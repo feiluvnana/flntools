@@ -297,7 +297,20 @@ class InsSource(BaseSource):
             # 3. Download highlights if found on profile
             if captured_highlights and (not limit or (current_count + saved_count) < limit):
                 print(f"  [highlights] Found {len(captured_highlights)} highlight collections.")
+
+                # Return to the main profile page so highlight elements can be clicked
+                profile_url = f"https://www.instagram.com/{username}/"
+                if not page.url.rstrip("/").endswith(f"instagram.com/{username}"):
+                    try:
+                        page.goto(profile_url, wait_until="load", timeout=20000)
+                        page.wait_for_timeout(2500)
+                    except Exception:
+                        pass
+
                 for hl in captured_highlights:
+                    if limit and (current_count + saved_count) >= limit:
+                        break
+
                     hl_id = hl["id"].replace("highlight:", "")
                     hl_title = hl["title"]
                     hl_dir = target_dir / "highlights" / sanitize_name(hl_title)
@@ -316,18 +329,39 @@ class InsSource(BaseSource):
                                 pass
 
                     page.on("response", on_hl_response)
-                    try:
-                        page.goto(hl_url, wait_until="load", timeout=20000)
-                        page.wait_for_timeout(3000)
-                    except Exception:
-                        pass
 
+                    # Click highlight element on profile page to trigger client-side Relay query
+                    try:
+                        hl_locator = page.locator(f'a[href*="{hl_id}"]').first
+                        if hl_locator.count() == 0:
+                            hl_locator = page.get_by_text(hl["title"].replace("_", " "), exact=False).first
+
+                        if hl_locator and hl_locator.count() > 0:
+                            hl_locator.click()
+                            page.wait_for_timeout(3500)
+                            # Close story modal so subsequent highlights can be clicked
+                            try:
+                                page.keyboard.press("Escape")
+                                page.wait_for_timeout(1000)
+                            except Exception:
+                                pass
+                        else:
+                            # Fallback to direct navigation
+                            page.goto(hl_url, wait_until="load", timeout=20000)
+                            page.wait_for_timeout(3500)
+                    except Exception as e:
+                        print(f"  [warn] Could not open highlight '{hl_title}': {e}")
+
+                    print(f"  [highlight:{hl_title}] Intercepted {len(hl_items)} items.")
                     for s_item in hl_items:
-                        date_str = s_item.get("date") or datetime.now().strftime("%Y-%m-%d")
+                        date_str = s_item.get("date") or ""
                         s_id = s_item["id"]
                         for idx, m_url in enumerate(s_item.get("media_urls", [])):
                             ext = "mp4" if s_item.get("is_video") else "jpg"
-                            filename = f"{date_str}_{s_id}_{idx}.{ext}" if len(s_item["media_urls"]) > 1 else f"{date_str}_{s_id}.{ext}"
+                            if len(s_item["media_urls"]) > 1:
+                                filename = f"{date_str}_{s_id}_{idx}.{ext}" if date_str else f"{s_id}_{idx}.{ext}"
+                            else:
+                                filename = f"{date_str}_{s_id}.{ext}" if date_str else f"{s_id}.{ext}"
                             dest_path = hl_dir / filename
                             if download_file(m_url, dest_path, client=client):
                                 saved_count += 1
