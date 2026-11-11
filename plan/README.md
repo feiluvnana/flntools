@@ -6,7 +6,7 @@ Every `shared` module follows three rules:
 
 1. **Wrap one library; don't rebuild it.** A module adds defaults, removes boilerplate that scripts repeat, and adds a few functions the library lacks. It does not define its own versions of the library's types.
 2. **Always hand back the real object.** `http.Client` *is* an `httpx.Client`. `browser.open` yields a Playwright `Page`. `store.sql` is the `sqlite3.Connection`. Anything the helper doesn't cover is one attribute away.
-3. **Stay small.** About 150–300 lines per module. If a module goes past 400 lines, stop and recheck its scope before writing more.
+3. **Stay small.** About 150–300 lines per module. If a module goes past 400 lines, stop and recheck its scope before writing more. `worker` is the one accepted exception, at about 440 lines: retries, rate limits, timeouts, per-worker setup, Ctrl-C handling, and processes are each part of what makes it robust, and splitting them apart would make it harder to read.
 
 ```python
 from shared import cli, fmt, log, prompt, style, theme          # Phase 1, stdlib only
@@ -67,7 +67,7 @@ Phase 2 removes about 50 lines of `create_parser` and 7 lines of `format_bytes`.
 
 - **Python and dependencies.** Python 3.10. Phase 1 modules use only the stdlib.
 - **Public surface.** Every file in `shared` starts with `_`, and [`shared/__init__.py`](../shared/__init__.py) is the only public surface. `log`, `style`, and `theme` are objects, so their properties can check what is assigned. The other modules are modules. Because no public name is also a submodule, `import shared.log` can never replace the `log` object with a module.
-- **Lazy imports.** `shared/__init__.py` loads `http`, `browser`, `crypto`, and `store` through a module `__getattr__`. `from shared import log` never imports httpx or Playwright.
+- **Lazy imports.** `shared/__init__.py` loads every Phase 3 module (`path`, `archive`, `crypto`, `store`, `worker`, `scrape`, `http`, `browser`) through a module `__getattr__`. `from shared import log` never imports httpx, Playwright, parsel, or cryptography.
 - **Missing extras.** A missing extra raises `ImportError("shared.http needs httpx: pip install 'flntools[http]'")` on first use.
 - **Readable code.** A module puts its public names first, then the small helpers they call. Names say what the value is. A comment is a plain sentence where a reader would otherwise have to reconstruct the rule. A comment does not restate the next line.
 - **Tests.** `unittest`, with one `tests/test_<module>.py` per module. Terminal tests use a fake `theme.screen`. `http` tests use `httpx.MockTransport`. `browser` tests use a local HTML file and are skipped when Chromium is not installed.
@@ -93,7 +93,7 @@ Phase 1 follows the rules, with one deliberate exception: the chalk-style names 
 ```toml
 [project.optional-dependencies]
 http = ["httpx>=0.27.0"]
-browser = ["playwright>=1.40.0"]
+browser = ["playwright>=1.40.0", "httpx>=0.27.0"]  # browser reads http.agents
 crypto = ["cryptography>=42"]
 scrape = ["parsel>=1.9.0"]
 ```
