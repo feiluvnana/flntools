@@ -50,6 +50,10 @@ class DateTest(unittest.TestCase):
         self.assertEqual(fmt.date(datetime(2026, 11, 11, 12, 8), "%Y-%m-%d"), "2026-11-11")
         self.assertEqual(fmt.date(date(2026, 11, 11), "%d/%m"), "11/11")
 
+    def test_date_rejects_bool(self):
+        with self.assertRaises(TypeError):
+            fmt.date(True)  # pyright: ignore[reportArgumentType]
+
 
 if __name__ == "__main__":
     unittest.main()

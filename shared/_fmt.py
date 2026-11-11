@@ -30,8 +30,13 @@ def duration(seconds: float) -> str:
 
 
 def date(value: _datetime.date | float, pattern: str | None = None) -> str:
-    """A date as `YYYY-MM-DD`; a datetime or Unix timestamp as `YYYY-MM-DD HH:MM`."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    """A date as `YYYY-MM-DD`; a datetime or Unix timestamp as `YYYY-MM-DD HH:MM`.
+
+    A bool raises TypeError: it is an int, but never a timestamp.
+    """
+    if isinstance(value, bool):
+        raise TypeError("fmt.date() takes a date, datetime, or Unix timestamp, not a bool")
+    if isinstance(value, (int, float)):
         value = _datetime.datetime.fromtimestamp(value)
     if pattern is None:
         pattern = "%Y-%m-%d %H:%M" if isinstance(value, _datetime.datetime) else "%Y-%m-%d"
