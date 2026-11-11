@@ -1,9 +1,11 @@
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+from importlib import metadata
 from pathlib import Path
 
 import shared
@@ -63,6 +65,46 @@ class LazyImportTest(unittest.TestCase):
     def test_missing_extras(self):
         message = missing_extra_message("selector", "parsel")
         self.assertEqual(message, "shared.selector needs parsel: pip install 'flntools[selector]'")
+
+
+def runtime_distributions(name: str) -> dict[str, metadata.Distribution]:
+    """Every installed distribution `name` needs at run time on this machine, by normalized name."""
+    from packaging.requirements import Requirement
+
+    found: dict[str, metadata.Distribution] = {}
+    queue = [(name, ())]
+    while queue:
+        current, extras = queue.pop()
+        key = re.sub(r"[-_.]+", "-", current).lower()
+        if key in found:
+            continue
+        found[key] = distribution = metadata.distribution(current)
+        for line in distribution.requires or []:
+            requirement = Requirement(line)
+            wanted = ("", *extras)
+            if requirement.marker is None or any(requirement.marker.evaluate({"extra": extra}) for extra in wanted):
+                queue.append((requirement.name, tuple(requirement.extras)))
+    del found[re.sub(r"[-_.]+", "-", name).lower()]
+    return found
+
+
+class LicensesTest(unittest.TestCase):
+    """licenses/ ships in the bundle: one <distribution>.txt for each third-party package in it."""
+
+    def test_every_file_names_its_package_and_licence(self):
+        for path in sorted((ROOT / "licenses").glob("*.txt")):
+            first, second = path.read_text(encoding="utf-8").splitlines()[:2]
+            self.assertEqual(first, path.stem, path.name)
+            self.assertTrue(second.startswith("License: "), path.name)
+
+    def test_every_bundled_package_has_its_licence(self):
+        try:
+            needed = runtime_distributions("flntools")
+        except (ImportError, metadata.PackageNotFoundError):
+            self.skipTest("flntools isn't installed with packaging, so its dependencies can't be listed")
+        missing = [f"{key} (its licence is in its .dist-info folder)"
+                   for key in needed if not (ROOT / "licenses" / f"{key}.txt").is_file()]
+        self.assertEqual(missing, [], "add licenses/<name>.txt for each")
 
 
 if __name__ == "__main__":
