@@ -1,109 +1,177 @@
-"""Hashes, HMAC, random values, and one way to encrypt a secret at rest.
+"""Hashes, keys, and AES encryption.
 
-Everything except `seal` and `unseal` uses only the stdlib. Those two need the `crypto`
-extra (`cryptography`) and raise ImportError without it.
+Hashing and keys use only the stdlib. The ciphers need `cryptography`, which comes with
+the `browser` extra, and raise ImportError on first use without it.
 """
 
 from __future__ import annotations
 
 import hashlib
-import hmac
 import secrets
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, BinaryIO, Union
+
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.ciphers import Cipher, modes
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 Data = Union[str, bytes]
+HashInput = Union[str, bytes, Path, BinaryIO]
 
 CHUNK_SIZE = 1024 * 1024
-KEY_SIZE = 32
-NONCE_SIZE = 12
-SEAL_VERSION = 1
 MIN_SALT_SIZE = 16
+GCM_VERSION = 1
+GCM_NONCE_SIZE = 12
+GCM_TAG_SIZE = 16
+DECRYPT_FAILED = "cannot decrypt: wrong key or damaged data"
+MISSING_CRYPTOGRAPHY = "shared.crypto needs cryptography: pip install 'flntools[browser]'"
 
 
-class CryptoError(Exception):
-    """A sealed blob could not be opened: wrong key, changed bytes, or unknown format."""
+class CryptoError(ValueError):
+    """Data could not be decrypted: a wrong key, changed bytes, bad padding, or an unknown format."""
 
 
-def digest(data: Data | Path, *, algo: str = "sha256") -> str:
-    """The hex digest of a `str` (as UTF-8), `bytes`, or a file read in 1 MB chunks."""
-    hasher = hashlib.new(algo)
-    if isinstance(data, Path):
-        with open(data, "rb") as handle:
-            while chunk := handle.read(CHUNK_SIZE):
-                hasher.update(chunk)
-    else:
-        hasher.update(_as_bytes(data))
-    return hasher.hexdigest()
+def hash_md5(data: HashInput) -> str:
+    """The MD5 of text, bytes, a file at a `Path`, or a binary file object, as hex.
+
+        crypto.hash_md5(Path("photo.jpg"))
+
+    Only a `Path` means a file: `hash_md5("photo.jpg")` hashes the text "photo.jpg".
+    """
+    return _hash("md5", data)
 
 
-def sign(key: Data, data: Data, *, algo: str = "sha256") -> str:
-    """The HMAC of `data` as hex."""
-    return hmac.new(_as_bytes(key), _as_bytes(data), algo).hexdigest()
+def hash_sha1(data: HashInput) -> str:
+    """The SHA-1 of `data` as hex, read the same way as `hash_md5`.
+
+        crypto.hash_sha1(b"bytes")
+    """
+    return _hash("sha1", data)
 
 
-def verify(key: Data, data: Data, signature: str, *, algo: str = "sha256") -> bool:
-    """Whether `signature` is the HMAC of `data`, compared in constant time."""
-    return equal(sign(key, data, algo=algo), signature)
+def hash_sha256(data: HashInput) -> str:
+    """The SHA-256 of `data` as hex, read the same way as `hash_md5`.
+
+        crypto.hash_sha256("text")
+    """
+    return _hash("sha256", data)
 
 
-def equal(a: Data, b: Data) -> bool:
-    """Compare two values in constant time."""
-    return hmac.compare_digest(_as_bytes(a), _as_bytes(b))
+def hash_sha512(data: HashInput) -> str:
+    """The SHA-512 of `data` as hex, read the same way as `hash_md5`.
+
+        crypto.hash_sha512(Path("f.bin"))
+    """
+    return _hash("sha512", data)
 
 
-def token(size: int = 32) -> str:
-    """`size` random bytes as URL-safe base64 text."""
-    return secrets.token_urlsafe(size)
+def hash_blake2b(data: HashInput) -> str:
+    """The BLAKE2b of `data` as hex, read the same way as `hash_md5`.
+
+        crypto.hash_blake2b(open("f.bin", "rb"))
+    """
+    return _hash("blake2b", data)
 
 
-def randbytes(n: int) -> bytes:
-    return secrets.token_bytes(n)
+def random_key(size: int = 32) -> bytes:
+    """`size` random bytes from the OS, for a key or a salt.
+
+        key = crypto.random_key()
+    """
+    return secrets.token_bytes(size)
 
 
-def keygen() -> bytes:
-    """A random 32-byte key for `seal`."""
-    return secrets.token_bytes(KEY_SIZE)
+def derive_scrypt(password: Data, salt: bytes, *, size: int = 32) -> bytes:
+    """A `size`-byte key from a password, with scrypt (n=2**15, r=8, p=1).
 
+        key = crypto.derive_scrypt("password", salt)
 
-def derive(password: Data, salt: bytes, *, n: int = 2**15, r: int = 8, p: int = 1) -> bytes:
-    """A 32-byte key from a password with scrypt. Keep `salt` (16+ random bytes) with the data."""
+    `salt` must be at least 16 random bytes, kept next to the data. It is slow on purpose.
+    """
     if len(salt) < MIN_SALT_SIZE:
         raise ValueError(f"salt must be at least {MIN_SALT_SIZE} bytes, not {len(salt)}")
-    # scrypt needs 128 * n * r bytes of memory; the default limit (32 MB) is just too small for n=2**15.
-    return hashlib.scrypt(_as_bytes(password), salt=salt, n=n, r=r, p=p, maxmem=256 * n * r + 1024 * 1024,
-                          dklen=KEY_SIZE)
+    cost, block_size = 2**15, 8
+    # scrypt needs a little over 128 * n * r bytes (32 MB here), just past OpenSSL's default limit.
+    return hashlib.scrypt(_as_bytes(password), salt=salt, n=cost, r=block_size, p=1,
+                          maxmem=256 * cost * block_size, dklen=size)
 
 
-def seal(data: Data, key: bytes) -> bytes:
-    """Encrypt with AES-256-GCM. The blob is a version byte, a 12-byte nonce, then the ciphertext and tag."""
-    cipher = _cipher(key)
-    nonce = secrets.token_bytes(NONCE_SIZE)
-    return bytes([SEAL_VERSION]) + nonce + cipher.encrypt(nonce, _as_bytes(data), None)
+def encrypt_aes_gcm(data: Data, key: bytes, *, context: bytes = b"") -> bytes:
+    """Encrypt and authenticate `data` into a version byte, a random nonce, the ciphertext and its tag.
+
+        blob = crypto.encrypt_aes_gcm("secret", key, context=b"cookies")
+
+    `context` is checked on decryption but not stored, so a blob sealed for one slot can't be moved to another.
+    """
+    nonce = secrets.token_bytes(GCM_NONCE_SIZE)
+    return bytes([GCM_VERSION]) + nonce + _aes_gcm(key).encrypt(nonce, _as_bytes(data), context)
 
 
-def unseal(blob: bytes, key: bytes) -> bytes:
-    """Reverse `seal`. Any failure raises `CryptoError` without saying which, so it leaks nothing."""
-    cipher = _cipher(key)
+def decrypt_aes_gcm(blob: bytes, key: bytes, *, context: bytes = b"") -> bytes:
+    """Decrypt a blob from `encrypt_aes_gcm` with the same key and context.
+
+        data = crypto.decrypt_aes_gcm(blob, key, context=b"cookies")
+
+    Any failure raises `CryptoError` without saying which, so it leaks nothing.
+    """
+    cipher = _aes_gcm(key)
     from cryptography.exceptions import InvalidTag
 
-    if len(blob) < 1 + NONCE_SIZE or blob[0] != SEAL_VERSION:
-        raise CryptoError("cannot unseal: wrong key or damaged data")
-    nonce, ciphertext = blob[1:1 + NONCE_SIZE], blob[1 + NONCE_SIZE:]
+    if len(blob) < 1 + GCM_NONCE_SIZE + GCM_TAG_SIZE or blob[0] != GCM_VERSION:
+        raise CryptoError(DECRYPT_FAILED)
+    nonce, ciphertext = blob[1:1 + GCM_NONCE_SIZE], blob[1 + GCM_NONCE_SIZE:]
     try:
-        return cipher.decrypt(nonce, ciphertext, None)
+        return cipher.decrypt(nonce, ciphertext, context)
     except InvalidTag:
-        raise CryptoError("cannot unseal: wrong key or damaged data") from None
+        raise CryptoError(DECRYPT_FAILED) from None
 
 
-def _cipher(key: bytes):
-    if len(key) != KEY_SIZE:
-        raise ValueError(f"key must be {KEY_SIZE} bytes, not {len(key)}: use crypto.keygen() or crypto.derive()")
+def encrypt_aes_cbc(data: Data, key: bytes, *, iv: bytes) -> bytes:
+    """Encrypt `data` with AES-CBC and PKCS7 padding, for a format you don't control.
+
+        blob = crypto.encrypt_aes_cbc("field", key, iv=iv)
+
+    CBC is not authenticated; your own data belongs in `encrypt_aes_gcm`.
+    """
+    encryptor = _aes_cbc(key, iv).encryptor()
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    padder = PKCS7(128).padder()
+    padded = padder.update(_as_bytes(data)) + padder.finalize()
+    return encryptor.update(padded) + encryptor.finalize()
+
+
+def decrypt_aes_cbc(blob: bytes, key: bytes, *, iv: bytes) -> bytes:
+    """Decrypt AES-CBC and remove the PKCS7 padding.
+
+        data = crypto.decrypt_aes_cbc(blob, key, iv=iv)
+
+    A blob that isn't whole blocks, or whose padding is wrong, raises `CryptoError`.
+    """
+    decryptor = _aes_cbc(key, iv).decryptor()
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    unpadder = PKCS7(128).unpadder()
     try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    except ImportError:
-        raise ImportError("shared.crypto.seal needs cryptography: pip install 'flntools[crypto]'") from None
-    return AESGCM(key)
+        padded = decryptor.update(blob) + decryptor.finalize()
+        return unpadder.update(padded) + unpadder.finalize()
+    except ValueError:
+        raise CryptoError(DECRYPT_FAILED) from None
+
+
+def _hash(algorithm: str, data: HashInput) -> str:
+    if isinstance(data, Path):
+        with data.open("rb") as handle:
+            return _hash(algorithm, handle)
+    hasher = hashlib.new(algorithm)
+    if isinstance(data, (str, bytes)):
+        hasher.update(_as_bytes(data))
+    elif hasattr(data, "read"):
+        while chunk := data.read(CHUNK_SIZE):
+            hasher.update(chunk)
+    else:
+        raise TypeError(f"cannot hash {type(data).__name__}: pass str, bytes, a Path, or a binary file")
+    return hasher.hexdigest()
 
 
 def _as_bytes(data: Data) -> bytes:
@@ -112,3 +180,26 @@ def _as_bytes(data: Data) -> bytes:
     if isinstance(data, (bytes, bytearray, memoryview)):
         return bytes(data)
     raise TypeError(f"expected str or bytes, not {type(data).__name__}")
+
+
+def _aes_gcm(key: bytes) -> AESGCM:
+    _check_key(key)
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError:
+        raise ImportError(MISSING_CRYPTOGRAPHY) from None
+    return AESGCM(key)
+
+
+def _aes_cbc(key: bytes, iv: bytes) -> Cipher[modes.CBC]:
+    _check_key(key)
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError:
+        raise ImportError(MISSING_CRYPTOGRAPHY) from None
+    return Cipher(algorithms.AES(key), modes.CBC(iv))
+
+
+def _check_key(key: bytes) -> None:
+    if len(key) not in (16, 24, 32):
+        raise ValueError(f"an AES key must be 16, 24 or 32 bytes, not {len(key)}: use crypto.random_key()")

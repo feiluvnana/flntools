@@ -1,6 +1,6 @@
 import builtins
 import hashlib
-import hmac
+import io
 import re
 import tempfile
 import unittest
@@ -15,117 +15,156 @@ try:
 except ImportError:
     HAS_CRYPTOGRAPHY = False
 
+HASHES = {
+    "md5": crypto.hash_md5,
+    "sha1": crypto.hash_sha1,
+    "sha256": crypto.hash_sha256,
+    "sha512": crypto.hash_sha512,
+    "blake2b": crypto.hash_blake2b,
+}
 
-class DigestTest(unittest.TestCase):
-    def test_str_bytes_and_path_agree_with_hashlib(self):
-        self.assertEqual(crypto.digest("hello"), hashlib.sha256(b"hello").hexdigest())
-        self.assertEqual(crypto.digest(b"hello", algo="blake2b"), hashlib.blake2b(b"hello").hexdigest())
-        with tempfile.TemporaryDirectory() as tmp:
-            file = Path(tmp) / "big.bin"
-            content = b"x" * (crypto.CHUNK_SIZE * 2 + 17)
+
+class HashTest(unittest.TestCase):
+    def test_every_input_agrees_with_hashlib(self):
+        content = b"x" * (crypto.CHUNK_SIZE * 2 + 17)
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / "big.bin"
             file.write_bytes(content)
-            self.assertEqual(crypto.digest(file), hashlib.sha256(content).hexdigest())
+            for algorithm, hash_function in HASHES.items():
+                with self.subTest(algorithm):
+                    self.assertEqual(hash_function("héllo"), hashlib.new(algorithm, "héllo".encode()).hexdigest())
+                    self.assertEqual(hash_function(b"\x00\xff"), hashlib.new(algorithm, b"\x00\xff").hexdigest())
+                    expected = hashlib.new(algorithm, content).hexdigest()
+                    self.assertEqual(hash_function(file), expected)
+                    with file.open("rb") as handle:
+                        self.assertEqual(hash_function(handle), expected)
+
+    def test_file_object_is_read_from_its_position(self):
+        handle = io.BytesIO(b"skipped|hashed")
+        handle.seek(8)
+        self.assertEqual(crypto.hash_sha256(handle), hashlib.sha256(b"hashed").hexdigest())
+
+    def test_str_is_text_not_a_file_name(self):
+        self.assertEqual(crypto.hash_sha256("photo.jpg"), hashlib.sha256(b"photo.jpg").hexdigest())
 
     def test_other_types_refused(self):
         with self.assertRaises(TypeError):
-            crypto.digest(123)
+            crypto.hash_sha256(123)  # pyright: ignore[reportArgumentType]
 
 
-class SignTest(unittest.TestCase):
-    def test_agrees_with_hmac(self):
-        expected = hmac.new(b"key", b"message", "sha256").hexdigest()
-        self.assertEqual(crypto.sign("key", "message"), expected)
-        self.assertEqual(crypto.sign(b"key", b"message"), expected)
+class KeyTest(unittest.TestCase):
+    def test_random_key(self):
+        self.assertEqual(len(crypto.random_key()), 32)
+        self.assertEqual(len(crypto.random_key(16)), 16)
+        self.assertNotEqual(crypto.random_key(), crypto.random_key())
 
-    def test_verify(self):
-        signature = crypto.sign("key", "message")
-        self.assertTrue(crypto.verify("key", "message", signature))
-        self.assertFalse(crypto.verify("key", "messagE", signature))
-        changed = signature[:-1] + ("1" if signature[-1] == "0" else "0")
-        self.assertFalse(crypto.verify("key", "message", changed))
-
-    def test_equal(self):
-        self.assertTrue(crypto.equal("abc", "abc"))
-        self.assertTrue(crypto.equal(b"abc", b"abc"))
-        self.assertTrue(crypto.equal("abc", b"abc"))
-        self.assertFalse(crypto.equal("abc", "abd"))
-
-
-class RandomTest(unittest.TestCase):
-    def test_token(self):
-        value = crypto.token()
-        self.assertEqual(len(value), 43)
-        self.assertRegex(value, r"^[A-Za-z0-9_-]+$")
-        self.assertEqual(len(crypto.token(16)), 22)
-        self.assertNotEqual(crypto.token(), crypto.token())
-
-    def test_randbytes_and_keygen(self):
-        self.assertEqual(len(crypto.randbytes(16)), 16)
-        self.assertEqual(len(crypto.keygen()), 32)
-
-
-class DeriveTest(unittest.TestCase):
-    def test_deterministic_per_salt(self):
-        salt, other = b"s" * 16, b"t" * 16
-        key = crypto.derive("pw", salt)
+    def test_derive_scrypt_is_deterministic_per_salt(self):
+        salt, other_salt = b"s" * 16, b"t" * 16
+        key = crypto.derive_scrypt("password", salt)
         self.assertEqual(len(key), 32)
-        self.assertEqual(key, crypto.derive("pw", salt))
-        self.assertNotEqual(key, crypto.derive("pw", other))
+        self.assertEqual(key, crypto.derive_scrypt(b"password", salt))
+        self.assertNotEqual(key, crypto.derive_scrypt("password", other_salt))
+        self.assertEqual(len(crypto.derive_scrypt("password", salt, size=16)), 16)
 
-    def test_short_salt(self):
+    def test_derive_scrypt_refuses_a_short_salt(self):
         with self.assertRaises(ValueError):
-            crypto.derive("pw", b"short")
+            crypto.derive_scrypt("password", b"s" * 15)
 
 
 @unittest.skipUnless(HAS_CRYPTOGRAPHY, "cryptography is not installed")
-class SealTest(unittest.TestCase):
+class AesGcmTest(unittest.TestCase):
     def setUp(self):
-        self.key = crypto.keygen()
+        self.key = crypto.random_key()
 
     def test_round_trip(self):
-        self.assertEqual(crypto.unseal(crypto.seal("sessionid=abc", self.key), self.key), b"sessionid=abc")
-        self.assertEqual(crypto.unseal(crypto.seal(b"\x00\xff", self.key), self.key), b"\x00\xff")
+        for key in (self.key, crypto.random_key(16), crypto.random_key(24)):
+            self.assertEqual(crypto.decrypt_aes_gcm(crypto.encrypt_aes_gcm("sessionid=abc", key), key),
+                             b"sessionid=abc")
+        blob = crypto.encrypt_aes_gcm(b"\x00\xff", self.key, context=b"slot")
+        self.assertEqual(crypto.decrypt_aes_gcm(blob, self.key, context=b"slot"), b"\x00\xff")
 
-    def test_layout_and_nonce(self):
-        first, second = crypto.seal("same", self.key), crypto.seal("same", self.key)
+    def test_layout_and_fresh_nonce(self):
+        first, second = crypto.encrypt_aes_gcm("same", self.key), crypto.encrypt_aes_gcm("same", self.key)
         self.assertNotEqual(first, second)
         self.assertEqual(first[0], 1)
         self.assertEqual(len(first), 1 + 12 + 4 + 16)
 
     def test_failures_raise_crypto_error(self):
-        blob = crypto.seal("secret", self.key)
+        blob = crypto.encrypt_aes_gcm("secret", self.key, context=b"slot")
         flipped = blob[:-1] + bytes([blob[-1] ^ 1])
         damaged = {
-            "wrong key": (blob, crypto.keygen()),
-            "flipped byte": (flipped, self.key),
-            "truncated": (blob[:10], self.key),
-            "unknown version": (b"\x02" + blob[1:], self.key),
+            "flipped byte": (flipped, self.key, b"slot"),
+            "wrong key": (blob, crypto.random_key(), b"slot"),
+            "wrong context": (blob, self.key, b"other slot"),
+            "truncated": (blob[:20], self.key, b"slot"),
+            "unknown version": (b"\x02" + blob[1:], self.key, b"slot"),
         }
-        for name, (data, key) in damaged.items():
-            with self.subTest(name), self.assertRaises(crypto.CryptoError) as caught:
-                crypto.unseal(data, key)
-            self.assertEqual(str(caught.exception), "cannot unseal: wrong key or damaged data")
+        for name, (damaged_blob, key, context) in damaged.items():
+            with self.subTest(name), self.assertRaises(crypto.CryptoError):
+                crypto.decrypt_aes_gcm(damaged_blob, key, context=context)
+        self.assertTrue(issubclass(crypto.CryptoError, ValueError))
 
-    def test_short_key(self):
-        with self.assertRaises(ValueError):
-            crypto.seal("x", b"k" * 16)
-        with self.assertRaises(ValueError):
-            crypto.unseal(b"x", b"k" * 16)
+
+@unittest.skipUnless(HAS_CRYPTOGRAPHY, "cryptography is not installed")
+class AesCbcTest(unittest.TestCase):
+    # NIST SP 800-38A, F.2.1 CBC-AES128.Encrypt, first two blocks.
+    KEY = bytes.fromhex("2b7e151628aed2a6abf7158809cf4f3c")
+    IV = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
+    PLAINTEXT = bytes.fromhex("6bc1bee22e409f96e93d7e117393172a" "ae2d8a571e03ac9c9eb76fac45af8e51")
+    CIPHERTEXT = bytes.fromhex("7649abac8119b246cee98e9b12e9197d" "5086cb9b507219ee95db113a917678b2")
+
+    def test_published_vector(self):
+        blob = crypto.encrypt_aes_cbc(self.PLAINTEXT, self.KEY, iv=self.IV)
+        # PKCS7 adds a whole block of padding to data that is already whole blocks.
+        self.assertEqual(len(blob), 48)
+        self.assertEqual(blob[:32], self.CIPHERTEXT)
+
+    def test_round_trip(self):
+        key, iv = crypto.random_key(), crypto.random_key(16)
+        for text in ("", "short", "é" * 40):
+            with self.subTest(text=text):
+                blob = crypto.encrypt_aes_cbc(text, key, iv=iv)
+                self.assertEqual(crypto.decrypt_aes_cbc(blob, key, iv=iv), text.encode())
+
+    def test_bad_padding_and_partial_blocks_raise_crypto_error(self):
+        # The vector without its padding block ends in a byte that is not valid PKCS7 padding.
+        with self.assertRaises(crypto.CryptoError):
+            crypto.decrypt_aes_cbc(self.CIPHERTEXT, self.KEY, iv=self.IV)
+        with self.assertRaises(crypto.CryptoError):
+            crypto.decrypt_aes_cbc(self.CIPHERTEXT[:20], self.KEY, iv=self.IV)
+
+
+@unittest.skipUnless(HAS_CRYPTOGRAPHY, "cryptography is not installed")
+class KeySizeTest(unittest.TestCase):
+    def test_a_20_byte_key_raises_value_error(self):
+        key = b"k" * 20
+        calls = {
+            "encrypt_aes_gcm": lambda: crypto.encrypt_aes_gcm("x", key),
+            "decrypt_aes_gcm": lambda: crypto.decrypt_aes_gcm(b"x" * 40, key),
+            "encrypt_aes_cbc": lambda: crypto.encrypt_aes_cbc("x", key, iv=b"i" * 16),
+            "decrypt_aes_cbc": lambda: crypto.decrypt_aes_cbc(b"x" * 16, key, iv=b"i" * 16),
+        }
+        for name, call in calls.items():
+            with self.subTest(name), self.assertRaises(ValueError) as caught:
+                call()
+            self.assertNotIsInstance(caught.exception, crypto.CryptoError)
 
 
 class MissingExtraTest(unittest.TestCase):
-    def test_seal_names_the_extra_and_hashes_still_work(self):
+    def test_ciphers_name_the_extra_and_hashes_still_work(self):
         real_import = builtins.__import__
 
-        def no_cryptography(name, *args, **kwargs):
+        def import_without_cryptography(name, *args, **kwargs):
             if name.startswith("cryptography"):
                 raise ImportError("No module named 'cryptography'")
             return real_import(name, *args, **kwargs)
 
-        with mock.patch("builtins.__import__", no_cryptography):
-            with self.assertRaisesRegex(ImportError, re.escape("pip install 'flntools[crypto]'")):
-                crypto.seal("x", crypto.keygen())
-            self.assertEqual(crypto.digest("a"), hashlib.sha256(b"a").hexdigest())
+        with mock.patch("builtins.__import__", import_without_cryptography):
+            for cipher_call in (lambda: crypto.decrypt_aes_gcm(b"x" * 40, crypto.random_key()),
+                                lambda: crypto.encrypt_aes_cbc("x", crypto.random_key(), iv=b"i" * 16)):
+                with self.assertRaisesRegex(ImportError, re.escape("pip install 'flntools[browser]'")):
+                    cipher_call()
+            self.assertEqual(crypto.hash_sha256("a"), hashlib.sha256(b"a").hexdigest())
 
 
 if __name__ == "__main__":
