@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Virtualenv created by `make setup`
+.venv/
+
 # Distribution / packaging
 dist/
 build/
@@ -14,4 +17,3 @@ build/
 
 # Local
 .flnd/
-scratch_ins_tabs.py

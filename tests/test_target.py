@@ -8,9 +8,9 @@ from flnd.target import parse_target, Target
 
 class TestTargetParsing(unittest.TestCase):
     def test_valid_targets(self):
-        t1 = parse_target("ins:iamsan_198")
+        t1 = parse_target("ins:example_user")
         self.assertEqual(t1.source, "ins")
-        self.assertEqual(t1.value, "iamsan_198")
+        self.assertEqual(t1.value, "example_user")
 
         t2 = parse_target("tik:example_creator")
         self.assertEqual(t2.source, "tik")

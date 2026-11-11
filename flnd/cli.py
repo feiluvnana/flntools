@@ -6,11 +6,11 @@ Usage:
   python -m flnd [targets...]
 
 Examples:
-  flnd ins:iamsan_198
+  flnd ins:example_user
   flnd tik:example_creator
   flnd twt:example_handle
   flnd fbk:example.page
-  flnd ins:iamsan_198 twt:example_handle --limit 5
+  flnd ins:example_user twt:example_handle --limit 5
 """
 
 import argparse
@@ -32,7 +32,7 @@ def create_parser() -> argparse.ArgumentParser:
             "  <source>:<want to download>\n"
             "  Supported sources: tik, fbk, ins, twt\n\n"
             "Examples:\n"
-            "  flnd ins:iamsan_198\n"
+            "  flnd ins:example_user\n"
             "  flnd tik:example_creator\n"
             "  flnd twt:example_handle\n"
             "  flnd fbk:example.page\n"
@@ -43,7 +43,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "targets",
         nargs="*",
-        help="One or more targets in format <source>:<value> (e.g. ins:iamsan_198, twt:example_handle)",
+        help="One or more targets in format <source>:<value> (e.g. ins:example_user, twt:example_handle)",
     )
 
     parser.add_argument(

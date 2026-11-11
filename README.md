@@ -1,15 +1,23 @@
-# flnd (Python)
+# flntools
 
-Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, and **Twitter/X**.
+Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, and **Twitter/X**. The command is `flnd`.
+
+`cli`, `log`, and `prompt` for this repo are specified in [PLAN.md](PLAN.md). They are not implemented yet.
 
 ---
 
 ## Installation
 
+Requires Python 3.10 or newer. This checkout uses a local virtualenv on Python 3.14.
+
 ```bash
-cd E:\flntools
-pip install -e .
+uv venv .venv --python 3.14
+source .venv/bin/activate
+uv pip install -e .
+playwright install chromium
 ```
+
+`.venv` stays in this folder. Activate it again with `source .venv/bin/activate` before running `flnd`.
 
 ---
 
@@ -20,32 +28,36 @@ flnd [targets...] [options]
 ```
 
 Or via python module:
+
 ```bash
 python -m flnd [targets...] [options]
 ```
 
 ### Target Format
+
 `<source>:<want to download>`
 
 Supported sources:
+
 - `tik`: TikTok
 - `fbk`: Facebook
 - `ins`: Instagram
 - `twt`: Twitter / X
 
 ### Examples
+
 ```bash
 # Single target
-flnd ins:iamsan_198
+flnd ins:example_user
 flnd tik:example_creator
 flnd twt:example_handle
 flnd fbk:example.page
 
 # Multiple targets with download limit
-flnd ins:iamsan_198 twt:example_handle --limit 5
+flnd ins:example_user twt:example_handle --limit 5
 
 # See browser during execution
-flnd ins:iamsan_198 --no-headless
+flnd ins:example_user --no-headless
 ```
 
 ---
@@ -53,6 +65,7 @@ flnd ins:iamsan_198 --no-headless
 ## Cookies
 
 Place your Netscape `cookies.txt` (or `.json`) under `.flnd/cookies/`:
+
 - `.flnd/cookies/tik.txt`
 - `.flnd/cookies/fbk.txt`
 - `.flnd/cookies/ins.txt`

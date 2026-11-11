@@ -33,7 +33,7 @@ def parse_target(raw_target: str) -> Target:
     Parse and validate a single target string.
 
     Examples of valid targets:
-      - ins:iamsan_198
+      - ins:example_user
       - tik:example_creator
       - twt:example_handle
       - fbk:example.page
@@ -45,7 +45,7 @@ def parse_target(raw_target: str) -> Target:
     if ":" not in cleaned:
         raise ValueError(
             f"Invalid target format: '{raw_target}'. Expected format: <source>:<want to download>\n"
-            f"Example: ins:iamsan_198 (supported sources: {', '.join(sorted(SUPPORTED_SOURCES))})"
+            f"Example: ins:example_user (supported sources: {', '.join(sorted(SUPPORTED_SOURCES))})"
         )
 
     source_code, _, value = cleaned.partition(":")
