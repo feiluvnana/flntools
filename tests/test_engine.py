@@ -534,6 +534,20 @@ class EngineLoginTest(EngineCase):
         with vault.open(self.home, "aaa") as secrets:
             self.assertEqual(secrets["session"], "s")
 
+    def test_ask_shows_its_description_in_the_question(self):
+        answers = []
+
+        def own_login(self, session, method):
+            answers.append(session.ask("Phone number", description="With the country code, such as +44"))
+
+        self.screen._interactive = True
+        self.screen.readkey = iter(["1", "enter"]).__next__
+        source = make_source("aaa", lambda session: None, login=own_login, login_methods=("qr",))
+        Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
+        self.assertEqual(answers, ["1"])
+        self.assertEqual(self.screen.out.getvalue().splitlines()[:3],
+                         ["┃ Phone number", "┃ With the country code, such as +44", "┃ >"])
+
 
 if __name__ == "__main__":
     unittest.main()

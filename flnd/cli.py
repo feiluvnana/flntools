@@ -66,8 +66,8 @@ def download(
     targets: Annotated[list[str], cli.arg(nargs="+")],
     *,
     categories: Annotated[Optional[list[str]], cli.opt("--from", metavar="CATEGORIES")] = None,
-    since: Annotated[Optional[date], cli.opt(type=date.fromisoformat, metavar="DATE")] = None,
-    until: Annotated[Optional[date], cli.opt(type=date.fromisoformat, metavar="DATE")] = None,
+    since: Optional[date] = None,
+    until: Optional[date] = None,
     unpack: bool = False,
     zip: bool = False,
     locale: Optional[str] = None,
@@ -95,7 +95,7 @@ def download(
         raise cli.UsageError(str(error)) from None
     names = None
     if categories is not None:
-        names = tuple(dict.fromkeys(part.strip() for value in categories for part in value.split(",") if part.strip()))
+        names = tuple(dict.fromkeys(categories))
         problem = unknown_categories(names, list(dict.fromkeys(SOURCES[target.source] for target in resolved)))
         if problem:
             raise cli.UsageError(problem)

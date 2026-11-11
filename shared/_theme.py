@@ -1,10 +1,16 @@
-"""The look of everything `shared` prints: glyphs, templates, and color depth."""
+"""The look of everything `shared` prints: glyphs, the palette, drawers, and color depth.
+
+Restyling means changing `theme.palette` or `theme.glyphs`. A script that wants something
+stranger replaces a drawer, a plain function of (theme, value) that returns the drawn text:
+`theme.drawers.log = lambda theme, record: f"[{record.level}] {record.message}"`.
+"""
 
 from __future__ import annotations
 
 import os
 import re
 import sys
+import textwrap
 import time
 import unicodedata
 from contextlib import contextmanager
@@ -12,7 +18,7 @@ from dataclasses import replace
 from typing import Any, Callable, Iterator, Literal, NamedTuple
 
 from shared._screen import Screen, isatty
-from shared._style import ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, pieces_of, style
+from shared._style import ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, Chain, style
 
 ColorDepth = Literal["none", "8", "256", "16m"]
 COLOR_DEPTHS: tuple[ColorDepth, ...] = ("none", "8", "256", "16m")
@@ -22,18 +28,28 @@ HELP_LABEL_WIDTH = 20
 # Each glyph is (unicode, ascii). A nested dict is a group of glyphs.
 GLYPHS: dict[str, Any] = {
     "bullet": ("•", "*"), "tick": ("✓", "+"), "bang": ("!", "!"),
-    "cross": ("✗", "x"), "dot": ("·", "."), "pointer": ("›", ">"),
+    "cross": ("✗", "x"), "dot": ("·", "."), "pointer": (">", ">"),
+    "border": ("┃", "|"), "keysep": ("•", "|"),
     "select": {"yes": ("●", "(*)"), "no": ("○", "( )")},
-    "check": {"yes": ("✔", "[x]"), "no": ("·", "[ ]")},
+    "check": {"yes": ("✓", "[x]"), "no": ("•", "[ ]")},
+    "keys": {"up": ("↑", "up"), "down": ("↓", "down"), "left": ("←", "left"), "right": ("→", "right")},
     "bar": {"full": ("━", "="), "empty": ("─", "-")},
     "spin": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), ("|", "/", "-", "\\")),
 }
+# Each value is anything `style.color` takes, or style names and colors such as "bold red".
+# The prompt colors are huh's ThemeCharm; ok and error match them, so log lines and prompts agree.
+PALETTE: dict[str, Any] = {
+    "info": "cyan", "ok": "#02BF87", "warn": "yellow", "error": "#ED567A", "debug": "dim",
+    "title": "bold #7571F9", "cursor": "#F780E2", "chosen": "#02BF87",
+    "text": 252, "muted": 243, "faint": 238, "key": 241, "hint": 239,
+    "label": "magenta", "cream": "#FFFDF5", "button": 237,
+}
+LOG_GLYPHS = {"info": "bullet", "ok": "tick", "warn": "bang", "error": "cross", "debug": "dot"}
 
 
 class LogRecord(NamedTuple):
     level: str
     message: str
-    fields: str = ""
     bar: Bar | None = None
 
 
@@ -58,16 +74,19 @@ class HelpModel(NamedTuple):
 
 
 class PromptView(NamedTuple):
+    """What a question shows. `options` are the visible labels; a confirm's are its buttons."""
+
     kind: str
     message: str
+    description: str = ""
     value: str = ""
+    placeholder: str = ""
     options: tuple = ()
     position: int = 0
     checked: frozenset = frozenset()
     error: str | None = None
-    keys: tuple = ()
+    keys: tuple = ()  # (action, key names) pairs for the help line
     done: bool = False
-    placeholder: str = ""
 
 
 class Theme:
@@ -79,7 +98,8 @@ class Theme:
         self.color = detect_color(sys.stderr) if color is None else color
         self.unicode = detect_unicode(sys.stderr) if unicode is None else unicode
         self.glyphs = Namespace("glyph", GLYPHS, self._pick_glyph)
-        self.templates = Namespace("template", default_templates(), lambda template: template)
+        self.palette = Namespace("palette color", PALETTE, _same, check=chain_of)
+        self.drawers = Namespace("drawer", DRAWERS, _same)
 
     @property
     def color(self) -> ColorDepth:
@@ -94,7 +114,10 @@ class Theme:
     @contextmanager
     def scope(self, **changes: Any) -> Iterator[Theme]:
         """Apply changes for the length of the block, then restore the old values."""
-        previous = {name: getattr(self, name) for name in _check_changes(changes)}
+        unknown = set(changes) - {"color", "unicode", "screen"}
+        if unknown:
+            raise TypeError(f"unknown theme settings: {', '.join(sorted(unknown))}")
+        previous = {name: getattr(self, name) for name in changes}
         try:
             for name, value in changes.items():
                 setattr(self, name, value)
@@ -103,134 +126,21 @@ class Theme:
             for name, value in previous.items():
                 setattr(self, name, value)
 
-    def branch(self, **changes: Any) -> Theme:
-        """A separate copy with the changes applied. The screen is shared unless changed."""
-        _check_changes(changes)
-        copy = Theme.__new__(Theme)
-        copy.screen, copy._color, copy.unicode = self.screen, self._color, self.unicode
-        copy.glyphs = self.glyphs._copy(copy._pick_glyph)
-        copy.templates = self.templates._copy(None)
-        for name, value in changes.items():
-            setattr(copy, name, value)
-        return copy
+    def paint(self, name: str, text: str, *, on: str | None = None) -> str:
+        """Paint text with a palette color, on another palette color's background when given."""
+        if not text:
+            return ""
+        chain = chain_of(getattr(self.palette, name))
+        if on is not None:
+            chain = replace(chain, bg=chain_of(getattr(self.palette, on)).fg)
+        return chain.paint(text, self.color)
 
-    def _format_log(self, record: LogRecord) -> str:
-        if record.bar is None:
-            template = getattr(self.templates.log, record.level)
-            return self._fill(template, message=record.message, fields=record.fields)
-        bar = record.bar
-        state = "error" if record.level == "error" else "ok" if bar.finished else "run"
-        return self._fill(
-            getattr(self.templates.progress, state),
-            label=bar.label, bar=self._bar_cells(bar), count=_count(bar), caption=bar.caption,
-        )
-
-    def _format_help(self, model: HelpModel) -> str:
-        help_templates = self.templates.help
-        lines = []
-        if model.error:
-            lines += [self._fill(help_templates.error, message=model.error), ""]
-        if model.description:
-            lines += [model.description, ""]
-        lines += [self._fill(help_templates.section, title="Usage:"), self._fill(help_templates.usage, usage=model.usage)]
-        for title, rows in (("Arguments:", model.arguments), ("Options:", model.options), ("Commands:", model.commands)):
-            if rows:
-                lines += ["", self._fill(help_templates.section, title=title)]
-                for label, text in rows:
-                    padded = ("  " + label).ljust(HELP_LABEL_WIDTH)
-                    lines.append(self._fill(help_templates.row, label=padded, help=text))
-        if model.epilog:
-            lines.append("")
-            lines += [self._epilog_line(line) for line in model.epilog.splitlines()]
-        return "\n".join(lines) + "\n"
-
-    def _format_prompt(self, view: PromptView) -> str:
-        prompt_templates = self.templates.prompt
-        if view.done:
-            return self._fill(prompt_templates.done, message=_done_text(view))
-        lines = [self._fill(prompt_templates.question, message=view.message)]
-        pointer = self.glyphs.pointer
-        if view.kind in ("input", "secret"):
-            if not view.value and view.placeholder:
-                lines.append(self._fill(prompt_templates.placeholder, cursor=pointer, value=view.placeholder))
-            else:
-                lines.append(self._fill(prompt_templates.input, cursor=pointer, value=view.value))
-        else:
-            marks = self.glyphs.check if view.kind == "choices" else self.glyphs.select
-            # Inactive rows get blanks as wide as the pointer, so the labels line up.
-            blank = " " * display_width(pointer)
-            for index, label in enumerate(view.options):
-                marked = index in view.checked if view.kind == "choices" else index == view.position
-                lines.append(self._fill(
-                    prompt_templates.choice,
-                    cursor=pointer if index == view.position else blank,
-                    mark=marks.yes if marked else marks.no,
-                    label=label,
-                ))
-        if view.error:
-            lines.append(self._fill(prompt_templates.error, message=view.error))
-        if view.keys:
-            lines.append("  ".join(
-                self._fill(prompt_templates.keys, binding="/".join(keys), action=action) for action, keys in view.keys
-            ))
-        return "\n".join(lines)
-
-    def _fill(self, template: str, **parts: Any) -> str:
-        """Fill the {g-*} and {p-*} slots, paint each styled piece, and tidy the spaces."""
-        painted = []
-        for raw, chain in pieces_of(template):
-            text = self._fill_slots(raw, parts)
-            if chain is not None:
-                if chain.link:
-                    chain = replace(chain, link=self._fill_slots(chain.link, parts).replace(EMPTY_SLOT, ""))
-                text = chain.paint(text, self.color)
-            painted.append(text)
-        return tidy_spaces("".join(painted))
-
-    def _fill_slots(self, raw: str, parts: dict) -> str:
-        def slot_value(match: re.Match) -> str:
-            kind, name = match.groups()
-            value = self._glyph(name) if kind == "g" else parts.get(name)
-            return EMPTY_SLOT if value is None or value == "" else str(value)
-
-        return SLOT.sub(slot_value, raw)
-
-    def _glyph(self, dotted_name: str) -> Any:
-        value: Any = self.glyphs
-        try:
-            for name in dotted_name.split("."):
-                value = getattr(value, name)
-        except AttributeError:
-            return None
-        return value
+    def draw(self, kind: str, value: Any) -> str:
+        """Draw a value with this theme's drawer for its kind: log, progress, prompt, or help."""
+        return getattr(self.drawers, kind)(self, value)
 
     def _pick_glyph(self, pair: tuple) -> Any:
         return pair[0] if self.unicode else pair[1]
-
-    def _bar_cells(self, bar: Bar) -> str:
-        if bar.total is None:
-            if bar.finished:
-                return ""
-            frames = self.glyphs.spin
-            return frames[int(time.monotonic() * 10) % len(frames)]
-        done = max(bar.done, 0)
-        filled = BAR_CELLS if bar.total <= 0 else round(BAR_CELLS * min(done, bar.total) / bar.total)
-        return self.glyphs.bar.full * filled + self.glyphs.bar.empty * (BAR_CELLS - filled)
-
-    def _epilog_line(self, line: str) -> str:
-        """Draw path words with help.path and runs of other words with help.epilog."""
-        drawn: list = []
-        for gap, word in re.findall(r"(\s*)(\S+)", line):
-            if _is_path(word):
-                drawn += [gap, self._fill(self.templates.help.path, path=word)]
-            elif drawn and isinstance(drawn[-1], list):
-                drawn[-1].append(gap + word)
-            else:
-                drawn += [gap, [word]]
-        return "".join(
-            self._fill(self.templates.help.epilog, text="".join(piece)) if isinstance(piece, list) else piece
-            for piece in drawn
-        )
 
 
 class Namespace:
@@ -240,14 +150,17 @@ class Namespace:
     _defaults: dict
     _groups: dict[str, Namespace]
     _pick: Callable[[Any], Any]
+    _check: Callable[[Any], Any]
     _assigned: dict
 
-    def __init__(self, kind: str, defaults: dict, pick: Callable[[Any], Any]):
+    def __init__(self, kind: str, defaults: dict, pick: Callable[[Any], Any], *,
+                 check: Callable[[Any], Any] = lambda value: value):
         groups = {name: Namespace(kind, value, pick) for name, value in defaults.items() if isinstance(value, dict)}
         object.__setattr__(self, "_kind", kind)
         object.__setattr__(self, "_defaults", defaults)
         object.__setattr__(self, "_groups", groups)
         object.__setattr__(self, "_pick", pick)
+        object.__setattr__(self, "_check", check)
         object.__setattr__(self, "_assigned", {})
 
     def __getattr__(self, name: str) -> Any:
@@ -262,51 +175,156 @@ class Namespace:
     def __setattr__(self, name: str, value: Any) -> None:
         if name not in self._defaults or name in self._groups:
             raise AttributeError(f"unknown {self._kind} {name!r}")
+        self._check(value)
         self._assigned[name] = value
 
-    def _copy(self, pick: Callable[[Any], Any] | None) -> Namespace:
-        pick = pick or self._pick
-        copy = Namespace(self._kind, self._defaults, pick)
-        copy._assigned.update(self._assigned)
-        for name, group in self._groups.items():
-            copy._groups[name] = group._copy(pick)
-        return copy
+
+def chain_of(value: str | int) -> Chain:
+    """The style for a palette value: a color, or style names and colors such as "bold #7571F9"."""
+    try:
+        return style.color(value)
+    except ValueError:
+        pass
+    chain = style
+    for word in str(value).split():
+        try:
+            chain = chain.color(int(word) if word.isdigit() else word) if word[0] in "#0123456789" \
+                else getattr(chain, word)
+        except AttributeError:
+            raise ValueError(f"not a style: {value!r}") from None
+    return chain
 
 
-def default_templates() -> dict:
-    log_tail = " {p-message}{p-fields}"
-    bar_tail = " {p-label} {p-bar} {p-count} {p-caption}"
-    return {
-        "log": {
-            "info": style.cyan("{g-bullet}") + log_tail,
-            "ok": style.green("{g-tick}") + log_tail,
-            "warn": style.yellow("{g-bang}") + log_tail,
-            "error": style.red("{g-cross}") + log_tail,
-            "debug": style.dim("{g-dot}") + log_tail,
-        },
-        "progress": {
-            "run": style.cyan("{g-bullet}") + bar_tail,
-            "ok": style.green("{g-tick}") + bar_tail,
-            "error": style.red("{g-cross}") + bar_tail,
-        },
-        "prompt": {
-            "question": style.white("{p-message}"),
-            "input": style.magenta("{p-cursor}") + " {p-value}",
-            "placeholder": style.magenta("{p-cursor}") + " " + style.bright_black("{p-value}"),
-            "choice": style.magenta("{p-cursor}") + " {p-mark} {p-label}",
-            "done": style.green("{g-tick}") + " {p-message}",
-            "error": style.red("{g-cross}") + " {p-message}",
-            "keys": style.dim("{p-binding} {p-action}"),
-        },
-        "help": {
-            "section": style.bold("{p-title}"),
-            "usage": style.magenta("  {p-usage}"),
-            "row": style.magenta("{p-label}") + "  " + style.dim("{p-help}"),
-            "epilog": style.dim("{p-text}"),
-            "path": style.cyan.underline.url("{p-path}")("{p-path}"),
-            "error": style.red("{g-cross}") + " {p-message}",
-        },
-    }
+def draw_log(theme: Theme, record: LogRecord) -> str:
+    glyph = theme.paint(record.level, getattr(theme.glyphs, LOG_GLYPHS[record.level]))
+    return f"{glyph} {record.message}" if record.message else glyph
+
+
+def draw_progress(theme: Theme, record: LogRecord) -> str:
+    bar = record.bar
+    assert bar is not None
+    level = "error" if record.level == "error" else "ok" if bar.finished else "info"
+    parts = [theme.paint(level, getattr(theme.glyphs, LOG_GLYPHS[level])), bar.label, _bar_cells(theme, bar),
+             _count(bar), bar.caption]
+    return " ".join(part for part in parts if part)
+
+
+def draw_help(theme: Theme, model: HelpModel) -> str:
+    lines = []
+    if model.error:
+        lines += [f"{theme.paint('error', theme.glyphs.cross)} {model.error}", ""]
+    if model.description:
+        lines += [model.description, ""]
+    lines += [theme.paint("title", "Usage:"), theme.paint("label", "  " + model.usage)]
+    for title, rows in (("Arguments:", model.arguments), ("Options:", model.options), ("Commands:", model.commands)):
+        if rows:
+            lines += ["", theme.paint("title", title)]
+            for label, text in rows:
+                padded = ("  " + label).ljust(HELP_LABEL_WIDTH)
+                lines.append(theme.paint("label", padded) + "  " + theme.paint("muted", text) if text
+                             else theme.paint("label", "  " + label))
+    if model.epilog:
+        lines += [""] + [theme.paint("muted", line) for line in model.epilog.splitlines()]
+    return "\n".join(lines) + "\n"
+
+
+def draw_prompt(theme: Theme, view: PromptView) -> str:
+    """A question's frame: a bar down every line, then the help line; once answered, one done line."""
+    if view.done:
+        return f"{theme.paint('ok', theme.glyphs.tick)} {_done_text(view)}"
+    head = [theme.paint("title", view.message) + (theme.paint("error", " *") if view.error else "")]
+    width = max(theme.screen.width - 2, 1)
+    for line in view.description.splitlines():
+        head += [theme.paint("muted", part) for part in textwrap.wrap(line, width)] or [""]
+    tail = [theme.paint("error", f"* {view.error}")] if view.error else []
+    keys = [_keys_line(theme, view.keys)] if view.keys else []
+    # A frame never outgrows the screen, or its cursor-up erase would miss the top rows.
+    room = theme.screen.height - 1 - len(head) - len(tail) - len(keys)
+    if view.kind in ("input", "secret"):
+        body = [_input_line(theme, view)]
+    elif view.kind == "confirm":
+        buttons = [_button(theme, label, index == view.position) for index, label in enumerate(view.options)]
+        body = ["", "  ".join(buttons)]
+    else:
+        body = _option_rows(theme, view, room)
+    border = theme.paint("faint", theme.glyphs.border)
+    return "\n".join([f"{border} {line}" if line else border for line in head + body + tail] + keys)
+
+
+def _input_line(theme: Theme, view: PromptView) -> str:
+    pointer = theme.paint("cursor", theme.glyphs.pointer)
+    if view.value:
+        return f"{pointer} {theme.paint('text', view.value)}"
+    return f"{pointer} {theme.paint('faint', view.placeholder)}" if view.placeholder else pointer
+
+
+def _option_rows(theme: Theme, view: PromptView, room: int) -> list[str]:
+    """One row per visible option, scrolled to a window around the cursor when they don't fit."""
+    count = len(view.options)
+    start, end = 0, count
+    if count > room:
+        shown = max(room - 2, 1)
+        start = min(max(view.position - shown // 2, 0), count - shown)
+        end = start + shown
+    # Rows without the cursor are indented by the pointer's width, so the labels line up.
+    blank = " " * display_width(theme.glyphs.pointer)
+    rows = [f"{blank} {theme.paint('faint', f'{theme.glyphs.keys.up} {start} more')}"] if start else []
+    for row in range(start, end):
+        label = view.options[row]
+        cursor = theme.paint("cursor", theme.glyphs.pointer) if row == view.position else blank
+        if view.kind == "choices":
+            # Color follows the checked state; the cursor only adds the pointer.
+            checked = row in view.checked
+            mark = theme.paint("chosen", theme.glyphs.check.yes) if checked \
+                else theme.paint("muted", theme.glyphs.check.no)
+            rows.append(f"{cursor} {mark} {theme.paint('chosen' if checked else 'text', label)}")
+        else:
+            rows.append(f"{cursor} {theme.paint('chosen' if row == view.position else 'text', label)}")
+    if end < count:
+        rows.append(f"{blank} {theme.paint('faint', f'{theme.glyphs.keys.down} {count - end} more')}")
+    return rows
+
+
+def _button(theme: Theme, label: str, active: bool) -> str:
+    # Without color, brackets show which button is active; both shapes are the same width.
+    if theme.color == "none":
+        return f"[ {label} ]" if active else f"  {label}  "
+    padded = f"  {label}  "
+    return theme.paint("cream", padded, on="cursor") if active else theme.paint("text", padded, on="button")
+
+
+def _keys_line(theme: Theme, keys: tuple) -> str:
+    separator = f" {theme.paint('hint', theme.glyphs.keysep)} "
+    return separator.join(
+        theme.paint("key", "/".join(getattr(theme.glyphs.keys, key) if key in GLYPHS["keys"] else key for key in bound))
+        + " " + theme.paint("hint", action)
+        for action, bound in keys
+    )
+
+
+def _done_text(view: PromptView) -> str:
+    if view.kind == "secret":
+        return view.message
+    if view.kind == "confirm":
+        return f"{view.message} {view.value}"
+    return f"{view.message}: {view.value}"
+
+
+def _bar_cells(theme: Theme, bar: Bar) -> str:
+    if bar.total is None:
+        if bar.finished:
+            return ""
+        frames = theme.glyphs.spin
+        return frames[int(time.monotonic() * 10) % len(frames)]
+    done = max(bar.done, 0)
+    filled = BAR_CELLS if bar.total <= 0 else round(BAR_CELLS * min(done, bar.total) / bar.total)
+    return theme.glyphs.bar.full * filled + theme.glyphs.bar.empty * (BAR_CELLS - filled)
+
+
+def _count(bar: Bar) -> str:
+    if bar.total is not None:
+        return f"{bar.show(bar.done)}/{bar.show(bar.total)}"
+    return bar.show(bar.done) if bar.done > 0 else ""
 
 
 def detect_color(stream) -> ColorDepth:
@@ -339,46 +357,7 @@ def fit(text: str, width: int) -> str:
     return text
 
 
-SLOT = re.compile(r"\{([gp])-([\w.]+)\}")
-EMPTY_SLOT = "\0"
 _UNIT = re.compile(ESCAPE_PATTERN + "|.", re.S)
-_EMPTY_RUN = re.compile(rf"(?:[ ]|{ESCAPE_PATTERN})*\0(?:[ ]|\0|{ESCAPE_PATTERN})*")
-_TRAILING_SPACES = re.compile(rf" +((?:{ESCAPE_PATTERN})*)$", re.M)
-
-
-def tidy_spaces(text: str) -> str:
-    """Collapse the spaces around empty slots to one, and drop trailing spaces."""
-    def squeeze(match: re.Match) -> str:
-        run = match.group()
-        escapes = "".join(ESCAPE.findall(run))
-        return (" " if " " in ESCAPE.sub("", run) else "") + escapes
-
-    return _TRAILING_SPACES.sub(r"\1", _EMPTY_RUN.sub(squeeze, text))
-
-
-def _check_changes(changes: dict) -> dict:
-    unknown = set(changes) - {"color", "unicode", "screen"}
-    if unknown:
-        raise TypeError(f"unknown theme settings: {', '.join(sorted(unknown))}")
-    return changes
-
-
-def _count(bar: Bar) -> str:
-    if bar.total is not None:
-        return f"{bar.show(bar.done)}/{bar.show(bar.total)}"
-    return bar.show(bar.done) if bar.done > 0 else ""
-
-
-def _done_text(view: PromptView) -> str:
-    if view.kind == "secret":
-        return view.message
-    if view.kind == "confirm":
-        return f"{view.message} {view.value}"
-    return f"{view.message}: {view.value}"
-
-
-def _is_path(word: str) -> bool:
-    return word.startswith(("./", "~/", "/", ".")) and "/" in word
 
 
 def _char_width(char: str) -> int:
@@ -386,5 +365,11 @@ def _char_width(char: str) -> int:
         return 0
     return 2 if unicodedata.east_asian_width(char) in "WF" else 1
 
+
+def _same(value: Any) -> Any:
+    return value
+
+
+DRAWERS: dict[str, Any] = {"log": draw_log, "progress": draw_progress, "prompt": draw_prompt, "help": draw_help}
 
 theme = Theme()

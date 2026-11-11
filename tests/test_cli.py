@@ -1,9 +1,11 @@
 import argparse
 import enum
 import io
+import subprocess
 import sys
 import unittest
 from contextlib import redirect_stdout
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Literal, Optional
 from unittest import mock
@@ -53,9 +55,14 @@ class CliCase(unittest.TestCase):
         return code, out.getvalue(), self.screen.out.getvalue()
 
     def parsed(self, fn, *argv):
-        app = cli.App("tool")
-        app(fn)
-        return app.parse(list(argv)).arguments
+        return single(fn).parse(list(argv)).arguments
+
+
+def single(fn):
+    """An app whose only handler is fn, as `cli.run(fn)` builds it."""
+    app = cli.App("tool")
+    app.handler = cli.Command(fn, "tool")
+    return app
 
 
 def flnd_app():
@@ -115,8 +122,7 @@ class ParameterTest(CliCase):
     def test_keyword_only_required_option(self):
         def fn(*, path: Path): ...
         self.assertEqual(self.parsed(fn, "--path", "a/b"), {"path": Path("a/b")})
-        app = cli.App("tool")
-        app(fn)
+        app = single(fn)
         self.assertEqual(self.run_app(app)[0], 2)
 
     def test_bool_flag(self):
@@ -135,12 +141,10 @@ class ParameterTest(CliCase):
         self.assertEqual(self.parsed(fn, "-o", "x"), {"output": Path("x")})
         self.assertEqual(self.parsed(fn, "--output", "y"), {"output": Path("y")})
 
-    def test_literal_and_enum_choices(self):
-        def fn(source: Literal["tik", "ins"] = "ins", color: Color = Color.RED): ...
-        self.assertEqual(self.parsed(fn, "--source", "tik", "--color", "blue"),
-                         {"source": "tik", "color": Color.BLUE})
-        app = cli.App("tool")
-        app(fn)
+    def test_literal_choices(self):
+        def fn(source: Literal["tik", "ins"] = "ins"): ...
+        self.assertEqual(self.parsed(fn, "--source", "tik"), {"source": "tik"})
+        app = single(fn)
         code, _, err = self.run_app(app, "--source", "fbk")
         self.assertEqual(code, 2)
         self.assertIn("invalid choice: 'fbk' (choose from tik, ins)", err)
@@ -157,29 +161,54 @@ class ParameterTest(CliCase):
         def star(items: Annotated[list[str], "*"] = ["d"]): ...
         def plus(items: Annotated[list[int], "+"]): ...
         def maybe(item: Annotated[str, "?"] = "d"): ...
-        def two(items: Annotated[list[str], 2]): ...
         self.assertEqual(self.parsed(star), {"items": ["d"]})
         self.assertEqual(self.parsed(star, "a"), {"items": ["a"]})
         self.assertEqual(self.parsed(plus, "1", "2"), {"items": [1, 2]})
         self.assertEqual(self.parsed(maybe), {"item": "d"})
-        self.assertEqual(self.parsed(two, "a", "b"), {"items": ["a", "b"]})
 
-    def test_rest_of_the_line(self):
-        def fn(name: str, rest: tuple[str, ...] = ()): ...
-        self.assertEqual(self.parsed(fn, "a", "b", "--c", "-d"), {"name": "a", "rest": ("b", "--c", "-d")})
+    def test_date_and_datetime(self):
+        def fn(*, since: date | None = None, at: datetime | None = None): ...
+        self.assertEqual(self.parsed(fn, "--since", "2026-01-31", "--at", "2026-01-31T08:30"),
+                         {"since": date(2026, 1, 31), "at": datetime(2026, 1, 31, 8, 30)})
+        app = single(fn)
+        self.assertIn("--since DATE", app.help())
+        self.assertIn("--at DATETIME", app.help())
+        code, _, err = self.run_app(app, "--since", "yesterday")
+        self.assertEqual(code, 2)
+        self.assertIn("✗ argument --since: invalid date: 'yesterday' (use YYYY-MM-DD)", err)
+        self.assertIn("invalid datetime: '2026-13-01' (use YYYY-MM-DDTHH:MM)", self.run_app(app, "--at", "2026-13-01")[2])
+
+    def test_comma_lists(self):
+        def fn(*, kind: list[Literal["photo", "video"]] = [], n: list[int] = []): ...
+        self.assertEqual(self.parsed(fn, "--kind", "photo,video"), {"kind": ["photo", "video"], "n": []})
+        self.assertEqual(self.parsed(fn, "--kind", "photo", "--kind", "video,", "--n", "1, 2"),
+                         {"kind": ["photo", "video"], "n": [1, 2]})
+        app = single(fn)
+        code, _, err = self.run_app(app, "--kind", "photo,gif")
+        self.assertEqual(code, 2)
+        self.assertIn("✗ argument --kind: invalid choice: 'gif' (choose from photo, video)", err)
+        self.assertIn("✗ argument --n: invalid int value: 'x'", self.run_app(app, "--n", "1,x")[2])
 
     def test_opt_and_arg(self):
         def fn(name: Annotated[str, cli.arg(metavar="WHO", help="who")],
-               level: Annotated[int, cli.opt("-l", "--lvl", metavar="L", help="how loud")] = 1,
-               secret: Annotated[str, cli.opt(hidden=True)] = ""): ...
-        self.assertEqual(self.parsed(fn, "x", "-l", "2", "--secret", "s"), {"name": "x", "level": 2, "secret": "s"})
+               level: Annotated[int, cli.opt("-l", "--lvl", metavar="L", help="how loud")] = 1): ...
+        self.assertEqual(self.parsed(fn, "x", "-l", "2"), {"name": "x", "level": 2})
         self.assertEqual(self.parsed(fn, "x", "--lvl", "3")["level"], 3)
-        app = cli.App("tool")
-        app(fn)
+        app = single(fn)
         text = app.help()
         self.assertIn("  WHO                 who", text)
-        self.assertIn("  -l, --lvl, --level L  how loud", text)
-        self.assertNotIn("secret", text)
+        self.assertIn("  -l, --lvl L         how loud", text)
+
+    def test_a_given_long_flag_replaces_the_name(self):
+        def fn(*, categories: Annotated[list[str] | None, cli.opt("--from", metavar="CATEGORIES")] = None,
+               fast: Annotated[bool, cli.opt("--quick")] = False): ...
+        self.assertEqual(self.parsed(fn, "--from", "a,b", "--quick"), {"categories": ["a", "b"], "fast": True})
+        app = single(fn)
+        text = app.help()
+        self.assertIn("  --from CATEGORIES\n", text)
+        self.assertIn("  --[no-]quick\n", text)
+        self.assertNotIn("--categories", text)
+        self.assertEqual(self.run_app(app, "--categories", "a")[0], 2)
 
     def test_custom_type(self):
         def even(text):
@@ -189,8 +218,7 @@ class ParameterTest(CliCase):
 
         def fn(n: Annotated[int, cli.opt(type=even)] = 0): ...
         self.assertEqual(self.parsed(fn, "--n", "4"), {"n": 4})
-        app = cli.App("tool")
-        app(fn)
+        app = single(fn)
         self.assertIn("✗ argument --n: not even", self.run_app(app, "--n", "3")[2])
 
     def test_unsupported_annotations_raise_type_error(self):
@@ -201,6 +229,35 @@ class ParameterTest(CliCase):
         with self.assertRaises(TypeError):
             @app.command
             def kwargs(**rest: str): ...
+
+    def test_removed_forms_raise_type_error(self):
+        app = cli.App("tool")
+        removed = {
+            "integer nargs": lambda: app.command(_fn(Annotated[list[str], 2])),
+            "integer nargs in arg": lambda: cli.arg(nargs=2),
+            "fixed tuple": lambda: app.command(_fn(tuple[str, str])),
+            "rest of the line": lambda: app.command(_fn(tuple[str, ...], ())),
+            "enum": lambda: app.command(_fn(Color, Color.RED)),
+            "hidden": lambda: cli.opt(hidden=True),
+            "ask on opt": lambda: cli.opt(ask=lambda: 1),
+            "ask on arg": lambda: cli.arg(ask=lambda: 1),
+            "verbosity": lambda: cli.App("tool", verbosity=True),
+            "prompt mode": lambda: cli.App("tool", promptmode=True),
+            "default command": lambda: app.command(default=True),
+            "single handler": lambda: cli.App("tool")(lambda: None),
+        }
+        for name, build in removed.items():
+            with self.subTest(name), self.assertRaises(TypeError):
+                build()
+        self.assertFalse(hasattr(cli.App, "prepare"))
+
+
+def _fn(annotation, *default):
+    """A handler with one parameter of this annotation, and its default when given."""
+    def handler(value=None): ...
+    handler.__annotations__ = {"value": annotation}
+    handler.__defaults__ = default or None
+    return handler
 
 
 class StructureTest(CliCase):
@@ -236,19 +293,20 @@ class StructureTest(CliCase):
         self.assertIn("  name                where to go, across lines", text)
         self.assertIn("  --[no-]fast         hurry", text)
 
-    def test_default_command_and_names(self):
+    def test_command_names(self):
         app = cli.App("tool")
         seen = []
 
-        @app.command(default=True)
+        @app.command
         def fetch_all(url: str):
             seen.append(url)
 
         @app.command("import")
         def import_(): ...
         self.assertEqual(list(app.children), ["fetch-all", "import"])
-        self.assertEqual(self.run_app(app, "https://x")[0], 0)
+        self.assertEqual(self.run_app(app, "fetch-all", "https://x")[0], 0)
         self.assertEqual(seen, ["https://x"])
+        self.assertEqual(self.run_app(app, "https://x")[0], 2)
 
     def test_nested_groups_and_group_help(self):
         app = cli.App("tool")
@@ -262,18 +320,6 @@ class StructureTest(CliCase):
         code, out, _ = self.run_app(app, "a", "b")
         self.assertEqual(code, 0)
         self.assertEqual(out, "Inner things.\n\nUsage:\n  tool a b [command]\n\nCommands:\n  c                   c\n")
-
-    def test_prepare_hook(self):
-        class Tool(cli.App):
-            def prepare(self, parser):
-                parser.allow_abbrev = False
-
-        app = Tool("tool")
-
-        @app.group("g").command
-        def go(verbose_name: str = ""): ...
-        self.assertEqual(self.run_app(app, "g", "go", "--verbose", "x")[0], 2)
-        self.assertEqual(cli.App("x").prepare(argparse.ArgumentParser()), None)
 
     def test_cli_run(self):
         def greet(name: str = "you"):
@@ -313,11 +359,13 @@ class HelpScreenTest(CliCase):
             "  --content CONTENT   the cookie text itself; read from stdin when piped\n  -h, --help\n"
         ))
 
-    def test_epilog_path_is_a_link_when_stdout_has_color(self):
+    def test_help_is_colored_for_stdout(self):
         with mock.patch("shared._cli.detect_color", return_value="16m"):
             out = self.run_app(flnd_app(), "-h")[1]
-        self.assertIn("\x1b]8;;~/Downloads/cookies.txt\x1b\\", out)
-        self.assertNotIn("8;;list.txt", out)
+        self.assertIn("\x1b[38;5;243m  cat list.txt | flnd download\x1b[0m", out)
+        self.assertIn("\x1b[1;38;2;117;113;249mCommands:\x1b[0m", out)
+        self.assertNotIn("]8;;", out)
+        self.assertEqual(theme.color, "none")
 
     def test_required_option_usage(self):
         app = cli.App("tool")
@@ -375,23 +423,26 @@ class UsageErrorTest(CliCase):
 
 
 class TopLevelFlagTest(CliCase):
-    def test_version_and_verbosity(self):
-        app = cli.App("tool", version="1.2.3", verbosity=True)
-        levels = []
+    def test_version(self):
+        app = cli.App("tool", version="1.2.3")
 
         @app.command
-        def go(verbose: bool = False):
-            levels.append((log.level, verbose))
+        def go(verbose: bool = False): ...
 
         self.assertEqual(self.run_app(app, "-V")[:2], (0, "tool 1.2.3\n"))
         self.assertEqual(self.run_app(app, "--version")[:2], (0, "tool 1.2.3\n"))
-        self.run_app(app, "-v", "go", "--verbose")
-        self.run_app(app, "-q", "go")
-        self.assertEqual(levels, [("debug", True), ("quiet", False)])
+        self.assertEqual(self.run_app(app, "-v", "go")[0], 2)
         text = app.help()
         self.assertIn("Usage:\n  tool [options] [command]", text)
-        self.assertIn("Options:\n  -V, --version       show the version\n  -v                  show debug lines\n"
-                      "  -q                  show only errors\n  -h, --help\n", text)
+        self.assertIn("Options:\n  -V, --version       show the version\n  -h, --help\n", text)
+
+    def test_cli_does_not_import_prompt(self):
+        # A bare package stands in for shared/__init__.py, which imports every terminal module.
+        code = ("import sys, types; package = types.ModuleType('shared'); package.__path__ = ['shared']; "
+                "sys.modules['shared'] = package; import shared._cli; print('shared._prompt' in sys.modules)")
+        root = Path(__file__).resolve().parent.parent
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, cwd=root)
+        self.assertEqual(result.stdout.strip(), "False")
 
     def test_parse_returns_bound_arguments(self):
         app = flnd_app()
@@ -425,8 +476,7 @@ class StdinTest(CliCase):
         self.pipe("1\n2\n")
         self.assertEqual(self.parsed(fn), {"numbers": (1, 2)})
         self.pipe("x\n")
-        app = cli.App("tool")
-        app(fn)
+        app = single(fn)
         self.assertEqual(self.run_app(app)[0], 2)
 
     def test_stdin_false(self):
@@ -471,76 +521,6 @@ class StdinTest(CliCase):
         with self.assertRaises(ValueError):
             @app.command
             def go(a: Annotated[str, cli.opt(stdin=True)] = "", b: Annotated[str, cli.opt(stdin=True)] = ""): ...
-
-
-class PromptModeTest(CliCase):
-    def keys(self, *names):
-        self.screen.readkey = iter(names).__next__
-
-    def prompt_app(self):
-        app = cli.App("flnd", promptmode=True)
-        app.calls = []
-
-        @app.command
-        def download(targets: Annotated[list[str], "+", cli.arg(help="Targets")], limit: int = 0):
-            """Download each target."""
-            app.calls.append(("download", targets, limit))
-
-        auth = app.group("auth", description="Cookie files for a source.")
-
-        @auth.command("set-cookie")
-        def set_cookie(*, source: Literal["ins", "twt"], path: Annotated[Path, cli.opt(help="Cookie file")],
-                       days: int, keep: bool = False, force: Annotated[bool, cli.opt(ask=lambda: True)] = False):
-            """Set a cookie file."""
-            app.calls.append(("set-cookie", source, path, days, keep, force))
-
-        return app
-
-    def test_menu_and_generated_list_question(self):
-        app = self.prompt_app()
-        self.keys("enter", *"ins:a 'tik:b c'", "enter")
-        self.assertEqual(self.run_app(app)[0], 0)
-        self.assertEqual(app.calls, [("download", ["ins:a", "tik:b c"], 0)])
-        lines = self.screen.out.getvalue().splitlines()
-        self.assertEqual(lines[:3], ["What do you want to do?", "› ● Download each target", "  ○ Cookie files for a source"])
-        self.assertEqual(lines[-1], "• flnd download ins:a 'tik:b c'")
-
-    def test_group_choice_and_each_question(self):
-        app = self.prompt_app()
-        self.keys("down", "enter", "enter", "down", "enter", *"a/b", "enter", "x", "enter", "backspace", "7", "enter")
-        self.assertEqual(self.run_app(app)[0], 0)
-        self.assertEqual(app.calls, [("set-cookie", "twt", Path("a/b"), 7, False, True)])
-        output = self.screen.out.getvalue()
-        self.assertIn("✓ What do you want to do?: Set a cookie file", output)
-        self.assertIn("✓ source: twt", output)
-        self.assertIn("✓ Cookie file: a/b", output)
-        self.assertIn("✗ invalid literal for int() with base 10: 'x'", output)
-        self.assertTrue(output.endswith("• flnd auth set-cookie --source twt --path a/b --days 7 --force\n"))
-
-    def test_plus_must_not_be_empty(self):
-        app = self.prompt_app()
-        self.keys("enter", "enter", "a", "enter")
-        self.run_app(app)
-        self.assertIn("✗ enter at least one value", self.screen.out.getvalue())
-
-    def test_ctrl_c_exits_130(self):
-        self.keys("ctrl+c")
-        self.assertEqual(self.run_app(self.prompt_app())[0], 130)
-
-    def test_which_mode_starts(self):
-        app = self.prompt_app()
-        self.screen.readkey = lambda: self.fail("asked a question")
-        self.pipe("")
-        self.assertIn("Usage:\n  flnd [command]", self.run_app(app)[1])
-        self.stdin.stop()
-        self.stdin = mock.patch("sys.stdin", Stdin(tty=True))
-        self.stdin.start()
-        self.screen._interactive = False
-        self.assertEqual(self.run_app(app)[0], 0)
-        self.screen._interactive = True
-        self.assertEqual(self.run_app(app, "download")[0], 2)
-        self.keys("ctrl+c")
-        self.assertEqual(self.run_app(app)[0], 130)
 
 
 if __name__ == "__main__":

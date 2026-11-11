@@ -138,7 +138,9 @@ class DownloadTest(FlndCase):
         message = ("✗ no source here has 'reels': use all, or tik: videos, stories, playlists, reposts, liked, "
                    "favorites, profile; twt: posts, media, highlights, reposts, replies, profile")
         self.assertIn(message, self.run_app("download", "tik:a", "twt:b", "--from", "videos,reels")[2])
-        self.assertEqual(self.run_app("download", "tik:a", "--since", "yesterday")[0], 2)
+        code, _, out = self.run_app("download", "tik:a", "--since", "yesterday")
+        self.assertEqual(code, 2)
+        self.assertIn("✗ argument --since: invalid date: 'yesterday' (use YYYY-MM-DD)", out)
         self.assertIn("✗ --since is after --until", self.run_app("download", "tik:a", "--since", "2026-02-01",
                                                                   "--until", "2026-01-01")[2])
         for option in ("--limit", "--output", "--headless"):
@@ -159,6 +161,10 @@ class DownloadTest(FlndCase):
         for option in ("--from", "--since", "--until", "--[no-]unpack", "--[no-]zip", "--locale", "--timezone"):
             self.assertIn(option, download_help)
         self.assertIn("match where your connection comes from", download_help)
+        self.assertIn("  --from CATEGORIES  ", download_help)
+        self.assertIn("  --since DATE  ", download_help)
+        self.assertNotIn("--categories", download_help)
+        self.assertEqual(self.run_app("download", "tik:a", "--categories", "posts")[0], 2)
 
     def test_bare_flnd_prints_help_even_on_a_terminal(self):
         self.keys()
@@ -205,7 +211,7 @@ class LoginFileTest(FlndCase):
         self.keys(*"nope", "enter", *["backspace"] * 4, *str(path), "enter")
         self.assertEqual(self.run_app("login", "twt", "--method", "file")[0], 0)
         out = self.screen.out.getvalue()
-        self.assertIn("✗ no file at nope", out)
+        self.assertIn("┃ * no file at nope", out)
         self.assertIn("✓ twt: logged in from cookies.txt (1 cookies)", out)
 
     def test_without_a_terminal_a_missing_answer_is_a_usage_error(self):

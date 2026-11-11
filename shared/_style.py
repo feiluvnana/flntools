@@ -20,20 +20,13 @@ NAMED_COLORS = {
     **{f"bright_{name}": index + 8 for index, name in enumerate(_BASE_NAMES)},
     "gray": 8,
 }
-MODIFIER_CODES = {
-    "bold": "1", "dim": "2", "italic": "3", "blink": "5", "reverse": "7",
-    "hidden": "8", "strike": "9", "overline": "53",
-}
-UNDERLINE_SHAPES = {
-    "underline": "4", "double_underline": "4:2", "curly_underline": "4:3",
-    "dotted_underline": "4:4", "dashed_underline": "4:5",
-}
+MODIFIER_CODES = {"bold": "1", "dim": "2", "italic": "3", "underline": "4", "reverse": "7", "strike": "9"}
 RAINBOW_STOPS = ("#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff")
 
 
 @dataclass(frozen=True)
 class Chain:
-    """A reusable style. Calling it paints a string and returns a `Styled`.
+    """A reusable style. Calling it paints a string for the process theme's color depth.
 
     Colors are tuples: ("ansi", 0-15) for the named colors, ("index", 0-255)
     for the 256-color palette, and ("rgb", (r, g, b)) for hex and rgb values.
@@ -44,8 +37,6 @@ class Chain:
     fg_ramp: tuple = ()
     bg_ramp: tuple = ()
     modifiers: frozenset = frozenset()
-    underline_shape: str | None = None
-    underline_tint: tuple | None = None
     link: str | None = None
 
     def __getattr__(self, name: str) -> Chain:
@@ -55,13 +46,10 @@ class Chain:
             return replace(self, bg=("ansi", NAMED_COLORS[name[3:]]))
         if name in MODIFIER_CODES:
             return replace(self, modifiers=self.modifiers | {name})
-        if name in UNDERLINE_SHAPES:
-            return replace(self, underline_shape=name)
         raise AttributeError(f"style has no property {name!r}")
 
-    def __call__(self, text: object) -> Styled:
-        raw = str(text)
-        return Styled(self.paint(raw, current_depth()), raw, self)
+    def __call__(self, text: object) -> str:
+        return self.paint(str(text), current_depth())
 
     def color(self, value: str | int, *, background: bool = False) -> Chain:
         color = parse_color(value)
@@ -73,16 +61,12 @@ class Chain:
         ramp = tuple(parse_color(stop) for stop in stops)
         return replace(self, bg_ramp=ramp) if background else replace(self, fg_ramp=ramp)
 
-    def rainbow(self, text: object = None, /, *, background: bool = False) -> Chain | Styled:
+    def rainbow(self, text: object = None, /, *, background: bool = False) -> Chain | str:
         chain = self.gradient(*RAINBOW_STOPS, background=background)
         return chain if text is None else chain(text)
 
     def url(self, target: str) -> Chain:
         return replace(self, link=target)
-
-    def underline_color(self, value: str | int) -> Chain:
-        shape = self.underline_shape or "underline"
-        return replace(self, underline_tint=parse_color(value), underline_shape=shape)
 
     @staticmethod
     def strip(text: str) -> str:
@@ -108,14 +92,10 @@ class Chain:
 
     def _static_codes(self, depth: str) -> list[str]:
         codes = [code for name, code in MODIFIER_CODES.items() if name in self.modifiers]
-        if self.underline_shape:
-            codes.append(UNDERLINE_SHAPES[self.underline_shape])
         if self.fg and not self.fg_ramp:
             codes.append(color_code(self.fg, depth, "fg"))
         if self.bg and not self.bg_ramp:
             codes.append(color_code(self.bg, depth, "bg"))
-        if self.underline_tint:
-            codes.append(color_code(self.underline_tint, depth, "underline"))
         return codes
 
     def _paint_ramp(self, text: str, depth: str, static_codes: list[str]) -> str:
@@ -138,63 +118,13 @@ class Chain:
         return "".join(painted) + RESET
 
 
-class _Joinable(str):
-    """`+` on painted text builds a `Template`, so theme can repaint the joined pieces."""
-
-    def __add__(self, other: object) -> Template:
-        if not isinstance(other, str):
-            return NotImplemented
-        return Template(pieces_of(self) + pieces_of(other))
-
-    def __radd__(self, other: object) -> Template:
-        if not isinstance(other, str):
-            return NotImplemented
-        return Template(pieces_of(other) + pieces_of(self))
-
-
-class Styled(_Joinable):
-    """Painted text that remembers its raw text and chain. `+` builds a `Template`."""
-
-    raw: str
-    chain: Chain
-
-    def __new__(cls, painted: str, raw: str, chain: Chain) -> Styled:
-        styled = super().__new__(cls, painted)
-        styled.raw = raw
-        styled.chain = chain
-        return styled
-
-
-class Template(_Joinable):
-    """Pieces of (raw text, chain or None) that `theme` fills and paints later."""
-
-    pieces: tuple
-
-    def __new__(cls, pieces: tuple) -> Template:
-        depth = current_depth()
-        painted = "".join(chain.paint(raw, depth) if chain else raw for raw, chain in pieces)
-        template = super().__new__(cls, painted)
-        template.pieces = tuple(pieces)
-        return template
-
-
 def strip(text: str) -> str:
     """Remove ANSI and OSC 8 sequences."""
     return ESCAPE.sub("", text)
 
 
-def pieces_of(value: str) -> tuple:
-    """The (raw, chain) pieces of a template, a styled string, or a plain string."""
-    if isinstance(value, Template):
-        return value.pieces
-    if isinstance(value, Styled):
-        return ((value.raw, value.chain),)
-    return ((str(value), None),)
-
-
 def current_depth() -> str:
     # theme imports style, so the process theme is looked up at call time.
-    # It is missing while theme builds its default templates.
     from shared import _theme
 
     process_theme = getattr(_theme, "theme", None)
@@ -223,22 +153,16 @@ def parse_color(value: str | int) -> tuple:
 
 
 def color_code(color: tuple, depth: str, layer: str) -> str:
-    """The SGR parameters that put a color on one layer: "fg", "bg", or "underline"."""
+    """The SGR parameters that put a color on one layer: "fg" or "bg"."""
     kind, value = color
-    if kind == "ansi" and layer != "underline":
+    if kind == "ansi" or depth == "8":
+        index = value if kind == "ansi" else nearest_ansi(color_rgb(color))
         base = 30 if layer == "fg" else 40
-        return str(base + value if value < 8 else base + 60 + value - 8)
-    if depth == "8":
-        value = nearest_ansi(color_rgb(color))
-        if layer != "underline":
-            return str((30 if layer == "fg" else 40) + value)
-    elif depth == "256" and kind == "rgb":
-        value = nearest_index(value)
-    elif kind == "rgb":
-        prefix = {"fg": "38", "bg": "48", "underline": "58"}[layer]
+        return str(base + index if index < 8 else base + 60 + index - 8)
+    prefix = "38" if layer == "fg" else "48"
+    if kind == "rgb" and depth == "16m":
         return f"{prefix};2;{value[0]};{value[1]};{value[2]}"
-    prefix = {"fg": "38", "bg": "48", "underline": "58"}[layer]
-    return f"{prefix};5;{value}"
+    return f"{prefix};5;{nearest_index(value) if kind == 'rgb' else value}"
 
 
 ANSI_RGB = (
@@ -247,6 +171,8 @@ ANSI_RGB = (
     (127, 127, 127), (255, 0, 0), (0, 255, 0), (255, 255, 0),
     (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
 )
+ANSI_GREYS = (0, 8, 7, 15)  # black, bright black, white, bright white: darkest first
+ANSI_HUES = tuple(index for index in range(16) if index not in ANSI_GREYS)
 CUBE_LEVELS = (0, 95, 135, 175, 215, 255)
 
 
@@ -264,7 +190,15 @@ def color_rgb(color: tuple) -> tuple:
 
 
 def nearest_ansi(rgb: tuple) -> int:
-    return min(range(8), key=lambda index: _distance(rgb, ANSI_RGB[index]))
+    """The closest of the 16 ANSI colors.
+
+    Greys go by lightness, never by hue: by distance, the dark greys a prompt uses
+    came out black (invisible on a dark terminal) and 243 came out yellow.
+    """
+    if max(rgb) - min(rgb) <= 10:
+        lightness = (max(rgb) + min(rgb)) / 2 / 255
+        return ANSI_GREYS[sum(lightness >= edge for edge in (0.15, 0.60, 0.85))]
+    return min(ANSI_HUES, key=lambda index: _distance(rgb, ANSI_RGB[index]))
 
 
 @functools.lru_cache(maxsize=4096)

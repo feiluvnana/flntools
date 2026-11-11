@@ -1,7 +1,8 @@
 import unittest
 
 from shared import style, theme
-from shared._style import NAMED_COLORS, Styled, Template, pieces_of
+from shared import _style
+from shared._style import NAMED_COLORS
 
 
 class StyleTest(unittest.TestCase):
@@ -14,15 +15,21 @@ class StyleTest(unittest.TestCase):
             fg = 30 + index if index < 8 else 90 + index - 8
             self.assertEqual(self.paint(getattr(style, name)), f"\x1b[{fg}mx\x1b[0m", name)
             self.assertEqual(self.paint(getattr(style, "bg_" + name)), f"\x1b[{fg + 10}mx\x1b[0m", name)
-        modifiers = {"bold": "1", "dim": "2", "italic": "3", "blink": "5", "reverse": "7", "hidden": "8",
-                     "strike": "9", "overline": "53", "underline": "4", "double_underline": "4:2",
-                     "curly_underline": "4:3", "dotted_underline": "4:4", "dashed_underline": "4:5"}
+        modifiers = {"bold": "1", "dim": "2", "italic": "3", "underline": "4", "reverse": "7", "strike": "9"}
         for name, code in modifiers.items():
             self.assertEqual(self.paint(getattr(style, name)), f"\x1b[{code}mx\x1b[0m", name)
 
     def test_unknown_property(self):
         with self.assertRaises(AttributeError):
             style.purple
+
+    def test_removed_attributes(self):
+        for name in ("double_underline", "curly_underline", "dotted_underline", "dashed_underline",
+                     "underline_color", "overline", "blink", "hidden"):
+            with self.subTest(name=name), self.assertRaises(AttributeError):
+                getattr(style, name)
+        for name in ("Styled", "Template", "pieces_of"):
+            self.assertFalse(hasattr(_style, name), name)
 
     def test_chain_order_does_not_matter(self):
         self.assertEqual(style.red.bold, style.bold.red)
@@ -32,17 +39,26 @@ class StyleTest(unittest.TestCase):
         self.assertEqual(style.red.green, style.green)
         self.assertEqual(style.red.color("#00ff00").fg, ("rgb", (0, 255, 0)))
 
-    def test_later_underline_shape_wins(self):
-        self.assertEqual(self.paint(style.curly_underline.underline), "\x1b[4mx\x1b[0m")
-
     def test_chain_is_reusable(self):
         danger = style.red.bold
-        self.assertEqual(danger("a").raw, "a")
-        self.assertEqual(danger("b").raw, "b")
+        self.assertEqual(self.paint(danger, "a"), "\x1b[1;31ma\x1b[0m")
+        self.assertEqual(self.paint(danger, "b"), "\x1b[1;31mb\x1b[0m")
         self.assertEqual(danger, style.red.bold)
 
-    def test_named_red_matches_hex_red_at_depth_8(self):
-        self.assertEqual(self.paint(style.red, depth="8"), self.paint(style.color("#ff0000"), depth="8"))
+    def test_depth_8_uses_all_16_colors(self):
+        self.assertEqual(self.paint(style.color("#ff0000"), depth="8"), "\x1b[91mx\x1b[0m")
+        self.assertEqual(self.paint(style.color("#cd0000"), depth="8"), "\x1b[31mx\x1b[0m")
+        self.assertEqual(self.paint(style.color("#7571F9"), depth="8"), "\x1b[94mx\x1b[0m")
+        self.assertEqual(self.paint(style.color("#F780E2"), depth="8"), "\x1b[95mx\x1b[0m")
+        self.assertEqual(self.paint(style.color("#ff0000", background=True), depth="8"), "\x1b[101mx\x1b[0m")
+
+    def test_depth_8_maps_greys_by_lightness(self):
+        greys = {232: "30", 237: "90", 238: "90", 241: "90", 243: "90", 252: "37", 255: "97",
+                 "#000000": "30", "#808080": "90", "#c8c8c8": "37", "#FFFDF5": "97", 16: "30", 231: "97"}
+        for value, code in greys.items():
+            with self.subTest(value=value):
+                self.assertEqual(self.paint(style.color(value), depth="8"), f"\x1b[{code}mx\x1b[0m")
+        self.assertEqual(self.paint(style.color(237, background=True), depth="8"), "\x1b[100mx\x1b[0m")
 
     def test_color_parsing(self):
         self.assertEqual(style.color("#F25D94").fg, ("rgb", (242, 93, 148)))
@@ -70,7 +86,7 @@ class StyleTest(unittest.TestCase):
         self.assertEqual(self.paint(style.red.bold, depth="none"), "x")
 
     def test_attributes_written_from_depth_8(self):
-        self.assertEqual(self.paint(style.curly_underline.blink, depth="8"), "\x1b[5;4:3mx\x1b[0m")
+        self.assertEqual(self.paint(style.underline.italic, depth="8"), "\x1b[3;4mx\x1b[0m")
 
     def test_gradient_steps(self):
         painted = self.paint(style.gradient("#000000", "#ffffff"), "abc")
@@ -105,7 +121,7 @@ class StyleTest(unittest.TestCase):
 
     def test_gradient_depth_8(self):
         painted = self.paint(style.gradient("#ff0000", "#0000ff"), "ab", depth="8")
-        self.assertEqual(painted, "\x1b[31ma\x1b[34mb\x1b[0m")
+        self.assertEqual(painted, "\x1b[91ma\x1b[34mb\x1b[0m")
 
     def test_rainbow(self):
         painted = self.paint(style.rainbow(), "abcdef")
@@ -122,33 +138,16 @@ class StyleTest(unittest.TestCase):
         colored = self.paint(style.cyan.underline.url("a/b"), "a/b")
         self.assertEqual(colored, "\x1b]8;;a/b\x1b\\\x1b[4;36ma/b\x1b[0m\x1b]8;;\x1b\\")
 
-    def test_underline_color(self):
-        self.assertEqual(self.paint(style.underline_color("#F25D94")), "\x1b[4;58;2;242;93;148mx\x1b[0m")
-        self.assertEqual(self.paint(style.curly_underline.underline_color(141)), "\x1b[4:3;58;5;141mx\x1b[0m")
-        self.assertEqual(self.paint(style.underline_color("#F25D94"), depth="8"), "\x1b[4;58;5;5mx\x1b[0m")
-
     def test_strip(self):
         with theme.scope(color="16m"):
             text = style.red("a") + style.url("u")("b")
         self.assertEqual(style.strip(text), "ab")
 
-    def test_styled_is_a_str(self):
+    def test_painted_text_is_a_plain_str(self):
         with theme.scope(color="16m"):
             danger = style.red("disk full")
-        self.assertIsInstance(danger, str)
-        self.assertIsInstance(danger, Styled)
-        self.assertEqual(f"{danger}", "\x1b[31mdisk full\x1b[0m")
-        self.assertEqual("x {}".format(danger), "x \x1b[31mdisk full\x1b[0m")
-        self.assertEqual((danger.raw, danger.chain), ("disk full", style.red))
-
-    def test_plus_builds_a_template(self):
-        template = style.green("{g-tick}") + " {p-message}"
-        self.assertIsInstance(template, Template)
-        self.assertEqual(pieces_of(template), (("{g-tick}", style.green), (" {p-message}", None)))
-        longer = "> " + template + style.red("!")
-        self.assertEqual([raw for raw, _ in pieces_of(longer)], ["> ", "{g-tick}", " {p-message}", "!"])
-        with theme.scope(color="16m"):
-            self.assertEqual(str(style.red("a") + "b"), "\x1b[31ma\x1b[0mb")
+        self.assertIs(type(danger), str)
+        self.assertEqual(danger, "\x1b[31mdisk full\x1b[0m")
 
     def test_inner_reset_reopens_outer_style(self):
         with theme.scope(color="16m"):

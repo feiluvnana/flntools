@@ -4,45 +4,39 @@ from __future__ import annotations
 
 import argparse
 import inspect
-import shlex
 import sys
 import typing
 from typing import Any, Callable
 
-from shared import _prompt as prompt
 from shared import _theme
-from shared._log import log
-from shared._params import UsageError, arg, command_line, opt, read_signature
-from shared._screen import isatty
+from shared._params import UsageError, arg, opt, read_signature
 from shared._style import strip
 from shared._theme import HelpModel, detect_color
 
 __all__ = ["App", "UsageError", "arg", "opt", "run"]
 
-def run(fn: Callable) -> None:
-    """Build an App named after fn, register fn as its handler, run it, and exit."""
+
+def run(fn: Callable) -> typing.NoReturn:
+    """Build an App named after fn, with fn as its only handler, run it, and exit."""
     app = App(fn.__name__.replace("_", "-"))
-    app(fn)
+    app.handler = Command(fn, app.name)
     app()
 
 
 class App:
-    def __init__(self, name: str, *, version: str | None = None, description: str = "", epilog: str = "",
-                 verbosity: bool = False, promptmode: bool = False):
+    """A program and its commands. Bare `app` with no command prints help; `cli.run(fn)` has one handler."""
+
+    def __init__(self, name: str, *, version: str | None = None, description: str = "", epilog: str = ""):
         self.name, self.version, self.description, self.epilog = name, version, description, epilog
-        self.verbosity, self.promptmode = verbosity, promptmode
         self.parent: App | None = None
         self.children: dict[str, Command | App] = {}
-        self.default_command: Command | None = None
         self.handler: Command | None = None
 
-    def command(self, target: Callable | str | None = None, /, *, default: bool = False) -> Any:
-        """Register a command: `@app.command`, `@app.command("name")`, or `@app.command(default=True)`."""
+    def command(self, target: Callable | str | None = None, /) -> Any:
+        """Register a command: `@app.command` or `@app.command("name")`."""
         def register(fn: Callable, name: str | None = None) -> Callable:
             command = Command(fn, name or fn.__name__.replace("_", "-"))
             self._add(command.name, command)
-            if default:
-                self.default_command = command
             return fn
 
         if callable(target):
@@ -55,23 +49,13 @@ class App:
         self._add(name, child)
         return child
 
-    def prepare(self, parser: argparse.ArgumentParser) -> None:
-        """Called for each parser before arguments are added. Override it to change argparse."""
-
-    def __call__(self, fn: Callable | None = None) -> Any:
-        """`@app` registers the program's only handler; `app()` runs it and exits."""
-        if fn is None:
-            sys.exit(self.run())
-        if self.children:
-            raise ValueError(f"{self.name} has commands, so it cannot also have its own handler")
-        self.handler = Command(fn, self.name)
-        return fn
+    def __call__(self) -> typing.NoReturn:
+        """Run with sys.argv and exit with the command's code."""
+        sys.exit(self.run())
 
     def run(self, argv: list[str] | None = None) -> int:
         argv = sys.argv[1:] if argv is None else list(argv)
         try:
-            if not argv and self.promptmode and _stdin_is_terminal() and _theme.theme.screen.interactive:
-                return self._run_promptmode()
             found = self._route(argv)
             if isinstance(found, int):
                 return found
@@ -87,7 +71,7 @@ class App:
         except UsageError as error:
             usage = error.usage or self._help_model([self.name]).usage
             model = HelpModel(prog="", description="", usage=usage, error=str(error))
-            text = _theme.theme._format_help(model)
+            text = _theme.theme.draw("help", model)
             _theme.theme.screen.write(strip(text) if _theme.theme.color == "none" else text)
             return 2
         except KeyboardInterrupt:
@@ -113,7 +97,7 @@ class App:
             node = node.children[name]
         names = [self.name, *path]
         model = node.help_model(names, self) if isinstance(node, Command) else node._help_model(names)
-        return _theme.theme._format_help(model)
+        return _theme.theme.draw("help", model)
 
     def _add(self, name: str, child: Command | App) -> None:
         if name in self.children:
@@ -134,10 +118,6 @@ class App:
                     if print_version:
                         sys.stdout.write(f"{self.name} {self.version}\n")
                     return 0
-                if app is self and self.verbosity and flag in ("-v", "-q"):
-                    log.level = "debug" if flag == "-v" else "quiet"
-                    tokens = tokens[1:]
-                    continue
                 break
             if app.handler is not None:
                 return app.handler, path, tokens
@@ -148,8 +128,6 @@ class App:
                 app, path, tokens = child, path + [tokens[0]], tokens[1:]
             elif child is not None:
                 return child, path + [tokens[0]], tokens[1:]
-            elif app.default_command is not None:
-                return app.default_command, path + [app.default_command.name], tokens
             else:
                 message = (f"unrecognized arguments: {' '.join(tokens)}" if tokens[0].startswith("-")
                            else f"unknown command '{tokens[0]}'")
@@ -166,32 +144,10 @@ class App:
         return HelpModel(" ".join(path), self.description, usage, options=rows, commands=commands, epilog=self.epilog)
 
     def _root_options(self) -> tuple:
-        rows = (("-V, --version", "show the version"),) if self.version else ()
-        if self.verbosity:
-            rows += (("-v", "show debug lines"), ("-q", "show only errors"))
-        return rows
+        return (("-V, --version", "show the version"),) if self.version else ()
 
     def row_text(self) -> str:
         return _first_line(self.description) or self.name
-
-    def _run_promptmode(self) -> int:
-        app, path = self, [self.name]
-        command = self.handler
-        while command is None:
-            labels: dict[str, str] = {}
-            for name, child in app.children.items():
-                label = child.row_text()
-                labels[label if label not in labels else f"{label} ({name})"] = name
-            name = prompt.choice("What do you want to do?", labels)
-            child, path = app.children[name], path + [name]
-            if isinstance(child, App):
-                app = child
-            else:
-                command = child
-        values = command.ask_values()
-        log.info(shlex.join(path + command_line(command.params, values)))
-        return _exit_code(command.call(values))
-
 
 class Command:
     """One handler function and the parameters read from its signature."""
@@ -207,7 +163,6 @@ class Command:
     def parse(self, tokens: list[str], path: list[str], app: App) -> inspect.BoundArguments:
         prog = " ".join(path)
         parser = _Parser(prog=prog, add_help=False)
-        _root(app).prepare(parser)
         parser.add_argument("-h", "--help", action=_HelpAction)
         for param in self.params:
             param.add_to(parser)
@@ -236,16 +191,11 @@ class Command:
                 args.append(value)
         return self.signature.bind(*args, **kwargs)
 
-    def call(self, values: dict) -> Any:
-        arguments = self.bind(values)
-        return self.fn(*arguments.args, **arguments.kwargs)
-
     def help_model(self, path: list[str], app: App) -> HelpModel:
         root = _root(app)
         extra = root._root_options() if root.handler is self else ()
-        shown = [param for param in self.params if not param.hidden]
-        positionals = [param for param in shown if param.positional]
-        options = [param for param in shown if not param.positional]
+        positionals = [param for param in self.params if param.positional]
+        options = [param for param in self.params if not param.positional]
         usage = [" ".join(path)]
         if extra or any(not param.required for param in options):
             usage.append("[options]")
@@ -259,20 +209,6 @@ class Command:
             epilog=root.epilog if root.handler is self else "",
         )
 
-    def ask_values(self) -> dict:
-        """Prompt mode: ask the required parameters, keep the defaults of the rest."""
-        values = {}
-        for param in self.params:
-            if param.ask is not None:
-                values[param.name] = param.ask()
-            elif param.required and not param.hidden:
-                values[param.name] = param.ask_generated()
-            else:
-                values[param.name] = param.finish(None)
-        return values
-
-
-
 class _HelpRequested(Exception):
     def __init__(self, model: HelpModel | None = None):
         super().__init__()
@@ -282,8 +218,9 @@ class _HelpRequested(Exception):
     def text(self) -> str:
         # _HelpAction raises without a model; the command catching it re-raises with one.
         assert self.model is not None
-        stdout_theme = _theme.theme.branch(color=detect_color(sys.stdout))
-        return stdout_theme._format_help(self.model)
+        # Help goes to stdout, whose color depth can differ from stderr's.
+        with _theme.theme.scope(color=detect_color(sys.stdout)) as stdout_theme:
+            return stdout_theme.draw("help", self.model)
 
 
 class _HelpAction(argparse.Action):
@@ -322,7 +259,3 @@ def _root(app: App) -> App:
     while app.parent is not None:
         app = app.parent
     return app
-
-
-def _stdin_is_terminal() -> bool:
-    return isatty(sys.stdin)

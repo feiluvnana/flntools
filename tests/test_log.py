@@ -85,10 +85,19 @@ class LevelTest(LogCase):
             log.level = "trace"
 
     def test_fields(self):
-        log.ok("finished", folders=3)
-        log.info("saved {path}", path="a", size=2, kind="mp4")
+        log.info("saved {path}", path="a")
         log.info("{} and {}", 1, 2)
-        self.assertEqual(self.lines(), ["✓ finished  folders=3", "• saved a  size=2  kind=mp4", "• 1 and 2"])
+        log.info("{0[x]} {item.real}", {"x": 1}, item=2)
+        self.assertEqual(self.lines(), ["• saved a", "• 1 and 2", "• 1 2"])
+
+    def test_an_unused_keyword_raises(self):
+        with self.assertRaises(TypeError):
+            log.ok("finished", folders=3)
+        with self.assertRaises(TypeError):
+            log.info("saved {path}", path="a", size=2)
+        with self.assertRaises(TypeError):
+            log.info("plain", theme=theme)
+        self.assertEqual(self.output(), "")
 
     def test_braces_without_arguments(self):
         log.info("saved {path}")
@@ -97,7 +106,7 @@ class LevelTest(LogCase):
 
     def test_bad_format_raises(self):
         with self.assertRaises(KeyError):
-            log.info("{missing}", other=1)
+            log.info("{missing}", "positional")
 
     def test_empty_message(self):
         log.ok()
@@ -106,13 +115,13 @@ class LevelTest(LogCase):
     def test_styled_field_is_kept(self):
         with theme.scope(color="16m"):
             log.error("{msg}", msg=style.red.bold("disk full"))
-        self.assertEqual(self.output(), "\x1b[31m✗\x1b[0m \x1b[1;31mdisk full\x1b[0m\n")
+        self.assertEqual(self.output(), "\x1b[38;2;237;86;122m✗\x1b[0m \x1b[1;31mdisk full\x1b[0m\n")
 
-    def test_per_call_theme(self):
+    def test_glyph_colors_follow_the_palette(self):
         with theme.scope(color="16m"):
-            log.info("plain", theme=theme.branch(color="none", unicode=False))
-            self.assertEqual(theme.color, "16m")
-        self.assertEqual(self.output(), "* plain\n")
+            log.ok("done")
+            log.info("note")
+        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓\x1b[0m done", "\x1b[36m•\x1b[0m note"])
 
 
 class PipeProgressTest(LogCase):
@@ -133,6 +142,14 @@ class PipeProgressTest(LogCase):
                 bar.caption = "part 3"
                 raise KeyboardInterrupt
         self.assertEqual(self.lines(), ["✗ clip.mp4 ━━━━━━━━──────────── 4/10 part 3"])
+
+    def test_update_takes_a_total(self):
+        with log.progress("upload") as bar:
+            bar.update(5, 10)
+            self.assertEqual((bar.done, bar.total), (5, 10))
+            bar.update(7)
+            self.assertEqual(bar.total, 10)
+        self.assertEqual(self.lines(), ["✓ upload ━━━━━━━━━━━━━━────── 7/10"])
 
     def test_return_and_break_are_clean(self):
         for _ in range(2):
@@ -369,7 +386,7 @@ class ThreadTest(LogCase):
         self.assertEqual(prompt.input("Name", default="ada"), "ada")
         thread.join()
         self.assertEqual(self.lines(), [
-            "Name", "› ada", "✓ Name: ada", "• background", "✓ bar ━━━━━━━━━━━━━━━━━━━━ 1/1",
+            "┃ Name", "┃ > ada", "enter submit", "✓ Name: ada", "• background", "✓ bar ━━━━━━━━━━━━━━━━━━━━ 1/1",
         ])
 
 

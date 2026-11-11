@@ -450,9 +450,8 @@ class TargetSession:
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
         """Ask a question, during `flnd login` only; `flnd download` never asks, and raises `RuntimeError`."""
         self._check_interactive()
-        if description:
-            log.info(description)
-        return prompt.secret(message) if secret else prompt.input(message)
+        ask = prompt.secret if secret else prompt.input
+        return ask(message, description=description)
 
     def choose(self, message: str, options: Sequence[str] | Mapping[str, str]) -> str:
         """Ask to pick one option, during `flnd login` only, like `ask`; a mapping shows its keys."""

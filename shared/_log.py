@@ -34,50 +34,48 @@ class Log:
             raise ValueError(f"log.level must be one of {', '.join(LEVELS)}, not {value!r}")
         self._level = value
 
-    def debug(self, message: str = "", /, *args: Any, theme: Theme | None = None, **fields: Any) -> None:
-        self._line("debug", message, args, fields, theme)
+    def debug(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        self._line("debug", message, args, fields)
 
-    def info(self, message: str = "", /, *args: Any, theme: Theme | None = None, **fields: Any) -> None:
-        self._line("info", message, args, fields, theme)
+    def info(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        self._line("info", message, args, fields)
 
-    def ok(self, message: str = "", /, *args: Any, theme: Theme | None = None, **fields: Any) -> None:
-        self._line("ok", message, args, fields, theme)
+    def ok(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        self._line("ok", message, args, fields)
 
-    def warn(self, message: str = "", /, *args: Any, theme: Theme | None = None, **fields: Any) -> None:
-        self._line("warn", message, args, fields, theme)
+    def warn(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        self._line("warn", message, args, fields)
 
-    def error(self, message: str = "", /, *args: Any, theme: Theme | None = None, **fields: Any) -> None:
-        self._line("error", message, args, fields, theme)
+    def error(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        self._line("error", message, args, fields)
 
     @contextmanager
-    def progress(self, label: str, *, total: float | None = None, show: Callable[[Any], str] = str,
-                 theme: Theme | None = None) -> Iterator[ProgressBar]:
+    def progress(self, label: str, *, total: float | None = None,
+                 show: Callable[[Any], str] = str) -> Iterator[ProgressBar]:
         """One bar. A clean exit ends it at ok; an exception ends it at error and re-raises."""
-        theme = theme or _theme.theme
-        group = Group(theme, title="")
+        group = Group(_theme.theme, title="")
         bar = group.add(label, total=total, show=show)
         with _ending(group):
             yield bar
 
     @contextmanager
-    def multi(self, title: str = "", *, theme: Theme | None = None) -> Iterator[Group]:
+    def multi(self, title: str = "") -> Iterator[Group]:
         """A title row with one row per job added under it."""
-        theme = theme or _theme.theme
-        group = Group(theme, title=title)
+        group = Group(_theme.theme, title=title)
         with _ending(group):
             yield group
 
-    def _line(self, level: str, message: str, args: tuple, fields: dict, theme: Theme | None) -> None:
+    def _line(self, level: str, message: str, args: tuple, fields: dict) -> None:
+        # str.format ignores unused keywords, so a misspelled field would vanish without a word.
+        unused = set(fields) - _field_names(message) if fields else ()
+        if unused:
+            raise TypeError(f"log message {message!r} has no field {', '.join(sorted(unused))}")
         if LEVEL_RANKS[level] < LEVEL_RANKS[self._level]:
             return
-        theme = theme or _theme.theme
-        extra = ""
         if args or fields:
-            used = _field_names(message)
             message = message.format(*args, **fields)
-            extra = "".join(f"  {name}={value}" for name, value in fields.items() if name not in used)
-        line = render(theme, LogRecord(level, message, extra))
-        live_area(theme.screen).write_lines([line])
+        theme = _theme.theme
+        live_area(theme.screen).write_lines([render(theme, LogRecord(level, message))])
 
 
 class ProgressBar:
@@ -121,8 +119,11 @@ class ProgressBar:
     def advance(self, n: float = 1) -> None:
         self.update(self._done + n)
 
-    def update(self, n: float) -> None:
+    def update(self, n: float, total: float | None = None) -> None:
+        """Set how much is done, and the total when given: `bar.update(current, total)`."""
         self._done = max(n, 0)
+        if total is not None:
+            self._total = total
         self._group.changed()
 
     def finish(self) -> None:
@@ -144,7 +145,7 @@ class ProgressBar:
     def _record(self) -> LogRecord:
         level = "info" if self.outcome is None else self.outcome
         view = Bar(self.label, self._done, self._total, self._caption, self.finished, self.show)
-        return LogRecord(level, self.label, "", view)
+        return LogRecord(level, self.label, view)
 
 
 class Group:
@@ -303,7 +304,7 @@ def live_area(screen: Screen) -> LiveArea:
 
 
 def render(theme: Theme, record: LogRecord) -> str:
-    line = theme._format_log(record)
+    line = theme.draw("log" if record.bar is None else "progress", record)
     return strip(line) if theme.color == "none" else line
 
 

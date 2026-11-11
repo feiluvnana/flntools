@@ -1,11 +1,12 @@
 import os
+import re
 import unittest
 from io import StringIO
 from unittest import mock
 
-from shared import style, theme
+from shared import _theme, theme
 from shared._screen import key_name
-from shared._theme import Bar, HelpModel, LogRecord, PromptView, Screen, Theme, detect_color, fit
+from shared._theme import PALETTE, Bar, HelpModel, LogRecord, PromptView, Screen, Theme, detect_color, fit
 
 
 class TtyStream(StringIO):
@@ -15,14 +16,16 @@ class TtyStream(StringIO):
 
 class GlyphTest(unittest.TestCase):
     def setUp(self):
-        self.theme = theme.branch(unicode=True)
+        self.theme = Theme(color="none", unicode=True)
 
     def test_namespaces(self):
         glyphs = self.theme.glyphs
         self.assertEqual((glyphs.bullet, glyphs.tick, glyphs.bang, glyphs.cross, glyphs.dot, glyphs.pointer),
-                         ("•", "✓", "!", "✗", "·", "›"))
+                         ("•", "✓", "!", "✗", "·", ">"))
+        self.assertEqual((glyphs.border, glyphs.keysep), ("┃", "•"))
         self.assertEqual((glyphs.select.yes, glyphs.select.no), ("●", "○"))
-        self.assertEqual((glyphs.check.yes, glyphs.check.no), ("✔", "·"))
+        self.assertEqual((glyphs.check.yes, glyphs.check.no), ("✓", "•"))
+        self.assertEqual((glyphs.keys.up, glyphs.keys.down, glyphs.keys.left, glyphs.keys.right), ("↑", "↓", "←", "→"))
         self.assertEqual((glyphs.bar.full, glyphs.bar.empty), ("━", "─"))
         self.assertEqual(len(glyphs.spin), 10)
 
@@ -41,8 +44,11 @@ class GlyphTest(unittest.TestCase):
         glyphs = self.theme.glyphs
         self.assertEqual((glyphs.bullet, glyphs.tick, glyphs.bang, glyphs.cross, glyphs.dot, glyphs.pointer),
                          ("*", "+", "!", "x", ".", ">"))
+        self.assertEqual((glyphs.border, glyphs.keysep), ("|", "|"))
         self.assertEqual((glyphs.select.yes, glyphs.select.no, glyphs.check.yes, glyphs.check.no),
                          ("(*)", "( )", "[x]", "[ ]"))
+        self.assertEqual((glyphs.keys.up, glyphs.keys.down, glyphs.keys.left, glyphs.keys.right),
+                         ("up", "down", "left", "right"))
         self.assertEqual((glyphs.bar.full, glyphs.bar.empty, glyphs.spin), ("=", "-", ("|", "/", "-", "\\")))
 
     def test_assigned_glyph_wins_over_ascii(self):
@@ -52,99 +58,130 @@ class GlyphTest(unittest.TestCase):
         self.assertEqual((self.theme.glyphs.tick, self.theme.glyphs.bar.full), ("√", "#"))
 
 
-class TemplateTest(unittest.TestCase):
-    def setUp(self):
-        self.theme = theme.branch(color="none", unicode=True)
+class NoLeftoversTest(unittest.TestCase):
+    def test_templates_and_branch_are_gone(self):
+        for name in ("templates", "branch"):
+            self.assertFalse(hasattr(theme, name), name)
+        for name in ("default_templates", "tidy_spaces", "SLOT", "EMPTY_SLOT"):
+            self.assertFalse(hasattr(_theme, name), name)
 
-    def test_log_templates(self):
-        draw = self.theme._format_log
+
+class PaletteTest(unittest.TestCase):
+    def setUp(self):
+        self.theme = Theme(color="16m", unicode=True, screen=Screen(out=StringIO(), width=40, height=20))
+
+    def test_defaults(self):
+        palette = self.theme.palette
+        self.assertEqual((palette.ok, palette.error, palette.cursor, palette.chosen), ("#02BF87", "#ED567A",
+                                                                                      "#F780E2", "#02BF87"))
+        self.assertEqual((palette.text, palette.muted, palette.faint, palette.key, palette.hint, palette.button),
+                         (252, 243, 238, 241, 239, 237))
+        self.assertEqual((palette.info, palette.warn, palette.debug, palette.label), ("cyan", "yellow", "dim", "magenta"))
+        self.assertEqual((palette.title, palette.cream), ("bold #7571F9", "#FFFDF5"))
+
+    def test_unknown_name_and_bad_value(self):
+        with self.assertRaises(AttributeError):
+            self.theme.palette.purple = "#ff00ff"
+        with self.assertRaises(AttributeError):
+            self.theme.palette.purple
+        with self.assertRaises(ValueError):
+            self.theme.palette.ok = "not-a-style"
+        self.theme.palette.ok = "bold red"
+        self.theme.palette.ok = "rgb(1, 2, 3)"
+        self.theme.palette.ok = 141
+
+    def test_paint(self):
+        self.assertEqual(self.theme.paint("ok", "x"), "\x1b[38;2;2;191;135mx\x1b[0m")
+        self.assertEqual(self.theme.paint("title", "x"), "\x1b[1;38;2;117;113;249mx\x1b[0m")
+        self.assertEqual(self.theme.paint("cream", "x", on="cursor"), "\x1b[38;2;255;253;245;48;2;247;128;226mx\x1b[0m")
+        self.assertEqual(self.theme.paint("text", "x", on="button"), "\x1b[38;5;252;48;5;237mx\x1b[0m")
+        self.assertEqual(self.theme.paint("debug", ""), "")
+        self.theme.color = "none"
+        self.assertEqual(self.theme.paint("ok", "x"), "x")
+
+    def test_a_palette_change_restyles_log_help_and_prompt(self):
+        self.theme.palette.ok = "#010203"
+        self.theme.palette.label = "#040506"
+        self.theme.palette.title = "#070809"
+        self.assertEqual(self.theme.draw("log", LogRecord("ok", "done")), "\x1b[38;2;1;2;3m✓\x1b[0m done")
+        help_text = self.theme.draw("help", HelpModel("tool", "", "tool name"))
+        self.assertIn("\x1b[38;2;4;5;6m  tool name\x1b[0m", help_text)
+        self.assertIn("\x1b[38;2;7;8;9mUsage:\x1b[0m", help_text)
+        frame = self.theme.draw("prompt", PromptView("input", "Name"))
+        self.assertIn("\x1b[38;2;7;8;9mName\x1b[0m", frame)
+
+    def test_depth_8_never_paints_black_or_yellow(self):
+        # warn is yellow on purpose; cursor and button are the only backgrounds.
+        self.theme.color = "8"
+        painted = [self.theme.paint(name, "x") for name in PALETTE if name != "warn"]
+        painted += [self.theme.paint("cream", "x", on="cursor"), self.theme.paint("text", "x", on="button")]
+        for line in painted:
+            codes = set(re.findall(r"\x1b\[([0-9;]*)m", line)[0].split(";"))
+            with self.subTest(line=line):
+                self.assertFalse({"30", "33", "40", "43"} & codes)
+        self.assertEqual(self.theme.paint("muted", "x"), "\x1b[90mx\x1b[0m")
+        self.assertEqual(self.theme.paint("text", "x", on="button"), "\x1b[37;100mx\x1b[0m")
+
+
+class DrawerTest(unittest.TestCase):
+    def setUp(self):
+        self.theme = Theme(color="none", unicode=True)
+
+    def test_log_lines(self):
+        draw = lambda record: self.theme.draw("log", record)  # noqa: E731
         self.assertEqual(draw(LogRecord("info", "saved /tmp/a")), "• saved /tmp/a")
         self.assertEqual(draw(LogRecord("ok", "done")), "✓ done")
         self.assertEqual(draw(LogRecord("warn", "retry 2")), "! retry 2")
         self.assertEqual(draw(LogRecord("error", "failed: boom")), "✗ failed: boom")
         self.assertEqual(draw(LogRecord("debug", "raw")), "· raw")
-        self.assertEqual(draw(LogRecord("ok", "finished", "  folders=3")), "✓ finished  folders=3")
         self.assertEqual(draw(LogRecord("ok", "")), "✓")
 
-    def test_progress_parts(self):
-        draw = self.theme._format_log
+    def test_progress_rows(self):
+        draw = lambda bar, level="info": self.theme.draw("progress", LogRecord(level, "", bar))  # noqa: E731
         running = Bar("clip.mp4", 3, 10, "part 3", False)
-        self.assertEqual(draw(LogRecord("info", "", bar=running)), "• clip.mp4 ━━━━━━────────────── 3/10 part 3")
-        finished = Bar("clip.mp4", 10, 10, "", True)
-        self.assertEqual(draw(LogRecord("ok", "", bar=finished)), "✓ clip.mp4 ━━━━━━━━━━━━━━━━━━━━ 10/10")
-        self.assertTrue(draw(LogRecord("error", "", bar=running)).startswith("✗ clip.mp4"))
-        over = Bar("a", 50, 10, "", False)
-        self.assertIn("━" * 20, draw(LogRecord("info", "", bar=over)))
-        shown = Bar("a", 1024, 2048, "", False, show=lambda n: f"{n // 1024}K")
-        self.assertTrue(draw(LogRecord("info", "", bar=shown)).endswith("1K/2K"))
+        self.assertEqual(draw(running), "• clip.mp4 ━━━━━━────────────── 3/10 part 3")
+        self.assertEqual(draw(Bar("clip.mp4", 10, 10, "", True), "ok"), "✓ clip.mp4 ━━━━━━━━━━━━━━━━━━━━ 10/10")
+        self.assertTrue(draw(running, "error").startswith("✗ clip.mp4"))
+        self.assertIn("━" * 20, draw(Bar("a", 50, 10, "", False)))
+        self.assertTrue(draw(Bar("a", 1024, 2048, "", False, show=lambda n: f"{n // 1024}K")).endswith("1K/2K"))
 
-    def test_spinner_parts_collapse(self):
-        draw = self.theme._format_log
-        spinning = draw(LogRecord("info", "", bar=Bar("scroll posts", 0, None, "", False)))
-        self.assertRegex(spinning, r"^• scroll posts [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$")
-        counted = draw(LogRecord("info", "", bar=Bar("scroll posts", 12, None, "", False)))
-        self.assertRegex(counted, r"^• scroll posts . 12$")
-        self.assertEqual(draw(LogRecord("ok", "", bar=Bar("scroll posts", 12, None, "", True))), "✓ scroll posts 12")
-        self.assertEqual(draw(LogRecord("ok", "", bar=Bar("scroll posts", 0, None, "", True))), "✓ scroll posts")
+    def test_spinner_rows_collapse(self):
+        draw = lambda bar, level="info": self.theme.draw("progress", LogRecord(level, "", bar))  # noqa: E731
+        self.assertRegex(draw(Bar("scroll posts", 0, None, "", False)), r"^• scroll posts [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$")
+        self.assertRegex(draw(Bar("scroll posts", 12, None, "", False)), r"^• scroll posts . 12$")
+        self.assertEqual(draw(Bar("scroll posts", 12, None, "", True), "ok"), "✓ scroll posts 12")
+        self.assertEqual(draw(Bar("scroll posts", 0, None, "", True), "ok"), "✓ scroll posts")
 
-    def test_assigned_template_and_missing_slot(self):
-        self.theme.templates.log.info = "[{g-bar.full}] {p-nothing} {p-message}"
-        self.assertEqual(self.theme._format_log(LogRecord("info", "hi")), "[━] hi")
-        with self.assertRaises(AttributeError):
-            self.theme.templates.log.trace = "x"
-
-    def test_styled_pieces_are_painted_after_filling(self):
-        painted = self.theme.branch(color="16m")
-        painted.templates.log.info = style.gradient("#000000", "#ffffff")("{p-message}")
-        line = painted._format_log(LogRecord("info", "ab"))
-        self.assertEqual(line, "\x1b[38;2;0;0;0ma\x1b[38;2;255;255;255mb\x1b[0m")
-
-    def test_prompt_parts(self):
-        draw = self.theme._format_prompt
-        self.assertEqual(draw(PromptView("input", "Name", placeholder="ada")), "Name\n› ada")
-        self.assertEqual(draw(PromptView("input", "Name", "sam")), "Name\n› sam")
-        self.assertEqual(draw(PromptView("input", "Name", error="Enter a name.")), "Name\n›\n✗ Enter a name.")
-        confirm = PromptView("confirm", "Deploy?", options=("Yes", "No"), position=1)
-        self.assertEqual(draw(confirm), "Deploy?\n  ○ Yes\n› ● No")
-        many = PromptView("choices", "Sources", options=("tik", "fbk"), position=1, checked=frozenset({0}))
-        self.assertEqual(draw(many), "Sources\n  ✔ tik\n› · fbk")
-        keys = PromptView("choice", "Source", options=("tik",), keys=(("up", ("up", "k")), ("accept", ("enter",))))
-        self.assertEqual(draw(keys), "Source\n› ● tik\nup/k up  enter accept")
-        self.assertEqual(draw(PromptView("input", "Name", "sam", done=True)), "✓ Name: sam")
-        self.assertEqual(draw(PromptView("secret", "Token", "x", done=True)), "✓ Token")
-        self.assertEqual(draw(PromptView("confirm", "Deploy?", "No", done=True)), "✓ Deploy? No")
-
-    def test_help_parts(self):
+    def test_help(self):
         model = HelpModel("tool", "Does things.", "tool [options] name",
                           arguments=(("name", "who"),), options=(("--count N", ""), ("-h, --help", "")),
                           commands=(("go", "Go now"),), epilog="See ./docs/a.md")
-        self.assertEqual(self.theme._format_help(model), (
+        self.assertEqual(self.theme.draw("help", model), (
             "Does things.\n\nUsage:\n  tool [options] name\n\nArguments:\n  name                who\n\n"
             "Options:\n  --count N\n  -h, --help\n\nCommands:\n  go                  Go now\n\nSee ./docs/a.md\n"
         ))
         error = HelpModel("tool", "", "tool name", error="bad")
-        self.assertEqual(self.theme._format_help(error), "✗ bad\n\nUsage:\n  tool name\n")
+        self.assertEqual(self.theme.draw("help", error), "✗ bad\n\nUsage:\n  tool name\n")
 
+    def test_help_colors_and_no_path_detection(self):
+        self.theme.color = "16m"
+        text = self.theme.draw("help", HelpModel("tool", "", "tool", options=(("--a A", "an a"),),
+                                                 epilog="use ~/x/cookies.txt\n\nok"))
+        self.assertIn("\x1b[35m  --a A             \x1b[0m  \x1b[38;5;243man a\x1b[0m", text)
+        self.assertIn("\x1b[38;5;243muse ~/x/cookies.txt\x1b[0m\n\n\x1b[38;5;243mok\x1b[0m\n", text)
+        self.assertNotIn("]8;;", text)
 
-class EpilogPathTest(unittest.TestCase):
-    def test_paths_are_links_and_other_words_are_dim(self):
-        painted = theme.branch(color="16m")
-        line = painted._epilog_line("  use ~/Downloads/cookies.txt and/or ./a/b, not list.txt or .env or Twitter/X")
-        link = "\x1b]8;;~/Downloads/cookies.txt\x1b\\\x1b[4;36m~/Downloads/cookies.txt\x1b[0m\x1b]8;;\x1b\\"
-        self.assertIn(link, line)
-        self.assertIn("\x1b]8;;./a/b,", line)
-        self.assertIn("\x1b[2mand/or\x1b[0m", line)
-        self.assertIn("\x1b[2mnot list.txt or .env or Twitter/X\x1b[0m", line)
-        self.assertNotIn("]8;;and/or", line)
-        self.assertNotIn("]8;;Twitter/X", line)
-        self.assertNotIn("]8;;list.txt", line)
-        self.assertNotIn("]8;;.env", line)
-        self.assertTrue(line.startswith("  \x1b[2muse\x1b[0m "))
+    def test_a_drawer_is_a_plain_function(self):
+        self.theme.drawers.log = lambda current, record: f"[{record.level}] {record.message}"
+        self.assertEqual(self.theme.draw("log", LogRecord("warn", "x")), "[warn] x")
+        self.assertIsNot(theme.drawers.log, self.theme.drawers.log)
+        with self.assertRaises(AttributeError):
+            self.theme.drawers.table = print
 
 
 class ColorTest(unittest.TestCase):
     def test_validation(self):
-        other = theme.branch()
+        other = Theme()
         for depth in ("none", "8", "256", "16m"):
             other.color = depth
         with self.assertRaises(ValueError):
@@ -162,7 +199,7 @@ class ColorTest(unittest.TestCase):
             self.assertEqual(detect_color(TtyStream()), "none")
 
 
-class ScopeBranchTest(unittest.TestCase):
+class ScopeTest(unittest.TestCase):
     def test_scope_restores(self):
         screen = Screen(out=StringIO(), width=40, tty=False, interactive=False)
         before = (theme.color, theme.unicode, theme.screen)
@@ -174,16 +211,6 @@ class ScopeBranchTest(unittest.TestCase):
         self.assertEqual(theme.color, before[0])
         with self.assertRaises(TypeError), theme.scope(glyphs=None):
             pass
-
-    def test_branch_leaves_process_theme_alone(self):
-        before = (theme.color, theme.glyphs.tick, theme.templates.log.ok)
-        other = theme.branch(color="16m")
-        other.glyphs.tick = "Y"
-        other.templates.log.ok = "{p-message}"
-        self.assertIsInstance(other, Theme)
-        self.assertEqual((theme.color, theme.glyphs.tick, theme.templates.log.ok), before)
-        self.assertEqual(other.glyphs.tick, "Y")
-        self.assertIs(other.screen, theme.screen)
 
 
 class ScreenTest(unittest.TestCase):
