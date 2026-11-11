@@ -6,7 +6,7 @@ flntools is flnd, a media downloader, and `shared`, the toolkit it is built on. 
 
 - **`shared` is flnd's toolkit, not a general library product.** flnd is its only user, since loi and tlg became flnd sources. The package boundary stays, because it keeps the engine and the sources clean. Nothing is added for imaginary outside users.
 - **Each module is small, with one obvious way to use it.** If the standard library already does the job, the module doesn't exist.
-- **Ceiling.** `shared` stays under **about 5,000 lines of code** (about 3,400 after Phase 4, about 4,500 after Phase 5). The user raised it from 4,500 on 2026-11-11, so `media` has room. Going over means removing something first. Lines of code don't count docstrings, comments or blank lines, so the size limits never push against documentation.
+- **Ceiling.** `shared` stays under **about 5,000 lines of code** (about 3,400 after Phase 4, about 4,500 after Phase 5, about 4,600 after [Phase 6](phase-6/api.md), `classify` included). The user raised it from 4,500 on 2026-11-11, so `media` has room. Going over means removing something first. Lines of code don't count docstrings, comments or blank lines, so the size limits never push against documentation.
 
 ## Rules
 
@@ -38,7 +38,7 @@ from shared import archive, crypto, cookies, kv, selector, browser, worker, bund
 | `browser` | [phase-4](phase-4/browser.md) | `_browser.py` | Playwright | `browser` |
 | `worker` | [phase-4](phase-4/worker.md) | `_worker.py` | `concurrent.futures`, `asyncio` | — |
 | `bundler` | [phase-4](phase-4/packaging.md#bundler) | `_bundler.py` | PyInstaller | `bundler` |
-| `media` | [phase-5](phase-5/media.md), [ffmpeg](phase-5/ffmpeg.md) | `_media.py`, `_ffmpeg.py`, `_pillow.py`, `_media_image.py`, `_media_video.py`, `_media_audio.py` | Pillow, pi-heif, the ffmpeg program (imageio-ffmpeg) | `media` |
+| `media` | [phase-5](phase-5/media.md), [ffmpeg](phase-5/ffmpeg.md), [classify](phase-6/classify.md) | `_media.py`, `_ffmpeg.py`, `_pillow.py`, `_media_image.py`, `_media_video.py`, `_media_audio.py`; `_classify.py` from Phase 6 | Pillow, pi-heif, the ffmpeg program (imageio-ffmpeg); ONNX Runtime for `classify` | `media`; `classify` |
 
 Removed in Phase 4:
 - **`http`:** downloads, retries and signing moved into flnd's [engine](phase-4/engine.md#downloads); response parsing moved to `selector`.
@@ -91,6 +91,20 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 1. [media](phase-5/media.md): `shared.media`, one module for photos, videos and audio, with `probe`, `convert`, `compress`, `check` and `sniff` for any file, and `media.image`, `media.video` and `media.audio` for one kind. Photos go through Pillow and pi-heif in process; videos and audio through the ffmpeg program, which [ffmpeg](phase-5/ffmpeg.md) gets from the `imageio-ffmpeg` wheel and runs behind input whitelists.
 2. [flnd on media](phase-5/flnd.md) (built): extensions from content, DASH video and audio merged (Facebook and Instagram), downloads checked, `--compress-image` / `--compress-video` with `--format-image` / `--format-video`, and `flnd sync` with its saved target settings in `.flnd/targets.db`.
 
+**Phase 6: lean and simple.** Based on an audit of the whole repository on 2026-11-12 ([overview](phase-6/README.md)). Built in this order:
+1. [fixes](phase-6/fixes.md): 15 bugs, among them corrupted downloads on Windows, failed targets shown as ok with exit status 0, and Twitter's login sent to its CDNs.
+2. [setup](phase-6/setup.md): `uv sync` with a committed `uv.lock`, the browser downloaded only when there is no Chrome, every task in a stdlib `scripts/dev.py`, and a Makefile that runs the same on every OS.
+3. [cli](phase-6/cli.md): `flnd download`, `sync` (repair and fetch only, no options), `login` and `logout`; `--time <since>,<until>`; `--image`, `--video`, `--audio` `<format>,<level>`; `--unpack`, `--zip`, `--locale`, `--timezone` and `install-browser` gone, and with them `shared.archive`; Google Chrome only, with Chromium offered when it's missing.
+   [source](phase-6/source.md): 8 fields and 5 hooks instead of 18 and 7.
+   [session](phase-6/session.md): 26 members instead of 35; scrolling ends after 10 s without progress and has no cap; page loads and API calls are paced and checked for 429s and login walls.
+4. [api](phase-6/api.md): every public API with its change or none; flnd's own APIs lose what flnd doesn't use, and `shared`'s are kept or removed by how useful they are.
+5. [ins](phase-6/ins.md): tagged and reposts posts read through Instagram's media info API, skipped before any request when already saved or out of range, and every throttle waited out.
+6. [scripts](phase-6/scripts.md): the sources rewritten shorter, with `save_post`, `day` and `meta_results` in `flnd/sources/common.py`.
+   [dates](phase-6/dates.md): the engine dates every file, in its name and its modified time, with the CDN's `Last-Modified` or the download day when the source has none.
+7. [classify](phase-6/classify.md): `media.classify`, a small CLIP-style model on ONNX Runtime, and `--classify`, which puts each file's categories at the start of its name.
+8. [ui](phase-6/ui.md): download rows that no longer blink (overwritten in place, synchronized, cursor hidden, short-lived rows never drawn), a prompt cursor where the text goes, and log lines in their level's color.
+9. [comments](phase-6/comments.md): a docstring for every module, class and function, with its arguments, result, errors and an example, and *why* comments at every non-obvious rule.
+
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
 
 ## Conventions
@@ -101,8 +115,8 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 - **Missing extras.** A missing extra raises `ImportError("shared.browser needs playwright: pip install 'flntools[browser]'")` on first use.
 - **Readable code.** Code is written for the next person to read it, and kept short:
   - **Order.** A module reads top to bottom: public names first, then the helpers they call, in the order they are called.
-  - **Docstrings.** Every public function and class starts with one plain sentence saying what it does, then a short example. Rules a caller must know (what raises, what is slow, what can't be undone) come after.
-  - **Comments** explain *why*, at the place a reader would otherwise have to work out a rule: why a timed-out thread can't be stopped, why archive links are refused. A comment never restates the next line.
+  - **Docstrings.** Every module, public class and public function has one, from Phase 6 to the [comments](phase-6/comments.md) standard: one plain sentence saying what it does, a short example, then `Args:` for every argument, `Returns:`, `Raises:`, and the rules a caller must know (what is slow, what can't be undone).
+  - **Comments** explain *why*, at the place a reader would otherwise have to work out a rule: why a timed-out thread can't be stopped, why archive links are refused. Every magic value, site quirk, lock, caught exception and platform branch gets one. A comment never restates the next line.
   - **Names** say what a value is (`queued`, `stop_requested`, `jar`), never `tmp`, `data`, `flag`, `x` or a one-letter loop variable outside a short comprehension.
   - **Concise.** One way to do each thing, no dead code, no option without a caller. When a function grows past about 40 lines, it is split where a reader would naturally pause.
 - **Tests.** `unittest`, with one `tests/test_<module>.py` per module. Terminal tests use a fake `theme.screen`. Browser tests use local pages, and are skipped without Chromium. flnd's network tests use `httpx.MockTransport`.
@@ -135,38 +149,24 @@ flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, 
 
 ## Makefile
 
+From [Phase 6, step 2](phase-6/setup.md), every task is in [`scripts/dev.py`](phase-6/setup.md#scriptsdevpy), stdlib only, so it runs the same on macOS, Linux and Windows with nothing but uv: `uv run --no-project scripts/dev.py <task>`. The Makefile is a shortcut for people who have make:
+
 ```makefile
-PYTHON ?= 3.14
+TASKS := setup test lint type check flnd dist
+.PHONY: $(TASKS)
 
-.PHONY: setup test lint typecheck check flnd dist
-
-setup:
-	uv venv .venv --python $(PYTHON)
-	uv pip install -e '.[archive,selector,browser,bundler,media]' --group dev --python .venv/bin/python
-	.venv/bin/playwright install chromium
-
-test:
-	.venv/bin/python -m unittest discover -s tests
-
-lint:
-	.venv/bin/python -m compileall -q flnd shared
-
-typecheck:
-	.venv/bin/pyright
-
-check: lint typecheck test
-
-flnd:
-	.venv/bin/flnd $(ARGS)
-
-dist:
-	.venv/bin/python -c "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', data=('licenses',))"
-	.venv/bin/python -c "$$FFMPEG_SOURCE" > dist/flnd/licenses/ffmpeg-source.txt
+$(TASKS):
+	uv run --no-project scripts/dev.py $@ $(ARGS)
 ```
 
-`FFMPEG_SOURCE` is a short Python snippet defined in the Makefile: it prints the bundled ffmpeg's `-version` output, for the GPL source offer in `licenses/ffmpeg.txt` ([flnd › Packaging](phase-5/flnd.md#packaging)).
+| Task | Runs |
+| --- | --- |
+| `setup` | `uv sync` from `uv.lock`, then `playwright install --no-shell chromium` only when there is no Chrome |
+| `test`, `lint`, `type`, `check` | unittest, compileall, pyright, and the three in that order |
+| `flnd` | `uv run flnd $(ARGS)` |
+| `dist` | `uv sync --group dist`, `bundler.build`, and `licenses/ffmpeg-source.txt` ([flnd › Packaging](phase-5/flnd.md#packaging)) |
 
-`requires-python` is `>=3.11`. Before a release, run `make setup PYTHON=3.11 check`. `make flnd ARGS="download ins:example_user"` passes arguments through.
+`requires-python` is `>=3.11`. Before a release, run `uv run --no-project scripts/dev.py check --python 3.11`. `make flnd ARGS="download ins:example_user"` passes arguments through.
 
 ## Out of scope
 
