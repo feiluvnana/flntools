@@ -94,7 +94,7 @@ A failing task never stops the others. Once all tasks have finished, what happen
 
 ## Timeouts
 
-A Python thread cannot be killed. When a thread task passes `timeout`, it is marked failed with `TimeoutError` and the pool stops waiting for it. The thread keeps running in the background until its function returns, and its result is discarded. Its worker slot is replaced, so the pool does not shrink. This is the honest limit of threads, and the docstring says so. For a real per-request limit, use the library's own timeout (httpx and Playwright both have one); `timeout` here is a safety net.
+A Python thread cannot be killed. When a thread task passes `timeout`, it is marked failed with `TimeoutError` and the pool stops waiting for it. The thread keeps running in the background until its function returns, and its result is discarded. Its worker slot is replaced, so the pool does not shrink. A timed-out attempt is never retried, because it may still be running. This is the honest limit of threads, and the docstring says so. For a real per-request limit, use the library's own timeout (httpx and Playwright both have one); `timeout` here is a safety net.
 
 With `processes=True`, a task past its timeout is also marked failed, and its process is replaced once it returns.
 
@@ -121,7 +121,7 @@ def screenshot(page, url):  # the resource comes first
 - `setup` is a function with no arguments. It returns either a context manager, which is entered, or a plain value.
 - Each worker thread calls `setup` once, before its first task. The task function then gets the resource as its first argument.
 - The context manager is exited when the pool shuts down, **in the same thread that entered it**. Playwright requires this, so the pool runs its own worker threads instead of `ThreadPoolExecutor`.
-- If `setup` raises, that worker records the error for every task it would have taken. The other workers keep going. The setup error is reported once, not per task.
+- If `setup` raises, that worker gives its task back and retires, and its slot is not refilled. The other workers keep going. Only when `setup` has failed in every slot are the remaining tasks failed with the setup error. The setup error is reported once, not per task.
 
 `setup` is threads-only. With `processes=True` it raises `ValueError`, because the resource could not cross processes.
 
@@ -164,5 +164,5 @@ A task may use `worker` itself. Each pool has its own threads, so an outer pool 
   - exited on Ctrl-C and on error;
   - a failing `setup` is reported once.
 - Ctrl-C, simulated by raising `KeyboardInterrupt` in the caller: queued tasks are dropped and running tasks finish.
-- `processes=True`: a CPU-bound task runs faster than in one thread on a machine with 2 or more CPUs (skipped otherwise); a lambda gives the clear `TypeError`.
+- `processes=True`: two CPU-bound tasks run at the same time in two processes on a machine with 2 or more CPUs (skipped otherwise). They meet at a `multiprocessing.Manager().Barrier(2)`, because timing a speed-up fails on a busy machine. A lambda gives the clear `TypeError`.
 - Option validation errors.

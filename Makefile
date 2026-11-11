@@ -1,10 +1,17 @@
-.PHONY: install test lint run
+PYTHON ?= 3.14
 
-install:
-	pip install -e .
+.PHONY: setup test lint flnd
+
+setup:
+	uv venv .venv --python $(PYTHON)
+	uv pip install -e '.[http,browser,crypto,scrape]' --python .venv/bin/python
+	.venv/bin/playwright install chromium
 
 test:
-	python -m unittest discover -s tests
+	.venv/bin/python -m unittest discover -s tests
 
 lint:
-	python -m py_compile flnd/**/*.py
+	.venv/bin/python -m compileall -q flnd shared
+
+flnd:
+	.venv/bin/flnd $(ARGS)

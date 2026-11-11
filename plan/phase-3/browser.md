@@ -31,8 +31,9 @@ with browser.open(headless=False, user_agent=http.agents.chrome, cookies=cookies
 
 - Starts `sync_playwright` and launches Chromium with `--disable-blink-features=AutomationControlled` and `--disable-infobars`.
 - Creates one context with `user_agent`, `viewport`, and any `context_kwargs` (locale, timezone, proxy, …). Opens one page.
-- `cookies` takes the `list[dict]` from `load_cookies`. Each cookie gets a leading `.` on its domain and a default `path` of `/`, which is exactly the fix-up every source does today. If Playwright rejects a cookie, the error is logged with `log.warn` and the page still opens.
+- `cookies` takes the `list[dict]` from `load_cookies`. Each cookie gets a leading `.` on its domain and a default `path` of `/`, which is exactly the fix-up every source does today. Cookies are added one at a time, so if Playwright rejects one, that error is logged with `log.warn` and the others and the page still load.
 - `stealth=True` adds the init script that hides `navigator.webdriver`. That is all; deeper stealth is [out of scope](../README.md#out-of-scope).
+- `slow_mo` is in seconds, like every time in `shared`, and is converted to Playwright's milliseconds.
 - On exit, the context, the browser, and Playwright are closed in that order, even when the block raised.
 - `page.context` and `page.context.browser` give the real objects for anything else, such as a second page.
 
@@ -67,14 +68,14 @@ It stops at the first of these:
 `browser.handoff(page, *, done, message, poll=1.0, timeout=None) -> bool` is for steps only a person can do, such as a captcha or a login.
 
 1. If `done()` is already true, it returns `True` at once.
-2. Otherwise it writes `log.warn(message)` and polls `done()` every `poll` seconds inside a `log.progress(message)` spinner.
+2. Otherwise it writes `log.warn(message)` and polls `done()` every `poll` seconds inside a `log.progress(message)` spinner. It waits with `page.wait_for_timeout`, not `time.sleep`, so Playwright keeps delivering events, such as `capture` responses, while it waits.
 3. When `done()` becomes true, it writes `log.ok` and returns `True`. When `timeout` seconds pass first, it returns `False`.
 
-When the browser is headless, a person cannot see the page, so it raises `RuntimeError` instead of waiting forever.
+When the browser is headless, a person cannot see the page, so it raises `RuntimeError` instead of waiting forever. Playwright does not report whether a page is headless, so this applies to pages opened by `browser.open(headless=True)`.
 
 ## Tests
 
-Tests load a local HTML file through a `file://` URL. They are skipped when Chromium is not installed.
+Tests load a local HTML file through a `file://` URL. They are skipped when Chromium is not installed. `capture` tests serve their responses with `page.route` on an `https://` URL, because a `file://` page cannot `fetch`. `handoff` tests use a fake page with a fake clock, except the headless one.
 
 - `open`:
   - the user-agent and viewport;

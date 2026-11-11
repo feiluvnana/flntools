@@ -52,7 +52,7 @@ Anything the key-value API doesn't cover goes through `db.sql`. Your own tables 
 
 ## Secrets
 
-`db.secrets(key=None)` returns a `Table` whose values are `str`.
+`db.secrets(key=None, *, password=None)` returns a `Table` whose values are `str`.
 
 - Each value is encrypted with `crypto.seal` and stored base64-encoded in namespace `secret:`.
 - Secrets never appear in plain text in the database file.
@@ -61,7 +61,8 @@ Anything the key-value API doesn't cover goes through `db.sql`. Your own tables 
 Where the key comes from:
 
 - **`key=None`:** the key is read from `<db>.key`, for example `.flnd/state.db.key`. It is created on first use with `crypto.keygen()` and file mode `0600`. This keeps secrets safe from someone who copies only the database. It does **not** protect against someone who can read the whole folder. That is the honest limit of a key file, and it is written in the module's docstring.
-- **`key=crypto.derive(...)`:** a password-derived key. The salt is stored in `kv` under namespace `meta`, key `secrets.salt`, and created on first use.
+- **`password="..."`:** a password-derived key, made with `crypto.derive` and a random 16-byte salt. The salt is stored in `kv` under namespace `meta`, key `secrets.salt`, and created on first use. The caller passes the password rather than a derived key, because the salt lives in the database and is not known before it is opened.
+- **`key=...`:** any 32-byte key the caller already has. Passing both `key` and `password` raises `ValueError`.
 
 ## Tests
 

@@ -17,7 +17,7 @@ with http.Client(user_agent=http.agents.chrome, cookies=cookies, base_url="https
 
 ## Client
 
-`http.Client(*, user_agent=UA.chrome, headers=None, cookies=None, timeout=30.0, retries=2, follow_redirects=True, **httpx_kwargs)`
+`http.Client(*, user_agent=agents.chrome, headers=None, cookies=None, timeout=30.0, retries=2, follow_redirects=True, **httpx_kwargs)`
 
 | Argument | Meaning |
 | --- | --- |
@@ -28,7 +28,7 @@ with http.Client(user_agent=http.agents.chrome, cookies=cookies, base_url="https
 | `retries` | extra attempts after a connection error, a `429`, or a `5xx`; `0` turns retries off |
 | anything else | passed to `httpx.Client` |
 
-**Retries.** The waits are 1 s, then 2 s, then 4 s. A `Retry-After` header of up to 60 s replaces the wait. Each retry writes `log.debug("retry {n} {url}: {reason}")`. Only `GET`, `HEAD`, `PUT`, `DELETE`, and `OPTIONS` are retried by default. `client.request(..., retry=True)` opts in a `POST`. Retries are a custom transport wrapped around httpx's own, so `client.stream` gets them too.
+**Retries.** The waits are 1 s, then 2 s, then 4 s. A `Retry-After` header, in seconds or as an HTTP date, replaces the wait; a longer one waits 60 s. Each retry writes `log.debug("retry {n} {url}: {reason}")`. Only `GET`, `HEAD`, `PUT`, `DELETE`, and `OPTIONS` are retried by default. `client.request(..., retry=True)` opts in a `POST`. Retries are a custom transport wrapped around httpx's own, so `client.stream` gets them too.
 
 `http.agents` holds current user-agent strings, so scripts don't copy them around:
 

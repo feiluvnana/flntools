@@ -19,9 +19,9 @@ with path.atomic("out/clip.mp4") as f:        # binary by default; mode="w" for 
 
 | Function | Behavior |
 | --- | --- |
-| `safename(text, *, fallback="untitled", maxlen=200)` | Replaces `\ / * ? : " < > \|` and control characters with `_`. Collapses runs of whitespace and `_` into one `_`, and strips `._ ` from both ends. Cuts the result to `maxlen` bytes of UTF-8 without splitting a character. Returns `fallback` when nothing is left. Names that Windows reserves (`CON`, `NUL`, `COM1`, …) get a trailing `_`. |
+| `safename(text, *, fallback="untitled", maxlen=200)` | Replaces `\ / * ? : " < > \|` and control characters with `_`. Collapses runs of whitespace and `_` into one `_`, and strips `._ ` from both ends. Cuts the result to `maxlen` bytes of UTF-8 without splitting a character. Returns `fallback` when nothing is left. Names that Windows reserves (`CON`, `NUL`, `COM1`, …) get a `_` after the part before the first dot, because Windows ignores the extension: `CON` becomes `CON_` and `nul.txt` becomes `nul_.txt`. |
 | `mkdir(p)` | `mkdir(parents=True, exist_ok=True)`, then returns the path. |
-| `unique(p)` | Returns `p` when it does not exist. Otherwise it tries `name (1).ext`, `name (2).ext`, and so on. |
+| `unique(p)` | Returns `p` when it does not exist. Otherwise it tries `name (1).ext`, `name (2).ext`, and so on. A `.tar.gz` style suffix stays together: `bundle (1).tar.gz`. |
 | `expand(p)` | Applies `expanduser`, then `expandvars`, then `resolve()`. |
 | `atomic(p, mode="wb", encoding=None)` | A context manager that writes to `p.part` next to the target. A normal exit renames the file into place with `replace`. An exception deletes the `.part` file and re-raises. Parent directories are created. |
 
