@@ -30,10 +30,11 @@ from typing import Any, Dict, List, Optional
 import httpx
 from playwright.sync_api import sync_playwright
 
-from flnd.cookies import cookies_to_dict, load_cookies, prompt_missing_cookies
+from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import download_file, sanitize_name, scroll_page_to_end
+from flnd.utils import download_file, sanitize_name, scroll_page_to_end, show_steps
+from shared import log
 
 # Mobile Android User-Agent: Instagram story tray API refuses desktop user-agents
 INSTAGRAM_MOBILE_UA = (
@@ -50,6 +51,8 @@ class InsSource(BaseSource):
     """Instagram autonomous scraper supporting posts, reels, tagged, reposts, stories, and highlights."""
 
     code = "ins"
+    name = "Instagram"
+    domains = ("instagram.com",)
 
     def download(
         self,
@@ -62,16 +65,18 @@ class InsSource(BaseSource):
         cookies_list = load_cookies(self.code)
         cookie_map = cookies_to_dict(cookies_list)
 
+        if "sessionid" not in cookie_map and ask_for_cookies(self.code):
+            cookies_list = load_cookies(self.code)
+            cookie_map = cookies_to_dict(cookies_list)
         if "sessionid" not in cookie_map:
-            prompt_missing_cookies(self.code)
-            print("  [warn] Running without sessionid; Instagram will likely wall requests.")
+            log.warn("Running without sessionid; Instagram will likely wall requests.")
 
         target_dir = download_dir / "ins" / username
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n[ins] Starting download for: @{username}")
-        print(f"      Destination: {target_dir}")
-        print(f"      Browser mode: {'headless' if headless else 'non-headless (visible)'}")
+        log.info("Starting download for: @{username}", username=username)
+        log.info("Destination: {path}", path=target_dir)
+        log.info("Browser mode: {mode}", mode="headless" if headless else "visible")
 
         total_downloaded = 0
 
@@ -79,11 +84,11 @@ class InsSource(BaseSource):
             # 1. Fetch active 24h stories via mobile API tray
             user_id = cookie_map.get("ds_user_id")
             if user_id:
-                print("  [stories] Checking active 24h stories tray...")
+                log.info("Checking active 24h stories tray...")
                 story_count = self._download_active_stories(username, user_id, target_dir, cookie_map, http_client)
                 total_downloaded += story_count
                 if limit and total_downloaded >= limit:
-                    print(f"\n[ins] Reached limit of {limit} downloads.")
+                    log.info("Reached limit of {limit} downloads.", limit=limit)
                     return total_downloaded
 
             # 2. Launch browser to navigate profile tabs: posts, reels, tagged, reposts, highlights
@@ -92,7 +97,7 @@ class InsSource(BaseSource):
             )
             total_downloaded += browser_count
 
-        print(f"\n[ins] Finished. Total downloaded for @{username}: {total_downloaded}")
+        log.ok("Finished @{username}: {n} files", username=username, n=total_downloaded)
         return total_downloaded
 
     def _download_active_stories(
@@ -144,11 +149,11 @@ class InsSource(BaseSource):
                             saved += 1
 
             if saved:
-                print(f"  [stories] Downloaded {saved} active stories from mobile tray.")
+                log.info("Downloaded {n} active stories from mobile tray.", n=saved)
             return saved
 
         except Exception as e:
-            print(f"  [warn] Could not fetch stories from mobile API: {e}")
+            log.warn("Could not fetch stories from mobile API: {err}", err=e)
             return 0
 
     def _download_via_browser(
@@ -207,7 +212,7 @@ class InsSource(BaseSource):
                 try:
                     context.add_cookies(formatted_cookies)
                 except Exception as e:
-                    print(f"  [warn] Cookie injection error: {e}")
+                    log.warn("Cookie injection error: {err}", err=e)
 
             page = context.new_page()
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -250,28 +255,30 @@ class InsSource(BaseSource):
 
                 current_tab = tab_name
                 tab_url = f"https://www.instagram.com/{username}/{tab_path}"
-                print(f"  [browser] Navigating tab: [{tab_name}] {tab_url}")
+                log.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
 
                 try:
                     page.goto(tab_url, wait_until="load", timeout=25000)
                     page.wait_for_timeout(3000)
 
                     # Continuously scroll down to the end to trigger all GraphQL replies
-                    scroll_page_to_end(
-                        page,
-                        get_count=lambda: current_count + saved_count + len(tab_media[tab_name]),
-                        limit=limit,
-                        max_idle_rounds=4,
-                        step_delay_ms=2000,
-                    )
+                    with log.progress(f"scroll {tab_name}", show=show_steps) as bar:
+                        scroll_page_to_end(
+                            page,
+                            get_count=lambda: current_count + saved_count + len(tab_media[tab_name]),
+                            limit=limit,
+                            max_idle_rounds=4,
+                            step_delay_ms=2000,
+                            on_step=bar.update,
+                        )
 
                 except Exception as e:
-                    print(f"  [warn] Navigation to {tab_url} encountered: {e}")
+                    log.warn("Navigation to {url} encountered: {err}", url=tab_url, err=e)
 
                 # Download items gathered for this tab immediately
                 dest_dir = target_dir / tab_name
                 items = tab_media[tab_name]
-                print(f"  [tab:{tab_name}] Intercepted {len(items)} media items.")
+                log.info("{tab}: intercepted {n} media items.", tab=tab_name, n=len(items))
 
                 for item in items:
                     date_str = item.get("date") or ""
@@ -290,13 +297,13 @@ class InsSource(BaseSource):
                         if download_file(media_url, dest_path, headers=headers, client=client):
                             saved_count += 1
                             if limit and (current_count + saved_count) >= limit:
-                                print(f"\n[ins] Reached limit of {limit} downloads.")
+                                log.info("Reached limit of {limit} downloads.", limit=limit)
                                 browser.close()
                                 return saved_count
 
             # 3. Download highlights if found on profile
             if captured_highlights and (not limit or (current_count + saved_count) < limit):
-                print(f"  [highlights] Found {len(captured_highlights)} highlight collections.")
+                log.info("Found {n} highlight collections.", n=len(captured_highlights))
 
                 # Return to the main profile page so highlight elements can be clicked
                 profile_url = f"https://www.instagram.com/{username}/"
@@ -316,7 +323,7 @@ class InsSource(BaseSource):
                     hl_dir = target_dir / "highlights" / sanitize_name(hl_title)
                     hl_url = f"https://www.instagram.com/stories/highlights/{hl_id}/"
 
-                    print(f"  [highlight] Opening '{hl_title}': {hl_url}")
+                    log.info("Opening highlight '{title}': {url}", title=hl_title, url=hl_url)
                     hl_items: List[Dict[str, Any]] = []
 
                     def on_hl_response(resp):
@@ -350,9 +357,9 @@ class InsSource(BaseSource):
                             page.goto(hl_url, wait_until="load", timeout=20000)
                             page.wait_for_timeout(3500)
                     except Exception as e:
-                        print(f"  [warn] Could not open highlight '{hl_title}': {e}")
+                        log.warn("Could not open highlight '{title}': {err}", title=hl_title, err=e)
 
-                    print(f"  [highlight:{hl_title}] Intercepted {len(hl_items)} items.")
+                    log.info("Highlight '{title}': intercepted {n} items.", title=hl_title, n=len(hl_items))
                     for s_item in hl_items:
                         date_str = s_item.get("date") or ""
                         s_id = s_item["id"]
@@ -509,7 +516,7 @@ class InsSource(BaseSource):
                     })
 
         except Exception as e:
-            print(f"  [warn] Error parsing Instagram JSON for [{tab}]: {e}")
+            log.warn("Error parsing Instagram JSON for {tab}: {err}", tab=tab, err=e)
 
         return extracted
 

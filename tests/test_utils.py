@@ -2,10 +2,16 @@
 Unit tests for flnd utils using standard unittest.
 """
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
-from flnd.utils import sanitize_name, download_file, scroll_page_to_end
+
+import httpx
+
+from flnd.utils import sanitize_name, download_file, scroll_page_to_end, show_steps
+from shared import theme
+from shared._theme import Screen
 
 
 class MockPage:
@@ -36,6 +42,15 @@ class MockPage:
 
 
 class TestUtils(unittest.TestCase):
+    def setUp(self):
+        self.screen = Screen(out=io.StringIO(), inp=io.StringIO(""), width=200, tty=False, interactive=False)
+        scope = theme.scope(screen=self.screen, color="none", unicode=True)
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
+
+    def client(self, response):
+        return httpx.Client(transport=httpx.MockTransport(lambda request: response))
+
     def test_sanitize_name(self):
         self.assertEqual(sanitize_name("My:Album*Name? / 2026"), "My_Album_Name_2026")
         self.assertEqual(sanitize_name("   hello   world   "), "hello_world")
@@ -49,6 +64,30 @@ class TestUtils(unittest.TestCase):
             # Downloading to an existing file must skip (returns False)
             downloaded = download_file("http://fake.example.com/test.jpg", dest)
             self.assertFalse(downloaded)
+        self.assertEqual(self.screen.out.getvalue(), "• skip test.jpg\n")
+
+    def test_download_saves_with_a_bar(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "posts" / "a.jpg"
+            with self.client(httpx.Response(200, content=b"x" * 1536)) as client:
+                self.assertTrue(download_file("https://media.example/a.jpg", dest, client=client))
+            self.assertEqual(dest.read_bytes(), b"x" * 1536)
+            self.assertFalse(dest.with_suffix(".jpg.part").exists())
+        self.assertEqual(self.screen.out.getvalue(), "✓ posts/a.jpg ━━━━━━━━━━━━━━━━━━━━ 1.5 KB/1.5 KB\n")
+
+    def test_download_http_error_ends_the_bar_at_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "posts" / "a.jpg"
+            with self.client(httpx.Response(404)) as client:
+                self.assertFalse(download_file("https://media.example/a.jpg", dest, client=client))
+            self.assertEqual(list(dest.parent.iterdir()), [])
+        self.assertEqual(self.screen.out.getvalue(), "✗ posts/a.jpg HTTP 404 for URL: https://media.example/a.jpg\n")
+
+    def test_scroll_reports_each_step(self):
+        steps = []
+        scroll_page_to_end(MockPage([1000]), max_idle_rounds=2, step_delay_ms=1, on_step=steps.append)
+        self.assertEqual(steps, [1, 2, 3])
+        self.assertEqual(show_steps(3), "3 steps")
 
     def test_scroll_page_to_end_stops_on_idle(self):
         # Height never changes, should stop after max_idle_rounds

@@ -28,10 +28,11 @@ from typing import Any, Dict, List, Optional
 import httpx
 from playwright.sync_api import sync_playwright
 
-from flnd.cookies import cookies_to_dict, load_cookies, prompt_missing_cookies
+from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import download_file, sanitize_name, scroll_page_to_end
+from flnd.utils import download_file, sanitize_name, scroll_page_to_end, show_steps
+from shared import log
 
 TIKTOK_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -43,6 +44,8 @@ class TikSource(BaseSource):
     """TikTok autonomous scraper supporting profile videos, photo mode, stories, and albums."""
 
     code = "tik"
+    name = "TikTok"
+    domains = ("tiktok.com",)
 
     def download(
         self,
@@ -55,16 +58,18 @@ class TikSource(BaseSource):
         cookies_list = load_cookies(self.code)
         cookie_map = cookies_to_dict(cookies_list)
 
+        if "sessionid" not in cookie_map and "sid_tt" not in cookie_map and ask_for_cookies(self.code):
+            cookies_list = load_cookies(self.code)
+            cookie_map = cookies_to_dict(cookies_list)
         if "sessionid" not in cookie_map and "sid_tt" not in cookie_map:
-            prompt_missing_cookies(self.code)
-            print("  [warn] Running without session cookies; TikTok rate-limits public requests aggressively.")
+            log.warn("Running without session cookies; TikTok rate-limits public requests aggressively.")
 
         target_dir = download_dir / "tik" / username_or_id
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n[tik] Starting download for: {username_or_id}")
-        print(f"      Destination: {target_dir}")
-        print(f"      Browser mode: {'headless' if headless else 'non-headless (visible)'}")
+        log.info("Starting download for: {target}", target=username_or_id)
+        log.info("Destination: {path}", path=target_dir)
+        log.info("Browser mode: {mode}", mode="headless" if headless else "visible")
 
         # Check if target is a single numeric video ID
         if username_or_id.isdigit() and len(username_or_id) > 15:
@@ -81,12 +86,12 @@ class TikSource(BaseSource):
         with httpx.Client(headers=headers, timeout=20.0) as client:
             resp = client.get(embed_url)
             if resp.status_code != 200:
-                print(f"  [fail] HTTP {resp.status_code} on embed endpoint for {video_id}")
+                log.error("HTTP {status} on embed endpoint for {id}", status=resp.status_code, id=video_id)
                 return 0
 
             match = re.search(r'id="__NEXT_DATA__".*?>(.*?)</script>', resp.text, re.DOTALL)
             if not match:
-                print(f"  [warn] Could not extract item data from embed HTML for {video_id}")
+                log.warn("Could not extract item data from embed HTML for {id}", id=video_id)
                 return 0
 
             try:
@@ -100,7 +105,7 @@ class TikSource(BaseSource):
                     saved += self._save_media_item(item, target_dir, cookie_map, client=client)
                 return saved
             except Exception as e:
-                print(f"  [error] Failed parsing embed data: {e}")
+                log.error("Failed parsing embed data: {err}", err=e)
                 return 0
 
     def _download_profile(
@@ -118,7 +123,7 @@ class TikSource(BaseSource):
         """
         captured_items: List[Dict[str, Any]] = []
 
-        print(f"  [browser] Navigating to https://www.tiktok.com/@{username}...")
+        log.info("Navigating to https://www.tiktok.com/@{username}...", username=username)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -146,7 +151,7 @@ class TikSource(BaseSource):
                 try:
                     context.add_cookies(formatted_cookies)
                 except Exception as e:
-                    print(f"  [warn] Cookie injection error: {e}")
+                    log.warn("Cookie injection error: {err}", err=e)
 
             page = context.new_page()
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -182,13 +187,13 @@ class TikSource(BaseSource):
                 }"""
 
                 if page.evaluate(captcha_detector):
-                    print("  [tik] TikTok captcha detected ('Drag the slider to fit the puzzle').")
-                    print("        Please complete the puzzle in the visible browser window...")
+                    log.warn("TikTok captcha detected ('Drag the slider to fit the puzzle').")
+                    log.info("Please complete the puzzle in the visible browser window...")
                     # Wait up to 60 seconds for user to solve
                     for _ in range(60):
                         page.wait_for_timeout(1000)
                         if not page.evaluate(captcha_detector):
-                            print("  [tik] Captcha solved! Continuing download...")
+                            log.ok("Captcha solved! Continuing download...")
                             page.wait_for_timeout(3000)
                             break
 
@@ -204,15 +209,17 @@ class TikSource(BaseSource):
                     }""")
 
                 # Continuously scroll to the end of the profile
-                scroll_page_to_end(
-                    page,
-                    get_count=lambda: len(captured_items),
-                    limit=limit,
-                    max_idle_rounds=4,
-                    step_delay_ms=2500,
-                    check_has_more=lambda: has_more[0],
-                    custom_scroll_action=tiktok_scroll,
-                )
+                with log.progress("scroll profile", show=show_steps) as bar:
+                    scroll_page_to_end(
+                        page,
+                        get_count=lambda: len(captured_items),
+                        limit=limit,
+                        max_idle_rounds=4,
+                        step_delay_ms=2500,
+                        check_has_more=lambda: has_more[0],
+                        custom_scroll_action=tiktok_scroll,
+                        on_step=bar.update,
+                    )
 
                 # Fallback: Also collect any video/photo links visible on page if API was walled
                 if not captured_items:
@@ -242,11 +249,11 @@ class TikSource(BaseSource):
                             })
 
             except Exception as e:
-                print(f"  [warn] Browser error: {e}")
+                log.warn("Browser error: {err}", err=e)
 
             browser.close()
 
-        print(f"  [browser] Intercepted {len(captured_items)} items from TikTok profile.")
+        log.info("Intercepted {n} items from TikTok profile.", n=len(captured_items))
 
         # Download media to platform-optimized layout
         saved_count = 0
@@ -261,7 +268,7 @@ class TikSource(BaseSource):
                         saved_count += 1
 
                 if limit and saved_count >= limit:
-                    print(f"\n[tik] Reached limit of {limit} downloads.")
+                    log.info("Reached limit of {limit} downloads.", limit=limit)
                     break
 
         return saved_count

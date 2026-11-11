@@ -3,10 +3,11 @@ Utility functions for file downloading, progress reporting, and deduplication.
 """
 
 import re
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 import httpx
+
+from shared import fmt, log
 
 
 def sanitize_name(name: str) -> str:
@@ -18,15 +19,6 @@ def sanitize_name(name: str) -> str:
     return sanitized or "untitled"
 
 
-def format_bytes(num_bytes: int) -> str:
-    """Format byte counts into human-readable strings (KB, MB, GB)."""
-    for unit in ["B", "KB", "MB", "GB"]:
-        if abs(num_bytes) < 1024.0:
-            return f"{num_bytes:.1f} {unit}"
-        num_bytes /= 1024.0
-    return f"{num_bytes:.1f} TB"
-
-
 def download_file(
     url: str,
     dest_path: Path,
@@ -34,7 +26,7 @@ def download_file(
     client: Optional[httpx.Client] = None,
 ) -> bool:
     """
-    Download a remote file to `dest_path`.
+    Download a remote file to `dest_path`, drawing a progress bar while it runs.
 
     Features:
       - Deduplication: If `dest_path` already exists and has size > 0, skips downloading.
@@ -46,7 +38,7 @@ def download_file(
     """
     # 1. Deduplication check
     if dest_path.is_file() and dest_path.stat().st_size > 0:
-        print(f"  [skip] Already downloaded: {dest_path.name}")
+        log.info("skip {name}", name=dest_path.name)
         return False
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,25 +58,27 @@ def download_file(
         default_headers.update(headers)
 
     try:
-        with http.stream("GET", url, headers=default_headers, follow_redirects=True) as response:
-            if response.status_code not in (200, 206):
-                print(f"  [fail] HTTP {response.status_code} for URL: {url[:80]}...")
-                return False
+        with log.progress(f"{dest_path.parent.name}/{dest_path.name}", show=fmt.bytes) as bar:
+            try:
+                with http.stream("GET", url, headers=default_headers, follow_redirects=True) as response:
+                    if response.status_code not in (200, 206):
+                        raise RuntimeError(f"HTTP {response.status_code} for URL: {url[:80]}")
+                    bar.total = content_length(response)
+                    with open(temp_path, "wb") as f:
+                        for chunk in response.iter_bytes(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+                                bar.advance(len(chunk))
 
-            total_bytes = 0
-            with open(temp_path, "wb") as f:
-                for chunk in response.iter_bytes(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
-                        total_bytes += len(chunk)
-
-        # Atomic rename once write is successful
-        temp_path.replace(dest_path)
-        print(f"  [saved] {dest_path.parent.name}/{dest_path.name} ({format_bytes(total_bytes)})")
+                # Atomic rename once write is successful
+                temp_path.replace(dest_path)
+            except Exception as e:
+                # The bar ends at error and keeps its caption, so the reason stays on its row.
+                bar.caption = str(e)
+                raise
         return True
 
-    except Exception as e:
-        print(f"  [error] Failed to download {url[:60]}: {e}")
+    except Exception:
         if temp_path.exists():
             temp_path.unlink()
         return False
@@ -92,6 +86,19 @@ def download_file(
     finally:
         if owns_client:
             http.close()
+
+
+def content_length(response: httpx.Response) -> Optional[int]:
+    """The Content-Length header as a number, or None when it is missing or not a number."""
+    try:
+        return int(response.headers["content-length"])
+    except (KeyError, ValueError):
+        return None
+
+
+def show_steps(steps: float) -> str:
+    """How a scroll spinner shows its count: `12 steps`."""
+    return f"{steps:g} steps"
 
 
 def scroll_page_to_end(
@@ -103,6 +110,7 @@ def scroll_page_to_end(
     max_scrolls: int = 200,
     check_has_more: Optional[Callable[[], bool]] = None,
     custom_scroll_action: Optional[Callable[[Any], None]] = None,
+    on_step: Optional[Callable[[int], None]] = None,
 ) -> None:
     """
     Continuously scrolls a Playwright page until the end of the feed/content is reached.
@@ -116,6 +124,7 @@ def scroll_page_to_end(
         max_scrolls: Safety cap on total scroll steps.
         check_has_more: Optional callable returning False when the platform explicitly indicates no more items.
         custom_scroll_action: Optional custom scroll callable (e.g. for TikTok's scroll dispatch trick).
+        on_step: Optional callable given the number of scroll steps done so far, after each step.
     """
     prev_height = 0
     prev_count = get_count() if get_count else 0
@@ -150,6 +159,8 @@ def scroll_page_to_end(
             break
 
         current_count = get_count() if get_count else 0
+        if on_step:
+            on_step(scroll_idx + 1)
 
         if new_height > prev_height or current_count > prev_count:
             idle_rounds = 0

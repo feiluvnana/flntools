@@ -2,7 +2,7 @@
 
 Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, and **Twitter/X**. The command is `flnd`.
 
-`cli`, `log`, and `prompt` for this repo are specified in [PLAN.md](PLAN.md). They are not implemented yet.
+The plan for the shared helpers flnd is built on is in [plan/README.md](plan/README.md).
 
 ---
 
@@ -24,54 +24,64 @@ playwright install chromium
 ## Usage
 
 ```bash
-flnd [targets...] [options]
+flnd download <targets...>
+flnd auth set-cookie --path <cookies.txt>
 ```
 
 Or via python module:
 
 ```bash
-python -m flnd [targets...] [options]
+python -m flnd download <targets...>
 ```
+
+Files go to `.flnd/downloads/`, and the browser window is visible while a source runs.
 
 ### Target Format
 
 `<source>:<want to download>`
 
-Supported sources:
+Sources:
 
 - `tik`: TikTok
 - `fbk`: Facebook
 - `ins`: Instagram
-- `twt`: Twitter / X
+- `twt`: Twitter/X
 
 ### Examples
 
 ```bash
 # Single target
-flnd ins:example_user
-flnd tik:example_creator
-flnd twt:example_handle
-flnd fbk:example.page
+flnd download ins:example_user
+flnd download tik:example_creator
+flnd download twt:example_handle
+flnd download fbk:example.page
 
-# Multiple targets with download limit
-flnd ins:example_user twt:example_handle --limit 5
+# Several targets
+flnd download ins:example_user twt:example_handle
 
-# See browser during execution
-flnd ins:example_user --no-headless
+# One target per line from a file (blank lines and # comments are skipped)
+cat list.txt | flnd download
 ```
+
+### Prompt mode
+
+Run `flnd` with no arguments in a terminal and it asks what to do: download (it asks for the source and the username one target at a time) or set a cookie file. Before it runs, it prints the matching command line, so you can type it directly next time. Without a terminal, `flnd` alone prints the help.
 
 ---
 
 ## Cookies
 
-Place your Netscape `cookies.txt` (or `.json`) under `.flnd/cookies/`:
+Most sources need your login cookies. Export them from your browser as a Netscape `cookies.txt` or a JSON file, then:
 
-- `.flnd/cookies/tik.txt`
-- `.flnd/cookies/fbk.txt`
-- `.flnd/cookies/ins.txt`
-- `.flnd/cookies/twt.txt`
+```bash
+flnd auth set-cookie --path ~/Downloads/cookies.txt   # a file
+flnd auth set-cookie --content "$(pbpaste)"           # the raw text
+pbpaste | flnd auth set-cookie                        # the raw text from stdin
+```
 
-If cookies are missing when a site requires authentication, `flnd` will display an actionable instruction detailing the exact location to place your cookie file.
+Each cookie is stored under the source its domain belongs to, in `.flnd/cookies/<source>.txt`. A full browser export sets every matching source at once; cookies for other sites are skipped.
+
+If a source runs without cookies in a terminal, `flnd` offers to set a cookie file right there.
 
 ---
 

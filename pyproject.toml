@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-flnd = "flnd.cli:main"
+flnd = "flnd.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["flnd", "shared", "loix"]

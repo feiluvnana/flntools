@@ -1,26 +1,17 @@
 """
 Target parser for flnd.
 
-Parses target strings in the format: <source 3-letter code>:<want to download>
-Supported sources:
-  - tik: TikTok
-  - fbk: Facebook
-  - ins: Instagram
-  - twt: Twitter / X
+Parses target strings in the format: <source code>:<want to download>.
+The source codes are the keys of `flnd.sources.SOURCES`.
 """
 
 from dataclasses import dataclass
-from typing import Literal
-
-# The 4 strictly supported sources
-SUPPORTED_SOURCES = {"tik", "fbk", "ins", "twt"}
-SourceCode = Literal["tik", "fbk", "ins", "twt"]
 
 
 @dataclass(frozen=True)
 class Target:
     """Represents a validated download target."""
-    source: SourceCode
+    source: str
     value: str
     raw: str
 
@@ -39,24 +30,24 @@ def parse_target(raw_target: str) -> Target:
       - fbk:example.page
 
     Raises:
-      ValueError: if format is invalid or source is not one of the 4 supported.
+      ValueError: if the format is invalid or the source is not in SOURCES.
     """
+    # flnd.sources.base imports Target, so importing the registry at the top would be circular.
+    from flnd.sources import SOURCES, unknown_source
+
     cleaned = raw_target.strip()
     if ":" not in cleaned:
         raise ValueError(
             f"Invalid target format: '{raw_target}'. Expected format: <source>:<want to download>\n"
-            f"Example: ins:example_user (supported sources: {', '.join(sorted(SUPPORTED_SOURCES))})"
+            f"Example: ins:example_user (sources: {', '.join(SOURCES)})"
         )
 
     source_code, _, value = cleaned.partition(":")
     source_code = source_code.strip().lower()
     value = value.strip()
 
-    # Reject unsupported sources
-    if source_code not in SUPPORTED_SOURCES:
-        raise ValueError(
-            f"Unsupported source '{source_code}'. flnd only supports: {', '.join(sorted(SUPPORTED_SOURCES))}"
-        )
+    if source_code not in SOURCES:
+        raise unknown_source(source_code)
 
     if not value:
         raise ValueError(f"Empty target value for source '{source_code}'. Example: {source_code}:username")

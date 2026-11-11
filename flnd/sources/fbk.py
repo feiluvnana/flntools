@@ -31,10 +31,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from playwright.sync_api import sync_playwright
 
-from flnd.cookies import cookies_to_dict, load_cookies, prompt_missing_cookies
+from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import download_file, sanitize_name, scroll_page_to_end
+from flnd.utils import download_file, sanitize_name, scroll_page_to_end, show_steps
+from shared import log
 
 FB_DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -46,6 +47,8 @@ class FbkSource(BaseSource):
     """Facebook autonomous scraper supporting photos, albums, reels, videos, stories, and tagged media."""
 
     code = "fbk"
+    name = "Facebook"
+    domains = ("facebook.com",)
 
     def download(
         self,
@@ -58,16 +61,18 @@ class FbkSource(BaseSource):
         cookies_list = load_cookies(self.code)
         cookie_map = cookies_to_dict(cookies_list)
 
+        if ("c_user" not in cookie_map or "xs" not in cookie_map) and ask_for_cookies(self.code):
+            cookies_list = load_cookies(self.code)
+            cookie_map = cookies_to_dict(cookies_list)
         if "c_user" not in cookie_map or "xs" not in cookie_map:
-            prompt_missing_cookies(self.code)
-            print("  [warn] Running without c_user/xs cookies; Facebook blocks unauthenticated profile browsing.")
+            log.warn("Running without c_user/xs cookies; Facebook blocks unauthenticated profile browsing.")
 
         target_dir = download_dir / "fbk" / username_or_id
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n[fbk] Starting download for: {username_or_id}")
-        print(f"      Destination: {target_dir}")
-        print(f"      Browser mode: {'headless' if headless else 'non-headless (visible)'}")
+        log.info("Starting download for: {target}", target=username_or_id)
+        log.info("Destination: {path}", path=target_dir)
+        log.info("Browser mode: {mode}", mode="headless" if headless else "visible")
 
         total_downloaded = 0
         with httpx.Client(timeout=30.0) as http_client:
@@ -75,7 +80,7 @@ class FbkSource(BaseSource):
                 username_or_id, target_dir, cookies_list, limit, headless, http_client
             )
 
-        print(f"\n[fbk] Finished. Total downloaded for {username_or_id}: {total_downloaded}")
+        log.ok("Finished {target}: {n} files", target=username_or_id, n=total_downloaded)
         return total_downloaded
 
     def _download_via_browser(
@@ -135,7 +140,7 @@ class FbkSource(BaseSource):
                 try:
                     context.add_cookies(formatted_cookies)
                 except Exception as e:
-                    print(f"  [warn] Cookie injection error: {e}")
+                    log.warn("Cookie injection error: {err}", err=e)
 
             page = context.new_page()
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -170,27 +175,29 @@ class FbkSource(BaseSource):
 
                 current_tab = tab_name
                 tab_url = f"https://www.facebook.com/{target_name}/{tab_path}".rstrip("/")
-                print(f"  [browser] Navigating tab: [{tab_name}] {tab_url}")
+                log.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
 
                 try:
                     page.goto(tab_url, wait_until="load", timeout=25000)
                     page.wait_for_timeout(3000)
 
                     # Continuously scroll down to the end of the feed/tab
-                    scroll_page_to_end(
-                        page,
-                        get_count=lambda: saved_count + len(tab_media[tab_name]),
-                        limit=limit,
-                        max_idle_rounds=4,
-                        step_delay_ms=2000,
-                    )
+                    with log.progress(f"scroll {tab_name}", show=show_steps) as bar:
+                        scroll_page_to_end(
+                            page,
+                            get_count=lambda: saved_count + len(tab_media[tab_name]),
+                            limit=limit,
+                            max_idle_rounds=4,
+                            step_delay_ms=2000,
+                            on_step=bar.update,
+                        )
 
                 except Exception as e:
-                    print(f"  [warn] Navigation error on {tab_url}: {e}")
+                    log.warn("Navigation error on {url}: {err}", url=tab_url, err=e)
 
                 # Download media captured for this tab
                 items = tab_media[tab_name]
-                print(f"  [tab:{tab_name}] Intercepted {len(items)} media items.")
+                log.info("{tab}: intercepted {n} media items.", tab=tab_name, n=len(items))
 
                 for item in items:
                     category = item.get("category", tab_name)
@@ -222,7 +229,7 @@ class FbkSource(BaseSource):
                     if download_file(item["url"], dest_path, headers=headers, client=client):
                         saved_count += 1
                         if limit and saved_count >= limit:
-                            print(f"\n[fbk] Reached limit of {limit} downloads.")
+                            log.info("Reached limit of {limit} downloads.", limit=limit)
                             browser.close()
                             return saved_count
 

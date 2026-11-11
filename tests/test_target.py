@@ -30,8 +30,11 @@ class TestTargetParsing(unittest.TestCase):
         self.assertEqual(t.value, "example_creator")
 
     def test_invalid_source(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt$"):
             parse_target("ytb:nasa")
+
+    def test_source_is_case_insensitive(self):
+        self.assertEqual(parse_target(" INS:someone ").source, "ins")
 
     def test_missing_colon(self):
         with self.assertRaises(ValueError):

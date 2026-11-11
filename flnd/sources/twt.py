@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
 
-from flnd.cookies import cookies_to_dict, load_cookies, prompt_missing_cookies
+from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import download_file, scroll_page_to_end
+from flnd.utils import download_file, scroll_page_to_end, show_steps
+from shared import log
 
 # Twitter's standard web client public bearer token
 TWITTER_BEARER = (
@@ -45,6 +46,8 @@ class TwtSource(BaseSource):
     """Twitter / X extractor with autonomous scraping and media downloading."""
 
     code = "twt"
+    name = "Twitter/X"
+    domains = ("x.com", "twitter.com")
 
     def download(
         self,
@@ -57,9 +60,11 @@ class TwtSource(BaseSource):
         cookies_list = load_cookies(self.code)
         cookie_map = cookies_to_dict(cookies_list)
 
+        if "auth_token" not in cookie_map and ask_for_cookies(self.code):
+            cookies_list = load_cookies(self.code)
+            cookie_map = cookies_to_dict(cookies_list)
         if "auth_token" not in cookie_map:
-            prompt_missing_cookies(self.code)
-            print("  [warn] Running without auth_token; only public guest access will be available.")
+            log.warn("Running without auth_token; only public guest access will be available.")
 
         target_dir = download_dir / "twt" / username_or_id
         posts_dir = target_dir / "posts"
@@ -69,8 +74,8 @@ class TwtSource(BaseSource):
         images_dir.mkdir(parents=True, exist_ok=True)
         videos_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n[twt] Starting download for: {username_or_id}")
-        print(f"      Destination: {target_dir}")
+        log.info("Starting download for: {target}", target=username_or_id)
+        log.info("Destination: {path}", path=target_dir)
 
         # Check if target is a numeric ID (single tweet)
         if username_or_id.isdigit() and len(username_or_id) > 10:
@@ -123,10 +128,10 @@ class TwtSource(BaseSource):
             # 1. Resolve user ID from screen name
             user_id = self._resolve_user_id(client, screen_name)
             if not user_id:
-                print(f"  [warn] Direct API resolution failed for '{screen_name}', attempting Playwright browser...")
+                log.warn("Direct API resolution failed for '{name}', attempting Playwright browser...", name=screen_name)
                 return self._download_via_playwright(screen_name, target_dir, cookie_map, limit, headless)
 
-            print(f"  [info] Resolved @{screen_name} -> User ID: {user_id}")
+            log.info("Resolved @{name} -> User ID: {id}", name=screen_name, id=user_id)
 
             downloaded_count = 0
 
@@ -140,7 +145,7 @@ class TwtSource(BaseSource):
                 if limit and downloaded_count >= limit:
                     break
 
-                print(f"  [info] Fetching {category} timeline for @{screen_name}...")
+                log.info("Fetching {category} timeline for @{name}...", category=category, name=screen_name)
                 cursor = None
                 empty_page_count = 0
 
@@ -170,14 +175,17 @@ class TwtSource(BaseSource):
                     try:
                         resp = client.get(url, params=params)
                         if resp.status_code != 200:
-                            print(f"  [warn] API status {resp.status_code} on {category}, switching to browser extraction...")
+                            log.warn(
+                                "API status {status} on {category}, switching to browser extraction...",
+                                status=resp.status_code, category=category,
+                            )
                             return downloaded_count + self._download_via_playwright(
                                 screen_name, target_dir, cookie_map, limit, headless, current_count=downloaded_count
                             )
 
                         data = resp.json()
                     except Exception as e:
-                        print(f"  [error] API request error: {e}")
+                        log.error("API request error: {err}", err=e)
                         break
 
                     # Extract media items from timeline instructions
@@ -195,14 +203,14 @@ class TwtSource(BaseSource):
                         if saved:
                             downloaded_count += 1
                             if limit and downloaded_count >= limit:
-                                print(f"\n[twt] Reached target limit of {limit} downloads.")
+                                log.info("Reached target limit of {limit} downloads.", limit=limit)
                                 return downloaded_count
 
                     if not next_cursor or next_cursor == cursor or next_cursor.startswith("0|"):
                         break
                     cursor = next_cursor
 
-            print(f"\n[twt] Finished. Downloaded {downloaded_count} items for @{screen_name}.")
+            log.ok("Finished @{name}: {n} files", name=screen_name, n=downloaded_count)
             return downloaded_count
 
     def _resolve_user_id(self, client: httpx.Client, screen_name: str) -> Optional[str]:
@@ -315,7 +323,7 @@ class TwtSource(BaseSource):
                                     })
 
         except Exception as e:
-            print(f"  [warn] Error parsing timeline JSON: {e}")
+            log.warn("Error parsing timeline JSON: {err}", err=e)
 
         return media_items, next_cursor
 
@@ -339,7 +347,7 @@ class TwtSource(BaseSource):
         for check_folder in [target_dir / "posts", target_dir / "images", target_dir / "videos"]:
             existing = check_folder / filename
             if existing.is_file() and existing.stat().st_size > 0:
-                print(f"  [skip] Already downloaded: {dest_folder.name}/{filename}")
+                log.info("skip {name}", name=f"{dest_folder.name}/{filename}")
                 return False
 
         return download_file(item["url"], dest_path, client=client)
@@ -361,7 +369,7 @@ class TwtSource(BaseSource):
         with httpx.Client(headers=headers, timeout=20.0) as client:
             resp = client.get(url, params=params)
             if resp.status_code != 200:
-                print(f"  [fail] HTTP {resp.status_code} fetching tweet {tweet_id}")
+                log.error("HTTP {status} fetching tweet {id}", status=resp.status_code, id=tweet_id)
                 return 0
 
             # Wrap in structure compatible with timeline parser
@@ -393,7 +401,7 @@ class TwtSource(BaseSource):
         from playwright.sync_api import sync_playwright
 
         cookies_list = load_cookies(self.code)
-        print(f"  [browser] Launching Playwright Chromium for @{screen_name}...")
+        log.info("Launching Playwright Chromium for @{name}...", name=screen_name)
         captured_items: List[Dict[str, Any]] = []
 
         tabs = [
@@ -430,7 +438,7 @@ class TwtSource(BaseSource):
                 try:
                     context.add_cookies(formatted_cookies)
                 except Exception as e:
-                    print(f"  [warn] Could not set cookies in browser: {e}")
+                    log.warn("Could not set cookies in browser: {err}", err=e)
 
             page = context.new_page()
             current_category = ["posts"]
@@ -455,25 +463,27 @@ class TwtSource(BaseSource):
                 if limit and (current_count + len(captured_items)) >= limit:
                     break
                 current_category[0] = cat
-                print(f"  [browser] Navigating [{cat}]: {tab_url}")
+                log.info("Navigating tab {tab}: {url}", tab=cat, url=tab_url)
                 try:
                     page.goto(tab_url, wait_until="domcontentloaded", timeout=30000)
                     page.wait_for_timeout(3000)
 
                     # Continuously scroll to the end of the tab
-                    scroll_page_to_end(
-                        page,
-                        get_count=lambda: len(captured_items),
-                        limit=limit,
-                        max_idle_rounds=4,
-                        step_delay_ms=2000,
-                    )
+                    with log.progress(f"scroll {cat}", show=show_steps) as bar:
+                        scroll_page_to_end(
+                            page,
+                            get_count=lambda: len(captured_items),
+                            limit=limit,
+                            max_idle_rounds=4,
+                            step_delay_ms=2000,
+                            on_step=bar.update,
+                        )
                 except Exception as e:
-                    print(f"  [warn] Browser navigation error on {tab_url}: {e}")
+                    log.warn("Browser navigation error on {url}: {err}", url=tab_url, err=e)
 
             browser.close()
 
-        print(f"  [browser] Captured {len(captured_items)} items from browser session.")
+        log.info("Captured {n} items from browser session.", n=len(captured_items))
         saved_count = 0
         with httpx.Client(timeout=30.0) as client:
             for item in captured_items:

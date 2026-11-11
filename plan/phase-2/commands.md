@@ -173,7 +173,7 @@ def ask_cookie_path() -> Path:
     return Path(prompt.input("Path to cookies.txt or .json", validate=readable_cookie_file)).expanduser()
 ```
 
-`readable_cookie_file` checks that the file exists and that `store_cookies` would find cookies in it. `content` is optional and has no `ask=`, so prompt mode does not ask for it. Pasting a multi-line cookie file into a one-line input would not work anyway. The logged command line is `flnd auth set-cookie --path ~/Downloads/cookies.txt`.
+`readable_cookie_file` checks that the file exists and that `store_cookies` would find cookies in it. `content` is optional and has no `ask=`, so prompt mode does not ask for it. `content` reads stdin only when nothing else was given on the command line, so `--path` never waits on a stdin that is open but never written to (see [cli › Values from stdin](../phase-1/cli.md#values-from-stdin)). Pasting a multi-line cookie file into a one-line input would not work anyway. The logged command line is `flnd auth set-cookie --path /Users/me/Downloads/cookies.txt`, because `ask_cookie_path` has already expanded `~`.
 
 ## Missing cookies
 

@@ -1,5 +1,5 @@
 """
-Base class for all source extractors (tik, fbk, ins, twt).
+Base class for all source extractors.
 
 Each source has full autonomy over:
   - Loading its cookies
@@ -10,16 +10,23 @@ Each source has full autonomy over:
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from flnd.target import Target
 
 
 class BaseSource(ABC):
-    """Abstract base class that every platform source must implement."""
+    """Abstract base class that every platform source must implement.
 
-    # 3-letter source identifier (tik, fbk, ins, twt)
+    Every subclass sets `code`, `name`, and `domains`, and is listed in `flnd.sources.SOURCES`.
+    """
+
+    # The prefix in a target and the cookie file name, such as "ins".
     code: str
+    # Shown in help and in prompt mode, such as "Instagram".
+    name: str
+    # Cookie domains that belong to this source, such as ("instagram.com",).
+    domains: Tuple[str, ...]
 
     @abstractmethod
     def download(

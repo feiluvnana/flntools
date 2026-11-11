@@ -2,8 +2,7 @@
 Entrypoint for python -m flnd
 """
 
-import sys
-from flnd.cli import main
+from flnd.cli import app
 
 if __name__ == "__main__":
-    sys.exit(main())
+    app()

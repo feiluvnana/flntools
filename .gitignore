@@ -17,3 +17,6 @@ build/
 
 # Local
 .flnd/
+
+# Claude Code agent worktrees
+.claude/worktrees/
