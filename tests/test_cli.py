@@ -446,6 +446,16 @@ class StdinTest(CliCase):
         self.run_app(app, "auth", "set-cookie", "--content", "given")
         self.assertEqual(app.calls, [("set-cookie", None, "given")])
 
+    def test_option_skips_stdin_when_other_input_given(self):
+        class NeverCloses(Stdin):
+            def read(self, *args):
+                raise AssertionError("stdin must not be read when --path is given")
+        app = flnd_app()
+        sys.stdin = NeverCloses("")
+        sys.stdin.buffer = sys.stdin
+        self.run_app(app, "auth", "set-cookie", "--path", "c.txt")
+        self.assertEqual(app.calls, [("set-cookie", Path("c.txt"), None)])
+
     def test_option_takes_stdin_from_positional(self):
         def fn(*names: str, body: Annotated[str, cli.opt(stdin=True)] = ""): ...
         self.pipe("a\nb\n")

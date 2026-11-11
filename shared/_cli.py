@@ -213,7 +213,11 @@ class Command:
             param.add_to(parser)
         try:
             namespace = parser.parse_args(tokens)
-            values = {param.name: param.finish(getattr(namespace, param.name)) for param in self.params}
+            given = {param.name for param in self.params if getattr(namespace, param.name) not in (None, [])}
+            values = {
+                param.name: param.finish(getattr(namespace, param.name), others_given=bool(given - {param.name}))
+                for param in self.params
+            }
         except _HelpRequested as request:
             raise _HelpRequested(self.help_model(path, app)) from request
         except UsageError as error:

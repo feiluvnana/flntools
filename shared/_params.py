@@ -168,10 +168,12 @@ class Param:
                 action="append" if self.repeat else "store", required=self.required, default=None,
             )
 
-    def finish(self, value: Any) -> Any:
+    def finish(self, value: Any, *, others_given: bool = False) -> Any:
         """Turn a parsed value into the value the function gets: stdin, defaults, and collections."""
         if value is None or value == []:
-            if self.stdin:
+            # An option reads stdin only as the fallback input: when the command line gave nothing
+            # else. Otherwise `--path f` would block on a stdin pipe that never closes (cron, ssh).
+            if self.stdin and (self.positional or not others_given):
                 value = _read_stdin(self)
             if (value is None or value == []) and self.positional and self.nargs == "+":
                 raise UsageError(f"the following arguments are required: {self.metavar}")

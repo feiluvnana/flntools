@@ -49,7 +49,7 @@ A command's first positional that takes many values (`*args`, a list, or `nargs`
 
 In that case each line of stdin becomes one value. Surrounding whitespace is stripped, and blank lines and lines starting with `#` are skipped. The values then go through the usual type conversion. Empty stdin counts as no values, so a `"+"` positional still reports its usage error. Values given on the command line always win, and stdin is never read in addition to them. `cli.arg(stdin=False)` turns this off for one parameter.
 
-An option can take stdin as one block of text instead. With `cli.opt(stdin=True)`, if the option is missing from the command line and stdin is not a terminal, its value is the whole of stdin, read as UTF-8, with nothing stripped or split. This is for raw content such as a cookie file.
+An option can take stdin as one block of text instead. With `cli.opt(stdin=True)`, stdin is the command's fallback input. If the command line gave no value to any of the command's parameters, and stdin is not a terminal, the option's value is the whole of stdin, read as UTF-8, with nothing stripped or split. This is for raw content such as a cookie file. Because any other value on the command line skips the read, `set-cookie --path f` never waits on a stdin that is open but never written to, as under cron or ssh.
 
 At most one parameter per command reads stdin. An option marked `stdin=True` takes stdin from the command's variadic positional. Marking two parameters `stdin=True` raises `ValueError` when the function is decorated.
 
