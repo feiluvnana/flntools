@@ -12,9 +12,9 @@ from shared._style import PAINT
 class Screen:
     """The terminal that `log` and `prompt` write to and read keys from."""
 
-    def __init__(self, out=None, inp=None, *, width: int | None = None, tty: bool | None = None,
-                 interactive: bool | None = None):
-        self._out, self._inp, self._width = out, inp, width
+    def __init__(self, out=None, inp=None, *, width: int | None = None, height: int | None = None,
+                 tty: bool | None = None, interactive: bool | None = None):
+        self._out, self._inp, self._width, self._height = out, inp, width, height
         self._tty, self._interactive = tty, interactive
         self._terminal_failed = False
         self._vt_enabled = False
@@ -51,6 +51,15 @@ class Screen:
             return os.get_terminal_size(self.out.fileno()).columns
         except (AttributeError, OSError, ValueError):
             return 80
+
+    @property
+    def height(self) -> int:
+        if self._height:
+            return self._height
+        try:
+            return os.get_terminal_size(self.out.fileno()).lines
+        except (AttributeError, OSError, ValueError):
+            return 24
 
     def readkey(self) -> str:
         """Read one key name, such as "a", "enter", "up", or "ctrl+c"."""

@@ -220,6 +220,17 @@ class TtyProgressTest(LogCase):
             "! careful", "✓ inner ──────────────────── 0/1", "✓ download", "✓ a ──────────────────── 0/2",
         ])
 
+    def test_live_area_capped_to_height(self):
+        self.screen._height = 4
+        with log.multi("download") as jobs:
+            for name in "abcde":
+                jobs.add(name, total=1)
+            rows = visible_screen(self.output())
+            self.assertEqual(rows[:2], ["• download", "• a ──────────────────── 0/1"])
+            self.assertEqual(rows[2:], ["… 4 more"])
+            jobs.changed(force=True)
+            self.assertEqual(len(visible_screen(self.output())), 3)
+
     def test_rows_cut_to_width(self):
         with log.progress("a-very-long-label-that-goes-past-the-width", total=10):
             rows = visible_screen(self.output())

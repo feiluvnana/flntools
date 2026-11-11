@@ -275,10 +275,19 @@ class LiveArea:
         width = self.screen.width
         # Under log.level "quiet", running bars are not drawn at all.
         groups = [] if log.level == "quiet" else self.groups
-        rows = [fit(row, width) for group in groups for _, row in group.rows()]
+        rows = _cap_rows([fit(row, width) for group in groups for _, row in group.rows()], self.screen.height)
         self.drawn_rows = len(rows)
         self.last_draw = time.monotonic()
         return "".join(row + "\n" for row in rows)
+
+
+def _cap_rows(rows: list[str], height: int) -> list[str]:
+    # Cursor-up can't reach rows that scrolled above the screen, so a taller area would leave
+    # a copy in the scrollback on every redraw. One line stays free for the cursor.
+    room = max(height - 1, 1)
+    if len(rows) <= room:
+        return rows
+    return rows[:room - 1] + [f"… {len(rows) - room + 1} more"]
 
 
 _live_areas: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
