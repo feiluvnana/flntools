@@ -1,41 +1,29 @@
 """
-Instagram source extractor for flnd.
+Instagram source for flnd.
 
-Features:
-  - Reads cookies (sessionid, ds_user_id, csrftoken) from .flnd/cookies/ins.txt
-  - Navigates profile tabs in browser (non-headless by default):
-      * Posts: https://www.instagram.com/<user>/ -> posts/
-      * Reels: https://www.instagram.com/<user>/reels/ -> reels/
-      * Tagged: https://www.instagram.com/<user>/tagged/ -> tagged/
-      * Reposts: https://www.instagram.com/<user>/reposts/ -> reposts/
-      * Stories: https://www.instagram.com/stories/<user>/ -> stories/
-      * Highlights: https://www.instagram.com/stories/highlights/<id>/ -> highlights/<title>/
-  - Supports multi-photo carousel slides, reels, and stories
-  - Uses proper headers (desktop & mobile User-Agent, referer, csrf)
+  - Active 24h stories come from the mobile API tray, when the login has `ds_user_id`.
+  - Profile tabs are read in a browser: posts, reels, tagged and reposts, then highlights.
+  - Carousels, reels and stories are all saved, from GraphQL responses.
 
-Folder layout:
-  .flnd/downloads/ins/<username>/
-  ├── posts/<YYYY-MM-DD>_<post_id>_<idx>.jpg (or .mp4)
-  ├── reels/<YYYY-MM-DD>_<reel_id>.mp4
-  ├── tagged/<YYYY-MM-DD>_<post_id>_<idx>.jpg (or .mp4)
-  ├── reposts/<YYYY-MM-DD>_<post_id>_<idx>.jpg (or .mp4)
-  ├── stories/<YYYY-MM-DD>_<story_id>.jpg (or .mp4)
-  └── highlights/<title>/<YYYY-MM-DD>_<story_id>.jpg (or .mp4)
+Folder layout, under `.flnd/downloads/ins/<username>/`:
+  posts/, tagged/, reposts/   <YYYY-MM-DD>_<post_id>_<idx>.jpg (or .mp4)
+  reels/                      <YYYY-MM-DD>_<reel_id>.mp4
+  stories/                    <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
+  highlights/<title>/         <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
 """
 
+from __future__ import annotations
+
 import json
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Mapping, Optional
 
-import httpx
+from flnd.session import Session
+from flnd.sources.base import Source
+from flnd.target import Target, TargetError, link, name, unreadable
+from shared import fmt, selector
 
-from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
-from flnd.sources.base import BaseSource
-from flnd.target import Target
-from flnd.utils import Downloads, open_page, scroll
-from shared import fmt, http, log, selector
-
+APP_ID = "936619743392459"
 # Mobile Android User-Agent: Instagram story tray API refuses desktop user-agents
 INSTAGRAM_MOBILE_UA = (
     "Instagram 219.0.0.12.117 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100; en_US; 346132297)"
@@ -49,118 +37,105 @@ TABS = [
     ("tagged", "tagged/"),
     ("reposts", "reposts/"),
 ]
+# The first part of a URL that points to one post, not a profile.
+SINGLE_POSTS = {"p", "reel", "reels", "tv", "stories"}
 
 
 def is_profile_api(response: Any) -> bool:
     return "graphql" in response.url or "/api/v1/" in response.url
 
 
-class InsSource(BaseSource):
-    """Instagram autonomous scraper supporting posts, reels, tagged, reposts, stories, and highlights."""
+def taken_on(day: str) -> Optional[date]:
+    return date.fromisoformat(day) if day else None
+
+
+class Instagram(Source):
+    """Instagram profiles: stories from the mobile API, everything else from the browser."""
 
     code = "ins"
     name = "Instagram"
     domains = ("instagram.com",)
+    examples = ("ins:example_user", "ins:@example_user", "https://www.instagram.com/example_user/")
+    needs = ("sessionid",)
+    categories = ("posts", "reels", "tagged", "reposts", "stories", "highlights")
+    default_categories = ("posts", "reels", "stories", "highlights")
 
-    def download(
-        self,
-        target: Target,
-        download_dir: Path,
-        limit: Optional[int] = None,
-        headless: bool = False,
-    ) -> int:
-        username = target.value
-        cookies_list = load_cookies(self.code)
-        cookie_map = cookies_to_dict(cookies_list)
+    def headers(self, cookies: Mapping[str, str]) -> Mapping[str, str]:
+        return {"x-ig-app-id": APP_ID}
 
-        if "sessionid" not in cookie_map and ask_for_cookies(self.code):
-            cookies_list = load_cookies(self.code)
-            cookie_map = cookies_to_dict(cookies_list)
-        if "sessionid" not in cookie_map:
-            log.warn("Running without sessionid; Instagram will likely wall requests.")
+    def resolve(self, text: str) -> Target:
+        found = link(text, self.domains)
+        if found is None:
+            user = name(text)
+        elif found.parts[:1] and found.parts[0] in SINGLE_POSTS:
+            raise TargetError(f"{self.code}: single posts aren't supported yet; "
+                              f"give the profile, for example {self.examples[0]}")
+        else:
+            user = name(found.parts[0]) if found.parts else None
+        if not user:
+            raise unreadable(self, text)
+        return Target(self.code, "user", user)
 
-        target_dir = download_dir / "ins" / username
-        target_dir.mkdir(parents=True, exist_ok=True)
+    def run(self, session: Session) -> None:
+        username = session.target.value
+        # 1. Fetch active 24h stories via mobile API tray
+        user_id = session.cookies.get("ds_user_id")
+        if user_id and session.wants(category="stories"):
+            session.info("Checking active 24h stories tray...")
+            self._download_active_stories(session, user_id)
 
-        log.info("Starting download for: @{username}", username=username)
-        log.info("Destination: {path}", path=target_dir)
-        log.info("Browser mode: {mode}", mode="headless" if headless else "visible")
+        # 2. Navigate profile tabs in the browser: posts, reels, tagged, reposts, highlights
+        in_browser = [name for name, _ in TABS] + ["highlights"]
+        if not session.full and any(session.wants(category=category) for category in in_browser):
+            self._download_via_browser(session, username)
 
-        with http.Client() as client, Downloads(self.code, target, download_dir, limit) as files:
-            # 1. Fetch active 24h stories via mobile API tray
-            user_id = cookie_map.get("ds_user_id")
-            if user_id:
-                log.info("Checking active 24h stories tray...")
-                self._download_active_stories(user_id, target_dir, cookie_map, client, files)
-
-            # 2. Launch browser to navigate profile tabs: posts, reels, tagged, reposts, highlights
-            if not files.full:
-                self._download_via_browser(username, target_dir, cookies_list, headless, client, files)
-
-        log.ok("Finished @{username}: {n} files", username=username, n=files.saved)
-        return files.saved
-
-    def _download_active_stories(
-        self,
-        user_id: str,
-        target_dir: Path,
-        cookie_map: Dict[str, str],
-        client: http.Client,
-        files: Downloads,
-    ) -> None:
+    def _download_active_stories(self, session: Session, user_id: str) -> None:
         """Queue active user stories from Instagram's mobile reels_media API."""
-        cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_map.items()])
+        cookie_str = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
         headers = {
             "user-agent": INSTAGRAM_MOBILE_UA,
             "cookie": cookie_str,
-            "x-ig-app-id": "936619743392459",
+            "x-ig-app-id": APP_ID,
         }
 
         url = "https://i.instagram.com/api/v1/feed/reels_media/"
         params = {"user_ids": json.dumps([user_id]), "source": "profile"}
 
         try:
-            data = client.json(url, headers=headers, params=params, follow_redirects=False)
-            reels = data.get("reels_media", []) or list(data.get("reels", {}).values())
-            stories_dir = target_dir / "stories"
-            queued = 0
-
-            for reel in reels:
-                items = reel.get("items", [])
-                for item in items:
-                    story_id = str(item.get("id") or item.get("pk") or "").split("_")[0]
-                    ts = item.get("taken_at")
-                    date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else datetime.now().strftime("%Y-%m-%d")
-
-                    # Check for video first, then highest quality image
-                    if item.get("media_type") == 2 and item.get("video_versions"):
-                        best_video = item["video_versions"][0]["url"]
-                        dest = stories_dir / f"{date_str}_{story_id}.mp4"
-                        queued += files.add(client, best_video, dest, key=story_id)
-                    elif selector.select(item).jmespath("image_versions2.candidates").first:
-                        best_image = item["image_versions2"]["candidates"][0]["url"]
-                        dest = stories_dir / f"{date_str}_{story_id}.jpg"
-                        queued += files.add(client, best_image, dest, key=story_id)
-
-            if queued:
-                log.info("Found {n} active stories in the mobile tray.", n=queued)
-
-        except httpx.HTTPStatusError:
-            pass
+            data = session.fetch_json(url, headers=headers, params=params, follow_redirects=False, soft=True)
         except Exception as e:
-            log.warn("Could not fetch stories from mobile API: {err}", err=e)
+            session.warn("Could not fetch stories from mobile API: {err}", err=e)
+            return
+        if data is None:
+            return
+        reels = data.get("reels_media", []) or list(data.get("reels", {}).values())
+        queued = 0
 
-    def _download_via_browser(
-        self,
-        username: str,
-        target_dir: Path,
-        cookies_list: List[Dict[str, Any]],
-        headless: bool,
-        client: http.Client,
-        files: Downloads,
-    ) -> None:
+        for reel in reels:
+            items = reel.get("items", [])
+            for item in items:
+                story_id = str(item.get("id") or item.get("pk") or "").split("_")[0]
+                ts = item.get("taken_at")
+                taken = datetime.fromtimestamp(ts) if ts else datetime.now()
+                date_str = taken.strftime("%Y-%m-%d")
+                posted = taken.date() if ts else None
+
+                # Check for video first, then highest quality image
+                if item.get("media_type") == 2 and item.get("video_versions"):
+                    best_video = item["video_versions"][0]["url"]
+                    queued += session.save(best_video, f"{date_str}_{story_id}.mp4", category="stories",
+                                           date=posted, folder="stories")
+                elif selector.select(item).jmespath("image_versions2.candidates").first:
+                    best_image = item["image_versions2"]["candidates"][0]["url"]
+                    queued += session.save(best_image, f"{date_str}_{story_id}.jpg", category="stories",
+                                           date=posted, folder="stories")
+
+        if queued:
+            session.info("Found {n} active stories in the mobile tray.", n=queued)
+
+    def _download_via_browser(self, session: Session, username: str) -> None:
         """
-        Use Playwright browser to navigate all user profile tabs:
+        Use the browser to navigate all user profile tabs:
           - / (Posts)
           - /reels/ (Reels)
           - /tagged/ (Tagged posts)
@@ -170,123 +145,115 @@ class InsSource(BaseSource):
         """
         captured_highlights: List[Dict[str, Any]] = []
         found = {name: 0 for name, _ in TABS}
-        # The tab whose media is being collected; None once the tabs are done.
-        current: Dict[str, Optional[str]] = {"tab": "posts"}
         headers = {"Referer": f"https://www.instagram.com/{username}/"}
 
-        def on_profile(data: Any, response: Any) -> None:
+        def on_profile(session: Session, data: Any, response: Any) -> None:
             # Extract highlights if available on profile response
             for h in self._extract_highlights_from_json(data):
                 if h not in captured_highlights:
                     captured_highlights.append(h)
 
-            # Extract media items based on current active tab
-            tab = current["tab"]
+            # Extract media items based on current active tab; None once the tabs are done.
+            tab = session.folder
             if tab is None:
                 return
-            extracted = self._extract_media_from_json(data, tab=tab)
+            extracted = self._extract_media_from_json(session, data, tab=tab)
             found[tab] += len(extracted)
             for item in extracted:
-                self._queue_media(item, target_dir / tab, client, files, headers, sniff_video=True)
+                self._queue_media(session, item, tab, headers, sniff_video=True)
 
-        with open_page(headless=headless, cookies=cookies_list) as page:
-            page.on_response(is_profile_api, on_profile)
+        session.on_response(is_profile_api, on_profile)
+        # Highlights are listed by the profile page, so it is loaded even when no tab is wanted.
+        if session.wants(category="highlights") and not session.wants(category="posts"):
+            session.folder = None
+            session.goto(f"https://www.instagram.com/{username}/")
 
-            # Navigate through each tab
-            for tab_name, tab_path in TABS:
-                if files.full:
-                    break
+        # Navigate through each tab
+        for tab_name, tab_path in TABS:
+            if session.full:
+                break
+            if not session.wants(category=tab_name):
+                continue
 
-                current["tab"] = tab_name
-                tab_url = f"https://www.instagram.com/{username}/{tab_path}"
-                log.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
+            session.folder = tab_name
+            tab_url = f"https://www.instagram.com/{username}/{tab_path}"
+            session.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
 
-                try:
-                    page.raw.goto(tab_url, wait_until="load", timeout=25000)
-                    page.raw.wait_for_timeout(3000)
+            # Continuously scroll down to the end to trigger all GraphQL replies
+            if session.goto(tab_url):
+                session.scroll(count=lambda: found[tab_name])
 
-                    # Continuously scroll down to the end to trigger all GraphQL replies
-                    scroll(page, tab_name, count=lambda: found[tab_name], more=lambda: not files.full)
+            session.info("{tab}: intercepted {n} media items.", tab=tab_name, n=found[tab_name])
 
-                except Exception as e:
-                    log.warn("Navigation to {url} encountered: {err}", url=tab_url, err=e)
+        # Media seen after the tabs was never downloaded; only highlights are still collected.
+        session.folder = None
 
-                log.info("{tab}: intercepted {n} media items.", tab=tab_name, n=found[tab_name])
+        # 3. Download highlights if found on profile
+        if captured_highlights and not session.full and session.wants(category="highlights"):
+            self._download_highlights(session, username, captured_highlights)
 
-            # Media seen after the tabs was never downloaded; only highlights are still collected.
-            current["tab"] = None
+    def _download_highlights(self, session: Session, username: str, highlights: List[Dict[str, Any]]) -> None:
+        """Open each highlight from the profile page, where its element can be clicked."""
+        session.info("Found {n} highlight collections.", n=len(highlights))
+        if not session.page.url.rstrip("/").endswith(f"instagram.com/{username}"):
+            session.goto(f"https://www.instagram.com/{username}/")
+        for hl in highlights:
+            if session.full:
+                break
+            self._download_highlight(session, hl)
 
-            # 3. Download highlights if found on profile
-            if captured_highlights and not files.full:
-                log.info("Found {n} highlight collections.", n=len(captured_highlights))
-
-                # Return to the main profile page so highlight elements can be clicked
-                profile_url = f"https://www.instagram.com/{username}/"
-                if not page.url.rstrip("/").endswith(f"instagram.com/{username}"):
-                    try:
-                        page.raw.goto(profile_url, wait_until="load", timeout=20000)
-                        page.raw.wait_for_timeout(2500)
-                    except Exception:
-                        pass
-
-                for hl in captured_highlights:
-                    if files.full:
-                        break
-                    self._download_highlight(page, hl, target_dir, client, files)
-
-    def _download_highlight(
-        self, page: Any, hl: Dict[str, Any], target_dir: Path, client: http.Client, files: Downloads
-    ) -> None:
+    def _download_highlight(self, session: Session, hl: Dict[str, Any]) -> None:
         """Open one highlight and queue the stories it loads."""
         hl_id = hl["id"].replace("highlight:", "")
         hl_title = hl["title"]
-        hl_dir = target_dir / "highlights" / fmt.filename(hl_title)
+        hl_folder = f"highlights/{fmt.filename(hl_title)}"
         hl_url = f"https://www.instagram.com/stories/highlights/{hl_id}/"
 
-        log.info("Opening highlight '{title}': {url}", title=hl_title, url=hl_url)
+        session.info("Opening highlight '{title}': {url}", title=hl_title, url=hl_url)
         found = [0]
 
-        def on_highlight(data: Any, response: Any) -> None:
+        def on_highlight(session: Session, data: Any, response: Any) -> None:
             parsed = self._extract_stories_from_json(data)
             found[0] += len(parsed)
             for s_item in parsed:
-                self._queue_media(s_item, hl_dir, client, files, None, sniff_video=False)
+                self._queue_media(session, s_item, hl_folder, None, sniff_video=False, category="highlights")
 
-        stop = page.on_response(is_profile_api, on_highlight)
+        stop = session.on_response(is_profile_api, on_highlight)
 
         # Click highlight element on profile page to trigger client-side Relay query
+        page = session.page.raw
         try:
-            hl_locator = page.raw.locator(f'a[href*="{hl_id}"]').first
+            hl_locator = page.locator(f'a[href*="{hl_id}"]').first
             if hl_locator.count() == 0:
-                hl_locator = page.raw.get_by_text(hl["title"].replace("_", " "), exact=False).first
+                hl_locator = page.get_by_text(hl["title"].replace("_", " "), exact=False).first
 
             if hl_locator and hl_locator.count() > 0:
                 hl_locator.click()
-                page.raw.wait_for_timeout(3500)
+                page.wait_for_timeout(3500)
                 # Close story modal so subsequent highlights can be clicked
                 try:
-                    page.raw.keyboard.press("Escape")
-                    page.raw.wait_for_timeout(1000)
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(1000)
                 except Exception:
                     pass
             else:
                 # Fallback to direct navigation
-                page.raw.goto(hl_url, wait_until="load", timeout=20000)
-                page.raw.wait_for_timeout(3500)
+                session.goto(hl_url)
+                page.wait_for_timeout(3500)
         except Exception as e:
-            log.warn("Could not open highlight '{title}': {err}", title=hl_title, err=e)
+            session.warn("Could not open highlight '{title}': {err}", title=hl_title, err=e)
         stop()
 
-        log.info("Highlight '{title}': intercepted {n} items.", title=hl_title, n=found[0])
+        session.info("Highlight '{title}': intercepted {n} items.", title=hl_title, n=found[0])
 
     def _queue_media(
         self,
+        session: Session,
         item: Dict[str, Any],
-        dest_dir: Path,
-        client: http.Client,
-        files: Downloads,
+        folder: str,
         headers: Optional[Dict[str, str]],
         sniff_video: bool,
+        category: Optional[str] = None,
     ) -> None:
         """Queue each file of a post or story. Posts also count a `.mp4` URL as a video."""
         date_str = item.get("date") or ""
@@ -297,9 +264,11 @@ class InsSource(BaseSource):
             ext = "mp4" if is_video else "jpg"
             stem = f"{post_id}_{idx}" if len(item["media_urls"]) > 1 else post_id
             filename = f"{date_str}_{stem}.{ext}" if date_str else f"{stem}.{ext}"
-            files.add(client, media_url, dest_dir / filename, key=stem, headers=headers)
+            session.save(media_url, filename, category=category or folder, date=taken_on(date_str),
+                         folder=folder, headers=headers)
 
-    def _extract_media_from_json(self, data: Dict[str, Any], tab: str = "posts") -> List[Dict[str, Any]]:
+    def _extract_media_from_json(self, session: Session, data: Dict[str, Any],
+                                 tab: str = "posts") -> List[Dict[str, Any]]:
         """
         Extract media items from Instagram GraphQL JSON for posts, reels, tagged, or reposts.
         """
@@ -434,7 +403,7 @@ class InsSource(BaseSource):
                     })
 
         except Exception as e:
-            log.warn("Error parsing Instagram JSON for {tab}: {err}", tab=tab, err=e)
+            session.warn("Error parsing Instagram JSON for {tab}: {err}", tab=tab, err=e)
 
         return extracted
 

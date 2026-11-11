@@ -1,0 +1,539 @@
+"""The engine and its session, end to end on httpx.MockTransport, with test sources. No network, no browser."""
+
+import asyncio
+import io
+import signal
+import threading
+import time
+import unittest
+import zipfile
+from contextlib import asynccontextmanager, contextmanager
+from datetime import date
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
+
+import httpx
+
+from flnd import engine as engine_module
+from flnd import login, net
+from flnd.engine import Engine
+from flnd.session import Options, TargetSession
+from flnd.sources.base import FetchError, Source
+from flnd.target import Target
+from shared import cookies, kv, theme
+from shared._theme import Screen
+
+CDN = "https://cdn.example"
+
+
+def make_source(code, run, **declared):
+    """A test source: `code:<name>` resolves to that user, and `run(session)` is the given function."""
+    def resolve(self, text):
+        return Target(code, "user", text.lstrip("@"))
+
+    attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "examples": (f"{code}:a",),
+                  "categories": ("posts", "reels", "files"), "default_categories": ("posts", "reels"),
+                  "resolve": resolve, "run": lambda self, session: run(session), **declared}
+    return type(f"Source_{code}", (Source,), attributes)
+
+
+class EngineCase(unittest.TestCase):
+    def setUp(self):
+        self.screen = Screen(out=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
+        scope = theme.scope(screen=self.screen, color="none", unicode=True)
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name) / ".flnd"
+        self.requests = []
+        self.routes = {}
+        self.pauses = []
+        self.now = 0.0
+        patches = [
+            mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve)),
+            mock.patch.object(net, "_sleep", self.sleep),
+            mock.patch.object(net, "_clock", lambda: self.now),
+            mock.patch.object(engine_module, "_sleep", self.pauses.append),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def serve(self, request):
+        self.requests.append(request)
+        answer = self.routes.get(str(request.url).split("?")[0])
+        if callable(answer):
+            return answer(request)
+        if answer is None:
+            return httpx.Response(200, content=request.url.path.encode())
+        return answer
+
+    def run_engine(self, *sources, targets, options=Options(), **settings):
+        engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
+        return engine.run(engine.resolve(targets), options)
+
+    def log_in(self, code, **values):
+        jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
+        cookies.to_file(jar, login.cookie_file(self.home, code))
+
+    def lines(self):
+        return self.screen.out.getvalue().splitlines()
+
+    def target_dir(self, code, name):
+        return self.home / "downloads" / code / name
+
+
+class GroupsTest(EngineCase):
+    def test_same_source_targets_never_overlap_and_sources_run_together(self):
+        lock = threading.Lock()
+        running, peaks = {"aaa": 0, "bbb": 0}, {"aaa": 0, "bbb": 0, "all": 0}
+
+        def run(session):
+            code = session.target.source
+            with lock:
+                running[code] += 1
+                peaks[code] = max(peaks[code], running[code])
+                peaks["all"] = max(peaks["all"], sum(running.values()))
+            time.sleep(0.05)
+            with lock:
+                running[code] -= 1
+
+        first, second = make_source("aaa", run), make_source("bbb", run)
+        self.run_engine(first, second, targets=["aaa:1", "aaa:2", "bbb:1", "aaa:3", "bbb:2"])
+        self.assertEqual((peaks["aaa"], peaks["bbb"]), (1, 1))
+        self.assertGreater(peaks["all"], 1)
+        # A pause before every target of a source but its first: two for aaa, one for bbb.
+        self.assertEqual(len(self.pauses), 3)
+        self.assertTrue(all(3.0 <= pause <= 7.0 for pause in self.pauses), self.pauses)
+
+    def test_rows_end_at_ok_or_error_and_the_run_goes_on(self):
+        def run(session):
+            if session.target.value == "bad":
+                raise RuntimeError("blocked")
+            session.save(f"{CDN}/{session.target.value}.jpg", "a.jpg", category="posts")
+
+        total = self.run_engine(make_source("aaa", run), targets=["aaa:bad", "aaa:good"])
+        self.assertEqual(total, 1)
+        lines = self.lines()
+        self.assertIn("✗ aaa:bad: blocked", lines)
+        self.assertIn("✗ aaa:bad", lines)
+        self.assertIn("✓ aaa:good", lines)
+
+
+class LoginStateTest(EngineCase):
+    def test_not_logged_in_is_a_hint_and_public_access_goes_on(self):
+        ran = []
+        self.run_engine(make_source("aaa", ran.append, needs=("sid",)), targets=["aaa:a"])
+        self.assertEqual(len(ran), 1)
+        self.assertIn("! aaa: not logged in, using public access; run flnd login aaa", self.lines())
+
+    def test_logged_in_has_no_hint_and_cookies_reach_the_client(self):
+        self.log_in("aaa", sid="1", other="2")
+        seen = []
+        source = make_source("aaa", lambda session: seen.append((dict(session.cookies),
+                                                                 session.fetch_json("https://api.aaa.example/me"))),
+                             needs=("sid",))
+        self.routes["https://api.aaa.example/me"] = httpx.Response(200, json={"me": 1})
+        self.run_engine(source, targets=["aaa:a"])
+        self.assertEqual(seen, [({"sid": "1", "other": "2"}, {"me": 1})])
+        self.assertEqual(self.requests[0].headers["cookie"], "sid=1; other=2")
+        self.assertFalse(any("not logged in" in line for line in self.lines()))
+
+    def test_requires_login_fails_the_targets(self):
+        ran = []
+        self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
+        self.assertEqual(ran, [])
+        self.assertIn("✗ aaa:a: not logged in; run flnd login aaa", self.lines())
+        self.assertIn("✗ aaa:b", self.lines())
+
+    def test_download_never_asks(self):
+        errors = []
+
+        def run(session):
+            try:
+                session.ask("Phone number")
+            except RuntimeError as error:
+                errors.append(str(error))
+
+        self.run_engine(make_source("aaa", run), targets=["aaa:a"])
+        self.assertEqual(errors, ["aaa: flnd download never asks questions; run flnd login aaa first"])
+
+
+class HttpTest(EngineCase):
+    def test_one_client_per_group_with_headers_user_agent_and_signing(self):
+        clients = []
+
+        def sign(self, request):
+            request.headers["x-signed"] = "yes"
+            return request
+
+        def run(session):
+            clients.append(session.http)
+            session.fetch_json("https://api.aaa.example/a", headers={"x-extra": "1"})
+
+        source = make_source("aaa", run, user_agent="Agent/1", sign=sign,
+                             headers=lambda self, jar: {"x-app": "7"})
+        self.routes["https://api.aaa.example/a"] = httpx.Response(200, json={})
+        self.run_engine(source, targets=["aaa:a", "aaa:b"])
+        self.assertIs(clients[0], clients[1])
+        request = self.requests[0]
+        self.assertEqual((request.headers["user-agent"], request.headers["x-app"], request.headers["x-signed"],
+                          request.headers["x-extra"]), ("Agent/1", "7", "yes", "1"))
+
+    def test_fetch_errors_and_soft(self):
+        results = []
+
+        def run(session):
+            results.append(session.fetch_json("https://api.aaa.example/gone", soft=True))
+            for url in ("https://api.aaa.example/gone", "https://api.aaa.example/html"):
+                try:
+                    session.fetch_json(url)
+                except FetchError as error:
+                    results.append((error.status, str(error)[:40]))
+            results.append(session.fetch_html("https://api.aaa.example/html").css("h1").text)
+
+        self.routes["https://api.aaa.example/gone"] = httpx.Response(404)
+        self.routes["https://api.aaa.example/html"] = httpx.Response(200, html="<h1>Hi</h1>")
+        self.run_engine(make_source("aaa", run), targets=["aaa:a"])
+        self.assertEqual(results, [None, (404, "HTTP 404 for https://api.aaa.example/gon"),
+                                   (None, "expected JSON from https://api.aaa.examp"), "Hi"])
+
+    def test_a_rate_limit_never_stops_the_source(self):
+        ran = []
+        answers = [httpx.Response(429)] * 4 + [httpx.Response(200, json={"ok": 1})]
+
+        def run(session):
+            ran.append((session.target.value, session.fetch_json("https://api.aaa.example/feed")))
+
+        self.routes["https://api.aaa.example/feed"] = lambda request: answers.pop(0) if len(answers) > 1 else answers[0]
+        self.run_engine(make_source("aaa", run), targets=["aaa:a", "aaa:b", "aaa:c"])
+        self.assertEqual(ran, [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
+        self.assertIn("! aaa: rate limited; waiting", " ".join(self.lines()))
+        self.assertIn("(attempt 4)", " ".join(self.lines()))
+        self.assertIn("✓ aaa:c", self.lines())
+
+    def test_challenges_are_waited_out(self):
+        self.run_engine(make_source("aaa", lambda session: session.challenged()),
+                        targets=["aaa:a", "aaa:b", "aaa:c", "aaa:d"])
+        waits = [line for line in self.lines() if "challenged; waiting" in line]
+        self.assertEqual([wait.rsplit(" ", 1)[-1] for wait in waits], ["1)", "2)", "3)", "4)"])
+        self.assertIn("✓ aaa:d", self.lines())
+
+    def test_ctrl_c_during_a_wait_stops_the_run(self):
+        def limited(request):
+            net.stopping.set()
+            return httpx.Response(429)
+
+        self.routes["https://api.aaa.example/feed"] = limited
+        self.addCleanup(net.stopping.clear)
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_engine(make_source("aaa", lambda session: session.fetch_json("https://api.aaa.example/feed")),
+                            targets=["aaa:a"])
+
+
+class CtrlCTest(unittest.TestCase):
+    def test_ctrl_c_sets_stopping_and_still_interrupts(self):
+        before = signal.getsignal(signal.SIGINT)
+        self.addCleanup(net.stopping.clear)
+        with engine_module._stop_waits_on_ctrl_c():
+            self.assertFalse(net.stopping.is_set())
+            with self.assertRaises(KeyboardInterrupt):
+                signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+            self.assertTrue(net.stopping.is_set())
+        self.assertIs(signal.getsignal(signal.SIGINT), before)
+
+
+class SaveTest(EngineCase):
+    def test_paths_history_and_skipping(self):
+        def run(session):
+            session.folder = "posts"
+            session.save(f"{CDN}/a.jpg", "2026-01-01_a.jpg", category="posts")
+            session.save(f"{CDN}/a.jpg", "2026-01-01_a.jpg", category="posts")
+            session.save(f"{CDN}/b.mp4", "../../escape.mp4", category="posts", folder="../videos")
+
+        self.assertEqual(self.run_engine(make_source("aaa", run), targets=["aaa:someone"]), 2)
+        folder = self.target_dir("aaa", "someone")
+        self.assertEqual((folder / "posts" / "2026-01-01_a.jpg").read_bytes(), b"/a.jpg")
+        # A name from a site never leaves the target's folder.
+        self.assertTrue((folder / "untitled" / "videos" / "escape.mp4").is_file())
+        self.assertIn("• skip posts/2026-01-01_a.jpg", self.lines())
+        with kv.open(self.home / "history.db", table="downloads") as history:
+            rows = dict(history.items())
+        self.assertEqual(sorted(rows), ["aaa:posts/2026-01-01_a.jpg", "aaa:untitled/videos/escape.mp4"])
+        self.assertEqual(rows["aaa:posts/2026-01-01_a.jpg"]["size"], 6)
+
+        # A second run skips by the history row, keyed by `key`, wherever the file now is.
+        self.requests.clear()
+        self.assertEqual(self.run_engine(make_source("aaa", run), targets=["aaa:someone"]), 0)
+        self.assertEqual(self.requests, [])
+
+    def test_key_dedupes_across_folders(self):
+        def run(session):
+            self.assertTrue(session.save(f"{CDN}/p.jpg", "1_0.jpg", category="posts", folder="posts", key="1_0"))
+            self.assertFalse(session.save(f"{CDN}/p.jpg", "1_0.jpg", category="posts", folder="images", key="1_0"))
+
+        self.assertEqual(self.run_engine(make_source("aaa", run), targets=["aaa:a"]), 1)
+
+    def test_kind_since_until_and_wants(self):
+        answers = []
+
+        def run(session):
+            answers.append(session.wants(date=date(2025, 12, 31)))
+            answers.append((session.categories, session.since, session.until))
+            for name, category, day in (("old.mp4", "reels", date(2025, 12, 31)), ("in.mp4", "reels", date(2026, 3, 1)),
+                                        ("late.mp4", "reels", date(2026, 7, 1)), ("post.jpg", "posts", date(2026, 3, 1)),
+                                        ("undated.mp4", "reels", None)):
+                answers.append(session.save(f"{CDN}/{name}", name, category=category, date=day))
+            try:
+                session.save(f"{CDN}/x.jpg", "x.jpg", category="liked")
+            except ValueError as error:
+                answers.append(str(error))
+
+        options = Options(categories=("reels", "media"), since=date(2026, 1, 1), until=date(2026, 6, 30))
+        self.run_engine(make_source("aaa", run), targets=["aaa:a"], options=options)
+        self.assertEqual(answers, [False, (("reels",), date(2026, 1, 1), date(2026, 6, 30)),
+                                   False, True, False, False, True,
+                                   "aaa: unknown category 'liked'; declare it in categories (posts, reels, files)"])
+
+    def test_categories_default_all_and_fallback(self):
+        seen = []
+        source = make_source("aaa", lambda session: seen.append(session.categories))
+        for categories in (None, ("all",), ("files",), ("media",)):
+            self.run_engine(source, targets=["aaa:a"], options=Options(categories=categories))
+        # A name the source doesn't have is ignored, and with none of its own it takes its defaults.
+        self.assertEqual(seen, [("posts", "reels"), ("posts", "reels", "files"), ("files",), ("posts", "reels")])
+
+    def test_limit_and_folder_none(self):
+        added = []
+
+        def run(session):
+            for number in range(4):
+                added.append(session.save(f"{CDN}/{number}.jpg", f"{number}.jpg", category="posts"))
+            session.folder = None
+            added.append(session.save(f"{CDN}/late.jpg", "late.jpg", category="posts"))
+            added.append(session.write("note.md", "x"))
+            added.append(session.full)
+
+        self.assertEqual(self.run_engine(make_source("aaa", run), targets=["aaa:a"], limit=2), 2)
+        self.assertEqual(added, [True, True, False, False, False, False, True])
+        self.assertIn("• Reached limit of 2 downloads.", self.lines())
+
+    def test_write_mirrors_and_fetch(self):
+        def fetch(dest, progress):
+            dest.write_bytes(b"fetched")
+            progress(7, 7)
+
+        def run(session):
+            session.folder = "post"
+            session.write("info.md", "# Title\n")
+            session.save([f"{CDN}/dead.7z", f"{CDN}/f.7z"], "f.7z", category="files")
+            session.save(fetch, "m.mp4", category="posts", size=7)
+
+        self.routes[f"{CDN}/dead.7z"] = httpx.Response(404)
+        self.run_engine(make_source("aaa", run), targets=["aaa:a"], options=Options(categories=("posts", "files")))
+        folder = self.target_dir("aaa", "a") / "post"
+        self.assertEqual((folder / "info.md").read_text(), "# Title\n")
+        self.assertEqual((folder / "f.7z").read_bytes(), b"/f.7z")
+        self.assertEqual((folder / "m.mp4").read_bytes(), b"fetched")
+        self.assertIn("! mirror 1 failed; trying next", self.lines())
+
+    def test_failed_downloads_are_named(self):
+        def run(session):
+            session.save(f"{CDN}/broken.jpg", "broken.jpg", category="posts")
+
+        self.routes[f"{CDN}/broken.jpg"] = lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused"))
+        self.assertEqual(self.run_engine(make_source("aaa", run), targets=["aaa:a"]), 0)
+        self.assertIn("✗ broken.jpg: ConnectError refused", self.lines())
+
+    def test_queued_downloads_are_dropped_and_logged_when_run_fails(self):
+        gate = threading.Event()
+
+        def slow(request):
+            gate.wait(5)
+            return httpx.Response(200, content=b"x")
+
+        def run(session):
+            # One download runs (held by the gate) and two wait in the queue when run fails.
+            for number in range(3):
+                session.save(f"{CDN}/{number}.jpg", f"{number}.jpg", category="posts")
+            threading.Timer(0.2, gate.set).start()
+            raise RuntimeError("page closed")
+
+        for number in range(3):
+            self.routes[f"{CDN}/{number}.jpg"] = slow
+        self.assertEqual(self.run_engine(make_source("aaa", run, concurrency=1), targets=["aaa:a"]), 1)
+        self.assertIn("✗ aaa:a: page closed", self.lines())
+        self.assertIn("! dropped 2 queued tasks after RuntimeError", self.lines())
+
+
+class OptionsTest(EngineCase):
+    def test_unpack_and_zip(self):
+        packed = io.BytesIO()
+        with zipfile.ZipFile(packed, "w") as archive:
+            archive.writestr("inside.txt", "hello")
+        self.routes[f"{CDN}/set.zip"] = httpx.Response(200, content=packed.getvalue())
+
+        def run(session):
+            session.save(f"{CDN}/set.zip", "set.zip", category="files", folder="post")
+            session.save(f"{CDN}/photo.jpg", "photo.jpg", category="files", folder="post")
+
+        options = Options(categories=("files",), unpack=True, zip=True)
+        self.run_engine(make_source("aaa", run), targets=["aaa:a"], options=options)
+        folder = self.target_dir("aaa", "a")
+        self.assertEqual((folder / "post" / "set" / "inside.txt").read_text(), "hello")
+        with zipfile.ZipFile(folder.with_name("a.zip")) as archive:
+            self.assertIn("a/post/set/inside.txt", archive.namelist())
+
+
+class FakeBrowser:
+    """Stands in for `browser.connect()`: records options, opened URLs and listeners; holds cookies."""
+
+    def __init__(self, **options):
+        self.options = options
+        self.added = []
+        self.urls = []
+        self.closed = False
+        self.cookies = self
+        self.all = [{"name": "csrftoken", "value": "late", "domain": ".aaa.example", "path": "/"}]
+        self.listeners = []
+
+    def add(self, jar):
+        self.added.extend(jar)
+
+    def open_page(self):
+        browser = self
+
+        class Page:
+            url = "about:blank"
+
+            def goto(self, url, idle=False, timeout=30.0):
+                browser.urls.append(url)
+                return True
+
+            def on_response(self, match, callback, lines=False):
+                browser.listeners.append(callback)
+                return lambda: browser.listeners.remove(callback)
+
+        return Page()
+
+    def close(self):
+        self.closed = True
+
+
+class BrowserTest(EngineCase):
+    def setUp(self):
+        super().setUp()
+        self.browsers = []
+
+        def connect(**options):
+            self.browsers.append(FakeBrowser(**options))
+            return self.browsers[-1]
+
+        patcher = mock.patch("shared._browser.connect", connect)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_connects_only_on_open_page_with_settings_and_cookies(self):
+        self.log_in("aaa", sid="1")
+        self.run_engine(make_source("aaa", lambda session: None), targets=["aaa:a"])
+        self.assertEqual(self.browsers, [])
+
+        seen = []
+
+        def run(session):
+            session.on_response("graphql", lambda session, data, response: seen.append(data))
+            session.open_page("https://aaa.example/a")
+            session.goto("https://aaa.example/a/tab")
+            for listener in self.browsers[0].listeners:
+                listener({"n": 1}, None)
+            session.fetch_json("https://api.aaa.example/x")
+
+        self.routes["https://api.aaa.example/x"] = httpx.Response(200, json={})
+        source = make_source("aaa", run, viewport=(800, 600), browser_args=("--no-sandbox",), stealth=False)
+        self.run_engine(source, targets=["aaa:a"], headless=True, locale="fr-FR", timezone="Europe/Paris")
+        connected = self.browsers[0]
+        self.assertEqual(connected.options, {"headless": True, "viewport": (800, 600), "locale": "fr-FR",
+                                             "timezone": "Europe/Paris", "args": ("--no-sandbox",), "stealth": False})
+        self.assertEqual([cookie["name"] for cookie in connected.added], ["sid"])
+        self.assertEqual(connected.added[0]["domain"], ".aaa.example")
+        self.assertEqual(connected.urls, ["https://aaa.example/a", "https://aaa.example/a/tab"])
+        self.assertEqual(seen, [{"n": 1}])
+        self.assertTrue(connected.closed)
+        # A cookie the site set in the browser reached the client.
+        self.assertIn("csrftoken=late", self.requests[0].headers["cookie"])
+
+    def test_page_before_open_page_raises(self):
+        errors = []
+
+        def run(session):
+            try:
+                session.page
+            except RuntimeError as error:
+                errors.append(str(error))
+
+        self.run_engine(make_source("aaa", run), targets=["aaa:a"])
+        self.assertEqual(errors, ["aaa: no page is open; call session.open_page(url) first"])
+
+
+class ClientTest(EngineCase):
+    def test_sync_connect_is_entered_once_per_group(self):
+        events = []
+
+        @contextmanager
+        def connect(self, session):
+            events.append("enter")
+            yield "client"
+            events.append("exit")
+
+        source = make_source("aaa", lambda session: events.append(session.client), connect=connect)
+        self.run_engine(source, targets=["aaa:a", "aaa:b"])
+        self.assertEqual(events, ["enter", "client", "client", "exit"])
+
+    def test_async_connect_run_and_fetch_share_one_loop(self):
+        loops = []
+
+        @asynccontextmanager
+        async def connect(self, session):
+            loops.append(asyncio.get_running_loop())
+            yield "telethon"
+
+        async def fetch(dest, progress):
+            loops.append(asyncio.get_running_loop())
+            dest.write_bytes(b"media")
+
+        async def run(session):
+            loops.append(asyncio.get_running_loop())
+            await asyncio.sleep(0)
+            session.save(fetch, f"{session.client}.mp4", category="posts")
+
+        source = make_source("aaa", None, connect=connect)
+        source.run = lambda self, session: run(session)
+        self.assertEqual(self.run_engine(source, targets=["aaa:a"]), 1)
+        self.assertEqual(len(set(map(id, loops))), 1)
+        self.assertEqual(len(loops), 3)
+        self.assertEqual((self.target_dir("aaa", "a") / "telethon.mp4").read_bytes(), b"media")
+
+
+class EngineLoginTest(EngineCase):
+    def test_a_source_with_its_own_login_gets_an_asking_session(self):
+        seen = []
+
+        def own_login(self, session, method):
+            seen.append((method, session.target, isinstance(session, TargetSession)))
+            session.secrets["session"] = "s"
+
+        source = make_source("aaa", lambda session: None, login=own_login, login_methods=("qr",))
+        Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
+        self.assertEqual(seen, [("qr", Target("aaa", "account", ""), True)])
+        from flnd import vault
+        with vault.open(self.home, "aaa") as secrets:
+            self.assertEqual(secrets["session"], "s")
+
+
+if __name__ == "__main__":
+    unittest.main()

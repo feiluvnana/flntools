@@ -1,40 +1,22 @@
-"""
-Facebook source extractor for flnd.
+"""Facebook: a profile's posts, photos, tagged photos, albums, reels and videos, read in a browser.
 
-Features:
-  - Reads cookies (c_user, xs, fr, datr) from .flnd/cookies/fbk.txt
-  - Navigates profile tabs in non-headless browser:
-      * Posts / Timeline: https://www.facebook.com/<user>/ -> posts/
-      * Photos: https://www.facebook.com/<user>/photos -> photos/
-      * Tagged / Photos of: https://www.facebook.com/<user>/photos_of -> tagged/
-      * Albums: https://www.facebook.com/<user>/photos_albums -> albums/<album_title>/
-      * Reels: https://www.facebook.com/<user>/reels -> reels/
-      * Videos: https://www.facebook.com/<user>/videos -> videos/
-  - Real creation date parsing from Unix timestamps (creation_time, publish_time)
-  - HD progressive video selection
+Each profile tab is opened and scrolled, and the Comet GraphQL responses it triggers are
+read for photos (largest image) and videos (HD progressive URL first), with their real dates.
 
-Folder layout:
-  .flnd/downloads/fbk/<username_or_id>/
-  ├── posts/<YYYY-MM-DD>_<post_id>.jpg (or .mp4)
-  ├── photos/<YYYY-MM-DD>_<photo_id>.jpg
-  ├── tagged/<YYYY-MM-DD>_<photo_id>.jpg
-  ├── reels/<YYYY-MM-DD>_<reel_id>.mp4
-  ├── videos/<YYYY-MM-DD>_<video_id>.mp4
-  ├── albums/<album_title>/<YYYY-MM-DD>_<photo_id>.jpg
-  └── stories/<YYYY-MM-DD>_<story_id>.jpg (or .mp4)
+Folder layout, under `.flnd/downloads/fbk/<username_or_id>/`:
+  posts/, photos/, tagged/, reels/, videos/   <YYYY-MM-DD>_<id>.jpg (or .mp4)
+  albums/<album_title>/                        <YYYY-MM-DD>_<photo_id>.jpg
 """
 
-from datetime import datetime
-from pathlib import Path
+from __future__ import annotations
+
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-
-from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
-from flnd.sources.base import BaseSource
-from flnd.target import Target
-from flnd.utils import Downloads, open_page, scroll
-from shared import fmt, http, log, selector
-
+from flnd.session import Session
+from flnd.sources.base import Source
+from flnd.target import Target, TargetError, link, name, unreadable
+from shared import fmt, selector
 
 # Tabs to navigate in order: (folder_name, relative_url_path)
 TABS = [
@@ -45,110 +27,75 @@ TABS = [
     ("reels", "reels"),
     ("videos", "videos"),
 ]
+# Paths on facebook.com that are pages of the site, not profiles.
+NOT_PROFILES = {"watch", "reel", "reels", "videos", "photo", "photos", "groups", "events", "stories", "story.php"}
+TAB_PATHS = {path for _, path in TABS if path}
 
 
-class FbkSource(BaseSource):
-    """Facebook autonomous scraper supporting photos, albums, reels, videos, stories, and tagged media."""
+def is_profile(parts: List[str]) -> bool:
+    """Whether a facebook.com path is a profile or one of its tabs, such as `example.page/photos`."""
+    return parts[0] not in NOT_PROFILES and (len(parts) == 1 or parts[1] in TAB_PATHS)
+
+
+class Facebook(Source):
+    """Facebook profiles, read in a browser that is logged in with the saved cookies."""
 
     code = "fbk"
     name = "Facebook"
-    domains = ("facebook.com",)
+    domains = ("facebook.com", "fb.com", "fb.watch")
+    short_links = ("fb.watch",)
+    examples = ("fbk:example.page", "fbk:100012345678901", "https://www.facebook.com/profile.php?id=100012345678901")
+    needs = ("c_user", "xs")
+    categories = tuple(tab for tab, _ in TABS)
+    default_categories = ("posts", "photos", "albums", "reels", "videos")
 
-    def download(
-        self,
-        target: Target,
-        download_dir: Path,
-        limit: Optional[int] = None,
-        headless: bool = False,
-    ) -> int:
-        username_or_id = target.value
-        cookies_list = load_cookies(self.code)
-        cookie_map = cookies_to_dict(cookies_list)
+    def resolve(self, text: str) -> Target:
+        found = link(text, self.domains)
+        if found is None:
+            user = name(text)
+        elif found.parts[:1] == ["profile.php"]:
+            user = found.query.get("id")
+        elif found.parts and is_profile(found.parts):
+            user = name(found.parts[0])
+        elif found.parts:
+            raise TargetError(f"{self.code}: single posts and videos aren't supported yet; "
+                              f"give the profile, for example {self.examples[0]}")
+        else:
+            user = None
+        if not user:
+            raise unreadable(self, text)
+        return Target(self.code, "user", user)
 
-        if ("c_user" not in cookie_map or "xs" not in cookie_map) and ask_for_cookies(self.code):
-            cookies_list = load_cookies(self.code)
-            cookie_map = cookies_to_dict(cookies_list)
-        if "c_user" not in cookie_map or "xs" not in cookie_map:
-            log.warn("Running without c_user/xs cookies; Facebook blocks unauthenticated profile browsing.")
+    def run(self, session: Session) -> None:
+        user = session.target.value
+        found = {tab: 0 for tab, _ in TABS}
+        headers = {"Referer": f"https://www.facebook.com/{user}"}
 
-        target_dir = download_dir / "fbk" / username_or_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        log.info("Starting download for: {target}", target=username_or_id)
-        log.info("Destination: {path}", path=target_dir)
-        log.info("Browser mode: {mode}", mode="headless" if headless else "visible")
-
-        with http.Client() as client, Downloads(self.code, target, download_dir, limit) as files:
-            self._download_via_browser(username_or_id, target_dir, cookies_list, headless, client, files)
-
-        log.ok("Finished {target}: {n} files", target=username_or_id, n=files.saved)
-        return files.saved
-
-    def _download_via_browser(
-        self,
-        target_name: str,
-        target_dir: Path,
-        cookies_list: List[Dict[str, Any]],
-        headless: bool,
-        client: http.Client,
-        files: Downloads,
-    ) -> None:
-        """
-        Launch browser to navigate Facebook profile tabs:
-          - posts (timeline)
-          - photos (uploads)
-          - photos_of (tagged)
-          - photos_albums (albums)
-          - reels
-          - videos
-        Intercept Comet GraphQL responses, parse real Unix timestamps, and queue each file as it is found.
-        """
-        found = {name: 0 for name, _ in TABS}
-        current = {"tab": "posts"}
-        headers = {"Referer": f"https://www.facebook.com/{target_name}"}
-
-        def on_graphql(data: Any, response: Any) -> None:
+        def on_graphql(session: Session, data: Any, response: Any) -> None:
             # Facebook sends one JSON object per line; other lines were never read.
-            if not isinstance(data, dict):
+            tab = session.folder
+            if not isinstance(data, dict) or tab is None:
                 return
-            tab = current["tab"]
             items = self._parse_facebook_graphql(data, default_category=tab)
             found[tab] += len(items)
             for item in items:
-                self._queue_item(item, tab, target_dir, client, files, headers)
+                self._queue_item(session, item, tab, headers)
 
-        with open_page(headless=headless, cookies=cookies_list) as page:
-            page.on_response("graphql", on_graphql, lines=True)
+        session.on_response("graphql", on_graphql, lines=True)
+        for tab_name, tab_path in TABS:
+            if session.full:
+                break
+            if not session.wants(category=tab_name):
+                continue
+            session.folder = tab_name
+            tab_url = f"https://www.facebook.com/{user}/{tab_path}".rstrip("/")
+            session.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
+            if session.goto(tab_url):
+                session.scroll(count=lambda: found[tab_name])
+            session.info("{tab}: intercepted {n} media items.", tab=tab_name, n=found[tab_name])
+        session.folder = None
 
-            for tab_name, tab_path in TABS:
-                if files.full:
-                    break
-
-                current["tab"] = tab_name
-                tab_url = f"https://www.facebook.com/{target_name}/{tab_path}".rstrip("/")
-                log.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
-
-                try:
-                    page.raw.goto(tab_url, wait_until="load", timeout=25000)
-                    page.raw.wait_for_timeout(3000)
-
-                    # Continuously scroll down to the end of the feed/tab
-                    scroll(page, tab_name, count=lambda: found[tab_name], more=lambda: not files.full)
-
-                except Exception as e:
-                    log.warn("Navigation error on {url}: {err}", url=tab_url, err=e)
-
-                log.info("{tab}: intercepted {n} media items.", tab=tab_name, n=found[tab_name])
-
-    def _queue_item(
-        self,
-        item: Dict[str, Any],
-        tab_name: str,
-        target_dir: Path,
-        client: http.Client,
-        files: Downloads,
-        headers: Dict[str, str],
-    ) -> None:
+    def _queue_item(self, session: Session, item: Dict[str, Any], tab_name: str, headers: Dict[str, str]) -> None:
         category = item.get("category", tab_name)
         album_title = item.get("album")
         date_str = item.get("date", "").strip()
@@ -158,21 +105,23 @@ class FbkSource(BaseSource):
 
         # Determine destination subfolder
         if album_title:
-            dest_folder = target_dir / "albums" / fmt.filename(album_title)
+            dest_folder = f"albums/{fmt.filename(album_title)}"
         elif category == "reels":
-            dest_folder = target_dir / "reels"
+            dest_folder = "reels"
         elif category == "videos" or kind == "video":
-            dest_folder = target_dir / "videos"
+            dest_folder = "videos"
         elif category == "tagged":
-            dest_folder = target_dir / "tagged"
+            dest_folder = "tagged"
         elif category == "photos":
-            dest_folder = target_dir / "photos"
+            dest_folder = "photos"
         else:
-            dest_folder = target_dir / "posts"
+            dest_folder = "posts"
 
         # Do NOT default to today's date when date is unknown; format cleanly
         filename = f"{date_str}_{item_id}.{ext}" if date_str else f"{item_id}.{ext}"
-        files.add(client, item["url"], dest_folder / filename, key=item_id, headers=headers)
+        # The category is the tab it was found on, wherever its folder is: tagged photos are opt-in.
+        session.save(item["url"], filename, category=tab_name, date=date.fromisoformat(date_str) if date_str else None,
+                     folder=dest_folder, headers=headers)
 
     def _parse_facebook_graphql(self, data: Dict[str, Any], default_category: str = "posts") -> List[Dict[str, Any]]:
         """

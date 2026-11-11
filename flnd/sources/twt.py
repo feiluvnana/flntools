@@ -1,33 +1,32 @@
 """
-Twitter / X source extractor for flnd.
+Twitter / X source for flnd.
 
-Features:
-  - Reads cookies (auth_token, ct0) from .flnd/cookies/twt.txt
-  - Downloads media from user Posts timeline into posts/
-  - Downloads full-resolution photos (?name=orig) into images/
-  - Downloads highest-bitrate MP4 videos into videos/
-  - Supports user posts and media timelines, and single tweet IDs
-  - Continuously scrolls each tab to the end with cursor pagination
+  - The user's Posts timeline goes to posts/, and the Media timeline's photos to images/ and
+    videos to videos/. A file already saved from one timeline is not saved again from the other.
+  - Photos are full resolution (?name=orig), and videos the highest-bitrate MP4.
+  - Each timeline is read to its end with cursor pagination. When the API refuses, a browser
+    scrolls the profile instead and reads the same GraphQL responses.
 
-Optimized folder layout:
-  .flnd/downloads/twt/<username>/
-  ├── posts/<YYYY-MM-DD>_<tweet_id>_<idx>.jpg (or .mp4)
-  ├── images/<YYYY-MM-DD>_<tweet_id>_<idx>.jpg
-  └── videos/<YYYY-MM-DD>_<tweet_id>_<idx>.mp4
+Folder layout, under `.flnd/downloads/twt/<username>/`:
+  posts/<YYYY-MM-DD>_<tweet_id>_<idx>.jpg (or .mp4)
+  images/<YYYY-MM-DD>_<tweet_id>_<idx>.jpg
+  videos/<YYYY-MM-DD>_<tweet_id>_<idx>.mp4
 """
 
+from __future__ import annotations
+
 import json
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from typing import Any, Dict, List, Mapping, Optional
 
-import httpx
+from flnd.session import Session
+from flnd.sources.base import FetchError, Source
+from flnd.target import Target, TargetError, link, name, unreadable
+from shared import selector
 
-from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
-from flnd.sources.base import BaseSource
-from flnd.target import Target
-from flnd.utils import Downloads, open_page, scroll
-from shared import http, log, selector
+# The user agent Twitter's API has always been sent: a desktop Chrome.
+CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+          "Chrome/128.0.0.0 Safari/537.36")
 
 # Twitter's standard web client public bearer token
 TWITTER_BEARER = (
@@ -38,111 +37,90 @@ TWITTER_BEARER = (
 QUERY_USER_BY_SCREEN_NAME_PRIMARY = "AMIBMjtxEEATh4z8V9GtRg/UserByScreenName"
 QUERY_USER_BY_SCREEN_NAME_LEGACY = "ck5KkZ8t5cOmoLssopN99Q/UserByScreenName"
 QUERY_USER_ORIGINALS_TIMELINE = "ZFKu1DFS63hgrkLzR3Hsdw/UserOriginalsTimeline"
-QUERY_USER_TWEETS = "E3opETHurGV11kgpTmUZ_Q/UserTweets"
 QUERY_USER_MEDIA = "jCRhbOzdgOHp6u9H4g2tEg/UserMedia"
-QUERY_TWEET_DETAIL = "2ICDjqPd81tulZcYrtpTuQ/TweetResultByRestId"
 
 TIMELINE_ENDPOINTS = ["UserMedia", "UserOriginalsTimeline", "UserTweets", "UserTweetsAndReplies"]
+# Paths on x.com that are pages of the site, not profiles.
+NOT_PROFILES = {"home", "explore", "search", "i", "settings", "notifications", "messages", "hashtag"}
 
 
 def is_timeline(response: Any) -> bool:
     return "graphql" in response.url and any(endpoint in response.url for endpoint in TIMELINE_ENDPOINTS)
 
 
-class TwtSource(BaseSource):
-    """Twitter / X extractor with autonomous scraping and media downloading."""
+def timeline_params(user_id: str, category: str, cursor: Optional[str]) -> Dict[str, str]:
+    """The query of one timeline page: its variables and features, as JSON."""
+    variables: Dict[str, Any] = {
+        "userId": user_id,
+        "count": 20,
+        "includePromotedContent": False,
+        "withClientEventToken": False,
+        "withBirdwatchNotes": False,
+        "withVoice": True,
+    }
+    if category == "posts":
+        variables["withQuickPromoteEligibilityTweetFields"] = True
+
+    if cursor:
+        variables["cursor"] = cursor
+
+    features = {
+        "responsive_web_graphql_timeline_navigation_enabled": True,
+        "responsive_web_media_download_video_enabled": True,
+    }
+    return {"variables": json.dumps(variables), "features": json.dumps(features)}
+
+
+class Twitter(Source):
+    """Twitter / X users, from the GraphQL API, with a browser when the API refuses."""
 
     code = "twt"
     name = "Twitter/X"
     domains = ("x.com", "twitter.com")
-    # This target's downloads, set while `download` runs.
-    files: Optional[Downloads] = None
+    examples = ("twt:example_handle", "twt:@example_handle", "twt:44196397", "https://x.com/example_handle")
+    needs = ("auth_token",)
+    categories = ("posts", "media")
+    default_categories = ("posts", "media")
+    user_agent = CHROME
+    # This browser never hid navigator.webdriver, so stealth stays off.
+    stealth = False
 
-    @property
-    def downloads(self) -> Downloads:
-        """This target's downloads. Raises RuntimeError outside `download`."""
-        if self.files is None:
-            raise RuntimeError("downloads are open only while download() runs")
-        return self.files
-
-    def download(
-        self,
-        target: Target,
-        download_dir: Path,
-        limit: Optional[int] = None,
-        headless: bool = False,
-    ) -> int:
-        username_or_id = target.value
-        cookies_list = load_cookies(self.code)
-        cookie_map = cookies_to_dict(cookies_list)
-
-        if "auth_token" not in cookie_map and ask_for_cookies(self.code):
-            cookies_list = load_cookies(self.code)
-            cookie_map = cookies_to_dict(cookies_list)
-        if "auth_token" not in cookie_map:
-            log.warn("Running without auth_token; only public guest access will be available.")
-
-        target_dir = download_dir / "twt" / username_or_id
-        for folder in ("posts", "images", "videos"):
-            (target_dir / folder).mkdir(parents=True, exist_ok=True)
-
-        log.info("Starting download for: {target}", target=username_or_id)
-        log.info("Destination: {path}", path=target_dir)
-
-        # The API client sends the session headers with every request, media included. Files found
-        # through the browser fallback were always fetched with a plain client.
-        with http.Client(headers=self._get_headers(cookie_map), timeout=20.0) as client, \
-                http.Client() as plain_client, \
-                Downloads(self.code, target, download_dir, limit) as self.files:
-            # Check if target is a numeric ID (single tweet)
-            if username_or_id.isdigit() and len(username_or_id) > 10:
-                self._download_single_tweet(username_or_id, target_dir, client)
-                finished = False
-            else:
-                # Otherwise, treat as username and download user posts & media timeline
-                finished = self._download_user_timeline(
-                    username_or_id, target_dir, headless, client, plain_client
-                )
-
-        if finished:
-            log.ok("Finished @{name}: {n} files", name=username_or_id, n=self.downloads.saved)
-        return self.downloads.saved
-
-    def _get_headers(self, cookie_map: Dict[str, str]) -> Dict[str, str]:
-        """Construct Twitter API headers with bearer token and CSRF."""
-        csrf = cookie_map.get("ct0", "")
-        cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_map.items()])
-
+    def headers(self, cookies: Mapping[str, str]) -> Mapping[str, str]:
+        """Twitter API headers: the bearer token, CSRF, and the session's cookies."""
         return {
             "authorization": TWITTER_BEARER,
-            "x-csrf-token": csrf,
+            "x-csrf-token": cookies.get("ct0", ""),
             "x-twitter-active-user": "yes",
-            "x-twitter-auth-type": "OAuth2Session" if "auth_token" in cookie_map else "",
+            "x-twitter-auth-type": "OAuth2Session" if "auth_token" in cookies else "",
             "x-twitter-client-language": "en",
-            "cookie": cookie_str,
-            "user-agent": http.agents.chrome,
+            "cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()]),
         }
 
-    def _download_user_timeline(
-        self,
-        screen_name: str,
-        target_dir: Path,
-        headless: bool,
-        client: http.Client,
-        plain_client: http.Client,
-    ) -> bool:
-        """Fetch user posts and media timeline using Twitter GraphQL API with Playwright fallback.
+    def resolve(self, text: str) -> Target:
+        """A screen name, or a number, which is a user id."""
+        found = link(text, self.domains)
+        if found is None:
+            user = name(text)
+        elif len(found.parts) >= 2 and found.parts[1] == "status":
+            raise TargetError(f"{self.code}: single posts aren't supported yet; "
+                              f"give the profile, for example {self.examples[0]}")
+        else:
+            user = name(found.parts[0]) if found.parts and found.parts[0] not in NOT_PROFILES else None
+        if not user:
+            raise unreadable(self, text)
+        return Target(self.code, "user", user)
 
-        Returns True when the API listed every timeline, False when the browser took over.
-        """
-        # 1. Resolve user ID from screen name
-        user_id = self._resolve_user_id(client, screen_name)
+    def run(self, session: Session) -> None:
+        """Fetch user posts and media timeline using Twitter GraphQL API with a browser fallback."""
+        screen_name = session.target.value
+        # 1. A number is a user id already; a name is looked up.
+        user_id = screen_name if screen_name.isdigit() else self._resolve_user_id(session, screen_name)
         if not user_id:
-            log.warn("Direct API resolution failed for '{name}', attempting Playwright browser...", name=screen_name)
-            self._download_via_playwright(screen_name, target_dir, headless, plain_client)
-            return False
+            session.warn("Direct API resolution failed for '{name}', attempting the browser...", name=screen_name)
+            self._download_via_browser(session, screen_name)
+            return
 
-        log.info("Resolved @{name} -> User ID: {id}", name=screen_name, id=user_id)
+        session.info("Resolved @{name} -> User ID: {id}", name=screen_name, id=user_id)
 
         # 2. Iterate through user timelines: Posts then Media
         timelines = [
@@ -151,69 +129,52 @@ class TwtSource(BaseSource):
         ]
 
         for category, query_id in timelines:
-            if self.downloads.full:
+            if session.full:
                 break
+            if not session.wants(category=category):
+                continue
+            session.info("Fetching {category} timeline for @{name}...", category=category, name=screen_name)
+            if not self._read_timeline(session, user_id, category, query_id):
+                self._download_via_browser(session, screen_name)
+                return
 
-            log.info("Fetching {category} timeline for @{name}...", category=category, name=screen_name)
-            cursor = None
-            empty_page_count = 0
+    def _read_timeline(self, session: Session, user_id: str, category: str, query_id: str) -> bool:
+        """Read one timeline to its end; False when the API refused it and the browser should take over."""
+        cursor = None
+        empty_page_count = 0
 
-            while not self.downloads.full:
-                variables: Dict[str, Any] = {
-                    "userId": user_id,
-                    "count": 20,
-                    "includePromotedContent": False,
-                    "withClientEventToken": False,
-                    "withBirdwatchNotes": False,
-                    "withVoice": True,
-                }
-                if category == "posts":
-                    variables["withQuickPromoteEligibilityTweetFields"] = True
+        while not session.full:
+            url = f"https://x.com/i/api/graphql/{query_id}"
+            try:
+                data = session.fetch_json(url, params=timeline_params(user_id, category, cursor),
+                                          follow_redirects=False)
+            except FetchError as e:
+                if e.status is None:
+                    session.warn("API request error: {err}", err=e)
+                    return True
+                session.warn("API status {status} on {category}, switching to browser extraction...",
+                             status=e.status, category=category)
+                return False
 
-                if cursor:
-                    variables["cursor"] = cursor
-
-                features = {
-                    "responsive_web_graphql_timeline_navigation_enabled": True,
-                    "responsive_web_media_download_video_enabled": True,
-                }
-
-                url = f"https://x.com/i/api/graphql/{query_id}"
-                params = {"variables": json.dumps(variables), "features": json.dumps(features)}
-
-                try:
-                    data = client.json(url, params=params, follow_redirects=False)
-                except httpx.HTTPStatusError as e:
-                    log.warn(
-                        "API status {status} on {category}, switching to browser extraction...",
-                        status=e.response.status_code, category=category,
-                    )
-                    self._download_via_playwright(screen_name, target_dir, headless, plain_client)
-                    return False
-                except Exception as e:
-                    log.error("API request error: {err}", err=e)
+            # Extract media items from timeline instructions
+            items, next_cursor = self._parse_timeline_entries(session, data)
+            if not items:
+                empty_page_count += 1
+                if empty_page_count >= 5:
                     break
+            else:
+                empty_page_count = 0
 
-                # Extract media items from timeline instructions
-                items, next_cursor = self._parse_timeline_entries(data)
-                if not items:
-                    empty_page_count += 1
-                    if empty_page_count >= 5:
-                        break
-                else:
-                    empty_page_count = 0
+            for item in items:
+                item["category"] = category
+                self._save_media_item(session, item)
 
-                for item in items:
-                    item["category"] = category
-                    self._save_media_item(item, target_dir, client)
-
-                if not next_cursor or next_cursor == cursor or next_cursor.startswith("0|"):
-                    break
-                cursor = next_cursor
-
+            if not next_cursor or next_cursor == cursor or next_cursor.startswith("0|"):
+                break
+            cursor = next_cursor
         return True
 
-    def _resolve_user_id(self, client: http.Client, screen_name: str) -> Optional[str]:
+    def _resolve_user_id(self, session: Session, screen_name: str) -> Optional[str]:
         """Query UserByScreenName GraphQL endpoint to obtain numeric rest_id."""
         for query in [QUERY_USER_BY_SCREEN_NAME_PRIMARY, QUERY_USER_BY_SCREEN_NAME_LEGACY]:
             url = f"https://x.com/i/api/graphql/{query}"
@@ -222,7 +183,7 @@ class TwtSource(BaseSource):
                 "features": json.dumps({"hidden_profile_likes_enabled": True}),
             }
             try:
-                data = client.json(url, params=params, follow_redirects=False)
+                data = session.fetch_json(url, params=params, follow_redirects=False)
                 rest_id = selector.select(data).jmespath("data.user.result.rest_id").first
                 if rest_id:
                     return rest_id
@@ -230,7 +191,8 @@ class TwtSource(BaseSource):
                 pass
         return None
 
-    def _parse_timeline_entries(self, data: Dict[str, Any]) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    def _parse_timeline_entries(self, session: Session,
+                                data: Dict[str, Any]) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Parse tweets and pagination cursor from GraphQL timeline JSON response."""
         media_items = []
         next_cursor = None
@@ -321,12 +283,16 @@ class TwtSource(BaseSource):
                                     })
 
         except Exception as e:
-            log.warn("Error parsing timeline JSON: {err}", err=e)
+            session.warn("Error parsing timeline JSON: {err}", err=e)
 
         return media_items, next_cursor
 
-    def _save_media_item(self, item: Dict[str, Any], target_dir: Path, client: http.Client) -> bool:
-        """Queue an extracted Twitter media item into the platform-optimized layout."""
+    def _save_media_item(self, session: Session, item: Dict[str, Any]) -> bool:
+        """Queue an extracted Twitter media item into the platform-optimized layout.
+
+        The key is the tweet and the media's place in it, so the same file listed by both
+        timelines is saved once.
+        """
         category = item.get("category", "media")
         kind = item["kind"]
         tweet_id = item["tweet_id"]
@@ -336,88 +302,43 @@ class TwtSource(BaseSource):
 
         filename = f"{date_str}_{tweet_id}_{idx}.{ext}" if date_str else f"{tweet_id}_{idx}.{ext}"
         if category == "posts":
-            dest_folder = target_dir / "posts"
+            dest_folder = "posts"
         else:
-            dest_folder = target_dir / ("images" if kind == "image" else "videos")
-        dest_path = dest_folder / filename
+            dest_folder = "images" if kind == "image" else "videos"
+        return session.save(item["url"], filename, category=category,
+                            date=date.fromisoformat(date_str) if date_str else None, folder=dest_folder,
+                            key=f"{tweet_id}_{idx}")
 
-        # Check deduplication across all subfolders for this user to avoid re-downloading duplicate
-        # files, counting files that are still downloading.
-        claimed = self.files.claimed if self.files else set()
-        for check_folder in [target_dir / "posts", target_dir / "images", target_dir / "videos"]:
-            existing = check_folder / filename
-            if (existing.is_file() and existing.stat().st_size > 0) or existing in claimed:
-                log.info("skip {name}", name=f"{dest_folder.name}/{filename}")
-                return False
-
-        return self.downloads.add(client, item["url"], dest_path, key=f"{tweet_id}_{idx}")
-
-    def _download_single_tweet(self, tweet_id: str, target_dir: Path, client: http.Client) -> None:
-        """Queue media for a single status / tweet ID."""
-        url = f"https://x.com/i/api/graphql/{QUERY_TWEET_DETAIL}"
-        params = {
-            "variables": json.dumps({"tweetId": tweet_id, "withCommunity": False, "includePromotedContent": False}),
-            "features": json.dumps({"responsive_web_graphql_timeline_navigation_enabled": True}),
-        }
-
-        try:
-            data = client.json(url, params=params, follow_redirects=False)
-        except httpx.HTTPStatusError as e:
-            log.error("HTTP {status} fetching tweet {id}", status=e.response.status_code, id=tweet_id)
-            return
-
-        # Wrap in structure compatible with timeline parser
-        tweet_result = (selector.select(data).jmespath("data.tweetResult.result").first or {})
-        fake_timeline = {"data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [
-            {"entries": [{"content": {"itemContent": {"tweet_results": {"result": tweet_result}}}}]}
-        ]}}}}}}
-
-        items, _ = self._parse_timeline_entries(fake_timeline)
-        for item in items:
-            item["category"] = "posts"
-            self._save_media_item(item, target_dir, client)
-
-    def _download_via_playwright(
-        self,
-        screen_name: str,
-        target_dir: Path,
-        headless: bool,
-        client: http.Client,
-    ) -> None:
-        """Playwright fallback: navigates to x.com/<user> and x.com/<user>/media, scrolling to the end and intercepting GraphQL replies."""
-        cookies_list = load_cookies(self.code)
-        log.info("Launching Playwright Chromium for @{name}...", name=screen_name)
+    def _download_via_browser(self, session: Session, screen_name: str) -> None:
+        """Browser fallback: x.com/<user> and x.com/<user>/media, scrolled to the end, reading GraphQL replies."""
+        session.info("Launching the browser for @{name}...", name=screen_name)
         captured = [0]
-        current_category = ["posts"]
-
+        profile = f"https://x.com/i/user/{screen_name}" if screen_name.isdigit() else f"https://x.com/{screen_name}"
         tabs = [
-            ("posts", f"https://x.com/{screen_name}"),
-            ("media", f"https://x.com/{screen_name}/media"),
+            ("posts", profile),
+            ("media", f"{profile}/media"),
         ]
 
-        def on_timeline(data: Any, response: Any) -> None:
-            items, _ = self._parse_timeline_entries(data)
+        def on_timeline(session: Session, data: Any, response: Any) -> None:
+            if session.folder is None:
+                return
+            items, _ = self._parse_timeline_entries(session, data)
             captured[0] += len(items)
             for it in items:
-                it["category"] = current_category[0]
-                self._save_media_item(it, target_dir, client)
+                it["category"] = session.folder
+                self._save_media_item(session, it)
 
-        # This browser never hid navigator.webdriver, so stealth stays off.
-        with open_page(headless=headless, cookies=cookies_list, stealth=False) as page:
-            page.on_response(is_timeline, on_timeline)
+        session.on_response(is_timeline, on_timeline)
+        for cat, tab_url in tabs:
+            if session.full:
+                break
+            if not session.wants(category=cat):
+                continue
+            session.folder = cat
+            session.info("Navigating tab {tab}: {url}", tab=cat, url=tab_url)
+            # Continuously scroll to the end of the tab
+            if session.goto(tab_url):
+                session.scroll(count=lambda: captured[0])
+        session.folder = None
 
-            for cat, tab_url in tabs:
-                if self.downloads.full:
-                    break
-                current_category[0] = cat
-                log.info("Navigating tab {tab}: {url}", tab=cat, url=tab_url)
-                try:
-                    page.raw.goto(tab_url, wait_until="domcontentloaded", timeout=30000)
-                    page.raw.wait_for_timeout(3000)
-
-                    # Continuously scroll to the end of the tab
-                    scroll(page, cat, count=lambda: captured[0], more=lambda: not self.downloads.full)
-                except Exception as e:
-                    log.warn("Browser navigation error on {url}: {err}", url=tab_url, err=e)
-
-        log.info("Captured {n} items from browser session.", n=captured[0])
+        session.info("Captured {n} items from browser session.", n=captured[0])
