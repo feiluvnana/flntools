@@ -11,6 +11,7 @@ import asyncio
 import datetime
 import inspect
 import os
+import queue
 import tempfile
 import threading
 from dataclasses import dataclass, field
@@ -23,7 +24,7 @@ import httpx
 from flnd import net, vault
 from flnd.sources.base import FetchError, Source
 from flnd.target import Target
-from shared import fmt, kv, log, prompt
+from shared import fmt, kv, log, prompt, theme
 
 if TYPE_CHECKING:
     from shared import worker
@@ -97,6 +98,8 @@ class Session(Protocol):
     @property
     def secrets(self) -> MutableMapping[str, str]: ...
 
+    @property
+    def interactive(self) -> bool: ...
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str: ...
     def choose(self, message: str, options: Sequence[str] | Mapping[str, str]) -> str: ...
     def info(self, message: str, **fields: Any) -> None: ...
@@ -214,6 +217,10 @@ class SourceRun:
             self._loop_thread.start()
         return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
 
+    def on_loop(self) -> bool:
+        """Whether the caller is running on this source's own event loop."""
+        return self._loop_thread is threading.current_thread()
+
     def close(self) -> None:
         self.http.close()
         for store in (self._state, self._secrets):
@@ -241,7 +248,10 @@ class TargetSession:
         self._categories = selected(run.settings.options, type(run.source))
         # Every path and history key queued so far, so one file is never written twice.
         self._queued: set[Path | str] = set()
+        self._submitted = 0
         self._unpack_saved: list[_File] = []
+        self._handover: queue.SimpleQueue[_File | None] | None = None
+        self._handover_thread: threading.Thread | None = None
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -414,7 +424,8 @@ class TargetSession:
                 self._unpack_saved.append(_File(source, saved, label, history_key, password, size, headers))
             return False
         self._queued.update((dest, history_key))
-        self._downloads().submit(self._download, _File(source, dest, label, history_key, password, size, headers))
+        self._submitted += 1
+        self._submit(_File(source, dest, label, history_key, password, size, headers))
         if self.full:
             log.info("Reached limit of {limit} downloads.", limit=self._settings.limit)
         return True
@@ -440,7 +451,7 @@ class TargetSession:
     def full(self) -> bool:
         """Whether the limit of queued files is reached."""
         limit = self._settings.limit
-        return bool(limit) and self._pool is not None and self._pool.submitted >= limit
+        return bool(limit) and self._submitted >= limit
 
     @property
     def state(self) -> MutableMapping[str, Any]:
@@ -451,6 +462,11 @@ class TargetSession:
     def secrets(self) -> MutableMapping[str, str]:
         """This source's secrets, encrypted in `.flnd/secrets.db`."""
         return self._run.secrets
+
+    @property
+    def interactive(self) -> bool:
+        """Whether `ask` and `choose` can ask: during `flnd login`, in a terminal."""
+        return self._settings.interactive and theme.screen.interactive
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
         """Ask a question, during `flnd login` only; `flnd download` never asks, and raises `RuntimeError`."""
@@ -485,6 +501,7 @@ class TargetSession:
             self._run.http.cookies.update(net.cookie_jar(self._browser.cookies.all))
             self._browser.close()
             self._browser = self._page = None
+        self._end_handover(dropping=error is not None)
         if self._pool is not None:
             self._pool.__exit__(type(error) if error else None, error, error.__traceback__ if error else None)
             # The pool keeps failures in its results instead of raising, so each one is named here.
@@ -566,6 +583,36 @@ class TargetSession:
 
             self._pool = worker.pool(concurrency=self._source.concurrency, progress=str(self.target))
         return self._pool
+
+    def _submit(self, file: _File) -> None:
+        pool = self._downloads()
+        if not self._run.on_loop():
+            pool.submit(self._download, file)
+            return
+        # On the source's loop, a full pool would wait for downloads that need this very loop, forever,
+        # so a thread of this target's waits for room instead.
+        if self._handover is None:
+            self._handover = queue.SimpleQueue()
+            self._handover_thread = threading.Thread(target=self._hand_over, args=(pool, self._handover),
+                                                     daemon=True, name=f"flnd-{self._source.code}-saves")
+            self._handover_thread.start()
+        self._handover.put(file)
+
+    def _hand_over(self, pool: worker.Pool, files: queue.SimpleQueue[_File | None]) -> None:
+        while (file := files.get()) is not None:
+            pool.submit(self._download, file)
+
+    def _end_handover(self, *, dropping: bool) -> None:
+        if self._handover is None or self._handover_thread is None:
+            return
+        while dropping:
+            try:
+                self._handover.get_nowait()
+            except queue.Empty:
+                break
+        self._handover.put(None)
+        self._handover_thread.join()
+        self._handover = self._handover_thread = None
 
     def _download(self, file: _File) -> bool:
         source = file.source

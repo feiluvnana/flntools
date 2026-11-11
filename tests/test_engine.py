@@ -533,6 +533,28 @@ class ClientTest(EngineCase):
         self.assertEqual(len(loops), 3)
         self.assertEqual((self.target_dir("aaa", "a") / "telethon.mp4").read_bytes(), b"media")
 
+    def test_an_async_run_saves_more_files_than_the_pool_queues(self):
+        # Each fetch needs the source's loop, so a save made on that loop must never wait for the pool.
+        @asynccontextmanager
+        async def connect(self, session):
+            yield "client"
+
+        async def fetch(dest, progress):
+            dest.write_bytes(b"media")
+
+        async def run(session):
+            for number in range(20):
+                session.save(fetch, f"{number}.jpg", category="posts")
+
+        source = make_source("aaa", None, connect=connect, concurrency=1)
+        source.run = lambda self, session: run(session)
+        finished = []
+        runner = threading.Thread(target=lambda: finished.append(self.run_engine(source, targets=["aaa:a"])),
+                                  daemon=True)
+        runner.start()
+        runner.join(timeout=10)
+        self.assertEqual(finished, [20])
+
 
 class EngineLoginTest(EngineCase):
     def test_a_source_with_its_own_login_gets_an_asking_session(self):
@@ -545,9 +567,25 @@ class EngineLoginTest(EngineCase):
         source = make_source("aaa", lambda session: None, login=own_login, login_methods=("qr",))
         Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
         self.assertEqual(seen, [("qr", Target("aaa", "account", ""), True)])
+        self.assertEqual(str(seen[0][1]), "aaa")
         from flnd import vault
         with vault.open(self.home, "aaa") as secrets:
             self.assertEqual(secrets["session"], "s")
+
+    def test_interactive_only_during_login_in_a_terminal(self):
+        seen = []
+
+        def own_login(self, session, method):
+            seen.append(session.interactive)
+
+        source = make_source("aaa", lambda session: seen.append(session.interactive), login=own_login,
+                             login_methods=("qr",))
+        engine = Engine(home=self.home, sources={"aaa": source})
+        engine.login(source(), "qr")
+        self.screen._interactive = True
+        engine.login(source(), "qr")
+        self.run_engine(source, targets=["aaa:a"])
+        self.assertEqual(seen, [False, True, False])
 
     def test_ask_shows_its_description_in_the_question(self):
         answers = []

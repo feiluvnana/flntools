@@ -60,6 +60,8 @@ class FakeSession:
         self.state: MutableMapping[str, Any] = {}
         self.secrets: MutableMapping[str, str] = {}
         self.client: Any = None
+        # Whether `ask` and `choose` can ask; a test of a login sets it.
+        self.interactive = False
         self._cookies = dict(cookies or {})
         self._json = dict(json or {})
         self._html = dict(html or {})

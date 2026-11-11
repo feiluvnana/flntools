@@ -35,6 +35,10 @@ class FetchError(Exception):
         self.status = status
 
 
+class LoginError(Exception):
+    """A login that didn't work, with what to do instead: `LoginError("tlg: run flnd login tlg")`."""
+
+
 class Source(ABC):
     """One site flnd downloads from: what it declares, `resolve`, and `run`.
 
@@ -97,6 +101,7 @@ class Source(ABC):
         """Log in by `method`, for a source with its own way (tlg).
 
         Cookie sources keep this default, and the engine's `browser` and `file` methods log in.
+        A login that fails raises `LoginError`, which `flnd login` reports.
         """
         raise NotImplementedError(f"{self.code} has no login method {method!r}")
 

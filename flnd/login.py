@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flnd import vault
+# A source's own login (tlg) raises it too, so it lives in base; `login.LoginError` is the same class.
+from flnd.sources.base import LoginError
 from shared import cookies
 
 if TYPE_CHECKING:
@@ -19,10 +21,6 @@ COOKIE_METHODS = ("browser", "file")
 BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave", "chromium": "Chromium"}
 # Cookie files from before `flnd login`, still read when `.flnd/cookies/<code>.txt` is missing.
 LEGACY_DIRS = (Path("E:/flntools/.flnd/cookies"), Path("E:/.flnd/cookies"))
-
-
-class LoginError(Exception):
-    """A login that didn't work, with what to do instead."""
 
 
 def from_browser(source: Source, *, browser: str, profile: str | None = None) -> list[dict]:

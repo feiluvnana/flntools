@@ -38,7 +38,8 @@ class Target:
     value: str
 
     def __str__(self) -> str:
-        return f"{self.source}:{self.value}"
+        # The account a login and `connect` see has no value, and reads as its source's code.
+        return f"{self.source}:{self.value}" if self.value else self.source
 
 
 class Link(NamedTuple):
