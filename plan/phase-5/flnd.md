@@ -7,8 +7,9 @@ What changes for someone using flnd:
 2. **Facebook and Instagram videos are saved at their best quality.** Those sites serve it as separate video and audio streams (DASH), which flnd now downloads and joins with `media.video.merge`.
 3. **Downloads whose size couldn't be verified are checked** with `media.check`.
 4. **`--compress-image` and `--compress-video`** (each `small|balanced|high`) make photos and videos smaller after they are saved, with `media.compress`: re-encoded, capped in resolution, stripped of metadata, in the **same format** unless `--format-image` / `--format-video` names another. They **replace the original**.
+5. **`flnd sync`** brings every download folder up to date in one command: it repairs what is broken, fetches new posts, compresses what isn't compressed yet, and prints a summary.
 
-No new command. ffmpeg arrives with `pip install`, because `imageio-ffmpeg` is a required dependency of flnd ([ffmpeg](ffmpeg.md)), so there is no `flnd install-ffmpeg`. flnd needs Python 3.11 or later.
+One new command, [`flnd sync`](#flnd-sync). ffmpeg arrives with `pip install`, because `imageio-ffmpeg` is a required dependency of flnd ([ffmpeg](ffmpeg.md)), so there is no `flnd install-ffmpeg`. flnd needs Python 3.11 or later.
 
 ## Content decides the extension
 
@@ -68,7 +69,22 @@ Four new [download options](../phase-4/engine.md#download-options), for every so
 | `--compress-image small\|balanced\|high` | after saving each photo, run `media.compress(path, preset=…)`: smaller, metadata stripped, same format. It **replaces the original** when the result is smaller |
 | `--compress-video small\|balanced\|high` | the same for each video |
 | `--format-image <format>` | write compressed photos in this format instead of their own: `media.compress(…, format=…)` |
-| `--format-video <format>` | the same for videos. Both take any format `media` [writes](media.md#write) of that kind, such as `jpg`, `webp`, `avif`, `png` or `mp4`, `webm`, `mkv`, `gif` |
+| `--format-video <format>` | the same for videos: a container, a codec, or both ([below](#video-formats-and-codecs)) |
+
+`--format-image` takes any still or animated format `media` [writes](media.md#write): `jpg`, `webp`, `avif`, `png`, `gif`, ….
+
+#### Video formats and codecs
+
+`--format-video` takes one of three forms:
+
+| Value | Container | Codec |
+| --- | --- | --- |
+| a container: `mp4`, `mov`, `mkv`, `webm`, `avi`, `ts`, `3gp`, `gif` | that one | the container's default: H.264, or VP9 for WebM |
+| a codec: `h264`, `h265`, `vp9` | the file's own, when it can hold that codec; otherwise MP4 for `h264`/`h265`, WebM for `vp9` | that one |
+| both, as `container:codec`: `mkv:h265`, `mp4:h265` | that one | that one; a pair that can't go together (`webm:h265`) is a usage error |
+
+- **H.265** (`--format-video h265`) gives files 30–50% smaller than H.264 at the same quality, but Chrome and Firefox on many machines, and older Windows, can't play them. It is written with the `hvc1` tag, so Apple's players open it. flnd never picks it on its own.
+- flnd turns the value into `media.compress(…, format=…, codec=…)`.
 
 - **`--format-image` needs `--compress-image`**, and `--format-video` needs `--compress-video`. Alone, each raises `cli.UsageError("--format-image needs --compress-image")`. flnd has no conversion without compression, as decided when `--jpg` was dropped.
 - **Both compress options always replace the original; flnd never keeps both files.** Compression is lossy and strips metadata, and the original's URL may stop working, so a replaced original can't be recovered. Anyone who wants the originals runs without these flags.
@@ -107,7 +123,7 @@ The skip check reads `file`. So:
 
 If someone deletes the file itself, the next run downloads it again, and compresses it with that run's flags.
 
-**Only new downloads are compressed.** Files saved by earlier runs are skipped as usual, and aren't compressed after the fact ([open question 2](#open-questions)).
+**`flnd download` compresses only new downloads.** Files saved by earlier runs are skipped as usual. [`flnd sync`](#flnd-sync) compresses the ones already there.
 
 **Where it runs.**
 - **Photos** compress on the download pool's thread, right after the save. A photo takes about 0.1–0.3 s.
@@ -124,6 +140,55 @@ If someone deletes the file itself, the next run downloads it again, and compres
 | `RuntimeError` (no ffmpeg, or no `libx264` in a `PATH` ffmpeg) | one warning, and video compression stops for this run. Photos continue |
 | Ctrl-C during an encode | the `.part` is removed, the original stays, and no row says it was compressed |
 
+## flnd sync
+
+`flnd sync` brings **everything already downloaded** up to date, so one command keeps every account current:
+
+```sh
+flnd sync                                   # every target ever downloaded, with the settings each was downloaded with
+flnd sync ins:example_user tik:example_creator   # only these
+flnd sync --compress-video small --format-video h265   # and change their settings from now on
+flnd sync --only info                       # just the summary; nothing is fetched or changed
+```
+
+### Which targets, with which settings
+
+- **Every `flnd download` records its target and its settings** in `.flnd/targets.db`, a `kv` table keyed by `<code>:<value>`: `kind`, `compress_image`, `compress_video`, `format_image`, `format_video`, `unpack` and `zip`, and when it last ran. `--since` and `--until` aren't recorded, because they describe one run, not the target.
+- **`flnd sync` with no targets** runs every recorded target. Folders under `.flnd/downloads/<code>/<value>/` with no record (downloaded before Phase 5) are found too, and run with the default settings; their first sync records them.
+- **`flnd sync` with targets** runs only those, resolved as in `flnd download`.
+- **Options given to `sync` override the recorded ones and are saved**, so `flnd sync --compress-video small` turns compression on for every target from then on. `--no-compress-image` and `--no-compress-video` turn it off. `sync` takes every [download option](../phase-4/engine.md#download-options) except `--since` and `--until`.
+
+### The steps
+
+For each target, in this order, under the target's progress row:
+
+| Step | What it does |
+| --- | --- |
+| **1. repair** | Walks the target's history rows and its folder. **Wrong extension:** `media.sniff` disagrees with the name (a WebP saved as `.jpg` before Phase 5), so the file is renamed and its row updated; a name already taken is reported and left. **Broken:** `media.check` fails, so the file is deleted and its row forgotten. **Missing:** a row whose file is gone. Broken and missing files are then downloaded again by step 2 |
+| **2. fetch** | The same run as `flnd download <target>` with the target's settings: new posts are downloaded, and so are the broken and missing files from step 1, because their rows no longer say they were saved. New files are compressed as they arrive, as in `flnd download` |
+| **3. compress** | When the target has a compress setting: every file in the target's folder whose history row has no `compressed` field yet goes through `media.compress` with the target's preset and format, exactly as a new download would. Videos use the one-at-a-time queue. Rows that say `compressed` (a preset or `"none"`) are skipped, so a second `sync` does nothing here |
+| **4. info** | One summary line per target, and a total |
+
+**The summary**, aligned columns printed with `log.info`, sizes through `fmt.size`:
+
+```
+target                  files   photos  videos   size     saved     repaired  missing
+ins:example_user       1,204   1,010   194      3.1 GB   4.8 GB    2         0
+tik:example_creator   88      0       88       610 MB   1.2 GB    0         1
+total                   1,292   1,010   282      3.7 GB   6.0 GB    2         1
+```
+
+- `saved` is the sum of `original_size − size` over compressed rows. `missing` counts files step 2 couldn't get back, because the post is gone, or lies outside what the source still lists.
+- `--only` chooses steps: `--only info` changes nothing and fetches nothing; `--only repair,compress` works offline. The default is all four.
+- **Repair never deletes a file it can't replace without saying so.** A broken file whose post is gone is still deleted, because a broken file is worth nothing, and it is listed by name in the summary's warnings.
+- Files in a target's folder that aren't in its history (put there by hand) are counted in `files` and otherwise left alone: not checked, not compressed.
+
+### Things it doesn't do
+
+- **Recompress.** A file compressed once is skipped, whatever settings the next sync has. Changing `--format-video` to `h265` applies to files compressed from then on. A `--recompress` would re-encode an already lossy file and lose quality twice.
+- **Delete files whose posts were deleted.** An archive keeps what it saved.
+- **Ask questions.** Like `flnd download`, it never prompts; a source that needs a login gets the usual hint and its targets are skipped.
+
 ## Checking downloads
 
 The engine already compares the bytes it received with `Content-Length`. Some downloads have no size to compare with: a chunked response without `Content-Length`, or a Telegram `fetch` with `size=None`. For those it runs `media.check` on photos and videos, before renaming the `.part` file. A `BrokenError` is a failed download, retried like any other.
@@ -137,7 +202,8 @@ The engine already compares the bytes it received with `Content-Length`. Some do
 | `flnd/net.py` | `sniff`, the `audio=` path, checks | +45 |
 | `flnd/session.py`, `flnd/engine.py` | `audio=`, the hint, both compress options with the video queue, and the history fields | +70 |
 | `flnd/dash.py` | new | 40 |
-| `flnd/cli.py` | `--compress-image`, `--compress-video`, `--format-image`, `--format-video`, and the check that a format comes with its compress option | +14 |
+| `flnd/cli.py` | `--compress-image`, `--compress-video`, `--format-image`, `--format-video` (with the `container:codec` parsing), the check that a format comes with its compress option, and the `sync` command | +40 |
+| `flnd/sync.py` | new: the repair, compress and summary steps of `flnd sync`, and the saved target settings | 140 |
 | `flnd/sources/fbk.py`, `ins.py` | choose DASH when there is a manifest | +8 each |
 
 The 35-line sniffer the first draft put in `net.py` is now `media.sniff`, and the preset table lives only in `media`.
@@ -224,6 +290,14 @@ One extra, named for the module, because `shared`'s missing-extra messages name 
   - a `BrokenError` keeps the original;
   - a missing `libx264` warns once and leaves videos as they are, while photos are still compressed;
   - Ctrl-C during an encode leaves the original, no `.part`, and no row marked compressed.
+- **`flnd sync`**, on a temp `.flnd/` with fake sources (`httpx.MockTransport`), never a real site:
+  - with no targets, it runs every recorded target, and a folder without a record with the defaults, then records it;
+  - options given to `sync` override the recorded ones and are saved; `--no-compress-video` turns it off;
+  - **repair:** a WebP named `.jpg` is renamed and its row updated; a truncated JPEG is deleted, re-downloaded by the fetch step, and counted in `repaired`; a missing file is re-downloaded; a file the source no longer lists is counted in `missing` and named in a warning;
+  - **compress:** existing uncompressed files are compressed and recorded; a second `sync` compresses nothing; files compressed with `"none"` are skipped; a file not in the history is left alone;
+  - **`--format-video`:** `h265` keeps `.mp4` and gives `hevc`; on a WebM it gives `.mp4`; `mkv:h265` gives `.mkv` + `hevc`; `webm:h265` is a usage error;
+  - **`--only info`** makes no request and changes no file; `--only repair,compress` makes no request;
+  - the summary's numbers match the history: files, kinds, size, saved, repaired, missing.
 - **Checks:**
   - a chunked response without `Content-Length` whose body is a truncated JPEG is retried;
   - a download with a known size isn't decoded;
@@ -241,11 +315,11 @@ These were open questions, and the user has decided them (2026-11-11):
 - **Two compress options,** `--compress-image` and `--compress-video`, and no `--jpg`. They strip metadata, GPS included, and keep the format unless `--format-image` / `--format-video` names another. `media.convert` stays available to scripts.
 - **A setting given directly replaces the preset's value for that setting** (`media.compress(p, quality=75)`); the preset fills in the rest.
 - **Python 3.11 is the floor.**
+- **H.265 only when asked,** through `--format-video h265` or `container:h265` ([Video formats and codecs](#video-formats-and-codecs)).
+- **`flnd sync`** repairs, fetches, compresses and summarizes every target ([flnd sync](#flnd-sync)).
 - **`media` has top-level functions for any file and `media.image` / `media.video` / `media.audio` namespaces**, reads every format Pillow and ffmpeg can read safely, and adds trim, frame extraction, photos-to-video and frame-rate caps ([media](media.md)).
 - **`shared`'s ceiling rises to about 5,000 lines**, so `media` (about 780) fits; the README change waits until Phase 4 is done with it.
 
 ## Open questions
 
-Still the user's call:
-1. **The codec for `--compress-video`.** flnd uses H.264 (VP9 for WebM), which plays everywhere. H.265 makes files 30–50% smaller, but many browsers and older Windows machines can't play it. If you want it, it could be a `--codec-video h265` option. `media.compress(codec="h265")` already exists for scripts.
-2. **Commands for files you already have.** The options only touch new downloads. Do you want `flnd compress <folder> --preset small` (and maybe `flnd info <file>`, printing `media.probe`)? Each is about 20 lines in `flnd/cli.py`, because `media` does the work.
+None right now.
