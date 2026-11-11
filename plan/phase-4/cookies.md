@@ -1,6 +1,6 @@
 # cookies
 
-Phase 4, step 2. `shared/_cookies.py` is everything cookie-related, in one module of its own. Cookies aren't only a browser thing: an API-only source such as loi loads a cookie file and sends a `Cookie:` header without ever opening a browser. `load_from_file`, `to_file` and `to_header` use only the stdlib (`http.cookiejar`). `load_from_browser` reads the browser's own sqlite database and decrypts it with `cryptography`, from the `browser` extra, which it loads lazily. No cookie library is used: `rookiepy`, the first choice, stopped publishing wheels after Python 3.12 and can't be installed on 3.13 or 3.14.
+Phase 4, step 2. `shared/_cookies.py` is everything cookie-related, in one module of its own. Cookies aren't only a browser thing: an API-only source such as loi loads a cookie file and sends a `Cookie:` header without ever opening a browser. `load_from_file`, `to_file` and `to_header` use only the stdlib. They parse Netscape files themselves, because `http.cookiejar` drops the `#HttpOnly_` marker. `load_from_browser` reads the browser's own sqlite database and decrypts it with `cryptography`, from the `browser` extra, which it loads lazily. No cookie library is used: `rookiepy`, the first choice, stopped publishing wheels after Python 3.12 and can't be installed on 3.13 or 3.14.
 
 ```python
 from shared import cookies

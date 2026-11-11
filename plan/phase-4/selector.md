@@ -3,7 +3,7 @@
 Phase 4, step 2. `shared/_selector.py` replaces `shared/_scrape.py` and the response half of `http`. It is a small wrapper over parsel, JMESPath and JSONPath, and needs the `selector` extra (`parsel`, `python-jsonpath`).
 
 ```python
-page = selector.select(response)                     # httpx or Playwright response, HTML, bytes, JSON text, or page.content
+page = selector.select(response)                     # httpx or Playwright response, HTML, bytes, JSON text, or a file
 page.css("h1").text                                  # "Example User"
 page.css("a[href*='/video/']::attr(href)").all      # ["…", "…"]
 page.xpath("//meta[@property='og:image']/@content").first
@@ -26,6 +26,7 @@ page.raw                                             # the parsel.Selector
 | an httpx response | `.text`. A JSON content type gives a JSON selection |
 | a Playwright response | `.text()` (it is a method there; the review caught the old code reading it as an attribute). The content type is read the same way |
 | a `Path` | the file's text |
+| a `dict` or `list` | a JSON selection over the value, for data already parsed |
 
 With `query`, it is a shortcut for `.css(query)` on HTML, or for `.jmespath(query)` on JSON. Sources are detected by duck typing, so `selector` imports neither httpx nor Playwright.
 

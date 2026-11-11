@@ -48,7 +48,6 @@ class Instagram(Source):
     code = "ins"
     name = "Instagram"
     domains = ("instagram.com",)
-    user_agent = browser.chrome_user_agent
     needs = ("sessionid",)                               # any one of these cookies is enough
 
     def headers(self, cookies):
@@ -79,7 +78,10 @@ class Instagram(Source):
 | `code`, `name`, `domains` | as in the registry | required |
 | `requires_login` | `True` when the source can't work at all without logging in (tlg) | `False` |
 | `login_methods` | how `flnd login` can log in to this source | `("browser", "file")` |
-| `user_agent`, `viewport`, `browser_args`, `stealth` | for this source's HTTP client and browser | `browser.chrome_user_agent`, `(1280, 900)`, `()`, `True` |
+| `user_agent` | the user agent for this source's HTTP requests only, for a site that refuses httpx's own. The browser always keeps its own | `None` |
+| `viewport`, `browser_args`, `stealth` | for this source's browser | `(1280, 900)`, `()`, `True` |
+| `concurrency` | how many files download from this source at once. A whole CDN hit eight at a time looks like a bot | `4` |
+| `pause` | seconds between two targets of this source, with ±40% jitter, so a list of accounts isn't read back to back | `5.0` |
 | `needs` | cookie names, **any one** of which is enough. If none is present, the engine asks for a cookie file, or warns | `()` |
 | `wait` | the retry wait: seconds, or `(error, attempt) -> float \| None` (Telegram reads `FloodWaitError.seconds`) | `1.0` |
 
@@ -130,7 +132,9 @@ What was `shared.http`, kept private in `flnd/net.py`:
 - **Atomic downloads with progress.** Each file is written to `.name.<random>.part` with mode 0644, then renamed. One `log` bar per file, sized from `Content-Length`.
 - **Mirrors.** Each failed mirror writes `log.warn("mirror N failed; trying next")`.
 - **Signing.** `Source.sign` runs inside the retry loop, before every attempt.
-- **User agents** come from `browser.chrome_user_agent` and its siblings ([browser](browser.md#user-agents)). The same string goes to the HTTP client and the browser.
+- **Backing off.** A 429, or a challenge a source reports through `session.challenged()`, pauses that source: 30 s, then 60 s, then 120 s, with jitter, and `log.warn` says so. A third in a row stops the source's remaining targets with an error, instead of hammering a site that has noticed.
+- **Locale and timezone.** `flnd download --locale fr-FR --timezone Europe/Paris` sets the browser's language and timezone for every source, through `browser.connect(locale=, timezone=)`. Without them, the browser keeps the system's. They should match where the connection really comes from, because a mismatch with the IP's country is a common bot signal; the help text says so.
+- **User agents.** The browser always reports its own. The HTTP client sends the source's `user_agent` when it sets one, written in that source, and httpx's own otherwise.
 
 ## Targets
 

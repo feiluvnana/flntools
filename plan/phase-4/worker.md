@@ -76,7 +76,7 @@ print(len(pool.results), "done")
 | `join(timeout=None) -> list[Result]` | waits until every task submitted so far has finished, and returns `results`. With `timeout`, it gives up waiting after that many seconds and returns what has finished, leaving the rest running. It may be called before `close()`, for example to wait for a first batch, and more tasks can be submitted afterwards |
 | `results` | the finished `Result`s, in finish order |
 | `submitted` | how many tasks were queued |
-| `raw` | the underlying executor |
+| `raw` | the `ProcessPoolExecutor` with `processes=True`, the asyncio loop once an `async def` function was submitted, else `None` |
 
 **Two ways to use it:**
 - **With `with`** (the usual way): leaving the block calls `close()` then `join()`. If the block raised, queued tasks are dropped instead of run, with a warning line.
@@ -188,7 +188,7 @@ The old `worker` options that almost nobody set are gone: `rate`, `setup`, `wait
 - **Processes:**
   - two tasks really run at the same time (a barrier that only opens with both);
   - a `lambda` gives the clear `TypeError`;
-  - a timeout terminates the process.
+  - a timeout stops the try inside its process (an alarm in the child; Windows has none, so there it runs on like a thread).
 - **async:** no more than `concurrency` run at once; a timeout cancels the coroutine.
 - **Retries:** the waits are 1 s, 2 s, 4 s with jitter, with sleeping patched out.
 - **Ctrl-C:**
