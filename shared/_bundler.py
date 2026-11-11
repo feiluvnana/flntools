@@ -23,9 +23,11 @@ import shared
 PathLike = Union[str, "os.PathLike[str]"]
 
 # What shared's modules import inside functions or by name, added whenever it is installed.
-# compression.zstd is the stdlib's on Python 3.14 and later.
+# compression.zstd is the stdlib's on Python 3.14 and later. media loads its namespaces by name,
+# and imageio-ffmpeg's hook collects the ffmpeg binary.
 PACKAGES = ("playwright.sync_api", "cryptography", "pyzipper", "py7zr", "parsel", "jmespath", "jsonpath", "telethon",
-            "compression.zstd")
+            "compression.zstd", "shared._media_image", "shared._media_video", "shared._media_audio", "PIL",
+            "pi_heif", "imageio_ffmpeg")
 LAST_LINES = 15
 
 

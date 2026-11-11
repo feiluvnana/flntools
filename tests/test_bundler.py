@@ -53,6 +53,13 @@ class CommandTest(unittest.TestCase):
         self.assertIn("mypkg.plugins", hidden)
         self.assertIn("mypkg.more", hidden)
 
+    def test_media_namespaces_and_engines_are_hidden_imports(self):
+        # media loads its namespaces by name, and Pillow, pi-heif and imageio-ffmpeg inside functions.
+        with mock.patch.object(bundler, "_installed", lambda module: True):
+            hidden = values(self.argv(), "--hidden-import")
+        for module in ("shared._media_image", "shared._media_video", "shared._media_audio", "PIL", "pi_heif",
+                       "imageio_ffmpeg"):
+            self.assertIn(module, hidden)
 
     def test_the_bundler_and_pyinstaller_stay_out_of_the_bundle(self):
         argv = self.argv()
@@ -137,6 +144,24 @@ class MissingExtraTest(unittest.TestCase):
 @unittest.skipUnless(HAS_PYINSTALLER and os.environ.get("FLNTOOLS_BUILD_TESTS") == "1",
                      "set FLNTOOLS_BUILD_TESTS=1 with PyInstaller installed to run a real build")
 class RealBuildTest(unittest.TestCase):
+    def test_a_built_program_probes_a_photo_and_a_video(self):
+        # The ffmpeg binary is data to PyInstaller, so a lost executable bit would only show here.
+        with tempfile.TemporaryDirectory() as folder:
+            photo, video = Path(folder) / "a.png", Path(folder) / "v.mp4"
+            from media_samples import sample
+
+            photo.write_bytes(sample("small.png").read_bytes())
+            video.write_bytes(sample("v.mp4").read_bytes())
+            script = Path(folder) / "probe.py"
+            script.write_text("import sys\nfrom shared import media\n"
+                              "print(media.probe(sys.argv[1]).kind, media.probe(sys.argv[2]).video)\n")
+            built = bundler.build(script, name="probe", out=Path(folder) / "dist")
+            program = built / ("probe.exe" if sys.platform == "win32" else "probe")
+            result = subprocess.run([str(program), str(photo), str(video)], capture_output=True, text=True,
+                                    timeout=120, cwd=folder)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["image", "mpeg4"])
+
     def test_a_built_script_finds_the_lazy_imports(self):
         with tempfile.TemporaryDirectory() as folder:
             script = Path(folder) / "tiny.py"
