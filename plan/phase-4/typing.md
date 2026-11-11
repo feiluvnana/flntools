@@ -14,7 +14,12 @@ Phase 4, step 1, then checked in every later step. `shared` and flnd are type-ch
 include = ["shared", "flnd", "tests/typing"]
 typeCheckingMode = "standard"
 pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+reportUnnecessaryTypeIgnoreComment = "error"
 ```
+
+`venvPath` and `venv` point pyright at `.venv`, where the extras are installed. Without them it can't resolve httpx, parsel or cryptography.
 
 ## What must type-check
 
@@ -31,5 +36,5 @@ pythonVersion = "3.10"
 ## Tests
 
 - `make typecheck` passes with zero errors.
-- `tests/typing/usage.py` is type-checked, never run. It uses `assert_type` for `worker.map`, `prompt.choice`, `kv` and `selector`. The lines that must fail carry `# type: ignore[...]` with `reportUnnecessaryTypeIgnoreComment` enabled, so a change that makes one of them type-check by accident fails the build. Those lines are a misspelt `theme.color`, a `Source` with `needs` as a string, and `worker.map(len, [1, 2])`.
+- `tests/typing/usage.py` is type-checked, never run. It uses `assert_type` for `worker.map`, `prompt.choice`, `kv` and `selector`. The lines that must fail carry `# pyright: ignore[<rule>]` with `reportUnnecessaryTypeIgnoreComment` enabled. Pyright reads `# type: ignore[...]` as a blanket ignore whatever the brackets say, so only the pyright form pins the expected error, so a change that makes one of them type-check by accident fails the build. Those lines are a misspelt `theme.color`, a `Source` with `domains` (and, from step 3, `needs`) as a string, and `worker.map(len, [1, 2])`. Each step adds the lines for the modules it builds: `kv` and `selector` in step 2, `Session` in step 3.
 - A test checks that `shared/py.typed` is in the built wheel.
