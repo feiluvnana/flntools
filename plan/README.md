@@ -6,21 +6,21 @@ flntools is flnd, a media downloader, and `shared`, the toolkit it is built on. 
 
 - **`shared` is flnd's toolkit, not a general library product.** flnd is its only user, since loi and tlg became flnd sources. The package boundary stays, because it keeps the engine and the sources clean. Nothing is added for imaginary outside users.
 - **Each module is small, with one obvious way to use it.** If the standard library already does the job, the module doesn't exist.
-- **Ceiling.** `shared` stays under **4,500 lines of code** (about 3,600 after Phase 4). Going over means removing something first. Lines of code don't count docstrings, comments or blank lines, so the size limits never push against documentation.
+- **Ceiling.** `shared` stays under **about 5,000 lines of code** (about 3,400 after Phase 4, about 4,500 after Phase 5). The user raised it from 4,500 on 2026-11-11, so `media` has room. Going over means removing something first. Lines of code don't count docstrings, comments or blank lines, so the size limits never push against documentation.
 
 ## Rules
 
 1. **Wrap one library; don't rebuild it.** A module adds only what scripts would otherwise write by hand.
 2. **Every wrapper has `.raw`.** A wrapper is a small object with the methods a script needs, and `.raw` is the real library object: a `Browser`'s Playwright `BrowserContext`, a page's Playwright `Page`, a selection's `parsel.Selector`, `kv`'s `sqlite3.Connection`, a worker pool's executor. Anything rarer goes through `.raw`, so a wrapper never grows into its library's whole API.
-3. **Stay small.** About 150–300 lines of code per module. A module is all of its files: `cli` is `_cli.py` + `_params.py`, and `theme` is `_theme.py` + `_screen.py`. Past 400 lines, stop and recheck the scope.
+3. **Stay small.** About 150–300 lines of code per module. A module is all of its files: `cli` is `_cli.py` + `_params.py`, and `theme` is `_theme.py` + `_screen.py`. Past 400 lines, stop and recheck the scope. **`media` is the one module allowed past 400** (about 1,100 in six files): it wraps two engines, Pillow and ffmpeg, for three kinds of file, and splitting it would bring back the two-module API its [plan](phase-5/media.md#files-and-budget) removes.
 4. **Safe by default.** Anything that reads untrusted input (archives, cookies, HTML) refuses dangerous input unless the caller explicitly allows it.
 
 ```python
 from shared import style, fmt, theme, log, prompt, cli        # stdlib only
-from shared import archive, crypto, cookies, kv, selector, browser, worker, bundler
+from shared import archive, crypto, cookies, kv, selector, browser, worker, bundler, media
 ```
 
-## Modules after Phase 4
+## Modules
 
 | Module | Plan | File | Wraps | Extra |
 | --- | --- | --- | --- | --- |
@@ -38,6 +38,7 @@ from shared import archive, crypto, cookies, kv, selector, browser, worker, bund
 | `browser` | [phase-4](phase-4/browser.md) | `_browser.py` | Playwright | `browser` |
 | `worker` | [phase-4](phase-4/worker.md) | `_worker.py` | `concurrent.futures`, `asyncio` | — |
 | `bundler` | [phase-4](phase-4/packaging.md#bundler) | `_bundler.py` | PyInstaller | `bundler` |
+| `media` | [phase-5](phase-5/media.md), [ffmpeg](phase-5/ffmpeg.md) | `_media.py`, `_ffmpeg.py`, `_pillow.py`, `_media_image.py`, `_media_video.py`, `_media_audio.py` | Pillow, pi-heif, the ffmpeg program (imageio-ffmpeg) | `media` |
 
 Removed in Phase 4:
 - **`http`:** downloads, retries and signing moved into flnd's [engine](phase-4/engine.md#downloads); response parsing moved to `selector`.
@@ -56,6 +57,7 @@ flowchart LR
   archive --> fmt
   browser -.-> cookies
   browser -.-> selector
+  media --> log
 ```
 
 ## Phases
@@ -85,13 +87,17 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 6. [tlg](phase-4/tlg.md): Telegram on Telethon. `flnd login tlg` (from Telegram Web in your browser, a QR code, or phone and code), then `flnd download tlg:<chat> --from … --since …`.
 7. [packaging](phase-4/packaging.md): `make dist`, through a one-function `shared.bundler` over PyInstaller; Chromium installed with `flnd install-browser`.
 
+**Phase 5: media.** Built in this order:
+1. [media](phase-5/media.md): `shared.media`, one module for photos, videos and audio, with `probe`, `convert`, `compress`, `check` and `sniff` for any file, and `media.image`, `media.video` and `media.audio` for one kind. Photos go through Pillow and pi-heif in process; videos and audio through the ffmpeg program, which [ffmpeg](phase-5/ffmpeg.md) gets from the `imageio-ffmpeg` wheel and runs behind input whitelists.
+2. [flnd on media](phase-5/flnd.md): extensions from content, DASH video and audio merged, downloads checked, `--compress-image` / `--compress-video` with `--format-image` / `--format-video`, and `flnd sync`.
+
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
 
 ## Conventions
 
 - **Python and dependencies.** Python 3.11 and later. 3.10 reached its end of life in October 2026, and Pillow and PyAV have dropped it. `style`, `fmt`, `theme`, `log`, `prompt`, `cli`, `kv` and `worker` use only the stdlib, and so does `cookies` apart from `load_from_browser`.
 - **Public surface.** Every file in `shared` starts with `_`, and [`shared/__init__.py`](../shared/__init__.py) is the only public surface.
-- **Lazy imports.** `archive`, `crypto`, `cookies`, `kv`, `selector`, `browser`, `worker` and `bundler` load through a module `__getattr__`, with a `TYPE_CHECKING` block for type checkers. `from shared import log` never imports Playwright, parsel or cryptography.
+- **Lazy imports.** `archive`, `crypto`, `cookies`, `kv`, `selector`, `browser`, `worker`, `bundler` and `media` load through a module `__getattr__`, with a `TYPE_CHECKING` block for type checkers. `from shared import log` never imports Playwright, parsel, cryptography or Pillow.
 - **Missing extras.** A missing extra raises `ImportError("shared.browser needs playwright: pip install 'flntools[browser]'")` on first use.
 - **Readable code.** Code is written for the next person to read it, and kept short:
   - **Order.** A module reads top to bottom: public names first, then the helpers they call, in the order they are called.
@@ -122,9 +128,10 @@ archive = ["pyzipper", "py7zr"]                                  # password zips
 selector = ["parsel>=1.9.0", "python-jsonpath"]
 browser = ["playwright>=1.40.0", "cryptography>=42"]
 bundler = ["pyinstaller>=6"]
+media = ["pillow>=11.3", "pi-heif>=1.0", "imageio-ffmpeg>=0.6"]   # Pillow and HEIC for photos; the ffmpeg binary
 ```
 
-flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pyzipper` and `py7zr`, because flnd always needs them (`qrcode` draws tlg's QR login). The dev group adds `pyright` and `typing_extensions`.
+flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pyzipper`, `py7zr`, `pillow`, `pi-heif` and `imageio-ffmpeg`, because flnd always needs them (`qrcode` draws tlg's QR login, and `imageio-ffmpeg` brings ffmpeg). The dev group adds `pyright` and `typing_extensions`.
 
 ## Makefile
 
@@ -135,7 +142,7 @@ PYTHON ?= 3.14
 
 setup:
 	uv venv .venv --python $(PYTHON)
-	uv pip install -e '.[archive,selector,browser,bundler]' --group dev --python .venv/bin/python
+	uv pip install -e '.[archive,selector,browser,bundler,media]' --group dev --python .venv/bin/python
 	.venv/bin/playwright install chromium
 
 test:
@@ -154,7 +161,10 @@ flnd:
 
 dist:
 	.venv/bin/python -c "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', data=('licenses',))"
+	.venv/bin/python -c "$$FFMPEG_SOURCE" > dist/flnd/licenses/ffmpeg-source.txt
 ```
+
+`FFMPEG_SOURCE` is a short Python snippet defined in the Makefile: it prints the bundled ffmpeg's `-version` output, for the GPL source offer in `licenses/ffmpeg.txt` ([flnd › Packaging](phase-5/flnd.md#packaging)).
 
 `requires-python` is `>=3.11`. Before a release, run `make setup PYTHON=3.11 check`. `make flnd ARGS="download ins:example_user"` passes arguments through.
 
@@ -170,4 +180,5 @@ These are what made flnkit big. They stay out.
 - **archive:** writing RAR, extracting nested archives automatically, file watching, and disk usage.
 - **selector:** Scrapy itself, spiders, link following, item pipelines, and robots.txt.
 - **worker:** a persistent or distributed job queue, scheduling, priorities, and a global thread limit.
-- **everything:** async variants of the APIs (`worker` runs async functions, and every `shared` API stays synchronous), and subprocess helpers.
+- **media:** see its [Rejected](phase-5/media.md#rejected) list: a public `which_ffmpeg()` or `run(*args)`, writing HEIC, JPEG XL, AV1 encoding, hardware encoders, filters and effects, metadata editing, HLS downloads.
+- **everything:** async variants of the APIs (`worker` runs async functions, and every `shared` API stays synchronous), and subprocess helpers. A module may privately run one outside program with arguments it builds itself, as `archive` runs `unrar` and `media` runs `ffmpeg`; it never offers a general "run this program" function.

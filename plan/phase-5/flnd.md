@@ -214,9 +214,9 @@ Counted as in the [ceiling](../README.md#position): lines of code, without docst
 
 | | Lines of code |
 | --- | --- |
-| `shared` after Phase 4 | about 3,600 |
-| `media` (six files) | about 780 ([why past 400](media.md#files-and-budget)) |
-| **`shared` after Phase 5** | **about 4,380**, under the raised ceiling of about 5,000 |
+| `shared` after Phase 4 | 3,372 |
+| `media` (six files) | 1,098 as built; planned at about 780 ([why past 400, and why more](media.md#files-and-budget)) |
+| **`shared` after Phase 5** | **4,475**, under the raised ceiling of about 5,000 |
 
 ## pyproject
 
@@ -239,18 +239,18 @@ One extra, named for the module, because `shared`'s missing-extra messages name 
 
 ## Packaging
 
-`make dist` is unchanged as a command. `bundler.build` adds `imageio_ffmpeg`, `PIL` and `pi_heif` to its hidden imports when they are installed, because `shared` loads them lazily and PyInstaller can't see that.
+`make dist` is unchanged as a command, plus one line that writes `ffmpeg-source.txt`. `bundler.build` adds `imageio_ffmpeg`, `PIL` and `pi_heif` to its hidden imports when they are installed, because `shared` loads them lazily and PyInstaller can't see that, and also `shared._media_image`, `_media_video` and `_media_audio`, which `media` loads by name.
 - **ffmpeg's binary** is collected by `pyinstaller-hooks-contrib`'s `hook-imageio_ffmpeg.py`, as `imageio_ffmpeg/binaries/ffmpeg-<platform>-v9.0`. hooks-contrib is installed with PyInstaller.
 - **Pillow** has hooks in PyInstaller itself.
 - **pi-heif** is a C extension whose libraries PyInstaller finds by dependency analysis.
 - **Size.** The bundle grows by the ffmpeg binary: 52 MB on macOS arm64, 101 MB on Windows x64, and 165 MB on Linux x86_64. Pillow and pi-heif add about 15 MB. Chromium is still not bundled.
 - **The executable bit.** A data file collected into the bundle could lose it. The bundle test runs a probe from inside the built program, so a lost bit fails the test instead of a user's download.
-- **The GPL.** Every bundle includes ffmpeg, because it is a required dependency. The binary is a GPL build ([ffmpeg › Licensing](ffmpeg.md#licensing)), so `make dist` ships a **`licenses/` folder** with it, through `bundler.build(data=("licenses",))`. It holds:
-  - `ffmpeg-LICENSE.txt`: the GPL text, from FFmpeg's `COPYING.GPLv3`;
-  - `ffmpeg-SOURCE.txt`: the **source offer**. It gives the exact ffmpeg version and `configure` line (read from `ffmpeg -version` at build time), links to the matching FFmpeg release tarball and to imageio-ffmpeg's build scripts, and makes a written offer to provide that source on request for three years;
-  - the licenses of the other bundled native code: Pillow (MIT-CMU), pi-heif (BSD-3) with libheif and libde265 (LGPL), and Playwright (Apache-2.0).
+- **The GPL.** Every bundle includes ffmpeg, because it is a required dependency. The binary is a GPL build ([ffmpeg › Licensing](ffmpeg.md#licensing)), so `make dist` ships the **`licenses/` folder** with it, through `bundler.build(data=("licenses",))`. As built (step 1), it holds, in the folder's one-file-per-package format (`tests/test_packaging.py` checks the first two lines):
+  - `ffmpeg.txt`: `License: GPL-2.0-or-later`, what the binary is and where its source is (FFmpeg's release tarballs and git, and imageio-ffmpeg's build scripts), the **written offer** to provide that source on request for three years, and FFmpeg's `COPYING.GPLv2` (the binary is GPL 2 or later, not 3: see ffmpeg › Licensing);
+  - `ffmpeg-source.txt`, **written by the `dist` target** into `dist/flnd/licenses/`, from the bundled binary's `ffmpeg -version`: its exact version and `configure` line, so it always matches the binary and differs per platform;
+  - `pillow.txt` (MIT-CMU, with the licences of the libraries its wheels carry), `pi-heif.txt` (BSD-3, with libheif and libde265's LGPL-3.0 and the GPL-3.0 it builds on), `imageio-ffmpeg.txt` (BSD-2), beside the existing files such as `playwright.txt`.
 
-  `flnd/licenses/` is a checked-in folder. Only `ffmpeg-SOURCE.txt` is generated, by the `dist` target, so its version always matches the binary in the bundle. The bundle test checks that both ffmpeg files exist, and that the version in the source offer equals the bundled binary's.
+  The real-build test (`FLNTOOLS_BUILD_TESTS=1`) builds a script that probes a generated photo and video from inside the bundle; it passes on macOS arm64, so imageio-ffmpeg's hook collects the binary with its executable bit. Checking `ffmpeg-source.txt` inside a built flnd is left to the flnd step's bundle test.
 
 ## Tests
 

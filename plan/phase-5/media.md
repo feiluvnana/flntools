@@ -105,15 +105,19 @@ Rule 3 counts a module as all of its files, in lines of code (no docstrings, com
 
 | File | Holds | Lines |
 | --- | --- | --- |
-| `shared/_media.py` | the top-level functions, `Info`, the errors, `sniff`, the presets, the output rule, the format tables | 170 |
-| `shared/_ffmpeg.py` | finding ffmpeg, the version and encoder checks, the safe runner with its timeouts and stall timer, the raw-frame pipe, parsing ffmpeg's output | 190 |
-| `shared/_pillow.py` | the safe open, EXIF to `tags` / `created` / `location`, the write pipeline, stripping, animated frames | 150 |
-| `shared/_media_image.py` | `resize`, `crop` | 40 |
-| `shared/_media_video.py` | `trim`, `frames`, `merge` | 200 |
-| `shared/_media_audio.py` | `extract` | 30 |
-| **`media`** | | **about 780** |
+| File | Holds | Planned | Built |
+| --- | --- | --- | --- |
+| `shared/_media.py` | the top-level functions, `Info`, the errors, `sniff`, the presets, the format and codec tables, the shared ffmpeg output builder (`output`, `muxer`), `transcode`, the output rule (`writing`) | 170 | 387 |
+| `shared/_ffmpeg.py` | finding ffmpeg, the version and encoder checks, the safe runner with its timeouts and stall timer, the raw-frame pipes both ways, parsing ffmpeg's output | 190 | 228 |
+| `shared/_pillow.py` | the safe open, EXIF to `tags` / `created` / `location`, the write pipeline, stripping, animated frames | 150 | 199 |
+| `shared/_media_image.py` | `resize`, `crop` | 40 | 42 |
+| `shared/_media_video.py` | `trim`, `frames`, `merge` | 200 | 218 |
+| `shared/_media_audio.py` | `extract` | 30 | 24 |
+| **`media`** | | **about 780** | **1,098** |
 
-**This is far past Rule 3's 400, on purpose:** it wraps two engines and three kinds of file, and splitting it brings back the two-module API this design removes. `shared` goes from about 3,600 to about **4,380**, close to the 4,500 ceiling. **The user decided (2026-11-11) to raise the ceiling to about 5,000** so `media` has room. `plan/README.md`'s ceiling, and Rule 3 with a line naming `media` as the one module allowed past 400, change once Phase 4 is finished with that file.
+**This is far past Rule 3's 400, on purpose:** it wraps two engines and three kinds of file, and splitting it brings back the two-module API this design removes. **The user decided (2026-11-11) to raise the ceiling to about 5,000** so `media` has room; `plan/README.md` says so, and Rule 3 names `media` as the one module allowed past 400.
+
+**The estimate was low by about 320 lines**, mostly in `_media.py`: the per-container table of what each holds and encodes with, the output builder every function shares, the `compress` target rules, and the paths between kinds (an animation to a video through the raw-frame pipe, a video to an animated WebP or APNG through Pillow). `shared` went from 3,372 lines after Phase 4 to **4,475**, under the ceiling of about 5,000.
 
 ## probe
 
@@ -221,7 +225,7 @@ With `strip=True` (the default), the result holds the picture and the sound, and
 | | Kept | Dropped |
 | --- | --- | --- |
 | photo | the pixels, upright (orientation is applied to them, so the tag isn't needed); the ICC color profile **unless it is sRGB**, because a Display P3 phone photo looks wrong without its profile, and sRGB is what a viewer assumes anyway | all EXIF: camera, lens, settings, date taken, **GPS**, MakerNote, the embedded thumbnail; XMP; IPTC; comments |
-| video | the first video stream, upright (ffmpeg applies the rotation while encoding), and the first audio stream | every other stream (subtitles, extra audio, data, cover art), chapters, and all container and stream metadata: `creation_time`, location, title, encoder and handler names (`-map_metadata -1 -map_chapters -1`, `-fflags +bitexact`, `-flags +bitexact` on each stream) |
+| video | the first video stream, upright (ffmpeg applies the rotation while encoding), and the first audio stream | every other stream (subtitles, extra audio, data, cover art), chapters, and all container and stream metadata: `creation_time`, location, title and encoder names (`-map_metadata -1 -map_chapters -1`, `-fflags +bitexact`, `-flags:v +bitexact -flags:a +bitexact`, `-metadata:s encoder=`). Handler names become the muxer's generic `VideoHandler` / `SoundHandler` |
 | audio | the first audio stream | tags (title, artist, album), cover art, chapters |
 
 - **The date taken is dropped with the rest.** flnd keeps the post's date in the file name and its history. A script that wants metadata kept passes `strip=False`: photos keep EXIF (orientation reset) and XMP; videos and audio keep their tags.
@@ -245,7 +249,7 @@ A preset is a name, never raw encoder settings. One table for every kind:
 
 | Argument | Means | Range |
 | --- | --- | --- |
-| `quality` | one scale for every kind, higher is better. A photo's JPEG, WebP, AVIF or JPEG 2000 quality. For a video, the encoder's constant-quality value: CRF `round(59.5 − 0.45 × quality)` for H.264 (70, 80, 90 → 28, 23, 19), 4 more for H.265, and `round(82 − 0.6 × quality)` for VP9 (→ 40, 34, 28). Lossless formats ignore it | 1–100 |
+| `quality` | one scale for every kind, higher is better. A photo's JPEG, WebP, AVIF or JPEG 2000 quality. For a video, the encoder's constant-quality value: CRF `⌊59.5 − 0.45 × quality⌋` for H.264 (70, 80, 90 → 28, 23, 19), 4 more for H.265, and `⌊82 − 0.6 × quality⌋` for VP9 (→ 40, 34, 28), at most 51 for x264/x265 and 63 for VP9. Rounded down, computed in integers, because `round` sends 23.5 to 24. Lossless formats ignore it | 1–100 |
 | `resolution` | the shorter side's cap, in pixels: the way people say "720p". A portrait 1080×1920 video becomes 720×1280; a 4000×3000 photo with 1536 becomes 2048×1536. Measured as displayed. Never scales up | ≥ 16 |
 | `fps` | the frame rate's cap, for videos and animations. Frames are dropped, never invented; a 24 fps video stays 24 under a cap of 30 | 1–240 |
 | `audio_bitrate` | the audio's bitrate, in bits per second (`96_000`) | 32,000–320,000 |
@@ -272,7 +276,7 @@ ffmpeg -hide_banner -nostdin -v error -protocol_whitelist file -format_whitelist
 
 - The `fps` filter is added only when the source's frame rate is above the cap, so frames are never duplicated.
 - WebM uses `-c:v libvpx-vp9 -crf 34 -b:v 0 -row-mt 1 -deadline good -cpu-used 2 -c:a libopus`.
-- With `strip=False`, and in `convert`, `trim` and `merge`, the `-map_metadata -1 -map_chapters -1` and `bitexact` flags are left out.
+- With `strip=False`, and in `convert`, `trim` and `merge`, the `-map_metadata -1 -map_chapters -1` and `bitexact` flags are left out. ffmpeg leaves `creation_time` out when it copies metadata (checked on 9.0), so it is written back with `-metadata creation_time=<value>` from `probe`, which also keeps it in `tags["creation_time"]`.
 - **Progress.** The duration comes from a `probe` first. `-progress pipe:1` writes `out_time_us=…` about twice a second; each line calls `progress`. stderr goes to a temp file, so a chatty ffmpeg can't fill a pipe and deadlock.
 - **A stall timer, not a total timeout.** A long encode legitimately takes many minutes. ffmpeg is killed when no progress line has arrived for **60 s**, raising `TimeoutError`.
 - **Encoders.** `ffmpeg -encoders` is read once. A `PATH` ffmpeg without an encoder a call needs (`libx264`, `libx265`, `libvpx-vp9`, `libopus`, `libmp3lame`; Fedora's `ffmpeg-free` lacks x264) raises `RuntimeError("this ffmpeg has no libx264 encoder; …")`. Every imageio-ffmpeg build checked (0.8.1, macOS arm64, Linux x86_64, Windows x64) is a GPL build with x264, x265, libvpx and Opus.
@@ -329,7 +333,9 @@ It saves frames of a video or animation as photos, and returns their paths in ti
 - **Names** are `<stem>_<seconds>.<ext>`, with the seconds zero-padded to three decimals so they sort in time order: `clip_00012.500.jpg`. Existing files with those names raise `FileExistsError` before anything is written. `dest_dir` is created when missing.
 - **`limit`** guards the disk: a request that would write more than `limit` frames raises `ValueError` before writing any. A 10-minute 60 fps video has 36,000 frames. `limit=None` lifts it.
 - Frames are taken **as displayed**: rotated, with square pixels.
-- **How:** a video is decoded once by ffmpeg, with `-vf fps=1/every` (or `select` for `at=` and `count=`), written as numbered files into a temp folder next to `dest_dir`, then renamed. That output file pattern is our own path, so it isn't the input-side `image2` risk. An animation is read by Pillow, frame by frame.
+- **How:** a video is decoded once by ffmpeg, with `-vf fps=1/every` (or `fps=<rate>,select='eq(n,…)+…'` for `at=` and `count=`), scaled to the probed size as displayed, and written as raw RGB frames to a pipe. Pillow saves each one into a hidden folder next to `dest_dir`, and they are renamed into place at the end. So every still format and `quality` work the same as in `convert`, and no image file pattern is involved at all. `select` needs `-fps_mode passthrough` (`-vsync 0` before ffmpeg 5.1; `-vsync` is gone in 9.0), or ffmpeg fills the gaps with copies. An animation is read by Pillow, frame by frame.
+- For `every=` and for every frame, the number of frames is estimated before decoding (`⌈duration ÷ every⌉`, `duration × fps`) for `limit` and the name check; frames are named as they arrive.
+- The size used is the probed display size; a non-square sample aspect ratio is not corrected.
 
 ### merge
 
@@ -349,7 +355,7 @@ It **combines several inputs into one** moving picture. What it does depends on 
 - **How photos reach ffmpeg:** Pillow decodes each photo, and its pixels are written to ffmpeg's stdin as raw frames (`-f rawvideo -pix_fmt rgb24 -s WxH -r <fps> -i pipe:0`). This avoids ffmpeg's `image2` pattern reader, which is refused on input ([Safety](#safety)). Checked on ffmpeg 9.0.2: `-nostdin` still allows `pipe:0` input.
 - **How clips are joined:**
   - **when they must be encoded,** with ffmpeg's `concat` *filter*, each clip being its own whitelisted `-i file:` input;
-  - **when they can be copied,** with the `concat` *reader* over a list file **that `media` writes itself** into a temp folder, after `probe` has accepted every clip: one `file 'file:/abs/part1.mp4'` line per clip, quotes escaped, read with `-safe 1 -protocol_whitelist file -format_whitelist concat,<readers>`. The `concat` reader is refused for any input that comes from outside ([Safety](#safety)), because an untrusted list can name any file.
+  - **when they can be copied,** with the `concat` *reader* over a list file **that `media` writes itself** into a temp folder, after `probe` has accepted every clip: one `file 'file:/abs/part1.mp4'` line per clip, quotes escaped, read with `-safe 0 -protocol_whitelist file -format_whitelist concat,<readers>`. Checked on ffmpeg 9.0: `-safe 1` refuses every `file:` path or absolute path ("Unsafe file name"), so it can't be used; the list is ours and names only probed clips, and the whitelists still apply to each clip. The `concat` reader is refused for any input that comes from outside ([Safety](#safety)), because an untrusted list can name any file.
 - In the DASH case, the container comes from `dest`; codecs it can't hold raise `RuntimeError` with ffmpeg's last line; and it reads every packet, so a truncated part fails here. The timeout is 600 s. Every other case that encodes has the stall timer and `progress`.
 - The inputs are never changed or deleted.
 
@@ -371,7 +377,7 @@ Audio-to-audio conversion is `media.convert`. `media.audio` exists so that "vide
 
 ## sniff
 
-`sniff(path) -> str | None` reads the first 64 bytes and returns the extension the content calls for. It needs neither Pillow nor ffmpeg, so flnd runs it on every download. "Sniffing" is the usual word for this (browsers' MIME sniffing). `probe` uses the same table for `format`.
+`sniff(path) -> str | None` reads the first 192 bytes (the MPEG-TS rule looks at byte 188) and returns the extension the content calls for. It needs neither Pillow nor ffmpeg, so flnd runs it on every download. "Sniffing" is the usual word for this (browsers' MIME sniffing). `probe` uses the same table for `format`.
 
 | First bytes | Returns |
 | --- | --- |
@@ -460,6 +466,20 @@ media = ["pillow>=11.3", "pi-heif>=1.0", "imageio-ffmpeg>=0.6"]
 
 One extra, because `media` is one module. flnd lists all three as plain dependencies ([flnd › pyproject](flnd.md#pyproject)).
 
+## Built (2026-11-11)
+
+What the build checked, against imageio-ffmpeg 0.8.1 (ffmpeg 9.0) on macOS arm64, Pillow 13.0 and pi-heif 1.4:
+
+- **Encoders**, from `ffmpeg -encoders` (run, not read from the configure line): `libx264`, `libx265`, `libvpx` (VP8), `libvpx-vp9`, `libopus`, `libmp3lame`, `libvorbis`, `libaom-av1`, `libsvtav1`, ffmpeg's own `aac` (and `aac_at`), `flac`, `alac`, `pcm_*`, `mpeg4`, `mjpeg`, `gif`, `apng`, `png`. Every codec in [Codecs chosen when writing](#codecs-chosen-when-writing) exists, so the choices stand. The Linux and Windows wheels were not run here.
+- **Quality to size** on `big.mp4` (3 s, 360×640, 60 fps, 3.1 MB), `small` / `balanced` / `high`: H.264 192 / 473 / 698 KB; H.265 122 / 339 / 586 KB; VP9 229 / 628 / 821 KB. On the 4000×3000 noise JPEG (9.8 MB): 743 KB at 2048×1536, 2.7 MB at 3072×2304, 7.1 MB at full size. Always `small` < `balanced` < `high` < the source; the tests check it for H.264 and JPEG.
+- **Merge by copy** works with `media`'s own list and `-safe 0` ([merge](#merge)); a container that can't hold the codecs fails with ffmpeg's "Could not write header", raised as `RuntimeError`, and leaves no file.
+- **`video.frames`:** names (`big_00000.000.jpg`), `at=`, `count=` (the middle of each part: 0.375 s first, for 4 frames of 3 s), every frame, animations, `limit` checked before writing, and existing names, all tested.
+- **Strip flags:** `-fflags +bitexact` removes the container's `encoder` tag; `-flags:v +bitexact` only shortens the stream's to `Lavc libx264`, so `-metadata:s encoder=` was added. x264 still writes its settings into the bitstream, which says nothing about the source. `probe` itself passes `-fflags +bitexact`, because ffmpeg's ffmetadata output otherwise adds its own `encoder=Lavf…` line to the tags. A Display P3 profile is kept and an sRGB one dropped, told apart by the profile's description through `ImageCms`.
+- **ffmpeg's summary:** 9.0 prints `Display Matrix: rotation of 90.00 degrees` under `    Side data:`, so both spellings are matched. Streams are printed at 2 spaces in 9.0 and at 4 in older releases; stream lines are matched only after `Duration:`, so a global tag whose *key* is a fake `Stream` line isn't counted either. The 4.4 sample in the parser test is written from ffmpeg's layout, not captured from a 4.4 binary, which wasn't available.
+- **A refused reader:** for a text file (an HLS playlist, an `ffconcat` list) it is `UnsafeError`; for binary junk ffmpeg only guessed an image reader media doesn't use, so it is `BrokenError`. ffmpeg 9.0 itself no longer opens an HLS playlist named `.mp4` ("Not detecting m3u8/hls with non standard extension").
+- **Choices the plan left open:** `MPO` photos report `format="jpeg"`; an animated WebP's frame durations are only known by decoding, so `probe` decodes its frames (other formats read them from headers); EPS, PDF and WMF are refused from their first bytes before Pillow is asked; `convert` maps the first video and first audio stream; a video written as an animated WebP or APNG is capped at 15 fps by default, like GIF; `trim` on an animation goes through Pillow; `merge` encodes at quality 90, and clips merged into an animated image go through a temp MKV; `compress` shows its own `log.progress` bar only for videos and audio.
+- **Fixtures:** `big.mp4` is 3.1 MB (testsrc2 at `-q:v 2`), not 1.5. The x264 speed (`-preset`) is the one setting only `preset` sets, so "giving every value builds the same command whatever `preset` is" holds between `small` and `balanced`, not against `high`. Samples are made once per test run by `tests/media_samples.py`, shared by the four test files.
+
 ## Rejected
 
 | Idea | Why not |
@@ -486,7 +506,7 @@ One extra, because `media` is one module. flnd lists all three as plain dependen
 
 `tests/test_media.py`, `test_media_image.py`, `test_media_video.py` and `test_media_audio.py`. **Fixtures are generated** in `setUpClass`, into a temp folder:
 - **photos** by Pillow, in every writable format: a JPEG with EXIF orientation 6, `DateTimeOriginal`, `OffsetTimeOriginal`, `Model`, a GPS block and a Display P3 ICC profile; an sRGB JPEG; an RGBA PNG; animated WebP, GIF and APNG; a 4000×3000 quality-95 noise JPEG that really shrinks;
-- **HEIC** is the one exception, because pi-heif can't write it: `tests/data/tiny.heic`, a committed 16×16 file of about 1 KB made with macOS `sips -s format heic`, its SHA-256 listed in the test;
+- **HEIC** is the one exception, because pi-heif can't write it: `tests/data/tiny.heic`, a committed 64×64 noise photo of 1.7 KB made with macOS `sips -s format heic -s formatOptions 50`, its SHA-256 listed in `tests/media_samples.py`. Not 16×16: pi-heif's security limit refuses the 16×16 and 32×32 files `sips` writes, and a HEIC of one color is too small for any JPEG to be smaller, which `compress(format="jpg")` needs;
 - **videos and audio** by calling ffmpeg directly (not through `media`, whose whitelist rightly refuses `lavfi`), with only built-in encoders so any build can make them: `v.mp4` (video only), `a.m4a` (audio only), `av.mkv` (both), `meta.mp4` with `creation_time`, an ISO 6709 `location`, a title, a chapter, a subtitle stream and a rotation of 90°; `big.mp4`, 3 s of portrait 360×640 at 60 fps, `mpeg4 -q:v 2` plus 192 kb/s AAC, about 1.5 MB; and one short file in each other readable container (AVI, TS, MPG, FLV, WMV, OGV) and audio format (MP3 where `libmp3lame` exists, FLAC, WAV, AIFF, Ogg).
 
 Video and audio tests are skipped without ffmpeg; tests needing `libx264`, `libx265`, `libvpx-vp9`, `libopus` or `libmp3lame` are skipped when the ffmpeg lacks it.

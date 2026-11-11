@@ -123,6 +123,10 @@ Checked by reading the `configure` line built into each imageio-ffmpeg 0.8.1 bin
 
 AAC is ffmpeg's own encoder, so it is in every build.
 
+**Run on the macOS arm64 binary (2026-11-11, `ffmpeg -encoders`):** `libx264`, `libx265`, `libvpx`, `libvpx-vp9`, `libopus`, `libmp3lame`, `libvorbis`, `libaom-av1`, `libsvtav1` and `aac` are all there, as the configure line said. The Linux and Windows binaries were not run.
+
+**The binary's own licence is GPL version 2 or later.** It is configured with `--enable-gpl` but not `--enable-version3`, and `ffmpeg -L` says "either version 2 of the License, or (at your option) any later version". So the bundle ships FFmpeg's `COPYING.GPLv2`, not `COPYING.GPLv3`.
+
 **Which codec to default to.**
 - **H.264 through `libx264` plays everywhere, so it is the default.**
 - **Choosing H.265 or AV1 avoids no GPL obligation.** x264 and x265 are both GPL. The binary is already one GPL program, whichever encoder we invoke. And running a GPL program as a separate process puts no license on flnd itself.
@@ -137,8 +141,8 @@ A `PATH` ffmpeg may be an LGPL build without x264 (Fedora's `ffmpeg-free`). `com
 
 ### Distributing
 
-Every bundled path ships GPL code. imageio-ffmpeg's binary is a GPL build, and PyAV's wheels carry x264 and x265. Installing from PyPI on your own machine raises nothing. **Handing a `make dist` folder to someone else** does: it then distributes a GPL ffmpeg binary next to flnd, as a separate program, which is aggregation, not linking. The GPL then asks that ffmpeg's license and an offer of its source travel with it. **Decided:** every `make dist` bundle ships a `licenses/` folder with ffmpeg's GPL text and a source offer ([flnd › Packaging](flnd.md#packaging)).
+Every bundled path ships GPL code. imageio-ffmpeg's binary is a GPL build, and PyAV's wheels carry x264 and x265. Installing from PyPI on your own machine raises nothing. **Handing a `make dist` folder to someone else** does: it then distributes a GPL ffmpeg binary next to flnd, as a separate program, which is aggregation, not linking. The GPL then asks that ffmpeg's license and an offer of its source travel with it. **Decided:** every `make dist` bundle ships a `licenses/` folder with ffmpeg's GPL text and a source offer ([flnd › Packaging](flnd.md#packaging)): `licenses/ffmpeg.txt` (checked in: the GPL-2.0 text and the written offer) and `ffmpeg-source.txt` (written by `make dist`: the bundled binary's `-version` output, with its exact version and configure line).
 
 ## Tests
 
-In `tests/test_media.py`: finding ffmpeg, the version and encoder checks, the safety rules, timeouts and cleanup ([media › Tests](media.md#tests)).
+In `tests/test_media.py`: finding ffmpeg, the version and encoder checks, the safety rules, timeouts and cleanup ([media › Tests](media.md#tests)). A fake ffmpeg is a shell script reached through `IMAGEIO_FFMPEG_EXE`; `_ffmpeg.found` and `_ffmpeg.encoders` are cached, and the tests clear them.
