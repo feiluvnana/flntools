@@ -37,6 +37,18 @@ ALL = "all"
 # A 401, 403 or 404 is "not there for us", which `soft=True` turns into None.
 SOFT_STATUSES = (401, 403, 404)
 ARCHIVE_SUFFIXES = {".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".tbz2", ".xz", ".txz", ".zst"}
+# What a saved file is, by its name: photos and videos get their extension from their content.
+PHOTO, VIDEO = "photo", "video"
+KINDS = {**dict.fromkeys((".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".heif", ".bmp", ".tif",
+                          ".tiff"), PHOTO),
+         **dict.fromkeys((".mp4", ".m4v", ".mov", ".webm", ".mkv"), VIDEO)}
+# --compress-image and --compress-video take media's presets; --format-* what media writes.
+PRESETS = ("small", "balanced", "high")
+IMAGE_FORMATS = ("jpg", "webp", "avif", "png", "gif", "tif", "bmp")
+VIDEO_CONTAINERS = ("mp4", "mov", "mkv", "webm", "avi", "ts", "3gp", "gif")
+VIDEO_CODECS = ("h264", "h265", "vp9")
+# The codecs a container holds, for --format-video; every other container holds H.264 and H.265.
+CODECS_IN = {"webm": ("vp9",), "avi": ("h264",), "mkv": VIDEO_CODECS, "gif": ()}
 
 
 class Session(Protocol):
@@ -88,7 +100,7 @@ class Session(Protocol):
 
     def save(self, source: net.Download, name: str, *, category: str, date: datetime.date | None = None,
              folder: str | None = None, key: str | None = None, password: str | None = None,
-             size: int | None = None, headers: Mapping[str, str] | None = None) -> bool: ...
+             size: int | None = None, headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool: ...
     def write(self, name: str, text: str) -> bool: ...
     @property
     def full(self) -> bool: ...
@@ -112,6 +124,8 @@ class Options:
     """The download options, the same for every source: `Options(categories=("reels",), since=date(2026, 1, 1))`.
 
     `categories` is `--from`: None means each source's `default_categories`, and "all" every one.
+    `compress_*` are presets, `format_image` a photo format, and `format_video` a container, a
+    codec, or `container:codec`.
     """
 
     categories: tuple[str, ...] | None = None
@@ -119,6 +133,10 @@ class Options:
     until: datetime.date | None = None
     unpack: bool = False
     zip: bool = False
+    compress_image: str | None = None
+    compress_video: str | None = None
+    format_image: str | None = None
+    format_video: str | None = None
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
@@ -171,6 +189,10 @@ class Settings:
     locale: str | None = None
     timezone: str | None = None
     interactive: bool = False
+    # One video encode at a time in the whole run, because x264 already uses every core.
+    encoding: threading.Lock = field(default_factory=threading.Lock)
+    videos_off: bool = False
+    hinted: set[str] = field(default_factory=set)
 
     @property
     def downloads(self) -> Path:
@@ -244,6 +266,7 @@ class TargetSession:
         self._browser: Browser | None = None
         self._page: Page | None = None
         self._pool: worker.Pool | None = None
+        self._encodes: worker.Pool | None = None
         self._listeners: list[_Listener] = []
         self._categories = selected(run.settings.options, type(run.source))
         # Every path and history key queued so far, so one file is never written twice.
@@ -398,7 +421,7 @@ class TargetSession:
 
     def save(self, source: net.Download, name: str, *, category: str, date: datetime.date | None = None,
              folder: str | None = None, key: str | None = None, password: str | None = None,
-             size: int | None = None, headers: Mapping[str, str] | None = None) -> bool:
+             size: int | None = None, headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool:
         """Queue one file, and return False when it is skipped.
 
             session.save(url, f"{day}_{post_id}.jpg", category="posts", date=posted, headers={"Referer": profile})
@@ -407,9 +430,13 @@ class TargetSession:
         `<downloads>/<code>/<target>/<folder>/<name>`. It is skipped when filtered out by
         `--from`/`--since`/`--until`, already saved or queued, past the limit, or when the folder
         is None. The history row is keyed by `key`, which defaults to `folder/name`. A `category`
-        the source doesn't declare raises `ValueError`.
+        the source doesn't declare raises `ValueError`. `audio` is a video's separate audio stream
+        (DASH), merged into it; a photo or video is renamed to the extension its content calls for.
         """
         check_category(self._source, category)
+        kind = media_kind(name)
+        if audio is not None and kind != VIDEO:
+            raise RuntimeError(f"{self._source.code}: audio= is for videos, not {name}")
         folder = self.folder if folder is None else folder
         if folder is None or self.full or not self.wants(category=category, date=date):
             return False
@@ -421,11 +448,11 @@ class TargetSession:
             log.info("skip {name}", name=label)
             if saved and self._settings.options.unpack and _is_archive(saved.name):
                 # An archive saved by an earlier run without --unpack is unpacked now, after the downloads.
-                self._unpack_saved.append(_File(source, saved, label, history_key, password, size, headers))
+                self._unpack_saved.append(_File(source, saved, label, history_key, password, size, headers, kind))
             return False
         self._queued.update((dest, history_key))
         self._submitted += 1
-        self._submit(_File(source, dest, label, history_key, password, size, headers))
+        self._submit(_File(source, dest, label, history_key, password, size, headers, kind, audio))
         if self.full:
             log.info("Reached limit of {limit} downloads.", limit=self._settings.limit)
         return True
@@ -502,12 +529,17 @@ class TargetSession:
             self._browser.close()
             self._browser = self._page = None
         self._end_handover(dropping=error is not None)
-        if self._pool is not None:
-            self._pool.__exit__(type(error) if error else None, error, error.__traceback__ if error else None)
+        # Downloads queue video encodes, so their pool ends first; the target, and --zip, wait for both.
+        for name in ("_pool", "_encodes"):
+            pool: worker.Pool | None = getattr(self, name)
+            if pool is None:
+                continue
+            pool.__exit__(type(error) if error else None, error, error.__traceback__ if error else None)
             # The pool keeps failures in its results instead of raising, so each one is named here.
-            for result in self._pool.results:
+            for result in pool.results:
                 if not result.ok:
-                    log.error("{file}: {kind} {error}", file=result.item, kind=type(result.error).__name__,
+                    item = result.item[0] if isinstance(result.item, tuple) else result.item
+                    log.error("{file}: {kind} {error}", file=item, kind=type(result.error).__name__,
                               error=result.error)
         if error is None:
             # One unpacked by an earlier run too is left as it is, so a run that skips everything stays quick.
@@ -624,17 +656,49 @@ class TargetSession:
         source = file.source
         if callable(source):
             source = self._sync_fetch(source)
-        saved = net.download(self._run.http, source, file.dest, label=file.label, backoff=self._run.backoff,
-                             headers=file.headers, wait=type(self._source).wait, size=file.size)
-        if not saved:
+        try:
+            saved = net.download(self._run.http, source, file.dest, label=file.label, backoff=self._run.backoff,
+                                 headers=file.headers, wait=type(self._source).wait, size=file.size, kind=file.kind,
+                                 audio=file.audio)
+        except RuntimeError as error:
+            if file.audio and "needs ffmpeg" in str(error) and self._source.code not in self._settings.hinted:
+                self._settings.hinted.add(self._source.code)
+                log.warn("{code}: ffmpeg not found; install ffmpeg on your PATH to save Facebook and Instagram "
+                         "videos", code=self._source.code)
+            raise
+        if saved is None:
             return False
-        self._settings.history[file.key] = {
-            "path": str(file.dest), "size": file.dest.stat().st_size,
-            "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-        }
-        if self._settings.options.unpack and _is_archive(file.dest.name):
+        options = self._settings.options
+        row = {"path": str(saved), "size": saved.stat().st_size,
+               "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+        if file.kind == PHOTO and options.compress_image:
+            row.update(compress(saved, PHOTO, options))
+        self._settings.history[file.key] = row
+        if file.kind == VIDEO and options.compress_video and not self._settings.videos_off:
+            self._encoder().submit(self._compress_video, file, row)
+        if options.unpack and _is_archive(file.dest.name):
             self._unpack(file)
         return True
+
+    def _encoder(self) -> worker.Pool:
+        if self._encodes is None:
+            from shared import worker
+
+            self._encodes = worker.pool(concurrency=1)
+        return self._encodes
+
+    def _compress_video(self, file: _File, row: dict) -> None:
+        settings = self._settings
+        with settings.encoding:
+            if settings.videos_off:
+                return
+            try:
+                fields = compress(Path(row["path"]), VIDEO, settings.options)
+            except RuntimeError as error:
+                settings.videos_off = True
+                log.warn("video compression stops for this run: {error}", error=error)
+                return
+            settings.history[file.key] = {**row, **fields}
 
     def _sync_fetch(self, fetch: net.Fetch) -> net.Fetch:
         def call(dest: Path, progress: Callable[..., None]) -> Any:
@@ -679,6 +743,8 @@ class _File:
     password: str | None
     size: int | None
     headers: Mapping[str, str] | None
+    kind: str | None = None
+    audio: str | None = None
 
     def __str__(self) -> str:
         return self.label
@@ -711,6 +777,69 @@ def check_category(source: Source, category: str) -> None:
     if category not in source.categories:
         raise ValueError(f"{source.code}: unknown category {category!r}; declare it in categories "
                          f"({', '.join(source.categories)})")
+
+
+def media_kind(name: str) -> str | None:
+    """"photo" or "video" for a file name such as `a.jpg`; None for anything else, such as an archive."""
+    return KINDS.get(Path(name).suffix.lower())
+
+
+def video_format(value: str | None) -> tuple[str | None, str | None]:
+    """`--format-video` as (container, codec): `mkv:h265` is ("mkv", "h265"), `h265` (None, "h265").
+
+    A value that isn't one, or a pair that can't go together (`webm:h265`), raises `ValueError`.
+    """
+    if not value:
+        return None, None
+    container, _, codec = value.lower().partition(":")
+    if not codec and container in VIDEO_CODECS:
+        container, codec = "", container
+    if (container and container not in VIDEO_CONTAINERS) or (codec and codec not in VIDEO_CODECS):
+        raise ValueError(f"--format-video takes a container ({', '.join(VIDEO_CONTAINERS)}), a codec "
+                         f"({', '.join(VIDEO_CODECS)}), or container:codec, not {value!r}")
+    if container and codec and codec not in CODECS_IN.get(container, ("h264", "h265")):
+        raise ValueError(f"--format-video {value}: {container} can't hold {codec}")
+    return container or None, codec or None
+
+
+def compress_problem(options: Options) -> str | None:
+    """Why these compress options can't be used, or None when they can."""
+    for kind in ("image", "video"):
+        if getattr(options, f"format_{kind}") and not getattr(options, f"compress_{kind}"):
+            return f"--format-{kind} needs --compress-{kind}"
+    if options.format_image and options.format_image.lower().lstrip(".") not in IMAGE_FORMATS:
+        return f"--format-image takes {', '.join(IMAGE_FORMATS)}, not {options.format_image!r}"
+    try:
+        video_format(options.format_video)
+    except ValueError as error:
+        return str(error)
+    return None
+
+
+def compress(path: Path, kind: str, options: Options) -> dict[str, Any]:
+    """Compress one saved photo or video with the options' preset and format, and return its history fields.
+
+    The file is replaced only when the result is smaller; otherwise, or when it can't be read, it
+    stays as it was and is recorded as "none". A missing ffmpeg or encoder raises `RuntimeError`.
+    """
+    from shared import media
+
+    if kind == PHOTO:
+        preset, (format, codec) = options.compress_image, (options.format_image, None)
+    else:
+        preset, (format, codec) = options.compress_video, video_format(options.format_video)
+        if codec and not format and codec not in CODECS_IN.get(path.suffix.lower()[1:], ("h264", "h265")):
+            # A codec alone keeps the file's container when it can hold it.
+            format = "webm" if codec == "vp9" else "mp4"
+    size = path.stat().st_size
+    try:
+        out = media.compress(path, preset=preset or "balanced", format=format, codec=codec)
+    except (ValueError, FileExistsError) as error:
+        log.warn("{name}: not compressed: {error}", name=path.name, error=error)
+        out = None
+    if out is None:
+        return {"path": str(path), "size": size, "compressed": "none", "original_size": size}
+    return {"path": str(out), "size": out.stat().st_size, "compressed": preset, "original_size": size}
 
 
 def _show_steps(steps: float) -> str:

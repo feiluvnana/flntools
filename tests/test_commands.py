@@ -17,7 +17,7 @@ from flnd.engine import Engine
 from flnd.session import Options
 from flnd.sources.base import Source
 from flnd.target import Target
-from shared import cookies, theme
+from shared import cookies, kv, theme
 from shared._theme import Screen
 
 NETSCAPE = (
@@ -80,7 +80,9 @@ class FlndCase(unittest.TestCase):
         return cookies.load_from_file(Path(".flnd/cookies") / f"{code}.txt")
 
 
-class DownloadTest(FlndCase):
+class RunsCase(FlndCase):
+    """Engine.run is replaced: each call is recorded in `runs`, and says 3 files were written."""
+
     def setUp(self):
         super().setUp()
         self.runs = []
@@ -93,6 +95,8 @@ class DownloadTest(FlndCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+
+class DownloadTest(RunsCase):
     def test_targets_and_options_reach_the_engine(self):
         code, _, out = self.run_app("download", "ins:example_user", "https://x.com/example_handle", "--from", "reels,media",
                                     "--from", "tagged", "--since", "2026-01-01", "--until", "2026-06-30", "--unpack",
@@ -154,12 +158,13 @@ class DownloadTest(FlndCase):
         self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, and Telegram.", stdout)
         self.assertIn("Sources: tik, fbk, ins, twt, loi", stdout)
         self.assertIn("https://www.facebook.com/profile.php?id=100012345678901", stdout)
-        for command in ("download", "login", "logout", "install-browser"):
+        for command in ("download", "sync", "login", "logout", "install-browser"):
             self.assertIn(command, stdout)
         self.assertNotIn("auth", stdout)
         self.assertEqual(self.run_app("auth", "set-cookie")[0], 2)
         download_help = self.run_app("download", "--help")[1]
-        for option in ("--from", "--since", "--until", "--[no-]unpack", "--[no-]zip", "--locale", "--timezone"):
+        for option in ("--from", "--since", "--until", "--[no-]unpack", "--[no-]zip", "--locale", "--timezone",
+                       "--compress-image", "--compress-video", "--format-image", "--format-video"):
             self.assertIn(option, download_help)
         self.assertIn("match where your connection comes from", download_help)
         self.assertIn("  --from CATEGORIES  ", download_help)
@@ -172,6 +177,77 @@ class DownloadTest(FlndCase):
         code, stdout, _ = self.run_app()
         self.assertEqual(code, 0)
         self.assertIn("Usage:\n  flnd [options] [command]", stdout)
+
+
+class CompressOptionsTest(RunsCase):
+    def test_compress_options_reach_the_engine_and_the_target_is_recorded(self):
+        code, _, out = self.run_app("download", "ins:example_user", "--compress-image", "small", "--compress-video",
+                                    "balanced", "--format-image", "webp", "--format-video", "mkv:h265", "--zip")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.runs[0][2], Options(zip=True, compress_image="small", compress_video="balanced",
+                                                  format_image="webp", format_video="mkv:h265"))
+        with kv.open(".flnd/targets.db", table="targets") as targets:
+            row = targets["ins:example_user"]
+        self.assertEqual((row["kind"], row["compress_video"], row["format_video"], row["zip"]),
+                         ("user", "balanced", "mkv:h265", True))
+
+    def test_a_format_needs_its_compress_option_and_pairs_must_fit(self):
+        for args, message in ((("--format-image", "jpg"), "✗ --format-image needs --compress-image"),
+                              (("--format-video", "mp4"), "✗ --format-video needs --compress-video"),
+                              (("--compress-video", "small", "--format-video", "webm:h265"),
+                               "✗ --format-video webm:h265: webm can't hold h265"),
+                              (("--compress-image", "small", "--format-image", "heic"), "✗ --format-image takes"),
+                              (("--compress-image", "tiny"), "✗ argument --compress-image")):
+            code, _, out = self.run_app("download", "ins:a", *args)
+            self.assertEqual(code, 2, args)
+            self.assertIn(message, out)
+        self.assertEqual(self.runs, [])
+        self.assertFalse(Path(".flnd/targets.db").exists())
+
+
+class SyncCommandTest(RunsCase):
+    def setUp(self):
+        super().setUp()
+        self.synced = []
+        patcher = mock.patch("flnd.sync.run", lambda engine, chosen, steps: self.synced.append((chosen, steps)) or [])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_every_recorded_target_with_its_settings_and_overrides_saved(self):
+        self.run_app("download", "ins:example_user", "--compress-image", "small", "--from", "reels")
+        self.run_app("download", "twt:example_handle")
+        code, _, out = self.run_app("sync", "--compress-video", "small", "--format-video", "h265")
+        self.assertEqual(code, 0, out)
+        chosen, steps = self.synced[0]
+        self.assertEqual(steps, ("repair", "fetch", "compress", "info"))
+        self.assertEqual(dict(chosen), {
+            Target("ins", "user", "example_user"): Options(categories=("reels",), compress_image="small",
+                                                           compress_video="small", format_video="h265"),
+            Target("twt", "user", "example_handle"): Options(compress_video="small", format_video="h265")})
+        self.run_app("sync", "ins:example_user", "--compress-video", "off", "--compress-image", "off")
+        self.assertEqual(dict(self.synced[1][0]), {Target("ins", "user", "example_user"): Options(categories=("reels",))})
+        self.run_app("sync")
+        self.assertEqual(dict(self.synced[2][0])[Target("ins", "user", "example_user")], Options(categories=("reels",)))
+
+    def test_only_and_usage_errors(self):
+        self.run_app("download", "ins:example_user")
+        self.assertEqual(self.run_app("sync", "--only", "info")[0], 0)
+        self.assertEqual(self.synced[0][1], ("info",))
+        self.assertEqual(self.run_app("sync", "--only", "compress,repair")[0], 0)
+        self.assertEqual(self.synced[1][1], ("repair", "compress"))
+        for args, message in ((("--only", "fetch,sing"), "✗ --only takes repair, fetch, compress, info, not 'sing'"),
+                              (("--format-video", "h265"), "✗ ins:example_user: --format-video needs --compress-video"),
+                              (("--since", "2026-01-01"), "✗ unrecognized arguments")):
+            code, _, out = self.run_app("sync", *args)
+            self.assertEqual(code, 2, args)
+            self.assertIn(message, out)
+        self.assertEqual(len(self.synced), 2)
+
+    def test_only_info_saves_nothing(self):
+        self.run_app("download", "ins:example_user")
+        self.run_app("sync", "--only", "info", "--compress-video", "small")
+        self.run_app("sync", "--only", "info")
+        self.assertEqual(dict(self.synced[1][0])[Target("ins", "user", "example_user")], Options())
 
 
 class LoginFileTest(FlndCase):
