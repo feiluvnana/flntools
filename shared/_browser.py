@@ -36,15 +36,17 @@ _headless_pages: weakref.WeakSet = weakref.WeakSet()
 @contextmanager
 def open(*, headless: bool = True, user_agent: str | None = agents.chrome, cookies: list[dict] | None = None,
          viewport: tuple[int, int] = (1280, 900), stealth: bool = True, slow_mo: float = 0,
-         **context_kwargs: Any) -> Iterator[Page]:
+         args: list[str] | None = None, **context_kwargs: Any) -> Iterator[Page]:
     """Launch Chromium with one context and one page, and close all of it on exit.
 
     `cookies` takes the `list[dict]` from `load_cookies`. `slow_mo` is in seconds.
+    `args` are extra Chromium flags, added after the anti-automation ones.
     `page.context` and `page.context.browser` are the real objects for anything else.
     """
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.launch(headless=headless, slow_mo=slow_mo * 1000, args=LAUNCH_ARGS)
+            browser = playwright.chromium.launch(headless=headless, slow_mo=slow_mo * 1000,
+                                                 args=LAUNCH_ARGS + list(args or []))
         except PlaywrightError as error:
             if "Executable doesn't exist" in str(error):
                 raise RuntimeError("Chromium is not installed: run 'playwright install chromium'") from None

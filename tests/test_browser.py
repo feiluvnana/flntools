@@ -115,6 +115,14 @@ class OpenTest(BrowserCase):
         self.assertTrue(page.is_closed())
         self.assertFalse(chromium.is_connected())
 
+    def test_extra_launch_args(self):
+        error = _browser.PlaywrightError("stop here")
+        with mock.patch("playwright.sync_api._generated.BrowserType.launch", side_effect=error) as launch:
+            with self.assertRaises(_browser.PlaywrightError):
+                with browser.open(args=["--no-sandbox"]):
+                    pass
+        self.assertEqual(launch.call_args.kwargs["args"], [*_browser.LAUNCH_ARGS, "--no-sandbox"])
+
     def test_missing_chromium_message(self):
         error = _browser.PlaywrightError("BrowserType.launch: Executable doesn't exist at /x/chrome")
         with mock.patch("playwright.sync_api._generated.BrowserType.launch", side_effect=error):

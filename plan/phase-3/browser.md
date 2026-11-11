@@ -27,9 +27,9 @@ with browser.open(headless=False, user_agent=http.agents.chrome, cookies=cookies
 
 ## open
 
-`browser.open(*, headless=True, user_agent=http.agents.chrome, cookies=None, viewport=(1280, 900), stealth=True, slow_mo=0, **context_kwargs)` is a context manager that yields a `Page`.
+`browser.open(*, headless=True, user_agent=http.agents.chrome, cookies=None, viewport=(1280, 900), stealth=True, slow_mo=0, args=None, **context_kwargs)` is a context manager that yields a `Page`.
 
-- Starts `sync_playwright` and launches Chromium with `--disable-blink-features=AutomationControlled` and `--disable-infobars`.
+- Starts `sync_playwright` and launches Chromium with `--disable-blink-features=AutomationControlled` and `--disable-infobars`. `args` adds more Chromium flags after these, such as TikTok's `--no-sandbox`.
 - Creates one context with `user_agent`, `viewport`, and any `context_kwargs` (locale, timezone, proxy, …). Opens one page.
 - `cookies` takes the `list[dict]` from `load_cookies`. Each cookie gets a leading `.` on its domain and a default `path` of `/`, which is exactly the fix-up every source does today. Cookies are added one at a time, so if Playwright rejects one, that error is logged with `log.warn` and the others and the page still load.
 - `stealth=True` adds the init script that hides `navigator.webdriver`. That is all; deeper stealth is [out of scope](../README.md#out-of-scope).
