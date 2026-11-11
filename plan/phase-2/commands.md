@@ -37,7 +37,7 @@ Examples:
   cat list.txt | flnd download
   flnd auth set-cookie --path ~/Downloads/cookies.txt
 """,
-    prompt_mode=True,
+    promptmode=True,
 )
 
 @app.command
@@ -192,7 +192,7 @@ Because the prompt pauses the live area, it can be asked in the middle of the `d
 ## Tests
 
 - `app.run` covers each flnd command line above, including targets from stdin.
-- Prompt mode, driven by `read_key`, reaches `download` through `ask_targets` (one target and two targets) and reaches `set-cookie`.
+- Prompt mode, driven by `readkey`, reaches `download` through `ask_targets` (one target and two targets) and reaches `set-cookie`.
 - `ask_for_cookies` covers both an interactive and a non-interactive screen.
 - `set-cookie`:
   - each of the three inputs, `--path` together with `--content`, and no input at all;

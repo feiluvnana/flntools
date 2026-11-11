@@ -51,7 +51,8 @@ Rules for combining them:
 - Order does not matter: `style.red.bold` and `style.bold.red` paint the same way.
 - A later color on the same layer replaces an earlier one.
 - When a chain has two underline shapes, the later one wins.
-- A chain is reusable, and `style.red` is the same red as `style.color("#ff0000")`.
+- A chain is reusable.
+- Named colors are the terminal's own palette colors (`31`, `91`, …) at every depth, so they follow the user's terminal theme. `style.color("#ff0000")` is an exact color, mapped down only on `"8"` and `"256"`.
 
 ## Colors and gradients
 

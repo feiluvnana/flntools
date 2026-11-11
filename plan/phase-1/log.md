@@ -32,7 +32,7 @@ Each level has the signature `(message: str = "", /, *args, theme=None, **fields
 ✓ finished  folders=3                  tick, green
 ```
 
-`log.level` defaults to `"info"`. The order, quietest first, is `debug`, `info`, `ok`, `warn`, `error`, then `quiet`. A line is shown when its rank is at least `log.level`, and `quiet` shows only `error`. Assigning an unknown name raises `ValueError`.
+`log.level` defaults to `"info"`. At `quiet`, progress bars are not drawn while they run, and a bar writes its final line only when it ends at `error`. At every other level, bars are drawn as described below. The order, quietest first, is `debug`, `info`, `ok`, `warn`, `error`, then `quiet`. A line is shown when its rank is at least `log.level`, and `quiet` shows only `error`. Assigning an unknown name raises `ValueError`.
 
 | Call | Shown when `log.level` is |
 | --- | --- |
@@ -104,6 +104,14 @@ Open bars live at the bottom of the screen. This one rule covers nesting, log li
 - When a `progress` finishes, its final line is written above the live area and its row goes away. A `multi` block stays in the live area until its block ends, and then all its final lines are written together.
 - A log line written while bars are open is written above the live area, and the live area is redrawn under it.
 - A prompt asked while bars are open clears the live area and asks below the log lines. After the done line, the live area is redrawn and the spinner thread resumes.
+
+### Threads
+
+`log` is safe to use from many threads at once. [worker](../phase-3/worker.md) depends on this.
+
+- The live area is a list of rows in the order they were opened. It is not a stack: any bar can finish at any time, from any thread, and its row is removed by identity. "A bar opened inside another bar" only means it was opened later, so its row sits lower.
+- Every change to the live area and every write happens under the screen's lock. One log line is never split by another thread's output.
+- While a prompt is open, log lines and bar changes from other threads are held. When the prompt's done line has been written, the held lines are written in order and the live area is redrawn. A question is never interrupted by output from another thread.
 
 On a TTY, rows are redrawn in place with `\r`, cursor-up, and clear-line. Each row is cut to `screen.width` so it never wraps, because a wrapped row would break the cursor-up count. Redraws happen at most every 0.1 s, plus once whenever a row finishes. While a spinner is open, a background thread redraws every 0.1 s so the spinner keeps moving during a blocking call. All writes share the screen's lock.
 

@@ -93,7 +93,7 @@ After the slots are filled, runs of spaces left by empty slots collapse to one s
 | `{p-bar}` | the 20-cell bar built from `glyphs.bar`, one `glyphs.spin` frame for a running spinner, or empty for a finished spinner |
 | `{p-count}` | `done/total` with a total; `done` for a spinner once `done > 0`; each number passed through the bar's `show` |
 | `{p-caption}` | the bar's caption |
-| `{p-cursor}` | `glyphs.pointer` on the active row, empty on the others |
+| `{p-cursor}` | `glyphs.pointer` on the active row, and spaces of the same width on the others, so rows line up |
 | `{p-mark}` | `select.yes` or `select.no` for one choice; `check.yes` or `check.no` for many |
 | `{p-binding}` | the keys for one action, joined with `/` |
 | `{p-action}` | that action's name |
@@ -111,7 +111,7 @@ theme.unicode = True
 
 `theme.color` defaults to `"none"` when stderr is not a TTY, `NO_COLOR` is set, or `TERM` is `dumb`. Otherwise it is `"16m"` when `COLORTERM` is `truecolor` or `24bit`, and `"256"` on any other TTY. `theme.unicode` defaults to `True` when stderr's encoding is UTF-8.
 
-`theme.screen` is the terminal that `log` and `prompt` use. Tests replace it.
+`theme.screen` is the terminal that `log` and `prompt` use. Tests replace it. `Screen` lives in [`shared/_screen.py`](../../shared/_screen.py) and is re-exported from `shared._theme`.
 
 | Field | Default |
 | --- | --- |
@@ -120,7 +120,7 @@ theme.unicode = True
 | `tty` | `out.isatty()`; controls whether progress redraws in place |
 | `interactive` | `tty`, and the terminal can be opened for keys; controls whether prompts may ask |
 | `width` | the terminal width, read at draw time |
-| `read_key()` | one key name (`"a"`, `"enter"`, `"up"`, `"ctrl+c"`, …), read from `inp` in raw mode with `termios` on POSIX and `msvcrt` on Windows |
+| `readkey()` | one key name (`"a"`, `"enter"`, `"up"`, `"ctrl+c"`, …), read from `inp` in raw mode with `termios` on POSIX and `msvcrt` on Windows |
 | `write(text)` | writes under a lock, and strips ANSI first when `theme.color == "none"` |
 
 Keys are read from the terminal rather than stdin, the same way `fzf` reads them. This leaves stdin free to carry data. `cat list.txt | flnd download` reads its targets from stdin and can still ask for a cookie file in the terminal. Under cron or CI there is no terminal to open, so `interactive` is `False` and nothing is asked.
@@ -130,7 +130,7 @@ from io import StringIO
 from shared._theme import Screen
 
 theme.screen = Screen(out=StringIO(), inp=StringIO(""), width=80, tty=False, interactive=True)
-theme.screen.read_key = iter(["down", "enter"]).__next__
+theme.screen.readkey = iter(["down", "enter"]).__next__
 ```
 
 On Windows, the first write turns on VT processing so that ANSI codes work in the old console.

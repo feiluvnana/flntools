@@ -2,7 +2,7 @@
 
 Phase 1. Depends on [theme](theme.md), [style](style.md), [log](log.md), and [prompt](prompt.md). Build it last.
 
-[`shared/_cli.py`](../../shared/_cli.py). The signature is the parser.
+[`shared/_cli.py`](../../shared/_cli.py) holds apps, groups, dispatch, help, and the two modes. [`shared/_params.py`](../../shared/_params.py) turns a signature into argparse arguments and converts values. `cli.opt`, `cli.arg`, and `cli.UsageError` are imported from `cli` as before. The signature is the parser.
 
 - The docstring's first line is the command summary.
 - The rest of the docstring, up to `Args:`, is the description.
@@ -70,7 +70,7 @@ twt:example_handle
 ## Apps, commands, and groups
 
 ```python
-app = cli.App("flnd", version="0.1.0", description="...", epilog="...", verbosity=True, prompt_mode=True)
+app = cli.App("flnd", version="0.1.0", description="...", epilog="...", verbosity=True, promptmode=True)
 
 @app.command
 def download(targets: Annotated[list[str], "+"]) -> int: ...
@@ -103,14 +103,14 @@ class Tool(cli.App):
 
 ## Two modes
 
-An app with `prompt_mode=True` can be run in two ways.
+An app with `promptmode=True` can be run in two ways.
 
 | Mode | Starts when | Behavior |
 | --- | --- | --- |
 | **cli mode** | anything is on the command line: a command, an option, or `-h` | parses argv as described above. It never asks a question; a missing value is a usage error |
 | **prompt mode** | the command line is empty, and stdin and stderr are both terminals | guides the user through questions, then runs the chosen command |
 
-A bare `flnd` with stdin piped in, or under cron or CI, prints the top-level help, as it would without `prompt_mode`. The two modes never mix. cli mode stays predictable for scripts, and prompt mode is the one place that asks.
+A bare `flnd` with stdin piped in, or under cron or CI, prints the top-level help, as it would without `promptmode`. The two modes never mix. cli mode stays predictable for scripts, and prompt mode is the one place that asks.
 
 Prompts called from a handler, such as flnd's cookie question, are separate from the modes. They ask whenever `theme.screen.interactive` is `True`, in either mode.
 
@@ -154,15 +154,19 @@ Help is written to stdout, in a color depth worked out from stdout the same way 
 
 ## Help screens
 
-Section titles, usage, rows, and the epilog use `templates.help`. Labels are padded to 20 columns, and `-h, --help` is the last option row. The usage line lists the required options and then the positionals. It adds `[options]` only when there are optional flags other than `-h`.
+Section titles, usage, rows, and the epilog use `templates.help`. Labels are padded to 20 columns, and `-h, --help` is the last option row. A row drops a trailing period from its summary. The usage line is the program, then `[options]`, then the required options, then the positionals. `[options]` and the `Options:` section appear only when there are flags other than `-h`, so `-V` / `--version`, `-v`, and `-q` count. A bool flag's label is `--[no-]name`, and a choice's values are added to its help as `(tik, ins)`.
 
-`flnd --help`:
+`flnd --help`. flnd's `App` sets `version`, so `-V` is listed:
 
 ```text
 Dead simple media downloader for TikTok, Facebook, Instagram, and Twitter/X.
 
 Usage:
-  flnd [command]
+  flnd [options] [command]
+
+Options:
+  -V, --version       show the version
+  -h, --help
 
 Commands:
   download            Download each target
@@ -212,11 +216,11 @@ Options:
   -h, --help
 ```
 
-Usage errors in cli mode:
+Usage errors in cli mode. argparse cannot know whether an unknown option takes a value, so in `--limit 5` the `5` is read as a target and only `--limit` is reported. Plain argparse does the same.
 
 ```text
 $ flnd download --limit 5
-✗ unrecognized arguments: --limit 5
+✗ unrecognized arguments: --limit
 
 Usage:
   flnd download targets...
@@ -231,7 +235,7 @@ $ flnd no-such
 ✗ unknown command 'no-such'
 
 Usage:
-  flnd [command]
+  flnd [options] [command]
 ```
 
 ## Tests
@@ -246,5 +250,5 @@ Usage:
 - `cli.opt(stdin=True)`: the whole of stdin as one string, the command line winning over stdin, and `ValueError` when two parameters claim stdin;
 - `cli.UsageError` raised from a handler;
 - which mode starts: an empty argv on a terminal, an empty argv with stdin piped, and any argv;
-- prompt mode driven by `read_key`: the menu, groups, each generated question, `ask=`, and the logged command line;
+- prompt mode driven by `readkey`: the menu, groups, each generated question, `ask=`, and the logged command line;
 - `KeyboardInterrupt` exiting `130`.

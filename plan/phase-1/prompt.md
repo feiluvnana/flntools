@@ -44,7 +44,8 @@ Option rules:
 
 Prompts need an interactive screen:
 
-- `with prompt.defaults():` answers each question with its `default` and reads no keys. A question with no `default` inside that block raises `prompt.PromptError`.
+- Only one question is open at a time. A question asked from a second thread waits for the first to finish, then asks. Output from other threads is held while a question is open (see [log › Threads](log.md#threads)).
+- `with prompt.defaults():` answers each question with its `default` and reads no keys. It applies to every thread, so questions asked by worker threads inside the block also take their defaults. A question with no `default` inside that block raises `prompt.PromptError`.
 - When `theme.screen.interactive` is `False`, a question returns its `default`, or raises `prompt.PromptError` if it has none.
 - Ctrl-C raises `KeyboardInterrupt`.
 
@@ -150,6 +151,8 @@ prompt.keymap.interrupt = ("ctrl+c",)
 ```
 
 Assigning a tuple replaces that action's keys, so `prompt.keymap.up = ("up",)` frees `k`. An unknown action name raises `AttributeError`.
+
+In `input`, `secret`, and any question with `filter=True`, printable keys are typed into the text, not treated as actions; otherwise `k`, `j`, `y`, and `n` could never be typed. `space` still toggles in `choices`. `up` and `down` stop at the first and last rows instead of wrapping. The filter ignores case. `left` and `right` are in the keymap for later use, and no question uses them yet.
 
 `keys=True` lists only the actions that question uses, in this order: `up`, `down`, `yes`, `no`, `toggle`, `accept`. An action with an empty tuple is skipped. The keys are read from `prompt.keymap` when the frame is drawn.
 
