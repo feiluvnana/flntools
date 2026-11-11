@@ -12,9 +12,9 @@ No new command. ffmpeg arrives with `pip install`, because `imageio-ffmpeg` is a
 
 ## Content decides the extension
 
-In `flnd/net.py`, after a photo or video download finishes and before the `.part` file is renamed, the engine calls `media.guess_extension(part)` ([the table](media.md#guess_extension)). It reads 64 bytes and needs no library. Today every source hard-codes `.jpg` or `.mp4`, whatever the CDN sent.
+In `flnd/net.py`, after a photo or video download finishes and before the `.part` file is renamed, the engine calls `media.sniff(part)` ([the table](media.md#sniff)). It reads 64 bytes and needs no library. Today every source hard-codes `.jpg` or `.mp4`, whatever the CDN sent.
 
-| `guess_extension` gives | The engine |
+| `sniff` gives | The engine |
 | --- | --- |
 | a photo or video extension | saves the file with it: `2026-01-02_123.jpg` becomes `2026-01-02_123.webp` when the content is WebP |
 | `.html` or `.json` | fails the download with `ValueError("got a web page instead of a photo")`, retried like any failed download |
@@ -27,7 +27,7 @@ In `flnd/net.py`, after a photo or video download finishes and before the `.part
 
 **`session.save(…, audio=None)`.** `audio` is the URL, or list of mirror URLs, of a separate audio stream, for `kind="video"` only. Passing it for another kind is a programming error (`RuntimeError`). When it is given, the engine, in one download-pool task:
 1. downloads `source` and `audio` one after the other, to `.name.<random>.video.part` and `.audio.part`, on one progress row sized by both `Content-Length`s;
-2. sets the row's caption to `merging`, and runs `media.merge(video_part, audio_part, temp_dest)`. `merge` reads every packet, so a truncated part fails here;
+2. sets the row's caption to `merging`, and runs `media.merge(video_part, audio=audio_part, dest=temp_dest)`. `merge` reads every packet, so a truncated part fails here;
 3. renames the result into place, deletes both parts, and writes the history row.
 
 `BrokenError` from `merge` counts as a failed download, retried like any other. `RuntimeError` (no ffmpeg, or a codec the container can't hold) fails the file at once, with its message.
@@ -131,13 +131,13 @@ The engine already compares the bytes it received with `Content-Length`. Some do
 
 | File | Change | Lines |
 | --- | --- | --- |
-| `flnd/net.py` | `guess_extension`, the `audio=` path, checks | +45 |
+| `flnd/net.py` | `sniff`, the `audio=` path, checks | +45 |
 | `flnd/session.py`, `flnd/engine.py` | `audio=`, the hint, both compress options with the video queue, and the history fields | +70 |
 | `flnd/dash.py` | new | 40 |
 | `flnd/cli.py` | `--compress-image`, `--compress-video` | +6 |
 | `flnd/sources/fbk.py`, `ins.py` | choose DASH when there is a manifest | +8 each |
 
-The 35-line sniffer the first draft put in `net.py` is now `media.guess_extension`, and the preset table lives only in `media`.
+The 35-line sniffer the first draft put in `net.py` is now `media.sniff`, and the preset table lives only in `media`.
 
 ## Budget
 

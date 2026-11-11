@@ -11,17 +11,20 @@ info.width, info.height                      # 3024, 4032: as displayed, rotatio
 info.created, info.location                  # datetime(2026, 1, 2, 9, 30, tzinfo=…), (35.6895, 139.6917)
 info.tags["Model"]                           # "iPhone 15 Pro": every metadata field, by name
 
-media.convert("IMG_0042.heic", "IMG_0042.jpg")     # the format comes from dest's extension
-media.convert("clip.webm", "clip.mp4")             # copies the streams when they fit, re-encodes when not
-media.convert("clip.mp4", "clip.m4a")              # the audio only
+media.convert("IMG_0042.heic", dest="IMG_0042.jpg")          # the format comes from dest's extension
+media.convert("clip.webm", dest="clip.mp4")                  # copies the streams when they fit, re-encodes when not
+media.convert("clip.mp4", dest="clip.m4a")                   # the audio only
 
-media.compress("IMG_0042.jpg")                     # in place: replaces the file when the result is smaller
-media.compress("clip.mp4", "small.mp4", preset="small", resolution=720)   # a smaller copy; the source stays
+media.compress("IMG_0042.jpg")                               # in place, "balanced": replaces the file when the result is smaller
+media.compress("IMG_0042.jpg", quality=75, resolution=1080)  # exact settings instead of a preset's
+media.compress("clip.mp4", dest="small.mp4", preset="small", resolution=480)   # a preset, one setting changed; the source stays
 
-media.merge("v.mp4", "a.m4a", "out.mp4")           # DASH video + audio, without re-encoding
-media.check("clip.mp4")                            # raises media.BrokenError when truncated or corrupt
-media.guess_extension("download.part")             # ".webp", from the first bytes; no library needed
+media.merge("v.mp4", audio="a.m4a", dest="out.mp4")          # DASH video + audio, without re-encoding
+media.check("clip.mp4")                                      # raises media.BrokenError when truncated or corrupt
+media.sniff("download.part")                                 # ".webp", from the first bytes; no library needed
 ```
+
+**The file is the one positional argument; everything else is named** (Naming rule 7). `convert(a, b)` doesn't say which file is read and which is written, and `merge(a, b, c)` is worse, so `dest=` and `audio=` are always written out, and so is every setting.
 
 Every function takes a path to a file **of any kind** and decides what it holds from its **content**, never its name. Photos go through **Pillow** (with **pi-heif** for HEIC), in process. Videos and audio go through the **ffmpeg** program, out of process. The caller never chooses, and never sees ffmpeg's path or arguments: there is no `which_ffmpeg()` and no `run(*args)`.
 
@@ -62,7 +65,7 @@ It reads what the file is and its metadata, **without decoding** the picture or 
 | --- | --- | --- |
 | `path` | the file | the file |
 | `kind` | `"image"` | `"video"`, or `"audio"` when there is no video stream |
-| `format` | `"jpeg"`, `"png"`, `"gif"`, `"webp"`, `"heif"`, `"avif"` | `"mp4"`, `"mov"`, `"webm"`, `"mkv"`, `"m4a"` (from the content, by the [sniffing table](#guess_extension)) |
+| `format` | `"jpeg"`, `"png"`, `"gif"`, `"webp"`, `"heif"`, `"avif"` | `"mp4"`, `"mov"`, `"webm"`, `"mkv"`, `"m4a"` (from the content, by the [sniffing table](#sniff)) |
 | `size` | bytes on disk | bytes on disk |
 | `width`, `height` | **as displayed**: EXIF orientation 5–8 swaps them | **as displayed**: a 90° rotation in the display matrix swaps them. `None` for audio |
 | `duration` | `None` | seconds, or `None` when ffmpeg prints `N/A` (some WebM) |
@@ -100,7 +103,7 @@ ffmpeg -hide_banner -nostdin -v info -protocol_whitelist file -format_whitelist 
 
 ## convert
 
-`convert(src, dest, *, quality=90) -> Path`
+`convert(src, *, dest, quality=90) -> Path`
 
 It writes `src` as the format **`dest`'s extension** names, and returns `dest`. `src` is never changed or deleted.
 
@@ -122,13 +125,13 @@ Which codecs each container holds, for the copy decision: MP4 and MOV hold H.264
 
 ## compress
 
-`compress(src, dest=None, *, preset="balanced", resolution=None, codec="h264", progress=None) -> Path | None`
+`compress(src, *, dest=None, preset="balanced", quality=None, resolution=None, codec="h264", audio_bitrate=None, progress=None) -> Path | None`
 
 It re-encodes `src` smaller. **The result is kept only if it is smaller than `src`.** It returns the path it wrote, or `None` when nothing changed.
 
 **Where the result goes:**
-- **`dest=None`** (the default) **replaces `src`**. The result is written next to `src`, then renamed onto it. When the format changes (`a.heic` → `a.jpg`, `clip.webm` → `clip.mp4`), the new name is used and `src` is deleted after the rename. If that new name already exists, `FileExistsError` is raised before anything is encoded.
-- **`dest` given** writes a copy there, and `src` stays. The format comes from `dest`'s extension, as in `convert`.
+- **No `dest=`** (the default) **replaces `src`**. The result is written next to `src`, then renamed onto it. When the format changes (`a.heic` → `a.jpg`, `clip.webm` → `clip.mp4`), the new name is used and `src` is deleted after the rename. If that new name already exists, `FileExistsError` is raised before anything is encoded.
+- **`dest=` given** writes a copy there, and `src` stays. The format comes from `dest`'s extension, as in `convert`.
 
 So `media.compress(path)` is "make this file smaller", and a loop over a folder is safe:
 ```python
@@ -163,11 +166,22 @@ A preset is a name, never raw encoder settings. One table for both kinds:
 | `"balanced"` (default) | 80 | 23 / 28 | `medium` | 128 kb/s | 1080 videos, 2304 photos |
 | `"high"` | 90 | 19 / 24 | `slow` | 160 kb/s | none |
 
+**Every setting can be given directly**, and a given setting wins over the preset's. The preset fills in only what isn't given:
+
+| Argument | Means | Range |
+| --- | --- | --- |
+| `quality` | one scale for photos and videos, higher is better: JPEG/WebP quality for a photo; for a video it becomes the CRF, `round(59.5 - 0.45 × quality)` for H.264, 4 more for H.265, so 70, 80 and 90 give the presets' 28, 23 and 19 | 1–100 |
+| `resolution` | the shorter side's cap, in pixels (below) | ≥ 16, or `None` for the preset's |
+| `audio_bitrate` | AAC bitrate for a video, in bits per second (`96_000`) | 32,000–320,000 |
+| `codec` | `"h264"` or `"h265"`, videos only | — |
+
+So `compress(p, quality=75)` is "balanced, but quality 75", and `compress(p, preset="high", resolution=720)` is "high quality, at most 720p". A value outside its range raises `ValueError` before anything is read. Photos ignore `codec` and `audio_bitrate`.
+
 - **CRF** keeps the quality constant and lets the size follow, which is what "smaller without ruining it" means, with no bitrate guessing. x265's CRF scale runs about 5 higher than x264's for the same quality.
-- **`resolution`** is one rule for both kinds: **the shorter side is at most this many pixels**, the way people say "720p". A portrait 1080×1920 video becomes 720×1280; a 4000×3000 photo with 1536 becomes 2048×1536. It is measured **as displayed**, after rotation. Nothing is ever scaled up. The argument overrides the preset's cap; `resolution=None` uses the preset's.
+- **`resolution`** is one rule for both kinds: **the shorter side is at most this many pixels**, the way people say "720p". A portrait 1080×1920 video becomes 720×1280; a 4000×3000 photo with 1536 becomes 2048×1536. It is measured **as displayed**, after rotation. Nothing is ever scaled up.
   - Video: `scale='if(gte(iw,ih),-2,min(iw,R))':'if(gte(iw,ih),min(ih,R),-2)',setsar=1`. `-2` keeps both sides even, which H.264 needs.
   - Photo: `Image.thumbnail` with Lanczos filtering.
-- **`codec`**: `"h264"` (default) plays on every browser, phone, TV and editor. `"h265"` is 30–50% smaller, but Chrome and Firefox on many machines, and older Windows, can't play it. Photos ignore it. An unknown value raises `ValueError`.
+- **`codec`**: `"h264"` (the default) plays on every browser, phone, TV and editor. `"h265"` is 30–50% smaller, but Chrome and Firefox on many machines, and older Windows, can't play it. Photos ignore it. An unknown value raises `ValueError`.
 - **`progress`** is a `(done, total)` callback in seconds of video, matching `log.progress`'s `bar.update(done, total=None)`. When it is `None`, a video gets its own `log.progress(src.name, total=duration)` bar, so a script sees progress without asking. Photos take 0.1–0.3 s and report nothing.
 
 ### How a video is compressed
@@ -184,7 +198,7 @@ ffmpeg -hide_banner -nostdin -v error -protocol_whitelist file -format_whitelist
 
 ## merge
 
-`merge(video, audio, dest) -> Path`
+`merge(video, *, audio, dest) -> Path`
 
 It joins a video-only file and an audio-only file into `dest` **without re-encoding**, which is what DASH needs: Facebook and Instagram serve their best quality as separate tracks ([flnd › DASH](flnd.md#dash-video-and-audio)).
 
@@ -206,9 +220,9 @@ ffmpeg -hide_banner -nostdin -v error -xerror \
 - **A photo** is fully decoded (`img.load()`), with `LOAD_TRUNCATED_IMAGES` left off. About 50 ms for 12 MP. A truncated JPEG raises `"a.jpg: Truncated File Read"`, checked on Pillow 13.
 - **A video or audio file** has every packet of every stream read, **without decoding**: `-map 0 -c copy -f null -`, with `-xerror`. That catches what a download leaves behind (a missing `moov` index, a cut-off last packet), checked on ffmpeg 9.0. It doesn't catch damage *inside* frames, which only decoding finds at about 50 times the cost; the docstring says so. The timeout is 600 s.
 
-## guess_extension
+## sniff
 
-`guess_extension(path) -> str | None` reads the first 64 bytes and returns the extension the content calls for. It needs neither Pillow nor ffmpeg, and costs one small read, so flnd runs it on every download. It is the same table `probe` uses for `format`.
+`sniff(path) -> str | None` reads the first 64 bytes and returns the extension the content calls for. It needs neither Pillow nor ffmpeg, and costs one small read, so flnd runs it on every download. It is the same table `probe` uses for `format`.
 
 | First bytes | Returns |
 | --- | --- |
@@ -226,7 +240,7 @@ ffmpeg -hide_banner -nostdin -v error -xerror \
 | `{` or `[` after optional whitespace or a BOM | `.json` |
 | anything else | `None` |
 
-The name follows `mimetypes.guess_extension`, which answers the same question from a MIME type. `.html` and `.json` are returned rather than `None` because "the server sent a web page" is exactly what a downloader needs to know.
+"Sniffing" is the usual word for deciding a type from a file's first bytes (browsers' MIME sniffing). It returns an extension, ready to put on a file name. `.html` and `.json` are returned rather than `None` because "the server sent a web page" is exactly what a downloader needs to know.
 
 ## Finding ffmpeg
 
@@ -237,13 +251,13 @@ Private, done once on the first video or audio call:
 
 `ffmpeg -version` is read once. Older than **4.4** raises `RuntimeError`; an unparseable version (a git build) is accepted. Details and the reasons for the wheel are in [ffmpeg](ffmpeg.md).
 
-**Pillow** is imported on the first photo call. A missing Pillow raises the usual missing-extra `ImportError("shared.media needs Pillow for photos: pip install 'flntools[media]'")`; videos still work. `pi_heif.register_heif_opener()` runs at the first photo call, not on import. `guess_extension` needs neither.
+**Pillow** is imported on the first photo call. A missing Pillow raises the usual missing-extra `ImportError("shared.media needs Pillow for photos: pip install 'flntools[media]'")`; videos still work. `pi_heif.register_heif_opener()` runs at the first photo call, not on import. `sniff` needs neither.
 
 ## Output
 
 Every function that writes (`convert`, `compress`, `merge`):
 - writes to a fresh `.<name>.<random>.part` **next to the final file**, and `os.replace`s it into place only when complete;
-- refuses an existing `dest` with `FileExistsError` before reading anything. The one exception is `compress(src)` with no `dest`, whose whole job is to replace `src`;
+- refuses an existing `dest` with `FileExistsError` before reading anything. The one exception is `compress(src)` without `dest=`, whose whole job is to replace `src`;
 - deletes the `.part` on any failure, timeout or Ctrl-C, and kills ffmpeg if it is running;
 - returns the final path.
 
@@ -299,7 +313,7 @@ One extra, because `media` is one module. flnd lists all three as plain dependen
 | **writing HEIC or AVIF** | nothing asks for it, and HEIC writing needs x265 (GPL) |
 | **AV1 in `compress`** | the smallest files, but very slow on Windows, whose wheel has only `libaom`; older phones and TVs can't decode it. A third `codec` when the wheels carry SVT-AV1 everywhere |
 | **hardware encoders** (VideoToolbox, NVENC, QSV) | lower quality per byte, and different on every machine, so a preset would mean different things |
-| **raw CRF, `-preset` or bitrate arguments; a target file size** | three named presets plus `resolution` are the interface. A target size means several encodes per file |
+| **raw CRF and x264 `-preset` arguments; a target file size** | `quality`, `resolution`, `audio_bitrate` and `codec` cover what people choose; CRF and encoder speed are ffmpeg's vocabulary, and `quality` maps onto CRF. A target size means several encodes per file |
 | **frame grabs, thumbnails, GIF previews, GIF-to-MP4** | no caller yet. GIF-to-MP4 would need `gif` added to ffmpeg's allowed formats, which is a one-word change when a caller appears |
 | **writing or stripping metadata** (`media.set_tags`, `strip_location=`) | no caller yet; whether flnd drops GPS when it compresses is an [open question](flnd.md#open-questions). Through Pillow it is one line: `exif.pop(0x8825)` |
 | **HLS / m3u8 downloads** | ffmpeg would fetch from the network itself, bypassing the engine's cookies, retries and progress. No source needs it |
@@ -342,10 +356,11 @@ Video tests are skipped without ffmpeg; tests needing `libx264`, `libx265` or `l
   - **progress:** `done` only grows, ending ≈ 3.0, `total` ≈ 3.0; with `progress=None` a `log.progress` bar is shown (a fake `theme.screen`);
   - **stall:** a fake `ffmpeg` that prints one progress line and sleeps is killed by a shortened stall timer; `TimeoutError`, and no `.part`;
   - a fake `ffmpeg -encoders` without `libx264` gives the `RuntimeError`;
-  - `preset="tiny"` and `codec="av1"` raise `ValueError`.
+  - **settings win over the preset:** `preset="small", quality=90` is larger than plain `"small"`; `quality=80` on a video runs CRF 23 (H.264) and 27 (H.265), checked from the command line built; `audio_bitrate=64_000` gives about 64 kb/s;
+  - `preset="tiny"`, `codec="av1"`, `quality=0`, `quality=101` and `audio_bitrate=8_000` raise `ValueError`.
 - **`merge`:** `v.mp4` + `a.m4a` into `.mp4` and `.mkv` has both streams and duration ≈ 1.0; the inputs are unchanged; an audio input without audio raises `BrokenError`; `.avi` raises `ValueError`; a codec the container can't hold raises `RuntimeError` and leaves no file.
 - **`check`:** every fixture passes; a JPEG cut in half and `v.mp4` cut to 70% raise `BrokenError` naming the file; random bytes and an HTML page named `.mp4` or `.jpg` raise `BrokenError`.
-- **`guess_extension`:** every row of the table from byte prefixes, `mif1` + `avif`, an HTML body with a BOM, and an empty file (`None`).
+- **`sniff`:** every row of the table from byte prefixes, `mif1` + `avif`, an HTML body with a BOM, and an empty file (`None`).
 - **Safety:**
   - an HLS playlist pointing at a local secret file, named `list.m3u8` and `clip.mp4`, and an `ffconcat` file: refused, `UnsafeError` for the `.m3u8`, and no output;
   - inputs named `-y.mp4`, `http:x.mp4` and `concat:a.mp4|b.mp4` are read as plain local files;
@@ -355,4 +370,4 @@ Video tests are skipped without ffmpeg; tests needing `libx264`, `libx265` or `l
   - `LOAD_TRUNCATED_IMAGES` is still `False` after every call;
   - a `KeyboardInterrupt` during an ffmpeg run leaves no `.part` and no child process.
 - **Finding ffmpeg:** imageio-ffmpeg's binary; `IMAGEIO_FFMPEG_EXE` pointing at a fake; imageio-ffmpeg blocked and a fake on a temp `PATH`; neither gives the install message on a video call while photos still work; version `4.2` refused, `4.4.2-0ubuntu0.22.04.1`, `n7.1` and `N-12345-gabc` accepted.
-- **Lazy import:** `from shared import log` imports neither PIL nor `shared._media`; `guess_extension` works with PIL and imageio-ffmpeg blocked; with PIL blocked, a photo call raises the missing-extra `ImportError`.
+- **Lazy import:** `from shared import log` imports neither PIL nor `shared._media`; `sniff` works with PIL and imageio-ffmpeg blocked; with PIL blocked, a photo call raises the missing-extra `ImportError`.
