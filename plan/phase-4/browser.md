@@ -19,7 +19,7 @@ with browser.connect(headless=False) as b:                     # incognito by de
 
 ## connect
 
-`connect(*, profile=None, cdp=None, headless=True, viewport=(1280, 900), locale=None, timezone=None, args=(), stealth=True) -> Browser`, used as a context manager. `locale` (`"fr-FR"`) and `timezone` (`"Europe/Paris"`) are passed to Playwright; `None` keeps the system's. They are added in step 3, with their caller, the engine.
+`connect(*, profile=None, cdp=None, headless=True, viewport=(1280, 900), locale=None, timezone=None, args=(), stealth=True) -> Browser`, used as a context manager. `locale` (`"fr-FR"`) and `timezone` (`"Europe/Paris"`) are passed to Playwright's context (`locale`, `timezone_id`), incognito or persistent; `None` keeps the system's. They were added in step 3, with their caller, the engine.
 
 | Choice | What you get |
 | --- | --- |
@@ -30,7 +30,7 @@ with browser.connect(headless=False) as b:                     # incognito by de
 
 - **Launch:** your installed Chrome (`channel="chrome"`) when there is one, because Playwright's own build differs in codecs and fonts, which fingerprinting sees. Otherwise Playwright's Chromium (`channel="chromium"`), which runs Chrome's new headless mode rather than the old, easily spotted one. It starts with the anti-automation flags, and `args=` adds more (TikTok needs `--no-sandbox`).
 - **User agent:** the browser's own, never a made-up one: a Windows string from a Mac contradicts `navigator.platform` and the client-hint headers. The one change is in headless mode, where "HeadlessChrome" is reported as "Chrome". There is no `user_agent=` option. A source that needs a particular user agent sets it on its own HTTP requests.
-- **With `cdp=`**, the browser and its context already exist, so `profile`, `headless`, `args` and `stealth` don't apply; passing them raises `ValueError`. `viewport` still applies, set on each page flnd opens. `b.cookies.add(jar)` works the same, so a cloud browser can be logged in with cookies from `cookies.load_from_browser`.
+- **With `cdp=`**, the browser and its context already exist, so `profile`, `headless`, `locale`, `timezone`, `args` and `stealth` don't apply; passing them raises `ValueError`. `viewport` still applies, set on each page flnd opens. `b.cookies.add(jar)` works the same, so a cloud browser can be logged in with cookies from `cookies.load_from_browser`.
 - **`stealth=True`** hides `navigator.webdriver`, and nothing more.
 - **On exit**, pages, the context, the browser and Playwright close in order, even when the block raised. A failure while closing is logged once and never hides the original error.
 - **Missing browser:** a missing Chromium raises `RuntimeError("Chromium is not installed: run 'playwright install chromium'")`. flnd's engine catches this and offers to install it ([packaging](packaging.md)).
@@ -97,7 +97,8 @@ The Playwright tests use local pages and `page.route`. They are skipped when Chr
   - a persistent `profile` keeps a cookie between two connects;
   - `installed_profile` copies a fake profile folder, and the copy is deleted on close;
   - `cdp=` attaches to a Chromium the test starts with a debugging port, and leaves it running after disconnecting;
-  - `cdp=` with `headless=`, `profile=`, `args=` or `stealth=` raises `ValueError`;
+  - `cdp=` with `headless=`, `profile=`, `locale=`, `timezone=`, `args=` or `stealth=` raises `ValueError`;
+  - `locale` and `timezone` reach `navigator.language` and `Intl`, incognito and with a profile;
   - headless mode reports the browser's own user agent without "Headless"; a missing channel falls back to the next;
   - `args`;
   - closing after an exception.

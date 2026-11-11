@@ -113,7 +113,7 @@ class ImportTest(BrowserCase):
 
     def test_cdp_refuses_launch_options(self):
         for options in ({"headless": False}, {"profile": "x"}, {"args": ["--x"]},
-                        {"stealth": False}):
+                        {"stealth": False}, {"locale": "fr-FR"}, {"timezone": "Europe/Paris"}):
             with self.assertRaises(ValueError, msg=options):
                 browser.connect(cdp="http://127.0.0.1:9", **options)
 
@@ -139,6 +139,13 @@ class ConnectTest(BrowserCase):
         self.assertNotIn("Headless", agent)
         with browser.connect(profile=Path(self.folder.name) / "profile") as b:
             self.assertEqual(b.open_page().raw.evaluate("navigator.userAgent"), agent)
+
+    def test_locale_and_timezone(self):
+        read = "[navigator.language, Intl.DateTimeFormat().resolvedOptions().timeZone]"
+        with browser.connect(locale="fr-FR", timezone="Europe/Paris") as b:
+            self.assertEqual(b.open_page().raw.evaluate(read), ["fr-FR", "Europe/Paris"])
+        with browser.connect(profile=Path(self.folder.name) / "profile", locale="de-DE", timezone="Asia/Tokyo") as b:
+            self.assertEqual(b.open_page().raw.evaluate(read), ["de-DE", "Asia/Tokyo"])
 
     def test_falls_back_when_a_channel_is_missing(self):
         with mock.patch.object(browser, "LAUNCH_CHANNELS", ("no-such-browser", "chromium")):

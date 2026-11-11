@@ -45,7 +45,8 @@ _installed_copies: dict[Path, str] = {}
 
 
 def connect(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = True,
-            viewport: tuple[int, int] = (1280, 900), args: Sequence[str] = (), stealth: bool = True) -> Browser:
+            viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None,
+            args: Sequence[str] = (), stealth: bool = True) -> Browser:
     """Start or attach to a browser, and return it as a `Browser` for a `with` block.
 
         with browser.connect(headless=False) as b:
@@ -56,19 +57,24 @@ def connect(*, profile: str | Path | None = None, cdp: str | None = None, headle
     running browser's DevTools endpoint (`http://127.0.0.1:9222`, or a cloud browser's `wss://` URL)
     and leaves it running. A local Chrome only allows that when started with `--remote-debugging-port`
     and its own `--user-data-dir`, not your default profile. With `cdp=`, `profile`, `headless`,
-    `args` and `stealth` raise `ValueError`, and `viewport` is set on each page opened.
+    `locale`, `timezone`, `args` and `stealth` raise `ValueError`, and `viewport` is set on each page opened.
+
+    `locale` ("fr-FR") and `timezone` ("Europe/Paris") set the browser's language and clock;
+    `None` keeps the system's.
 
     It launches your installed Chrome when there is one, and Playwright's Chromium otherwise; a
     missing Chromium raises `RuntimeError`. The browser keeps its own user agent, except that
     headless mode's "HeadlessChrome" is reported as "Chrome".
     """
-    if cdp is not None and (profile is not None or not headless or args or not stealth):
+    launch_only = profile is not None or not headless or args or not stealth or locale or timezone
+    if cdp is not None and launch_only:
         raise ValueError("connect(cdp=...) uses the running browser as it is: "
-                         "profile, headless, args and stealth don't apply")
+                         "profile, headless, locale, timezone, args and stealth don't apply")
     playwright = _start_playwright()
     try:
         if cdp is None:
-            return _launch(playwright, profile, headless=headless, viewport=viewport, args=args, stealth=stealth)
+            return _launch(playwright, profile, headless=headless, viewport=viewport, locale=locale,
+                           timezone=timezone, args=args, stealth=stealth)
         remote = playwright.chromium.connect_over_cdp(cdp)
         context = remote.contexts[0] if remote.contexts else remote.new_context()
         # Closing a browser reached over CDP only disconnects; the context is the user's, so it stays open.
@@ -417,10 +423,14 @@ def _start_playwright() -> Playwright:
     return sync_playwright().start()
 
 
-def _launch(playwright: Playwright, profile: str | Path | None, *, headless: bool,
-            viewport: tuple[int, int], args: Sequence[str], stealth: bool) -> Browser:
+def _launch(playwright: Playwright, profile: str | Path | None, *, headless: bool, viewport: tuple[int, int],
+            locale: str | None, timezone: str | None, args: Sequence[str], stealth: bool) -> Browser:
     launch_options: dict[str, Any] = {"headless": headless, "args": [*LAUNCH_ARGS, *args]}
     context_options: dict[str, Any] = {"viewport": {"width": viewport[0], "height": viewport[1]}}
+    if locale is not None:
+        context_options["locale"] = locale
+    if timezone is not None:
+        context_options["timezone_id"] = timezone
     copy = Path(profile) if profile is not None and Path(profile) in _installed_copies else None
     channels = (CHANNELS[_installed_copies.pop(copy)],) if copy is not None else LAUNCH_CHANNELS
     if copy is not None:
