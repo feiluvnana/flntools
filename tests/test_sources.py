@@ -15,6 +15,7 @@ from flnd.sources.fbk import Facebook
 from flnd.sources.ins import Instagram
 from flnd.sources.loi import Loibus
 from flnd.sources.tik import TIKTOK_UA, TikTok
+from flnd.sources.tlg import Telegram
 from flnd.sources.twt import CHROME, Twitter
 from flnd.target import Target
 
@@ -36,7 +37,7 @@ class RegistryTest(unittest.TestCase):
                                                                for d in source.domains)}, code)
 
     def test_codes_and_order(self):
-        self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt", "loi"])
+        self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt", "loi", "tlg"])
 
     def test_no_domain_belongs_to_two_sources(self):
         owners = {}
@@ -53,7 +54,8 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual((TikTok.user_agent, TikTok.browser_args), (TIKTOK_UA, ("--no-sandbox",)))
         self.assertIsNone(Instagram.user_agent)
         for source in SOURCES.values():
-            self.assertEqual((source.concurrency, source.pause, source.login_methods), (4, 5.0, ("browser", "file")))
+            methods = ("browser", "qr", "phone") if source is Telegram else ("browser", "file")
+            self.assertEqual((source.concurrency, source.pause, source.login_methods), (4, 5.0, methods))
             self.assertTrue(set(source.default_categories) <= set(source.categories), source.code)
 
     def test_categories_and_their_defaults(self):
@@ -65,6 +67,7 @@ class RegistryTest(unittest.TestCase):
             TikTok: ("videos stories playlists reposts liked favorites profile", "videos stories playlists profile"),
             Twitter: ("posts media highlights reposts replies profile", "posts media highlights profile"),
             Loibus: ("photo archive", "photo"),
+            Telegram: ("photo video file", "photo video"),
         }
         for source, (categories, defaults) in table.items():
             with self.subTest(source=source.code):

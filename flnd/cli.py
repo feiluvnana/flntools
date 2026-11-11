@@ -24,7 +24,8 @@ from flnd.target import TargetError
 from shared import cli, log, prompt, theme
 
 HOME = Path(".flnd")
-METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file"}
+METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
+                 "phone": "With your phone number and a code"}
 
 
 def describe() -> str:
@@ -114,13 +115,14 @@ def login_command(
     browser: Annotated[Optional[str], cli.opt(choices=logins.BROWSERS)] = None,
     profile: Optional[str] = None,
 ) -> int:
-    """Log in to a source, from your browser or a cookie file.
+    """Log in to a source, from your browser or a cookie file, or Telegram's own ways.
 
     Each method asks only for what it needs and wasn't given. Without a terminal, give them all.
 
     Args:
         source: the source to log in to.
-        method: how to log in: browser or file for cookie sources; asked when there are several.
+        method: how to log in: browser or file for cookie sources, browser, qr or phone for tlg;
+            asked when there are several.
         path: the cookie file (Netscape cookies.txt or JSON) for --method file; a whole browser export works.
         browser: the installed browser to read cookies from, for --method browser.
         profile: the browser profile's folder name, such as "Profile 1"; the default profile otherwise.
