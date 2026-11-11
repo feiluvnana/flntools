@@ -21,7 +21,7 @@ from flnd.sources.ins import INSTAGRAM_MOBILE_UA, InsSource
 from flnd.sources.tik import TikSource
 from flnd.sources.twt import TwtSource
 from flnd.target import parse_target
-from shared import _http, http, store, theme
+from shared import _http, http, kv, theme
 from shared._theme import Screen
 
 
@@ -257,8 +257,8 @@ class ApiPathTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def history(self):
-        with store.open(self.root / "state.db") as db:
-            return sorted(db.table("downloads"))
+        with kv.open(self.root / "history.db", table="downloads") as db:
+            return sorted(db)
 
     def media_requests(self, host):
         return [request for request in self.requests if request.url.host == host]

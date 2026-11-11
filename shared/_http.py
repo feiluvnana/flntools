@@ -14,7 +14,6 @@ except ImportError:
     raise ImportError("shared.http needs httpx: pip install 'flntools[http]'") from None
 
 from shared import _fmt as fmt
-from shared import _path as path
 from shared._log import log
 
 agents = SimpleNamespace(
@@ -85,12 +84,12 @@ class Client(httpx.Client):
             raise JSONError(response) from None
 
     def html(self, url: Any, *, method: str = "GET", **request_kwargs: Any) -> Any:
-        """Send, raise on a 4xx or 5xx, and return a `parsel.Selector`. Needs the scrape extra."""
-        from shared import _scrape as scrape
+        """Send, raise on a 4xx or 5xx, and return a `selector.Selection`. Needs the selector extra."""
+        from shared import _selector as selector
 
         response = self.request(method, url, **request_kwargs)
         response.raise_for_status()
-        return scrape.select(response)
+        return selector.select(response)
 
     def download(self, url: Any, dest: Any, *, label: str | None = None, skip: bool = True,
                  headers: Any = None) -> bool:
@@ -109,14 +108,26 @@ class Client(httpx.Client):
                 if response.status_code not in (200, 206):
                     raise httpx.HTTPStatusError(f"HTTP {response.status_code} for {url}",
                                                 request=response.request, response=response)
-                written = 0
-                with path.atomic(dest) as file:
-                    for chunk in response.iter_bytes(CHUNK_SIZE):
-                        file.write(chunk)
-                        written += len(chunk)
-                        # Content-Length counts bytes on the wire, which differ from `written` when compressed.
-                        bar.update(response.num_bytes_downloaded or written)
+                _write_atomically(dest, response, bar)
         return True
+
+
+def _write_atomically(dest: Path, response: Any, bar: Any) -> None:
+    # A file appears under its real name only once complete, so a crash never leaves half a video.
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    written = 0
+    try:
+        with open(part, "wb") as file:
+            for chunk in response.iter_bytes(CHUNK_SIZE):
+                file.write(chunk)
+                written += len(chunk)
+                # Content-Length counts bytes on the wire, which differ from `written` when compressed.
+                bar.update(response.num_bytes_downloaded or written)
+        part.replace(dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
 
 
 def download(url: Any, dest: Any, **kwargs: Any) -> bool:

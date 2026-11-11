@@ -11,8 +11,8 @@ from unittest import mock
 import httpx
 
 from flnd.target import Target
-from flnd.utils import SCROLL_AFTER_WAIT, Downloads, save, scroll, show_steps
-from shared import http, store, theme
+from flnd.utils import Downloads, for_browser, save, scroll, show_steps
+from shared import http, kv, theme
 from shared import _http, _worker
 from shared._theme import Screen
 
@@ -22,26 +22,23 @@ def client_for(handler):
 
 
 class FakePage:
-    """Answers browser.scroll's height question from a list, and records every other script."""
+    """Records the options `scroll` passes to `page.scroll`, and runs its callbacks a few times."""
 
-    def __init__(self, heights):
-        self.heights = list(heights)
-        self.scripts = []
-        self.wheels = 0
-        self.mouse = mock.Mock(wheel=self.wheel)
+    def __init__(self, scrolls=3):
+        self.scrolls = scrolls
+        self.options = {}
 
-    def wheel(self, x, y):
-        self.wheels += 1
-        self.scripts.append(f"wheel {y}")
+    def scroll(self, **options):
+        self.options = options
+        for _ in range(self.scrolls):
+            if options["by"] is not None:
+                options["by"]("raw page")
+            options["onscroll"]()
+        return self.scrolls
 
-    def wait_for_timeout(self, ms):
-        pass
 
-    def evaluate(self, script):
-        if "scrollHeight" in script and "scrollTo" not in script:
-            return self.heights.pop(0) if len(self.heights) > 1 else self.heights[0]
-        self.scripts.append(script)
-        return None
+# The two modules wait differently: worker's wait also returns whether Ctrl-C ended it early.
+SLEEPS = {_http: lambda seconds: None, _worker: lambda seconds, stop_requested: False}
 
 
 class UtilsCase(unittest.TestCase):
@@ -54,7 +51,7 @@ class UtilsCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
         for module in (_http, _worker):
-            patcher = mock.patch.object(module, "_sleep", lambda seconds: None)
+            patcher = mock.patch.object(module, "_sleep", SLEEPS[module])
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -74,10 +71,9 @@ class SaveTest(UtilsCase):
     def test_success_draws_a_bar_and_records_history(self):
         dest = self.tmp / "posts" / "a.jpg"
         seen = []
-        with store.open(self.tmp / "state.db") as db, client_for(
+        with kv.open(self.tmp / "history.db", table="downloads") as history, client_for(
             lambda request: seen.append(request.headers["Referer"]) or httpx.Response(200, content=b"x" * 1536)
         ) as client:
-            history = db.table("downloads")
             self.assertTrue(save(client, "https://media.example/a.jpg", dest,
                                  headers={"Referer": "https://site.example/"}, key="ins:a", history=history))
             row = history["ins:a"]
@@ -90,8 +86,8 @@ class SaveTest(UtilsCase):
 
     def test_http_error_returns_false_and_logs(self):
         dest = self.tmp / "posts" / "a.jpg"
-        with store.open(self.tmp / "state.db") as db, client_for(lambda request: httpx.Response(404)) as client:
-            history = db.table("downloads")
+        with kv.open(self.tmp / "history.db", table="downloads") as history, \
+                client_for(lambda request: httpx.Response(404)) as client:
             self.assertFalse(save(client, "https://media.example/a.jpg", dest, key="ins:a", history=history))
             self.assertEqual(len(history), 0)
         self.assertFalse(dest.exists() or dest.with_name("a.jpg.part").exists())
@@ -128,8 +124,8 @@ class DownloadsTest(UtilsCase):
         self.assertEqual(files.pool.submitted, 4)
         self.assertEqual(files.saved, 2)
         self.assertEqual((folder / "b.jpg").read_bytes(), b"bb")
-        with store.open(self.tmp / "state.db") as db:
-            history = dict(db.table("downloads").items())
+        with kv.open(self.tmp / "history.db", table="downloads") as db:
+            history = dict(db.items())
         self.assertEqual(sorted(history), ["ins:a", "ins:b"])
         self.assertEqual(history["ins:b"]["size"], 2)
         self.assertIn("• skip a.jpg", self.lines())
@@ -161,30 +157,30 @@ class DownloadsTest(UtilsCase):
 
 
 class ScrollTest(UtilsCase):
-    def test_wheel_steps_and_500_more_after_each_wait(self):
-        page = FakePage([1000, 2000, 2000, 2000, 2000, 2000])
-        scroll(page, "posts", count=lambda: 0, more=lambda: True, delay=0)
-        # Two steps that grow the page, then four idle ones.
-        self.assertEqual(page.wheels, 6)
-        self.assertEqual(page.scripts[:4], ["wheel 2000", SCROLL_AFTER_WAIT, "wheel 2000", SCROLL_AFTER_WAIT])
+    def test_scrolls_under_a_spinner(self):
+        page = FakePage(scrolls=6)
+        self.assertEqual(scroll(page, "posts", count=lambda: 0, more=lambda: True, delay=0.5), 6)
+        self.assertEqual((page.options["idle"], page.options["delay"], page.options["by"]), (4, 0.5, None))
         self.assertEqual(self.lines(), ["✓ scroll posts 6 steps"])
         self.assertEqual(show_steps(3), "3 steps")
 
-    def test_more_and_count(self):
-        found = [0]
-        page = FakePage([1000])
+    def test_a_custom_step_runs_and_its_errors_are_ignored(self):
+        calls = []
 
-        def step(p):
-            found[0] += 1
+        def step(raw_page):
+            calls.append(raw_page)
+            raise RuntimeError("closed")
 
-        scroll(page, "profile", count=lambda: found[0], more=lambda: found[0] < 3, delay=0, step=step)
-        self.assertEqual(found[0], 3)
+        scroll(FakePage(scrolls=2), "profile", count=lambda: 0, more=lambda: True, step=step)
+        self.assertEqual(calls, ["raw page", "raw page"])
 
-    def test_a_failing_step_is_ignored(self):
-        page = FakePage([1000])
-        page.mouse.wheel = mock.Mock(side_effect=RuntimeError("closed"))
-        scroll(page, "posts", count=lambda: 0, more=lambda: True, delay=0)
-        self.assertEqual(page.mouse.wheel.call_count, 5)
+
+class ForBrowserTest(unittest.TestCase):
+    def test_domain_gets_a_dot_and_path_a_default(self):
+        cookie = {"name": "sid", "value": "1", "domain": "site.example", "path": ""}
+        self.assertEqual(for_browser(cookie), {"name": "sid", "value": "1", "domain": ".site.example", "path": "/"})
+        dotted = {"name": "a", "value": "2", "domain": ".site.example", "path": "/x"}
+        self.assertEqual(for_browser(dotted)["domain"], ".site.example")
 
 
 if __name__ == "__main__":

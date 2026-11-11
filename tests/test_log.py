@@ -117,7 +117,7 @@ class LevelTest(LogCase):
 
 class PipeProgressTest(LogCase):
     def test_clean_exit(self):
-        with log.progress("clip.mp4", total=3 * 1024 * 1024, show=fmt.bytes) as bar:
+        with log.progress("clip.mp4", total=3 * 1024 * 1024, show=fmt.size) as bar:
             bar.advance(1024 * 1024)
             bar.update(1258291)
             bar.caption = "part 3"

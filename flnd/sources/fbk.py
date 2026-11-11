@@ -32,10 +32,9 @@ from typing import Any, Dict, List, Optional
 from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import Downloads, scroll
-from shared import browser, http, log, path, scrape
+from flnd.utils import Downloads, open_page, scroll
+from shared import fmt, http, log, selector
 
-FB_DESKTOP_UA = http.agents.chrome
 
 # Tabs to navigate in order: (folder_name, relative_url_path)
 TABS = [
@@ -72,7 +71,8 @@ class FbkSource(BaseSource):
         if "c_user" not in cookie_map or "xs" not in cookie_map:
             log.warn("Running without c_user/xs cookies; Facebook blocks unauthenticated profile browsing.")
 
-        target_dir = path.mkdir(download_dir / "fbk" / username_or_id)
+        target_dir = download_dir / "fbk" / username_or_id
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         log.info("Starting download for: {target}", target=username_or_id)
         log.info("Destination: {path}", path=target_dir)
@@ -107,7 +107,7 @@ class FbkSource(BaseSource):
         current = {"tab": "posts"}
         headers = {"Referer": f"https://www.facebook.com/{target_name}"}
 
-        def on_graphql(response: Any, data: Any) -> None:
+        def on_graphql(data: Any, response: Any) -> None:
             # Facebook sends one JSON object per line; other lines were never read.
             if not isinstance(data, dict):
                 return
@@ -117,8 +117,8 @@ class FbkSource(BaseSource):
             for item in items:
                 self._queue_item(item, tab, target_dir, client, files, headers)
 
-        with browser.open(headless=headless, user_agent=FB_DESKTOP_UA, cookies=cookies_list) as page:
-            browser.capture(page, "graphql", on_graphql, lines=True)
+        with open_page(headless=headless, cookies=cookies_list) as page:
+            page.on_response("graphql", on_graphql, lines=True)
 
             for tab_name, tab_path in TABS:
                 if files.full:
@@ -129,8 +129,8 @@ class FbkSource(BaseSource):
                 log.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
 
                 try:
-                    page.goto(tab_url, wait_until="load", timeout=25000)
-                    page.wait_for_timeout(3000)
+                    page.raw.goto(tab_url, wait_until="load", timeout=25000)
+                    page.raw.wait_for_timeout(3000)
 
                     # Continuously scroll down to the end of the feed/tab
                     scroll(page, tab_name, count=lambda: found[tab_name], more=lambda: not files.full)
@@ -158,7 +158,7 @@ class FbkSource(BaseSource):
 
         # Determine destination subfolder
         if album_title:
-            dest_folder = target_dir / "albums" / path.safename(album_title)
+            dest_folder = target_dir / "albums" / fmt.filename(album_title)
         elif category == "reels":
             dest_folder = target_dir / "reels"
         elif category == "videos" or kind == "video":
@@ -211,7 +211,7 @@ class FbkSource(BaseSource):
                         progressive = node.get("progressive_urls", [])
                         best_url = None
                         for p in progressive:
-                            if scrape.dig(p, "metadata.quality") == "HD":
+                            if selector.select(p).jmespath("metadata.quality").first == "HD":
                                 best_url = p.get("progressive_url")
                                 break
                         if not best_url and progressive:
@@ -244,12 +244,15 @@ class FbkSource(BaseSource):
                     or ("image" in node and isinstance(node["image"], dict) and "uri" in node["image"])
                 ):
                     photo_id = str(node.get("id") or node.get("photo_id") or node.get("legacy_photo_id") or "")
-                    img_url = scrape.dig(
-                        node, "viewer_image.uri || large_share_image.uri || photo_image.uri || image.uri"
-                    )
+                    img_url = selector.select(node).jmespath(
+                        "viewer_image.uri"
+                        " || large_share_image.uri"
+                        " || photo_image.uri"
+                        " || image.uri"
+                    ).first
                     if photo_id and img_url and photo_id not in seen_ids:
                         seen_ids.add(photo_id)
-                        album_name = scrape.dig(node, "album.name")
+                        album_name = selector.select(node).jmespath("album.name").first
                         extracted.append({
                             "id": photo_id,
                             "url": img_url,

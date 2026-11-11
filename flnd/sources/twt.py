@@ -26,8 +26,8 @@ import httpx
 from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import Downloads, scroll
-from shared import browser, http, log, path, scrape
+from flnd.utils import Downloads, open_page, scroll
+from shared import http, log, selector
 
 # Twitter's standard web client public bearer token
 TWITTER_BEARER = (
@@ -84,7 +84,7 @@ class TwtSource(BaseSource):
 
         target_dir = download_dir / "twt" / username_or_id
         for folder in ("posts", "images", "videos"):
-            path.mkdir(target_dir / folder)
+            (target_dir / folder).mkdir(parents=True, exist_ok=True)
 
         log.info("Starting download for: {target}", target=username_or_id)
         log.info("Destination: {path}", path=target_dir)
@@ -223,7 +223,7 @@ class TwtSource(BaseSource):
             }
             try:
                 data = client.json(url, params=params, follow_redirects=False)
-                rest_id = scrape.dig(data, "data.user.result.rest_id")
+                rest_id = selector.select(data).jmespath("data.user.result.rest_id").first
                 if rest_id:
                     return rest_id
             except Exception:
@@ -236,10 +236,12 @@ class TwtSource(BaseSource):
         next_cursor = None
 
         try:
-            user_result = scrape.dig(data, "data.user.result", default={})
-            timeline_obj = scrape.dig(
-                user_result, "timeline_v2.timeline || timeline.timeline || timeline", default={}
-            )
+            user_result = (selector.select(data).jmespath("data.user.result").first or {})
+            timeline_obj = (selector.select(user_result).jmespath(
+                "timeline_v2.timeline"
+                " || timeline.timeline"
+                " || timeline"
+            ).first or {})
             instructions = timeline_obj.get("instructions", [])
 
             for instruction in instructions:
@@ -259,13 +261,13 @@ class TwtSource(BaseSource):
                     raw_items = []
                     if "items" in content:
                         for grid_item in content["items"]:
-                            tc = scrape.dig(grid_item, "item.itemContent || itemContent", default={})
+                            tc = (selector.select(grid_item).jmespath("item.itemContent || itemContent").first or {})
                             raw_items.append(tc)
                     elif "itemContent" in content:
                         raw_items.append(content["itemContent"])
 
                     for item_content in raw_items:
-                        tweet_result = scrape.dig(item_content, "tweet_results.result", default={})
+                        tweet_result = (selector.select(item_content).jmespath("tweet_results.result").first or {})
                         if not tweet_result:
                             continue
 
@@ -287,7 +289,7 @@ class TwtSource(BaseSource):
                                 date_str = ""
 
                         # Extract extended entities media (photos & videos)
-                        entities = scrape.dig(legacy, "extended_entities.media", default=[])
+                        entities = selector.select(legacy).jmespath("extended_entities.media").all
                         for idx, media in enumerate(entities):
                             media_type = media.get("type")
                             media_id = str(media.get("id_str") or idx)
@@ -305,7 +307,7 @@ class TwtSource(BaseSource):
                                     })
 
                             elif media_type in ("video", "animated_gif"):
-                                variants = scrape.dig(media, "video_info.variants", default=[])
+                                variants = selector.select(media).jmespath("video_info.variants").all
                                 mp4s = [v for v in variants if v.get("content_type") == "video/mp4"]
                                 if mp4s:
                                     best = max(mp4s, key=lambda v: v.get("bitrate", 0))
@@ -365,7 +367,7 @@ class TwtSource(BaseSource):
             return
 
         # Wrap in structure compatible with timeline parser
-        tweet_result = scrape.dig(data, "data.tweetResult.result", default={})
+        tweet_result = (selector.select(data).jmespath("data.tweetResult.result").first or {})
         fake_timeline = {"data": {"user": {"result": {"timeline_v2": {"timeline": {"instructions": [
             {"entries": [{"content": {"itemContent": {"tweet_results": {"result": tweet_result}}}}]}
         ]}}}}}}
@@ -393,7 +395,7 @@ class TwtSource(BaseSource):
             ("media", f"https://x.com/{screen_name}/media"),
         ]
 
-        def on_timeline(response: Any, data: Any) -> None:
+        def on_timeline(data: Any, response: Any) -> None:
             items, _ = self._parse_timeline_entries(data)
             captured[0] += len(items)
             for it in items:
@@ -401,8 +403,8 @@ class TwtSource(BaseSource):
                 self._save_media_item(it, target_dir, client)
 
         # This browser never hid navigator.webdriver, so stealth stays off.
-        with browser.open(headless=headless, user_agent=http.agents.chrome, cookies=cookies_list, stealth=False) as page:
-            browser.capture(page, is_timeline, on_timeline)
+        with open_page(headless=headless, cookies=cookies_list, stealth=False) as page:
+            page.on_response(is_timeline, on_timeline)
 
             for cat, tab_url in tabs:
                 if self.downloads.full:
@@ -410,8 +412,8 @@ class TwtSource(BaseSource):
                 current_category[0] = cat
                 log.info("Navigating tab {tab}: {url}", tab=cat, url=tab_url)
                 try:
-                    page.goto(tab_url, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(3000)
+                    page.raw.goto(tab_url, wait_until="domcontentloaded", timeout=30000)
+                    page.raw.wait_for_timeout(3000)
 
                     # Continuously scroll to the end of the tab
                     scroll(page, cat, count=lambda: captured[0], more=lambda: not self.downloads.full)

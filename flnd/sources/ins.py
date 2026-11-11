@@ -33,15 +33,14 @@ import httpx
 from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import Downloads, scroll
-from shared import browser, http, log, path, scrape
+from flnd.utils import Downloads, open_page, scroll
+from shared import fmt, http, log, selector
 
 # Mobile Android User-Agent: Instagram story tray API refuses desktop user-agents
 INSTAGRAM_MOBILE_UA = (
     "Instagram 219.0.0.12.117 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100; en_US; 346132297)"
 )
 
-INSTAGRAM_DESKTOP_UA = http.agents.chrome
 
 # Tabs to navigate in order: (folder_name, relative_path)
 TABS = [
@@ -80,7 +79,8 @@ class InsSource(BaseSource):
         if "sessionid" not in cookie_map:
             log.warn("Running without sessionid; Instagram will likely wall requests.")
 
-        target_dir = path.mkdir(download_dir / "ins" / username)
+        target_dir = download_dir / "ins" / username
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         log.info("Starting download for: @{username}", username=username)
         log.info("Destination: {path}", path=target_dir)
@@ -137,7 +137,7 @@ class InsSource(BaseSource):
                         best_video = item["video_versions"][0]["url"]
                         dest = stories_dir / f"{date_str}_{story_id}.mp4"
                         queued += files.add(client, best_video, dest, key=story_id)
-                    elif scrape.dig(item, "image_versions2.candidates"):
+                    elif selector.select(item).jmespath("image_versions2.candidates").first:
                         best_image = item["image_versions2"]["candidates"][0]["url"]
                         dest = stories_dir / f"{date_str}_{story_id}.jpg"
                         queued += files.add(client, best_image, dest, key=story_id)
@@ -174,7 +174,7 @@ class InsSource(BaseSource):
         current: Dict[str, Optional[str]] = {"tab": "posts"}
         headers = {"Referer": f"https://www.instagram.com/{username}/"}
 
-        def on_profile(response: Any, data: Any) -> None:
+        def on_profile(data: Any, response: Any) -> None:
             # Extract highlights if available on profile response
             for h in self._extract_highlights_from_json(data):
                 if h not in captured_highlights:
@@ -189,8 +189,8 @@ class InsSource(BaseSource):
             for item in extracted:
                 self._queue_media(item, target_dir / tab, client, files, headers, sniff_video=True)
 
-        with browser.open(headless=headless, user_agent=INSTAGRAM_DESKTOP_UA, cookies=cookies_list) as page:
-            browser.capture(page, is_profile_api, on_profile)
+        with open_page(headless=headless, cookies=cookies_list) as page:
+            page.on_response(is_profile_api, on_profile)
 
             # Navigate through each tab
             for tab_name, tab_path in TABS:
@@ -202,8 +202,8 @@ class InsSource(BaseSource):
                 log.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
 
                 try:
-                    page.goto(tab_url, wait_until="load", timeout=25000)
-                    page.wait_for_timeout(3000)
+                    page.raw.goto(tab_url, wait_until="load", timeout=25000)
+                    page.raw.wait_for_timeout(3000)
 
                     # Continuously scroll down to the end to trigger all GraphQL replies
                     scroll(page, tab_name, count=lambda: found[tab_name], more=lambda: not files.full)
@@ -224,8 +224,8 @@ class InsSource(BaseSource):
                 profile_url = f"https://www.instagram.com/{username}/"
                 if not page.url.rstrip("/").endswith(f"instagram.com/{username}"):
                     try:
-                        page.goto(profile_url, wait_until="load", timeout=20000)
-                        page.wait_for_timeout(2500)
+                        page.raw.goto(profile_url, wait_until="load", timeout=20000)
+                        page.raw.wait_for_timeout(2500)
                     except Exception:
                         pass
 
@@ -240,39 +240,39 @@ class InsSource(BaseSource):
         """Open one highlight and queue the stories it loads."""
         hl_id = hl["id"].replace("highlight:", "")
         hl_title = hl["title"]
-        hl_dir = target_dir / "highlights" / path.safename(hl_title)
+        hl_dir = target_dir / "highlights" / fmt.filename(hl_title)
         hl_url = f"https://www.instagram.com/stories/highlights/{hl_id}/"
 
         log.info("Opening highlight '{title}': {url}", title=hl_title, url=hl_url)
         found = [0]
 
-        def on_highlight(response: Any, data: Any) -> None:
+        def on_highlight(data: Any, response: Any) -> None:
             parsed = self._extract_stories_from_json(data)
             found[0] += len(parsed)
             for s_item in parsed:
                 self._queue_media(s_item, hl_dir, client, files, None, sniff_video=False)
 
-        stop = browser.capture(page, is_profile_api, on_highlight)
+        stop = page.on_response(is_profile_api, on_highlight)
 
         # Click highlight element on profile page to trigger client-side Relay query
         try:
-            hl_locator = page.locator(f'a[href*="{hl_id}"]').first
+            hl_locator = page.raw.locator(f'a[href*="{hl_id}"]').first
             if hl_locator.count() == 0:
-                hl_locator = page.get_by_text(hl["title"].replace("_", " "), exact=False).first
+                hl_locator = page.raw.get_by_text(hl["title"].replace("_", " "), exact=False).first
 
             if hl_locator and hl_locator.count() > 0:
                 hl_locator.click()
-                page.wait_for_timeout(3500)
+                page.raw.wait_for_timeout(3500)
                 # Close story modal so subsequent highlights can be clicked
                 try:
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(1000)
+                    page.raw.keyboard.press("Escape")
+                    page.raw.wait_for_timeout(1000)
                 except Exception:
                     pass
             else:
                 # Fallback to direct navigation
-                page.goto(hl_url, wait_until="load", timeout=20000)
-                page.wait_for_timeout(3500)
+                page.raw.goto(hl_url, wait_until="load", timeout=20000)
+                page.raw.wait_for_timeout(3500)
         except Exception as e:
             log.warn("Could not open highlight '{title}': {err}", title=hl_title, err=e)
         stop()
@@ -309,32 +309,27 @@ class InsSource(BaseSource):
 
             # 1. Main timeline posts
             if tab == "posts":
-                timeline = scrape.dig(
-                    data,
+                timeline = (selector.select(data).jmespath(
                     "data.xdt_api__v1__feed__user_timeline_graphql_connection"
-                    " || data.user.edge_owner_to_timeline_media",
-                    default={},
-                )
+                    " || data.user.edge_owner_to_timeline_media"
+                ).first or {})
                 edges = timeline.get("edges", [])
 
             # 2. Reels tab
             elif tab == "reels":
-                clips = scrape.dig(
-                    data,
+                clips = (selector.select(data).jmespath(
                     "data.fetch__XDTUserDict.clips_connection"
                     " || data.xdt_api__v1__clips__user__connection_v2"
-                    " || data.user.edge_felix_video_timeline",
-                    default={},
-                )
+                    " || data.user.edge_felix_video_timeline"
+                ).first or {})
                 edges = clips.get("edges", [])
 
             # 3. Tagged tab
             elif tab == "tagged":
-                tagged_conn = scrape.dig(
-                    data,
-                    "data.xdt_api__v1__usertags__user_id__feed_connection || data.user.edge_user_to_photos_of_you",
-                    default={},
-                )
+                tagged_conn = (selector.select(data).jmespath(
+                    "data.xdt_api__v1__usertags__user_id__feed_connection"
+                    " || data.user.edge_user_to_photos_of_you"
+                ).first or {})
                 if tagged_conn:
                     edges = tagged_conn.get("edges", [])
                 else:
@@ -346,13 +341,11 @@ class InsSource(BaseSource):
 
             # 4. Reposts tab
             elif tab == "reposts":
-                reposts_conn = scrape.dig(
-                    data,
+                reposts_conn = (selector.select(data).jmespath(
                     "data.fetch__XDTUserDict.user_reposts_timeline"
                     " || data.xdt_api__v1__feed__user_reposts_graphql_connection"
-                    " || data.user_reposts_timeline",
-                    default={},
-                )
+                    " || data.user_reposts_timeline"
+                ).first or {})
                 if "repost_grid_items" in reposts_conn:
                     edges = [{"node": item.get("media", item)} for item in reposts_conn.get("repost_grid_items", [])]
                 elif "edges" in reposts_conn:
@@ -397,7 +390,7 @@ class InsSource(BaseSource):
                 if carousel:
                     for child in carousel:
                         videos = child.get("video_versions", [])
-                        images = scrape.dig(child, "image_versions2.candidates", default=[])
+                        images = selector.select(child).jmespath("image_versions2.candidates").all
                         if videos:
                             media_urls.append(videos[0]["url"])
                             is_video = True
@@ -405,7 +398,7 @@ class InsSource(BaseSource):
                             media_urls.append(images[0]["url"])
 
                 # Legacy edge_sidecar_to_children
-                elif scrape.dig(node, "edge_sidecar_to_children.edges"):
+                elif selector.select(node).jmespath("edge_sidecar_to_children.edges").first:
                     for child in node["edge_sidecar_to_children"]["edges"]:
                         c_node = child.get("node", {})
                         if c_node.get("is_video") and c_node.get("video_url"):
@@ -417,7 +410,7 @@ class InsSource(BaseSource):
                 # Single photo or video item
                 else:
                     videos = node.get("video_versions", [])
-                    images = scrape.dig(node, "image_versions2.candidates", default=[])
+                    images = selector.select(node).jmespath("image_versions2.candidates").all
                     if videos:
                         media_urls.append(videos[0]["url"])
                         is_video = True
@@ -449,11 +442,11 @@ class InsSource(BaseSource):
         """Extract highlight collections from profile GraphQL."""
         highlights = []
         try:
-            edges = scrape.dig(data, "data.highlights.edges", default=[])
+            edges = selector.select(data).jmespath("data.highlights.edges").all
             for edge in edges:
                 node = edge.get("node", {})
                 hid = node.get("id")
-                title = path.safename(node.get("title", "highlight"))
+                title = fmt.filename(node.get("title", "highlight"))
                 if hid:
                     highlights.append({"id": hid, "title": title})
         except Exception:
@@ -464,9 +457,10 @@ class InsSource(BaseSource):
         """Extract story/highlight media items from GraphQL connection."""
         items = []
         try:
-            nodes = scrape.dig(
-                data, "data.xdt_api__v1__feed__reels_media__connection.edges || data.reels_media", default=[]
-            )
+            nodes = selector.select(data).jmespath(
+                "data.xdt_api__v1__feed__reels_media__connection.edges"
+                " || data.reels_media"
+            ).all
             for node in nodes:
                 reel = node.get("node", {}) if "node" in node else node
                 for item in reel.get("items", []):
@@ -479,7 +473,7 @@ class InsSource(BaseSource):
                     if item.get("media_type") == 2 and item.get("video_versions"):
                         media_urls.append(item["video_versions"][0]["url"])
                         is_video = True
-                    elif scrape.dig(item, "image_versions2.candidates"):
+                    elif selector.select(item).jmespath("image_versions2.candidates").first:
                         media_urls.append(item["image_versions2"]["candidates"][0]["url"])
 
                     if media_urls:

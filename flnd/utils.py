@@ -2,21 +2,19 @@
 Saving files for flnd: `save`, one download pool per target, the download history, and scrolling.
 """
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, MutableMapping, Optional, Set
+from typing import Any, Callable, Dict, Iterator, List, MutableMapping, Optional, Sequence, Set
 
 import httpx
 
-from shared import browser, http, log, store, worker
+from shared import browser, http, kv, log, worker
 
-# Each saved file is recorded here, next to the downloads folder: `.flnd/state.db`.
-HISTORY_FILE = "state.db"
+# Each saved file is recorded here, next to the downloads folder: `.flnd/history.db`. The old
+# `.flnd/state.db` has another table layout, so the history starts a new file instead of reading it.
+HISTORY_FILE = "history.db"
 HISTORY_TABLE = "downloads"
-# flnd has always scrolled a feed with a 2000 px mouse wheel step, then 500 px more after each wait.
-WHEEL_STEP = 2000
-SCROLL_AFTER_WAIT = "() => { window.scrollBy(0, 500); }"
 
 
 def save(
@@ -78,15 +76,17 @@ class Downloads:
         from flnd.cli import DOWNLOAD_WORKERS
 
         with ExitStack() as exits:
-            self.history = exits.enter_context(store.open(self.history_file)).table(HISTORY_TABLE)
-            self.pool = exits.enter_context(
-                worker.pool(workers=DOWNLOAD_WORKERS, retries=2, errors="log", progress=self.label)
-            )
+            self.history = exits.enter_context(kv.open(self.history_file, table=HISTORY_TABLE))
+            self.pool = exits.enter_context(worker.pool(concurrency=DOWNLOAD_WORKERS, retries=2, progress=self.label))
             self._exits = exits.pop_all()
         return self
 
     def __exit__(self, *exc_info: Any) -> None:
         self._exits.__exit__(*exc_info)
+        # The pool keeps failures in its results instead of raising, so each one is named here.
+        for result in self.pool.results:
+            if not result.ok:
+                log.error("{file}: {kind} {err}", file=result.item, kind=type(result.error).__name__, err=result.error)
 
     @property
     def full(self) -> bool:
@@ -116,6 +116,23 @@ class Downloads:
                     key=f"{self.source}:{file.key}", history=self.history)
 
 
+@contextmanager
+def open_page(*, headless: bool, cookies: List[Dict[str, Any]], args: Sequence[str] = (),
+              stealth: bool = True) -> Iterator[Any]:
+    """A page in a fresh incognito browser, logged in with a source's cookies; closed with the block."""
+    with browser.connect(headless=headless, args=args, stealth=stealth) as connected:
+        connected.cookies.add([for_browser(cookie) for cookie in cookies])
+        yield connected.open_page()
+
+
+def for_browser(cookie: Dict[str, Any]) -> Dict[str, Any]:
+    """A cookie from a cookie file as the browser should get it: a leading-dot domain, and path `/`."""
+    # Exported files often hold host-only domains; the dot lets every subdomain see the cookie, as before.
+    domain = cookie.get("domain", "")
+    return {"name": cookie["name"], "value": cookie["value"], "path": cookie.get("path") or "/",
+            "domain": domain if domain.startswith(".") else "." + domain}
+
+
 def scroll(
     page: Any,
     label: str,
@@ -124,26 +141,25 @@ def scroll(
     more: Callable[[], bool],
     delay: float = 2.0,
     step: Optional[Callable[[Any], None]] = None,
-) -> None:
-    """`browser.scroll` the way flnd has always scrolled, under a `scroll <label>` spinner.
+) -> int:
+    """`page.scroll` through a feed under a `scroll <label>` spinner, and return the number of scrolls.
 
-    A failing scroll step is ignored, as before.
+    A failing custom `step` is ignored, as flnd always has: one bad scroll shouldn't end a feed.
     """
 
-    def scroll_step(p: Any) -> None:
+    by = _ignoring_errors(step) if step is not None else None
+    with log.progress(f"scroll {label}", show=show_steps) as bar:
+        return page.scroll(count=count, more=more, idle=4, delay=delay, by=by, onscroll=bar.advance)
+
+
+def _ignoring_errors(step: Callable[[Any], None]) -> Callable[[Any], None]:
+    def guarded(raw_page: Any) -> None:
         try:
-            step(p) if step else p.mouse.wheel(0, WHEEL_STEP)
+            step(raw_page)
         except Exception:
             pass
 
-    with log.progress(f"scroll {label}", show=show_steps) as bar:
-
-        def after_wait() -> None:
-            # Before, this ran in the same script that read the page height, so the height is unchanged.
-            page.evaluate(SCROLL_AFTER_WAIT)
-            bar.advance()
-
-        browser.scroll(page, count=count, more=more, idle=4, delay=delay, step=scroll_step, onstep=after_wait)
+    return guarded
 
 
 def show_steps(steps: float) -> str:

@@ -1,7 +1,7 @@
 """Small helpers for scripts.
 
-Phase 1 (the terminal) is stdlib only and loads at once. The Phase 3 modules load on
-first use, so `from shared import log` never imports httpx, Playwright, or cryptography.
+The terminal modules are stdlib only and load at once. The others load on first use,
+so `from shared import log` never imports httpx, Playwright, parsel, or cryptography.
 A module whose extra is missing raises an ImportError that names the extra to install.
 """
 
@@ -21,18 +21,18 @@ if TYPE_CHECKING:
     # Checkers see the real modules; at runtime they still load on first use.
     from shared import _archive as archive
     from shared import _browser as browser
+    from shared import _cookies as cookies
     from shared import _crypto as crypto
     from shared import _http as http
-    from shared import _path as path
-    from shared import _scrape as scrape
-    from shared import _store as store
+    from shared import _kv as kv
+    from shared import _selector as selector
     from shared import _worker as worker
 
-LAZY_MODULES = ("path", "archive", "crypto", "store", "worker", "scrape", "http", "browser")
+LAZY_MODULES = ("archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "http")
 
 __all__ = [
     "cli", "fmt", "log", "prompt", "style", "theme",
-    "path", "archive", "crypto", "store", "worker", "scrape", "http", "browser",
+    "archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "http",
 ]
 
 

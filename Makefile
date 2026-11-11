@@ -4,7 +4,7 @@ PYTHON ?= 3.14
 
 setup:
 	uv venv .venv --python $(PYTHON)
-	uv pip install -e '.[http,browser,crypto,scrape]' --group dev --python .venv/bin/python
+	uv pip install -e '.[archive,selector,browser,http]' --group dev --python .venv/bin/python
 	.venv/bin/playwright install chromium
 
 test:

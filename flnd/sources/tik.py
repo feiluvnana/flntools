@@ -29,8 +29,8 @@ from typing import Any, Dict, List, Optional
 from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import Downloads, scroll
-from shared import browser, http, log, path, scrape
+from flnd.utils import Downloads, open_page, scroll
+from shared import fmt, http, log, selector
 
 TIKTOK_UA = http.agents.chrome
 
@@ -83,7 +83,8 @@ class TikSource(BaseSource):
         if "sessionid" not in cookie_map and "sid_tt" not in cookie_map:
             log.warn("Running without session cookies; TikTok rate-limits public requests aggressively.")
 
-        target_dir = path.mkdir(download_dir / "tik" / username_or_id)
+        target_dir = download_dir / "tik" / username_or_id
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         log.info("Starting download for: {target}", target=username_or_id)
         log.info("Destination: {path}", path=target_dir)
@@ -110,11 +111,11 @@ class TikSource(BaseSource):
             return
 
         try:
-            data = scrape.script(resp, id="__NEXT_DATA__")
+            data = selector.select(resp).script("__NEXT_DATA__").first
             if data is None:
                 log.warn("Could not extract item data from embed HTML for {id}", id=video_id)
                 return
-            item_struct = scrape.dig(data, "props.pageProps.itemStruct", default={})
+            item_struct = (selector.select(data).jmespath("props.pageProps.itemStruct").first or {})
             if not item_struct:
                 return
             for item in self._extract_tiktok_items({"itemList": [item_struct]}):
@@ -143,7 +144,7 @@ class TikSource(BaseSource):
 
         log.info("Navigating to https://www.tiktok.com/@{username}...", username=username)
 
-        def on_items(response: Any, data: Any) -> None:
+        def on_items(data: Any, response: Any) -> None:
             story = "/api/user/story" in response.url
             if "/api/post/item_list" in response.url and "hasMore" in data:
                 has_more[0] = bool(data.get("hasMore"))
@@ -152,24 +153,21 @@ class TikSource(BaseSource):
             for item in parsed:
                 self._save_media_item(item, target_dir, cookie_map, client, files)
 
-        with browser.open(
-            headless=headless, user_agent=TIKTOK_UA, cookies=cookies_list, args=["--no-sandbox"]
-        ) as page:
-            browser.capture(page, is_feed_api, on_items)
+        with open_page(headless=headless, cookies=cookies_list, args=["--no-sandbox"]) as page:
+            page.on_response(is_feed_api, on_items)
 
             try:
-                page.goto(f"https://www.tiktok.com/@{username}", wait_until="load", timeout=30000)
-                page.wait_for_timeout(3500)
+                page.raw.goto(f"https://www.tiktok.com/@{username}", wait_until="load", timeout=30000)
+                page.raw.wait_for_timeout(3500)
 
-                if page.evaluate(CAPTCHA_DETECTOR):
-                    solved = browser.handoff(
-                        page,
-                        done=lambda: not page.evaluate(CAPTCHA_DETECTOR),
+                if page.raw.evaluate(CAPTCHA_DETECTOR):
+                    solved = page.handoff(
+                        until=lambda: not page.raw.evaluate(CAPTCHA_DETECTOR),
                         message="Solve the TikTok captcha in the browser window",
                         timeout=60.0,
                     )
                     if solved:
-                        page.wait_for_timeout(3000)
+                        page.raw.wait_for_timeout(3000)
 
                 # Continuously scroll to the end of the profile
                 scroll(
@@ -183,7 +181,7 @@ class TikSource(BaseSource):
 
                 # Fallback: Also collect any video/photo links visible on page if API was walled
                 if not captured[0]:
-                    for h in page.evaluate(POST_LINKS):
+                    for h in page.raw.evaluate(POST_LINKS):
                         m = re.search(r'/(video|photo)/(\d+)', h)
                         if m:
                             linked_ids.append(m.group(2))
@@ -215,7 +213,7 @@ class TikSource(BaseSource):
         if is_story:
             dest_folder = target_dir / "stories"
         elif playlist:
-            dest_folder = target_dir / "albums" / path.safename(playlist)
+            dest_folder = target_dir / "albums" / fmt.filename(playlist)
         elif kind == "video":
             dest_folder = target_dir / "videos"
         else:
@@ -250,7 +248,7 @@ class TikSource(BaseSource):
     def _extract_tiktok_items(self, data: Dict[str, Any], is_story: bool = False) -> List[Dict[str, Any]]:
         """Parse itemList / storyList from TikTok API into structured media items."""
         items = []
-        raw_list = scrape.dig(data, "itemList || storyList || story_list", default=[])
+        raw_list = selector.select(data).jmespath("itemList || storyList || story_list").all
 
         for raw in raw_list:
             item_id = str(raw.get("id") or raw.get("aweme_id") or "")
@@ -270,15 +268,17 @@ class TikSource(BaseSource):
                 except Exception:
                     pass
 
-            playlist_name = scrape.dig(raw, "playlist.name || playlist_info.name")
+            playlist_name = selector.select(raw).jmespath("playlist.name || playlist_info.name").first
 
             # 1. Photo mode carousel
-            images = scrape.dig(raw, "imagePost.images", default=[])
+            images = selector.select(raw).jmespath("imagePost.images").all
             if images:
                 for idx, img in enumerate(images):
-                    url_list = scrape.dig(
-                        img, "imageURL.urlList || displayImage.urlList || thumbnail.urlList", default=[]
-                    )
+                    url_list = selector.select(img).jmespath(
+                        "imageURL.urlList"
+                        " || displayImage.urlList"
+                        " || thumbnail.urlList"
+                    ).all
                     if url_list:
                         items.append({
                             "id": item_id,

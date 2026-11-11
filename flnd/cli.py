@@ -81,11 +81,12 @@ def download(targets: Annotated[List[str], cli.arg(nargs="+", ask=ask_targets)])
         groups: Dict[str, List[Tuple[Target, Any]]] = {}
         for target in parsed:
             groups.setdefault(target.source, []).append((target, jobs.add(str(target))))
+        # run_group logs and ends each target's own failure, so this never raises TaskError.
         totals = worker.map(
             lambda group: run_group(group, output), list(groups.values()),
-            workers=min(len(groups), SOURCE_WORKERS), errors="log",
+            concurrency=min(len(groups), SOURCE_WORKERS),
         )
-    log.ok("Complete. {n} files", n=sum(n or 0 for n in totals))
+    log.ok("Complete. {n} files", n=sum(totals))
     return 0
 
 

@@ -178,13 +178,12 @@ class JsonTest(HttpCase):
         self.assertIsInstance(error, ValueError)
 
 
-@unittest.skipIf(parsel is None, "the scrape extra is not installed")
+@unittest.skipIf(parsel is None, "the selector extra is not installed")
 class HtmlTest(HttpCase):
     def test_selector(self):
         with self.client(httpx.Response(200, html="<h1>Hi</h1>")) as client:
             page = client.html(URL)
-        self.assertIsInstance(page, parsel.Selector)
-        self.assertEqual(page.css("h1::text").get(), "Hi")
+        self.assertEqual(page.css("h1").text, "Hi")
 
     def test_404_raises(self):
         with self.client(httpx.Response(404)) as client:
@@ -274,8 +273,8 @@ class LazyImportTest(unittest.TestCase):
         self.assertEqual(run_python(code).stdout.strip(), "[]")
 
     def test_modules_load_on_first_use(self):
-        code = ("import sys, shared\nbefore = 'shared._path' in sys.modules\n"
-                "print(before, shared.path is sys.modules['shared._path'], 'path' in dir(shared))")
+        code = ("import sys, shared\nbefore = 'shared._kv' in sys.modules\n"
+                "print(before, shared.kv is sys.modules['shared._kv'], 'kv' in dir(shared))")
         self.assertEqual(run_python(code).stdout.strip(), "False True True")
 
     def test_unknown_name(self):
@@ -286,8 +285,7 @@ class LazyImportTest(unittest.TestCase):
     def test_missing_extras(self):
         expected = {
             ("http", "httpx"): "shared.http needs httpx: pip install 'flntools[http]'",
-            ("scrape", "parsel"): "shared.scrape needs parsel: pip install 'flntools[scrape]'",
-            ("browser", "playwright"): "shared.browser needs playwright: pip install 'flntools[browser]'",
+            ("selector", "parsel"): "shared.selector needs parsel: pip install 'flntools[selector]'",
         }
         for (module, package), message in expected.items():
             self.assertEqual(missing_extra_message(module, package), message)
