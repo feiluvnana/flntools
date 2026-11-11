@@ -5,6 +5,8 @@ Cookies are located under `.flnd/cookies/<source>.txt` (or .json).
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -133,11 +135,24 @@ def store_cookies(text: str) -> Dict[str, Tuple[int, Path]]:
     saved = {}
     for code, cookies in by_source.items():
         path = COOKIE_DIR / f"{code}.txt"
-        path.write_text(write_netscape(cookies), encoding="utf-8")
+        write_private(path, write_netscape(cookies))
         # Only one cookie file per source, so an old JSON file cannot shadow the new one.
         (COOKIE_DIR / f"{code}.json").unlink(missing_ok=True)
         saved[code] = (len(cookies), path)
     return saved
+
+
+def write_private(path: Path, text: str) -> None:
+    """Write text to path readable only by its owner, replacing any old file in one step."""
+    # mkstemp creates the file with mode 0600, and the rename means a reader never sees half a file.
+    handle, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
 
 
 def sort_cookies(text: str) -> Tuple[Dict[str, List[Dict[str, Any]]], int]:

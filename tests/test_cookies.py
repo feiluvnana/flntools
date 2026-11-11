@@ -4,11 +4,14 @@ Unit tests for cookie loading, parsing, and writing using standard unittest.
 
 import json
 import tempfile
+import stat
 import unittest
 from pathlib import Path
+from unittest import mock
+
 from flnd.cookies import (
     cookies_to_dict, parse_json_cookies, parse_json_text, parse_netscape_cookies, parse_netscape_text,
-    readable_cookie_file, sort_cookies, write_netscape,
+    readable_cookie_file, sort_cookies, store_cookies, write_netscape,
 )
 
 
@@ -73,6 +76,14 @@ class TestCookies(unittest.TestCase):
             self.assertEqual(readable_cookie_file(str(Path(tmp_dir) / "missing.txt")),
                              f"no file at {Path(tmp_dir) / 'missing.txt'}")
             self.assertEqual(readable_cookie_file(tmp_dir), f"no file at {tmp_dir}")
+
+    def test_cookie_file_mode_0600(self):
+        with tempfile.TemporaryDirectory() as tmp_dir, mock.patch("flnd.cookies.COOKIE_DIR", Path(tmp_dir)):
+            saved = store_cookies(".instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc\n")
+            path = saved["ins"][1]
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertIn("sessionid\tabc", path.read_text(encoding="utf-8"))
+            self.assertEqual([entry.name for entry in Path(tmp_dir).iterdir()], ["ins.txt"])
 
 
 if __name__ == "__main__":
