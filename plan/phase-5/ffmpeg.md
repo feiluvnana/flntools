@@ -50,7 +50,7 @@ Facts from PyPI on 2026-11-11.
 
 - **Python versions.** PyAV 19 has already dropped 3.11, flnd's floor. flnd would be stuck on `av<19`, which gets no fixes.
 - **Out of process is safer.** ffmpeg runs as a separate program, so a crash on hostile media kills ffmpeg, not flnd. A hang can be timed out and killed. Inside PyAV, a segfault in a decoder takes the whole downloader down, and a stuck `demux()` can't be interrupted.
-- **Less code.** `media` needs five things: stream copies (merge, and `convert` between containers), container checks, reading stream info and metadata, and a preset re-encode (compress). Each is one ffmpeg command line. With PyAV, a merge is a packet loop with timestamp rescaling, and a re-encode is a decode, scale and encode loop with its own audio resampling. We would write and test both ourselves.
+- **Less code.** Everything `media` does with video and audio (copies, merges, trims, frames, encodes, probing) is one ffmpeg command line each. With PyAV, a merge is a packet loop with timestamp rescaling, and a re-encode is a decode, scale and encode loop with its own audio resampling. We would write and test both ourselves.
 - **API churn.** PyAV broke its API three times in 2026. ffmpeg's command line has been stable for a decade.
 
 ### Why the wheel and not our own downloader
@@ -99,10 +99,10 @@ Every run gets:
 | Threat | Rule |
 | --- | --- |
 | a **file name read as an option** (`-y.mp4`) or **as a protocol** (`http:x.mp4`, `concat:a\|b`, `subfile:…`) | every input and output is passed as `file:` + the **absolute** path. It can't start with `-`, and ffmpeg can't read it as another protocol |
-| **network access**, or an input that pulls in other files: an HLS playlist saved as `.mp4`, an `ffconcat` list, or an `image2` pattern. This is the known ffmpeg hole where a "video" playlist reads `/etc/passwd` into the output | each input gets `-protocol_whitelist file` and `-format_whitelist mov,matroska`, which allows only the MP4/MOV/M4A family and Matroska/WebM. ffmpeg refuses anything else before it reads past the header, with `Format not on whitelist`. That refusal raises `media.UnsafeError`. Recent ffmpeg also limits which HLS segment extensions it will open, but the 4.4 that Ubuntu 22.04 ships does not, so the whitelist is what protects a `PATH` ffmpeg. External references in MOV (`enable_drefs`) are off by default in ffmpeg, and we never turn them on |
+| **network access**, or an input that pulls in other files: an HLS playlist saved as `.mp4`, an `ffconcat` list, or an `image2` pattern. This is the known ffmpeg hole where a "video" playlist reads `/etc/passwd` into the output | each input gets `-protocol_whitelist file` and a `-format_whitelist` naming only readers that never open another file or URL: `mov,matroska,avi,mpegts,mpeg,flv,asf,ogg,mp3,aac,flac,wav,aiff,caf,amr,gif` ([media › Read](media.md#read)). `hls`, `dash`, `concat`, `image2` and every `*_pipe` reader are left out. ffmpeg refuses anything else before it reads past the header, with `Format not on whitelist`. That refusal raises `media.UnsafeError`. Recent ffmpeg also limits which HLS segment extensions it will open, but the 4.4 that Ubuntu 22.04 ships does not, so the whitelist is what protects a `PATH` ffmpeg. External references in MOV (`enable_drefs`) are off by default in ffmpeg, and we never turn them on |
 | ffmpeg **reading the terminal**: it waits on `q` and steals keystrokes from `log`'s live area | `-nostdin` |
 | **overwriting** something | output goes to a fresh temp name `.<name>.<random>.part` next to `dest`, with `-n` (never overwrite). It is renamed onto `dest` with `os.replace` only after ffmpeg exits 0. Any failure, timeout or Ctrl-C deletes the temp file. This matters: when muxing fails, ffmpeg has already created a partial output file. A `dest` that already exists raises `FileExistsError` before ffmpeg starts |
-| **hangs** | every call has a `timeout` in seconds: `probe` 30, `merge` and `check` 600. `subprocess.run` kills ffmpeg when the time runs out, and on any exception, Ctrl-C included. That raises the builtin `TimeoutError`, naming the file. Video `compress`, and a `convert` that re-encodes, have a **stall timeout** instead: 60 s without a progress line, because a long transcode is legitimately slow |
+| **hangs** | every call has a `timeout` in seconds: `probe` 30, stream copies and `check` 600. `subprocess.run` kills ffmpeg when the time runs out, and on any exception, Ctrl-C included. That raises the builtin `TimeoutError`, naming the file. Every encode has a **stall timeout** instead: 60 s without a progress line, because a long transcode is legitimately slow |
 | **the environment** | `FFREPORT` is removed, because it makes ffmpeg write a log file into the working directory. `AV_LOG_FORCE_NOCOLOR=1` is set, so the output we parse has no color codes |
 | **stray console windows** | none: flnd is a console program, and ffmpeg inherits its console |
 | **a crash on hostile media** | it stays inside ffmpeg's process and becomes `media.BrokenError` with ffmpeg's last error line |
@@ -133,7 +133,7 @@ So licensing doesn't decide the codec. Playback and encode speed do:
 - **H.265** is offered for smaller files;
 - **AV1** waits until every wheel has SVT-AV1 ([media › Rejected](media.md#rejected)).
 
-A `PATH` ffmpeg may be an LGPL build without x264 (Fedora's `ffmpeg-free`). `compress` and `convert` check `-encoders` and say so ([media › compress](media.md#how-a-video-is-compressed)).
+A `PATH` ffmpeg may be an LGPL build without x264 (Fedora's `ffmpeg-free`). `compress` and `convert` check `-encoders` and say so ([media › How a video is encoded](media.md#how-a-video-is-encoded)).
 
 ### Distributing
 

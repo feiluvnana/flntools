@@ -4,9 +4,9 @@ Phase 5, after [media](media.md). This file covers how flnd's engine and sources
 
 What changes for someone using flnd:
 1. **Saved files get the right extension.** A WebP served for a `.jpg` name is saved as `.webp`, and an HTML error page is never saved as a photo.
-2. **Facebook and Instagram videos are saved at their best quality.** Those sites serve it as separate video and audio streams (DASH), which flnd now downloads and joins with `media.merge`.
+2. **Facebook and Instagram videos are saved at their best quality.** Those sites serve it as separate video and audio streams (DASH), which flnd now downloads and joins with `media.video.merge`.
 3. **Downloads whose size couldn't be verified are checked** with `media.check`.
-4. **`--compress-image` and `--compress-video`** (each `small|balanced|high`) make photos and videos smaller after they are saved, with `media.compress`, and **replace the original**.
+4. **`--compress-image` and `--compress-video`** (each `small|balanced|high`) make photos and videos smaller after they are saved, with `media.compress`: re-encoded, capped in resolution, stripped of metadata, in the **same format** unless `--format-image` / `--format-video` names another. They **replace the original**.
 
 No new command. ffmpeg arrives with `pip install`, because `imageio-ffmpeg` is a required dependency of flnd ([ffmpeg](ffmpeg.md)), so there is no `flnd install-ffmpeg`. flnd needs Python 3.11 or later.
 
@@ -27,7 +27,7 @@ In `flnd/net.py`, after a photo or video download finishes and before the `.part
 
 **`session.save(…, audio=None)`.** `audio` is the URL, or list of mirror URLs, of a separate audio stream, for `kind="video"` only. Passing it for another kind is a programming error (`RuntimeError`). When it is given, the engine, in one download-pool task:
 1. downloads `source` and `audio` one after the other, to `.name.<random>.video.part` and `.audio.part`, on one progress row sized by both `Content-Length`s;
-2. sets the row's caption to `merging`, and runs `media.merge(video_part, audio=audio_part, dest=temp_dest)`. `merge` reads every packet, so a truncated part fails here;
+2. sets the row's caption to `merging`, and runs `media.video.merge([video_part], audio=audio_part, dest=temp_dest)`. `merge` reads every packet, so a truncated part fails here;
 3. renames the result into place, deletes both parts, and writes the history row.
 
 `BrokenError` from `merge` counts as a failed download, retried like any other. `RuntimeError` (no ffmpeg, or a codec the container can't hold) fails the file at once, with its message.
@@ -61,28 +61,31 @@ The exact JSON paths are confirmed against saved, anonymized fixtures when each 
 
 ## Compressing
 
-Two new [download options](../phase-4/engine.md#download-options), for every source. Each is off by default, and they can be used together or alone:
+Four new [download options](../phase-4/engine.md#download-options), for every source. All are off by default:
 
 | Option | Meaning |
 | --- | --- |
-| `--compress-image small\|balanced\|high` | after saving each photo, run `media.compress(path, preset=…)`, which **replaces the original** when the result is smaller |
+| `--compress-image small\|balanced\|high` | after saving each photo, run `media.compress(path, preset=…)`: smaller, metadata stripped, same format. It **replaces the original** when the result is smaller |
 | `--compress-video small\|balanced\|high` | the same for each video |
+| `--format-image <format>` | write compressed photos in this format instead of their own: `media.compress(…, format=…)` |
+| `--format-video <format>` | the same for videos. Both take any format `media` [writes](media.md#write) of that kind, such as `jpg`, `webp`, `avif`, `png` or `mp4`, `webm`, `mkv`, `gif` |
 
-**Both always replace the original; flnd never keeps both files.** Compression is lossy, and the original's URL may stop working, so a replaced original can't be recovered. Anyone who wants the originals runs without these flags.
+- **`--format-image` needs `--compress-image`**, and `--format-video` needs `--compress-video`. Alone, each raises `cli.UsageError("--format-image needs --compress-image")`. flnd has no conversion without compression, as decided when `--jpg` was dropped.
+- **Both compress options always replace the original; flnd never keeps both files.** Compression is lossy and strips metadata, and the original's URL may stop working, so a replaced original can't be recovered. Anyone who wants the originals runs without these flags.
 
 **The values are `media`'s [presets](media.md#presets),** with nothing added by flnd:
 
-| Value | Photos | Videos (H.264 + AAC, as `.mp4`) |
+| Value | Photos | Videos |
 | --- | --- | --- |
-| `small` | quality 70, shorter side at most 1536 (a 4000×3000 photo becomes 2048×1536) | CRF 28, at most 720p, audio 64 kb/s |
-| `balanced` | quality 80, shorter side at most 2304 (3072×2304) | CRF 23, at most 1080p, audio 128 kb/s |
-| `high` | quality 90, no cap | CRF 19, no cap, audio 160 kb/s |
+| `small` | quality 70, shorter side at most 1536 (a 4000×3000 photo becomes 2048×1536) | quality 70 (H.264 CRF 28), at most 720p and 30 fps, audio 64 kb/s |
+| `balanced` | quality 80, shorter side at most 2304 (3072×2304) | quality 80 (CRF 23), at most 1080p and 60 fps, audio 128 kb/s |
+| `high` | quality 90, no cap | quality 90 (CRF 19), no cap, audio 160 kb/s |
 
-flnd always uses H.264, because it plays everywhere ([open question 2](#open-questions)).
-
-**What changes, as `media.compress` decides it:**
-- **Photos.** JPEG and WebP stay in their own format. HEIC and AVIF become `.jpg`. PNG, GIF and animated photos are left alone (`compress` returns `None`).
-- **Videos** always become `.mp4`, so a `.webm` changes extension. A DASH video is compressed after its merge.
+**What happens to each file, as `media.compress` decides it:**
+- **The format stays the same** unless `--format-*` is given. JPEG, WebP, AVIF and PNG photos stay in their format (PNG losslessly, only resized and stripped). MP4, MOV and MKV videos stay in their container, re-encoded as H.264 + AAC; WebM stays WebM, as VP9 + Opus. A DASH video is compressed after its merge.
+- **Metadata is stripped:** EXIF (date taken, camera, **GPS**), XMP, the embedded thumbnail, and every video tag, chapter and extra stream ([media › What is stripped](media.md#what-is-stripped)). The picture is kept upright, and a wide-gamut color profile is kept. The post's date stays in the file name and the history.
+- **Animated photos** (GIF, animated WebP) are compressed as animations: frames resized, frame rate capped.
+- **Left alone:** HEIC without `--format-image` (`media` can't write HEIC). With `--format-image jpg`, a HEIC becomes a `.jpg`.
 
 **The sequence for one file:**
 1. The file is saved at `name.ext` and passes the usual checks.
@@ -104,7 +107,7 @@ The skip check reads `file`. So:
 
 If someone deletes the file itself, the next run downloads it again, and compresses it with that run's flags.
 
-**Only new downloads are compressed.** Files saved by earlier runs are skipped as usual, and aren't compressed after the fact ([open question 3](#open-questions)).
+**Only new downloads are compressed.** Files saved by earlier runs are skipped as usual, and aren't compressed after the fact ([open question 2](#open-questions)).
 
 **Where it runs.**
 - **Photos** compress on the download pool's thread, right after the save. A photo takes about 0.1–0.3 s.
@@ -134,7 +137,7 @@ The engine already compares the bytes it received with `Content-Length`. Some do
 | `flnd/net.py` | `sniff`, the `audio=` path, checks | +45 |
 | `flnd/session.py`, `flnd/engine.py` | `audio=`, the hint, both compress options with the video queue, and the history fields | +70 |
 | `flnd/dash.py` | new | 40 |
-| `flnd/cli.py` | `--compress-image`, `--compress-video` | +6 |
+| `flnd/cli.py` | `--compress-image`, `--compress-video`, `--format-image`, `--format-video`, and the check that a format comes with its compress option | +14 |
 | `flnd/sources/fbk.py`, `ins.py` | choose DASH when there is a manifest | +8 each |
 
 The 35-line sniffer the first draft put in `net.py` is now `media.sniff`, and the preset table lives only in `media`.
@@ -146,8 +149,8 @@ Counted as in the [ceiling](../README.md#position): lines of code, without docst
 | | Lines of code |
 | --- | --- |
 | `shared` after Phase 4 | about 3,600 |
-| `media` (`_media.py`, `_ffmpeg.py`, `_pillow.py`) | about 460 ([why past 400](media.md#files-and-budget)) |
-| **`shared` after Phase 5** | **about 4,060**, under the 4,500 ceiling, with about 440 to spare |
+| `media` (six files) | about 780 ([why past 400](media.md#files-and-budget)) |
+| **`shared` after Phase 5** | **about 4,380**, under the raised ceiling of about 5,000 |
 
 ## pyproject
 
@@ -206,11 +209,15 @@ One extra, named for the module, because `shared`'s missing-extra messages name 
 - **Compressing**, using the generated `big.mp4` and the large JPEG from the media tests; video cases are skipped without ffmpeg or `libx264`:
   - for each value of each option, the saved file is **smaller than what was served**, still passes `check`, and replaced the original; only one file is in the folder;
   - the history row has `file`, `compressed`, `size` and `original_size` as in the table, and a second run with a different preset skips the file;
-  - a `.webm` becomes `.mp4` and a HEIC becomes `.jpg`, the old files are gone, and the rows' `file` names the new ones;
+  - with `--format-video mp4` a `.webm` becomes `.mp4`, the old file is gone, and the row's `file` names the new one;
   - `small` caps a 1080×1920 video at 720×1280 and a 4000×3000 photo at 2048×1536;
   - a file that doesn't shrink is kept, recorded with `"none"`, and isn't tried again;
-  - PNG, GIF and animated WebP are untouched;
+  - an animated GIF stays animated, with smaller frames;
   - `--compress-image` alone leaves videos untouched, and `--compress-video` alone leaves photos untouched;
+  - without `--format-*`, a JPEG stays `.jpg`, a WebP `.webp`, an MP4 `.mp4` and a WebM `.webm`; with `--format-image jpg` a WebP becomes `.jpg`, and with `--format-video mp4` a WebM becomes `.mp4`;
+  - a saved photo has no EXIF or GPS left, and a saved video no `creation_time` or location;
+  - a HEIC is left alone without `--format-image`, and becomes `.jpg` with `--format-image jpg`;
+  - `--format-image jpg` without `--compress-image` is a usage error, and nothing is downloaded;
   - a merged DASH video is compressed after the merge;
   - two videos queued at once are compressed one after the other;
   - the target, and `--zip`, wait for the queue;
@@ -226,17 +233,19 @@ One extra, named for the module, because `shared`'s missing-extra messages name 
 ## Decided
 
 These were open questions, and the user has decided them (2026-11-11):
-- **One `media` module**, for probing, converting and compressing photos and videos, with no public `which_ffmpeg()` ([media › Why one module](media.md#why-one-module)).
+- **One `media` module**, for probing, converting and compressing photos and videos, with no public `which_ffmpeg()` ([media › The layout](media.md#the-layout)).
 - **ffmpeg is always installed:** `imageio-ffmpeg` is a required dependency of flnd.
 - **A shared bundle ships ffmpeg's GPL text and a source offer** in `licenses/` ([Packaging](#packaging)).
 - **Compressing replaces the original;** flnd never keeps both. The history records the result ([Compressing](#compressing)).
 - **DASH merging is automatic.**
-- **Two compress options,** `--compress-image` and `--compress-video`, and no `--jpg`. HEIC and AVIF photos become JPEG only when they are compressed. `media.convert` stays available to scripts.
+- **Two compress options,** `--compress-image` and `--compress-video`, and no `--jpg`. They strip metadata, GPS included, and keep the format unless `--format-image` / `--format-video` names another. `media.convert` stays available to scripts.
+- **A setting given directly replaces the preset's value for that setting** (`media.compress(p, quality=75)`); the preset fills in the rest.
 - **Python 3.11 is the floor.**
+- **`media` has top-level functions for any file and `media.image` / `media.video` / `media.audio` namespaces**, reads every format Pillow and ffmpeg can read safely, and adds trim, frame extraction, photos-to-video and frame-rate caps ([media](media.md)).
+- **`shared`'s ceiling rises to about 5,000 lines**, so `media` (about 780) fits; the README change waits until Phase 4 is done with it.
 
 ## Open questions
 
 Still the user's call:
-1. **GPS in compressed photos** is kept, for an archive that stays as it was posted. If you would rather share compressed photos without location, flnd can drop GPS whenever it re-encodes, with a `strip_location=True` on `media.compress`.
-2. **The codec for `--compress-video`.** flnd always uses H.264, which plays everywhere. H.265 makes files 30–50% smaller, but many browsers and older Windows machines can't play it. If you want it, it could be a fourth value (`small-hevc`) or a `--hevc` flag. `media.compress(codec="h265")` already exists for scripts.
-3. **Commands for files you already have.** The options only touch new downloads. Do you want `flnd compress <folder> --preset small` (and maybe `flnd info <file>`, printing `media.probe`)? Each is about 20 lines in `flnd/cli.py`, because `media` does the work.
+1. **The codec for `--compress-video`.** flnd uses H.264 (VP9 for WebM), which plays everywhere. H.265 makes files 30–50% smaller, but many browsers and older Windows machines can't play it. If you want it, it could be a `--codec-video h265` option. `media.compress(codec="h265")` already exists for scripts.
+2. **Commands for files you already have.** The options only touch new downloads. Do you want `flnd compress <folder> --preset small` (and maybe `flnd info <file>`, printing `media.probe`)? Each is about 20 lines in `flnd/cli.py`, because `media` does the work.
