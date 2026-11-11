@@ -39,6 +39,7 @@ flnd download ins:a twt:b tlg:@c --from posts,photo
 | `flnd/target.py` | `Target`, and reading the text people paste (see [Targets](#targets)) |
 | `flnd/sources/base.py` | `Source`: what a source declares, and its optional hooks; `FetchError` |
 | `flnd/sources/*.py` | the sources: scraping logic only |
+| `flnd/sources/relay.py` | the GraphQL results Instagram and Facebook embed in a page's HTML on its first load (`__bbox.result`), read like the responses that come later; the first page of a tab, a post, a story and a profile header arrive only this way |
 | `flnd/cli.py` | the commands: `download`, `login` and `logout`; `install-browser` comes with [packaging](packaging.md). The `auth` group and `set-cookie` are gone; a cookie file is the `file` login method |
 | `flnd/cookies.py`, `flnd/utils.py` | deleted |
 
@@ -138,7 +139,7 @@ What was `shared.http`, kept private in `flnd/net.py`:
 - **Atomic downloads with progress.** Each file is written to `.name.<random>.part` with mode 0644, then renamed. One `log` bar per file, sized from `Content-Length`.
 - **Mirrors.** Each failed mirror writes `log.warn("mirror N failed; trying next")`.
 - **Signing.** `Source.sign` runs inside the retry loop, before every attempt.
-- **Backing off.** A rate limit never stops a source. On a 429, or a challenge a source reports through `session.challenged()`, the engine pauses that source and then tries again, as often as it takes. The wait is the server's `Retry-After` when it sent one, with no cap; otherwise 30 s, then 60 s, 120 s, 240 s, … up to 15 min, each with ±20% jitter. Each wait gets one `log.warn`, such as `! ins: rate limited; waiting 2m (attempt 3)`, with `fmt.duration`, and a progress row counts it down, so the screen never looks frozen. Every request and download of that source waits out the same pause, and downloads that hit the same 429 together count once. A request that goes through resets the back-off. A 429 is not one of the three attempts. Ctrl-C ends a wait at once, in every thread. `concurrency` and `pause` are unchanged by it.
+- **Backing off.** A rate limit never stops a source. On a 429, or a challenge a source reports through `session.challenged()`, the engine pauses that source and then tries again, as often as it takes. The wait is the server's `Retry-After` when it sent one, or the time its `x-rate-limit-reset` names (Twitter's) plus 5 s, with no cap; otherwise 30 s, then 60 s, 120 s, 240 s, … up to 15 min, each with ±20% jitter. Each wait gets one `log.warn`, such as `! ins: rate limited; waiting 2m (attempt 3)`, with `fmt.duration`, and a progress row counts it down, so the screen never looks frozen. Every request and download of that source waits out the same pause, and downloads that hit the same 429 together count once. A request that goes through resets the back-off. A 429 is not one of the three attempts. Ctrl-C ends a wait at once, in every thread. `concurrency` and `pause` are unchanged by it.
 - **Locale and timezone.** `flnd download --locale fr-FR --timezone Europe/Paris` sets the browser's language and timezone for every source, through `browser.connect(locale=, timezone=)`. Without them, the browser keeps the system's. They should match where the connection really comes from, because a mismatch with the IP's country is a common bot signal; the help text says so.
 - **User agents.** The browser always reports its own. The HTTP client sends the source's `user_agent` when it sets one, written in that source, and httpx's own otherwise.
 
@@ -152,6 +153,7 @@ flnd download https://www.instagram.com/example_user/      # a URL: the domain n
 flnd download fbk:100012345678901                           # a numeric id
 flnd download https://www.facebook.com/profile.php?id=100012345678901
 flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456   # one video
+flnd download https://www.instagram.com/p/C1abcDEFghi/ https://x.com/example_handle/status/1790000000000000000   # one post, one tweet
 ```
 
 **Resolution:**
@@ -163,22 +165,25 @@ flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456 
 - `kind` is what the target points to: `user`, `post`, `video` or `chat`, from the source's `kinds_of_target`;
 - `value` is the clean form used for folders and the history, such as `example_user`, never the URL.
 
-A form the source can't download yet is refused with what to do instead (`✗ ins: single posts aren't supported yet; give the profile, for example ins:example_user`). An unrecognized form lists the accepted ones, from the source's `examples`. Resolution is offline, except for short links (`vm.tiktok.com/…`, `fb.watch/…`), which are followed with one `HEAD` request.
+A form the source can't download yet is refused with what to do instead (`✗ fbk: single posts and videos aren't supported yet; give the profile, for example fbk:example.page`). An unrecognized form lists the accepted ones, from the source's `examples`. Resolution is offline, except for short links (`vm.tiktok.com/…`, `fb.watch/…`), which are followed with one `HEAD` request.
 
 | Source | Accepts | Resolves to |
 | --- | --- | --- |
 | ins | `example_user`, `@example_user`, `instagram.com/example_user`, with any query string (`?hl=en`) | `user` |
-| ins | `instagram.com/p/…`, `/reel/…` | refused for now (single posts) |
+| ins | `instagram.com/p/<code>`, `/reel/<code>`, `/tv/<code>`, `instagram.com/example_user/p/<code>` | `post` (the code) |
+| ins | `instagram.com/stories/…` | refused (the profile's stories come with the profile) |
 | fbk | `example.page`, a numeric id, `facebook.com/example.page` (and its tabs, `/photos`), `facebook.com/profile.php?id=…`, `fb.com/…`, `m.facebook.com/…` | `user` (a name or an id) |
 | fbk | `facebook.com/<user>/posts/…`, `/watch/…`, `fb.watch/…` | refused for now (single posts and videos) |
 | twt | `example_handle`, `@example_handle`, a numeric user id, `x.com/example_handle`, `twitter.com/example_handle` | `user` |
-| twt | `x.com/example_handle/status/…` | refused for now (single posts) |
+| twt | `x.com/example_handle/status/<id>`, `twitter.com/…/status/<id>`, `x.com/i/web/status/<id>` | `post` (the tweet id) |
 | tik | `example_creator`, `@example_creator`, `tiktok.com/@example_creator` | `user` |
 | tik | `tiktok.com/@…/video/<id>`, a video id (a number of 16 or more digits), `vm.tiktok.com/…` | `video` |
 | loi | `5930`, `loix.cc/lois/5930` | `post` |
 | tlg | `@examplechannel`, `t.me/examplechannel`, a chat title, `-1001234567890`, `t.me/c/1234567890/…`, `t.me/+…` (invite) | `chat` |
 
-What used to be implicit becomes explicit and tested: "a long number is a video id" for tik, and "a number is a user id" for twt. twt used to read a number of more than 10 digits as one tweet; that path is gone with single posts.
+What used to be implicit becomes explicit and tested: "a long number is a video id" for tik, and "a number is a user id" for twt. twt used to read a number of more than 10 digits as one tweet; one tweet is now always a `/status/` URL.
+
+A single post or video lands in `<downloads>/<code>/<id>/`, and counts as the source's `posts` (tik: `videos`), so `--from` filters it like any other item.
 
 **Declared on the source:**
 - `kinds_of_target`, for example `("user", "video")` for tik;
@@ -204,14 +209,14 @@ flnd download ins:example_user tik:example_creator --from all
 | `--unpack` | off | unpack each saved archive (by its name: `.zip`, `.7z`, `.rar`, `.tar…`, parts) into a folder named after it, with `archive.unzip` and the password the source gave |
 | `--zip` | off | zip each target's folder with `archive.zip` when the target ends |
 
-**Categories.** Each source declares its `categories` and, among them, its `default_categories`: the account's own content. Other people's content (tagged, reposts, liked, favorites, replies) is opt-in. A name that no source of the given targets has is a usage error listing the names per source. A name only some sources have applies to those and is ignored by the others; a source left with none of its own names takes its defaults, as without `--from`. `flnd --help` lists every source's categories, marking the defaults.
+**Categories.** Each source declares its `categories` and, among them, its `default_categories`: the account's own content. Other people's content (tagged, reposts, liked, favorites, replies) is opt-in. `profile` is the account's pictures: Instagram's HD profile picture, TikTok's profile picture, X's avatar and banner, and Facebook's profile and cover photos. TikTok's liked and favorites exist only when the account made them public; otherwise one info line says so, and it isn't an error. A name that no source of the given targets has is a usage error listing the names per source. A name only some sources have applies to those and is ignored by the others; a source left with none of its own names takes its defaults, as without `--from`. `flnd --help` lists every source's categories, marking the defaults.
 
 | Source | Categories (default ones in bold) |
 | --- | --- |
-| ins | **posts**, **reels**, tagged, reposts, **stories**, **highlights** |
-| fbk | **posts**, **photos**, tagged, **albums**, **reels**, **videos** |
-| tik | **videos**, **stories**, **playlists** |
-| twt | **posts**, **media** |
+| ins | **posts**, **reels**, tagged, reposts, **stories**, **highlights**, **profile** |
+| fbk | **posts**, **photos**, tagged, **albums**, **reels**, **videos**, **stories**, **profile** |
+| tik | **videos**, **stories**, **playlists**, reposts, liked, favorites, **profile** |
+| twt | **posts**, **media**, **highlights**, reposts, replies, **profile** |
 | loi | **photo**, archive ([loi](loi.md)) |
 | tlg | **photo**, **video**, file ([tlg](tlg.md)) |
 

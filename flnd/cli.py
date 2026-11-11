@@ -47,6 +47,8 @@ Categories (--from; * is downloaded without --from):
 Examples:
   flnd download ins:example_user
   flnd download tik:example_creator twt:example_handle --from all
+  flnd download fbk:example.page --from profile,stories
+  flnd download https://x.com/example_handle/status/1790000000000000000
   cat list.txt | flnd download
   flnd login ins
 """

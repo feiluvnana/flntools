@@ -65,9 +65,19 @@ flnd download ins:example_user twt:example_handle
 # One target per line from a file (blank lines and # comments are skipped)
 cat list.txt | flnd download
 
-# Reels and tagged posts from this year, and one single TikTok video by URL
+# Reels and tagged posts from this year
 flnd download ins:example_user --from reels,tagged --since 2026-01-01
+
+# Everything, other people's content too: reposts, replies, liked
+flnd download twt:example_handle tik:example_creator --from all
+
+# Only the profile pictures
+flnd download fbk:example.page ins:example_user --from profile
+
+# One TikTok video, one Instagram post or reel, one tweet
 flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456
+flnd download https://www.instagram.com/p/C1abcDEFghi/
+flnd download https://x.com/example_handle/status/1790000000000000000
 ```
 
 ### Options
@@ -109,30 +119,39 @@ Files are saved with platform-optimized subfolder layouts and automatic deduplic
 ```
 .flnd/downloads/
 ├── ins/<username>/
-│   ├── posts/                  # Feed photos and multi-photo carousels
-│   ├── reels/                  # Video reels
-│   ├── reposts/                # User reposts
+│   ├── posts/                  # Feed photos and every carousel item
+│   ├── reels/                  # Reels not already saved from the grid
+│   ├── tagged/                 # Tagged posts (opt-in)
+│   ├── reposts/                # Reposts (opt-in)
 │   ├── stories/                # Active 24h stories
-│   ├── highlights/<title>/     # Grouped story highlights
-│   └── tagged/                 # Tagged posts
+│   ├── highlights/<title>/     # Story highlights
+│   └── profile/                # HD profile picture
 │
 ├── fbk/<username_or_id>/
 │   ├── posts/                  # Timeline posts
 │   ├── photos/                 # Uploaded photos
+│   ├── tagged/                 # Tagged photos (opt-in)
+│   ├── albums/<album_title>/   # Photo albums
 │   ├── reels/                  # Facebook reels
 │   ├── videos/                 # HD videos
 │   ├── stories/                # Active stories
-│   ├── highlights/<title>/     # Profile highlights
-│   └── albums/<album_title>/   # Photo albums
+│   └── profile/                # Profile and cover photos
 │
 ├── tik/<username>/
 │   ├── videos/                 # TikTok videos
 │   ├── images/                 # Photo mode slides
 │   ├── stories/                # Active stories
-│   └── albums/<playlist>/      # Series/playlists
+│   ├── albums/<playlist>/      # Series/playlists
+│   ├── reposts/, liked/, favorites/   # Opt-in; liked and favorites only when public
+│   └── profile/                # Profile picture
 │
-└── twt/<username>/
-    ├── posts/                  # Media from user tweets / posts timeline
-    ├── images/                 # Original resolution photos from media tab
-    └── videos/                 # Best bitrate MP4 videos from media tab
+├── twt/<username>/
+│   ├── posts/                  # Media from the user's own tweets
+│   ├── images/, videos/        # Media tab items not already in posts/
+│   ├── highlights/             # Highlights tab
+│   ├── reposts/                # Media of retweets (opt-in)
+│   ├── replies/                # Media of the user's replies (opt-in)
+│   └── profile/                # Avatar and banner
+│
+└── <source>/<post id>/         # A single post, reel, tweet or video given by its link
 ```
