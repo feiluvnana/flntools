@@ -150,8 +150,8 @@ class DownloadTest(FlndCase):
     def test_help(self):
         code, stdout, _ = self.run_app("--help")
         self.assertEqual(code, 0)
-        self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, and Twitter/X.", stdout)
-        self.assertIn("Sources: tik, fbk, ins, twt", stdout)
+        self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, and LOIBUS.", stdout)
+        self.assertIn("Sources: tik, fbk, ins, twt, loi", stdout)
         self.assertIn("https://www.facebook.com/profile.php?id=100012345678901", stdout)
         for command in ("download", "login", "logout"):
             self.assertIn(command, stdout)

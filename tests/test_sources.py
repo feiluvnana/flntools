@@ -13,6 +13,7 @@ from flnd.sources import SOURCES
 from flnd.sources.base import Source
 from flnd.sources.fbk import Facebook
 from flnd.sources.ins import Instagram
+from flnd.sources.loi import Loibus
 from flnd.sources.tik import TIKTOK_UA, TikTok
 from flnd.sources.twt import CHROME, Twitter
 from flnd.target import Target
@@ -35,7 +36,7 @@ class RegistryTest(unittest.TestCase):
                                                                for d in source.domains)}, code)
 
     def test_codes_and_order(self):
-        self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt"])
+        self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt", "loi"])
 
     def test_no_domain_belongs_to_two_sources(self):
         owners = {}
@@ -47,6 +48,7 @@ class RegistryTest(unittest.TestCase):
     def test_declarations(self):
         self.assertEqual(Instagram.needs, ("sessionid",))
         self.assertEqual(Twitter.needs, ("auth_token",))
+        self.assertEqual(Loibus.needs, ("access-token",))
         self.assertEqual((Twitter.user_agent, Twitter.stealth), (CHROME, False))
         self.assertEqual((TikTok.user_agent, TikTok.browser_args), (TIKTOK_UA, ("--no-sandbox",)))
         self.assertIsNone(Instagram.user_agent)
@@ -62,6 +64,7 @@ class RegistryTest(unittest.TestCase):
                        "posts photos albums reels videos stories profile"),
             TikTok: ("videos stories playlists reposts liked favorites profile", "videos stories playlists profile"),
             Twitter: ("posts media highlights reposts replies profile", "posts media highlights profile"),
+            Loibus: ("photo archive", "photo"),
         }
         for source, (categories, defaults) in table.items():
             with self.subTest(source=source.code):

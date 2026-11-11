@@ -7,7 +7,8 @@ class and adding it here.
 from flnd.sources.base import Source
 from flnd.sources.fbk import Facebook
 from flnd.sources.ins import Instagram
+from flnd.sources.loi import Loibus
 from flnd.sources.tik import TikTok
 from flnd.sources.twt import Twitter
 
-SOURCES: dict[str, type[Source]] = {source.code: source for source in (TikTok, Facebook, Instagram, Twitter)}
+SOURCES: dict[str, type[Source]] = {source.code: source for source in (TikTok, Facebook, Instagram, Twitter, Loibus)}

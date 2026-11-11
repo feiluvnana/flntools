@@ -64,6 +64,11 @@ class AcceptedFormsTest(unittest.TestCase):
             ("tik:123456789012345", Target("tik", "user", "123456789012345")),
         ])
 
+    def test_loi(self):
+        post = Target("loi", "post", "5930")
+        self.check([("loi:5930", post), ("https://loix.cc/lois/5930", post), ("loix.cc/lois/5930", post),
+                    ("loi:https://www.loix.cc/lois/5930?ref=1", post)])
+
     def test_codes_are_case_insensitive_and_trimmed(self):
         self.assertEqual(read(" INS:someone "), Target("ins", "user", "someone"))
 
@@ -96,10 +101,10 @@ class RefusedTest(unittest.TestCase):
         with self.assertRaises(TargetError) as caught:
             read("example_user")
         self.assertEqual(str(caught.exception), 'which source is "example_user"? Write it as tik:example_user, '
-                                                "fbk:example_user, ins:example_user, twt:example_user")
+                                                "fbk:example_user, ins:example_user, twt:example_user, loi:example_user")
 
     def test_unknown_source(self):
-        with self.assertRaisesRegex(TargetError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt$"):
+        with self.assertRaisesRegex(TargetError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi$"):
             read("ytb:nasa")
 
     def test_url_of_no_source(self):
