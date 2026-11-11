@@ -213,7 +213,7 @@ class Command:
             param.add_to(parser)
         try:
             namespace = parser.parse_args(tokens)
-            given = {param.name for param in self.params if getattr(namespace, param.name) not in (None, [])}
+            given = {param.name for param in self.params if param.is_given(getattr(namespace, param.name))}
             values = {
                 param.name: param.finish(getattr(namespace, param.name), others_given=bool(given - {param.name}))
                 for param in self.params

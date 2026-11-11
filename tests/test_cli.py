@@ -461,6 +461,11 @@ class StdinTest(CliCase):
         self.pipe("a\nb\n")
         self.assertEqual(self.parsed(fn), {"body": "a\nb\n"})
 
+    def test_stdin_option_with_bool_flag(self):
+        def fn(verbose: bool = False, body: Annotated[str, cli.opt(stdin=True)] = ""): ...
+        self.pipe("piped\n")
+        self.assertEqual(self.parsed(fn), {"verbose": False, "body": "piped\n"})
+
     def test_two_stdin_options_raise(self):
         app = cli.App("tool")
         with self.assertRaises(ValueError):

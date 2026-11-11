@@ -131,6 +131,18 @@ class Param:
     def long_flag(self) -> str:
         return self.flags[-1]
 
+    @property
+    def parsed_default(self) -> Any:
+        """The value argparse stores when the command line leaves this parameter out."""
+        if self.kind == "option" or self.default is REQUIRED:
+            return False if self.kind == "flag" else None
+        return self.default
+
+    def is_given(self, value: Any) -> bool:
+        """Whether the command line set this parameter, judged by its parsed value."""
+        # A flag always parses to a bool, so "not None" would count every flag as given.
+        return value is not None and value != [] and value != self.parsed_default
+
     def label(self) -> str:
         if self.kind == "flag":
             return ", ".join(self.flags[:-1] + ("--[no-]" + self.long_flag[2:],))
@@ -157,11 +169,13 @@ class Param:
             if nargs is argparse.REMAINDER:
                 parser.add_argument(self.name, nargs=nargs, metavar=self.metavar)
             else:
-                default = None if self.default is REQUIRED else self.default
-                parser.add_argument(self.name, nargs=nargs, type=self.convert, default=default, metavar=self.metavar)
+                parser.add_argument(
+                    self.name, nargs=nargs, type=self.convert, default=self.parsed_default, metavar=self.metavar,
+                )
         elif self.kind == "flag":
-            default = False if self.default is REQUIRED else self.default
-            parser.add_argument(*self.flags, dest=self.name, action=argparse.BooleanOptionalAction, default=default)
+            parser.add_argument(
+                *self.flags, dest=self.name, action=argparse.BooleanOptionalAction, default=self.parsed_default,
+            )
         else:
             parser.add_argument(
                 *self.flags, dest=self.name, type=self.convert, metavar=self.metavar,
