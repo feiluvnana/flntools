@@ -166,6 +166,13 @@ class BackoffTest(NetCase):
         self.assertEqual(sum(self.sleeps), 3600.0)
         self.assertIn("! ins: rate limited; waiting 1h (attempt 1)", self.lines())
 
+    def test_a_rate_limit_reset_time_is_waited_for(self):
+        reset = httpx.Response(429, headers={"x-rate-limit-reset": "1000600"})
+        with mock.patch.object(net.time, "time", lambda: 1000000.0), self.client(reset, httpx.Response(200)) as http:
+            http.get("https://a.example/")
+        self.assertEqual(sum(self.sleeps), 600.0 + net.RESET_SLACK)
+        self.assertIn("! ins: rate limited; waiting 10m 5s (attempt 1)", self.lines())
+
     def test_the_wait_shows_a_countdown_row(self):
         backoff = net.Backoff("ins")
         backoff.hit("challenged")

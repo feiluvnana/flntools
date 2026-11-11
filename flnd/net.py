@@ -27,6 +27,8 @@ MAX_RETRY_AFTER = 60.0
 # A source that keeps answering 429, or showing challenges, waits twice as long each time, up to 15 min.
 FIRST_BACKOFF = 30.0
 MAX_BACKOFF = 15 * 60.0
+# Seconds added to a rate limit's reset time, so a clock a little behind the server's isn't refused again.
+RESET_SLACK = 5.0
 CHUNK_SIZE = 64 * 1024
 # The request extension that sends a request once, for downloads that retry on their own.
 ONE_ATTEMPT = "flnd.one_attempt"
@@ -181,7 +183,7 @@ class RateLimited(Exception):
 def checked(response: httpx.Response, backoff: Backoff) -> httpx.Response:
     """The response when it is worth keeping; a 429 backs off and raises `RateLimited`, a 5xx `RetryableStatus`."""
     if response.status_code == 429:
-        backoff.hit("rate limited", retry_after=retry_after_seconds(response.headers.get("retry-after")))
+        backoff.hit("rate limited", retry_after=rate_limit_wait(response.headers))
         response.close()
         raise RateLimited()
     if response.status_code >= 500:
@@ -232,6 +234,15 @@ def retry_wait(wait: Wait, error: BaseException, attempt: int) -> float:
         return min(error.retry_after, MAX_RETRY_AFTER)
     base = wait if isinstance(wait, (int, float)) else 1.0
     return base * 2 ** (attempt - 1)
+
+
+def rate_limit_wait(headers: Mapping[str, str]) -> float | None:
+    """How long a 429 asks to wait: its Retry-After, or else its `x-rate-limit-reset` time (Twitter's)."""
+    seconds = retry_after_seconds(headers.get("retry-after"))
+    reset = headers.get("x-rate-limit-reset", "")
+    if seconds is None and reset.isdigit():
+        seconds = max(0.0, int(reset) - time.time()) + RESET_SLACK
+    return seconds
 
 
 def retry_after_seconds(value: str | None) -> float | None:
