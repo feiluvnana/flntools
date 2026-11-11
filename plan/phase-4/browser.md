@@ -33,7 +33,7 @@ with browser.connect(headless=False) as b:                     # incognito by de
 - **With `cdp=`**, the browser and its context already exist, so `profile`, `headless`, `locale`, `timezone`, `args` and `stealth` don't apply; passing them raises `ValueError`. `viewport` still applies, set on each page flnd opens. `b.cookies.add(jar)` works the same, so a cloud browser can be logged in with cookies from `cookies.load_from_browser`.
 - **`stealth=True`** hides `navigator.webdriver`, and nothing more.
 - **On exit**, pages, the context, the browser and Playwright close in order, even when the block raised. A failure while closing is logged once and never hides the original error.
-- **Missing browser:** a missing Chromium raises `RuntimeError("Chromium is not installed: run 'playwright install chromium'")`. flnd's engine catches this and offers to install it ([packaging](packaging.md)).
+- **Missing browser:** a missing Chromium raises `RuntimeError("Chromium is not installed: run 'playwright install chromium'")`. flnd's session replaces it with `Chromium is not installed; run flnd install-browser` ([packaging](packaging.md)).
 
 ## Browser
 

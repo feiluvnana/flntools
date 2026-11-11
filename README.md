@@ -14,10 +14,24 @@ Requires Python 3.11 or newer. This checkout uses a local virtualenv on Python 3
 uv venv .venv --python 3.14
 source .venv/bin/activate
 uv pip install -e .
-playwright install chromium
+flnd install-browser
 ```
 
 `.venv` stays in this folder. Activate it again with `source .venv/bin/activate` before running `flnd`.
+With `uv`, `uv tool install --editable .` puts `flnd` on your PATH instead.
+
+`flnd install-browser` downloads Chromium (about 150 MB) once, into Playwright's folder in your user cache,
+for the sources that open a browser. Your installed Chrome is used instead when there is one.
+
+### A folder that runs without Python
+
+```bash
+make setup
+make dist            # dist/flnd/flnd (flnd.exe on Windows), for the OS you build on
+```
+
+Copy the whole `dist/flnd/` folder; it holds `flnd`, `_internal/` and `licenses/`, the third-party licences.
+Then run `flnd install-browser` once. The bundled `flnd` still writes `.flnd/` in the folder you run it from.
 
 ---
 
@@ -27,6 +41,7 @@ playwright install chromium
 flnd download <targets...> [--from CATEGORIES] [--since DATE] [--until DATE] [--unpack] [--zip]
 flnd login <source>
 flnd logout <source>
+flnd install-browser
 ```
 
 Or via python module:

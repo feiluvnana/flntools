@@ -121,7 +121,7 @@ flnd's own helpers keep normal `snake_case`. The chalk-style color names (`style
 archive = ["pyzipper", "py7zr"]                                  # password zips and 7z; plain zip and tar need nothing
 selector = ["parsel>=1.9.0", "python-jsonpath"]
 browser = ["playwright>=1.40.0", "cryptography>=42"]
-bundler = ["pyinstaller"]
+bundler = ["pyinstaller>=6"]
 ```
 
 flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pyzipper` and `py7zr`, because flnd always needs them (`qrcode` draws tlg's QR login). The dev group adds `pyright` and `typing_extensions`.
@@ -153,7 +153,7 @@ flnd:
 	.venv/bin/flnd $(ARGS)
 
 dist:
-	.venv/bin/python -c "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd')"
+	.venv/bin/python -c "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', data=('licenses',))"
 ```
 
 `requires-python` is `>=3.11`. Before a release, run `make setup PYTHON=3.11 check`. `make flnd ARGS="download ins:example_user"` passes arguments through.
