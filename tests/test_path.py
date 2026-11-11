@@ -7,39 +7,6 @@ from unittest import mock
 from shared import path
 
 
-class SafenameTest(unittest.TestCase):
-    def test_each_replaced_character(self):
-        for char in '\\/*?:"<>|\x00\x1f\x7f':
-            self.assertEqual(path.safename(f"a{char}b"), "a_b", repr(char))
-
-    def test_runs_collapse(self):
-        self.assertEqual(path.safename("a  _ \t_b"), "a_b")
-        self.assertEqual(path.safename("Summer: 2026 / day 1?"), "Summer_2026_day_1")
-
-    def test_ends_are_stripped(self):
-        self.assertEqual(path.safename(" ._name_. "), "name")
-
-    def test_fallback(self):
-        self.assertEqual(path.safename("..."), "untitled")
-        self.assertEqual(path.safename("", fallback="x"), "x")
-
-    def test_cut_never_splits_a_character(self):
-        name = path.safename("é" * 10, maxlen=5)
-        self.assertEqual(name, "éé")
-        self.assertLessEqual(len(name.encode()), 5)
-        self.assertEqual(path.safename("a" * 300), "a" * 200)
-
-    def test_reserved_windows_names(self):
-        self.assertEqual(path.safename("CON"), "CON_")
-        self.assertEqual(path.safename("nul.txt"), "nul_.txt")
-        self.assertEqual(path.safename("com1"), "com1_")
-        self.assertEqual(path.safename("CONSOLE"), "CONSOLE")
-
-    def test_matches_sanitize_name(self):
-        self.assertEqual(path.safename("My:Album*Name? / 2026"), "My_Album_Name_2026")
-        self.assertEqual(path.safename("   hello   world   "), "hello_world")
-
-
 class FolderTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -105,7 +105,7 @@ class Client(httpx.Client):
         with self.stream("GET", url, headers=headers) as response:
             length = response.headers.get("content-length", "")
             total = int(length) if length.isdigit() else None
-            with log.progress(label or dest.name, total=total, show=fmt.bytes) as bar:
+            with log.progress(label or dest.name, total=total, show=fmt.size) as bar:
                 if response.status_code not in (200, 206):
                     raise httpx.HTTPStatusError(f"HTTP {response.status_code} for {url}",
                                                 request=response.request, response=response)
