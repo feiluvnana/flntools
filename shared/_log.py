@@ -7,13 +7,14 @@ import threading
 import time
 import weakref
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Literal
 
 from shared import _theme
 from shared._style import strip
 from shared._theme import Bar, LogRecord, Screen, Theme, fit
 
-LEVELS = ("debug", "info", "ok", "warn", "error", "quiet")
+Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
+LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
 # quiet shares error's rank, so errors are still shown under quiet.
 LEVEL_RANKS = {"debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4, "quiet": 4}
 REDRAW_INTERVAL = 0.1
@@ -21,14 +22,14 @@ REDRAW_INTERVAL = 0.1
 
 class Log:
     def __init__(self) -> None:
-        self._level = "info"
+        self._level: Level = "info"
 
     @property
-    def level(self) -> str:
+    def level(self) -> Level:
         return self._level
 
     @level.setter
-    def level(self, value: str) -> None:
+    def level(self, value: Level) -> None:
         if value not in LEVELS:
             raise ValueError(f"log.level must be one of {', '.join(LEVELS)}, not {value!r}")
         self._level = value

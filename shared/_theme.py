@@ -9,12 +9,13 @@ import time
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any, Callable, Iterator, NamedTuple
+from typing import Any, Callable, Iterator, Literal, NamedTuple
 
 from shared._screen import Screen, isatty
 from shared._style import ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, pieces_of, style
 
-COLOR_DEPTHS = ("none", "8", "256", "16m")
+ColorDepth = Literal["none", "8", "256", "16m"]
+COLOR_DEPTHS: tuple[ColorDepth, ...] = ("none", "8", "256", "16m")
 BAR_CELLS = 20
 HELP_LABEL_WIDTH = 20
 
@@ -61,7 +62,7 @@ class PromptView(NamedTuple):
     message: str
     value: str = ""
     options: tuple = ()
-    index: int = 0
+    position: int = 0
     checked: frozenset = frozenset()
     error: str | None = None
     keys: tuple = ()
@@ -70,7 +71,10 @@ class PromptView(NamedTuple):
 
 
 class Theme:
-    def __init__(self, *, color: str | None = None, unicode: bool | None = None, screen: Screen | None = None):
+    _color: ColorDepth
+
+    def __init__(self, *, color: ColorDepth | None = None, unicode: bool | None = None,
+                 screen: Screen | None = None):
         self.screen = screen or Screen()
         self.color = detect_color(sys.stderr) if color is None else color
         self.unicode = detect_unicode(sys.stderr) if unicode is None else unicode
@@ -78,11 +82,11 @@ class Theme:
         self.templates = Namespace("template", default_templates(), lambda template: template)
 
     @property
-    def color(self) -> str:
+    def color(self) -> ColorDepth:
         return self._color
 
     @color.setter
-    def color(self, value: str) -> None:
+    def color(self, value: ColorDepth) -> None:
         if value not in COLOR_DEPTHS:
             raise ValueError(f"theme.color must be one of {', '.join(COLOR_DEPTHS)}, not {value!r}")
         self._color = value
@@ -156,10 +160,10 @@ class Theme:
             # Inactive rows get blanks as wide as the pointer, so the labels line up.
             blank = " " * display_width(pointer)
             for index, label in enumerate(view.options):
-                marked = index in view.checked if view.kind == "choices" else index == view.index
+                marked = index in view.checked if view.kind == "choices" else index == view.position
                 lines.append(self._fill(
                     prompt_templates.choice,
-                    cursor=pointer if index == view.index else blank,
+                    cursor=pointer if index == view.position else blank,
                     mark=marks.yes if marked else marks.no,
                     label=label,
                 ))
@@ -232,6 +236,12 @@ class Theme:
 class Namespace:
     """A fixed set of names, some of them nested groups. Unknown names raise AttributeError."""
 
+    _kind: str
+    _defaults: dict
+    _groups: dict[str, Namespace]
+    _pick: Callable[[Any], Any]
+    _assigned: dict
+
     def __init__(self, kind: str, defaults: dict, pick: Callable[[Any], Any]):
         groups = {name: Namespace(kind, value, pick) for name, value in defaults.items() if isinstance(value, dict)}
         object.__setattr__(self, "_kind", kind)
@@ -299,7 +309,7 @@ def default_templates() -> dict:
     }
 
 
-def detect_color(stream) -> str:
+def detect_color(stream) -> ColorDepth:
     """The color depth a stream supports, from NO_COLOR, TERM, COLORTERM, and isatty."""
     if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb" or not isatty(stream):
         return "none"

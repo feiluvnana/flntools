@@ -25,7 +25,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
 
 from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
@@ -100,7 +99,7 @@ class TikSource(BaseSource):
         return files.saved
 
     def _download_single_embed(
-        self, video_id: str, target_dir: Path, cookie_map: Dict[str, str], client: httpx.Client, files: Downloads
+        self, video_id: str, target_dir: Path, cookie_map: Dict[str, str], client: http.Client, files: Downloads
     ) -> None:
         """Queue a single video or photo post via TikTok public embed endpoint."""
         embed_url = f"https://www.tiktok.com/embed/v2/{video_id}"
@@ -130,7 +129,7 @@ class TikSource(BaseSource):
         cookies_list: List[Dict[str, Any]],
         cookie_map: Dict[str, str],
         headless: bool,
-        client: httpx.Client,
+        client: http.Client,
         files: Downloads,
     ) -> None:
         """
@@ -205,7 +204,7 @@ class TikSource(BaseSource):
         item: Dict[str, Any],
         target_dir: Path,
         cookie_map: Dict[str, str],
-        client: httpx.Client,
+        client: http.Client,
         files: Downloads,
     ) -> bool:
         """Queue a TikTok clip or photo into the appropriate subfolder with anti-403 CDN headers."""

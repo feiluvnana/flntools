@@ -24,4 +24,15 @@ scrape = ["parsel>=1.9.0"]
 flnd = "flnd.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["flnd", "shared", "loix"]
+packages = ["flnd", "shared"]
+
+[dependency-groups]
+dev = ["pyright==1.1.414", "typing_extensions>=4.12"]
+
+[tool.pyright]
+include = ["shared", "flnd", "tests/typing"]
+typeCheckingMode = "standard"
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+reportUnnecessaryTypeIgnoreComment = "error"

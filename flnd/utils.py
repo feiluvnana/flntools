@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, MutableMapping, Optional, Set
 
 import httpx
 
-from shared import browser, log, store, worker
+from shared import browser, http, log, store, worker
 
 # Each saved file is recorded here, next to the downloads folder: `.flnd/state.db`.
 HISTORY_FILE = "state.db"
@@ -20,7 +20,7 @@ SCROLL_AFTER_WAIT = "() => { window.scrollBy(0, 500); }"
 
 
 def save(
-    client: httpx.Client,
+    client: http.Client,
     url: str,
     dest: Path,
     *,
@@ -51,7 +51,7 @@ def save(
 class File:
     """One queued download. It prints as `folder/name`, so a failed download names its file."""
 
-    def __init__(self, client: httpx.Client, url: str, dest: Path, key: str, headers: Optional[Dict[str, str]]):
+    def __init__(self, client: http.Client, url: str, dest: Path, key: str, headers: Optional[Dict[str, str]]):
         self.client, self.url, self.dest, self.key, self.headers = client, url, dest, key, headers
 
     def __str__(self) -> str:
@@ -97,7 +97,7 @@ class Downloads:
         """How many files were written. Read it after the block, when every download has finished."""
         return sum(1 for result in self.pool.results if result.value is True)
 
-    def add(self, client: httpx.Client, url: str, dest: Path, *, key: str,
+    def add(self, client: http.Client, url: str, dest: Path, *, key: str,
             headers: Optional[Dict[str, str]] = None) -> bool:
         """Queue a download. False when the limit is reached or dest is already queued."""
         if self.full:

@@ -8,7 +8,7 @@ A module whose extra is missing raises an ImportError that names the extra to in
 from __future__ import annotations
 
 import importlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from shared import _cli as cli
 from shared import _fmt as fmt
@@ -17,9 +17,23 @@ from shared._log import log
 from shared._style import style
 from shared._theme import theme
 
+if TYPE_CHECKING:
+    # Checkers see the real modules; at runtime they still load on first use.
+    from shared import _archive as archive
+    from shared import _browser as browser
+    from shared import _crypto as crypto
+    from shared import _http as http
+    from shared import _path as path
+    from shared import _scrape as scrape
+    from shared import _store as store
+    from shared import _worker as worker
+
 LAZY_MODULES = ("path", "archive", "crypto", "store", "worker", "scrape", "http", "browser")
 
-__all__ = ["cli", "fmt", "log", "prompt", "style", "theme", *LAZY_MODULES]
+__all__ = [
+    "cli", "fmt", "log", "prompt", "style", "theme",
+    "path", "archive", "crypto", "store", "worker", "scrape", "http", "browser",
+]
 
 
 def __getattr__(name: str) -> Any:

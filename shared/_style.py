@@ -138,17 +138,8 @@ class Chain:
         return "".join(painted) + RESET
 
 
-class Styled(str):
-    """Painted text that remembers its raw text and chain. `+` builds a `Template`."""
-
-    raw: str
-    chain: Chain
-
-    def __new__(cls, painted: str, raw: str, chain: Chain) -> Styled:
-        styled = super().__new__(cls, painted)
-        styled.raw = raw
-        styled.chain = chain
-        return styled
+class _Joinable(str):
+    """`+` on painted text builds a `Template`, so theme can repaint the joined pieces."""
 
     def __add__(self, other: object) -> Template:
         if not isinstance(other, str):
@@ -161,7 +152,20 @@ class Styled(str):
         return Template(pieces_of(other) + pieces_of(self))
 
 
-class Template(str):
+class Styled(_Joinable):
+    """Painted text that remembers its raw text and chain. `+` builds a `Template`."""
+
+    raw: str
+    chain: Chain
+
+    def __new__(cls, painted: str, raw: str, chain: Chain) -> Styled:
+        styled = super().__new__(cls, painted)
+        styled.raw = raw
+        styled.chain = chain
+        return styled
+
+
+class Template(_Joinable):
     """Pieces of (raw text, chain or None) that `theme` fills and paints later."""
 
     pieces: tuple
@@ -172,9 +176,6 @@ class Template(str):
         template = super().__new__(cls, painted)
         template.pieces = tuple(pieces)
         return template
-
-    __add__ = Styled.__add__
-    __radd__ = Styled.__radd__
 
 
 def strip(text: str) -> str:

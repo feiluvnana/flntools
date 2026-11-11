@@ -122,10 +122,13 @@ def set_cookie(
     """
     if path and content:
         raise cli.UsageError("give --path or --content, not both")
-    if not path and not content:
-        raise cli.UsageError("give --path, --content, or pipe the cookie text in")
     try:
-        text = path.expanduser().read_text(encoding="utf-8") if path else content
+        if path:
+            text = path.expanduser().read_text(encoding="utf-8")
+        elif content:
+            text = content
+        else:
+            raise cli.UsageError("give --path, --content, or pipe the cookie text in")
         saved = store_cookies(text)
     except (OSError, UnicodeDecodeError, ValueError) as err:
         log.error("{err}", err=err)

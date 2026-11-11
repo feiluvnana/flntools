@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence, TypeVar, overload
 
 from shared import _theme
 from shared._log import live_area
@@ -77,6 +77,15 @@ def confirm(message: str, *, default: bool = False, yes: str = "Yes", no: str = 
     return _ask(question, theme)
 
 
+Value = TypeVar("Value")
+
+
+@overload
+def choice(message: str, options: Mapping[Any, Value], *, default: Any = None, filter: bool = False,
+           keys: bool = False, validate: Validate | None = None, theme: Theme | None = None) -> Value: ...
+@overload
+def choice(message: str, options: Sequence[Value], *, default: Any = None, filter: bool = False,
+           keys: bool = False, validate: Validate | None = None, theme: Theme | None = None) -> Value: ...
 def choice(message: str, options: Sequence | Mapping, *, default: Any = None, filter: bool = False,
            keys: bool = False, validate: Validate | None = None, theme: Theme | None = None) -> Any:
     question = _Question("choice", message, default=default, validate=validate, keys=keys)
@@ -128,7 +137,8 @@ class _Question:
         self.index = 0
         self.checked: set[int] = set()
         self.filter = False
-        self.least, self.most = 0, None
+        self.least = 0
+        self.most: int | None = None
         self.error: str | None = None
 
     def set_options(self, options: Sequence | Mapping, filter: bool) -> None:
@@ -206,7 +216,7 @@ class _Question:
         return PromptView(
             self.kind, self.message, shown_value,
             options=tuple(self.labels[position] for position in visible),
-            index=self.index,
+            position=self.index,
             checked=frozenset(row for row, position in enumerate(visible) if position in self.checked),
             error=self.error or no_match, keys=keys, placeholder=self.placeholder,
         )

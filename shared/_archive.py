@@ -9,7 +9,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Iterable, Union
+from typing import Iterable, Literal, Union
 
 from shared import _path as path
 
@@ -18,6 +18,9 @@ PathLike = Union[str, "os.PathLike[str]"]
 # Suffix -> tarfile compression, or "zip". Longer suffixes come first so ".tar.gz" wins over ".gz".
 FORMATS = {
     ".tar.gz": "gz", ".tar.bz2": "bz2", ".tar.xz": "xz", ".tgz": "gz", ".tar": "", ".zip": "zip",
+}
+TAR_WRITE_MODES: dict[str, Literal["w:", "w:gz", "w:bz2", "w:xz"]] = {
+    "": "w:", "gz": "w:gz", "bz2": "w:bz2", "xz": "w:xz",
 }
 
 
@@ -46,7 +49,7 @@ def pack(sources: PathLike | Iterable[PathLike], dest: PathLike, *, root: PathLi
                 for file, name in entries:
                     archive.write(file, name)
         else:
-            with tarfile.open(fileobj=handle, mode=f"w:{kind}") as archive:
+            with tarfile.open(fileobj=handle, mode=TAR_WRITE_MODES[kind]) as archive:
                 for file, name in entries:
                     archive.add(file, name, recursive=False)
     return dest

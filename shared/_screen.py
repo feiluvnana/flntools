@@ -143,6 +143,7 @@ def _readkey_posix(fd: int) -> str:
 
 
 def _readkey_windows() -> str:
+    assert sys.platform == "win32"
     import msvcrt
 
     char = msvcrt.getwch()
@@ -152,6 +153,7 @@ def _readkey_windows() -> str:
 
 
 def _enable_windows_vt() -> None:
+    assert sys.platform == "win32"
     try:
         import ctypes
 

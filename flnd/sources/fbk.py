@@ -28,7 +28,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
 
 from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
@@ -91,7 +90,7 @@ class FbkSource(BaseSource):
         target_dir: Path,
         cookies_list: List[Dict[str, Any]],
         headless: bool,
-        client: httpx.Client,
+        client: http.Client,
         files: Downloads,
     ) -> None:
         """
@@ -146,7 +145,7 @@ class FbkSource(BaseSource):
         item: Dict[str, Any],
         tab_name: str,
         target_dir: Path,
-        client: httpx.Client,
+        client: http.Client,
         files: Downloads,
         headers: Dict[str, str],
     ) -> None:

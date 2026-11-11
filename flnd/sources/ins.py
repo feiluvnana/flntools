@@ -105,7 +105,7 @@ class InsSource(BaseSource):
         user_id: str,
         target_dir: Path,
         cookie_map: Dict[str, str],
-        client: httpx.Client,
+        client: http.Client,
         files: Downloads,
     ) -> None:
         """Queue active user stories from Instagram's mobile reels_media API."""
@@ -156,7 +156,7 @@ class InsSource(BaseSource):
         target_dir: Path,
         cookies_list: List[Dict[str, Any]],
         headless: bool,
-        client: httpx.Client,
+        client: http.Client,
         files: Downloads,
     ) -> None:
         """
@@ -171,7 +171,7 @@ class InsSource(BaseSource):
         captured_highlights: List[Dict[str, Any]] = []
         found = {name: 0 for name, _ in TABS}
         # The tab whose media is being collected; None once the tabs are done.
-        current = {"tab": "posts"}
+        current: Dict[str, Optional[str]] = {"tab": "posts"}
         headers = {"Referer": f"https://www.instagram.com/{username}/"}
 
         def on_profile(response: Any, data: Any) -> None:
@@ -235,7 +235,7 @@ class InsSource(BaseSource):
                     self._download_highlight(page, hl, target_dir, client, files)
 
     def _download_highlight(
-        self, page: Any, hl: Dict[str, Any], target_dir: Path, client: httpx.Client, files: Downloads
+        self, page: Any, hl: Dict[str, Any], target_dir: Path, client: http.Client, files: Downloads
     ) -> None:
         """Open one highlight and queue the stories it loads."""
         hl_id = hl["id"].replace("highlight:", "")
@@ -283,7 +283,7 @@ class InsSource(BaseSource):
         self,
         item: Dict[str, Any],
         dest_dir: Path,
-        client: httpx.Client,
+        client: http.Client,
         files: Downloads,
         headers: Optional[Dict[str, str]],
         sniff_video: bool,

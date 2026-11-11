@@ -85,7 +85,7 @@ class App:
             _write_help(request.text)
             return 0
         except UsageError as error:
-            usage = getattr(error, "usage", None) or self._help_model([self.name]).usage
+            usage = error.usage or self._help_model([self.name]).usage
             model = HelpModel(prog="", description="", usage=usage, error=str(error))
             text = _theme.theme._format_help(model)
             _theme.theme.screen.write(strip(text) if _theme.theme.color == "none" else text)
@@ -280,6 +280,8 @@ class _HelpRequested(Exception):
 
     @property
     def text(self) -> str:
+        # _HelpAction raises without a model; the command catching it re-raises with one.
+        assert self.model is not None
         stdout_theme = _theme.theme.branch(color=detect_color(sys.stdout))
         return stdout_theme._format_help(self.model)
 

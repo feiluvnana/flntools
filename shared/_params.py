@@ -24,6 +24,8 @@ MANY_NARGS = ("*", "+")
 class UsageError(Exception):
     """A command line the command cannot run with. Reported as `✗ message` and the usage, exit 2."""
 
+    usage: str = ""
+
 
 @dataclass(frozen=True)
 class Opt:
@@ -204,17 +206,18 @@ class Param:
     def ask_generated(self) -> Any:
         """Ask for this parameter with a question chosen from its type."""
         text = self.help or self.name
-        has_default = self.default is not REQUIRED and self.default is not None
+        default: Any = self.default
+        has_default = default is not REQUIRED and default is not None
         if self.kind == "flag":
-            return prompt.confirm(text, default=bool(self.default) if has_default else False)
+            return prompt.confirm(text, default=bool(default) if has_default else False)
         if self.tokens:
             options = dict(zip(self.tokens, self.choices))
-            return prompt.choice(text, options, default=self.default if has_default else None)
+            return prompt.choice(text, options, default=default if has_default else None)
         if self.many:
-            start = " ".join(shlex.quote(token(item)) for item in self.default) if has_default else None
+            start = " ".join(shlex.quote(token(item)) for item in typing.cast(list, default)) if has_default else None
             raw = prompt.input(text, default=start, validate=lambda raw: _problem(self._split, raw))
             return self.finish(self._split(raw))
-        start = token(self.default) if has_default else None
+        start = token(default) if has_default else None
         raw = prompt.input(text, default=start, validate=lambda raw: _problem(self.convert, raw))
         return self.convert(raw)
 

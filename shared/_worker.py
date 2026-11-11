@@ -23,7 +23,7 @@ import time
 from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Iterator, NamedTuple
+from typing import Any, Callable, Generic, Iterable, Iterator, NamedTuple, TypeVar, overload
 
 from shared._log import log
 
@@ -36,10 +36,16 @@ _clock = time.monotonic
 _sleep = time.sleep
 
 
+R = TypeVar("R")
+A1 = TypeVar("A1")
+A2 = TypeVar("A2")
+A3 = TypeVar("A3")
+
+
 @dataclass
-class Result:
+class Result(Generic[R]):
     item: Any
-    value: Any = None
+    value: R | None = None
     error: BaseException | None = None
     attempts: int = 0
     seconds: float = 0.0
@@ -59,8 +65,21 @@ class TaskError(Exception):
         super().__init__(f"{len(failed)} of {len(results)} tasks failed; first: {first.item}: {_describe(first.error)}")
 
 
+@overload
+def map(fn: Callable[[A1], R], items: Iterable[A1], /, **options: Any) -> list[R]: ...
+@overload
+def map(fn: Callable[[A1, A2], R], items: Iterable[A1], second: Iterable[A2], /, **options: Any) -> list[R]: ...
+@overload
+def map(fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2], third: Iterable[A3], /,
+        **options: Any) -> list[R]: ...
+@overload
+def map(fn: Callable[..., Any], items: Iterable, second: Iterable, third: Iterable, fourth: Iterable, /,
+        *more: Iterable, **options: Any) -> list[Any]: ...
 def map(fn: Callable, *iterables: Iterable, **options: Any) -> list:
-    """Like the builtin `map`, but parallel. Results come back in input order."""
+    """Like the builtin `map`, but parallel. Results come back in input order.
+
+    Like the builtin, it is typed for one to three iterables; with more, the results are `Any`.
+    """
     with Pool(**options, total=_length(iterables)) as running:
         for index, args in enumerate(zip(*iterables)):
             running._submit(fn, args, index)
@@ -113,7 +132,7 @@ class Job(NamedTuple):
     fn: Callable
     args: tuple
     item: Any
-    index: int
+    position: int
 
 
 class Slot:
@@ -255,7 +274,7 @@ class Pool:
         try:
             resource, ready = None, self.setup is None
             while (job := self._next_job(slot)) is not None:
-                if not ready:
+                if not ready and self.setup is not None:
                     try:
                         value = self.setup()
                         is_context = hasattr(value, "__enter__") and hasattr(value, "__exit__")
@@ -310,8 +329,8 @@ class Pool:
                 if attempts <= self.retries and isinstance(error, self.retryable) and not timed_out:
                     _sleep(_backoff_wait(self.backoff, attempts))
                     continue
-                return Result(job.item, None, error, attempts, time.monotonic() - started, job.index)
-            return Result(job.item, value, None, attempts, time.monotonic() - started, job.index)
+                return Result(job.item, None, error, attempts, time.monotonic() - started, job.position)
+            return Result(job.item, value, None, attempts, time.monotonic() - started, job.position)
 
     def _attempt(self, fn: Callable, args: tuple, slot: Slot) -> Any:
         if self._executor is not None:
@@ -369,18 +388,20 @@ class Pool:
     def _fail_queued(self, error: Exception | None) -> None:
         while self._queue:
             job = self._queue.popleft()
-            self._record(Result(job.item, None, error, 0, 0.0, job.index))
+            self._record(Result(job.item, None, error, 0, 0.0, job.position))
 
     def _watch_timeouts(self) -> None:
         with self._cond:
             while not (self._closed and not self._live):
                 now = time.monotonic()
                 for slot in [slot for slot in self._live if slot.deadline is not None and slot.deadline <= now]:
+                    # Only a running job under a timeout has a deadline.
+                    assert slot.job is not None and self.timeout is not None
                     slot.abandoned = True
                     self._live.remove(slot)
                     self.running -= 1
                     error = TimeoutError(f"task took longer than {self.timeout}s")
-                    self._record(Result(slot.job.item, None, error, 1, self.timeout, slot.job.index))
+                    self._record(Result(slot.job.item, None, error, 1, self.timeout, slot.job.position))
                     self._spawn_workers()
                 deadlines = [slot.deadline for slot in self._live if slot.deadline is not None]
                 self._cond.wait(min(deadlines) - now if deadlines else WAKE_INTERVAL)

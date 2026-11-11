@@ -10,7 +10,7 @@ Each source has full autonomy over:
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import ClassVar, Optional, Tuple
 
 from flnd.target import Target
 
@@ -22,11 +22,11 @@ class BaseSource(ABC):
     """
 
     # The prefix in a target and the cookie file name, such as "ins".
-    code: str
+    code: ClassVar[str]
     # Shown in help and in prompt mode, such as "Instagram".
-    name: str
+    name: ClassVar[str]
     # Cookie domains that belong to this source, such as ("instagram.com",).
-    domains: Tuple[str, ...]
+    domains: ClassVar[Tuple[str, ...]]
 
     @abstractmethod
     def download(

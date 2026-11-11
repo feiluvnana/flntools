@@ -58,6 +58,13 @@ class TwtSource(BaseSource):
     # This target's downloads, set while `download` runs.
     files: Optional[Downloads] = None
 
+    @property
+    def downloads(self) -> Downloads:
+        """This target's downloads. Raises RuntimeError outside `download`."""
+        if self.files is None:
+            raise RuntimeError("downloads are open only while download() runs")
+        return self.files
+
     def download(
         self,
         target: Target,
@@ -98,8 +105,8 @@ class TwtSource(BaseSource):
                 )
 
         if finished:
-            log.ok("Finished @{name}: {n} files", name=username_or_id, n=self.files.saved)
-        return self.files.saved
+            log.ok("Finished @{name}: {n} files", name=username_or_id, n=self.downloads.saved)
+        return self.downloads.saved
 
     def _get_headers(self, cookie_map: Dict[str, str]) -> Dict[str, str]:
         """Construct Twitter API headers with bearer token and CSRF."""
@@ -121,8 +128,8 @@ class TwtSource(BaseSource):
         screen_name: str,
         target_dir: Path,
         headless: bool,
-        client: httpx.Client,
-        plain_client: httpx.Client,
+        client: http.Client,
+        plain_client: http.Client,
     ) -> bool:
         """Fetch user posts and media timeline using Twitter GraphQL API with Playwright fallback.
 
@@ -144,14 +151,14 @@ class TwtSource(BaseSource):
         ]
 
         for category, query_id in timelines:
-            if self.files.full:
+            if self.downloads.full:
                 break
 
             log.info("Fetching {category} timeline for @{name}...", category=category, name=screen_name)
             cursor = None
             empty_page_count = 0
 
-            while not self.files.full:
+            while not self.downloads.full:
                 variables: Dict[str, Any] = {
                     "userId": user_id,
                     "count": 20,
@@ -206,7 +213,7 @@ class TwtSource(BaseSource):
 
         return True
 
-    def _resolve_user_id(self, client: httpx.Client, screen_name: str) -> Optional[str]:
+    def _resolve_user_id(self, client: http.Client, screen_name: str) -> Optional[str]:
         """Query UserByScreenName GraphQL endpoint to obtain numeric rest_id."""
         for query in [QUERY_USER_BY_SCREEN_NAME_PRIMARY, QUERY_USER_BY_SCREEN_NAME_LEGACY]:
             url = f"https://x.com/i/api/graphql/{query}"
@@ -316,7 +323,7 @@ class TwtSource(BaseSource):
 
         return media_items, next_cursor
 
-    def _save_media_item(self, item: Dict[str, Any], target_dir: Path, client: httpx.Client) -> bool:
+    def _save_media_item(self, item: Dict[str, Any], target_dir: Path, client: http.Client) -> bool:
         """Queue an extracted Twitter media item into the platform-optimized layout."""
         category = item.get("category", "media")
         kind = item["kind"]
@@ -341,9 +348,9 @@ class TwtSource(BaseSource):
                 log.info("skip {name}", name=f"{dest_folder.name}/{filename}")
                 return False
 
-        return self.files.add(client, item["url"], dest_path, key=f"{tweet_id}_{idx}")
+        return self.downloads.add(client, item["url"], dest_path, key=f"{tweet_id}_{idx}")
 
-    def _download_single_tweet(self, tweet_id: str, target_dir: Path, client: httpx.Client) -> None:
+    def _download_single_tweet(self, tweet_id: str, target_dir: Path, client: http.Client) -> None:
         """Queue media for a single status / tweet ID."""
         url = f"https://x.com/i/api/graphql/{QUERY_TWEET_DETAIL}"
         params = {
@@ -373,7 +380,7 @@ class TwtSource(BaseSource):
         screen_name: str,
         target_dir: Path,
         headless: bool,
-        client: httpx.Client,
+        client: http.Client,
     ) -> None:
         """Playwright fallback: navigates to x.com/<user> and x.com/<user>/media, scrolling to the end and intercepting GraphQL replies."""
         cookies_list = load_cookies(self.code)
@@ -398,7 +405,7 @@ class TwtSource(BaseSource):
             browser.capture(page, is_timeline, on_timeline)
 
             for cat, tab_url in tabs:
-                if self.files.full:
+                if self.downloads.full:
                     break
                 current_category[0] = cat
                 log.info("Navigating tab {tab}: {url}", tab=cat, url=tab_url)
@@ -407,7 +414,7 @@ class TwtSource(BaseSource):
                     page.wait_for_timeout(3000)
 
                     # Continuously scroll to the end of the tab
-                    scroll(page, cat, count=lambda: captured[0], more=lambda: not self.files.full)
+                    scroll(page, cat, count=lambda: captured[0], more=lambda: not self.downloads.full)
                 except Exception as e:
                     log.warn("Browser navigation error on {url}: {err}", url=tab_url, err=e)
 

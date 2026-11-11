@@ -49,12 +49,12 @@ def script(source: Any, *, id: str | None = None, pattern: str | None = None) ->
     """
     if (id is None) == (pattern is None):
         raise ValueError("pass exactly one of id or pattern")
-    if id is not None:
-        found = select(source).xpath("//script[@id=$id]/text()", id=id).get()
-    else:
+    if pattern is not None:
         content = source.get() if isinstance(source, parsel.Selector) else _read(source)[0]
         match = re.search(pattern, content, re.DOTALL)
         found = match.group(1) if match else None
+    else:
+        found = select(source).xpath("//script[@id=$id]/text()", id=id).get()
     return None if found is None else json.loads(found)
 
 
