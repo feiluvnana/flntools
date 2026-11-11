@@ -389,6 +389,21 @@ class OptionsTest(EngineCase):
         with zipfile.ZipFile(folder.with_name("a.zip")) as archive:
             self.assertIn("a/post/set/inside.txt", archive.namelist())
 
+    def test_unpack_takes_an_archive_saved_before(self):
+        packed = io.BytesIO()
+        with zipfile.ZipFile(packed, "w") as archive:
+            archive.writestr("inside.txt", "hello")
+        self.routes[f"{CDN}/set.zip"] = httpx.Response(200, content=packed.getvalue())
+        source = make_source("aaa", lambda session: session.save(f"{CDN}/set.zip", "set.zip", category="files"))
+        self.run_engine(source, targets=["aaa:a"], options=Options(categories=("files",)))
+        unpacked = self.target_dir("aaa", "a") / "set"
+        self.assertFalse(unpacked.exists())
+        for _ in range(2):
+            self.run_engine(source, targets=["aaa:a"], options=Options(categories=("files",), unpack=True))
+            self.assertEqual((unpacked / "inside.txt").read_text(), "hello")
+        self.assertEqual(sum(request.url.host == "cdn.example" for request in self.requests), 1)
+        self.assertEqual(sum("unpacked" in line for line in self.lines()), 1)
+
 
 class FakeBrowser:
     """Stands in for `browser.connect()`: records options, opened URLs and listeners; holds cookies."""

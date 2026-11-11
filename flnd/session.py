@@ -241,6 +241,7 @@ class TargetSession:
         self._categories = selected(run.settings.options, type(run.source))
         # Every path and history key queued so far, so one file is never written twice.
         self._queued: set[Path | str] = set()
+        self._unpack_saved: list[_File] = []
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -405,8 +406,12 @@ class TargetSession:
         dest = self._path(folder, name)
         label = dest.relative_to(self._target_dir()).as_posix()
         history_key = f"{self._source.code}:{key or label}"
-        if dest in self._queued or history_key in self._queued or self._already_saved(dest, history_key):
+        saved = self._saved_path(dest, history_key)
+        if dest in self._queued or history_key in self._queued or saved:
             log.info("skip {name}", name=label)
+            if saved and self._settings.options.unpack and _is_archive(saved.name):
+                # An archive saved by an earlier run without --unpack is unpacked now, after the downloads.
+                self._unpack_saved.append(_File(source, saved, label, history_key, password, size, headers))
             return False
         self._queued.update((dest, history_key))
         self._downloads().submit(self._download, _File(source, dest, label, history_key, password, size, headers))
@@ -472,7 +477,7 @@ class TargetSession:
         self._run.backoff.wait_turn()
 
     def finish(self, error: BaseException | None = None) -> int:
-        """Close the browser, wait for the downloads (or drop queued ones after `error`), and zip with `--zip`.
+        """Close the browser, wait for the downloads (or drop queued ones after `error`), then unpack and zip.
 
         It returns how many files were written, after logging each failed one.
         """
@@ -480,14 +485,20 @@ class TargetSession:
             self._run.http.cookies.update(net.cookie_jar(self._browser.cookies.all))
             self._browser.close()
             self._browser = self._page = None
+        if self._pool is not None:
+            self._pool.__exit__(type(error) if error else None, error, error.__traceback__ if error else None)
+            # The pool keeps failures in its results instead of raising, so each one is named here.
+            for result in self._pool.results:
+                if not result.ok:
+                    log.error("{file}: {kind} {error}", file=result.item, kind=type(result.error).__name__,
+                              error=result.error)
+        if error is None:
+            # One unpacked by an earlier run too is left as it is, so a run that skips everything stays quick.
+            for file in self._unpack_saved:
+                if not _unpack_folder(file.dest).exists():
+                    self._unpack(file)
         if self._pool is None:
             return 0
-        self._pool.__exit__(type(error) if error else None, error, error.__traceback__ if error else None)
-        # The pool keeps failures in its results instead of raising, so each one is named here.
-        for result in self._pool.results:
-            if not result.ok:
-                log.error("{file}: {kind} {error}", file=result.item, kind=type(result.error).__name__,
-                          error=result.error)
         if self._settings.options.zip and error is None:
             self._zip()
         return sum(1 for result in self._pool.results if result.value is True)
@@ -542,11 +553,12 @@ class TargetSession:
         parts = [fmt.filename(part) for part in folder.split("/") if part]
         return self._target_dir().joinpath(*parts, fmt.filename(name))
 
-    def _already_saved(self, dest: Path, history_key: str) -> bool:
+    def _saved_path(self, dest: Path, history_key: str) -> Path | None:
         if dest.is_file() and dest.stat().st_size > 0:
-            return True
+            return dest
         row = self._settings.history.get(history_key)
-        return isinstance(row, dict) and Path(row.get("path", "")).is_file()
+        found = Path(row.get("path", "")) if isinstance(row, dict) else None
+        return found if found is not None and found.is_file() else None
 
     def _downloads(self) -> worker.Pool:
         if self._pool is None:
@@ -581,11 +593,13 @@ class TargetSession:
     def _unpack(self, file: _File) -> None:
         from shared import archive
 
-        folder = file.dest.parent / _without_archive_suffixes(file.dest.name)
+        folder = _unpack_folder(file.dest)
         try:
             archive.unzip(file.dest, folder, password=file.password, conflict="skip")
         except (OSError, ValueError, RuntimeError) as error:
             log.error("{file}: can't unpack: {error}", file=file.label, error=error)
+            return
+        log.info("unpacked {file}", file=file.label)
 
     def _zip(self) -> None:
         from shared import archive
@@ -648,6 +662,10 @@ def check_category(source: Source, category: str) -> None:
 
 def _show_steps(steps: float) -> str:
     return f"{steps:g} steps"
+
+
+def _unpack_folder(archive: Path) -> Path:
+    return archive.parent / _without_archive_suffixes(archive.name)
 
 
 def _is_archive(name: str) -> bool:
