@@ -206,7 +206,7 @@ flnd download ins:example_user tik:example_creator --from all
 | --- | --- | --- |
 | `--from` | each source's `default_categories` | which categories to take: a comma list or repeated, or `all` for every category of every source |
 | `--since`, `--until` | none | only items dated in this range, inclusive (a `date` in ISO format) |
-| `--unpack` | off | unpack each saved archive (by its name: `.zip`, `.7z`, `.rar`, `.tar…`, parts) into a folder named after it, with `archive.unzip` and the password the source gave |
+| `--unpack` | off | unpack each saved archive (by its name: `.zip`, `.7z`, `.rar`, `.tar…`, parts) into a folder named after it, with `archive.unzip` and the password the source gave. An archive an earlier run saved is unpacked too, after the target's downloads, when its folder doesn't exist yet |
 | `--zip` | off | zip each target's folder with `archive.zip` when the target ends |
 
 **Categories.** Each source declares its `categories` and, among them, its `default_categories`: the account's own content. Other people's content (tagged, reposts, liked, favorites, replies) is opt-in. `profile` is the account's pictures: Instagram's HD profile picture, TikTok's profile picture, X's avatar and banner, and Facebook's profile and cover photos. TikTok's liked and favorites exist only when the account made them public; otherwise one info line says so, and it isn't an error. A name that no source of the given targets has is a usage error listing the names per source. A name only some sources have applies to those and is ignored by the others; a source left with none of its own names takes its defaults, as without `--from`. `flnd --help` lists every source's categories, marking the defaults.
@@ -326,7 +326,7 @@ total = engine.run(engine.resolve(texts), options)
   - the limit and `folder = None`;
   - `--from` (defaults, `all`, a name some sources lack, an unknown name), `--since` and `--until` filtering in `save`, items without a date, and `wants`;
   - target resolution: every row of the targets table, a bare URL per source, `www.`/`m.` hosts, query strings, a bare value refused with suggestions, refused forms with their hint, and the short-link `HEAD` (mocked);
-  - `--unpack` and `--zip`;
+  - `--unpack` and `--zip`, and `--unpack` on an archive saved by an earlier run;
   - `download` never asks: missing targets are a usage error, and a source that isn't logged in gets the hint;
   - `login`:
     - both cookie methods, with `domain` filtering on a full export;

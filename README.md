@@ -1,6 +1,6 @@
 # flntools
 
-Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, and **Twitter/X**. The command is `flnd`.
+Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, **Twitter/X**, and **LOIBUS**. The command is `flnd`.
 
 The plan for the shared helpers flnd is built on is in [plan/README.md](plan/README.md).
 
@@ -49,6 +49,7 @@ Sources:
 - `fbk`: Facebook
 - `ins`: Instagram
 - `twt`: Twitter/X
+- `loi`: LOIBUS (loix.cc), one post by its id or URL
 
 ### Examples
 
@@ -58,6 +59,7 @@ flnd download ins:example_user
 flnd download tik:example_creator
 flnd download twt:example_handle
 flnd download fbk:example.page
+flnd download loi:5930
 
 # Several targets
 flnd download ins:example_user twt:example_handle
@@ -78,6 +80,9 @@ flnd download fbk:example.page ins:example_user --from profile
 flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456
 flnd download https://www.instagram.com/p/C1abcDEFghi/
 flnd download https://x.com/example_handle/status/1790000000000000000
+
+# A LOIBUS post with its VIP archives, unpacked with the post's password
+flnd download https://loix.cc/lois/5930 --from all --unpack
 ```
 
 ### Options
@@ -87,7 +92,8 @@ Every source takes the same options:
 - `--from`: which categories to take, such as `posts,reels`, or `all` (`flnd --help` lists them).
   Without it, each source's own content; other people's (tagged, reposts) only when named;
 - `--since`, `--until`: only items dated in that range (YYYY-MM-DD);
-- `--unpack`: unpack each saved archive into a folder named after it;
+- `--unpack`: unpack each saved archive into a folder named after it, including one saved by an
+  earlier run;
 - `--zip`: zip each target's folder when it ends;
 - `--locale`, `--timezone`: the browser's language and timezone, such as `fr-FR` and `Europe/Paris`.
   Match where your connection really comes from.
@@ -108,7 +114,9 @@ flnd logout ins                                             # or: flnd logout --
 ```
 
 A full browser export works: only the source's own cookies are kept, in `.flnd/cookies/<source>.txt`.
-A source that isn't logged in still downloads with public access, and says so.
+A source that isn't logged in still downloads with public access, and says so. LOIBUS without a
+login gives a post's info and preview images only; its archives (`--from archive`) need a VIP login,
+and count against the account's daily quota.
 
 ---
 
@@ -152,6 +160,11 @@ Files are saved with platform-optimized subfolder layouts and automatic deduplic
 │   ├── reposts/                # Media of retweets (opt-in)
 │   ├── replies/                # Media of the user's replies (opt-in)
 │   └── profile/                # Avatar and banner
+│
+├── loi/<post id>/<author>/<post id> <title>/
+│   ├── info.md                 # The post's fields, download links and unzip password
+│   ├── images/                 # Preview images
+│   └── <archive>.7z, <archive>/   # VIP archives (--from archive), unpacked with --unpack
 │
 └── <source>/<post id>/         # A single post, reel, tweet or video given by its link
 ```

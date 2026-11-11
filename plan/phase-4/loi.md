@@ -41,31 +41,50 @@ class Loibus(Source):
     default_categories = ("photo",)
     api = "https://api.moegoat.com/api/"
 
-    def headers(self, cookies):
+    def headers(self, cookies):               # the site's referer and origin, and the Bearer token
         token = decode_token(cookies.get("access-token", ""))
-        return {"authorization": f"Bearer {token}"} if token else {}
+        return {"referer": SITE, "origin": SITE.rstrip("/"), **({"authorization": f"Bearer {token}"} if token else {})}
 
     def sign(self, request):                  # runs on every attempt, retries included
-        return sign_request(request, now_ms=clock_ms())
+        if request.url.host != API_HOST:      # images and mirrors: no signature, and the token is dropped
+            request.headers.pop("authorization", None)
+            return request
+        return sign_request(request, now_ms=_clock_ms())
 
     def resolve(self, text) -> Target:        # "5930" or a loix.cc post URL -> kind "post", value "5930"
         ...
 
 
     def run(self, session):
-        post = session.select(session.fetch_json(f"{self.api}lois/{session.target.value}")).jmespath("data").first
+        post = session.fetch_json(f"{API}lois/{session.target.value}").get("data")   # FetchError when missing
+        day = posted_on(post)
+        if not session.wants(date=day):
+            return
         session.folder = folder_of(post)                       # author / "<id> <title>"
-        links = session.fetch_json(f"{self.api}user/loi/download_v6/{post['id']}", soft=True)
+        links = self._links(session, post) if session.wants(category="archive") else None
         session.write("info.md", info_md(post, links))
-        for url in post["images"]:
-            session.save(url, image_name(url), category="photo", date=post_date(post))
-        if links and session.wants(category="archive") and quota_left(session):
-            for name, mirrors in group_mirrors(links):
-                session.save(mirrors, name, category="archive", date=post_date(post),
-                             password=decrypt_field(post["open_key"]))
+        for number, url in enumerate(post["images"], start=1):
+            session.save(url, image_name(number, url), category="photo", date=day, folder=f"{session.folder}/images")
+        if links is None:
+            return
+        queued = [session.save(mirrors, name, category="archive", date=day, password=post["open_key"] or None)
+                  for name, mirrors in group_mirrors(links)]
+        if any(queued):
+            count_download(session, post["id"])
 ```
 
-The `sign_request`, `decode_token`, `decrypt_field`, `info_md` and `folder_of` helpers move from `loix/api.py` and `loix/get.py` with their logic unchanged. They use `crypto.hash_sha256` and `crypto.decrypt_aes_cbc` instead of flnkit's `crypto`, and the stdlib `secrets` instead of `crypto_random` / `crypto_choice`.
+`_links` warns and gives None without a token, when the quota is used up, or when `download_v6` is refused or empty; otherwise it decrypts every `sv_list[].sv_url` and the Baidu link and key.
+
+What the live site showed, and the code follows:
+- **`open_key` is plain text**, not encrypted, so it is the password as it is.
+- **Each `sv_list` entry is a mirror**: the two VIP lines serve the same file. `group_mirrors` groups them by the URL's file name (`loi-<hash>.7z`), which is also the archive's name, so the file is saved once and its extension is the server's. loix grouped by server name, which would have saved one archive per line.
+- **`download_v6` counts as a download** on the site (it shows up in `user/mydownloaded`), so it is called only when `--from` takes `archive`, after the quota check. With the default categories, the source makes one request, `lois/<id>`.
+- **The quota** is `session.state["quota"] = {"day": "<today>", "posts": [<ids>]}`, against `VIP_DAILY_LIMITS[vip_id]` (twice for SVIP) from `user/info`. A post already counted today is free again, a post is counted only when one of its archives was queued (not when all were skipped), and the record of an earlier day no longer counts. One overwritten key needs no `ttl`, which `Session.state` (a `MutableMapping`) doesn't have.
+- `info.md` is written on every run, so its stats and links stay current; it has no history row.
+
+The `sign_request`, `decode_token`, `decrypt_field`, `info_md` and `folder_of` helpers move from `loix/api.py` and `loix/get.py` with their logic unchanged. They use `crypto.hash_sha256` and `crypto.decrypt_aes_cbc` instead of flnkit's `crypto`, and the stdlib `secrets` instead of `crypto_random` / `crypto_choice` (`sign_request` takes `pick` and `noise` for tests). `info.md` always holds the unzip password, and the download links when archives were asked for.
+
+**Unpacking.** `--unpack` unpacks each archive into a folder of its name with the post's password. The engine also unpacks an archive an earlier run saved without `--unpack`, once its folder is missing ([engine › Download options](engine.md#download-options)), so `--from archive --unpack` after `--from all` needs no new download.
 
 ## Engine features it uses
 
@@ -84,8 +103,9 @@ Without a login, loi still downloads a post's info and preview images. Archives 
 - `run` through `FakeSession`:
   - a post without a token: info and images only;
   - with a token and `--from archive`: mirrors grouped, `password=` given the decrypted password;
-  - the default categories: no archive requested, and `links` never fetched for archives;
-  - quota used up: archives skipped with a warning.
+  - the default categories: no archive requested, and `links` never fetched;
+  - quota used up: archives skipped with a warning, and `links` not fetched; a post counted today is free;
+  - refused links, a post outside `--since`/`--until`, and a missing post.
 - The engine end to end with `httpx.MockTransport`:
   - signatures are fresh on a retried request;
   - a 7z archive served as `.zip` is unpacked;
