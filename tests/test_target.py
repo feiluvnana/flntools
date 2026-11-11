@@ -23,6 +23,8 @@ class AcceptedFormsTest(unittest.TestCase):
             ("https://www.instagram.com/example_user/", user), ("https://instagram.com/example_user/?hl=en", user),
             ("instagram.com/example_user", user), ("https://m.instagram.com/example_user/reels/", user),
             ("ins:example.user", Target("ins", "user", "example.user")),
+            ("https://www.instagram.com/p/C1abcDEFghi/", Target("ins", "post", "C1abcDEFghi")),
+            ("ins:https://www.instagram.com/reel/C1abcDEFghi/", Target("ins", "post", "C1abcDEFghi")),
         ])
 
     def test_fbk(self):
@@ -44,6 +46,9 @@ class AcceptedFormsTest(unittest.TestCase):
             # A number is a user id, never a tweet.
             ("twt:44196397", Target("twt", "user", "44196397")),
             ("twt:1234567890123456789", Target("twt", "user", "1234567890123456789")),
+            ("https://x.com/example_handle/status/1790000000000000000", Target("twt", "post", "1790000000000000000")),
+            ("https://twitter.com/example_handle/status/1790000000000000000",
+             Target("twt", "post", "1790000000000000000")),
         ])
 
     def test_tik(self):
@@ -101,12 +106,10 @@ class RefusedTest(unittest.TestCase):
         with self.assertRaisesRegex(TargetError, "^which source is"):
             read("https://example.com/someone")
 
-    def test_single_posts_are_refused_with_a_hint(self):
+    def test_refused_forms_have_a_hint(self):
         rows = [
-            ("https://www.instagram.com/p/C1abc/", "ins: single posts aren't supported yet; give the profile, "
-                                                   "for example ins:example_user"),
-            ("ins:https://www.instagram.com/reel/C1abc/", "ins: single posts aren't supported yet"),
-            ("https://x.com/example_handle/status/1790000000000000000", "twt: single posts aren't supported yet"),
+            ("https://www.instagram.com/stories/example_user/123/", "ins: story links aren't supported; give the "
+                                                                   "profile, for example ins:example_user"),
             ("https://www.facebook.com/example.page/posts/123", "fbk: single posts and videos aren't supported yet"),
         ]
         for text, message in rows:
@@ -117,7 +120,9 @@ class RefusedTest(unittest.TestCase):
         with self.assertRaises(TargetError) as caught:
             read("ins:not a name")
         self.assertEqual(str(caught.exception), "ins: can't read 'not a name'; write it like ins:example_user, "
-                                                "ins:@example_user, https://www.instagram.com/example_user/")
+                                                "ins:@example_user, https://www.instagram.com/example_user/, "
+                                                "https://www.instagram.com/p/C1abcDEFghi/, "
+                                                "https://www.instagram.com/reel/C1abcDEFghi/")
         for text in ("ins:", "tik:https://www.tiktok.com/", "twt:https://x.com/explore"):
             with self.subTest(text=text), self.assertRaisesRegex(TargetError, "can't read"):
                 read(text)

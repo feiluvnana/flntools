@@ -126,7 +126,8 @@ class DownloadTest(FlndCase):
     def test_bad_targets_are_usage_errors_before_anything_starts(self):
         for target, message in (("ytb:nasa", "✗ unknown source 'ytb'. Sources: tik, fbk, ins, twt"),
                                 ("example_user", '✗ which source is "example_user"? Write it as tik:example_user'),
-                                ("https://www.instagram.com/p/C1/", "✗ ins: single posts aren't supported yet")):
+                                ("https://www.facebook.com/example.page/posts/1",
+                                 "✗ fbk: single posts and videos aren't supported yet")):
             code, _, out = self.run_app("download", "ins:a", target)
             self.assertEqual(code, 2, target)
             self.assertIn(message, out)
@@ -134,8 +135,8 @@ class DownloadTest(FlndCase):
         self.assertFalse(Path(".flnd").exists())
 
     def test_bad_options(self):
-        message = ("✗ no source here has 'reels': use all, or tik: videos, stories, playlists; "
-                   "twt: posts, media")
+        message = ("✗ no source here has 'reels': use all, or tik: videos, stories, playlists, reposts, liked, "
+                   "favorites, profile; twt: posts, media, highlights, reposts, replies, profile")
         self.assertIn(message, self.run_app("download", "tik:a", "twt:b", "--from", "videos,reels")[2])
         self.assertEqual(self.run_app("download", "tik:a", "--since", "yesterday")[0], 2)
         self.assertIn("✗ --since is after --until", self.run_app("download", "tik:a", "--since", "2026-02-01",
