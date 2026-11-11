@@ -4,8 +4,8 @@ Phase 4, step 6. A flnd source for Telegram, fully integrated: its targets go th
 
 ```sh
 flnd login tlg                                                     # once: asks Telegram Web, QR code, or phone and code
-flnd download tlg:@examplechannel                                        # photos and videos (the default kinds)
-flnd download "tlg:Lens Club" --kind photo,archive                 # by title
+flnd download tlg:@examplechannel                                        # photos and videos (the default categories)
+flnd download "tlg:Lens Club" --from photo,file                    # by title
 flnd download tlg:-1001234567890 --since 2026-01-01 --unpack       # by id, from a date, unpack archives
 flnd download tlg:@examplechannel ins:example_user --zip                # with other sources, in parallel
 ```
@@ -30,6 +30,8 @@ class Telegram(Source):
     name = "Telegram"
     domains = ("t.me", "telegram.org")
     wait = flood_wait                          # FloodWaitError.seconds, for the engine's retries
+    categories = ("photo", "video", "file")    # its content is naturally typed, so the types are the categories
+    default_categories = ("photo", "video")
 
     login_methods = ("browser", "qr", "phone")
     requires_login = True
@@ -44,13 +46,11 @@ class Telegram(Source):
     async def run(self, session) -> None:
         chat = await resolve(session, session.target.value)    # an ambiguous title fails, listing ids
         session.folder = safe_title(chat)
-        for kind in session.kinds:                              # --kind: only the server filters wanted
+        for kind in session.categories:                         # --from: only the server filters wanted
             async for message in session.client.iter_messages(chat, filter=FILTERS[kind], offset_date=session.until):
                 if not session.wants(date=message.date.date()):     # older than --since: done with this kind
                     break
-                if kind == "archive" and not is_archive(message.document):
-                    continue
-                session.save(fetcher(session.client, message), file_name(message), kind=kind,
+                session.save(fetcher(session.client, message), file_name(message), category=kind,
                              date=message.date.date(), folder=f"{session.folder}/{kind}",
                              key=f"{chat.id}:{message.id}", size=media_size(message))
 ```
@@ -82,7 +82,7 @@ flnd login tlg --method phone       # phone number, code, 2FA password
 ## Download details
 
 - **Chats:** a title matching several chats fails, listing the candidates with their ids, so the next run can pass `tlg:<id>`. `flnd download` never asks.
-- **Kinds:** these map to Telegram's server-side filters: photos, videos, and documents for `file` and `archive`. An archive is a document whose MIME type or extension is zip, 7z, rar or tar.
+- **Categories:** `photo`, `video` and `file` map to Telegram's server-side filters: photos, videos, and documents. An archive is a `file`; `--unpack` unpacks it by its name (zip, 7z, rar or tar).
 - **Resume:** the history key is `<chat_id>:<message_id>`, so a second run skips what it already has. A partial file never enters the history, because the engine writes through `path.atomic`.
 - **Rate limits:** `wait = flood_wait` makes the engine's retries honor `FloodWaitError.seconds`, instead of its usual backoff.
 - **Names:** `<date>_<message_id>_<original name>` in `<chat title>/<kind>/`. Album files share a date and message group, so they sort together.
@@ -91,7 +91,7 @@ flnd login tlg --method phone       # phone number, code, 2FA password
 ## Engine features this source is the first user of
 
 Each is general and specified in [engine](engine.md):
-- reading `session.kinds`, `since` and `until`, and `wants`, to ask Telegram only for what's wanted;
+- reading `session.categories`, `since` and `until`, and `wants`, to ask Telegram only for what's wanted;
 - `Source.login`, `login_methods`, `logged_in` and `requires_login`, with `flnd login tlg --method …`;
 - `session.ask` / `choose` / `secrets`;
 - `Source.connect` and `session.client`;
@@ -111,11 +111,11 @@ Tests use a fake Telethon client (an async stub with `iter_messages`, `download_
   In every case the session lands in `secrets`, nothing readable is left on disk, and a missing `--method` is asked.
 - **Login errors:** `flnd login ins --method qr` is a usage error (ins has `browser` and `file`); `qr` or `phone` without a terminal fails, naming the command to run.
 - **Downloads:**
-  - `flnd download tlg:@x --kind photo,archive --since …` asks Telegram only for photos and documents, and stops at the `--since` date;
-  - the default kinds download photos and videos only.
+  - `flnd download tlg:@x --from photo,file --since …` asks Telegram only for photos and documents, and stops at the `--since` date;
+  - the default categories download photos and videos only.
 - **Resume:** a second run downloads nothing.
 - **Rate limits:** a `FloodWaitError(seconds=3)` waits 3 s (fake clock) and retries.
 - **Chats:** an ambiguous title fails, listing ids.
-- **Kinds:** they map to filters, and archives are recognised by MIME type and extension.
+- **Categories:** they map to filters, and an archive sent as a file is unpacked with `--unpack`.
 - **With other sources:** `flnd download tlg:@x ins:y` runs both groups in parallel, Telegram's on its async loop.
 - **`--unpack` and `--zip`:** they work on Telegram downloads through the engine.

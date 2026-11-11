@@ -11,7 +11,7 @@ Phase 4, step 1, then checked in every later step. `shared` and flnd are type-ch
 
 ```toml
 [tool.pyright]
-include = ["shared", "flnd", "tests/typing"]
+include = ["shared", "flnd", "tests/typing", "tests/fakes.py"]
 typeCheckingMode = "standard"
 pythonVersion = "3.11"
 venvPath = "."
@@ -29,7 +29,7 @@ reportUnnecessaryTypeIgnoreComment = "error"
   - `worker.map(fn, items)` returns `list[R]`, and `Result` is `Result[R]`. Overloads cover one to three iterables, like the builtin `map`; beyond that it is `Any`.
   - `prompt.choice` returns the mapping's value type, or the sequence's item type, through two overloads.
 - **Options with fixed values are `Literal` types:** `theme.color`, `log.level`, and `archive.unzip`'s `conflict`. The runtime checks stay.
-- **The session interface:** `Session` is a `typing.Protocol`, so pyright checks that the engine's session and `FakeSession` both match it.
+- **The session interface:** `Session` is a `typing.Protocol`, so pyright checks that the engine's session and `FakeSession` both match it: `tests/typing/usage.py` assigns both to a `Session`, and `tests/fakes.py` is in pyright's `include` so its own errors show too.
 - **Source declarations:** `Source` attributes are typed `ClassVar`s, so `needs = "sessionid"` (a string, not a tuple) is a type error.
 - **JSON values** (JSON `Selection.first` / `all`, `session.fetch_json`, handler data) are `Any`. JSON is untyped by nature. The runtime `type=` checks with TypedDict support are deferred.
 

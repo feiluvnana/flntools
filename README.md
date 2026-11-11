@@ -8,7 +8,7 @@ The plan for the shared helpers flnd is built on is in [plan/README.md](plan/REA
 
 ## Installation
 
-Requires Python 3.10 or newer. This checkout uses a local virtualenv on Python 3.14.
+Requires Python 3.11 or newer. This checkout uses a local virtualenv on Python 3.14.
 
 ```bash
 uv venv .venv --python 3.14
@@ -24,8 +24,9 @@ playwright install chromium
 ## Usage
 
 ```bash
-flnd download <targets...>
-flnd auth set-cookie --path <cookies.txt>
+flnd download <targets...> [--from CATEGORIES] [--since DATE] [--until DATE] [--unpack] [--zip]
+flnd login <source>
+flnd logout <source>
 ```
 
 Or via python module:
@@ -38,7 +39,9 @@ Files go to `.flnd/downloads/`, and the browser window is visible while a source
 
 ### Target Format
 
-`<source>:<want to download>`
+`<source>:<name, id or URL>`, or just the URL: `ins:example_user`, `ins:@example_user` and
+`https://www.instagram.com/example_user/` are the same target. `flnd download --help` lists every
+accepted form.
 
 Sources:
 
@@ -61,27 +64,41 @@ flnd download ins:example_user twt:example_handle
 
 # One target per line from a file (blank lines and # comments are skipped)
 cat list.txt | flnd download
+
+# Reels and tagged posts from this year, and one single TikTok video by URL
+flnd download ins:example_user --from reels,tagged --since 2026-01-01
+flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456
 ```
 
-### Prompt mode
+### Options
 
-Run `flnd` with no arguments in a terminal and it asks what to do: download (it asks for the source and the username one target at a time) or set a cookie file. Before it runs, it prints the matching command line, so you can type it directly next time. Without a terminal, `flnd` alone prints the help.
+Every source takes the same options:
+
+- `--from`: which categories to take, such as `posts,reels`, or `all` (`flnd --help` lists them).
+  Without it, each source's own content; other people's (tagged, reposts) only when named;
+- `--since`, `--until`: only items dated in that range (YYYY-MM-DD);
+- `--unpack`: unpack each saved archive into a folder named after it;
+- `--zip`: zip each target's folder when it ends;
+- `--locale`, `--timezone`: the browser's language and timezone, such as `fr-FR` and `Europe/Paris`.
+  Match where your connection really comes from.
+
+`flnd download` never asks questions. `flnd` alone prints the help.
 
 ---
 
-## Cookies
+## Logging in
 
-Most sources need your login cookies. Export them from your browser as a Netscape `cookies.txt` or a JSON file, then:
+Most sources work better logged in. `flnd login` reads your login cookies from your browser, or from a cookie file you exported:
 
 ```bash
-flnd auth set-cookie --path ~/Downloads/cookies.txt   # a file
-flnd auth set-cookie --content "$(pbpaste)"           # the raw text
-pbpaste | flnd auth set-cookie                        # the raw text from stdin
+flnd login ins                                              # asks: from your browser, or a cookie file?
+flnd login ins --method browser --browser firefox           # Chrome, Firefox, Edge, Brave or Chromium
+flnd login twt --method file --path ~/Downloads/cookies.txt # Netscape cookies.txt or JSON
+flnd logout ins                                             # or: flnd logout --all
 ```
 
-Each cookie is stored under the source its domain belongs to, in `.flnd/cookies/<source>.txt`. A full browser export sets every matching source at once; cookies for other sites are skipped.
-
-If a source runs without cookies in a terminal, `flnd` offers to set a cookie file right there.
+A full browser export works: only the source's own cookies are kept, in `.flnd/cookies/<source>.txt`.
+A source that isn't logged in still downloads with public access, and says so.
 
 ---
 

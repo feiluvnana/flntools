@@ -6,7 +6,7 @@ Phase 4, step 5. A flnd source for LOIBUS (loix.cc), ported from `flnkit/project
 flnd download loi:5930
 flnd download loi:https://loix.cc/lois/5930        # a post URL works too
 flnd download loi:5930 ins:example_user           # mixed with other sources, in parallel
-flnd download loi:5930 --kind photo,archive --unpack    # also the VIP archives, unpacked
+flnd download loi:5930 --from photo,archive --unpack    # also the VIP archives, unpacked
 ```
 
 ## What is ported, and what isn't
@@ -37,6 +37,8 @@ class Loibus(Source):
     name = "LOIBUS"
     domains = ("loix.cc", "moegoat.com")
     needs = ("access-token",)                 # without it: images and info only, no archives
+    categories = ("photo", "archive")         # its content is naturally typed, so the types are the categories
+    default_categories = ("photo",)
     api = "https://api.moegoat.com/api/"
 
     def headers(self, cookies):
@@ -56,10 +58,10 @@ class Loibus(Source):
         links = session.fetch_json(f"{self.api}user/loi/download_v6/{post['id']}", soft=True)
         session.write("info.md", info_md(post, links))
         for url in post["images"]:
-            session.save(url, image_name(url), kind="photo", date=post_date(post))
-        if links and session.wants(kind="archive") and quota_left(session):
+            session.save(url, image_name(url), category="photo", date=post_date(post))
+        if links and session.wants(category="archive") and quota_left(session):
             for name, mirrors in group_mirrors(links):
-                session.save(mirrors, name, kind="archive", date=post_date(post),
+                session.save(mirrors, name, category="archive", date=post_date(post),
                              password=decrypt_field(post["open_key"]))
 ```
 
@@ -67,13 +69,13 @@ The `sign_request`, `decode_token`, `decrypt_field`, `info_md` and `folder_of` h
 
 ## Engine features it uses
 
-`Source.sign`, `Source.resolve`, the default login methods, `--kind archive` through `session.wants`, `session.write`, mirror lists and `password=` on `session.save`, `session.fetch_json(..., soft=True)`, and `session.state` are all in the [engine](engine.md).
+`Source.sign`, `Source.resolve`, the default login methods, `--from archive` through `session.wants`, `session.write`, mirror lists and `password=` on `session.save`, `session.fetch_json(..., soft=True)`, and `session.state` are all in the [engine](engine.md).
 
 ## Login
 
 loi uses the engine's default login ([engine › Login](engine.md#login)): `flnd login loi` reads the `loix.cc` cookies from your browser or a cookie file, checks that `access-token` is there (`needs = ("access-token",)`), and saves them to `.flnd/cookies/loi.txt`. `headers()` turns that cookie into the `Bearer` token on every request. There is no login code in the source.
 
-Without a login, loi still downloads a post's info and preview images. Archives (`--kind archive`) need the token, and say so.
+Without a login, loi still downloads a post's info and preview images. Archives (`--from archive`) need the token, and say so.
 
 ## Tests
 
@@ -81,8 +83,8 @@ Without a login, loi still downloads a post's info and preview images. Archives 
 - `decrypt_field` against a known ciphertext.
 - `run` through `FakeSession`:
   - a post without a token: info and images only;
-  - with a token and `--kind archive`: mirrors grouped, `password=` given the decrypted password;
-  - the default kinds: no archive requested, and `links` never fetched for archives;
+  - with a token and `--from archive`: mirrors grouped, `password=` given the decrypted password;
+  - the default categories: no archive requested, and `links` never fetched for archives;
   - quota used up: archives skipped with a warning.
 - The engine end to end with `httpx.MockTransport`:
   - signatures are fresh on a retried request;

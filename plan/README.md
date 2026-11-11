@@ -79,10 +79,10 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
    - [browser](phase-4/browser.md): `connect()` gives a `Browser` (incognito, a profile, or an attached running Chrome; real Chrome when installed, with its own user agent), then `open_page()`; `b.cookies` is the live browser's jar; `page.selector` reads the live page; `page.scroll` scrolls at a person's pace;
    - [cookies](phase-4/cookies.md): `load_from_browser`, `load_from_file`, `to_file`, `to_header`;
    - [worker](phase-4/worker.md): `map`, `race`, `pool`, each with `concurrency=`.
-3. [engine](phase-4/engine.md): flnd splits into an engine and sources. The engine absorbs `http`, and adds one set of download options for every source (`--kind`, `--since`, `--until`, `--unpack`, `--zip`), `flnd login <source>` with per-source methods (browser, cookie file, or the source's own), secrets, and SDK clients. Only `login` asks questions.
+3. [engine](phase-4/engine.md): flnd splits into an engine and sources. The engine absorbs `http`, and adds one set of download options for every source (`--from`, `--since`, `--until`, `--unpack`, `--zip`), `flnd login <source>` with per-source methods (browser, cookie file, or the source's own), secrets, and SDK clients. Only `login` asks questions.
 4. [terminal](phase-4/terminal.md) and [prompt](phase-4/prompt.md): templates deleted in favor of `theme.palette` and drawer functions; unused `style` and `cli` forms removed; prompt mode removed from `cli` (a command that needs an answer asks with `prompt` itself, as `flnd login` does); the huh prompt look.
-5. [loi](phase-4/loi.md): LOIBUS, API-only. `loi:<post id>`; its VIP archives are `--kind archive`. `flnd login loi` from browser cookies or a file.
-6. [tlg](phase-4/tlg.md): Telegram on Telethon. `flnd login tlg` (from Telegram Web in your browser, a QR code, or phone and code), then `flnd download tlg:<chat> --kind … --since …`.
+5. [loi](phase-4/loi.md): LOIBUS, API-only. `loi:<post id>`; its VIP archives are `--from archive`. `flnd login loi` from browser cookies or a file.
+6. [tlg](phase-4/tlg.md): Telegram on Telethon. `flnd login tlg` (from Telegram Web in your browser, a QR code, or phone and code), then `flnd download tlg:<chat> --from … --since …`.
 7. [packaging](phase-4/packaging.md): `make dist`, through a one-function `shared.bundler` over PyInstaller; Chromium installed with `flnd install-browser`.
 
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.

@@ -16,12 +16,12 @@ Four sources means four copies of that plumbing, mixed into the scraping logic. 
 2. **A source** only says what it wants and reports what it finds. It never imports httpx, Playwright, `worker`, `kv`, `log` or `prompt`. A test enforces this.
 
 ```text
-flnd download ins:a twt:b tlg:@c --kind photo
+flnd download ins:a twt:b tlg:@c --from posts,photo
       │
       ▼
    engine ── resolve targets ── group by source ── one worker per group
       │
-      │   for each target: Session(target, kinds/since/until, http, page, client, downloads, history, screen)
+      │   for each target: Session(target, categories/since/until, http, page, client, downloads, history, screen)
       ▼
    source.run(session) ──► session.fetch_json(…) / session.open_page(…) / session.save(…)
                                           ──► engine: paths, skipping, limit, retries, bars, history
@@ -31,15 +31,16 @@ flnd download ins:a twt:b tlg:@c --kind photo
 
 | File | Holds |
 | --- | --- |
-| `flnd/engine.py` | `Engine`: runs targets, owns resources, groups sources, counts results |
-| `flnd/session.py` | `Session` (a `typing.Protocol`), and the engine's implementation of it |
-| `flnd/net.py` | what was `shared.http`, now private to flnd: the httpx client factory, the single retry layer, signing, mirrors, atomic downloads with progress |
-| `flnd/secrets.py` | encrypted login data (see [Secrets](#secrets)) |
-| `flnd/sources/base.py` | `Source`: what a source declares, and its optional hooks |
+| `flnd/engine.py` | `Engine`: resolves and runs targets, owns resources, groups sources, counts results |
+| `flnd/session.py` | `Session` (a `typing.Protocol`), the download `Options`, and the engine's implementation, `TargetSession` |
+| `flnd/net.py` | what was `shared.http`, now private to flnd: the httpx client factory, the single retry layer, signing, backing off, mirrors, atomic downloads with progress |
+| `flnd/vault.py` | encrypted login data (see [Secrets](#secrets)). It isn't named `secrets.py`, because a bundled `flnd/__main__.py` puts `flnd/` on the import path, where that name would hide the stdlib `secrets` that `crypto.random_key` uses |
+| `flnd/login.py` | the `browser` and `file` cookie logins, where each source's cookie file lives, the legacy domain fix-up, and logout. Reading and writing files is `shared.cookies` |
+| `flnd/target.py` | `Target`, and reading the text people paste (see [Targets](#targets)) |
+| `flnd/sources/base.py` | `Source`: what a source declares, and its optional hooks; `FetchError` |
 | `flnd/sources/*.py` | the sources: scraping logic only |
-| `flnd/cli.py` | the commands: `download`, `login`, `logout` and `install-browser`. The `auth` group and `set-cookie` are gone; a cookie file is the `file` login method |
-| `flnd/cookies.py` | only flnd's own rules: sorting an exported file into sources by loading it once per source with `cookies.load_from_file(path, domain=…)`, where each source's file lives, and the legacy domain fix-up. Writing files is `cookies.to_file` |
-| `flnd/utils.py` | deleted |
+| `flnd/cli.py` | the commands: `download`, `login` and `logout`; `install-browser` comes with [packaging](packaging.md). The `auth` group and `set-cookie` are gone; a cookie file is the `file` login method |
+| `flnd/cookies.py`, `flnd/utils.py` | deleted |
 
 ## The source
 
@@ -55,7 +56,7 @@ class Instagram(Source):
 
     def run(self, session):
         user = session.target.value
-        session.on_response("graphql", self.on_feed)
+        session.on_response("graphql", self.on_feed)              # before open_page: the first load counts too
         session.open_page(f"https://www.instagram.com/{user}/")
         for tab, path in TABS:
             session.folder = tab
@@ -68,7 +69,7 @@ class Instagram(Source):
     def on_feed(self, session, data, response):
         for node in session.select(data).jmespath("data.user.edge_owner_to_timeline_media.edges[].node").all:
             for url, name in self.media(node):
-                session.save(url, name, kind=kind_of(node), date=posted_at(node))
+                session.save(url, name, category=session.folder, date=posted_at(node))
 ```
 
 **Declared on the class**
@@ -76,6 +77,9 @@ class Instagram(Source):
 | Attribute | Meaning | Default |
 | --- | --- | --- |
 | `code`, `name`, `domains` | as in the registry | required |
+| `short_links` | short-link hosts, also in `domains` (`vm.tiktok.com`, `fb.watch`), followed with one `HEAD` before `resolve` | `()` |
+| `kinds_of_target`, `examples` | see [Targets](#targets) | `("user",)`, `()` |
+| `categories`, `default_categories` | what `--from` can take, and what it takes by default; see [Download options](#download-options) | `()`, `()` |
 | `requires_login` | `True` when the source can't work at all without logging in (tlg) | `False` |
 | `login_methods` | how `flnd login` can log in to this source | `("browser", "file")` |
 | `user_agent` | the user agent for this source's HTTP requests only, for a site that refuses httpx's own. The browser always keeps its own | `None` |
@@ -83,7 +87,7 @@ class Instagram(Source):
 | `concurrency` | how many files download from this source at once. A whole CDN hit eight at a time looks like a bot | `4` |
 | `pause` | seconds between two targets of this source, with ±40% jitter, so a list of accounts isn't read back to back | `5.0` |
 | `needs` | cookie names, **any one** of which is enough. If none is present, the engine asks for a cookie file, or warns | `()` |
-| `wait` | the retry wait: seconds, or `(error, attempt) -> float \| None` (Telegram reads `FloodWaitError.seconds`) | `1.0` |
+| `wait` | the retry wait: seconds, doubled on each retry, or `(error, attempt) -> float \| None` (Telegram reads `FloodWaitError.seconds`). The engine reads it from the class, so a plain function works | `1.0` |
 
 **Methods**
 
@@ -96,28 +100,30 @@ class Instagram(Source):
 | `login(self, session, method)`, `logged_in(self, session) -> bool` | no | the defaults read the browser's cookies; see [Login](#login) |
 | `connect(self, session)` | no | see [SDK clients](#sdk-clients) |
 
+`login`, `logged_in` and `connect` get a session for the account rather than a target: its `target` is `Target(code, "account", "")`.
+
 ## The session
 
 The only way a source acts.
 
 | Group | Members |
 | --- | --- |
-| target | `target`, `cookies` (read-only `{name: value}`), `kinds`, `since`, `until`, and `wants(kind=None, date=None)` |
-| API | `fetch_json(url, *, method="GET", headers=None, soft=False, **kw)`, `fetch_html(url, **kw) -> Selection`, `select(value) -> Selection`. They are named `fetch_` because they make a request. Per-request `headers=` override the source's (Instagram's mobile user-agent for stories). With `soft=True`, 401, 403 and 404 return `None` instead of raising. `http` is the raw httpx client |
-| browser | `open_page(url)` connects the browser on first use (`browser.connect` with the source's settings, then `b.cookies.add` with the source's jar) and opens the page. Later calls reuse the same browser. Also `goto`, `on_response`, `on_request`, `scroll`, `wait_for_*` and `handoff`, which are the [browser](browser.md) page methods with flnd's spinner and limit wired in. `page` is the current `browser.Page`, and `browser` the `browser.Browser` |
+| target | `target`, `cookies` (read-only `{name: value}`), `categories`, `since`, `until`, and `wants(category=None, date=None)` |
+| API | `fetch_json(url, *, method="GET", headers=None, soft=False, **kw)`, `fetch_html(url, **kw) -> Selection`, `select(value) -> Selection`. They are named `fetch_` because they make a request. Per-request `headers=` override the source's (Instagram's mobile user-agent for stories). With `soft=True`, 401, 403 and 404 return `None` instead of raising. Any other failure raises `FetchError` (from `flnd.sources.base`), whose `status` is the refusing HTTP status, or `None` when no response came or it wasn't JSON. `http` is the raw httpx client |
+| browser | `open_page(url)` connects the browser on first use (`browser.connect` with the source's settings, then `b.cookies.add` with the source's jar) and opens the page. Later calls reuse the same browser. Also `goto` (which opens the page when none is open), `on_response`, `on_request`, `scroll`, `wait_for_*` and `handoff`, which are the [browser](browser.md) page methods with flnd's spinner and limit wired in. Handlers get the session first, `handler(session, data, response)`, and may be added before `open_page`, so nothing from the first load is missed. `page` is the current `browser.Page`, and `browser` the `browser.Browser` |
 | SDK | `client`: what `connect` produced |
-| results | `save(source, name, *, kind, date=None, folder=None, key=None, password=None, size=None) -> bool`, `write(name, text)`, `folder`, `full` |
-| state | `state` (a `kv` table for this source), `secrets` (encrypted; see [Secrets](#secrets)) |
-| people | `ask(message, *, secret=False, description="")`, `choose(message, options)`, `info(…)`, `warn(…)` |
+| results | `save(source, name, *, category, date=None, folder=None, key=None, password=None, size=None, headers=None) -> bool`, `write(name, text) -> bool`, `folder`, `full`. `headers=` are sent with that file only, such as a CDN's `Referer` |
+| state | `state` (a `kv` table for this source, in `.flnd/sources.db`), `secrets` (encrypted; see [Secrets](#secrets)) |
+| people | `ask(message, *, secret=False, description="")`, `choose(message, options)`, `info(…)`, `warn(…)`, `challenged()`. `info` and `warn` name the target. `ask` and `choose` work during `flnd login` only; during a download they raise `RuntimeError` |
 
-`save` reports a file and returns `False` when it is skipped (already there, already queued, or filtered out by `--kind`/`--since`/`--until`), the limit is reached, or `folder` is `None`. Its `source` is:
+`save` reports a file and returns `False` when it is skipped (already there, already queued, or filtered out by `--from`/`--since`/`--until`), the limit is reached, or `folder` is `None`. `folder` starts as `""`, the target's own folder. Its `source` is:
 - a URL;
 - a list of mirror URLs, tried in order;
 - or a `fetch(dest, progress)` function, sync or async, for media without a URL (Telegram).
 
 The engine decides:
-- **the path:** `<downloads>/<code>/<target>/<folder>/<fmt.filename(name)>`;
-- **skipping:** files that already exist, or are already queued;
+- **the path:** `<downloads>/<code>/<target>/<folder>/<fmt.filename(name)>`, with every part of `folder` through `fmt.filename` too, so nothing a site sends can leave the target's folder;
+- **skipping:** files that already exist; files whose history row (by `key`) names a file that still exists; and files already queued in this run, by path or by `key`, so the same file found in two places (Twitter's two timelines) is saved once;
 - the limit, retries and the progress bar;
 - **the history row:** keyed by `key`, which defaults to `folder/name`, because CDN URLs are signed and change.
 
@@ -127,12 +133,12 @@ The engine decides:
 
 What was `shared.http`, kept private in `flnd/net.py`:
 
-- **One retry layer.** API calls retry connection errors, 429 and 5xx through the source's client, twice. File downloads are retried by the download pool, twice, including errors raised while the body streams, and the client doesn't retry them. A dead connection costs 3 attempts, not the 9 the review measured.
-- **Retry waits** follow the source's `wait`. A server's `Retry-After` is honored, up to 60 s.
+- **One retry layer.** API calls retry connection errors and 5xx through the source's client, twice; a 429 is [backed off](#downloads) instead. File downloads run in the download pool, and each pool task retries its file twice itself, including errors raised while the body streams and a body shorter than its `Content-Length`; the client doesn't retry them. A dead connection costs 3 attempts, not the 9 the review measured. The pool's own `retries` stays off, because its waits can't follow the source's `wait`.
+- **Retry waits** follow the source's `wait`. A server's `Retry-After` on a 5xx is honored, up to 60 s.
 - **Atomic downloads with progress.** Each file is written to `.name.<random>.part` with mode 0644, then renamed. One `log` bar per file, sized from `Content-Length`.
 - **Mirrors.** Each failed mirror writes `log.warn("mirror N failed; trying next")`.
 - **Signing.** `Source.sign` runs inside the retry loop, before every attempt.
-- **Backing off.** A 429, or a challenge a source reports through `session.challenged()`, pauses that source: 30 s, then 60 s, then 120 s, with jitter, and `log.warn` says so. A third in a row stops the source's remaining targets with an error, instead of hammering a site that has noticed.
+- **Backing off.** A rate limit never stops a source. On a 429, or a challenge a source reports through `session.challenged()`, the engine pauses that source and then tries again, as often as it takes. The wait is the server's `Retry-After` when it sent one, with no cap; otherwise 30 s, then 60 s, 120 s, 240 s, … up to 15 min, each with ±20% jitter. Each wait gets one `log.warn`, such as `! ins: rate limited; waiting 2m (attempt 3)`, with `fmt.duration`, and a progress row counts it down, so the screen never looks frozen. Every request and download of that source waits out the same pause, and downloads that hit the same 429 together count once. A request that goes through resets the back-off. A 429 is not one of the three attempts. Ctrl-C ends a wait at once, in every thread. `concurrency` and `pause` are unchanged by it.
 - **Locale and timezone.** `flnd download --locale fr-FR --timezone Europe/Paris` sets the browser's language and timezone for every source, through `browser.connect(locale=, timezone=)`. Without them, the browser keeps the system's. They should match where the connection really comes from, because a mismatch with the IP's country is a common bot signal; the help text says so.
 - **User agents.** The browser always reports its own. The HTTP client sends the source's `user_agent` when it sets one, written in that source, and httpx's own otherwise.
 
@@ -150,7 +156,7 @@ flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456 
 
 **Resolution:**
 1. **`code:value`** goes to that source's resolver. `value` may itself be a URL (`ins:https://…`).
-2. **A bare URL** finds its source by domain, with the same rule as [cookies › Domains](cookies.md#domains), matched against every source's `domains`. `www.`, `m.` and `mobile.` hosts match, and a short-link host (`vm.tiktok.com`) is listed in that source's `domains`.
+2. **A bare URL**, with or without `https://` (`instagram.com/example_user`), finds its source by domain, with the same rule as [cookies › Domains](cookies.md#domains), matched against every source's `domains`. `www.`, `m.` and `mobile.` hosts match, and a short-link host (`vm.tiktok.com`) is listed in that source's `domains`.
 3. **A bare value that isn't a URL** is a usage error, because it could belong to any source: `✗ which source is "example_user"? Write it as ins:example_user, twt:example_user, …`.
 
 `Source.resolve(self, text) -> Target` turns one form into a `Target(source, kind, value)`:
@@ -163,7 +169,8 @@ A form the source can't download yet is refused with what to do instead (`✗ in
 | --- | --- | --- |
 | ins | `example_user`, `@example_user`, `instagram.com/example_user`, with any query string (`?hl=en`) | `user` |
 | ins | `instagram.com/p/…`, `/reel/…` | refused for now (single posts) |
-| fbk | `example.page`, a numeric id, `facebook.com/example.page`, `facebook.com/profile.php?id=…`, `fb.com/…`, `m.facebook.com/…` | `user` (a name or an id) |
+| fbk | `example.page`, a numeric id, `facebook.com/example.page` (and its tabs, `/photos`), `facebook.com/profile.php?id=…`, `fb.com/…`, `m.facebook.com/…` | `user` (a name or an id) |
+| fbk | `facebook.com/<user>/posts/…`, `/watch/…`, `fb.watch/…` | refused for now (single posts and videos) |
 | twt | `example_handle`, `@example_handle`, a numeric user id, `x.com/example_handle`, `twitter.com/example_handle` | `user` |
 | twt | `x.com/example_handle/status/…` | refused for now (single posts) |
 | tik | `example_creator`, `@example_creator`, `tiktok.com/@example_creator` | `user` |
@@ -171,7 +178,7 @@ A form the source can't download yet is refused with what to do instead (`✗ in
 | loi | `5930`, `loix.cc/lois/5930` | `post` |
 | tlg | `@examplechannel`, `t.me/examplechannel`, a chat title, `-1001234567890`, `t.me/c/1234567890/…`, `t.me/+…` (invite) | `chat` |
 
-What used to be implicit becomes explicit and tested: "a long number is a video id" for tik, and "a number is a user id" for twt.
+What used to be implicit becomes explicit and tested: "a long number is a video id" for tik, and "a number is a user id" for twt. twt used to read a number of more than 10 digits as one tweet; that path is gone with single posts.
 
 **Declared on the source:**
 - `kinds_of_target`, for example `("user", "video")` for tik;
@@ -185,30 +192,46 @@ What used to be implicit becomes explicit and tested: "a long number is a video 
 `flnd download` has one set of options, and **every source supports all of them**. There are no per-source options.
 
 ```sh
-flnd download ins:example_user --kind video --since 2026-01-01
-flnd download tlg:@examplechannel loi:5930 --kind photo,archive --until 2026-06-30 --unpack
+flnd download ins:example_user --from reels,tagged --since 2026-01-01
+flnd download tlg:@examplechannel loi:5930 --from photo,archive --until 2026-06-30 --unpack
+flnd download ins:example_user tik:example_creator --from all
 ```
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--kind` | `photo,video` | which kinds to download: `photo`, `video`, `file`, `archive`. A comma list or repeated |
+| `--from` | each source's `default_categories` | which categories to take: a comma list or repeated, or `all` for every category of every source |
 | `--since`, `--until` | none | only items dated in this range, inclusive (a `date` in ISO format) |
-| `--unpack` | off | unpack each saved archive into a folder named after it, with `archive.unzip` and the password the source gave |
+| `--unpack` | off | unpack each saved archive (by its name: `.zip`, `.7z`, `.rar`, `.tar…`, parts) into a folder named after it, with `archive.unzip` and the password the source gave |
 | `--zip` | off | zip each target's folder with `archive.zip` when the target ends |
 
-**How sources support them.** A source reports each item's kind and date, and the engine applies the filters:
+**Categories.** Each source declares its `categories` and, among them, its `default_categories`: the account's own content. Other people's content (tagged, reposts, liked, favorites, replies) is opt-in. A name that no source of the given targets has is a usage error listing the names per source. A name only some sources have applies to those and is ignored by the others; a source left with none of its own names takes its defaults, as without `--from`. `flnd --help` lists every source's categories, marking the defaults.
+
+| Source | Categories (default ones in bold) |
+| --- | --- |
+| ins | **posts**, **reels**, tagged, reposts, **stories**, **highlights** |
+| fbk | **posts**, **photos**, tagged, **albums**, **reels**, **videos** |
+| tik | **videos**, **stories**, **playlists** |
+| twt | **posts**, **media** |
+| loi | **photo**, archive ([loi](loi.md)) |
+| tlg | **photo**, **video**, file ([tlg](tlg.md)) |
+
+Sources whose content is naturally typed use those types as categories: loi's VIP archives are `--from archive`, and Telegram's are photo, video and file. A category is where an item came from, not where it is saved: a video on Facebook's tagged tab is `tagged`, though it lands in `videos/`.
+
+**How sources support them.** A source reports each item's category and date, and the engine applies the filters:
 
 ```python
-session.save(url, name, kind="video", date=posted)      # skipped unless video is wanted and posted is in range
-if not session.wants(date=posted):                      # older than --since: stop scrolling early
+session.save(url, name, category="reels", date=posted)      # skipped unless reels are wanted and posted is in range
+if not session.wants(category="tagged"):                     # not asked for: don't even open the tab
+    continue
+if not session.wants(date=posted):                           # older than --since: stop scrolling early
     break
 ```
 
-- `session.save(…, kind=…, date=…)`: `kind` is required. `date` may be `None` when the site gives none, and such items are kept whatever the range. Skipped items return `False`, like files that already exist.
-- `session.wants(kind=None, date=None) -> bool` lets a source skip work early. Telegram asks only for the kinds wanted, through its server filters. A feed scraper stops scrolling once posts are older than `--since`. Using it is optional, because `save` filters anyway, so a source that ignores it is still correct, only slower.
-- `session.kinds`, `session.since` and `session.until` are readable, for sources that pass them to an API.
+- `session.save(…, category=…, date=…)`: `category` is required, and one the source doesn't declare raises `ValueError`. `date` may be `None` when the site gives none, and such items are kept whatever the range. Skipped items return `False`, like files that already exist.
+- `session.wants(category=None, date=None) -> bool` lets a source skip work early: a tab that wasn't asked for isn't opened, and a feed scraper stops scrolling once posts are older than `--since`. Using it is optional, because `save` filters anyway, so a source that ignores it is still correct, only slower.
+- `session.categories`, `session.since` and `session.until` are readable, for sources that pass them to an API (Telegram's server filters).
 
-loi's old `--full` is `--kind archive`, because its password-protected archives are simply the `archive` kind. They are off by default, as before, because `archive` isn't in the default `--kind`.
+loi's old `--full` is `--from archive`. Archives are off by default, as before, because `archive` isn't one of loi's default categories.
 
 ## Questions
 
@@ -239,13 +262,15 @@ flnd logout --all
 
 Both methods then:
 1. check that one of the source's `needs` cookies is there, which proves the login;
-2. apply flnd's legacy domain fix-up;
-3. save the cookies with `cookies.to_file` to `.flnd/cookies/<code>.txt`;
+2. apply flnd's legacy domain fix-up: every domain gets a leading dot, so every subdomain sees the cookie, and every path defaults to `/`;
+3. save the cookies with `cookies.to_file` to `.flnd/cookies/<code>.txt`, removing an old `<code>.json`;
 4. report `✓ ins: logged in from Chrome (14 cookies)`. A missing `needs` cookie gets `✗ twt: no auth_token for x.com in Chrome; log in there first` instead.
 
 If the browser can't be read at all (see [cookies](cookies.md#platform-notes-for-load_from_browser)), it says so and suggests `--method file`.
 
-**A source with its own way of logging in** overrides `Source.login(self, session, method)` and lists its own `login_methods`. Today that's Telegram, with `browser` (Telegram Web's saved login), `qr` and `phone` ([tlg](tlg.md#login)). It asks through `session.ask` and `session.choose`, and stores the result in `session.secrets`.
+At download time the engine reads `.flnd/cookies/<code>.txt`, or an older `<code>.json` (and the `E:/` folders flnd used to read), with the same fix-up, because files written before `flnd login` lack it.
+
+**A source with its own way of logging in** overrides `Source.login(self, session, method)` and lists its own `login_methods`; the engine then calls it for every method, even one named `browser`. Today that's Telegram, with `browser` (Telegram Web's saved login), `qr` and `phone` ([tlg](tlg.md#login)). It asks through `session.ask` and `session.choose`, and stores the result in `session.secrets`.
 
 **Logged in or not at download time.** `Source.logged_in(self, session) -> bool` defaults to "one of `needs` is in the source's cookie file". When it is `False`, the engine prints one hint and never asks:
 - **`requires_login = False`** (the default): `! ins: not logged in, using public access; run flnd login ins`, then the download continues, as flnd does today.
@@ -257,41 +282,44 @@ If the browser can't be read at all (see [cookies](cookies.md#platform-notes-for
 
 Login data lives in `.flnd/`, so `rm -rf .flnd` removes every trace.
 - **Storage:** `.flnd/secrets.db` is a `kv` table. Each value is sealed with `crypto.encrypt_aes_gcm`, with the context `<source>\0<key>`, so a value can't be moved to another slot.
-- **The key:** `.flnd/secret.key`, mode 0600, created with a temp file and an atomic link, so it is never left empty. The review found the old code could leave it empty.
+- **The key:** `.flnd/secret.key`, mode 0600, created on the first read or write of a secret, with a temp file and an atomic link, so it is never left empty. Two runs racing both end up with the key that was linked first. A key file of the wrong size raises `ValueError` naming it. The review found the old code could leave it empty.
 - **What it protects against:** someone who copies only `secrets.db`. It doesn't protect against someone who can read the whole folder, which is the same exposure as the cookie files next to it. The docstring says so.
 - **Access:** `session.secrets` is a mapping scoped to the source.
 
 ## SDK clients
 
-For services with an SDK instead of URLs. `Source.connect(session)` returns a context manager, or an async one. The engine enters it once per source group, before the first target, and exits it after the last. `session.client` is the result. With an async `connect`, the engine awaits an async `run`, and runs that group's `fetch` downloads as async `worker` tasks on the same loop. Other groups keep their threads.
+For services with an SDK instead of URLs. `Source.connect(session)` returns a context manager, or an async one. The engine enters it once per source group, before the first target, and exits it after the last. `session.client` is the result. Anything async in a group (an async `connect`, an async `run`, an async `fetch`) runs on one event loop of that group's own, in a thread started on first use, because an SDK client only works on the loop that made it. A `fetch` download still takes a download-pool slot, and waits there for its coroutine on that loop. Other groups keep their threads.
 
 ## The engine
 
 ```python
-total = Engine(downloads=Path(".flnd/downloads"), limit=None, headless=False).run(targets, options)
+engine = Engine(home=Path(".flnd"), limit=None, headless=False, locale=None, timezone=None)
+total = engine.run(engine.resolve(texts), options)
 ```
 
-1. Resolve every target ([Targets](#targets)). Stop on the first bad one, before anything starts.
-2. Read the [download options](#download-options) once; every session sees the same values.
+`home` holds everything: `downloads/`, `cookies/`, `history.db`, `sources.db`, `secrets.db` and `secret.key`.
+
+1. `resolve` reads every target ([Targets](#targets)), stopping on the first bad one with `TargetError`. `flnd download` calls it before anything starts, and reports a bad target as a usage error.
+2. `run` reads the [download options](#download-options) once; every session sees the same values.
 3. Group the targets by source, and run the groups with `worker.race`, one at a time per source (`concurrency` = the number of groups).
 4. For each group:
-   1. check `logged_in`, as in [Login](#login), then `connect` if the source has it;
-   2. for each target, load cookies, asking via `needs`. Build the HTTP client after the cookies, and copy later cookies into it;
-   3. open a `Session` and call `run`;
+   1. load the source's cookie file once, and build its one HTTP client from it. Nothing is asked;
+   2. check `logged_in`, as in [Login](#login), then `connect` if the source has it;
+   3. for each target, after a `pause` from the second one on: open a `Session` and call `run`. Cookies the site set in the browser are copied into the client before each API request and when the browser closes, so they reach later requests and targets;
    4. close the browser if one was opened, and wait for the downloads;
    5. end the target's row at `ok` or `error`.
-5. Log the total and return it.
+5. Return the total; `flnd download` logs it.
 
 ## Testing
 
 - **Sources are tested without network or browser.** `Session` is a `Protocol`, so pyright checks that `FakeSession` (in `tests/fakes.py`) matches it. `FakeSession` records `save` calls, serves `fetch_json` and `fetch_html` from fixtures, and feeds `on_response` handlers directly.
 - **The engine:**
   - same-source targets never overlap;
-  - `needs` prompting;
+  - the `needs` hint, and `requires_login` failing the targets;
   - one client per group, and cookies added later reach it;
   - the browser connects only on `open_page`;
   - the limit and `folder = None`;
-  - `--kind`, `--since` and `--until` filtering in `save`, items without a date, and `wants`;
+  - `--from` (defaults, `all`, a name some sources lack, an unknown name), `--since` and `--until` filtering in `save`, items without a date, and `wants`;
   - target resolution: every row of the targets table, a bare URL per source, `www.`/`m.` hosts, query strings, a bare value refused with suggestions, refused forms with their hint, and the short-link `HEAD` (mocked);
   - `--unpack` and `--zip`;
   - `download` never asks: missing targets are a usage error, and a source that isn't logged in gets the hint;
@@ -311,7 +339,7 @@ total = Engine(downloads=Path(".flnd/downloads"), limit=None, headless=False).ru
   - a streaming error retried by the pool;
   - no `.part` left behind;
   - dropped tasks logged.
-- **The guard test:** no module under `flnd/sources/` imports `httpx`, `playwright`, `shared.worker`, `shared.kv`, `shared.log` or `shared.prompt`.
+- **The guard test:** no module under `flnd/sources/` imports `httpx`, `playwright`, `shared.worker`, `shared.kv`, `shared.log` or `shared.prompt` when it runs. Imports under `if TYPE_CHECKING:` are only read by checkers, so `base.py` may name `httpx.Request` in an annotation.
 
 ## Migration
 
