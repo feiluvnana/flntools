@@ -19,7 +19,7 @@ Colors are huh's dark palette. The numbers are xterm 256-color indexes. The firs
 
 | Name | Color | Used for |
 | --- | --- | --- |
-| `title` | `#7571F9` (indigo) | the title |
+| `title` | `bold #7571F9` (indigo) | the title |
 | `cursor` | `#F780E2` (fuchsia) | the `>` cursor, the active button background |
 | `chosen` (and `ok`) | `#02BF87` (green) | a chosen or checked option; `ok` draws the done tick |
 | `error` | `#ED567A` (red) | the error mark and message |
@@ -36,7 +36,7 @@ Colors are huh's dark palette. The numbers are xterm 256-color indexes. The firs
 - under 85 % → white (`37`);
 - above that → bright white (`97`).
 
-Without this rule, `237`–`241` became black (invisible on a dark terminal) and `243` became yellow. The rule lives in `style`, so every theme benefits.
+Other colors go to the nearest of the 12 non-grey ANSI colors. Without this rule, `237`–`241` became black (invisible on a dark terminal) and `243` became yellow. The rule lives in `style`, so every theme benefits. At depth `"8"` huh's green (`#02BF87`) is nearest to cyan, so `ok` and `chosen` show cyan there.
 
 ## Frames
 
@@ -127,13 +127,13 @@ The frame and its help line are replaced by one line, as today:
 
 - **The bar is on every frame line**, including each line of a multi-line description, and is never on the help line.
 - **Descriptions wrap** to `screen.width - 2` columns, on word boundaries, before the bar is added. Nothing is cut off.
-- **Long lists scroll.** A frame is never taller than `screen.height - 1` rows. When a `choice` or `choices` list doesn't fit, it shows a window of rows around the cursor, with a faint `↑ N more` / `↓ N more` row at the cut edges. `Screen.height` comes from [fixes › log](fixes.md#log); the same cap keeps the frame's cursor-up erase correct.
+- **Long lists scroll.** A frame is never taller than `screen.height - 1` rows. When a `choice` or `choices` list doesn't fit, it shows a window of rows around the cursor, with a faint `↑ N more` / `↓ N more` row at the cut edges (the arrows are `glyphs.keys.up` / `down`, so ASCII shows `up N more`). `Screen.height` comes from [fixes › log](fixes.md#log); the same cap keeps the frame's cursor-up erase correct.
 - **Padding is exact.** Drawers build each piece directly, so the button's `" No "` keeps both spaces inside its background. The old space tidying trimmed the right one.
 
 ## The help line
 
-- **On by default.** `keys` defaults to `True`, and `keys=False` hides the line for one question.
-- **One setting hides it everywhere:** `prompt.keys = False` is the module-wide default that `keys=` overrides per question.
+- **On by default.** `prompt.keys` is `True`, and `keys=False` hides the line for one question.
+- **One setting hides it everywhere:** `prompt.keys = False` is the module-wide default. Each question's `keys=` defaults to `None`, meaning "follow `prompt.keys`", and `True` or `False` overrides it for that question.
 - **Key names are glyphs.** The `glyphs.keys` group maps key names to what the line shows: `up` → `↑`, `down` → `↓`, `left` → `←`, `right` → `→`. Other keys are shown by name.
 - **The separator is a glyph.** `glyphs.keysep` is `•`, or `|` in ASCII, so `theme.unicode = False` has no `•` left.
 - **Typing questions list only keys that aren't typed.** In `input`, `secret`, and any `filter=True` question, letters are typed as text. So the line shows `↑ up • ↓ down • enter submit`, without `k` or `j`.
@@ -142,14 +142,15 @@ The frame and its help line are replaced by one line, as today:
 | Question | Help line |
 | --- | --- |
 | `input`, `secret` | `enter submit` |
-| `confirm` | `←/h left • →/l right • y yes • n no • enter submit` (`up`/`down` are no longer listed) |
+| `confirm` | `←/h left • →/l right • y yes • n no • enter submit` (`up`/`down` still move between the buttons, but are no longer listed) |
 | `choice` | `↑/k up • ↓/j down • enter submit` |
 | `choices` | `↑/k up • ↓/j down • space toggle • enter submit` |
 | `choice` / `choices` with `filter=True` | the same, without the letter keys |
 
 ## API changes
 
-- **`description=""`** on every question. When `cli` asks for a missing value, the parameter's help line becomes the description.
+- **`description=""`** on every question. `cli` no longer asks anything ([terminal › cli](terminal.md#cli)); flnd's `session.ask(message, description=)` passes its description through, where it used to log it as an info line first.
+- **No per-call `theme=`.** With `theme.branch` gone, questions use the process theme, like `log`; `theme.scope` covers a temporary change.
 - **Glyphs.**
   - New: `border` (`┃`, ASCII `|`), `keysep` (`•`, ASCII `|`), and `keys.up`, `keys.down`, `keys.left`, `keys.right` (arrows; in ASCII the key name).
   - Changed: `pointer` becomes `>`, `check.yes` becomes `✓` (ASCII `[x]`), `check.no` becomes `•` (ASCII `[ ]`).
@@ -177,5 +178,5 @@ huh picks a light or dark palette from the terminal background. flntools does no
 - A `choice` list taller than `height - 1` scrolls with the cursor, shows the `↑ N more` / `↓ N more` rows, and redraws cleanly.
 - `confirm`: `left`/`right` move between buttons, `y`/`n` answer at once, and `enter` submits the active button.
 - `prompt.keymap.accept` raises `AttributeError` with the rename message.
-- `cli` passes help lines as descriptions when it asks for missing values.
+- flnd's `session.ask` shows its description inside the question (`cli` no longer asks).
 - The done line replaces the frame and the help line, and the live area is redrawn afterwards.
