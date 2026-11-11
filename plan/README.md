@@ -33,7 +33,7 @@ from shared import archive, crypto, cookies, kv, selector, browser, worker, bund
 | `archive` | [phase-4](phase-4/archive.md) | `_archive.py` | `zipfile`, `tarfile`, `pyzipper`, `py7zr` | `archive` |
 | `crypto` | [phase-4](phase-4/crypto.md) | `_crypto.py` | `hashlib`, `cryptography` | `browser` or `cryptography` |
 | `kv` | [phase-4](phase-4/kv.md) | `_kv.py` | `sqlite3` | — |
-| `cookies` | [phase-4](phase-4/cookies.md) | `_cookies.py` | `http.cookiejar`, rookiepy | `browser` for `load_from_browser` |
+| `cookies` | [phase-4](phase-4/cookies.md) | `_cookies.py` | `http.cookiejar`, `sqlite3`, `cryptography` | `browser` for `load_from_browser` |
 | `selector` | [phase-4](phase-4/selector.md) | `_selector.py` | parsel, jmespath, python-jsonpath | `selector` |
 | `browser` | [phase-4](phase-4/browser.md) | `_browser.py` | Playwright | `browser` |
 | `worker` | [phase-4](phase-4/worker.md) | `_worker.py` | `concurrent.futures`, `asyncio` | — |
@@ -119,11 +119,11 @@ flnd's own helpers keep normal `snake_case`. The chalk-style color names (`style
 [project.optional-dependencies]
 archive = ["pyzipper", "py7zr"]                                  # password zips and 7z; plain zip and tar need nothing
 selector = ["parsel>=1.9.0", "python-jsonpath"]
-browser = ["playwright>=1.40.0", "rookiepy", "cryptography>=42"]
+browser = ["playwright>=1.40.0", "cryptography>=42"]
 bundler = ["pyinstaller"]
 ```
 
-flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `rookiepy`, `cryptography`, `telethon`, `pyzipper` and `py7zr`, because flnd always needs them. The dev group adds `pyright` and `typing_extensions`.
+flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `pyzipper` and `py7zr`, because flnd always needs them. The dev group adds `pyright` and `typing_extensions`.
 
 ## Makefile
 
@@ -163,7 +163,7 @@ These are what made flnkit big. They stay out.
 
 - **cli:** config files, env prefixes, shell completion, before-hooks, dataclass flag groups, and conflicts and implies.
 - **terminal:** a multiline editor, a fuzzy finder, full-screen widgets, a box model, file rotation, JSON log mode, extra log levels, string templates, and detecting the terminal background (OSC 11).
-- **browser:** its own locator or element types, a login-flow framework, stealth beyond hiding `navigator.webdriver`, and wrapping Playwright methods that `.raw` already gives.
+- **browser:** its own locator or element types, a login-flow framework, stealth beyond hiding `navigator.webdriver` and scrolling at a person's pace, and wrapping Playwright methods that `.raw` already gives.
 - **crypto:** JWT, TOTP, certificates, asymmetric keys, and a password-hashing API.
 - **kv:** an ORM, a query builder, migrations, batches, and storing secrets (flnd's engine seals them).
 - **archive:** writing RAR, extracting nested archives automatically, file watching, and disk usage.

@@ -52,13 +52,29 @@ with browser.connect(headless=False) as b:                     # incognito by de
 | `on_response(match, handler, *, lines=False)` | `handler(data, response)` for each matching response whose body is JSON. `match` is a URL substring, a compiled regex, or a function. `lines=True` parses newline-delimited JSON, calling the handler once per line. A body that isn't JSON is skipped (logged at `debug`). An exception inside the handler is logged with `log.warn`, with the URL, and later responses keep arriving |
 | `on_request(match, handler)` | `handler(request)` for each matching request. Each `on_*` returns a function that stops it |
 | `wait_for_selector(css, *, timeout=30.0)`, `wait_for_url(pattern, …)`, `wait_for_load(*, idle=False, …)` (with `idle=True` it also waits until the network is quiet) | wait; all times in seconds |
-| `scroll(*, by=None, count=None, limit=None, more=None, idle=4, delay=2.0, max=200, onscroll=None) -> int` | scrolls until `count()` reaches `limit`, `more()` returns `False`, `idle` scrolls in a row change nothing, or `max` scrolls are done. `by` is a JS expression or a `(raw_page) -> None` function for sites that need their own scroll; the default jumps to the bottom. Waits use Playwright's clock, so `on_*` handlers keep running. It returns the number of scrolls |
+| `scroll(*, by=None, count=None, limit=None, more=None, idle=4, delay=2.0, max=200, onscroll=None) -> int` | scrolls like a person until the feed ends (see [Scrolling](#scrolling)), `count()` reaches `limit`, `more()` returns `False`, or `max` scrolls are done. `by` is a JS expression or a `(raw_page) -> None` function for sites that need their own scroll. Waits use Playwright's clock, so `on_*` handlers keep running. It returns the number of scrolls |
 | `handoff(*, until, message, poll=1.0, timeout=None) -> bool` | for steps only a person can do, such as a captcha or a login. It shows `log.warn(message)` and a spinner, and polls `until()`. It returns `True` when done, or `False` on timeout. In headless mode it raises `RuntimeError`, because no person can see the page |
 | `content` | the live DOM's HTML, for `selector.select`. A property: it is read fresh each time |
 | `url`, `title` | properties |
 | `browser` | the `Browser` it belongs to |
 | `raw` | the Playwright `Page`, for `click`, `fill`, `evaluate`, and everything else |
 | `close()` | closes the tab |
+
+### Scrolling
+
+`page.scroll` has two jobs: notice reliably when a feed has ended, and not look like a script while it gets there.
+
+**Like a person.** A script that jumps to the bottom every 2 seconds is easy to spot. Each scroll instead:
+- moves the mouse to a random point over the page, then turns the **wheel** (`mouse.wheel`), so the site sees real wheel events and its own lazy loading runs;
+- goes down by 60–90% of the viewport's height, in 3–6 smaller wheel steps a few tens of milliseconds apart;
+- now and then (about one scroll in eight) goes back up a little, as a reader does;
+- pauses for `delay` seconds with ±40% jitter, and sometimes (about one scroll in ten) for twice as long.
+
+The randomness comes from one `random.Random`, which a test can seed.
+
+**The end of the feed.** A scroll counts as *progress* when the page grew (`document.scrollingElement.scrollHeight`), `count()` grew, or new responses arrived for an `on_response` handler. When a scroll makes no progress, it waits a little longer and jiggles: up a screen and back down, which is what makes most feeds load the next page. The feed has ended after `idle` scrolls in a row without progress, while already at the bottom. A sticky footer or a spinner that never stops can't keep it going forever, because `max` still applies.
+
+`by=` replaces the wheel movement only. The pauses and the end-of-feed rule stay the same.
 
 Downloads, dialogs and other events go through `raw` (`page.raw.on("download", …)`). The two wrappers stop at these lists. Anything rarer goes through `raw`, so they never grow into Playwright's whole API.
 
@@ -103,6 +119,6 @@ The Playwright tests use local pages and `page.route`. They are skipped when Chr
   - `goto` returns `False` on a bad URL;
   - `on_response`: each `match` form, a body that isn't JSON, `lines=True`, a handler exception keeping later events, and `stop()`;
   - each `wait_for_*`, `wait_for_load(idle=True)`, and a timeout;
-  - `scroll`: each stopping rule, custom `by`, `onscroll` calls;
+  - `scroll`: each stopping rule, custom `by`, `onscroll` calls; on a local page that appends items when scrolled near the bottom, it reaches the end and stops; a feed that only loads after the up-and-down jiggle; the wheel is used (the page records `wheel` events), the steps vary, and a seeded run is repeatable;
   - `handoff`: done at once, done later, a timeout, and headless raising;
   - `content`, `url`, `title`, `browser`, `close`.

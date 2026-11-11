@@ -1,6 +1,6 @@
 # archive
 
-Phase 4, step 2. `shared/_archive.py` is rewritten as two functions, `zip` and `unzip`. Plain zip and tar use the stdlib. Password-protected zips and 7z need the `archive` extra (`pyzipper`, `py7zr`). RAR can be read, and only when the `unrar` program is installed.
+Phase 4, step 2. `shared/_archive.py` is rewritten as two functions, `zip` and `unzip`. Plain zip and tar use the stdlib. Password-protected zips and 7z need the `archive` extra (`pyzipper`, `py7zr`). RAR can be read, and only when the `unrar` program is installed. Every common format is covered: zip, 7z, RAR, and tar with any of the usual compressions.
 
 ```python
 archive.zip(sources, "out/photos.zip")                                # the format comes from the extension
@@ -16,7 +16,7 @@ archive.unzip("in/a.zip", "out/", conflict="rename")                  # a.jpg ex
 `zip(sources, dest, *, password=None, split=None) -> list[Path]`
 
 - `sources` is a path or a list of paths. A folder is added with everything inside it. Names in the archive are relative to each source's parent.
-- The format comes from `dest`'s extension: `.zip`, `.7z`, `.tar`, `.tar.gz`, `.tar.xz`. Any other extension raises `ValueError`.
+- The format comes from `dest`'s extension: `.zip`, `.7z`, `.tar`, `.tar.gz` or `.tgz`, `.tar.bz2` or `.tbz2`, `.tar.xz` or `.txz`, and `.tar.zst` on Python 3.14 and later, whose `tarfile` has zstd. On an older Python, `.tar.zst` raises `RuntimeError` saying so. Any other extension raises `ValueError`.
 - `password` works for `.zip` (AES, through `pyzipper`) and `.7z`. A password on tar raises `ValueError`.
 - `split` (in bytes) writes parts in the plain `.001`, `.002` style, which 7-Zip, `unzip`, and this module all read.
 - Everything is written to temp names and renamed at the end, so a failed `zip` leaves nothing behind.
@@ -30,6 +30,8 @@ archive.unzip("in/a.zip", "out/", conflict="rename")                  # a.jpg ex
 - The format is sniffed from the **magic bytes** of the joined data, never from the name. A mirror often serves a 7z under a `.zip` name.
 - Everything inside lands directly in `dest`, which is created if missing. To keep the contents together, create a folder and pass it as `dest`.
 - `password` works for zip (ZipCrypto and AES) and 7z. A missing or wrong password raises `PasswordError`.
+- tar is read with any of gzip, bzip2, xz, or zstd (3.14 and later), each told apart by its magic bytes.
+- A single compressed file that isn't a tar (`notes.txt.gz`, `.bz2`, `.xz`) is unpacked to one file, named without the compression extension.
 - RAR needs the `unrar` program. Without it, `RuntimeError` says how to install it.
 - It returns the files written.
 
@@ -65,7 +67,8 @@ Every check below runs on the archive's directory **before anything is written**
 
 ## Tests
 
-- **Round trips:** each format, with and without a password where supported; split into 3 parts and joined back.
+- **Round trips:** each format and each tar alias, with and without a password where supported; split into 3 parts and joined back.
+- **Single files:** a `.gz`, a `.bz2` and an `.xz` that aren't tars each unpack to one file.
 - **Format sniffing:** a 7z named `.zip`; zip, 7z and tar magic bytes; all three part styles, found from the first part.
 - **Conflicts:** each `conflict=` value, plus a case-only clash.
 - **Safety:**

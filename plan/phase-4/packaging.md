@@ -24,7 +24,7 @@ bundler.build("tool.py", name="tool", hidden=("mypkg.plugins",), data=("assets",
 
 `build(entry, *, name, hidden=(), data=(), out="dist") -> Path`
 - builds a **one-folder** bundle, which starts at once. A one-file build would unpack about 100 MB to a temp folder on every run.
-- **adds the hidden imports itself:** every module `shared` loads lazily, and the packages those modules need (`playwright`, `rookiepy`, `cryptography`, `pyzipper`, `py7zr`, `parsel`, `telethon` when installed). PyInstaller can't see lazy imports, and a hand-kept list would drift. `hidden=` adds a script's own lazy imports, such as flnd's sources.
+- **adds the hidden imports itself:** every module `shared` loads lazily, and the packages those modules need (`playwright`, `cryptography`, `pyzipper`, `py7zr`, `parsel`, `telethon` when installed). PyInstaller can't see lazy imports, and a hand-kept list would drift. `hidden=` adds a script's own lazy imports, such as flnd's sources.
 - `data=` copies folders into the bundle.
 - runs PyInstaller in-process with a generated command line, so there is no `.spec` file to maintain.
 - returns the folder it built. A PyInstaller failure raises `RuntimeError` with PyInstaller's last lines.
