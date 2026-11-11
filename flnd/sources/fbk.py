@@ -4,7 +4,7 @@ Everything is read in a browser logged in with the saved cookies. The profile pa
 its header, embedded in the HTML, gives the profile and cover photos, the story buckets, and
 which tabs the profile has. Each tab it has is then scrolled to its end, and the Comet GraphQL
 results it loads (embedded or fetched) are read for photos (the largest image) and videos (the
-HD progressive URL first), with their real dates. Each story bucket is read from its page.
+DASH manifest's best video, merged with its audio, or else the HD progressive URL), with their real dates. Each story bucket is read from its page.
 
 Folder layout, under `.flnd/downloads/fbk/<username_or_id>/`:
   posts/, photos/, tagged/, reels/, videos/   <YYYY-MM-DD>_<id>.jpg (or .png, .mp4)
@@ -22,6 +22,7 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
+from flnd import dash
 from flnd.session import Session
 from flnd.sources.base import Source
 from flnd.sources.relay import embedded_results
@@ -50,6 +51,9 @@ HEADER = "data.user.profile_header_renderer.user"
 STORY_CARDS = "data.bucket.unified_stories_with_notes.edges[].node"
 # Where a video's progressive files are: Facebook moved them under its delivery fragment.
 PROGRESSIVE = "videoDeliveryResponseFragment.videoDeliveryResponseResult.progressive_urls || progressive_urls"
+# Where a video's DASH manifest is, beside its progressive files.
+MANIFEST = ("videoDeliveryResponseFragment.videoDeliveryResponseResult.dash_manifests[0].manifest_xml"
+            " || dash_manifests[0].manifest_xml || dash_manifest")
 VIDEO_URLS = ("browser_native_hd_url", "playable_url_quality_hd", "browser_native_sd_url", "playable_url")
 PHOTO_URL = "viewer_image.uri || large_share_image.uri || photo_image.uri || image.uri"
 TILES = {"TimelineAppCollectionItem"}
@@ -235,7 +239,7 @@ def save_media(session: Session, data: dict, tab: str, *, album: str | None = No
         file_name = f"{item.day}_{item.id}.{extension}" if item.day else f"{item.id}.{extension}"
         # The category is the tab it was found on, wherever its folder is: tagged photos are opt-in.
         session.save(item.url, file_name, category=tab, date=item.day, folder=folder, key=item.id,
-                     headers={"Referer": f"{SITE}/"})
+                     headers={"Referer": f"{SITE}/"}, audio=item.audio)
         count += 1
     return count
 
@@ -253,7 +257,8 @@ def save_stories(session: Session, url: str) -> None:
             if item is not None:
                 extension = "mp4" if item.kind == "video" else image_extension(item.url)
                 file_name = f"{day}_{item.id}.{extension}" if day else f"{item.id}.{extension}"
-                session.save(item.url, file_name, category="stories", date=day, folder="stories", key=item.id)
+                session.save(item.url, file_name, category="stories", date=day, folder="stories", key=item.id,
+                             audio=item.audio)
     session.info("stories: {n} in {url}", n=len(cards), url=url)
 
 
@@ -265,6 +270,8 @@ class Item(NamedTuple):
     kind: str
     day: date | None
     album: str | None = None
+    # A DASH video's audio stream, merged into it.
+    audio: str | None = None
 
 
 def media_items(data: Any, day: date | None = None, seen: set[str] | None = None, *,
@@ -295,11 +302,13 @@ def media_items(data: Any, day: date | None = None, seen: set[str] | None = None
 
 
 def video_item(node: dict, day: date | None) -> Item | None:
-    """A video node's best file: the HD progressive one, or else the best playable URL."""
+    """A video node's best file: its DASH video and audio, the HD progressive one, or else the best playable URL."""
     typename = node.get("__typename", "")
     if not ("Video" in typename or "Reel" in typename or "progressive_urls" in node):
         return None
     video_id = str(node.get("id") or node.get("video_id") or "")
+    if video_id and (streams := dash.best(selector.select(node).jmespath(MANIFEST).first)):
+        return Item(video_id, streams.video, "video", day, audio=streams.audio)
     progressive = selector.select(node).jmespath(PROGRESSIVE).all
     hd = [entry for entry in progressive if selector.select(entry).jmespath("metadata.quality").first == "HD"]
     url = next((entry.get("progressive_url") for entry in hd + progressive if entry.get("progressive_url")), None)

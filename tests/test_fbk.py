@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime
 
 from fakes import FakeSession
+from test_dash import INSTAGRAM
 
 from flnd.session import Options
 from flnd.sources.fbk import Facebook, image_extension, media_items
@@ -45,7 +46,19 @@ STORY = {"data": {"bucket": {"unified_stories_with_notes": {"edges": [
 ]}}}}
 
 
+def with_dash(node, manifest):
+    result = dict(node["videoDeliveryResponseFragment"]["videoDeliveryResponseResult"],
+                  dash_manifests=[{"manifest_xml": manifest, "failure_reason": None}])
+    return {**node, "videoDeliveryResponseFragment": {"videoDeliveryResponseResult": result}}
+
+
 class WalkerTest(unittest.TestCase):
+    def test_a_dash_manifest_gives_its_best_video_and_audio(self):
+        [item] = media_items({"data": {"node": with_dash(VIDEO, INSTAGRAM)}})
+        self.assertEqual((item.url, item.audio), ("https://cdn.example/1080.mp4", "https://cdn.example/a95.mp4"))
+        [item] = media_items({"data": {"node": with_dash(VIDEO, "<MPD/>")}})
+        self.assertEqual((item.url, item.audio), ("https://cdn.example/hd.mp4", None))
+
     def test_photos_and_videos_are_found_once_with_their_dates(self):
         items = list(media_items({"data": {"a": PHOTO, "b": [VIDEO, VIDEO], "c": {"id": "x", "image": {"w": 1}}}}))
         self.assertEqual([(item.id, item.kind, item.day, item.album) for item in items],
@@ -100,7 +113,23 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual([item["category"] for item in session.saved],
                          ["photos", "reels", "profile", "profile", "stories", "stories"])
         self.assertEqual(session.saved[0]["headers"], {"Referer": f"{SITE}/"})
+        self.assertEqual([item["audio"] for item in session.saved], [None] * 6)
         self.assertIn("tagged: this profile has no such tab", session.messages)
+
+    def test_dash_videos_are_saved_with_their_audio(self):
+        story = {"data": {"bucket": {"unified_stories_with_notes": {"edges": [{"node": {
+            "creation_time": str(STAMP), "attachments": [{"media": {**with_dash(VIDEO, INSTAGRAM), "id": "31"}}]}}]}}}}
+
+        def scrolled(session):
+            session.respond(f"{SITE}/api/graphql/", {"data": {"node": with_dash(VIDEO, INSTAGRAM)}})
+
+        session = FakeSession(Target("fbk", "user", "example.page"), options=Options(categories=("reels", "stories")),
+                              on_scroll=scrolled,
+                              pages={f"{SITE}/example.page": embedded(header("reels_tab")),
+                                     f"{SITE}/stories/900/": embedded(story)})
+        Facebook().run(session)
+        self.assertEqual(session.paths(), [f"reels/{DAY}_22.mp4", f"stories/{DAY}_31.mp4"])
+        self.assertEqual([item["audio"] for item in session.saved], ["https://cdn.example/a95.mp4"] * 2)
         self.assertIsNone(session.folder)
 
     def test_each_album_is_opened_into_its_folder(self):

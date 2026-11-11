@@ -7,6 +7,7 @@ first load embeds the post in the HTML; stories and highlights are read from the
 
 Folder layout, under `.flnd/downloads/ins/<username>/`:
   posts/, reels/, tagged/, reposts/   <YYYY-MM-DD>_<code>_<idx>.jpg (or .mp4; no _<idx> for one file)
+Videos are saved from their DASH manifest when they have one: the best video, merged with its audio.
   stories/                            <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
   highlights/<title>/                 <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
   profile/                            the profile picture, named as Instagram names it
@@ -23,6 +24,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from flnd import dash
 from flnd.session import Session
 from flnd.sources.base import Source
 from flnd.sources.relay import embedded_results
@@ -188,11 +190,11 @@ def save_post(session: Session, post: dict, *, category: str, folder: str) -> No
     """Save each file of a post; the key is its code and place, so a post on two tabs is saved once."""
     code, day = post_name(post), taken_on(post)
     files = post_files(post)
-    for index, (url, extension) in enumerate(files):
+    for index, (url, extension, audio) in enumerate(files):
         stem = f"{code}_{index}" if len(files) > 1 else code
         file_name = f"{day}_{stem}.{extension}" if day else f"{stem}.{extension}"
         session.save(url, file_name, category=category, date=day, folder=folder, key=f"{code}_{index}",
-                     headers=CDN_HEADERS)
+                     headers=CDN_HEADERS, audio=audio)
 
 
 def save_story_page(session: Session, url: str, *, category: str, folder: str) -> None:
@@ -204,10 +206,10 @@ def save_story_page(session: Session, url: str, *, category: str, folder: str) -
         file = best_file(story)
         if file is None:
             continue
-        url, extension = file
+        url, extension, audio = file
         story_id, day = str(story.get("pk") or story.get("id", "")).split("_")[0], taken_on(story)
         file_name = f"{day}_{story_id}.{extension}" if day else f"{story_id}.{extension}"
-        session.save(url, file_name, category=category, date=day, folder=folder, headers=CDN_HEADERS)
+        session.save(url, file_name, category=category, date=day, folder=folder, headers=CDN_HEADERS, audio=audio)
     session.info("{folder}: {n} stories", folder=folder, n=len(stories))
 
 
@@ -266,21 +268,26 @@ def profile_picture(result: Any) -> str | None:
     return selector.select(result).jmespath("data.user.hd_profile_pic_url_info.url").first
 
 
-def post_files(media: dict) -> list[tuple[str, str]]:
-    """Each file of a post as `(url, extension)`: every carousel item, or the post itself."""
+def post_files(media: dict) -> list[tuple[str, str, str | None]]:
+    """Each file of a post as `(url, extension, audio)`: every carousel item, or the post itself."""
     children = media.get("carousel_media") or [media]
     return [file for child in children if (file := best_file(child)) is not None]
 
 
-def best_file(media: dict) -> tuple[str, str] | None:
-    """The largest video of one item, or else its largest image, as `(url, extension)`."""
+def best_file(media: dict) -> tuple[str, str, str | None] | None:
+    """One item's best file as `(url, extension, audio)`: its DASH video, its largest progressive one, or its largest image.
+
+    `audio` is the DASH audio stream's URL, merged into the video; None for anything else.
+    """
+    if streams := dash.best(media.get("video_dash_manifest")):
+        return streams.video, streams.extension[1:], streams.audio
     videos = media.get("video_versions") or []
     if videos:
-        return max(videos, key=_area)["url"], "mp4"
+        return max(videos, key=_area)["url"], "mp4", None
     images = selector.select(media).jmespath("image_versions2.candidates").all
     if images:
         url = max(images, key=_area)["url"]
-        return url, image_extension(url)
+        return url, image_extension(url), None
     return None
 
 

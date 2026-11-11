@@ -13,6 +13,7 @@ import random
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar, Union
@@ -33,6 +34,8 @@ CHUNK_SIZE = 64 * 1024
 # The request extension that sends a request once, for downloads that retry on their own.
 ONE_ATTEMPT = "flnd.one_attempt"
 CONNECTION_ERRORS = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)
+# Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
+SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
 
 T = TypeVar("T")
 # A file to save: a URL, mirror URLs tried in order, or `fetch(dest, progress)` for media without a URL.
@@ -176,6 +179,10 @@ class IncompleteError(Exception):
     """A body that ended before its Content-Length."""
 
 
+class NotMediaError(ValueError):
+    """A web page or JSON where a photo or video was expected: a login wall or an error page."""
+
+
 class RateLimited(Exception):
     """A 429: the source backs off, then sends the request again."""
 
@@ -259,32 +266,37 @@ def retry_after_seconds(value: str | None) -> float | None:
 
 
 def download(http: httpx.Client, source: Download, dest: Path, *, label: str, backoff: Backoff,
-             headers: Mapping[str, str] | None = None, wait: Wait = 1.0, size: int | None = None) -> bool:
-    """Save one file atomically under a progress bar, and return whether it was written.
+             headers: Mapping[str, str] | None = None, wait: Wait = 1.0, size: int | None = None,
+             kind: str | None = None, audio: str | None = None) -> Path | None:
+    """Save one file atomically under a progress bar, and return the path written, or None.
 
         net.download(http, ["https://a.example/f.7z", "https://b.example/f.7z"], Path("f.7z"), label="f.7z",
                      backoff=Backoff("loi"))
 
     Each mirror gets three attempts. A failed mirror is logged, and the next one tried. A refusal
-    (a 4xx other than 429) on the last mirror is logged and gives False; any other failure there
+    (a 4xx other than 429) on the last mirror is logged and gives None; any other failure there
     is raised. The file appears under its name only once complete.
+
+    With `kind` ("photo" or "video"), the content decides the extension, a web page fails the
+    attempt, and a file whose size couldn't be verified must pass `media.check`. `audio` is the URL
+    of a separate audio stream (DASH), downloaded after the video and merged with it.
     """
     mirrors: list[str | Fetch] = [source] if isinstance(source, str) or callable(source) else list(source)
     for number, mirror in enumerate(mirrors, start=1):
-        retryable = (Exception,) if callable(mirror) else (*CONNECTION_ERRORS, RetryableStatus, IncompleteError)
+        retryable = (Exception,) if callable(mirror) else (*CONNECTION_ERRORS, RetryableStatus, IncompleteError,
+                                                           ValueError)
         try:
-            save = partial(_save_once, http, mirror, dest, label, headers, size, backoff)
-            retrying(partial(patiently, save, backoff), wait=wait, retryable=retryable)
-            return True
+            save = partial(_save_once, http, mirror, dest, label, headers, size, backoff, kind, audio)
+            return retrying(partial(patiently, save, backoff), wait=wait, retryable=retryable)
         except FetchError as error:
             if number == len(mirrors):
                 log.error("{label}: {error}", label=label, error=error)
-                return False
+                return None
         except Exception:
             if number == len(mirrors):
                 raise
         log.warn("mirror {n} failed; trying next", n=number)
-    return False
+    return None
 
 
 def follow(url: str) -> str:
@@ -307,50 +319,109 @@ def _base_transport() -> httpx.BaseTransport:
 
 
 def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
-               headers: Mapping[str, str] | None, size: int | None, backoff: Backoff) -> None:
+               headers: Mapping[str, str] | None, size: int | None, backoff: Backoff, kind: str | None,
+               audio: str | None) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # A random part name, so two runs never write into each other's file.
-    part = dest.with_name(f".{dest.name}.{uuid.uuid4().hex[:8]}.part")
+    # Random part names, so two runs never write into each other's files.
+    part, sound, merged = (dest.with_name(f".{dest.name}.{uuid.uuid4().hex[:8]}{end}")
+                           for end in (".part", ".audio.part", f".merge{dest.suffix}"))
     try:
-        if callable(mirror):
-            _fetch_with(mirror, part, label, size)
-        else:
-            _fetch_url(http, mirror, part, label, headers, backoff)
+        with _Row(label) as row:
+            if callable(mirror):
+                row.start(size)
+                mirror(part, row.update)
+                known = size is not None
+            else:
+                known = _fetch_url(http, mirror, part, row, headers, backoff)
+            if audio is not None:
+                _fetch_url(http, audio, sound, row, headers, backoff)
+                row.caption("merging")
+                from shared import media
+
+                media.video.merge([part], audio=sound, dest=merged)
+                os.replace(merged, dest)
+                return dest
+            if kind is not None:
+                dest = _as_media(part, dest, kind, known)
         os.replace(part, dest)
-    except BaseException:
-        part.unlink(missing_ok=True)
-        raise
+        return dest
+    finally:
+        for path in (part, sound, merged):
+            path.unlink(missing_ok=True)
 
 
-def _fetch_url(http: httpx.Client, url: str, part: Path, label: str, headers: Mapping[str, str] | None,
-               backoff: Backoff) -> None:
+def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Mapping[str, str] | None,
+               backoff: Backoff) -> bool:
+    """Stream `url` into `part`, and return whether its size was checked against Content-Length."""
     with http.stream("GET", url, headers=dict(headers or {}), extensions={ONE_ATTEMPT: True}) as response:
         checked(response, backoff)
         if response.status_code not in (200, 206):
             raise FetchError(f"HTTP {response.status_code} for {url}", status=response.status_code)
         length = response.headers.get("content-length", "")
         total = int(length) if length.isdigit() else None
-        with log.progress(label, total=total, show=fmt.size) as bar:
-            written = 0
-            with _open_part(part) as file:
-                for chunk in response.iter_bytes(CHUNK_SIZE):
-                    file.write(chunk)
-                    written += len(chunk)
-                    # Content-Length counts bytes on the wire, which differ from the file's when compressed.
-                    bar.update(response.num_bytes_downloaded or written)
-            received = response.num_bytes_downloaded or written
-            if total is not None and received != total:
-                raise IncompleteError(f"got {received} of {total} bytes from {url}")
+        row.start(total)
+        written = 0
+        with _open_part(part) as file:
+            for chunk in response.iter_bytes(CHUNK_SIZE):
+                file.write(chunk)
+                written += len(chunk)
+                # Content-Length counts bytes on the wire, which differ from the file's when compressed.
+                row.update(response.num_bytes_downloaded or written)
+        received = response.num_bytes_downloaded or written
+        if total is not None and received != total:
+            raise IncompleteError(f"got {received} of {total} bytes from {url}")
+        return total is not None
 
 
-def _fetch_with(fetch: Fetch, part: Path, label: str, size: int | None) -> None:
-    with log.progress(label, total=size, show=fmt.size) as bar:
-        def progress(done: float, total: float | None = None) -> None:
-            if total:
-                bar.total = total
-            bar.update(done)
+def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
+    """Where a downloaded photo or video goes, named by its content; a web page or a broken file raises."""
+    from shared import media
 
-        fetch(part, progress)
+    extension = media.sniff(part)
+    if extension in (".html", ".json"):
+        raise NotMediaError(f"got a web page instead of a {kind}")
+    if not known:
+        try:
+            media.check(part)
+        except (RuntimeError, ImportError) as error:
+            log.debug("{name}: not checked: {error}", name=dest.name, error=error)
+    if extension is None or same_extension(extension, dest.suffix):
+        return dest
+    return dest.with_suffix(extension)
+
+
+def same_extension(one: str, other: str) -> bool:
+    """Whether two extensions name one format: `.jpg` and `.jpeg` do."""
+    return SAME_EXTENSIONS.get(one.lower(), one.lower()) == SAME_EXTENSIONS.get(other.lower(), other.lower())
+
+
+class _Row:
+    """One progress bar for a file, or for a DASH video and its audio, opened when the first response arrives."""
+
+    def __init__(self, label: str):
+        self.label, self.stack, self.base = label, ExitStack(), 0.0
+        self.bar: Any = None
+
+    def __enter__(self) -> _Row:
+        return self
+
+    def __exit__(self, *error: Any) -> None:
+        self.stack.__exit__(*error)
+
+    def start(self, total: float | None) -> None:
+        if self.bar is None:
+            self.bar = self.stack.enter_context(log.progress(self.label, total=total, show=fmt.size))
+            return
+        self.base = self.bar.done
+        self.bar.total = self.base + total if total is not None and self.bar.total is not None else None
+
+    def update(self, done: float, total: float | None = None) -> None:
+        if total:
+            self.bar.total = self.base + total
+        self.bar.update(self.base + done)
+
+    def caption(self, text: str) -> None:
+        self.bar.caption = text
 
 
 def _open_part(part: Path) -> Any:

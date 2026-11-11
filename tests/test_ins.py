@@ -5,9 +5,10 @@ import unittest
 from datetime import date, datetime
 
 from fakes import FakeSession
+from test_dash import INSTAGRAM
 
 from flnd.session import Options
-from flnd.sources.ins import Instagram, is_complete, post_files, tab_media, taken_on
+from flnd.sources.ins import Instagram, best_file, is_complete, post_files, tab_media, taken_on
 from flnd.sources.relay import embedded_results
 from flnd.target import Target
 from shared import selector
@@ -64,9 +65,16 @@ class MediaTest(unittest.TestCase):
     def test_each_carousel_item_keeps_its_own_kind_at_its_best_size(self):
         post = {"code": "ABC", "taken_at": STAMP, "carousel_media": [image("https://cdn.example/1.jpg"),
                                                                    video("https://cdn.example/2.mp4")]}
-        self.assertEqual(post_files(post), [("https://cdn.example/1.jpg", "jpg"), ("https://cdn.example/2.mp4", "mp4")])
+        self.assertEqual(post_files(post), [("https://cdn.example/1.jpg", "jpg", None),
+                                            ("https://cdn.example/2.mp4", "mp4", None)])
         self.assertEqual(taken_on(post), DAY)
         self.assertIsNone(taken_on({}))
+
+    def test_a_dash_manifest_gives_its_best_video_and_audio(self):
+        reel = {**video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}
+        self.assertEqual(best_file(reel), ("https://cdn.example/1080.mp4", "mp4", "https://cdn.example/a95.mp4"))
+        # A manifest dash.best can't use falls back to the progressive file.
+        self.assertEqual(best_file({**reel, "video_dash_manifest": "<MPD/>"}), ("https://cdn.example/r.mp4", "mp4", None))
 
     def test_grid_listings_without_a_date_are_incomplete(self):
         self.assertFalse(is_complete(tab_media(reels_grid("R1"), "reels")[0]))
@@ -116,6 +124,7 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual([item["category"] for item in session.saved],
                          ["posts", "posts", "reels", "profile", "stories", "highlights"])
         self.assertEqual(session.saved[1]["source"], "https://cdn.example/r1.mp4")
+        self.assertIsNone(session.saved[1]["audio"])
         self.assertEqual(session.saved[0]["headers"], {"Referer": f"{SITE}/"})
         # R1 was on the grid already, so only R2 is opened.
         self.assertNotIn(f"{SITE}/p/R1/", session.visited)
@@ -153,6 +162,15 @@ class SinglePostTest(unittest.TestCase):
         session = FakeSession(Target("ins", "post", "C1abc"), pages={f"{SITE}/p/C1abc/": page})
         Instagram().run(session)
         self.assertEqual(session.paths(), [f"{DAY}_C1abc_0.jpg", f"{DAY}_C1abc_1.jpg"])
+
+    def test_a_reel_with_a_manifest_is_saved_from_dash(self):
+        reel = {"code": "R9", "taken_at": STAMP, **video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}
+        page = embedded({"data": {"xig_fetch_media": reel}})
+        session = FakeSession(Target("ins", "post", "R9"), pages={f"{SITE}/p/R9/": page})
+        Instagram().run(session)
+        self.assertEqual(session.paths(), [f"{DAY}_R9.mp4"])
+        self.assertEqual((session.saved[0]["source"], session.saved[0]["audio"]),
+                         ("https://cdn.example/1080.mp4", "https://cdn.example/a95.mp4"))
         self.assertEqual(session.saved[0]["date"], date.fromisoformat(str(DAY)))
 
 

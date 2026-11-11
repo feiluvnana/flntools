@@ -165,7 +165,7 @@ class FakeSession:
 
     def save(self, source: Download, name: str, *, category: str, date: datetime.date | None = None,
              folder: str | None = None, key: str | None = None, password: str | None = None,
-             size: int | None = None, headers: Mapping[str, str] | None = None) -> bool:
+             size: int | None = None, headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool:
         check_category(self.source(), category)
         folder = self.folder if folder is None else folder
         if folder is None or self.full or not self.wants(category=category, date=date):
@@ -174,7 +174,7 @@ class FakeSession:
         if any(item["path"] == path or (key and item["key"] == key) for item in self.saved):
             return False
         self.saved.append({"source": source, "path": path, "category": category, "date": date, "key": key,
-                           "password": password, "size": size, "headers": dict(headers or {})})
+                           "password": password, "size": size, "headers": dict(headers or {}), "audio": audio})
         return True
 
     def write(self, name: str, text: str) -> bool:

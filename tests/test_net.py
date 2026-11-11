@@ -9,9 +9,11 @@ from unittest import mock
 
 import httpx
 
+from media_samples import needs_ffmpeg, needs_pillow, sample
+
 from flnd import net
 from flnd.sources.base import FetchError
-from shared import theme
+from shared import media, theme
 from shared._theme import Screen
 
 
@@ -286,6 +288,121 @@ class DownloadTest(NetCase):
             self.assertTrue(self.download(http, ["https://a.example/f", "https://b.example/f"]))
         self.assertEqual({request.url.host for request in self.requests}, {"a.example"})
         self.assertNotIn("! mirror 1 failed; trying next", self.lines())
+
+
+def photo(format, size=(32, 24)):
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.effect_noise(size, 40).convert("RGB").save(out, format)
+    return out.getvalue()
+
+
+def chunked(data):
+    """A body sent without Content-Length, as a chunked response is."""
+    return httpx.Response(200, content=iter([data]))
+
+
+@needs_pillow
+class MediaDownloadTest(NetCase):
+    def download(self, http, source, name="a.jpg", **options):
+        return net.download(http, source, self.tmp / "posts" / name, label=f"posts/{name}", backoff=self.backoff,
+                            **options)
+
+    def names(self):
+        return sorted(path.name for path in (self.tmp / "posts").iterdir())
+
+    def test_content_decides_the_extension(self):
+        with self.client(httpx.Response(200, content=photo("WEBP"))) as http:
+            self.assertEqual(self.download(http, "https://cdn.example/a.jpg", kind="photo"), self.tmp / "posts" / "a.webp")
+        self.assertEqual(self.names(), ["a.webp"])
+        with self.client(httpx.Response(200, content=photo("JPEG"))) as http:
+            self.assertEqual(self.download(http, "https://cdn.example/b.jpeg", "b.jpeg", kind="photo").name, "b.jpeg")
+
+    @needs_ffmpeg()
+    def test_an_mp4_keeps_its_name(self):
+        with self.client(httpx.Response(200, content=sample("v.mp4").read_bytes())) as http:
+            self.assertEqual(self.download(http, "https://cdn.example/v.mp4", "v.mp4", kind="video").name, "v.mp4")
+
+    def test_a_web_page_is_retried_then_fails_and_nothing_is_saved(self):
+        page = httpx.Response(200, content=b"<!doctype html><title>Log in</title>")
+        with self.client(page) as http, self.assertRaises(ValueError) as caught:
+            self.download(http, "https://cdn.example/a.jpg", kind="photo")
+        self.assertEqual(str(caught.exception), "got a web page instead of a photo")
+        self.assertEqual(len(self.requests), 3)
+        self.assertEqual(self.names(), [])
+
+    def test_files_and_archives_are_never_renamed(self):
+        with self.client(httpx.Response(200, content=photo("WEBP"))) as http:
+            self.assertEqual(self.download(http, "https://cdn.example/f.zip", "f.zip").name, "f.zip")
+
+    def test_a_truncated_photo_without_a_size_is_retried(self):
+        whole = photo("JPEG", (400, 300))
+        with self.client(chunked(whole[: len(whole) // 2]), chunked(whole)) as http:
+            self.assertEqual(self.download(http, "https://cdn.example/a.jpg", kind="photo").read_bytes(), whole)
+        self.assertEqual(len(self.requests), 2)
+
+    def test_a_fetch_without_a_size_is_checked(self):
+        whole = photo("JPEG", (400, 300))
+        bodies = [whole[:300], whole]
+
+        def fetch(dest, progress):
+            dest.write_bytes(bodies.pop(0))
+
+        with self.client(httpx.Response(200)) as http:
+            self.assertEqual(self.download(http, fetch, kind="photo").read_bytes(), whole)
+        self.assertEqual(bodies, [])
+
+    def test_a_download_with_a_known_size_is_not_decoded(self):
+        with self.client(httpx.Response(200, content=photo("JPEG"))) as http, \
+                mock.patch("shared.media.check", side_effect=AssertionError("decoded")):
+            self.assertTrue(self.download(http, "https://cdn.example/a.jpg", kind="photo"))
+
+    def test_without_ffmpeg_video_checks_are_skipped(self):
+        with self.client(chunked(b"\0\0\0\x18ftypisom" + bytes(100))) as http, \
+                mock.patch("shared.media.check", side_effect=RuntimeError("shared.media needs ffmpeg")):
+            self.assertEqual(self.download(http, "https://cdn.example/v.mp4", "v.mp4", kind="video").name, "v.mp4")
+
+
+@needs_ffmpeg()
+class DashDownloadTest(NetCase):
+    VIDEO, AUDIO = "https://cdn.example/v.mp4", "https://cdn.example/a.mp4"
+
+    def serve(self, request):
+        self.requests.append(request)
+        return self.bodies[str(request.url)].pop(0)
+
+    def client(self, **bodies):
+        self.bodies = {self.VIDEO: [httpx.Response(200, content=sample("v.mp4").read_bytes())],
+                       self.AUDIO: [httpx.Response(200, content=sample("a.m4a").read_bytes())], **bodies}
+        return super().client(httpx.Response(500))
+
+    def merged(self, http, name="r.mp4"):
+        return net.download(http, self.VIDEO, self.tmp / "reels" / name, label=f"reels/{name}", backoff=self.backoff,
+                            kind="video", audio=self.AUDIO)
+
+    def test_video_and_audio_are_merged_and_both_parts_deleted(self):
+        with self.client() as http:
+            saved = self.merged(http)
+        info = media.probe(saved)
+        self.assertEqual((info.video, info.audio is not None), ("mpeg4", True))
+        self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
+        self.assertEqual(len(self.lines()), 1)
+
+    def test_a_truncated_audio_part_is_retried(self):
+        sound = sample("a.m4a").read_bytes()
+        with self.client(**{self.AUDIO: [chunked(sound[: len(sound) * 7 // 10]), chunked(sound)],
+                            self.VIDEO: [httpx.Response(200, content=sample("v.mp4").read_bytes())] * 2}) as http:
+            saved = self.merged(http)
+        self.assertIsNotNone(media.probe(saved).audio)
+        self.assertEqual(len(self.requests), 4)
+        self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
+
+    def test_a_container_that_cant_hold_the_streams_fails_at_once(self):
+        with self.client() as http, self.assertRaises(RuntimeError):
+            self.merged(http, "r.webm")
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(list((self.tmp / "reels").iterdir()), [])
 
 
 class FollowTest(NetCase):
