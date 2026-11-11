@@ -9,15 +9,19 @@ Usage:
 """
 
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from flnd import __version__
 from flnd.cookies import ask_cookie_path, store_cookies
 from flnd.sources import SOURCES, get_source
-from flnd.target import parse_target
-from shared import cli, log, prompt
+from flnd.target import Target, parse_target
+from shared import cli, log, prompt, worker
 
 DOWNLOAD_DIR = Path(".flnd/downloads")
+# Targets are grouped by source and each group gets one worker, so two targets on the same
+# site never run together. Each target then saves up to DOWNLOAD_WORKERS files at once.
+SOURCE_WORKERS = len(SOURCES)
+DOWNLOAD_WORKERS = 6
 
 
 def describe() -> str:
@@ -73,20 +77,31 @@ def download(targets: Annotated[List[str], cli.arg(nargs="+", ask=ask_targets)])
 
     output = DOWNLOAD_DIR.resolve()
     log.info("Storage: {path}", path=output)
-    total = 0
     with log.multi("download") as jobs:
-        rows = [(target, jobs.add(str(target))) for target in parsed]
-        for target, row in rows:
-            try:
-                total += get_source(target.source).download(
-                    target=target, download_dir=output, limit=None, headless=False
-                )
-                row.finish()
-            except Exception as err:
-                log.error("{target}: {err}", target=target, err=err)
-                row.fail()
-    log.ok("Complete. {n} files", n=total)
+        groups: Dict[str, List[Tuple[Target, Any]]] = {}
+        for target in parsed:
+            groups.setdefault(target.source, []).append((target, jobs.add(str(target))))
+        totals = worker.map(
+            lambda group: run_group(group, output), list(groups.values()),
+            workers=min(len(groups), SOURCE_WORKERS), errors="log",
+        )
+    log.ok("Complete. {n} files", n=sum(n or 0 for n in totals))
     return 0
+
+
+def run_group(group: List[Tuple[Target, Any]], output: Path) -> int:
+    """Download one source's targets one after another, ending each target's row."""
+    total = 0
+    for target, row in group:
+        try:
+            total += get_source(target.source).download(
+                target=target, download_dir=output, limit=None, headless=False
+            )
+            row.finish()
+        except Exception as err:
+            log.error("{target}: {err}", target=target, err=err)
+            row.fail()
+    return total
 
 
 auth = app.group("auth", description="Cookie files for a source.")

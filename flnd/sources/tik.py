@@ -20,24 +20,44 @@ Folder layout:
   └── albums/<playlist_title>/<YYYY-MM-DD>_<video_id>.mp4
 """
 
-import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 import httpx
-from playwright.sync_api import sync_playwright
 
 from flnd.cookies import ask_for_cookies, cookies_to_dict, load_cookies
 from flnd.sources.base import BaseSource
 from flnd.target import Target
-from flnd.utils import download_file, sanitize_name, scroll_page_to_end, show_steps
-from shared import log
+from flnd.utils import Downloads, scroll
+from shared import browser, http, log, path, scrape
 
-TIKTOK_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-)
+TIKTOK_UA = http.agents.chrome
+
+# Captcha verification detection
+CAPTCHA_DETECTOR = """() => {
+    return !!document.querySelector('#captcha-verify-container-main-page, #captcha_container, [id*="captcha-verify"], [class*="captcha_verify"], [class*="captcha-verify"]')
+        || /Drag the slider|Drag the puzzle|Verify to continue|Select 2 objects/i.test(document.body ? document.body.innerText : '');
+}"""
+
+TIKTOK_SCROLL = """() => {
+    const posts = document.querySelectorAll('a[href*="/video/"], a[href*="/photo/"]');
+    if (posts.length > 0) {
+        posts[posts.length - 1].scrollIntoView({block: 'end'});
+    }
+    window.scrollBy(0, 800);
+    window.scrollTo(0, document.body ? document.body.scrollHeight : 0);
+    window.dispatchEvent(new Event('scroll'));
+}"""
+
+POST_LINKS = """() => {
+    return Array.from(document.querySelectorAll('a[href*="/video/"], a[href*="/photo/"]')).map(a => a.href);
+}"""
+
+
+def is_feed_api(response: Any) -> bool:
+    return "/api/post/item_list" in response.url or "/api/user/story" in response.url
 
 
 class TikSource(BaseSource):
@@ -64,49 +84,44 @@ class TikSource(BaseSource):
         if "sessionid" not in cookie_map and "sid_tt" not in cookie_map:
             log.warn("Running without session cookies; TikTok rate-limits public requests aggressively.")
 
-        target_dir = download_dir / "tik" / username_or_id
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = path.mkdir(download_dir / "tik" / username_or_id)
 
         log.info("Starting download for: {target}", target=username_or_id)
         log.info("Destination: {path}", path=target_dir)
         log.info("Browser mode: {mode}", mode="headless" if headless else "visible")
 
-        # Check if target is a single numeric video ID
-        if username_or_id.isdigit() and len(username_or_id) > 15:
-            return self._download_single_embed(username_or_id, target_dir, cookie_map)
+        with http.Client(user_agent=TIKTOK_UA) as client, Downloads(self.code, target, download_dir, limit) as files:
+            # Check if target is a single numeric video ID
+            if username_or_id.isdigit() and len(username_or_id) > 15:
+                self._download_single_embed(username_or_id, target_dir, cookie_map, client, files)
+            else:
+                # Scrape profile media
+                self._download_profile(username_or_id, target_dir, cookies_list, cookie_map, headless, client, files)
+        return files.saved
 
-        # Scrape profile media
-        return self._download_profile(username_or_id, target_dir, cookies_list, cookie_map, limit, headless)
-
-    def _download_single_embed(self, video_id: str, target_dir: Path, cookie_map: Dict[str, str]) -> int:
-        """Download a single video or photo post via TikTok public embed endpoint."""
+    def _download_single_embed(
+        self, video_id: str, target_dir: Path, cookie_map: Dict[str, str], client: httpx.Client, files: Downloads
+    ) -> None:
+        """Queue a single video or photo post via TikTok public embed endpoint."""
         embed_url = f"https://www.tiktok.com/embed/v2/{video_id}"
-        headers = {"User-Agent": TIKTOK_UA}
 
-        with httpx.Client(headers=headers, timeout=20.0) as client:
-            resp = client.get(embed_url)
-            if resp.status_code != 200:
-                log.error("HTTP {status} on embed endpoint for {id}", status=resp.status_code, id=video_id)
-                return 0
+        resp = client.get(embed_url, timeout=20.0, follow_redirects=False)
+        if resp.status_code != 200:
+            log.error("HTTP {status} on embed endpoint for {id}", status=resp.status_code, id=video_id)
+            return
 
-            match = re.search(r'id="__NEXT_DATA__".*?>(.*?)</script>', resp.text, re.DOTALL)
-            if not match:
+        try:
+            data = scrape.script(resp, id="__NEXT_DATA__")
+            if data is None:
                 log.warn("Could not extract item data from embed HTML for {id}", id=video_id)
-                return 0
-
-            try:
-                data = json.loads(match.group(1))
-                item_struct = data.get("props", {}).get("pageProps", {}).get("itemStruct", {})
-                if not item_struct:
-                    return 0
-                items = self._extract_tiktok_items({"itemList": [item_struct]})
-                saved = 0
-                for item in items:
-                    saved += self._save_media_item(item, target_dir, cookie_map, client=client)
-                return saved
-            except Exception as e:
-                log.error("Failed parsing embed data: {err}", err=e)
-                return 0
+                return
+            item_struct = scrape.dig(data, "props.pageProps.itemStruct", default={})
+            if not item_struct:
+                return
+            for item in self._extract_tiktok_items({"itemList": [item_struct]}):
+                self._save_media_item(item, target_dir, cookie_map, client, files)
+        except Exception as e:
+            log.error("Failed parsing embed data: {err}", err=e)
 
     def _download_profile(
         self,
@@ -114,164 +129,76 @@ class TikSource(BaseSource):
         target_dir: Path,
         cookies_list: List[Dict[str, Any]],
         cookie_map: Dict[str, str],
-        limit: Optional[int],
         headless: bool,
-    ) -> int:
+        client: httpx.Client,
+        files: Downloads,
+    ) -> None:
         """
         Open user profile in non-headless Playwright browser, detect/wait for captcha,
-        intercept /api/post/item_list and /api/user/story/, and download clips and photo carousels.
+        intercept /api/post/item_list and /api/user/story/, and queue clips and photo carousels.
         """
-        captured_items: List[Dict[str, Any]] = []
+        captured = [0]
+        has_more = [True]
+        # Posts found only as links on the page, when the API was walled; resolved through the embed endpoint.
+        linked_ids: List[str] = []
 
         log.info("Navigating to https://www.tiktok.com/@{username}...", username=username)
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=headless,
-                args=["--disable-blink-features=AutomationControlled", "--disable-infobars", "--no-sandbox"],
-            )
-            context = browser.new_context(
-                user_agent=TIKTOK_UA,
-                viewport={"width": 1280, "height": 900},
-            )
+        def on_items(response: Any, data: Any) -> None:
+            story = "/api/user/story" in response.url
+            if "/api/post/item_list" in response.url and "hasMore" in data:
+                has_more[0] = bool(data.get("hasMore"))
+            parsed = self._extract_tiktok_items(data, is_story=story)
+            captured[0] += len(parsed)
+            for item in parsed:
+                self._save_media_item(item, target_dir, cookie_map, client, files)
 
-            # Inject session cookies into context
-            if cookies_list:
-                formatted_cookies = []
-                for c in cookies_list:
-                    fc = {
-                        "name": c["name"],
-                        "value": c["value"],
-                        "domain": c.get("domain", ".tiktok.com"),
-                        "path": c.get("path", "/"),
-                    }
-                    if not fc["domain"].startswith("."):
-                        fc["domain"] = "." + fc["domain"]
-                    formatted_cookies.append(fc)
-                try:
-                    context.add_cookies(formatted_cookies)
-                except Exception as e:
-                    log.warn("Cookie injection error: {err}", err=e)
-
-            page = context.new_page()
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            has_more = [True]
-
-            # Intercept API responses
-            def on_response(response):
-                url = response.url
-                if "/api/post/item_list" in url or "/api/user/story" in url:
-                    try:
-                        b = response.body()
-                        if b and len(b) > 0:
-                            data = json.loads(b)
-                            story = "/api/user/story" in url
-                            if "/api/post/item_list" in url and "hasMore" in data:
-                                has_more[0] = bool(data.get("hasMore"))
-                            parsed = self._extract_tiktok_items(data, is_story=story)
-                            captured_items.extend(parsed)
-                    except Exception:
-                        pass
-
-            page.on("response", on_response)
+        with browser.open(
+            headless=headless, user_agent=TIKTOK_UA, cookies=cookies_list, args=["--no-sandbox"]
+        ) as page:
+            browser.capture(page, is_feed_api, on_items)
 
             try:
                 page.goto(f"https://www.tiktok.com/@{username}", wait_until="load", timeout=30000)
                 page.wait_for_timeout(3500)
 
-                # Captcha verification detection
-                captcha_detector = """() => {
-                    return !!document.querySelector('#captcha-verify-container-main-page, #captcha_container, [id*="captcha-verify"], [class*="captcha_verify"], [class*="captcha-verify"]')
-                        || /Drag the slider|Drag the puzzle|Verify to continue|Select 2 objects/i.test(document.body ? document.body.innerText : '');
-                }"""
-
-                if page.evaluate(captcha_detector):
-                    log.warn("TikTok captcha detected ('Drag the slider to fit the puzzle').")
-                    log.info("Please complete the puzzle in the visible browser window...")
-                    # Wait up to 60 seconds for user to solve
-                    for _ in range(60):
-                        page.wait_for_timeout(1000)
-                        if not page.evaluate(captcha_detector):
-                            log.ok("Captcha solved! Continuing download...")
-                            page.wait_for_timeout(3000)
-                            break
-
-                def tiktok_scroll(p):
-                    p.evaluate("""() => {
-                        const posts = document.querySelectorAll('a[href*="/video/"], a[href*="/photo/"]');
-                        if (posts.length > 0) {
-                            posts[posts.length - 1].scrollIntoView({block: 'end'});
-                        }
-                        window.scrollBy(0, 800);
-                        window.scrollTo(0, document.body ? document.body.scrollHeight : 0);
-                        window.dispatchEvent(new Event('scroll'));
-                    }""")
+                if page.evaluate(CAPTCHA_DETECTOR):
+                    solved = browser.handoff(
+                        page,
+                        done=lambda: not page.evaluate(CAPTCHA_DETECTOR),
+                        message="Solve the TikTok captcha in the browser window",
+                        timeout=60.0,
+                    )
+                    if solved:
+                        page.wait_for_timeout(3000)
 
                 # Continuously scroll to the end of the profile
-                with log.progress("scroll profile", show=show_steps) as bar:
-                    scroll_page_to_end(
-                        page,
-                        get_count=lambda: len(captured_items),
-                        limit=limit,
-                        max_idle_rounds=4,
-                        step_delay_ms=2500,
-                        check_has_more=lambda: has_more[0],
-                        custom_scroll_action=tiktok_scroll,
-                        on_step=bar.update,
-                    )
+                scroll(
+                    page,
+                    "profile",
+                    count=lambda: captured[0],
+                    more=lambda: has_more[0] and not files.full,
+                    delay=2.5,
+                    step=lambda p: p.evaluate(TIKTOK_SCROLL),
+                )
 
                 # Fallback: Also collect any video/photo links visible on page if API was walled
-                if not captured_items:
-                    hrefs = page.evaluate("""() => {
-                        return Array.from(document.querySelectorAll('a[href*="/video/"], a[href*="/photo/"]')).map(a => a.href);
-                    }""")
-                    for h in hrefs:
+                if not captured[0]:
+                    for h in page.evaluate(POST_LINKS):
                         m = re.search(r'/(video|photo)/(\d+)', h)
                         if m:
-                            kind = "video" if m.group(1) == "video" else "image"
-                            vid = m.group(2)
-                            # Timestamp from Snowflake ID
-                            date_str = ""
-                            try:
-                                ts = int(vid) >> 32
-                                if ts > 100000000:
-                                    date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-                            except Exception:
-                                pass
-                            captured_items.append({
-                                "id": vid,
-                                "url": h,
-                                "kind": kind,
-                                "date": date_str,
-                                "is_story": False,
-                                "needs_embed": True,
-                            })
+                            linked_ids.append(m.group(2))
 
             except Exception as e:
                 log.warn("Browser error: {err}", err=e)
 
-            browser.close()
+        log.info("Intercepted {n} items from TikTok profile.", n=captured[0] + len(linked_ids))
 
-        log.info("Intercepted {n} items from TikTok profile.", n=len(captured_items))
-
-        # Download media to platform-optimized layout
-        saved_count = 0
-        with httpx.Client(timeout=30.0) as client:
-            for item in captured_items:
-                if item.get("needs_embed"):
-                    # Resolve full media URLs from embed endpoint
-                    sub_count = self._download_single_embed(item["id"], target_dir, cookie_map)
-                    saved_count += sub_count
-                else:
-                    if self._save_media_item(item, target_dir, cookie_map, client=client):
-                        saved_count += 1
-
-                if limit and saved_count >= limit:
-                    log.info("Reached limit of {limit} downloads.", limit=limit)
-                    break
-
-        return saved_count
+        for video_id in linked_ids:
+            if files.full:
+                break
+            # Resolve full media URLs from embed endpoint
+            self._download_single_embed(video_id, target_dir, cookie_map, client, files)
 
     def _save_media_item(
         self,
@@ -279,8 +206,9 @@ class TikSource(BaseSource):
         target_dir: Path,
         cookie_map: Dict[str, str],
         client: httpx.Client,
+        files: Downloads,
     ) -> bool:
-        """Download TikTok clip or photo into appropriate subfolder with anti-403 CDN headers."""
+        """Queue a TikTok clip or photo into the appropriate subfolder with anti-403 CDN headers."""
         is_story = item.get("is_story", False)
         playlist = item.get("playlist")
         kind = item["kind"]
@@ -288,7 +216,7 @@ class TikSource(BaseSource):
         if is_story:
             dest_folder = target_dir / "stories"
         elif playlist:
-            dest_folder = target_dir / "albums" / sanitize_name(playlist)
+            dest_folder = target_dir / "albums" / path.safename(playlist)
         elif kind == "video":
             dest_folder = target_dir / "videos"
         else:
@@ -317,12 +245,13 @@ class TikSource(BaseSource):
             "Cookie": cookie_header,
         }
 
-        return download_file(item["url"], dest_path, headers=headers, client=client)
+        key = f"{item_id}_{idx}" if idx > 0 else item_id
+        return files.add(client, item["url"], dest_path, key=key, headers=headers)
 
     def _extract_tiktok_items(self, data: Dict[str, Any], is_story: bool = False) -> List[Dict[str, Any]]:
         """Parse itemList / storyList from TikTok API into structured media items."""
         items = []
-        raw_list = data.get("itemList", []) or data.get("storyList", []) or data.get("story_list", [])
+        raw_list = scrape.dig(data, "itemList || storyList || story_list", default=[])
 
         for raw in raw_list:
             item_id = str(raw.get("id") or raw.get("aweme_id") or "")
@@ -342,16 +271,14 @@ class TikSource(BaseSource):
                 except Exception:
                     pass
 
-            playlist_name = raw.get("playlist", {}).get("name") or raw.get("playlist_info", {}).get("name")
+            playlist_name = scrape.dig(raw, "playlist.name || playlist_info.name")
 
             # 1. Photo mode carousel
-            images = raw.get("imagePost", {}).get("images", [])
+            images = scrape.dig(raw, "imagePost.images", default=[])
             if images:
                 for idx, img in enumerate(images):
-                    url_list = (
-                        img.get("imageURL", {}).get("urlList", [])
-                        or img.get("displayImage", {}).get("urlList", [])
-                        or img.get("thumbnail", {}).get("urlList", [])
+                    url_list = scrape.dig(
+                        img, "imageURL.urlList || displayImage.urlList || thumbnail.urlList", default=[]
                     )
                     if url_list:
                         items.append({

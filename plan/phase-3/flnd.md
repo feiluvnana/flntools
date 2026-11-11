@@ -10,11 +10,11 @@ The four sources move onto the helpers. Their scraping logic does not change: wh
 | --- | --- |
 | `sync_playwright()` + `launch` + `new_context` + cookie fix-up loop + webdriver script, in all four sources | `with browser.open(headless=headless, user_agent=..., cookies=cookies) as page:` |
 | `def on_response(response): … try: response.json() … except Exception: pass` + `page.on("response", …)` | `browser.capture(page, "graphql", handler)`; parse errors now show at `debug`, and handler bugs at `warn` |
-| `scroll_page_to_end(page, …)` in `utils.py` | `browser.scroll(page, …, onstep=bar.advance)` |
+| `scroll_page_to_end(page, …)` in `utils.py` | `browser.scroll(page, …, onstep=…)` inside flnd's `scroll`, which keeps flnd's 2000 px wheel step and the extra 500 px after each wait |
 | TikTok's captcha loop (detect, print, poll, print) | `browser.handoff(page, done=no_captcha, message="Solve the TikTok captcha in the browser window")` |
 | `httpx.Client(headers=…, timeout=…)` in 8 places | `http.Client(user_agent=…, headers=…, cookies=…)` |
 | `resp = client.get(…)`; status check; `resp.json()` | `client.json(…)` |
-| `utils.download_file` (60 lines) | `client.download(url, dest)` inside flnd's `save(client, url, dest) -> bool`, which catches `httpx.HTTPError`, logs it, and returns `False` the way callers expect |
+| `utils.download_file` (60 lines) | `client.download(url, dest)` inside flnd's `save(client, url, dest) -> bool`, which catches `httpx.HTTPStatusError`, logs it, and returns `False` the way callers expect. A network error is raised, so the pool can retry it |
 | `data.get("data", {}).get("user", {}).get(…)` chains, 31 of them, many with `or` fallbacks | `scrape.dig(data, "data.user.…", "data.xdt_api__….")` |
 | `re.search(r'id="__NEXT_DATA__".*?>(.*?)</script>', …)` + `json.loads` in TikTok | `scrape.script(response, id="__NEXT_DATA__")` |
 | `sanitize_name` | `path.safename` |
@@ -52,12 +52,14 @@ with http.Client(...) as client, worker.pool(workers=6, retries=2, errors="log",
         pool.submit(save, client, item.url, item.dest)
     browser.capture(page, "graphql", lambda response, data: [found(i) for i in parse(data)])
     browser.scroll(page, count=lambda: pool.submitted, limit=limit)
-return pool.succeeded
+return sum(1 for result in pool.results if result.value is True)
 ```
 
-- `pool.submitted` and `pool.succeeded` are the pool's [live counters](worker.md#results).
+flnd keeps this in a small `Downloads` class in [`flnd/utils.py`](../../flnd/utils.py), so each source only calls `files.add(client, url, dest, key=media_id)`. It also skips a `dest` that is already queued, so two threads never write the same file.
+
+- `pool.submitted` is one of the pool's [live counters](worker.md#results). The count of new files reads `pool.results`, because `pool.succeeded` also counts files that were skipped or refused, which `save` reports as `False`.
 - `limit` counts submitted items, so the limit stops listing as well as downloading.
-- `retries=2` replaces today's single-attempt download. The same `http.Client` is shared by the workers, because httpx clients are thread-safe.
+- `retries=2` replaces today's single-attempt download. It retries network errors, which `save` raises; a status error is final and only logged. The same `http.Client` is shared by the workers, because httpx clients are thread-safe.
 - The browser stays in the source's own thread. Only `save` runs in pool threads, and it never touches the page.
 
 **Numbers.** The defaults are 6 downloads per source and one worker per source group. So a run over all four sources has at most 4 browsers and 24 downloads at once. These are constants at the top of [`flnd/cli.py`](../../flnd/cli.py), not options, because `download` takes no options. The expected gain:
@@ -68,7 +70,7 @@ return pool.succeeded
 
 ## Download history
 
-Each saved file is recorded in `.flnd/state.db`, table `downloads`. The key is `<source>:<media id>` and the value is `{"path", "size", "at"}`. The skip rule stays the same as today: a file is skipped when it exists on disk. The history makes these possible later:
+Each saved file is recorded in `.flnd/state.db` (next to the downloads folder), table `downloads`. The key is `<source>:<media id>` and the value is `{"path", "size", "at"}`. The skip rule stays the same as today: a file is skipped when it exists on disk. The history makes these possible later:
 
 - not downloading a file again after the user deleted it on purpose (like yt-dlp's `--download-archive`);
 - a `flnd history` command.
@@ -85,4 +87,5 @@ Neither of those is part of this phase.
 - The existing source tests in [`tests/test_sources.py`](../../tests/test_sources.py) keep passing.
 - `save`: a skip, a success, and an HTTP error that returns `False` and logs `error`.
 - The download history: a row is written for each saved file.
-- One end-to-end test per source with `httpx.MockTransport`, for its API path (the path that needs no browser).
+- One end-to-end test per source with `httpx.MockTransport`, for its API path (the path that needs no browser). Facebook has no API path, so it has none.
+- Targets grouped by source: two targets of the same source never run at once, while different sources do.

@@ -7,6 +7,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -101,7 +103,8 @@ class DownloadTest(FlndCase):
         code, _, out = self.run_app("download", "ins:example_user", "tik:@example_creator")
         self.assertEqual(code, 0)
         storage = (Path(self.tmp.name) / ".flnd/downloads").resolve()
-        self.assertEqual(FakeSource.calls, [
+        # Different sources run at the same time, so their calls may come in either order.
+        self.assertCountEqual(FakeSource.calls, [
             ("ins:example_user", storage, None, False),
             ("tik:example_creator", storage, None, False),
         ])
@@ -116,7 +119,7 @@ class DownloadTest(FlndCase):
     def test_targets_from_stdin(self):
         self.pipe("ins:a\n\n# a comment\ntwt:b\n")
         self.assertEqual(self.run_app("download")[0], 0)
-        self.assertEqual([call[0] for call in FakeSource.calls], ["ins:a", "twt:b"])
+        self.assertCountEqual([call[0] for call in FakeSource.calls], ["ins:a", "twt:b"])
 
     def test_no_targets_is_a_usage_error(self):
         code, _, out = self.run_app("download")
@@ -144,6 +147,28 @@ class DownloadTest(FlndCase):
         self.assertIn("✗ ins:a", lines)
         self.assertIn("✓ ins:b", lines)
         self.assertEqual(lines[-1], "✓ Complete. 2 files")
+
+    def test_targets_run_in_parallel_one_per_source(self):
+        lock = threading.Lock()
+        running = {"ins": 0, "twt": 0, "tik": 0}
+        peaks = {"ins": 0, "twt": 0, "tik": 0, "all": 0}
+
+        def download(target, download_dir, limit=None, headless=True):
+            with lock:
+                running[target.source] += 1
+                peaks[target.source] = max(peaks[target.source], running[target.source])
+                peaks["all"] = max(peaks["all"], sum(running.values()))
+            time.sleep(0.1)
+            with lock:
+                running[target.source] -= 1
+            return 1
+
+        with mock.patch.object(FakeSource, "download", staticmethod(download)):
+            code, _, out = self.run_app("download", "ins:a", "ins:b", "twt:c", "ins:d", "tik:e")
+        self.assertEqual(code, 0)
+        self.assertEqual((peaks["ins"], peaks["twt"], peaks["tik"]), (1, 1, 1))
+        self.assertGreater(peaks["all"], 1)
+        self.assertEqual(out.splitlines()[-1], "✓ Complete. 5 files")
 
     def test_help_and_unknown_command(self):
         code, stdout, _ = self.run_app("--help")

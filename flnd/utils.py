@@ -1,181 +1,151 @@
 """
-Utility functions for file downloading, progress reporting, and deduplication.
+Saving files for flnd: `save`, one download pool per target, the download history, and scrolling.
 """
 
-import re
+from contextlib import ExitStack
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, MutableMapping, Optional, Set
+
 import httpx
 
-from shared import fmt, log
+from shared import browser, log, store, worker
+
+# Each saved file is recorded here, next to the downloads folder: `.flnd/state.db`.
+HISTORY_FILE = "state.db"
+HISTORY_TABLE = "downloads"
+# flnd has always scrolled a feed with a 2000 px mouse wheel step, then 500 px more after each wait.
+WHEEL_STEP = 2000
+SCROLL_AFTER_WAIT = "() => { window.scrollBy(0, 500); }"
 
 
-def sanitize_name(name: str) -> str:
-    """Sanitize strings to be safe for directory and file names."""
-    # Replace characters that are invalid in Windows and Unix paths
-    sanitized = re.sub(r'[\\/*?:"<>|]', "_", name)
-    # Collapse multiple underscores and spaces
-    sanitized = re.sub(r'[\s_]+', "_", sanitized).strip("._ ")
-    return sanitized or "untitled"
-
-
-def download_file(
+def save(
+    client: httpx.Client,
     url: str,
-    dest_path: Path,
+    dest: Path,
+    *,
     headers: Optional[Dict[str, str]] = None,
-    client: Optional[httpx.Client] = None,
+    key: Optional[str] = None,
+    history: Optional[MutableMapping[str, Any]] = None,
 ) -> bool:
+    """Download url into dest. True when a file was written; False when dest exists or the server refused.
+
+    A status error is logged and gives False. A network error is raised, so the pool can retry it.
     """
-    Download a remote file to `dest_path`, drawing a progress bar while it runs.
-
-    Features:
-      - Deduplication: If `dest_path` already exists and has size > 0, skips downloading.
-      - Atomic write: Writes to a temporary file (`.part`) and renames on completion.
-      - Parent directories are automatically created.
-
-    Returns:
-      True if the file was downloaded, False if skipped (already exists) or failed.
-    """
-    # 1. Deduplication check
-    if dest_path.is_file() and dest_path.stat().st_size > 0:
-        log.info("skip {name}", name=dest_path.name)
-        return False
-
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = dest_path.with_suffix(dest_path.suffix + ".part")
-
-    # Use provided client or create a short-lived one
-    owns_client = client is None
-    http = client or httpx.Client(timeout=30.0, follow_redirects=True)
-
-    default_headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-        )
-    }
-    if headers:
-        default_headers.update(headers)
-
+    name = f"{dest.parent.name}/{dest.name}"
     try:
-        with log.progress(f"{dest_path.parent.name}/{dest_path.name}", show=fmt.bytes) as bar:
-            try:
-                with http.stream("GET", url, headers=default_headers, follow_redirects=True) as response:
-                    if response.status_code not in (200, 206):
-                        raise RuntimeError(f"HTTP {response.status_code} for URL: {url[:80]}")
-                    bar.total = content_length(response)
-                    with open(temp_path, "wb") as f:
-                        for chunk in response.iter_bytes(chunk_size=65536):
-                            if chunk:
-                                f.write(chunk)
-                                bar.advance(len(chunk))
+        if not client.download(url, dest, label=name, headers=headers):
+            return False
+    except httpx.HTTPStatusError as err:
+        log.error("{name}: {err}", name=name, err=err)
+        return False
+    if history is not None and key:
+        history[key] = {
+            "path": str(dest),
+            "size": dest.stat().st_size,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    return True
 
-                # Atomic rename once write is successful
-                temp_path.replace(dest_path)
-            except Exception as e:
-                # The bar ends at error and keeps its caption, so the reason stays on its row.
-                bar.caption = str(e)
-                raise
+
+class File:
+    """One queued download. It prints as `folder/name`, so a failed download names its file."""
+
+    def __init__(self, client: httpx.Client, url: str, dest: Path, key: str, headers: Optional[Dict[str, str]]):
+        self.client, self.url, self.dest, self.key, self.headers = client, url, dest, key, headers
+
+    def __str__(self) -> str:
+        return f"{self.dest.parent.name}/{self.dest.name}"
+
+
+class Downloads:
+    """One target's downloads: files are saved in a worker pool while the source keeps listing.
+
+    `limit` counts queued files. The browser stays in the source's thread; pool threads only run `save`.
+    """
+
+    def __init__(self, source: str, target: Any, download_dir: Path, limit: Optional[int] = None):
+        self.source = source
+        self.label = str(target)
+        self.limit = limit
+        self.history_file = Path(download_dir).parent / HISTORY_FILE
+        # Every dest queued so far, so one file is never written by two threads at once.
+        self.claimed: Set[Path] = set()
+        self._exits = ExitStack()
+
+    def __enter__(self) -> "Downloads":
+        # flnd.cli imports every source, and every source imports this module.
+        from flnd.cli import DOWNLOAD_WORKERS
+
+        with ExitStack() as exits:
+            self.history = exits.enter_context(store.open(self.history_file)).table(HISTORY_TABLE)
+            self.pool = exits.enter_context(
+                worker.pool(workers=DOWNLOAD_WORKERS, retries=2, errors="log", progress=self.label)
+            )
+            self._exits = exits.pop_all()
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self._exits.__exit__(*exc_info)
+
+    @property
+    def full(self) -> bool:
+        return bool(self.limit) and self.pool.submitted >= self.limit
+
+    @property
+    def saved(self) -> int:
+        """How many files were written. Read it after the block, when every download has finished."""
+        return sum(1 for result in self.pool.results if result.value is True)
+
+    def add(self, client: httpx.Client, url: str, dest: Path, *, key: str,
+            headers: Optional[Dict[str, str]] = None) -> bool:
+        """Queue a download. False when the limit is reached or dest is already queued."""
+        if self.full:
+            return False
+        if dest in self.claimed:
+            log.info("skip {name}", name=dest.name)
+            return False
+        self.claimed.add(dest)
+        self.pool.submit(self._save, File(client, url, dest, key, headers))
+        if self.full:
+            log.info("Reached limit of {limit} downloads.", limit=self.limit)
         return True
 
-    except Exception:
-        if temp_path.exists():
-            temp_path.unlink()
-        return False
-
-    finally:
-        if owns_client:
-            http.close()
+    def _save(self, file: File) -> bool:
+        return save(file.client, file.url, file.dest, headers=file.headers,
+                    key=f"{self.source}:{file.key}", history=self.history)
 
 
-def content_length(response: httpx.Response) -> Optional[int]:
-    """The Content-Length header as a number, or None when it is missing or not a number."""
-    try:
-        return int(response.headers["content-length"])
-    except (KeyError, ValueError):
-        return None
+def scroll(
+    page: Any,
+    label: str,
+    *,
+    count: Callable[[], int],
+    more: Callable[[], bool],
+    delay: float = 2.0,
+    step: Optional[Callable[[Any], None]] = None,
+) -> None:
+    """`browser.scroll` the way flnd has always scrolled, under a `scroll <label>` spinner.
+
+    A failing scroll step is ignored, as before.
+    """
+
+    def scroll_step(p: Any) -> None:
+        try:
+            step(p) if step else p.mouse.wheel(0, WHEEL_STEP)
+        except Exception:
+            pass
+
+    with log.progress(f"scroll {label}", show=show_steps) as bar:
+
+        def after_wait() -> None:
+            # Before, this ran in the same script that read the page height, so the height is unchanged.
+            page.evaluate(SCROLL_AFTER_WAIT)
+            bar.advance()
+
+        browser.scroll(page, count=count, more=more, idle=4, delay=delay, step=scroll_step, onstep=after_wait)
 
 
 def show_steps(steps: float) -> str:
     """How a scroll spinner shows its count: `12 steps`."""
     return f"{steps:g} steps"
-
-
-def scroll_page_to_end(
-    page: Any,
-    get_count: Optional[Callable[[], int]] = None,
-    limit: Optional[int] = None,
-    max_idle_rounds: int = 4,
-    step_delay_ms: int = 2000,
-    max_scrolls: int = 200,
-    check_has_more: Optional[Callable[[], bool]] = None,
-    custom_scroll_action: Optional[Callable[[Any], None]] = None,
-    on_step: Optional[Callable[[int], None]] = None,
-) -> None:
-    """
-    Continuously scrolls a Playwright page until the end of the feed/content is reached.
-
-    Args:
-        page: Playwright Page instance.
-        get_count: Optional callable returning current count of collected items.
-        limit: Max items to collect before breaking early.
-        max_idle_rounds: Number of consecutive unchanged scrolls before stopping.
-        step_delay_ms: Milliseconds to wait between scrolls.
-        max_scrolls: Safety cap on total scroll steps.
-        check_has_more: Optional callable returning False when the platform explicitly indicates no more items.
-        custom_scroll_action: Optional custom scroll callable (e.g. for TikTok's scroll dispatch trick).
-        on_step: Optional callable given the number of scroll steps done so far, after each step.
-    """
-    prev_height = 0
-    prev_count = get_count() if get_count else 0
-    idle_rounds = 0
-
-    for scroll_idx in range(max_scrolls):
-        if limit and get_count and get_count() >= limit:
-            break
-
-        if check_has_more and not check_has_more():
-            break
-
-        if custom_scroll_action:
-            try:
-                custom_scroll_action(page)
-            except Exception:
-                pass
-        else:
-            try:
-                page.mouse.wheel(0, 2000)
-            except Exception:
-                pass
-
-        try:
-            page.wait_for_timeout(step_delay_ms)
-        except Exception:
-            break
-
-        try:
-            new_height = page.evaluate("() => { window.scrollBy(0, 500); return document.body ? document.body.scrollHeight : 0; }")
-        except Exception:
-            break
-
-        current_count = get_count() if get_count else 0
-        if on_step:
-            on_step(scroll_idx + 1)
-
-        if new_height > prev_height or current_count > prev_count:
-            idle_rounds = 0
-            prev_height = max(prev_height, new_height)
-            prev_count = current_count
-        else:
-            idle_rounds += 1
-            # Nudge scroll up slightly to re-trigger intersection observers / event listeners
-            try:
-                page.evaluate("() => { window.scrollBy(0, -350); }")
-                page.wait_for_timeout(800)
-                page.evaluate("() => { window.scrollTo(0, document.body ? document.body.scrollHeight : 0); window.dispatchEvent(new Event('scroll')); }")
-            except Exception:
-                pass
-
-            if idle_rounds >= max_idle_rounds:
-                break
-
