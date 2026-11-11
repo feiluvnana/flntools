@@ -269,6 +269,8 @@ def read_telegram_web() -> dict[str, str]:
             page = connected.open_page(TELEGRAM_WEB, idle=True)
             return page.raw.evaluate("Object.assign({}, localStorage)")
     except (OSError, RuntimeError, ValueError) as error:
+        if str(error).startswith("Chromium is not installed"):
+            error = "Chromium is not installed; run flnd install-browser"
         raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try --method qr") from None
 
 

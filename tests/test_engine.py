@@ -495,6 +495,16 @@ class BrowserTest(EngineCase):
         self.assertEqual(errors, ["aaa: no page is open; call session.open_page(url) first"])
 
 
+    def test_a_missing_chromium_names_flnd_install_browser(self):
+        def connect(**options):
+            raise RuntimeError("Chromium is not installed: run 'playwright install chromium'")
+
+        with mock.patch("shared._browser.connect", connect):
+            self.run_engine(make_source("aaa", lambda session: session.open_page("https://aaa.example/a")),
+                            targets=["aaa:a"])
+        self.assertIn("✗ aaa:a: Chromium is not installed; run flnd install-browser", self.lines())
+
+
 class ClientTest(EngineCase):
     def test_sync_connect_is_entered_once_per_group(self):
         events = []

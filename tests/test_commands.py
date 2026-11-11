@@ -4,6 +4,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -153,7 +154,7 @@ class DownloadTest(FlndCase):
         self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, and Telegram.", stdout)
         self.assertIn("Sources: tik, fbk, ins, twt, loi", stdout)
         self.assertIn("https://www.facebook.com/profile.php?id=100012345678901", stdout)
-        for command in ("download", "login", "logout"):
+        for command in ("download", "login", "logout", "install-browser"):
             self.assertIn(command, stdout)
         self.assertNotIn("auth", stdout)
         self.assertEqual(self.run_app("auth", "set-cookie")[0], 2)
@@ -321,6 +322,45 @@ class LogoutTest(FlndCase):
     def test_a_source_or_all(self):
         self.assertIn("✗ give a source, or --all", self.run_app("logout")[2])
         self.assertIn("✗ give a source or --all, not both", self.run_app("logout", "ins", "--all")[2])
+
+
+class InstallBrowserTest(FlndCase):
+    """Playwright's installer is mocked: nothing is downloaded."""
+
+    def install(self, returncode=0, error=None):
+        calls = []
+
+        def run(argv, **options):
+            calls.append((argv, options))
+            if error is not None:
+                raise error
+            return subprocess.CompletedProcess(argv, returncode)
+
+        with mock.patch.object(flnd_cli.subprocess, "run", run):
+            code, _, out = self.run_app("install-browser")
+        return code, out, calls
+
+    def test_runs_playwrights_own_installer_for_chromium(self):
+        code, out, calls = self.install()
+        self.assertEqual((code, out), (0, "✓ Chromium is installed\n"))
+        (argv, options), = calls
+        self.assertTrue(Path(argv[0]).name.startswith("node"))
+        self.assertEqual(Path(argv[1]).name, "cli.js")
+        self.assertEqual(argv[2:], ["install", "chromium"])
+        self.assertEqual(options["env"]["PW_LANG_NAME"], "python")
+        # Into the user cache: the installer's output folder is left to Playwright.
+        self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", {key: value for key, value in options["env"].items()
+                                                      if key not in os.environ})
+
+    def test_a_failed_install(self):
+        code, out, _ = self.install(returncode=1)
+        self.assertEqual((code, out), (1, "✗ Chromium was not installed: Playwright's installer exited with 1\n"))
+        code, out, _ = self.install(error=OSError("Permission denied"))
+        self.assertEqual(code, 1)
+        self.assertIn("✗ Chromium was not installed: Permission denied", out)
+
+    def test_help(self):
+        self.assertIn("Chromium", self.run_app("install-browser", "--help")[1])
 
 
 if __name__ == "__main__":

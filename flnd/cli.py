@@ -1,16 +1,18 @@
-"""The flnd command line: `flnd download`, `flnd login` and `flnd logout`.
+"""The flnd command line: `flnd download`, `flnd login`, `flnd logout` and `flnd install-browser`.
 
 Usage:
   flnd download ins:example_user https://x.com/example_handle --from reels,media --since 2026-01-01
   cat list.txt | flnd download
   flnd login ins --method browser --browser firefox
   flnd logout --all
+  flnd install-browser
 
 Only `login` asks questions; `download` never does.
 """
 
 from __future__ import annotations
 
+import subprocess
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Optional
@@ -165,6 +167,33 @@ def logout(source: Annotated[Optional[str], cli.arg(choices=SOURCES)] = None, *,
         elif not all:
             log.info("{code}: was not logged in", code=code)
     return 0
+
+
+@app.command("install-browser")
+def install_browser() -> int:
+    """Install Chromium, for the sources that open a browser, into Playwright's folder in your user cache.
+
+    It downloads about 150 MB once, with Playwright's own progress bar. Your installed Chrome is used
+    instead when there is one.
+    """
+    try:
+        code = _run_playwright("install", "chromium")
+    except Exception as error:
+        log.error("Chromium was not installed: {error}", error=error)
+        return 1
+    if code:
+        log.error("Chromium was not installed: Playwright's installer exited with {code}", code=code)
+        return 1
+    log.ok("Chromium is installed")
+    return 0
+
+
+def _run_playwright(*args: str) -> int:
+    # A bundled flnd has no `python -m playwright`, so this runs the driver Playwright ships, as that command does.
+    from playwright._impl._driver import compute_driver_executable, get_driver_env
+
+    node, cli_js = compute_driver_executable()
+    return subprocess.run([node, cli_js, *args], env=get_driver_env()).returncode
 
 
 def _choose_method(source: Source) -> str:

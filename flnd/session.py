@@ -557,8 +557,14 @@ class TargetSession:
         from shared import browser
 
         source, settings = self._source, self._settings
-        connected = browser.connect(headless=settings.headless, viewport=source.viewport, locale=settings.locale,
-                                    timezone=settings.timezone, args=source.browser_args, stealth=source.stealth)
+        try:
+            connected = browser.connect(headless=settings.headless, viewport=source.viewport, locale=settings.locale,
+                                        timezone=settings.timezone, args=source.browser_args, stealth=source.stealth)
+        except RuntimeError as error:
+            # shared names Playwright's own command, which a bundled flnd doesn't have.
+            if str(error).startswith("Chromium is not installed"):
+                raise RuntimeError("Chromium is not installed; run flnd install-browser") from None
+            raise
         connected.cookies.add(self._run.jar)
         return connected
 
