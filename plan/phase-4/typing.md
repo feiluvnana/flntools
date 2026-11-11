@@ -5,7 +5,7 @@ Phase 4, step 1, then checked in every later step. `shared` and flnd are type-ch
 ## Setup
 
 - **`shared/py.typed`:** an empty marker file, so type checkers read `shared`'s annotations. hatch packages it.
-- **pyright** in `standard` mode, with `pythonVersion = "3.10"`, over `shared`, `flnd` and `tests/typing`. It is pinned in the dev group.
+- **pyright** in `standard` mode, with `pythonVersion = "3.11"`, over `shared`, `flnd` and `tests/typing`. It is pinned in the dev group.
 - **`make typecheck`**, and **`make check`**, which runs `lint`, `typecheck` and `test`.
 - **`typing_extensions`** is imported only under `TYPE_CHECKING`, so `shared` stays stdlib-only at runtime. It's a dev dependency.
 
@@ -13,7 +13,7 @@ Phase 4, step 1, then checked in every later step. `shared` and flnd are type-ch
 [tool.pyright]
 include = ["shared", "flnd", "tests/typing"]
 typeCheckingMode = "standard"
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 venvPath = "."
 venv = ".venv"
 reportUnnecessaryTypeIgnoreComment = "error"

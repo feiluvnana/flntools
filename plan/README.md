@@ -89,7 +89,7 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 
 ## Conventions
 
-- **Python and dependencies.** Python 3.10. `style`, `fmt`, `theme`, `log`, `prompt`, `cli`, `kv` and `worker` use only the stdlib, and so does `cookies` apart from `load_from_browser`.
+- **Python and dependencies.** Python 3.11 and later. 3.10 reached its end of life in October 2026, and Pillow and PyAV have dropped it. `style`, `fmt`, `theme`, `log`, `prompt`, `cli`, `kv` and `worker` use only the stdlib, and so does `cookies` apart from `load_from_browser`.
 - **Public surface.** Every file in `shared` starts with `_`, and [`shared/__init__.py`](../shared/__init__.py) is the only public surface.
 - **Lazy imports.** `archive`, `crypto`, `cookies`, `kv`, `selector`, `browser`, `worker` and `bundler` load through a module `__getattr__`, with a `TYPE_CHECKING` block for type checkers. `from shared import log` never imports Playwright, parsel or cryptography.
 - **Missing extras.** A missing extra raises `ImportError("shared.browser needs playwright: pip install 'flntools[browser]'")` on first use.
@@ -156,7 +156,7 @@ dist:
 	.venv/bin/python -c "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd')"
 ```
 
-`requires-python` stays `>=3.10`. Before a release, run `make setup PYTHON=3.10 check`. `make flnd ARGS="download ins:example_user"` passes arguments through.
+`requires-python` is `>=3.11`. Before a release, run `make setup PYTHON=3.11 check`. `make flnd ARGS="download ins:example_user"` passes arguments through.
 
 ## Out of scope
 
