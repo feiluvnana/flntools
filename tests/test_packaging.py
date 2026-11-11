@@ -109,6 +109,24 @@ class LicensesTest(unittest.TestCase):
         self.assertIn("Written offer: for three years", text)
         self.assertIn("ffmpeg-source.txt", (ROOT / "Makefile").read_text(encoding="utf-8"))
 
+    def test_ffmpeg_source_names_the_bundled_binary(self):
+        # `make dist` writes ffmpeg-source.txt next to the licences, from the ffmpeg imageio-ffmpeg bundles.
+        try:
+            import imageio_ffmpeg
+        except ImportError:
+            self.skipTest("imageio-ffmpeg is not installed")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        block = makefile.split("export FFMPEG_SOURCE = ", 1)[1]
+        # make joins a line ending in a backslash with the next, dropping the next one's indent.
+        program = re.sub(r"\\\n\s*", " ", block).split("\n", 1)[0]
+        result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        version = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-version"], capture_output=True,
+                                 text=True).stdout.splitlines()[0]
+        self.assertEqual(result.stdout.splitlines()[0], "ffmpeg-source")
+        self.assertIn(version, result.stdout)
+        self.assertIn("configuration:", result.stdout)
+
     def test_every_bundled_package_has_its_licence(self):
         try:
             needed = runtime_distributions("flntools")
