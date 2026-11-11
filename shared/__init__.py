@@ -21,17 +21,18 @@ if TYPE_CHECKING:
     # Checkers see the real modules; at runtime they still load on first use.
     from shared import _archive as archive
     from shared import _browser as browser
+    from shared import _bundler as bundler
     from shared import _cookies as cookies
     from shared import _crypto as crypto
     from shared import _kv as kv
     from shared import _selector as selector
     from shared import _worker as worker
 
-LAZY_MODULES = ("archive", "crypto", "cookies", "kv", "selector", "browser", "worker")
+LAZY_MODULES = ("archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler")
 
 __all__ = [
     "cli", "fmt", "log", "prompt", "style", "theme",
-    "archive", "crypto", "cookies", "kv", "selector", "browser", "worker",
+    "archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler",
 ]
 
 

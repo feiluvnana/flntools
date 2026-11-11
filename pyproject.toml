@@ -24,6 +24,7 @@ dependencies = [
 archive = ["pyzipper", "py7zr"]
 selector = ["parsel>=1.9.0", "python-jsonpath"]
 browser = ["playwright>=1.40.0", "cryptography>=42"]
+bundler = ["pyinstaller>=6"]
 
 [project.scripts]
 flnd = "flnd.cli:app"
