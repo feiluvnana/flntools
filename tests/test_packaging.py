@@ -66,6 +66,10 @@ class LazyImportTest(unittest.TestCase):
         message = missing_extra_message("selector", "parsel")
         self.assertEqual(message, "shared.selector needs parsel: pip install 'flntools[selector]'")
 
+    def test_media_loads_on_first_use(self):
+        code = "import sys, shared\nprint('shared._media' in sys.modules, shared.media is sys.modules['shared._media'])"
+        self.assertEqual(run_python(code).stdout.strip(), "False True")
+
 
 def runtime_distributions(name: str) -> dict[str, metadata.Distribution]:
     """Every installed distribution `name` needs at run time on this machine, by normalized name."""
@@ -96,6 +100,14 @@ class LicensesTest(unittest.TestCase):
             first, second = path.read_text(encoding="utf-8").splitlines()[:2]
             self.assertEqual(first, path.stem, path.name)
             self.assertTrue(second.startswith("License: "), path.name)
+
+    def test_ffmpeg_ships_its_gpl_and_a_source_offer(self):
+        # imageio-ffmpeg's wheel carries a GPL ffmpeg; `make dist` adds ffmpeg-source.txt with its version.
+        text = (ROOT / "licenses" / "ffmpeg.txt").read_text(encoding="utf-8")
+        self.assertIn("License: GPL-2.0-or-later", text)
+        self.assertIn("GNU GENERAL PUBLIC LICENSE", text)
+        self.assertIn("Written offer: for three years", text)
+        self.assertIn("ffmpeg-source.txt", (ROOT / "Makefile").read_text(encoding="utf-8"))
 
     def test_every_bundled_package_has_its_licence(self):
         try:

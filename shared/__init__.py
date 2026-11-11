@@ -1,7 +1,7 @@
 """Small helpers for scripts.
 
 The terminal modules are stdlib only and load at once. The others load on first use,
-so `from shared import log` never imports Playwright, parsel, or cryptography.
+so `from shared import log` never imports Playwright, parsel, cryptography, or Pillow.
 A module whose extra is missing raises an ImportError that names the extra to install.
 """
 
@@ -25,14 +25,15 @@ if TYPE_CHECKING:
     from shared import _cookies as cookies
     from shared import _crypto as crypto
     from shared import _kv as kv
+    from shared import _media as media
     from shared import _selector as selector
     from shared import _worker as worker
 
-LAZY_MODULES = ("archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler")
+LAZY_MODULES = ("archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler", "media")
 
 __all__ = [
     "cli", "fmt", "log", "prompt", "style", "theme",
-    "archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler",
+    "archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler", "media",
 ]
 
 
