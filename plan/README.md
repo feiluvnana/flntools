@@ -89,7 +89,7 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 
 **Phase 5: media.** Built in this order:
 1. [media](phase-5/media.md): `shared.media`, one module for photos, videos and audio, with `probe`, `convert`, `compress`, `check` and `sniff` for any file, and `media.image`, `media.video` and `media.audio` for one kind. Photos go through Pillow and pi-heif in process; videos and audio through the ffmpeg program, which [ffmpeg](phase-5/ffmpeg.md) gets from the `imageio-ffmpeg` wheel and runs behind input whitelists.
-2. [flnd on media](phase-5/flnd.md): extensions from content, DASH video and audio merged, downloads checked, `--compress-image` / `--compress-video` with `--format-image` / `--format-video`, and `flnd sync`.
+2. [flnd on media](phase-5/flnd.md) (built): extensions from content, DASH video and audio merged (Facebook and Instagram), downloads checked, `--compress-image` / `--compress-video` with `--format-image` / `--format-video`, and `flnd sync` with its saved target settings in `.flnd/targets.db`.
 
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
 

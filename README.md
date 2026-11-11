@@ -1,6 +1,6 @@
 # flntools
 
-Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, **Twitter/X**, and **LOIBUS**. The command is `flnd`.
+Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, **Twitter/X**, **LOIBUS**, and **Telegram**. The command is `flnd`.
 
 The plan for the shared helpers flnd is built on is in [plan/README.md](plan/README.md).
 
@@ -20,6 +20,10 @@ flnd install-browser
 `.venv` stays in this folder. Activate it again with `source .venv/bin/activate` before running `flnd`.
 With `uv`, `uv tool install --editable .` puts `flnd` on your PATH instead.
 
+ffmpeg comes with `pip install`, as the `imageio-ffmpeg` dependency; flnd uses it to join Facebook and
+Instagram videos with their sound, and to compress videos. Where that package has no wheel (musl Linux,
+32-bit ARM), install ffmpeg on your PATH instead.
+
 `flnd install-browser` downloads Chromium (about 150 MB) once, into Playwright's folder in your user cache,
 for the sources that open a browser. Your installed Chrome is used instead when there is one.
 
@@ -31,6 +35,8 @@ make dist            # dist/flnd/flnd (flnd.exe on Windows), for the OS you buil
 ```
 
 Copy the whole `dist/flnd/` folder; it holds `flnd`, `_internal/` and `licenses/`, the third-party licences.
+The bundle includes ffmpeg, a GPL program: `licenses/ffmpeg.txt` has its licence and the offer of its
+source, and `licenses/ffmpeg-source.txt` the exact build.
 Then run `flnd install-browser` once. The bundled `flnd` still writes `.flnd/` in the folder you run it from.
 
 ---
@@ -39,6 +45,8 @@ Then run `flnd install-browser` once. The bundled `flnd` still writes `.flnd/` i
 
 ```bash
 flnd download <targets...> [--from CATEGORIES] [--since DATE] [--until DATE] [--unpack] [--zip]
+              [--compress-image PRESET] [--compress-video PRESET] [--format-image FORMAT] [--format-video FORMAT]
+flnd sync [targets...] [--only STEPS] [any download option but --since and --until]
 flnd login <source>
 flnd logout <source>
 flnd install-browser
@@ -65,6 +73,11 @@ Sources:
 - `ins`: Instagram
 - `twt`: Twitter/X
 - `loi`: LOIBUS (loix.cc), one post by its id or URL
+- `tlg`: Telegram, a chat, group or channel the account can see
+
+Facebook and Instagram serve their best videos as separate video and sound streams (DASH);
+flnd downloads both and joins them, so you get the highest quality the site has, up to 1080p
+or more where a progressive file stops at 720p. Twitter/X and TikTok videos already come whole.
 
 ### Examples
 
@@ -98,6 +111,12 @@ flnd download https://x.com/example_handle/status/1790000000000000000
 
 # A LOIBUS post with its VIP archives, unpacked with the post's password
 flnd download https://loix.cc/lois/5930 --from all --unpack
+
+# Smaller files: photos' shorter side at most 1536, videos at most 720p; the originals are replaced
+flnd download ins:example_user --compress-image small --compress-video small
+
+# Videos as H.265, 30-50% smaller again, but many browsers can't play it
+flnd download tik:example_creator --compress-video balanced --format-video h265
 ```
 
 ### Options
@@ -110,10 +129,56 @@ Every source takes the same options:
 - `--unpack`: unpack each saved archive into a folder named after it, including one saved by an
   earlier run;
 - `--zip`: zip each target's folder when it ends;
+- `--compress-image`, `--compress-video` (`small`, `balanced` or `high`): make each new photo or video
+  smaller after it is saved, in the same format. It **replaces the original**, and strips its
+  metadata (date taken, camera, GPS); the post's date stays in the file name. A file that wouldn't
+  get smaller is kept as it is;
+
+  | Preset | Photos | Videos |
+  | --- | --- | --- |
+  | `small` | quality 70, shorter side at most 1536 | H.264 CRF 28, at most 720p and 30 fps, audio 64 kb/s |
+  | `balanced` | quality 80, shorter side at most 2304 | CRF 23, at most 1080p and 60 fps, audio 128 kb/s |
+  | `high` | quality 90, full size | CRF 19, full size, audio 160 kb/s |
+
+- `--format-image`: write compressed photos as `jpg`, `webp`, `avif`, `png`, `gif`, `tif` or `bmp`;
+- `--format-video`: write compressed videos in a container (`mp4`, `mov`, `mkv`, `webm`, `avi`, `ts`,
+  `3gp`, `gif`), with a codec (`h264`, `h265`, `vp9`), or both as `mkv:h265`. Each `--format-*` needs
+  its `--compress-*`;
 - `--locale`, `--timezone`: the browser's language and timezone, such as `fr-FR` and `Europe/Paris`.
   Match where your connection really comes from.
 
+A saved photo or video gets the extension its content calls for (a WebP is saved as `.webp`, not
+`.jpg`), a web page served instead of a photo is retried rather than saved, and a download whose
+size the server didn't give is checked to be complete.
+
 `flnd download` never asks questions. `flnd` alone prints the help.
+
+---
+
+## Keeping downloads up to date
+
+```bash
+flnd sync                                             # every target downloaded so far
+flnd sync ins:example_user tik:example_creator        # only these
+flnd sync --compress-video small --format-video h265  # and compress their videos from now on
+flnd sync --compress-video off                        # stop compressing videos
+flnd sync --only info                                 # just the summary; nothing is fetched or changed
+```
+
+Every `flnd download` records its target and options in `.flnd/targets.db`, and `flnd sync` runs
+each target again with them. Options given to `sync` replace the recorded ones from then on.
+Folders downloaded before flnd recorded options are synced with the defaults. For each target:
+
+1. **repair**: a file whose extension doesn't match its content is renamed; a broken one (cut
+   off, or a web page) is deleted and downloaded again; a missing one is downloaded again;
+2. **fetch**: new posts are downloaded, as `flnd download` would;
+3. **compress**: with a compress option, files not compressed yet are compressed. A file is
+   compressed once, whatever later options say;
+4. **info**: one line per target and a total: files, photos, videos, size, space saved by
+   compressing, repaired, and missing (files the site no longer lists).
+
+`--only repair,compress` works offline. `sync` never deletes a file whose post was deleted, and
+never asks questions.
 
 ---
 
