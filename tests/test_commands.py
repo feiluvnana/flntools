@@ -272,7 +272,8 @@ class PromptModeTest(FlndCase):
     def test_two_targets_and_empty_value(self):
         self.keys("enter", "enter", "enter", *"a", "enter", "y", "down", "down", "down", "enter", *"b", "enter", "n")
         self.assertEqual(self.run_app()[0], 0)
-        self.assertEqual([call[0] for call in FakeSource.calls], ["tik:a", "twt:b"])
+        # Each source runs in its own worker, so the two calls can come in either order.
+        self.assertCountEqual([call[0] for call in FakeSource.calls], ["tik:a", "twt:b"])
         out = self.screen.out.getvalue()
         self.assertIn("✗ enter a username or id", out)
         self.assertIn("• flnd download tik:a twt:b\n", out)
