@@ -10,7 +10,7 @@ Every `shared` module follows three rules:
 
 ```python
 from shared import cli, fmt, log, prompt, style, theme          # Phase 1, stdlib only
-from shared import http, browser, path, archive, crypto, store  # Phase 3
+from shared import http, browser, path, archive, crypto, store, worker, scrape  # Phase 3
 ```
 
 ## Modules
@@ -19,16 +19,18 @@ from shared import http, browser, path, archive, crypto, store  # Phase 3
 | --- | --- | --- | --- | --- |
 | `style` | [phase-1/style.md](phase-1/style.md) | `shared/_style.py` | ANSI codes | — |
 | `fmt` | [phase-1/fmt.md](phase-1/fmt.md) | `shared/_fmt.py` | — | — |
-| `theme` | [phase-1/theme.md](phase-1/theme.md) | `shared/_theme.py` | `termios` / `msvcrt` | — |
+| `theme` | [phase-1/theme.md](phase-1/theme.md) | `shared/_theme.py`, `_screen.py` | `termios` / `msvcrt` | — |
 | `log` | [phase-1/log.md](phase-1/log.md) | `shared/_log.py` | — | — |
 | `prompt` | [phase-1/prompt.md](phase-1/prompt.md) | `shared/_prompt.py` | — | — |
-| `cli` | [phase-1/cli.md](phase-1/cli.md) | `shared/_cli.py` | `argparse` | — |
+| `cli` | [phase-1/cli.md](phase-1/cli.md) | `shared/_cli.py`, `_params.py` | `argparse` | — |
 | `path` | [phase-3/path.md](phase-3/path.md) | `shared/_path.py` | `pathlib` | — |
 | `archive` | [phase-3/archive.md](phase-3/archive.md) | `shared/_archive.py` | `zipfile`, `tarfile` | — |
 | `crypto` | [phase-3/crypto.md](phase-3/crypto.md) | `shared/_crypto.py` | `hashlib`, `hmac`, `secrets`, `cryptography` | `crypto` for `seal` / `unseal` |
 | `store` | [phase-3/store.md](phase-3/store.md) | `shared/_store.py` | `sqlite3` | `crypto` for `secrets` |
 | `http` | [phase-3/http.md](phase-3/http.md) | `shared/_http.py` | `httpx` | `http` |
 | `browser` | [phase-3/browser.md](phase-3/browser.md) | `shared/_browser.py` | Playwright | `browser` |
+| `worker` | [phase-3/worker.md](phase-3/worker.md) | `shared/_worker.py` | `threading`, `concurrent.futures` | — |
+| `scrape` | [phase-3/scrape.md](phase-3/scrape.md) | `shared/_scrape.py` | parsel, jmespath | `scrape` |
 
 ```mermaid
 flowchart LR
@@ -40,6 +42,8 @@ flowchart LR
   browser --> log & http
   store --> crypto
   archive --> path
+  worker --> log
+  http -.-> scrape
 ```
 
 ## Phases
@@ -56,8 +60,8 @@ Each phase ends with flnd working and `make test` green. Each plan file is self-
 Phase 2 removes about 50 lines of `create_parser` and 7 lines of `format_bytes`. The 62 prints in the sources become about 62 log calls. What flnd gains is the look: colored levels, a live bar per file, a row per target, a cookie prompt instead of a dead end, and prompt mode for anyone who does not know the flags.
 
 **Phase 3: library helpers.**
-1. [path](phase-3/path.md), [archive](phase-3/archive.md), [crypto](phase-3/crypto.md), [store](phase-3/store.md), [http](phase-3/http.md), and [browser](phase-3/browser.md), in that order.
-2. [flnd](phase-3/flnd.md): the sources move onto `http`, `browser`, and `path`, and [`flnd/utils.py`](../flnd/utils.py) mostly goes away.
+1. [path](phase-3/path.md), [archive](phase-3/archive.md), [crypto](phase-3/crypto.md), [store](phase-3/store.md), [worker](phase-3/worker.md), [scrape](phase-3/scrape.md), [http](phase-3/http.md), and [browser](phase-3/browser.md), in that order.
+2. [flnd](phase-3/flnd.md): the sources move onto `http`, `browser`, `path`, `worker`, and `scrape` (targets in parallel per source, downloads overlapping with listing), and [`flnd/utils.py`](../flnd/utils.py) mostly goes away.
 
 ## Conventions
 
@@ -68,6 +72,22 @@ Phase 2 removes about 50 lines of `create_parser` and 7 lines of `format_bytes`.
 - **Readable code.** A module puts its public names first, then the small helpers they call. Names say what the value is. A comment is a plain sentence where a reader would otherwise have to reconstruct the rule. A comment does not restate the next line.
 - **Tests.** `unittest`, with one `tests/test_<module>.py` per module. Terminal tests use a fake `theme.screen`. `http` tests use `httpx.MockTransport`. `browser` tests use a local HTML file and are skipped when Chromium is not installed.
 
+## Naming
+
+Public names in `shared` should read like the commands and stdlib functions people already know.
+
+1. **Use the familiar word.** If Unix or the stdlib already has a name for the action, use it: `path.mkdir`, `archive.pack` / `unpack`, `store.open`, `worker.map`, `crypto.keygen`, `crypto.randbytes`.
+2. **One word, or two joined without `_`**, the way the stdlib writes `makedirs`, `getcwd`, `onerror`, and `maxlen`: `path.safename`, `crypto.derive`, `browser.handoff`. Avoid three-word names; pick a better single word instead.
+3. **Keyword arguments follow the same rules:** `maxlen`, `idle`, `delay`, `retryable`. Callbacks are `on` + event, joined (`onstep`), like `shutil.rmtree(onerror=)`.
+4. **A wrapper keeps its library's names** for things it passes through, even with `_`: `user_agent`, `follow_redirects`, `slow_mo`. Someone who knows httpx or Playwright should recognize them.
+5. **Times are seconds, as a `float`:** `delay=2.0`, `poll=1.0`, `timeout=30.0`, `backoff=1.0`. A wrapper converts to the library's unit (Playwright uses milliseconds) itself.
+6. **Classes are `CapWords`, and exceptions end in `Error`:** `crypto.CryptoError`, `archive.UnsafeError`, `http.JSONError`, `worker.TaskError`. A module raises its own error type only for failures the caller is expected to handle. Everything else is a standard `ValueError`, `TypeError`, or `RuntimeError`.
+7. **Don't shadow a builtin** unless the stdlib already does in the same place: `store.open` and `browser.open` (like `gzip.open`), and `max=` / `min=` keyword arguments (like `prompt.choices`). `crypto.digest` is `digest`, not `hash`, for this reason.
+
+These rules apply to `shared`'s public API. flnd's own helpers (`ask_targets`, `store_cookies`) keep normal `snake_case`.
+
+Phase 1 follows the rules, with one deliberate exception: the chalk-style names `style.bright_red`, `bg_red`, `double_underline`, and `underline_color` keep chalk's compounds, so they read like chalk.
+
 ## pyproject
 
 ```toml
@@ -75,6 +95,7 @@ Phase 2 removes about 50 lines of `create_parser` and 7 lines of `format_bytes`.
 http = ["httpx>=0.27.0"]
 browser = ["playwright>=1.40.0"]
 crypto = ["cryptography>=42"]
+scrape = ["parsel>=1.9.0"]
 ```
 
 flnd keeps `httpx`, `playwright`, and `parsel` as normal dependencies, because flnd always needs them. The extras matter for other scripts that only use part of `shared`.
@@ -90,7 +111,7 @@ PYTHON ?= 3.14
 
 setup:
 	uv venv .venv --python $(PYTHON)
-	uv pip install -e '.[http,browser,crypto]' --python .venv/bin/python
+	uv pip install -e '.[http,browser,crypto,scrape]' --python .venv/bin/python
 	.venv/bin/playwright install chromium
 
 test:
@@ -116,4 +137,6 @@ These are what made flnkit big. They stay out.
 - **crypto:** JWT, TOTP, certificates, asymmetric keys, and a password-hashing API.
 - **store:** an ORM, a query builder, migrations, and a cache with expiry.
 - **path / archive:** file watching, grep, tree printing, disk usage, and file locks.
+- **scrape:** Scrapy itself, spiders, link following, item pipelines, feed exports, and robots.txt handling.
+- **worker:** async/await, a persistent or distributed job queue, scheduling, priorities, and a global thread limit.
 - **everything:** async variants and subprocess helpers.
