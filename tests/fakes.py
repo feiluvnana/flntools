@@ -40,14 +40,16 @@ class FakeSession:
     def __init__(self, target: Target, *, source: type[Source] | None = None, cookies: Mapping[str, str] | None = None,
                  json: Mapping[str, Answer] | None = None, html: Mapping[str, str] | None = None,
                  options: Options = Options(), limit: int | None = None, page_html: str = "",
-                 on_scroll: Callable[[FakeSession], Any] | None = None):
+                 pages: Mapping[str, str] | None = None, on_scroll: Callable[[FakeSession], Any] | None = None):
         self.target = target
         self.folder: str | None = ""
         self.options = options
         # The target's source, for its categories; a test source can be given.
         self.source = source or SOURCES[target.source]
         self.limit = limit
+        # The page's HTML: by the URL last visited, or else `page_html`.
         self.page_html = page_html
+        self.pages = dict(pages or {})
         self.on_scroll = on_scroll
         self.saved: list[dict[str, Any]] = []
         self.written: dict[str, str] = {}
@@ -150,8 +152,9 @@ class FakeSession:
 
     @property
     def page(self) -> Page:
-        self._raw_page.content.return_value = self.page_html
-        self._raw_page.url = self.visited[-1] if self.visited else "about:blank"
+        url = self.visited[-1] if self.visited else "about:blank"
+        self._raw_page.content.return_value = self.pages.get(url, self.page_html)
+        self._raw_page.url = url
         return Page(self._raw_page, mock.MagicMock())
 
     @property

@@ -1,75 +1,82 @@
-"""
-Instagram source for flnd.
+"""Instagram: a profile's posts, reels, tagged posts, reposts, stories, highlights and picture, or one post.
 
-  - Active 24h stories come from the mobile API tray, when the login has `ds_user_id`.
-  - Profile tabs are read in a browser: posts, reels, tagged and reposts, then highlights.
-  - Carousels, reels and stories are all saved, from GraphQL responses.
+Everything is read in a browser logged in with the saved cookies. Each profile tab is scrolled
+to its end while its GraphQL responses are read. A listed post without its date or files (the
+reels, tagged and reposts grids list only thumbnails) is read again from its own page, where the
+first load embeds the post in the HTML; stories and highlights are read from their pages the same way.
 
 Folder layout, under `.flnd/downloads/ins/<username>/`:
-  posts/, tagged/, reposts/   <YYYY-MM-DD>_<post_id>_<idx>.jpg (or .mp4)
-  reels/                      <YYYY-MM-DD>_<reel_id>.mp4
-  stories/                    <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
-  highlights/<title>/         <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
+  posts/, reels/, tagged/, reposts/   <YYYY-MM-DD>_<code>_<idx>.jpg (or .mp4; no _<idx> for one file)
+  stories/                            <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
+  highlights/<title>/                 <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
+  profile/                            the profile picture, named as Instagram names it
+One post, `ins:https://www.instagram.com/p/<code>/`, lands in `.flnd/downloads/ins/<code>/`.
+
+A post found on two tabs (a reel is on the grid too) is saved once, on the first.
 """
 
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Dict, List, Mapping, Optional
+from pathlib import PurePosixPath
+from typing import Any
+from urllib.parse import urlsplit
 
 from flnd.session import Session
 from flnd.sources.base import Source
+from flnd.sources.relay import embedded_results
 from flnd.target import Target, TargetError, link, name, unreadable
 from shared import fmt, selector
 
-APP_ID = "936619743392459"
-# Mobile Android User-Agent: Instagram story tray API refuses desktop user-agents
-INSTAGRAM_MOBILE_UA = (
-    "Instagram 219.0.0.12.117 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100; en_US; 346132297)"
-)
+SITE = "https://www.instagram.com"
+# The profile's tabs, in the order they are read, and their paths under the profile.
+TABS = (("posts", ""), ("reels", "reels/"), ("tagged", "tagged/"), ("reposts", "reposts/"))
+# The part of a URL before a post's code: /p/<code>/, /reel/<code>/, and /<user>/p/<code>/ too.
+POST_PATHS = {"p", "reel", "reels", "tv"}
+CDN_HEADERS = {"Referer": f"{SITE}/"}
+# Where each profile tab's result lists its posts; the name Instagram uses now comes first.
+TAB_CONNECTIONS = {
+    "posts": ("xdt_api__v1__feed__user_timeline_graphql_connection",),
+    "reels": ("fetch__XDTUserDict.clips_connection", "xdt_api__v1__clips__user__connection_v2"),
+    "tagged": ("xdt_api__v1__usertags__user_id__feed_connection",),
+    "reposts": ("fetch__XDTUserDict.user_reposts_timeline", "xdt_api__v1__feed__user_reposts_graphql_connection"),
+}
+IMAGE_EXTENSIONS = {"jpg", "webp", "png", "heic"}
+# One post's page: a reel's, or any other post's.
+POST = "data.xig_fetch_media || data.xdt_api__v1__media__shortcode__web_info.items[0]"
+# A story page lists one user's active stories; a highlight's page lists the highlight's.
+STORIES = ("data.xdt_api__v1__feed__reels_media__connection.edges[].node.items[]"
+           " || data.xdt_api__v1__feed__reels_media.reels_media[].items[]")
 
 
-# Tabs to navigate in order: (folder_name, relative_path)
-TABS = [
-    ("posts", ""),
-    ("reels", "reels/"),
-    ("tagged", "tagged/"),
-    ("reposts", "reposts/"),
-]
-# The first part of a URL that points to one post, not a profile.
-SINGLE_POSTS = {"p", "reel", "reels", "tv", "stories"}
-
-
-def is_profile_api(response: Any) -> bool:
-    return "graphql" in response.url or "/api/v1/" in response.url
-
-
-def taken_on(day: str) -> Optional[date]:
-    return date.fromisoformat(day) if day else None
+def is_graphql(response: Any) -> bool:
+    return "graphql" in response.url
 
 
 class Instagram(Source):
-    """Instagram profiles: stories from the mobile API, everything else from the browser."""
+    """Instagram profiles and single posts, read in a browser."""
 
     code = "ins"
     name = "Instagram"
     domains = ("instagram.com",)
-    examples = ("ins:example_user", "ins:@example_user", "https://www.instagram.com/example_user/")
+    kinds_of_target = ("user", "post")
+    examples = ("ins:example_user", "ins:@example_user", "https://www.instagram.com/example_user/",
+                "https://www.instagram.com/p/C1abcDEFghi/", "https://www.instagram.com/reel/C1abcDEFghi/")
     needs = ("sessionid",)
-    categories = ("posts", "reels", "tagged", "reposts", "stories", "highlights")
-    default_categories = ("posts", "reels", "stories", "highlights")
-
-    def headers(self, cookies: Mapping[str, str]) -> Mapping[str, str]:
-        return {"x-ig-app-id": APP_ID}
+    categories = ("posts", "reels", "tagged", "reposts", "stories", "highlights", "profile")
+    default_categories = ("posts", "reels", "stories", "highlights", "profile")
 
     def resolve(self, text: str) -> Target:
+        """A user name, or one post: a URL with /p/<code>, /reel/<code> or /tv/<code>."""
         found = link(text, self.domains)
         if found is None:
             user = name(text)
-        elif found.parts[:1] and found.parts[0] in SINGLE_POSTS:
-            raise TargetError(f"{self.code}: single posts aren't supported yet; "
-                              f"give the profile, for example {self.examples[0]}")
+        elif (code := post_code(found.parts)) is not None:
+            return Target(self.code, "post", code)
+        elif found.parts[:1] == ["stories"]:
+            raise TargetError(f"{self.code}: story links aren't supported; give the profile, "
+                              f"for example {self.examples[0]}, and its stories come with it")
         else:
             user = name(found.parts[0]) if found.parts else None
         if not user:
@@ -77,381 +84,217 @@ class Instagram(Source):
         return Target(self.code, "user", user)
 
     def run(self, session: Session) -> None:
-        username = session.target.value
-        # 1. Fetch active 24h stories via mobile API tray
-        user_id = session.cookies.get("ds_user_id")
-        if user_id and session.wants(category="stories"):
-            session.info("Checking active 24h stories tray...")
-            self._download_active_stories(session, user_id)
-
-        # 2. Navigate profile tabs in the browser: posts, reels, tagged, reposts, highlights
-        in_browser = [name for name, _ in TABS] + ["highlights"]
-        if not session.full and any(session.wants(category=category) for category in in_browser):
-            self._download_via_browser(session, username)
-
-    def _download_active_stories(self, session: Session, user_id: str) -> None:
-        """Queue active user stories from Instagram's mobile reels_media API."""
-        cookie_str = "; ".join([f"{k}={v}" for k, v in session.cookies.items()])
-        headers = {
-            "user-agent": INSTAGRAM_MOBILE_UA,
-            "cookie": cookie_str,
-            "x-ig-app-id": APP_ID,
-        }
-
-        url = "https://i.instagram.com/api/v1/feed/reels_media/"
-        params = {"user_ids": json.dumps([user_id]), "source": "profile"}
-
-        try:
-            data = session.fetch_json(url, headers=headers, params=params, follow_redirects=False, soft=True)
-        except Exception as e:
-            session.warn("Could not fetch stories from mobile API: {err}", err=e)
+        if session.target.kind == "post":
+            save_post_page(session, session.target.value, category="posts", folder="")
             return
-        if data is None:
-            return
-        reels = data.get("reels_media", []) or list(data.get("reels", {}).values())
-        queued = 0
-
-        for reel in reels:
-            items = reel.get("items", [])
-            for item in items:
-                story_id = str(item.get("id") or item.get("pk") or "").split("_")[0]
-                ts = item.get("taken_at")
-                taken = datetime.fromtimestamp(ts) if ts else datetime.now()
-                date_str = taken.strftime("%Y-%m-%d")
-                posted = taken.date() if ts else None
-
-                # Check for video first, then highest quality image
-                if item.get("media_type") == 2 and item.get("video_versions"):
-                    best_video = item["video_versions"][0]["url"]
-                    queued += session.save(best_video, f"{date_str}_{story_id}.mp4", category="stories",
-                                           date=posted, folder="stories")
-                elif selector.select(item).jmespath("image_versions2.candidates").first:
-                    best_image = item["image_versions2"]["candidates"][0]["url"]
-                    queued += session.save(best_image, f"{date_str}_{story_id}.jpg", category="stories",
-                                           date=posted, folder="stories")
-
-        if queued:
-            session.info("Found {n} active stories in the mobile tray.", n=queued)
-
-    def _download_via_browser(self, session: Session, username: str) -> None:
-        """
-        Use the browser to navigate all user profile tabs:
-          - / (Posts)
-          - /reels/ (Reels)
-          - /tagged/ (Tagged posts)
-          - /reposts/ (Reposts, if enabled)
-          - Highlights collections
-        Intercepts GraphQL network responses and queues media into platform-optimized subfolders.
-        """
-        captured_highlights: List[Dict[str, Any]] = []
-        found = {name: 0 for name, _ in TABS}
-        headers = {"Referer": f"https://www.instagram.com/{username}/"}
-
-        def on_profile(session: Session, data: Any, response: Any) -> None:
-            # Extract highlights if available on profile response
-            for h in self._extract_highlights_from_json(data):
-                if h not in captured_highlights:
-                    captured_highlights.append(h)
-
-            # Extract media items based on current active tab; None once the tabs are done.
-            tab = session.folder
-            if tab is None:
-                return
-            extracted = self._extract_media_from_json(session, data, tab=tab)
-            found[tab] += len(extracted)
-            for item in extracted:
-                self._queue_media(session, item, tab, headers, sniff_video=True)
-
-        session.on_response(is_profile_api, on_profile)
-        # Highlights are listed by the profile page, so it is loaded even when no tab is wanted.
-        if session.wants(category="highlights") and not session.wants(category="posts"):
+        user = session.target.value
+        profile = Profile()
+        session.on_response(is_graphql, profile.on_result)
+        for tab, path in TABS:
+            if not session.full and session.wants(category=tab):
+                self._read_tab(session, profile, tab, f"{SITE}/{user}/{path}")
+        # The picture and the highlights come with any profile tab; load one if none was wanted.
+        if not profile.described and (session.wants(category="profile") or session.wants(category="highlights")):
             session.folder = None
-            session.goto(f"https://www.instagram.com/{username}/")
-
-        # Navigate through each tab
-        for tab_name, tab_path in TABS:
-            if session.full:
-                break
-            if not session.wants(category=tab_name):
-                continue
-
-            session.folder = tab_name
-            tab_url = f"https://www.instagram.com/{username}/{tab_path}"
-            session.info("Navigating tab {tab}: {url}", tab=tab_name, url=tab_url)
-
-            # Continuously scroll down to the end to trigger all GraphQL replies
-            if session.goto(tab_url):
-                session.scroll(count=lambda: found[tab_name])
-
-            session.info("{tab}: intercepted {n} media items.", tab=tab_name, n=found[tab_name])
-
-        # Media seen after the tabs was never downloaded; only highlights are still collected.
+            load(session, profile, f"{SITE}/{user}/")
         session.folder = None
+        for tab, code in profile.incomplete:
+            # A reel already saved from the grid isn't opened again.
+            if not session.full and code not in profile.saved:
+                save_post_page(session, code, category=tab, folder=tab)
+        if profile.picture and session.wants(category="profile"):
+            session.save(profile.picture, picture_name(profile.picture), category="profile", folder="profile",
+                         headers=CDN_HEADERS)
+        if session.wants(category="stories"):
+            save_story_page(session, f"{SITE}/stories/{user}/", category="stories", folder="stories")
+        if session.wants(category="highlights"):
+            for highlight_id, title in profile.highlights:
+                if not session.full:
+                    save_story_page(session, f"{SITE}/stories/highlights/{highlight_id}/", category="highlights",
+                                    folder=f"highlights/{fmt.filename(title)}")
 
-        # 3. Download highlights if found on profile
-        if captured_highlights and not session.full and session.wants(category="highlights"):
-            self._download_highlights(session, username, captured_highlights)
+    def _read_tab(self, session: Session, profile: Profile, tab: str, url: str) -> None:
+        session.folder = tab
+        if load(session, profile, url):
+            session.scroll(count=lambda: len(profile.listed[tab]))
+        session.info("{tab}: {n} posts listed", tab=tab, n=len(profile.listed[tab]))
 
-    def _download_highlights(self, session: Session, username: str, highlights: List[Dict[str, Any]]) -> None:
-        """Open each highlight from the profile page, where its element can be clicked."""
-        session.info("Found {n} highlight collections.", n=len(highlights))
-        if not session.page.url.rstrip("/").endswith(f"instagram.com/{username}"):
-            session.goto(f"https://www.instagram.com/{username}/")
-        for hl in highlights:
-            if session.full:
-                break
-            self._download_highlight(session, hl)
 
-    def _download_highlight(self, session: Session, hl: Dict[str, Any]) -> None:
-        """Open one highlight and queue the stories it loads."""
-        hl_id = hl["id"].replace("highlight:", "")
-        hl_title = hl["title"]
-        hl_folder = f"highlights/{fmt.filename(hl_title)}"
-        hl_url = f"https://www.instagram.com/stories/highlights/{hl_id}/"
+@dataclass
+class Profile:
+    """What the profile's results told so far: its picture, highlights, and each tab's posts."""
 
-        session.info("Opening highlight '{title}': {url}", title=hl_title, url=hl_url)
-        found = [0]
+    picture: str | None = None
+    described: bool = False
+    highlights: list[tuple[str, str]] = field(default_factory=list)
+    listed: dict[str, set[str]] = field(default_factory=lambda: {tab: set() for tab, _ in TABS})
+    saved: set[str] = field(default_factory=set)
+    # Posts listed without their date or files, as (tab, code), read later from their own page.
+    incomplete: list[tuple[str, str]] = field(default_factory=list)
 
-        def on_highlight(session: Session, data: Any, response: Any) -> None:
-            parsed = self._extract_stories_from_json(data)
-            found[0] += len(parsed)
-            for s_item in parsed:
-                self._queue_media(session, s_item, hl_folder, None, sniff_video=False, category="highlights")
-
-        stop = session.on_response(is_profile_api, on_highlight)
-
-        # Click highlight element on profile page to trigger client-side Relay query
-        page = session.page.raw
-        try:
-            hl_locator = page.locator(f'a[href*="{hl_id}"]').first
-            if hl_locator.count() == 0:
-                hl_locator = page.get_by_text(hl["title"].replace("_", " "), exact=False).first
-
-            if hl_locator and hl_locator.count() > 0:
-                hl_locator.click()
-                page.wait_for_timeout(3500)
-                # Close story modal so subsequent highlights can be clicked
-                try:
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(1000)
-                except Exception:
-                    pass
+    def on_result(self, session: Session, result: Any, response: Any) -> None:
+        """Note the profile's picture and highlights, and save the posts of the tab being read."""
+        if not isinstance(result, dict):
+            return
+        # Only the profile's first result describes its user; later pages may describe others.
+        picture = profile_picture(result)
+        if picture and not self.described:
+            self.picture, self.described = picture, True
+        self.highlights += [found for found in listed_highlights(result) if found not in self.highlights]
+        tab = session.folder
+        if tab not in self.listed:
+            return
+        for post in tab_media(result, tab):
+            code = post_name(post)
+            if not code or code in self.listed[tab]:
+                continue
+            self.listed[tab].add(code)
+            if is_complete(post):
+                save_post(session, post, category=tab, folder=tab)
+                self.saved.add(code)
             else:
-                # Fallback to direct navigation
-                session.goto(hl_url)
-                page.wait_for_timeout(3500)
-        except Exception as e:
-            session.warn("Could not open highlight '{title}': {err}", title=hl_title, err=e)
-        stop()
+                self.incomplete.append((tab, code))
 
-        session.info("Highlight '{title}': intercepted {n} items.", title=hl_title, n=found[0])
 
-    def _queue_media(
-        self,
-        session: Session,
-        item: Dict[str, Any],
-        folder: str,
-        headers: Optional[Dict[str, str]],
-        sniff_video: bool,
-        category: Optional[str] = None,
-    ) -> None:
-        """Queue each file of a post or story. Posts also count a `.mp4` URL as a video."""
-        date_str = item.get("date") or ""
-        post_id = item["id"]
+def post_code(parts: list[str]) -> str | None:
+    """The post code in a URL's path parts, or None when it points to no post."""
+    for kind, code in zip(parts, parts[1:]):
+        if kind in POST_PATHS:
+            return code
+    return None
 
-        for idx, media_url in enumerate(item.get("media_urls", [])):
-            is_video = item.get("is_video", False) or (sniff_video and ".mp4" in media_url)
-            ext = "mp4" if is_video else "jpg"
-            stem = f"{post_id}_{idx}" if len(item["media_urls"]) > 1 else post_id
-            filename = f"{date_str}_{stem}.{ext}" if date_str else f"{stem}.{ext}"
-            session.save(media_url, filename, category=category or folder, date=taken_on(date_str),
-                         folder=folder, headers=headers)
 
-    def _extract_media_from_json(self, session: Session, data: Dict[str, Any],
-                                 tab: str = "posts") -> List[Dict[str, Any]]:
-        """
-        Extract media items from Instagram GraphQL JSON for posts, reels, tagged, or reposts.
-        """
-        extracted = []
-        try:
-            edges = []
+def load(session: Session, profile: Profile, url: str) -> bool:
+    """Go to `url` and read the results its HTML embeds, as the later responses are read; False if it didn't load."""
+    if not session.goto(url):
+        return False
+    for result in embedded_results(session.page.selector):
+        profile.on_result(session, result, None)
+    return True
 
-            # 1. Main timeline posts
-            if tab == "posts":
-                timeline = (selector.select(data).jmespath(
-                    "data.xdt_api__v1__feed__user_timeline_graphql_connection"
-                    " || data.user.edge_owner_to_timeline_media"
-                ).first or {})
-                edges = timeline.get("edges", [])
 
-            # 2. Reels tab
-            elif tab == "reels":
-                clips = (selector.select(data).jmespath(
-                    "data.fetch__XDTUserDict.clips_connection"
-                    " || data.xdt_api__v1__clips__user__connection_v2"
-                    " || data.user.edge_felix_video_timeline"
-                ).first or {})
-                edges = clips.get("edges", [])
+def save_post_page(session: Session, code: str, *, category: str, folder: str) -> None:
+    """Open one post's page and save its files, every carousel item included."""
+    if not session.goto(f"{SITE}/p/{code}/"):
+        return
+    found = [post for result in embedded_results(session.page.selector) if (post := post_media(result))]
+    if not found:
+        session.warn("post {code}: its page holds no post; skipped", code=code)
+        return
+    save_post(session, found[0], category=category, folder=folder)
 
-            # 3. Tagged tab
-            elif tab == "tagged":
-                tagged_conn = (selector.select(data).jmespath(
-                    "data.xdt_api__v1__usertags__user_id__feed_connection"
-                    " || data.user.edge_user_to_photos_of_you"
-                ).first or {})
-                if tagged_conn:
-                    edges = tagged_conn.get("edges", [])
-                else:
-                    # Generic search for usertag feeds in JSON
-                    for k, v in data.get("data", {}).items():
-                        if "usertag" in k.lower() and isinstance(v, dict):
-                            edges = v.get("edges", [])
-                            break
 
-            # 4. Reposts tab
-            elif tab == "reposts":
-                reposts_conn = (selector.select(data).jmespath(
-                    "data.fetch__XDTUserDict.user_reposts_timeline"
-                    " || data.xdt_api__v1__feed__user_reposts_graphql_connection"
-                    " || data.user_reposts_timeline"
-                ).first or {})
-                if "repost_grid_items" in reposts_conn:
-                    edges = [{"node": item.get("media", item)} for item in reposts_conn.get("repost_grid_items", [])]
-                elif "edges" in reposts_conn:
-                    edges = reposts_conn.get("edges", [])
-                else:
-                    for k, v in data.get("data", {}).items():
-                        if "repost" in k.lower() and isinstance(v, dict):
-                            if "repost_grid_items" in v:
-                                edges = [{"node": item.get("media", item)} for item in v["repost_grid_items"]]
-                            elif "edges" in v:
-                                edges = v["edges"]
-                            break
+def save_post(session: Session, post: dict, *, category: str, folder: str) -> None:
+    """Save each file of a post; the key is its code and place, so a post on two tabs is saved once."""
+    code, day = post_name(post), taken_on(post)
+    files = post_files(post)
+    for index, (url, extension) in enumerate(files):
+        stem = f"{code}_{index}" if len(files) > 1 else code
+        file_name = f"{day}_{stem}.{extension}" if day else f"{stem}.{extension}"
+        session.save(url, file_name, category=category, date=day, folder=folder, key=f"{code}_{index}",
+                     headers=CDN_HEADERS)
 
-            # Fallback if edges empty: check generic items list
-            if not edges and "items" in data:
-                edges = [{"node": item} for item in data.get("items", [])]
 
-            for edge in edges:
-                outer_node = edge.get("node", {})
-                node = outer_node
-                # If node has an inner 'media' dictionary (common in reels / clips_connection)
-                if "media" in outer_node and isinstance(outer_node["media"], dict):
-                    node = outer_node["media"]
+def save_story_page(session: Session, url: str, *, category: str, folder: str) -> None:
+    """Open a story or highlight page and save each of its stories."""
+    if not session.goto(url):
+        return
+    stories = [story for result in embedded_results(session.page.selector) for story in story_items(result)]
+    for story in stories:
+        file = best_file(story)
+        if file is None:
+            continue
+        url, extension = file
+        story_id, day = str(story.get("pk") or story.get("id", "")).split("_")[0], taken_on(story)
+        file_name = f"{day}_{story_id}.{extension}" if day else f"{story_id}.{extension}"
+        session.save(url, file_name, category=category, date=day, folder=folder, headers=CDN_HEADERS)
+    session.info("{folder}: {n} stories", folder=folder, n=len(stories))
 
-                post_id = str(node.get("code") or node.get("shortcode") or outer_node.get("code") or node.get("pk") or node.get("id") or "")
-                if not post_id:
-                    continue
 
-                ts = (
-                    node.get("taken_at")
-                    or node.get("taken_at_timestamp")
-                    or outer_node.get("taken_at")
-                    or outer_node.get("taken_at_timestamp")
-                )
-                date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
+def post_name(post: dict) -> str:
+    """A post's code, as in its URL, or its number when the result leaves the code out."""
+    return str(post.get("code") or post.get("pk") or "")
 
-                media_urls = []
-                is_video = False
 
-                # Carousel / multi-photo slides
-                carousel = node.get("carousel_media", [])
-                if carousel:
-                    for child in carousel:
-                        videos = child.get("video_versions", [])
-                        images = selector.select(child).jmespath("image_versions2.candidates").all
-                        if videos:
-                            media_urls.append(videos[0]["url"])
-                            is_video = True
-                        elif images:
-                            media_urls.append(images[0]["url"])
+def picture_name(url: str) -> str:
+    """A profile picture's file name, as Instagram's URL names it, so a new picture is a new file."""
+    return urlsplit(url).path.rsplit("/", 1)[-1] or "profile.jpg"
 
-                # Legacy edge_sidecar_to_children
-                elif selector.select(node).jmespath("edge_sidecar_to_children.edges").first:
-                    for child in node["edge_sidecar_to_children"]["edges"]:
-                        c_node = child.get("node", {})
-                        if c_node.get("is_video") and c_node.get("video_url"):
-                            media_urls.append(c_node["video_url"])
-                            is_video = True
-                        elif c_node.get("display_url"):
-                            media_urls.append(c_node["display_url"])
 
-                # Single photo or video item
-                else:
-                    videos = node.get("video_versions", [])
-                    images = selector.select(node).jmespath("image_versions2.candidates").all
-                    if videos:
-                        media_urls.append(videos[0]["url"])
-                        is_video = True
-                    elif node.get("video_url"):
-                        media_urls.append(node["video_url"])
-                        is_video = True
-                    elif images:
-                        media_urls.append(images[0]["url"])
-                    elif node.get("display_url"):
-                        media_urls.append(node["display_url"])
+def tab_media(result: Any, tab: str) -> list[dict]:
+    """The posts one profile tab's result lists: `tab_media(result, "reels")`."""
+    found = selector.select(result)
+    for path in TAB_CONNECTIONS[tab]:
+        connection = found.jmespath(f"data.{path}").first
+        if isinstance(connection, dict):
+            break
+    else:
+        return []
+    if "repost_grid_items" in connection:
+        nodes = [item.get("media", item) for item in connection["repost_grid_items"]]
+    else:
+        nodes = [edge.get("node") or {} for edge in connection.get("edges", [])]
+    # The reels tab wraps each post as {"media": post}.
+    return [node["media"] if isinstance(node.get("media"), dict) else node for node in nodes]
 
-                if media_urls:
-                    # Deduplicate while preserving order
-                    seen_urls = set()
-                    deduped_urls = [u for u in media_urls if not (u in seen_urls or seen_urls.add(u))]
-                    extracted.append({
-                        "id": post_id,
-                        "date": date_str,
-                        "is_video": is_video or (tab == "reels"),
-                        "media_urls": deduped_urls,
-                    })
 
-        except Exception as e:
-            session.warn("Error parsing Instagram JSON for {tab}: {err}", tab=tab, err=e)
+def is_complete(media: dict) -> bool:
+    """Whether a listed post has its date and files; the reels, tagged and reposts grids leave both out."""
+    return bool(media.get("taken_at"))
 
-        return extracted
 
-    def _extract_highlights_from_json(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract highlight collections from profile GraphQL."""
-        highlights = []
-        try:
-            edges = selector.select(data).jmespath("data.highlights.edges").all
-            for edge in edges:
-                node = edge.get("node", {})
-                hid = node.get("id")
-                title = fmt.filename(node.get("title", "highlight"))
-                if hid:
-                    highlights.append({"id": hid, "title": title})
-        except Exception:
-            pass
-        return highlights
+def post_media(result: Any) -> dict | None:
+    """The post a post's own page shows, or None when this result isn't it."""
+    media = selector.select(result).jmespath(POST).first
+    return media if isinstance(media, dict) else None
 
-    def _extract_stories_from_json(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract story/highlight media items from GraphQL connection."""
-        items = []
-        try:
-            nodes = selector.select(data).jmespath(
-                "data.xdt_api__v1__feed__reels_media__connection.edges"
-                " || data.reels_media"
-            ).all
-            for node in nodes:
-                reel = node.get("node", {}) if "node" in node else node
-                for item in reel.get("items", []):
-                    story_id = str(item.get("id") or item.get("pk") or "").split("_")[0]
-                    ts = item.get("taken_at")
-                    date_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else ""
 
-                    media_urls = []
-                    is_video = False
-                    if item.get("media_type") == 2 and item.get("video_versions"):
-                        media_urls.append(item["video_versions"][0]["url"])
-                        is_video = True
-                    elif selector.select(item).jmespath("image_versions2.candidates").first:
-                        media_urls.append(item["image_versions2"]["candidates"][0]["url"])
+def story_items(result: Any) -> list[dict]:
+    """The stories of a story or highlight page."""
+    return [item for item in selector.select(result).jmespath(STORIES).all if isinstance(item, dict)]
 
-                    if media_urls:
-                        items.append({
-                            "id": story_id,
-                            "date": date_str,
-                            "is_video": is_video,
-                            "media_urls": media_urls,
-                        })
-        except Exception:
-            pass
-        return items
+
+def listed_highlights(result: Any) -> list[tuple[str, str]]:
+    """The profile's highlights as `(id, title)`, from the result that lists them."""
+    nodes = selector.select(result).jmespath("data.highlights.edges[].node").all
+    return [(str(node["id"]).removeprefix("highlight:"), node.get("title") or "highlight")
+            for node in nodes if isinstance(node, dict) and node.get("id")]
+
+
+def profile_picture(result: Any) -> str | None:
+    """The largest profile picture of the profile's user, from the result that describes them."""
+    return selector.select(result).jmespath("data.user.hd_profile_pic_url_info.url").first
+
+
+def post_files(media: dict) -> list[tuple[str, str]]:
+    """Each file of a post as `(url, extension)`: every carousel item, or the post itself."""
+    children = media.get("carousel_media") or [media]
+    return [file for child in children if (file := best_file(child)) is not None]
+
+
+def best_file(media: dict) -> tuple[str, str] | None:
+    """The largest video of one item, or else its largest image, as `(url, extension)`."""
+    videos = media.get("video_versions") or []
+    if videos:
+        return max(videos, key=_area)["url"], "mp4"
+    images = selector.select(media).jmespath("image_versions2.candidates").all
+    if images:
+        url = max(images, key=_area)["url"]
+        return url, image_extension(url)
+    return None
+
+
+def image_extension(url: str) -> str:
+    """An image's extension from its URL: older posts are served as WebP, newer ones as JPEG."""
+    suffix = PurePosixPath(urlsplit(url).path).suffix.lower().lstrip(".")
+    return suffix if suffix in IMAGE_EXTENSIONS else "jpg"
+
+
+def taken_on(media: dict) -> date | None:
+    """The day a post or story was taken, or None when the result leaves it out."""
+    stamp = media.get("taken_at")
+    return datetime.fromtimestamp(int(stamp)).date() if stamp else None
+
+
+def _area(version: dict) -> int:
+    return (version.get("width") or 0) * (version.get("height") or 0)
