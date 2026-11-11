@@ -124,7 +124,7 @@ browser = ["playwright>=1.40.0", "cryptography>=42"]
 bundler = ["pyinstaller"]
 ```
 
-flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `pyzipper` and `py7zr`, because flnd always needs them. The dev group adds `pyright` and `typing_extensions`.
+flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pyzipper` and `py7zr`, because flnd always needs them (`qrcode` draws tlg's QR login). The dev group adds `pyright` and `typing_extensions`.
 
 ## Makefile
 

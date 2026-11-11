@@ -115,7 +115,7 @@ The only way a source acts.
 | SDK | `client`: what `connect` produced |
 | results | `save(source, name, *, category, date=None, folder=None, key=None, password=None, size=None, headers=None) -> bool`, `write(name, text) -> bool`, `folder`, `full`. `headers=` are sent with that file only, such as a CDN's `Referer` |
 | state | `state` (a `kv` table for this source, in `.flnd/sources.db`), `secrets` (encrypted; see [Secrets](#secrets)) |
-| people | `ask(message, *, secret=False, description="")`, `choose(message, options)`, `info(…)`, `warn(…)`, `challenged()`. `info` and `warn` name the target. `ask` and `choose` work during `flnd login` only; during a download they raise `RuntimeError` |
+| people | `ask(message, *, secret=False, description="")`, `choose(message, options)`, `info(…)`, `warn(…)`, `challenged()`. `info` and `warn` name the target. `ask` and `choose` work during `flnd login` only; during a download they raise `RuntimeError`. `interactive` says whether they can ask: during `flnd login`, in a terminal |
 
 `save` reports a file and returns `False` when it is skipped (already there, already queued, or filtered out by `--from`/`--since`/`--until`), the limit is reached, or `folder` is `None`. `folder` starts as `""`, the target's own folder. Its `source` is:
 - a URL;
@@ -275,7 +275,7 @@ If the browser can't be read at all (see [cookies](cookies.md#platform-notes-for
 
 At download time the engine reads `.flnd/cookies/<code>.txt`, or an older `<code>.json` (and the `E:/` folders flnd used to read), with the same fix-up, because files written before `flnd login` lack it.
 
-**A source with its own way of logging in** overrides `Source.login(self, session, method)` and lists its own `login_methods`; the engine then calls it for every method, even one named `browser`. Today that's Telegram, with `browser` (Telegram Web's saved login), `qr` and `phone` ([tlg](tlg.md#login)). It asks through `session.ask` and `session.choose`, and stores the result in `session.secrets`.
+**A source with its own way of logging in** overrides `Source.login(self, session, method)` and lists its own `login_methods`; the engine then calls it for every method, even one named `browser`. Today that's Telegram, with `browser` (Telegram Web's saved login), `qr` and `phone` ([tlg](tlg.md#login)). It asks through `session.ask` and `session.choose` (checking `session.interactive` first when a method can't work without answers), stores the result in `session.secrets`, and raises `LoginError` (from `flnd.sources.base`; `flnd.login.LoginError` is the same class) when the login fails, which `flnd login` reports with exit code 1. Its session's target is the account, which prints as the source's code alone (`tlg`), so `session.info("logged in as …")` reads `• tlg: logged in as …`.
 
 **Logged in or not at download time.** `Source.logged_in(self, session) -> bool` defaults to "one of `needs` is in the source's cookie file". When it is `False`, the engine prints one hint and never asks:
 - **`requires_login = False`** (the default): `! ins: not logged in, using public access; run flnd login ins`, then the download continues, as flnd does today.
@@ -293,7 +293,7 @@ Login data lives in `.flnd/`, so `rm -rf .flnd` removes every trace.
 
 ## SDK clients
 
-For services with an SDK instead of URLs. `Source.connect(session)` returns a context manager, or an async one. The engine enters it once per source group, before the first target, and exits it after the last. `session.client` is the result. Anything async in a group (an async `connect`, an async `run`, an async `fetch`) runs on one event loop of that group's own, in a thread started on first use, because an SDK client only works on the loop that made it. A `fetch` download still takes a download-pool slot, and waits there for its coroutine on that loop. Other groups keep their threads.
+For services with an SDK instead of URLs. `Source.connect(session)` returns a context manager, or an async one. The engine enters it once per source group, before the first target, and exits it after the last. `session.client` is the result. Anything async in a group (an async `connect`, an async `run`, an async `fetch`) runs on one event loop of that group's own, in a thread started on first use, because an SDK client only works on the loop that made it. A `fetch` download still takes a download-pool slot, and waits there for its coroutine on that loop. A `save` made on that loop (from an async `run`) never waits for room in the pool, because the downloads it would wait for need the same loop: a thread of the target's hands those files to the pool instead, and `full` counts saves, not pool tasks. Other groups keep their threads.
 
 ## The engine
 
