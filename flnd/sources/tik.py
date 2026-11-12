@@ -1,10 +1,18 @@
 """TikTok: a profile's videos, photo posts, stories, playlists, reposts, liked and favorites, and its picture.
 
-How it works: a profile is opened in a browser, and its lists are read from the JSON responses the
-page receives while it scrolls (`watch_responses`); there is no API of the source's own to call.
-The route `user` returns a `Profile`, which opens the page the first time a category needs it and
-shares what it read between the categories. One video, by id or URL, is read from the public embed
-page, without a browser.
+How it works: the list APIs first, and the browser only as the fallback (plan/phase-6/simplify.md §4).
+The route `user` returns a `Profile`, shared by the categories. The first category to need the
+profile fetches its HTML with flnd's own client, for the user's `secUid` and id in the data the
+server renders into it. Each list (`/api/post/item_list/`, the reposts, liked, favorites and
+stories lists) is then asked for directly, page by page (`pages`), with the web client's fixed
+parameters (gallery-dl's: `aid=1988`, `app_name=tiktok_web`, a random 19-digit `device_id`, made
+anew when a page comes back repeated) and `cursor` from the last page. So a profile run needs no
+page, and meets no captcha, as long as TikTok answers its lists unsigned.
+
+When it doesn't (the HTML has no `secUid`, a list is refused or isn't JSON, or the post list comes
+back empty while the profile counts videos), that list is read as before: the profile is opened in
+the browser, and its JSON responses are read while the page scrolls (`watch_responses`), with one
+warning. One video, by id or URL, is read from the public embed page, without a browser.
 
     flnd download tik:example_creator --from videos,playlists
     flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456
@@ -36,15 +44,16 @@ A single video's folder, `.flnd/downloads/tik/<video_id>/`, has `videos/` or `im
 
 from __future__ import annotations
 
+import random
 import re
 from collections import deque
 from pathlib import PurePosixPath
 from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
-from flnd.source import FetchError, File, Post, Site, Source, day, fill, target
+from flnd.source import FetchError, File, Post, Site, Source, day, fill, pages, target
 from flnd.sources.common.watch import Responses, watch_responses
-from shared import selector
+from shared import http, selector
 
 # The user agent TikTok's embed page and CDN have always been sent: a desktop Chrome.
 TIKTOK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -68,6 +77,19 @@ USER = '"__DEFAULT_SCOPE__"."webapp.user-detail".userInfo'
 # A Unix time before 1973 is a placeholder (0, a small number), not a post's time: the post is then
 # dated from its id instead.
 FIRST_UNIX_TIME = 100000000
+SITE = "https://www.tiktok.com"
+# The web client's fixed parameters, which its list APIs answer without a signature (gallery-dl's,
+# read 2026-11-12; to be confirmed by a live run). `device_id` is added per page, `cursor` and the
+# list's own (`secUid`, `authorId`) by the caller.
+WEB_PARAMS = {"aid": "1988", "app_name": "tiktok_web", "app_language": "en", "browser_language": "en-US",
+              "browser_name": "Mozilla", "browser_online": "true", "browser_platform": "Win32",
+              "channel": "tiktok_web", "cookie_enabled": "true", "device_platform": "web_pc", "focus_state": "true",
+              "from_page": "user", "is_fullscreen": "false", "is_page_visible": "true", "language": "en",
+              "os": "windows", "region": "US", "screen_height": "1080", "screen_width": "1920"}
+# Items asked for per page: what the web client asks for.
+PAGE_SIZE = 35
+# A web client's `device_id` is 19 random digits.
+DEVICE_DIGITS = 19
 
 
 class Feed(NamedTuple):
@@ -75,6 +97,88 @@ class Feed(NamedTuple):
 
     category: str
     api: str
+
+
+# The list each category asks for directly, and which of the user's ids it takes.
+LISTS = {
+    "videos": ("/api/post/item_list/", "secUid"),
+    "stories": ("/api/story/item_list/", "authorId"),
+    "reposts": ("/api/repost/item_list/", "secUid"),
+    "favorites": ("/api/user/collect/item_list/", "secUid"),
+    "liked": ("/api/favorite/item_list/", "secUid"),
+}
+
+
+class Refused(Exception):
+    """A list API that didn't answer with a list: the category reads it in the browser instead."""
+
+
+def new_device() -> str:
+    """A web client's `device_id`: 19 random digits, which TikTok ties a session's pages to."""
+    return str(random.randrange(10 ** (DEVICE_DIGITS - 1), 10 ** DEVICE_DIGITS))
+
+
+def list_pages(site: Site, category: str, user: Mapping[str, Any]) -> Iterator[Dict[str, Any]]:
+    """Each page of one of the profile's lists, asked for directly, until it says it has no more.
+
+        for data in list_pages(site, "videos", {"secUid": "MS4w…", "id": "6800000000000000000"}): ...
+
+    Args:
+        site: the target's site; each page is paced, a 429 waited out.
+        category: a key of `LISTS`.
+        user: the profile's `user` object, holding its `secUid` and `id`.
+
+    Raises:
+        Refused: a page was refused, isn't JSON, or has a `statusCode` other than 0; the caller
+            reads the list in the browser instead.
+
+    A page that only repeats items already seen gets a new `device_id` and is asked once more, as
+    gallery-dl does; a second repeat ends the list, and so does a cursor seen before (`pages`).
+    """
+    path, key = LISTS[category]
+    value = user.get("secUid") if key == "secUid" else user.get("id")
+    if not value:
+        raise Refused(f"the profile's data has no {key}")
+    device = [new_device()]
+    seen: set[str] = set()
+
+    def ask(cursor: str | None) -> tuple[Dict[str, Any], set[str]]:
+        params = {**WEB_PARAMS, key: str(value), "count": str(PAGE_SIZE), "cursor": cursor or "0",
+                  "device_id": device[0]}
+        data = list_page(site, f"{SITE}{path}", params)
+        return data, {item["id"] for item in items_of(data)}
+
+    def fetch(cursor: str | None) -> Dict[str, Any]:
+        data, ids = ask(cursor)
+        if cursor and ids and ids <= seen:
+            device[0] = new_device()
+            data, ids = ask(cursor)
+            if ids <= seen:
+                # Repeated again: the list has nothing new to give, so it ends here.
+                return {**data, "hasMore": False}
+        seen.update(ids)
+        return data
+
+    yield from pages(fetch, lambda data: str(data["cursor"]) if data.get("hasMore") and data.get("cursor") else None)
+
+
+def list_page(site: Site, url: str, params: Mapping[str, str]) -> Dict[str, Any]:
+    """One page of a list API, as its JSON object; a refusal of any kind raises `Refused`."""
+    try:
+        response = site.fetch(url, params=params, headers={"Referer": f"{SITE}/"})
+    except FetchError as error:
+        raise Refused(str(error)) from None
+    try:
+        data = response.json
+    # 2026-11 (gallery-dl #9718): an unsigned list can come back as an empty 200 body.
+    except http.Error:
+        raise Refused("its answer isn't JSON") from None
+    if not isinstance(data, dict):
+        raise Refused("its answer isn't a list")
+    status = data.get("statusCode", data.get("status_code", 0))
+    if status not in (0, None):
+        raise Refused(f"statusCode {status}")
+    return data
 
 
 FEEDS = (
@@ -104,35 +208,59 @@ def has_captcha(site: Site) -> bool:
 
 
 class Profile:
-    """What a profile's categories share: its page, opened once, and the lists read from it.
+    """What a profile's categories share: its data, its lists, and its page, opened only when a list needs it.
 
         profile = Profile(site, "example_creator")
-        profile.open(feeds=True)                  # loads the page, waits out a captcha
-        for item in profile.feed("videos"): ...   # reads the page to the end of the videos, once for all
+        for item in profile.feed("videos"): ...   # the post list, direct or else from the page, once for all
 
     Args:
         site: the target's site, whose tab is the profile's.
         name: the user name, without `@`.
 
-    The route builds it and opens nothing: `--from profile` needs the page but no scrolling, and
-    the response watchers must exist before the page loads or the first responses are lost, so
-    the first category that needs the page opens it, as it needs it.
+    The route builds it and asks nothing yet. The first category to need the profile reads its
+    HTML directly (`described`); when that gives no `secUid`, every list is read in the browser as
+    before routes: the response watchers must exist before the page loads or the first responses
+    are lost, so the first category that needs the page opens it, as it needs it.
     """
 
     def __init__(self, site: Site, name: str):
         self.site = site
-        self.url = f"https://www.tiktok.com/@{name}"
-        # The profile's own data from the page (the picture, the video count); empty until it is open.
+        self.url = f"{SITE}/@{name}"
+        # The profile's own data (its `user` with `secUid` and `id`, its `stats`); empty until read.
         self.user: Dict[str, Any] = {}
         # How many items each feed gave, saved or not, so a second run still sees a list grow.
         self.found = {feed.category: 0 for feed in FEEDS}
+        self._direct: bool | None = None
         self._loaded: bool | None = None
-        # The post feed's pages, scrolling for more, and the stories' (no scrolling: they come with the load).
+        # The post list's pages: from the API directly, or else from the page, scrolling for more;
+        # and the stories' page responses (no scrolling: they come with the load).
+        self._api: Iterator[Dict[str, Any]] | None = None
         self._posts: Responses | None = None
         self._stories: Responses | None = None
+        self._started = False
         # The post feed's items waiting for the category that wants them: a playlist's or not.
         self._queues: Dict[str, deque[Dict[str, Any]]] = {"videos": deque(), "playlists": deque()}
+        # The (id, idx) of each post-feed file queued, so a page re-read after a fallback adds nothing twice.
+        self._seen: set[tuple[str, int]] = set()
         self._told = False
+
+    @property
+    def on_page(self) -> bool:
+        """Whether the profile's page was opened in the browser."""
+        return bool(self._loaded)
+
+    def described(self) -> bool:
+        """Whether the profile's HTML, fetched directly on the first call, gave its data with a `secUid`."""
+        if self._direct is None:
+            self._direct = False
+            try:
+                page = self.site.fetch(self.url).html
+            except (FetchError, http.Error):
+                return False
+            user = page.script(PAGE_DATA).jmespath(USER).first
+            if isinstance(user, dict) and selector.parse(user).jmespath("user.secUid").first:
+                self.user, self._direct = user, True
+        return self._direct
 
     def open(self, *, feeds: bool) -> bool:
         """Open the profile on the first call, and return whether it loaded; later calls answer the same.
@@ -150,10 +278,20 @@ class Profile:
             self._loaded = self._load()
         return self._loaded
 
-    def feed(self, wanted: str) -> Iterator[Dict[str, Any]]:
-        """The post feed's items of `wanted` ("videos", or "playlists" for those in a playlist), reading the page as needed.
+    def start(self) -> bool:
+        """Start the post feed on the first call: its list API when the profile was described, else the page."""
+        if not self._started:
+            self._started = True
+            if self.described():
+                self._api = list_pages(self.site, "videos", self.user.get("user") or {})
+            else:
+                return self.open(feeds=True)
+        return self._api is not None or bool(self._loaded)
 
-        Scrolling reads both kinds at once; the kind not asked for waits in its queue for the
+    def feed(self, wanted: str) -> Iterator[Dict[str, Any]]:
+        """The post feed's items of `wanted` ("videos", or "playlists" for those in a playlist), reading the list as needed.
+
+        Reading gives both kinds at once; the kind not asked for waits in its queue for the
         category that is. The iterator ends when the feed does.
         """
         queue = self._queues[wanted]
@@ -164,7 +302,21 @@ class Profile:
                 return
 
     def stories(self) -> Iterator[Dict[str, Any]]:
-        """The story feeds' items, from what arrived with the page and while it scrolled."""
+        """The profile's stories: from the page when it was loaded watching them, else from their list API."""
+        if self._stories is None and self.described():
+            try:
+                for data in list_pages(self.site, "stories", self.user.get("user") or {}):
+                    items = items_of(data)
+                    self.found["stories"] += len(items)
+                    yield from items
+                return
+            except Refused as error:
+                self.site.warn("stories: the list API refused ({error}); reading the profile in the browser",
+                               error=error)
+                if not self._watch(stories=True):
+                    return
+        elif self._stories is None and not self.open(feeds=True):
+            return
         stories, self._stories = self._stories, None
         for data in stories or ():
             items = items_of(data)
@@ -172,12 +324,46 @@ class Profile:
             yield from items
 
     def tab(self, category: str, tab: str) -> Iterator[Dict[str, Any]]:
-        """Open one profile tab and read its feed to the end; one line when the account doesn't show it.
+        """One of the profile's other lists, to its end: its API, else its tab in the browser.
 
         Args:
             category: the tab's feed: "reposts", "favorites" or "liked".
             tab: the tab's `data-e2e` name.
+
+        One line says when the account doesn't show the list, or shows nothing in it.
         """
+        seen: set[tuple[str, int]] = set()
+        if self.described():
+            try:
+                for data in list_pages(self.site, category, self.user.get("user") or {}):
+                    for item in items_of(data):
+                        seen.add((item["id"], item["idx"]))
+                        self.found[category] += 1
+                        yield item
+                if not self.found[category]:
+                    self.site.info("{tab}: nothing public on this account", tab=category)
+                return
+            except Refused as error:
+                self.site.warn("{tab}: the list API refused ({error}); reading the tab in the browser",
+                               tab=category, error=error)
+        if not self.open(feeds=False):
+            return
+        for item in self._clicked(category, tab):
+            if (item["id"], item["idx"]) not in seen:
+                yield item
+
+    def wait_out_captcha(self) -> None:
+        """Until no captcha is left: a person solves it in the window, or the source backs off and reloads."""
+        while has_captcha(self.site):
+            if self.site.handoff(until=lambda: not has_captcha(self.site), timeout=CAPTCHA_TIMEOUT,
+                                 message="Solve the TikTok captcha in the browser window"):
+                return
+            self.site.back_off("TikTok captcha")
+            self.site.goto(self.url)
+            self.site.page.raw.wait_for_timeout(SETTLE * 1000)
+
+    def _clicked(self, category: str, tab: str) -> Iterator[Dict[str, Any]]:
+        """Open one profile tab in the browser by a click and read its feed to the end."""
         css = f'[data-e2e="{tab}"]'
         if not self.site.page.document.css(css):
             self.site.info("{tab}: not public on this account", tab=category)
@@ -198,15 +384,16 @@ class Profile:
         if not self.found[category]:
             self.site.info("{tab}: nothing public on this account", tab=category)
 
-    def wait_out_captcha(self) -> None:
-        """Until no captcha is left: a person solves it in the window, or the source backs off and reloads."""
-        while has_captcha(self.site):
-            if self.site.handoff(until=lambda: not has_captcha(self.site), timeout=CAPTCHA_TIMEOUT,
-                                 message="Solve the TikTok captcha in the browser window"):
-                return
-            self.site.back_off("TikTok captcha")
-            self.site.goto(self.url)
-            self.site.page.raw.wait_for_timeout(SETTLE * 1000)
+    def _watch(self, *, posts: bool = False, stories: bool = False) -> bool:
+        """Read a list in the browser after its API failed: the first load watches both feeds, a later one reloads."""
+        if self._loaded is None:
+            return self.open(feeds=True)
+        if posts:
+            self._posts = watch_responses(self.site, is_feed_of("videos"), scroll=True)
+        if stories:
+            self._stories = watch_responses(self.site, is_feed_of("stories"))
+        self._loaded = self._load()
+        return self._loaded
 
     def _load(self) -> bool:
         """Load the profile, wait out any captcha it shows and read its own data; False when it didn't load."""
@@ -215,11 +402,34 @@ class Profile:
         # The captcha shows a few seconds after the load event, over a page that looks ready.
         self.site.page.raw.wait_for_timeout(SETTLE * 1000)
         self.wait_out_captcha()
-        self.user = self.site.page.document.script(PAGE_DATA).jmespath(USER).first or {}
+        self.user = self.site.page.document.script(PAGE_DATA).jmespath(USER).first or self.user or {}
         return True
 
     def _read(self) -> bool:
-        """Read the post feed's next response into the queues; False once the feed has ended."""
+        """Read the post feed's next page into the queues; False once the feed has ended."""
+        if not self.start():
+            return False
+        if self._api is not None:
+            try:
+                data = next(self._api)
+            except StopIteration:
+                self._api = None
+                listed = selector.parse(self.user).jmespath("stats.videoCount").first
+                # 2026-11 (gallery-dl #9718): an empty first page while the profile counts videos is a wall, not the end.
+                if self.found["videos"] or not listed:
+                    self._end()
+                    return False
+                self.site.warn("videos: the list API gave none of the {listed} videos; reading the profile "
+                               "in the browser", listed=listed)
+            except Refused as error:
+                self._api = None
+                self.site.warn("videos: the list API refused ({error}); reading the profile in the browser",
+                               error=error)
+            else:
+                self._file(data, api=True)
+                return True
+            if not self._watch(posts=True):
+                return False
         while self._posts is not None:
             for data in self._posts:
                 self._file(data)
@@ -233,13 +443,16 @@ class Profile:
             self.wait_out_captcha()
         return False
 
-    def _file(self, data: Any) -> None:
-        """Queue one post-feed response's items, and end the feed when it says it has no more."""
+    def _file(self, data: Any, *, api: bool = False) -> None:
+        """Queue one post-feed page's items not queued before, and end a watched feed when it says it has no more."""
         items = items_of(data)
         self.found["videos"] += len(items)
         for item in items:
+            if (item["id"], item["idx"]) in self._seen:
+                continue
+            self._seen.add((item["id"], item["idx"]))
             self._queues["playlists" if item["playlist"] else "videos"].append(item)
-        if isinstance(data, dict) and "hasMore" in data and not data["hasMore"] and self._posts is not None:
+        if not api and isinstance(data, dict) and "hasMore" in data and not data["hasMore"] and self._posts is not None:
             self._end()
 
     def _end(self) -> None:
@@ -263,6 +476,8 @@ class TikTok(Source):
     domains = ("tiktok.com",)
     needs = ("sessionid", "sid_tt")
     user_agent = TIKTOK_UA
+    # No known limit; a captcha is its signal, which doubles the gap (plan/phase-6/pace.md).
+    pace = 1.0
     # What a post's files are named and keyed by, as they always were: `<date>_<id>` for a video and
     # `<date>_<id>_<n>` for the n-th photo (n from 1), the key the same without the date. `idx` is
     # empty for a video, so the `_` before it goes. A post's `part` is its folder (videos, images,
@@ -289,12 +504,10 @@ class TikTok(Source):
     # Newest first, apart from pinned videos at the top, which the engine's early stop allows for.
     @user.category(newest_first=True)
     def videos(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The videos and photo posts that are in no playlist; the page's links when the API is walled."""
-        if not profile.open(feeds=True):
-            return
+        """The videos and photo posts that are in no playlist; the page's links when every list is walled."""
         for item in profile.feed("videos"):
             yield post_of(site, item, "videos")
-        if not profile.found["videos"]:
+        if not profile.found["videos"] and profile.on_page:
             # A walled API gave nothing: read each post linked on the page from its embed page.
             links = [match.group(2) for href in site.page.document.css(POST_LINKS).all
                      if (match := re.search(r"/(video|photo)/(\d+)", href))]
@@ -303,43 +516,38 @@ class TikTok(Source):
 
     @user.category
     def stories(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's stories, which come with the page."""
-        if profile.open(feeds=True):
-            for item in profile.stories():
-                yield post_of(site, item, "stories")
+        """The profile's stories: their list API, or the page they come with."""
+        for item in profile.stories():
+            yield post_of(site, item, "stories")
 
     @user.category(newest_first=True)
     def playlists(self, site: Site, profile: Profile) -> Iterator[Post]:
         """The videos that are in a playlist, each under `albums/<playlist title>/`."""
-        if profile.open(feeds=True):
-            for item in profile.feed("playlists"):
-                yield post_of(site, item, "videos")
+        for item in profile.feed("playlists"):
+            yield post_of(site, item, "videos")
 
     @user.category
     def reposts(self, site: Site, profile: Profile) -> Iterator[Post]:
         """The Reposts tab. Not `newest_first`: it is ordered by when each was reposted, not posted."""
-        if profile.open(feeds=False):
-            for item in profile.tab("reposts", "repost-tab"):
-                yield post_of(site, item, "reposts")
+        for item in profile.tab("reposts", "repost-tab"):
+            yield post_of(site, item, "reposts")
 
     @user.category
     def liked(self, site: Site, profile: Profile) -> Iterator[Post]:
         """The Liked tab, when the account made it public."""
-        if profile.open(feeds=False):
-            for item in profile.tab("liked", "liked-tab"):
-                yield post_of(site, item, "liked")
+        for item in profile.tab("liked", "liked-tab"):
+            yield post_of(site, item, "liked")
 
     @user.category
     def favorites(self, site: Site, profile: Profile) -> Iterator[Post]:
         """The Favorites tab, when the account made it public."""
-        if profile.open(feeds=False):
-            for item in profile.tab("favorites", "favorites-tab"):
-                yield post_of(site, item, "favorites")
+        for item in profile.tab("favorites", "favorites-tab"):
+            yield post_of(site, item, "favorites")
 
     @user.category(folder="profile", key="")
     def profile(self, site: Site, profile: Profile) -> Iterator[Post]:
         """The profile picture, named `avatar_<picture id>.jpg` and keyed by that path, as always."""
-        if not profile.open(feeds=False):
+        if not profile.described() and not profile.open(feeds=False):
             return
         url = selector.parse(profile.user).jmespath("user.avatarLarger").first
         if url:

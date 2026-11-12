@@ -1,8 +1,8 @@
 """TikTok: its routes, the names and keys of every file it saves, the captcha, the tabs, and one video from its embed page.
 
-What is faked: the site's answers (`FakeSite` through `collect`), and the browser's tab, by `FakeTab`,
-which hands the profile's JSON responses to whoever watches for them when the source scrolls. No
-network, no browser, no wait is slept.
+What is faked: the site's answers (`FakeSite` through `collect`): the profile's HTML and its list APIs,
+asked for directly, and the browser's tab, by `FakeTab`, which hands the profile's JSON responses to
+whoever watches for them when the source scrolls, the fallback. No network, no browser, no wait is slept.
 """
 
 import json
@@ -15,7 +15,7 @@ from unittest import mock
 from fakes import FakeSite, Seen, collect
 
 from flnd.session import Options
-from flnd.source import Target, TargetError
+from flnd.source import FetchError, Target, TargetError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
 from shared import selector
 from shared._browser import Subscription
@@ -106,10 +106,12 @@ def embed_page(item):
     return f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script></html>'
 
 
-def profile_page(*tabs, video_count=2):
+def profile_page(*tabs, video_count=2, sec_uid=None):
+    user = {"avatarLarger": "https://p16.example/tos-avt/abc123~tplv-cropcenter:1080:1080.jpeg?x=1"}
+    if sec_uid:
+        user.update(secUid=sec_uid, id="6800000000000000001")
     data = {"__DEFAULT_SCOPE__": {"webapp.user-detail": {"userInfo": {
-        "user": {"avatarLarger": "https://p16.example/tos-avt/abc123~tplv-cropcenter:1080:1080.jpeg?x=1"},
-        "stats": {"videoCount": video_count}}}}}
+        "user": user, "stats": {"videoCount": video_count}}}}}
     tab_html = "".join(f'<p data-e2e="{tab}">{tab}</p>' for tab in tabs)
     return (f'<html><body>{tab_html}<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
             f"{json.dumps(data)}</script></body></html>")
@@ -161,12 +163,12 @@ class FakeTab:
         self.deliver()
 
 
-def run(text, *, feeds=(), html="", pages=None, options=Options(), cookies=None):
+def run(text, *, feeds=(), html="", pages=None, json=None, options=Options(), cookies=None):
     """What the job would download for `text`, with `FakeTab` as the browser: (saved files, seen, tab)."""
     seen = Seen()
     tab = FakeTab(seen, feeds, html)
     with mock.patch.object(FakeSite, "page", property(lambda site: tab)):
-        saved = collect(TikTok, text, html=pages, options=options, seen=seen, cookies=cookies)
+        saved = collect(TikTok, text, html=pages, json=json, options=options, seen=seen, cookies=cookies)
     return saved, seen, tab
 
 
@@ -419,6 +421,97 @@ class far_off_timezone:
         else:
             os.environ["TZ"] = self.previous
         time.tzset()
+
+SEC_UID = "MS4wLjABAAAAexample"
+# The profile's HTML as flnd's own client gets it: its data with the secUid the list APIs take.
+DIRECT_HTML = {PROFILE: profile_page(video_count=8, sec_uid=SEC_UID)}
+# Each list API's answers, as the page's scrolling gets them: the same data, asked for directly.
+LISTS = {f"{API}/api/post/item_list/": POSTS, f"{API}/api/story/item_list/": {**STORIES, **STORIES_2},
+         f"{API}/api/repost/item_list/": REPOSTS, f"{API}/api/user/collect/item_list/": FAVORITES,
+         f"{API}/api/favorite/item_list/": LIKED}
+
+
+class ListApiTest(unittest.TestCase):
+    """simplify.md §4: the list APIs directly first, so a profile run needs no page; scrolling only as the fallback."""
+
+    def test_a_profile_is_read_without_the_page_and_named_and_keyed_as_before(self):
+        stories = {"storyList": STORIES["storyList"] + [{"id": "7310000000000000003", "createTime": 1700001002,
+                                                          "video": {"playAddr": f"{CDN}/s3"}}]}
+        saved, seen, tab = run("tik:someone", pages=DIRECT_HTML, json={**LISTS, f"{API}/api/story/item_list/": stories},
+                               options=Options(categories=("all",)))
+        self.assertEqual(sorted(pairs(saved)), sorted(PROFILE_PAIRS))
+        self.assertEqual(seen.visited, [])
+        self.assertEqual(seen.back_offs, [])
+
+    def test_each_list_is_asked_with_the_web_clients_parameters(self):
+        _, seen, _ = run("tik:someone", pages=DIRECT_HTML, json=LISTS, options=Options(categories=("videos", "stories")))
+        lists = [(url, options["params"]) for _, url, options in seen.requests if "/api/" in url]
+        self.assertEqual([url for url, _ in lists], [f"{API}/api/post/item_list/", f"{API}/api/story/item_list/"])
+        posts, stories = (params for _, params in lists)
+        self.assertEqual((posts["secUid"], posts["cursor"], posts["aid"], posts["app_name"]),
+                         (SEC_UID, "0", "1988", "tiktok_web"))
+        self.assertEqual(stories["authorId"], "6800000000000000001")
+        self.assertRegex(posts["device_id"], r"^\d{19}$")
+
+    def test_pages_follow_the_cursor_and_a_repeated_page_gets_a_new_device(self):
+        first = {"hasMore": True, "cursor": "1700000500000",
+                 "itemList": [video("7300000000000000001", f"{CDN}/v1", createTime=1700000000)]}
+        last = {"hasMore": False, "cursor": "0",
+                "itemList": [video("7300000000000000002", f"{CDN}/v2", createTime=1700000001)]}
+        answers = [first, first, last]
+        saved, seen, _ = run("tik:someone", pages=DIRECT_HTML, options=Options(categories=("videos",)),
+                             json={f"{API}/api/post/item_list/": lambda url, request: answers.pop(0)})
+        params = [options["params"] for _, url, options in seen.requests if "/api/" in url]
+        self.assertEqual([p["cursor"] for p in params], ["0", "1700000500000", "1700000500000"])
+        self.assertEqual(params[0]["device_id"], params[1]["device_id"])
+        self.assertNotEqual(params[1]["device_id"], params[2]["device_id"])
+        self.assertEqual([item.key for item in saved], ["7300000000000000001", "7300000000000000002"])
+
+    def test_a_refused_list_falls_back_to_scrolling_with_one_warning(self):
+        for refusal in (FetchError("HTTP 403", status=403), {"statusCode": 10201, "itemList": []}):
+            with self.subTest(refusal=refusal):
+                saved, seen, tab = run("tik:someone", pages=DIRECT_HTML, feeds=FEEDS[:1], html=profile_page(),
+                                       json={f"{API}/api/post/item_list/": refusal},
+                                       options=Options(categories=("videos",)))
+                self.assertEqual(len(saved), 6)
+                self.assertEqual(seen.visited, [PROFILE])
+                warnings = [m for m in seen.messages if m.startswith("!")]
+                self.assertEqual(len(warnings), 1)
+                self.assertIn("videos: the list API refused", warnings[0])
+
+    def test_an_answer_that_isnt_json_falls_back_too(self):
+        saved, seen, _ = run("tik:someone", pages={**DIRECT_HTML, f"{API}/api/post/item_list/": ""}, feeds=FEEDS[:1],
+                             html=profile_page(), options=Options(categories=("videos",)))
+        self.assertEqual(len(saved), 6)
+        self.assertTrue(any("isn't JSON" in m for m in seen.messages))
+
+    def test_an_empty_list_of_a_profile_with_videos_is_a_wall(self):
+        """gallery-dl #9718: TikTok's first page can come back empty; the page is read instead."""
+        saved, seen, _ = run("tik:someone", pages=DIRECT_HTML, feeds=FEEDS[:1], html=profile_page(),
+                             json={f"{API}/api/post/item_list/": {"hasMore": False, "itemList": []}},
+                             options=Options(categories=("videos",)))
+        self.assertEqual(len(saved), 6)
+        self.assertTrue(any("gave none of the 8 videos" in m for m in seen.messages))
+
+    def test_a_private_tab_says_so_without_the_page(self):
+        _, seen, _ = run("tik:someone", pages=DIRECT_HTML, options=Options(categories=("liked",)),
+                         json={f"{API}/api/favorite/item_list/": {"hasMore": False, "itemList": []}})
+        self.assertIn("liked: nothing public on this account", seen.messages)
+        self.assertEqual(seen.visited, [])
+
+    def test_a_refused_tab_is_read_by_its_click(self):
+        saved, seen, _ = run("tik:someone", pages=DIRECT_HTML, feeds=[FEEDS[3]], html=TABS,
+                             json={f"{API}/api/repost/item_list/": FetchError("HTTP 403", status=403)},
+                             options=Options(categories=("reposts",)))
+        self.assertEqual(len(saved), 4)
+        self.assertEqual(seen.visited, [PROFILE])
+
+    def test_html_without_a_sec_uid_reads_everything_in_the_browser(self):
+        _, seen, _ = run("tik:someone", pages={PROFILE: profile_page()}, feeds=FEEDS, html=TABS,
+                         options=Options(categories=("all",)))
+        self.assertEqual([url for _, url, _ in seen.requests], [PROFILE])
+        self.assertEqual(seen.visited, [PROFILE])
+
 
 if __name__ == "__main__":
     unittest.main()
