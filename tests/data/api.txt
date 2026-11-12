@@ -286,8 +286,9 @@ shared.kv.UnstorableError(shared.kv.Error, TypeError)
 shared.kv.open(path: PathLike, *, table: str = 'default', timeout: float = 5.0) -> Store
 shared.log: Log
 shared.log.Error(shared.Error)
-shared.log.Group(theme: Theme, title: str)
+shared.log.Group(theme: Theme, title: str, parent: Progress | None = None)
 shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress
+shared.log.Group.parent: attribute
 shared.log.Progress(label: str, total: float | None, show: Callable[[Any], str], _group: Group)
 shared.log.Progress.advance(n: float = 1) -> None
 shared.log.Progress.caption: property, settable -> str
@@ -297,6 +298,7 @@ shared.log.Progress.finish() -> None
 shared.log.Progress.finished: property -> bool
 shared.log.Progress.label: attribute
 shared.log.Progress.outcome: property -> str | None
+shared.log.Progress.slots: attribute -> int | None
 shared.log.Progress.total: property, settable -> float | None
 shared.log.debug(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.error(message: str = '', /, *args: Any, **fields: Any) -> None
@@ -305,6 +307,7 @@ shared.log.info(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.level: property, settable -> Level
 shared.log.ok(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Iterator[Progress]
+shared.log.under(row: Progress | None) -> Iterator[None]
 shared.log.warn(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.media: module
 shared.media.BrokenError(shared.media.Error, shared.BrokenError)
@@ -410,12 +413,13 @@ shared.style.modifiers: field -> frozenset
 shared.style.paint(text: str, depth: str) -> str
 shared.style.strip(text: str) -> str
 shared.theme: Theme
-shared.theme.Bar(label: str, count: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str)
+shared.theme.Bar(label: str, count: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str, tick: int | None = None)
 shared.theme.Bar.caption: field -> str
 shared.theme.Bar.count: field -> float
 shared.theme.Bar.finished: field -> bool
 shared.theme.Bar.label: field -> str
 shared.theme.Bar.show: field -> Callable[[Any], str]
+shared.theme.Bar.tick: field -> int | None
 shared.theme.Bar.total: field -> float | None
 shared.theme.Error(shared.Error)
 shared.theme.HelpModel(prog: str, description: str, usage: str, arguments: tuple = (), options: tuple = (), commands: tuple = (), epilog: str = '', error: str = '')

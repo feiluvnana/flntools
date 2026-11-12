@@ -103,7 +103,7 @@ class PaletteTest(unittest.TestCase):
         self.theme.palette.ok = "#010203"
         self.theme.palette.label = "#040506"
         self.theme.palette.title = "#070809"
-        self.assertEqual(self.theme.draw("log", LogRecord("ok", "done")), "\x1b[38;2;1;2;3m✓\x1b[0m done")
+        self.assertEqual(self.theme.draw("log", LogRecord("ok", "done")), "\x1b[38;2;1;2;3m✓ done\x1b[0m")
         help_text = self.theme.draw("help", HelpModel("tool", "", "tool name"))
         self.assertIn("\x1b[38;2;4;5;6m  tool name\x1b[0m", help_text)
         self.assertIn("\x1b[38;2;7;8;9mUsage:\x1b[0m", help_text)

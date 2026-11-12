@@ -321,6 +321,12 @@ class Job:
         self._changed = threading.Condition()
         self._pending = 0
         self._running = 0
+        # Every download submitted so far, for the target's row, which counts them.
+        self._submitted = 0
+        # The target's progress row, whose caption counts the files and whose `slots` limit how many
+        # running files are drawn under it; None when a caller has none (set by `download`).
+        self.row: Any = None
+        self._counts = ""
         self._refreshes: deque[_Refresh] = deque()
         # False once the job stops answering refreshes (`finish` after an error); a refresh
         # asked for then gets no fresh link, so no download waits for an answer that won't come.
@@ -488,14 +494,34 @@ class Job:
                     return False
                 if self._pending < limit:
                     self._pending += 1
-                    return True
+                    self._submitted += 1
+                    break
                 self._changed.wait(WAKE)
+        self._show_counts()
+        return True
 
     def _ended(self) -> None:
         """One submitted download has ended, however."""
         with self._changed:
             self._pending -= 1
             self._changed.notify_all()
+        self._show_counts()
+
+    def _show_counts(self) -> None:
+        """Caption the target's row with its files, such as `120 files · 4 running · 31 queued`.
+
+        The row, not one row per queued file, says how many wait, so the live area's height stays
+        steady however many files a target has. Once Ctrl-C was pressed `wait` captions it instead.
+        """
+        row = self.row
+        if row is None or net.stopping.is_set():
+            return
+        with self._changed:
+            text = f"{fmt.count(self._submitted, 'file')} · {self._running} running · {self._pending - self._running} queued"
+        # Compared outside the lock on purpose: two threads racing here only set the same caption twice.
+        if text != self._counts:
+            self._counts = text
+            row.caption = text
 
     def _task(self, queued: _Queued) -> bool:
         """One queued download on a pool thread, unless Ctrl-C came first: a file not yet started is dropped."""
@@ -504,8 +530,11 @@ class Job:
                 if net.stopping.is_set():
                     return False
                 self._running += 1
+            self._show_counts()
             try:
-                return self._download(queued)
+                # The file's bar is drawn under the target's row, one of at most `concurrency`.
+                with log.under(self.row):
+                    return self._download(queued)
             finally:
                 with self._changed:
                     self._running -= 1
@@ -655,6 +684,9 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     """
     site = TargetSite(run, target, row=row)
     job = Job(run, site, target)
+    job.row = row
+    # A target's row shows its running files, as many as the source downloads at once.
+    row.slots = job.source.concurrency
     complete: list[str] = []
     listed = _listed(run.settings.home, target) if sync else {}
     listing = posts(run.source, site, target, run.settings.options, run_async=run.run_async, ended=complete.append,

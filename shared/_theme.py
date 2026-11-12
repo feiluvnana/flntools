@@ -82,6 +82,8 @@ class Bar:
     caption: str
     finished: bool
     show: Callable[[Any], str] = str
+    # The spinner's frame number, which the live area fixes for a whole frame; None reads the clock.
+    tick: int | None = None
 
 
 class HelpModel(NamedTuple):
@@ -222,8 +224,19 @@ def chain_of(value: str | int) -> Chain:
 
 
 def draw_log(theme: Theme, record: LogRecord) -> str:
-    glyph = theme.paint(record.level, getattr(theme.glyphs, LOG_GLYPHS[record.level]))
-    return f"{glyph} {record.message}" if record.message else glyph
+    """A log line, wholly in its level's color; a part of the message with its own style keeps it."""
+    glyph = getattr(theme.glyphs, LOG_GLYPHS[record.level])
+    line = f"{glyph} {record.message}" if record.message else glyph
+    # Paint a marker to learn the level's opening and closing sequences, whatever the color depth.
+    opening, _, closing = theme.paint(record.level, "\0").partition("\0")
+    if not opening:
+        return line
+    # A reset inside the message ends the level's color too, so it is started again after each one.
+    body = line.replace(RESET, RESET + opening)
+    if body.endswith(opening):
+        # The message ended in a reset, which already closes the line.
+        return opening + body[:-len(opening)]
+    return opening + body + closing
 
 
 def draw_progress(theme: Theme, record: LogRecord) -> str:
@@ -353,7 +366,7 @@ def _bar_cells(theme: Theme, bar: Bar) -> str:
         if bar.finished:
             return ""
         frames = theme.glyphs.spin
-        return frames[int(time.monotonic() * 10) % len(frames)]
+        return frames[(int(time.monotonic() * 10) if bar.tick is None else bar.tick) % len(frames)]
     done = max(bar.count, 0)
     filled = BAR_CELLS if bar.total <= 0 else round(BAR_CELLS * min(done, bar.total) / bar.total)
     return theme.glyphs.bar.full * filled + theme.glyphs.bar.empty * (BAR_CELLS - filled)

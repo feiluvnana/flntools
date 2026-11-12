@@ -2,10 +2,14 @@
 
 A line (`log.info`, `log.warn`, …) is formatted, dropped when it's below `log.level`, drawn by
 the theme and written above the live area: the open rows at the bottom of the screen. A
-`log.progress` or `log.group` block opens rows there; on a terminal they're redrawn in place
-(at most every 0.1 s, or at once when a row starts or ends), and when the block ends each row
-is written once more as a final line. Off a terminal only those final lines are written. How a
-line or row looks is the theme's (`shared.theme`); this module decides when and where.
+`log.progress` or `log.group` block opens rows there. Changing a row only marks it: one drawing
+thread per screen, alive while a block is open, redraws the rows that changed (at most every
+0.1 s, one write inside synchronized output, over the old rows rather than after erasing them),
+and the lines written meanwhile go out above the area in that same frame. A row is drawn once it
+has run for 0.5 s, so a burst of small files never flickers. When the block ends each row is
+written once more as a final line. Off a terminal there is no live area and no thread: only the
+final lines are written. How a line or row looks is the theme's (`shared.theme`); this module
+decides when and where.
 
     log.level = "debug"
     log.ok("{n} saved", n=3)
@@ -16,8 +20,9 @@ line or row looks is the theme's (`shared.theme`); this module decides when and 
         row = rows.add("ins:example")
         row.total = 12
 
-Every function and property here may be called from several threads at once: lines and row
-changes go through the screen's lock, and `prompt` holds other threads' lines while it asks.
+Every function and property here may be called from several threads at once: `advance` and the
+row setters take no screen lock (a download thread may call them on every chunk), lines go
+through the screen's lock, and `prompt` holds other threads' lines while it asks.
 """
 
 from __future__ import annotations
@@ -31,8 +36,9 @@ from typing import Any, Callable, Iterator, Literal
 
 import shared
 from shared import _theme
+from shared._screen import SYNC_BEGIN, SYNC_END, hide_cursor, show_cursor
 from shared._style import strip
-from shared._theme import Bar, LogRecord, Screen, Theme, fit
+from shared._theme import Bar, LogRecord, Screen, Theme, _bar_cells, _count, fit
 
 # `shared.log` is the `log` object: its methods, `Error` among them, are the module's names, and the
 # classes are what `log.progress` and `log.group` return.
@@ -42,7 +48,15 @@ Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
 # quiet shares error's rank, so errors are still shown under quiet.
 LEVEL_RANKS = {"debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4, "quiet": 4}
+# The drawing thread draws at most this often, in seconds; a spinner row keeps it at this pace.
 REDRAW_INTERVAL = 0.1
+# A row is drawn once it has run this long, in seconds: a file that finishes sooner writes only its
+# final line, so a burst of small photos shows no rows coming and going.
+SHOW_AFTER = 0.5
+# The clock rows and frames are timed with; tests replace it to run seconds in no time.
+clock = time.monotonic
+# The row `log.under` names on this thread, which `log.progress` nests its row under.
+_nest = threading.local()
 
 
 class Error(shared.Error):
@@ -118,10 +132,29 @@ class Log:
             The row, a `Progress`. An exception, `KeyboardInterrupt` included, is re-raised after
             the row ends at error. The block may be used from one thread while others advance the row.
         """
-        group = Group(_theme.theme, title="")
+        group = Group(_theme.theme, title="", parent=getattr(_nest, "row", None))
         bar = group.add(label, total=total, show=show)
         with _ending(group):
             yield bar
+
+    @contextmanager
+    def under(self, row: Progress | None) -> Iterator[None]:
+        """Nest the rows `log.progress` opens on this thread under `row`, for the length of the block.
+
+            with log.under(target_row):
+                download(url)       # its bar is drawn indented under `target_row`
+
+        Args:
+            row: the row to nest under, one of the live area's; None nests nothing. The row's
+                `slots` says how many of its nested rows are drawn at once. Only this thread's
+                `log.progress` calls are nested; other threads' are not.
+        """
+        previous = getattr(_nest, "row", None)
+        _nest.row = row
+        try:
+            yield
+        finally:
+            _nest.row = previous
 
     @contextmanager
     def group(self, title: str = "") -> Iterator[Group]:
@@ -164,18 +197,29 @@ class Progress:
         bar.count, bar.finished
 
     Its state is the settable `count`, `total` and `caption`; `advance`, `finish` and `fail`
-    are its transitions. Every member may be used from several threads at once: changes are
-    made under the screen's lock, so two threads advancing one row lose no count.
+    are its transitions. Every member may be used from several threads at once. None of them
+    draws or takes the screen's lock: each changes the row and marks the live area, whose one
+    drawing thread shows the change in its next frame. Two threads advancing one row lose no count.
     """
 
     def __init__(self, label: str, total: float | None, show: Callable[[Any], str], _group: Group):
         self.label = label
+        # How many rows nested under this one (`log.under`) are drawn at once; None draws them all.
+        self.slots: int | None = None
         self._show = show
         self._total = total
         self._caption = ""
         self._count: float = 0
         self._group = _group
         self._outcome: str | None = None
+        # Guards `_count` and `_outcome` against two threads; it is this row's own, never the screen's.
+        self._lock = threading.Lock()
+        self._created = clock()
+        # Whether the row has been drawn: a row that ends before it is old enough never is.
+        self._seen = False
+        # What the row's last drawn line showed, so an unchanged row is neither rendered nor cut again.
+        self._drawn: tuple = ()
+        self._line = ""
 
     @property
     def count(self) -> float:
@@ -184,9 +228,8 @@ class Progress:
 
     @count.setter
     def count(self, value: float) -> None:
-        with self._group._live.screen.lock:
-            self._count = max(value, 0)
-            self._group._redraw()
+        self._count = max(value, 0)
+        self._group._live.mark()
 
     @property
     def outcome(self) -> str | None:
@@ -205,9 +248,8 @@ class Progress:
 
     @total.setter
     def total(self, value: float | None) -> None:
-        with self._group._live.screen.lock:
-            self._total = value
-            self._group._redraw()
+        self._total = value
+        self._group._live.mark()
 
     @property
     def caption(self) -> str:
@@ -216,9 +258,8 @@ class Progress:
 
     @caption.setter
     def caption(self, value: str) -> None:
-        with self._group._live.screen.lock:
-            self._caption = value
-            self._group._redraw()
+        self._caption = value
+        self._group._live.mark()
 
     def advance(self, n: float = 1) -> None:
         """Add `n` to `count`, at once, so threads advancing one row lose no count.
@@ -226,8 +267,9 @@ class Progress:
         Args:
             n: how much more is done, in the unit of `total`; a negative `n` takes back, down to 0.
         """
-        with self._group._live.screen.lock:
-            self.count = self._count + n
+        with self._lock:
+            self._count = max(self._count + n, 0)
+        self._group._live.mark()
 
     def finish(self) -> None:
         """End this row at ok and clear its caption; a row already ended is left as it is."""
@@ -238,18 +280,43 @@ class Progress:
         self._end("error")
 
     def _end(self, outcome: str) -> None:
-        with self._group._live.screen.lock:
-            if self.finished:
+        with self._lock:
+            if self._outcome is not None:
                 return
             self._outcome = outcome
-            if outcome == "ok":
-                self._caption = ""
-            self._group._redraw(force=True)
+        if outcome == "ok":
+            self._caption = ""
+        self._group._live.mark()
 
     def _record(self) -> LogRecord:
         level = "info" if self._outcome is None else self._outcome
-        view = Bar(self.label, self._count, self._total, self._caption, self.finished, self._show)
-        return LogRecord(level, self.label, view)
+        return LogRecord(level, self.label, self._view(None))
+
+    def _view(self, now: float | None) -> Bar:
+        """What the theme draws; `now` fixes the spinner's frame, None leaves it to the theme's clock."""
+        return Bar(self.label, self._count, self._total, self._caption, self.finished, self._show,
+                   None if now is None else int(now * 10))
+
+    def _area_line(self, now: float, width: int) -> str | None:
+        """The row as drawn in the live area, cut to `width`; None while it is too young or ended unseen."""
+        if not self._seen:
+            if self.finished or now - self._created < SHOW_AFTER:
+                return None
+            self._seen = True
+        theme = self._group._theme
+        bar = self._view(now)
+        drawn = (self._outcome, bar.label, bar.caption, _bar_cells(theme, bar), _count(bar), width, theme.color)
+        if drawn != self._drawn:
+            self._drawn = drawn
+            record = LogRecord("info" if self._outcome is None else self._outcome, self.label, bar)
+            self._line = fit(render(theme, record), width)
+        return self._line
+
+    def _waiting(self, now: float) -> bool:
+        """Whether the row changes with the clock alone: a spinner, or a row not yet old enough to draw."""
+        if self.finished:
+            return False
+        return self._total is None or (not self._seen and now - self._created < SHOW_AFTER)
 
 
 class Group:
@@ -261,12 +328,16 @@ class Group:
     `add` may be called from several threads at once; rows are drawn in the order they were added.
     """
 
-    def __init__(self, theme: Theme, title: str):
+    def __init__(self, theme: Theme, title: str, parent: Progress | None = None):
         self._theme = theme
         self._title = title
+        # The row this group's rows are drawn under, indented, while that row's group is open.
+        self.parent = parent
         self._bars: list[Progress] = []
         self._outcome: str | None = None
         self._live = live_area(theme.screen)
+        self._title_drawn: tuple = ()
+        self._title_line = ""
 
     def add(self, label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress:
         """Open a row at the bottom of the group, and return it.
@@ -279,77 +350,121 @@ class Group:
         bar = Progress(label, total, show, self)
         with self._live.screen.lock:
             self._bars.append(bar)
-        self._redraw(force=True)
-        self._live.start_spinner()
+        self._live.mark()
         return bar
 
-    def _redraw(self, force: bool = False) -> None:
-        """Redraw the live area, at most every 0.1 s unless `force`."""
-        self._live.redraw(force)
-
     def _rows(self) -> list[tuple[str, str]]:
-        """(level, drawn line) for the title row and each bar row."""
+        """(level, drawn line) for the title row and each bar row: the final lines."""
         records = [bar._record() for bar in self._bars]
         if self._title:
             records.insert(0, LogRecord("info" if self._outcome is None else self._outcome, self._title))
         return [(record.level, render(self._theme, record)) for record in records]
 
+    def _area_rows(self, now: float, width: int) -> list[tuple[Progress | None, str]]:
+        """The rows to draw now, each with its bar (None for the title), reusing the lines of unchanged rows."""
+        rows: list[tuple[Progress | None, str]] = []
+        if self._title:
+            drawn = (self._outcome, width, self._theme.color)
+            if drawn != self._title_drawn:
+                self._title_drawn = drawn
+                level = "info" if self._outcome is None else self._outcome
+                self._title_line = fit(render(self._theme, LogRecord(level, self._title)), width)
+            rows.append((None, self._title_line))
+        for bar in list(self._bars):
+            line = bar._area_line(now, width)
+            if line is not None:
+                rows.append((bar, line))
+        return rows
+
     def _end(self, outcome: str) -> None:
         """End every unfinished row and the title at this outcome."""
-        with self._live.screen.lock:
-            for bar in self._bars:
-                bar._end(outcome)
-            self._outcome = outcome
+        for bar in list(self._bars):
+            bar._end(outcome)
+        self._outcome = outcome
+        self._live.mark()
 
 
 class LiveArea:
     """The open rows at the bottom of one screen, in the order their groups were opened.
 
-    Every change and write happens under the screen's lock. While a question is open,
-    lines from other threads are held and written after the question's done line.
+    Rows change without drawing; `tick` draws what changed, on the drawing thread, as one frame
+    that overwrites the rows already there. `groups`, `shown` and `pending` are touched under the
+    screen's lock. While a question is open, lines from other threads are held and written after
+    the question's done line.
     """
 
     def __init__(self, screen: Screen):
         self.screen = screen
         self.groups: list[Group] = []
-        self.drawn_rows = 0
-        self.last_draw = 0.0
+        # The rows the terminal shows now, which a frame is compared against; the cursor sits on
+        # the line below them.
+        self.shown: list[str] = []
+        # Lines to write above the area in the next frame.
+        self.pending: list[str] = []
         self.held_lines: list[str] = []
         self.asking_thread: int | None = None
         self.question_lock = threading.RLock()
-        self.spinner: threading.Thread | None = None
+        # Set by every change, from any thread; the drawing thread sleeps on `wake` while it is clear.
+        # `dirty` lets a thread skip the set when it is already set, which keeps `mark` cheap.
+        self.dirty = False
+        self.wake = threading.Event()
+        # Set when the last group closes, so the drawing thread leaves at once.
+        self.closing = threading.Event()
+        self.thread: threading.Thread | None = None
+        # Tests turn the thread off and call `tick` themselves.
+        self.threaded = True
+        # A slow write (an SSH session) skips the next frame instead of queueing it.
+        self.skip = False
+        self.frames = 0
+        # When the last frame was written, by `time.perf_counter`, which spaces the drawing thread's frames.
+        self.drawn_at = 0.0
+
+    def mark(self) -> None:
+        """Say a row or line changed. No lock, no drawing: the drawing thread does that."""
+        if not self.dirty:
+            self.dirty = True
+            self.wake.set()
 
     def open(self, group: Group) -> None:
         with self.screen.lock:
             self.groups.append(group)
-        self.redraw(force=True)
+            if self.screen.tty:
+                # Under "quiet" nothing is drawn, so there is no cursor to hide.
+                if log.level != "quiet":
+                    hide_cursor(self.screen)
+                self._start()
+            self.mark()
 
     def close(self, group: Group) -> None:
         """Remove a group's rows and write its final lines above the live area.
 
-        Under log.level "quiet", only the final lines that ended at error are written.
+        Under log.level "quiet", only the final lines that ended at error are written. The last
+        group to close draws the final frame at once; any other leaves it to the next tick.
         """
         with self.screen.lock:
             self.groups = [open_group for open_group in self.groups if open_group is not group]
             quiet = log.level == "quiet"
             self.write_lines([line for level, line in group._rows() if not quiet or level == "error"])
+            if self.groups:
+                self.mark()
+            else:
+                self._finish()
 
     def write_lines(self, lines: list[str]) -> None:
+        """Write lines above the area: at once when no area is open, else in the next frame."""
         with self.screen.lock:
-            if self.asking_thread not in (None, threading.get_ident()):
+            if self.asking_thread is not None:
                 self.held_lines.extend(lines)
                 return
-            text = "".join(line + "\n" for line in lines)
-            if self.screen.tty:
-                text = self._erase() + text + self._draw_rows()
-            self.screen.write(text)
-
-    def redraw(self, force: bool = False) -> None:
-        with self.screen.lock:
-            if not self.screen.tty or self.asking_thread is not None:
+            if not self.screen.tty or (not self.groups and not self.shown and not self.pending):
+                # No area to keep below the lines: plain text, one write.
+                self.screen.write("".join(line + "\n" for line in lines))
                 return
-            if force or time.monotonic() - self.last_draw >= REDRAW_INTERVAL:
-                self.screen.write(self._erase() + self._draw_rows())
+            self.pending.extend(lines)
+            if self.groups:
+                self.mark()
+            else:
+                self._draw([])
 
     @contextmanager
     def question(self) -> Iterator[None]:
@@ -357,8 +472,8 @@ class LiveArea:
         with self.question_lock:
             with self.screen.lock:
                 previous_asker = self.asking_thread
-                if self.screen.tty:
-                    self.screen.write(self._erase())
+                if previous_asker is None and self.screen.tty:
+                    self._draw([])
                 self.asking_thread = threading.get_ident()
             try:
                 yield
@@ -367,39 +482,157 @@ class LiveArea:
                     self.asking_thread = previous_asker
                     if previous_asker is None:
                         held, self.held_lines = self.held_lines, []
+                        if self.screen.tty and self.groups:
+                            # The prompt's frame showed the cursor again when it ended.
+                            hide_cursor(self.screen)
                         self.write_lines(held)
+                        self.mark()
 
-    def start_spinner(self) -> None:
+    def tick(self) -> None:
+        """Draw one frame of what changed since the last, unless a question is open or the last write was slow."""
         with self.screen.lock:
-            if self.screen.tty and self.spinner is None and self._has_spinner():
-                self.spinner = threading.Thread(target=self._spin, name="shared-log-spinner", daemon=True)
-                self.spinner.start()
+            if not self.screen.tty or self.asking_thread is not None:
+                return
+            if self.skip:
+                self.skip = False
+                return
+            now = clock()
+            # Cleared before the rows are read, so a change made while drawing marks the next frame.
+            self.dirty = False
+            self.wake.clear()
+            started = time.perf_counter()
+            self._draw(self._rows(now))
+            self.skip = time.perf_counter() - started > REDRAW_INTERVAL
 
-    def _spin(self) -> None:
+    def _start(self) -> None:
+        """Start the drawing thread if it isn't running; called under the lock when a group opens."""
+        self.closing.clear()
+        if self.threaded and self.thread is None:
+            self.thread = threading.Thread(target=self._run, name="shared-log-draw", daemon=True)
+            self.thread.start()
+
+    def _run(self) -> None:
+        """The drawing thread: sleep until something changes, wait out the interval since the last frame, draw."""
         while True:
-            time.sleep(REDRAW_INTERVAL)
             with self.screen.lock:
-                if not self._has_spinner():
-                    self.spinner = None
+                if not self.groups:
+                    self.thread = None
                     return
-                self.redraw(force=True)
+                # Rows that only the clock changes (a spinner, a row about to be old enough) need a
+                # wake-up of their own; with none, the thread sleeps until a change marks it.
+                now = clock()
+                timeout = REDRAW_INTERVAL if any(
+                    bar._waiting(now) for group in self.groups for bar in group._bars) else None
+            self.wake.wait(timeout)
+            # At most one frame per interval: a change that comes right after a frame waits for the rest of it.
+            remaining = REDRAW_INTERVAL - (time.perf_counter() - self.drawn_at)
+            if remaining > 0:
+                self.closing.wait(remaining)
+            self.tick()
 
-    def _has_spinner(self) -> bool:
-        return any(bar.total is None and not bar.finished for group in self.groups for bar in group._bars)
+    def _finish(self) -> None:
+        """Called under the lock when the last group has closed: the final frame at once, then the cursor back."""
+        self._draw([])
+        self.closing.set()
+        self.wake.set()
+        if self.asking_thread is None:
+            show_cursor(self.screen)
 
-    def _erase(self) -> str:
-        erase = f"\r\x1b[{self.drawn_rows}A\x1b[J" if self.drawn_rows else ""
-        self.drawn_rows = 0
-        return erase
-
-    def _draw_rows(self) -> str:
-        width = self.screen.width
+    def _rows(self, now: float) -> list[str]:
+        """The rows to show now: groups in the order they opened, a nested group's rows under its row."""
         # Under log.level "quiet", running bars are not drawn at all.
-        groups = [] if log.level == "quiet" else self.groups
-        rows = _cap_rows([fit(row, width) for group in groups for _, row in group._rows()], self.screen.height)
-        self.drawn_rows = len(rows)
-        self.last_draw = time.monotonic()
-        return "".join(row + "\n" for row in rows)
+        if log.level == "quiet":
+            return []
+        width = self.screen.width
+        open_ids = {id(group) for group in self.groups}
+        nested: dict[int, list[Group]] = {}
+        top: list[Group] = []
+        for group in self.groups:
+            parent = group.parent
+            if parent is not None and id(parent._group) in open_ids:
+                nested.setdefault(id(parent), []).append(group)
+            else:
+                top.append(group)
+        rows: list[str] = []
+
+        def emit(group: Group, indent: int) -> None:
+            for bar, line in group._area_rows(now, width - indent):
+                rows.append(" " * indent + line)
+                if bar is None:
+                    continue
+                room = bar.slots
+                for child in nested.get(id(bar), ()):
+                    start = len(rows)
+                    emit(child, indent + 2)
+                    if room is not None:
+                        # Each running file is one row; the rest is the target's row counting them.
+                        room -= len(rows) - start
+                        if room < 0:
+                            del rows[room:]
+                            room = 0
+
+        for group in top:
+            emit(group, 0)
+        return _cap_rows(rows, self.screen.height)
+
+    def _draw(self, rows: list[str]) -> None:
+        """Write the frame that turns the shown rows into `rows`, with the pending lines above them."""
+        frame = self._frame(rows)
+        if frame:
+            self.frames += 1
+            self.screen.write(frame)
+            self.drawn_at = time.perf_counter()
+
+    def _frame(self, rows: list[str]) -> str:
+        """The text that makes the terminal show `rows` under the pending lines; "" when nothing changed.
+
+        Rows are overwritten, each followed by `\\x1b[K` (clear to the end of that line), never
+        erased first, so no moment shows an empty area; `\\x1b[J` (clear below) comes last, and
+        only when the new frame has fewer rows. Only the rows that differ are written, each after
+        a cursor move, and the whole frame sits inside synchronized output.
+        """
+        old, pending = self.shown, self.pending
+        if not pending and rows == old:
+            return ""
+        self.shown, self.pending = rows, []
+        out = [SYNC_BEGIN]
+        if pending:
+            # Lines above the area push it down, so every row moves: all are written again. The
+            # cursor starts on the line below the old rows, and goes back to the area's top.
+            out.append("\r" + (f"\x1b[{len(old)}A" if old else ""))
+            for line in pending + rows:
+                out.append(line + "\x1b[K\n")
+            if len(old) > len(pending) + len(rows):
+                out.append("\x1b[J")
+        else:
+            # `cursor` is the row the terminal's cursor is on, counted from the old rows' top.
+            cursor = len(old)
+
+            def goto(row: int) -> None:
+                nonlocal cursor
+                if row > cursor:
+                    out.append(f"\x1b[{row - cursor}B")
+                elif row < cursor:
+                    out.append(f"\x1b[{cursor - row}A")
+                cursor = row
+
+            for number, row in enumerate(rows[:len(old)]):
+                if row != old[number]:
+                    goto(number)
+                    out.append("\r" + row + "\x1b[K")
+            if len(rows) > len(old):
+                # New rows go below the old ones with a newline each, which scrolls at the screen's bottom.
+                goto(len(old))
+                out.append("\r")
+                for row in rows[len(old):]:
+                    out.append(row + "\x1b[K\n")
+            else:
+                goto(len(rows))
+                out.append("\r")
+                if len(rows) < len(old):
+                    out.append("\x1b[J")
+        out.append(SYNC_END)
+        return "".join(out)
 
 
 def _cap_rows(rows: list[str], height: int) -> list[str]:
@@ -430,7 +663,6 @@ def render(theme: Theme, record: LogRecord) -> str:
 @contextmanager
 def _ending(group: Group) -> Iterator[None]:
     group._live.open(group)
-    group._live.start_spinner()
     try:
         yield
     except BaseException:

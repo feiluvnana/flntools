@@ -1,8 +1,32 @@
+"""shared.log: levels, progress rows, the live area's frames, and the drawing thread.
+
+Lines and rows go to a fake `theme.screen` over StringIO. The clock is faked too (`LogCase.tick`
+moves it and draws one frame), so a row's 0.5 s and a frame's 0.1 s cost no time, and the live
+area's own thread is off except in `DrawingThreadTest`. `RealTerminalCase` runs the live area
+in a child process on a real pty and reads the raw bytes, which the fake screen can't show.
+"""
+
+import os
 import re
+import struct
+import sys
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+try:
+    import fcntl
+    import pty
+    import select
+    import termios
+
+    HAS_PTY = True
+except ImportError:
+    HAS_PTY = False
 
 from shared import fmt, log, prompt, style, theme
 from shared._log import live_area
@@ -10,9 +34,9 @@ from shared._theme import Screen
 
 
 def visible_screen(output: str) -> list[str]:
-    """Replay what a terminal shows after output: text, \\r, \\n, cursor-up, and clear-below."""
+    """Replay what a terminal shows after output: text, \\r, \\n, cursor up and down, and the clears."""
     lines, row, column = [""], 0, 0
-    for match in re.finditer(r"\x1b\[(\d*)A|\x1b\[J|\x1b\[K|\r|\n|[^\x1b\r\n]+", output):
+    for match in re.finditer(r"\x1b\[(\d*)([AB])|\x1b\[\?\d+[hl]|\x1b\[J|\x1b\[K|\r|\n|[^\x1b\r\n]+", output):
         token = match.group()
         if token == "\r":
             column = 0
@@ -20,8 +44,14 @@ def visible_screen(output: str) -> list[str]:
             row, column = row + 1, 0
             if row == len(lines):
                 lines.append("")
-        elif token.endswith("A"):
+        elif match[2] == "A":
             row -= int(match[1] or 1)
+        elif match[2] == "B":
+            row += int(match[1] or 1)
+            while row >= len(lines):
+                lines.append("")
+        elif token.startswith("\x1b[?"):
+            continue
         elif token in ("\x1b[J", "\x1b[K"):
             lines[row] = lines[row][:column]
             if token == "\x1b[J":
@@ -33,14 +63,34 @@ def visible_screen(output: str) -> list[str]:
 
 
 class LogCase(unittest.TestCase):
+    """Log lines and rows on a fake screen over StringIO, with a fake clock and no drawing thread.
+
+    A test on a terminal moves `self.now` with `tick` and has the live area draw one frame, so
+    rows that need 0.5 s to appear and frames 0.1 s apart cost no time. `DrawingThreadTest` is
+    the one that runs the real thread on the real clock.
+    """
+
     tty = False
     width = 80
+    fake_clock = True
 
     def setUp(self):
         self.screen = Screen(dest=StringIO(), inp=StringIO(""), width=self.width, tty=self.tty, interactive=True)
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
         self.previous_level = log.level
+        self.now = 100.0
+        if self.fake_clock:
+            clock = patch("shared._log.clock", lambda: self.now)
+            clock.start()
+            self.addCleanup(clock.stop)
+        self.area = live_area(self.screen)
+        self.area.threaded = False
+
+    def tick(self, seconds: float = 0.0) -> None:
+        """Move the fake clock on and draw one frame."""
+        self.now += seconds
+        self.area.tick()
 
     def tearDown(self):
         log.level = self.previous_level
@@ -115,13 +165,37 @@ class LevelTest(LogCase):
     def test_styled_field_is_kept(self):
         with theme.scope(color="16m"):
             log.error("{msg}", msg=style.red.bold("disk full"))
-        self.assertEqual(self.output(), "\x1b[38;2;237;86;122m✗\x1b[0m \x1b[1;31mdisk full\x1b[0m\n")
+        # The message's own red bold wins; the line's color is not started again after a final reset.
+        self.assertEqual(self.output(), "\x1b[38;2;237;86;122m✗ \x1b[1;31mdisk full\x1b[0m\n")
 
-    def test_glyph_colors_follow_the_palette(self):
+    def test_the_whole_line_takes_its_levels_color(self):
         with theme.scope(color="16m"):
             log.ok("done")
             log.info("note")
-        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓\x1b[0m done", "\x1b[36m•\x1b[0m note"])
+            log.warn("careful")
+        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓ done\x1b[0m", "\x1b[36m• note\x1b[0m",
+                                       "\x1b[33m! careful\x1b[0m"])
+
+    def test_a_styled_part_keeps_its_style_and_the_line_goes_back_to_its_color(self):
+        with theme.scope(color="16m"):
+            log.warn("{x} failed", x=style.bold("a"))
+        self.assertEqual(self.output(), "\x1b[33m! \x1b[1ma\x1b[0m\x1b[33m failed\x1b[0m\n")
+        log.warn("{x} failed", x=style.bold("a"))
+        self.assertEqual(self.output().splitlines()[-1], "! a failed")
+
+    def test_a_palette_change_recolors_the_whole_line(self):
+        with theme.scope(color="16m"):
+            theme.palette.warn = "#010203"
+            try:
+                log.warn("careful")
+            finally:
+                del theme.palette._assigned["warn"]
+        self.assertEqual(self.output(), "\x1b[38;2;1;2;3m! careful\x1b[0m\n")
+
+    def test_progress_rows_keep_a_colored_glyph_only(self):
+        with theme.scope(color="16m"), log.progress("a", total=2) as bar:
+            bar.advance()
+        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓\x1b[0m a ━━━━━━━━━━────────── 1/2"])
 
 
 class PipeProgressTest(LogCase):
@@ -213,11 +287,11 @@ class TtyProgressTest(LogCase):
     def test_redraws_in_place(self):
         with log.progress("c", total=4) as bar:
             bar.advance(1)
-            self.assertEqual(visible_screen(self.output()), ["• c ──────────────────── 0/4"])
-            time.sleep(0.11)
+            self.tick(0.6)
+            self.assertEqual(visible_screen(self.output()), ["• c ━━━━━─────────────── 1/4"])
             bar.advance(1)
+            self.tick(0.1)
             self.assertEqual(visible_screen(self.output()), ["• c ━━━━━━━━━━────────── 2/4"])
-        self.assertIn("\x1b[1A\x1b[J", self.output())
         self.assertEqual(visible_screen(self.output()), ["✓ c ━━━━━━━━━━────────── 2/4"])
 
     def test_exception_on_tty(self):
@@ -230,7 +304,9 @@ class TtyProgressTest(LogCase):
         with log.group("download") as jobs:
             jobs.add("a", total=2)
             with log.progress("inner", total=1):
+                self.tick(0.6)
                 log.warn("careful")
+                self.tick(0.1)
                 self.assertEqual(visible_screen(self.output()), [
                     "! careful", "• download", "• a ──────────────────── 0/2", "• inner ──────────────────── 0",
                 ])
@@ -243,25 +319,257 @@ class TtyProgressTest(LogCase):
         with log.group("download") as jobs:
             for name in "abcde":
                 jobs.add(name, total=1)
+            self.tick(0.6)
             rows = visible_screen(self.output())
             self.assertEqual(rows[:2], ["• download", "• a ──────────────────── 0/1"])
             self.assertEqual(rows[2:], ["… 4 more"])
-            jobs._redraw(force=True)
+            jobs.add("f", total=1)
+            self.tick(0.1)
             self.assertEqual(len(visible_screen(self.output())), 3)
 
     def test_rows_cut_to_width(self):
         with log.progress("a-very-long-label-that-goes-past-the-width", total=10):
+            self.tick(0.6)
             rows = visible_screen(self.output())
             self.assertEqual(len(rows), 1)
             self.assertEqual(len(rows[0]), 30)
 
-    def test_spinner_thread_redraws(self):
+    def test_a_spinner_row_changes_with_the_clock(self):
         with log.progress("wait"):
-            time.sleep(0.35)
-            self.assertGreaterEqual(self.output().count("\x1b[1A"), 2)
+            self.tick(0.6)
+            first = self.output()
+            self.tick(0.25)
+            self.assertNotEqual(self.output(), first)
         self.assertEqual(visible_screen(self.output()), ["✓ wait"])
-        time.sleep(0.15)
-        self.assertIsNone(live_area(self.screen).spinner)
+
+
+class FrameTest(LogCase):
+    """What a frame writes: overwriting, synchronized output, the cursor, and how little."""
+
+    tty = True
+    width = 40
+
+    def frames(self) -> list[str]:
+        """Each synchronized frame's text, without its begin and end sequences."""
+        return re.findall(r"\x1b\[\?2026h(.*?)\x1b\[\?2026l", self.output(), re.S)
+
+    def test_every_frame_is_synchronized_and_rewrites_rows_without_erasing_first(self):
+        with log.group("download") as rows:
+            first, second = rows.add("a", total=4), rows.add("b", total=4)
+            self.tick(0.6)
+            first.advance(2)
+            self.tick(0.1)
+            second.advance(1)
+            second.advance(1)
+            self.tick(0.1)
+            first.finish()
+            self.tick(0.1)
+        frames = self.frames()
+        # Nothing but the cursor's hide and show is written outside a frame.
+        outside = re.sub(r"\x1b\[\?2026h.*?\x1b\[\?2026l", "", self.output(), flags=re.S)
+        self.assertEqual(outside, "\x1b[?25l\x1b[?25h")
+        self.assertEqual(frames, [
+            "\r• download\x1b[K\n• a ──────────────────── 0/4\x1b[K\n• b ──────────────────── 0/4\x1b[K\n",
+            # A frame that changed one bar writes that bar's row alone: a cursor move, the row, its clear.
+            "\x1b[2A\r• a ━━━━━━━━━━────────── 2/4\x1b[K\x1b[2B\r",
+            "\x1b[1A\r• b ━━━━━━━━━━────────── 2/4\x1b[K\x1b[1B\r",
+            "\x1b[2A\r✓ a ━━━━━━━━━━────────── 2/4\x1b[K\x1b[2B\r",
+            # The last frame goes back up to write the lines the rows become, and clears nothing.
+            "\r\x1b[3A✓ download\x1b[K\n✓ a ━━━━━━━━━━────────── 2/4\x1b[K\n✓ b ━━━━━━━━━━────────── 2/4\x1b[K\n",
+        ])
+        self.assertNotIn("\x1b[J", self.output())
+
+    def test_the_area_is_cleared_below_only_when_it_shrinks(self):
+        with log.group("download") as rows:
+            rows.add("a", total=2)
+            rows.add("b", total=2)
+            self.tick(0.6)
+            self.assertNotIn("\x1b[J", self.output())
+            # A question takes the rows off the screen: three rows to none.
+            with self.area.question():
+                self.assertEqual(self.frames()[-1], "\x1b[3A\r\x1b[J")
+            self.assertEqual(self.output().count("\x1b[J"), 1)
+
+    def test_the_cursor_is_hidden_while_an_area_is_open(self):
+        with log.progress("a", total=2):
+            self.assertEqual(self.output(), "\x1b[?25l")
+        self.assertTrue(self.output().endswith("\x1b[?25h"))
+        self.assertEqual(self.output().count("\x1b[?25l"), 1)
+
+    def test_the_cursor_is_shown_after_ctrl_c(self):
+        with self.assertRaises(KeyboardInterrupt), log.progress("a", total=2):
+            raise KeyboardInterrupt
+        self.assertTrue(self.output().endswith("\x1b[?25h"))
+
+    def test_the_cursor_stays_hidden_until_the_last_area_closes(self):
+        with log.progress("outer"):
+            with log.progress("inner"):
+                pass
+            self.assertEqual(self.output().count("\x1b[?25h"), 0)
+        self.assertEqual(self.output().count("\x1b[?25h"), 1)
+
+    def test_no_cursor_change_without_a_terminal(self):
+        self.screen._tty = False
+        with log.progress("a"):
+            pass
+        self.assertNotIn("\x1b[?25", self.output())
+
+    def test_a_burst_of_fast_files_draws_no_rows(self):
+        with log.group("download") as rows:
+            for number in range(50):
+                row = rows.add(f"file{number}.jpg", total=1)
+                row.advance()
+                row.finish()
+                self.tick(0.002)
+            self.assertLessEqual(self.area.frames, 2)
+            self.assertNotIn("file", self.output())
+        self.assertEqual(len(visible_screen(self.output())), 51)
+
+    def test_a_row_appears_once_it_has_run_half_a_second(self):
+        with log.group("download") as rows:
+            rows.add("slow.mp4", total=2)
+            self.tick(0.4)
+            self.assertNotIn("slow", self.output())
+            self.tick(0.2)
+            self.assertIn("slow.mp4", self.output())
+
+    def test_a_frame_with_nothing_new_writes_nothing(self):
+        with log.progress("c", total=1_000_000, show=lambda n: f"{int(n) // 1000}k") as bar:
+            bar.advance(1)
+            self.tick(0.6)
+            written = len(self.output())
+            for _ in range(20):
+                bar.advance(1)
+                self.tick(0.1)
+            self.assertEqual(len(self.output()), written)
+            bar.advance(1000)
+            self.tick(0.1)
+            self.assertGreater(len(self.output()), written)
+
+    def test_four_busy_bars_cost_at_most_ten_frames_a_second(self):
+        with log.group("download") as rows:
+            bars = [rows.add(f"file{number}", total=40_000) for number in range(4)]
+            for step in range(10_000):
+                for bar in bars:
+                    bar.advance()
+                if step % 100 == 99:
+                    self.tick(0.1)
+            self.assertLessEqual(self.area.frames, 100)
+            self.assertGreater(self.area.frames, 5)
+            self.assertEqual([bar.count for bar in bars], [10_000] * 4)
+
+    def test_changing_a_row_never_takes_the_screens_lock(self):
+        class Forbidden:
+            def __enter__(self):
+                raise AssertionError("the screen's lock was taken")
+
+            def __exit__(self, *error):
+                return None
+
+            acquire = release = __enter__
+
+        with log.group("download") as rows:
+            bar = rows.add("a", total=10)
+            real, self.screen.lock = self.screen.lock, Forbidden()
+            try:
+                bar.advance()
+                bar.count = 5
+                bar.total = 20
+                bar.caption = "part 2"
+                self.assertEqual((bar.count, bar.total, bar.caption), (5, 20, "part 2"))
+            finally:
+                self.screen.lock = real
+
+    def test_a_slow_terminal_skips_a_frame_instead_of_queueing_it(self):
+        writes = []
+        original = self.screen.write
+
+        def slow(text):
+            writes.append(text)
+            time.sleep(0.12)
+            original(text)
+
+        with log.progress("c", total=100) as bar:
+            self.now += 0.6
+            self.screen.write = slow
+            bar.advance(50)
+            self.tick()
+            self.assertEqual(len(writes), 1)
+            bar.advance(30)
+            self.tick(0.1)
+            self.assertEqual(len(writes), 1)
+            self.tick(0.1)
+            self.assertEqual(len(writes), 2)
+            self.assertIn("80/100", writes[1])
+            del self.screen.write
+
+    def test_rows_nested_under_a_target_are_capped_to_its_slots(self):
+        with log.group("download") as rows, ExitStack() as files:
+            target = rows.add("ins:example_user")
+            target.slots = 2
+            with log.under(target):
+                for name in ("a.jpg", "b.jpg", "c.jpg"):
+                    files.enter_context(log.progress(name, total=2))
+            self.tick(0.6)
+            self.assertEqual(visible_screen(self.output()), [
+                "• download", "• ins:example_user ⠦", "  • a.jpg ──────────────────── 0/2", "  • b.jpg ──────────────────── 0/2",
+            ])
+            target.caption = "3 files · 3 running · 0 queued"
+            self.tick(0.1)
+            self.assertIn("3 files · 3 running", visible_screen(self.output())[1])
+            self.assertEqual(len(visible_screen(self.output())), 4)
+
+    def test_no_thread_without_a_terminal_or_an_area(self):
+        self.area.threaded = True
+        log.info("idle")
+        self.assertIsNone(self.area.thread)
+        self.screen._tty = False
+        with log.progress("a"):
+            self.assertIsNone(self.area.thread)
+        self.assertEqual(self.lines(), ["• idle", "✓ a"])
+
+
+class DrawingThreadTest(LogCase):
+    """The one drawing thread, on the real clock."""
+
+    tty = True
+    width = 40
+    fake_clock = False
+
+    def setUp(self):
+        super().setUp()
+        self.area.threaded = True
+
+    def test_a_spinner_is_redrawn_and_the_thread_ends_with_the_last_area(self):
+        with log.progress("wait"):
+            time.sleep(0.9)
+            self.assertIsNotNone(self.area.thread)
+            self.assertGreaterEqual(self.area.frames, 3)
+            self.assertEqual(visible_screen(self.output())[0][:1], "•")
+        self.assertEqual(visible_screen(self.output()), ["✓ wait"])
+        for _ in range(20):
+            if self.area.thread is None:
+                break
+            time.sleep(0.05)
+        self.assertIsNone(self.area.thread)
+
+    def test_an_idle_area_never_wakes_the_thread(self):
+        with log.progress("c", total=10) as bar:
+            bar.advance()
+            time.sleep(0.7)
+            frames = self.area.frames
+            time.sleep(0.4)
+            self.assertEqual(self.area.frames, frames)
+            bar.advance()
+            time.sleep(0.3)
+            self.assertGreater(self.area.frames, frames)
+
+    def test_one_thread_serves_every_area(self):
+        with log.progress("a"), log.progress("b"):
+            first = self.area.thread
+            self.assertIsNotNone(first)
+            with log.progress("c"):
+                self.assertIs(self.area.thread, first)
 
 
 class QuietPipeTest(LogCase):
@@ -295,7 +603,7 @@ class QuietTtyTest(QuietPipeTest):
         log.level = "quiet"
         with log.progress("good", total=2) as bar, log.progress("spin"):
             bar.advance()
-            time.sleep(0.15)
+            self.tick(0.6)
             self.assertEqual(self.output(), "")
         with self.assertRaises(RuntimeError), log.progress("bad", total=2):
             raise RuntimeError
@@ -342,6 +650,7 @@ class ThreadTest(LogCase):
         first_open.wait(2)
         with log.progress("second", total=1) as bar:
             bar.advance()
+        self.tick(0.6)
         self.assertEqual(visible_screen(self.output()), [
             "✓ second ━━━━━━━━━━━━━━━━━━━━ 1/1", "• first ──────────────────── 0/1",
         ])
@@ -424,6 +733,113 @@ class ThreadTest(LogCase):
         self.assertEqual(self.lines(), [
             "┃ Name", "┃ > ada_", "enter submit", "✓ Name: ada", "• background", "✓ bar ━━━━━━━━━━━━━━━━━━━━ 1/1",
         ])
+
+
+# One cell of a bar, "━" or "─", as UTF-8 bytes.
+CELL = rb"\xe2\x94[\x80\x81]"
+
+LIVE_CHILD = """
+import sys, time
+sys.path.insert(0, {root!r})
+from shared import log
+with log.group("download") as rows:
+    one, two = rows.add("a.mp4", total=10), rows.add("b.mp4", total=10)
+    for step in range(10):
+        one.advance()
+        two.advance(2 if step < 5 else 0)
+        if step == 4:
+            log.warn("careful")
+        time.sleep(0.12)
+    one.finish()
+    two.fail()
+    time.sleep(0.2)
+print("RESULT", flush=True)
+"""
+
+WAITING_CHILD = """
+import signal, sys, time
+# A test run started in the background has SIGINT ignored, and a child inherits that.
+signal.signal(signal.SIGINT, signal.default_int_handler)
+sys.path.insert(0, {root!r})
+from shared import log
+with log.progress("clip.mp4", total=10) as bar:
+    print("OPEN", flush=True)
+    time.sleep(30)
+"""
+
+
+def run_on_a_pty(source: str, *, interrupt_after: bytes | None = None) -> bytes:
+    """Run a script on a pty 100 columns wide, and return every byte the terminal received.
+
+    With `interrupt_after`, press Ctrl-C once those bytes arrive. The pty's line discipline is
+    real, so a bare line feed, which a fake screen can't show, would reach the bytes as one.
+    """
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ.update(TERM="xterm-256color", COLUMNS="100", LINES="30")
+        os.execv(sys.executable, [sys.executable, "-c", source.format(root=str(Path(__file__).parent.parent))])
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+    out, interrupted = b"", False
+    end = time.monotonic() + 20
+    try:
+        while time.monotonic() < end:
+            if select.select([fd], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+            if interrupt_after is not None and not interrupted and interrupt_after in out:
+                time.sleep(0.8)  # long enough for the row to be drawn
+                os.write(fd, b"\x03")
+                interrupted = True
+    finally:
+        os.close(fd)
+        os.waitpid(pid, 0)
+    return out
+
+
+@unittest.skipUnless(HAS_PTY, "needs a POSIX pty")
+class RealTerminalCase(unittest.TestCase):
+    """The live area on a real pty, checked on the raw bytes the terminal receives.
+
+    The fake screen can't catch what a terminal's line discipline does to the bytes (the staircase
+    bug of prompts, where a bare line feed no longer returned to column 0), nor what a terminal
+    would show between two writes; the bytes are what a terminal gets, so these read them.
+    """
+
+    def test_frames_are_synchronized_overwrite_rows_and_hide_the_cursor(self):
+        out = run_on_a_pty(LIVE_CHILD)
+        self.assertIn(b"RESULT", out)
+        frames = re.findall(rb"\x1b\[\?2026h(.*?)\x1b\[\?2026l", out, re.S)
+        self.assertGreaterEqual(len(frames), 4)
+        # Every row, and every line written above the rows, is inside a synchronized frame.
+        outside = re.sub(rb"\x1b\[\?2026h.*?\x1b\[\?2026l", b"", out, flags=re.S)
+        for text in (b"a.mp4", b"b.mp4", b"careful"):
+            self.assertNotIn(text, outside)
+        self.assertEqual(out.count(b"\x1b[?2026h"), out.count(b"\x1b[?2026l"))
+        for frame in frames:
+            # Rows are rewritten in place: a clear-below never comes before a row, and a row ends
+            # with its own line's clear, not a screen's.
+            self.assertIsNone(re.search(rb"\x1b\[J.*" + CELL, frame, re.S), frame)
+            for ending in re.findall(rb"[^\x1b\n]*" + CELL + rb"[^\x1b\n]*(\x1b\[K)?", frame):
+                self.assertEqual(ending, b"\x1b[K", frame)
+        # No line feed without its carriage return, so no row staircases.
+        self.assertIsNone(re.search(rb"(?<!\r)\n", out), out)
+        # The cursor is hidden before the first frame and shown after the last.
+        hidden, shown = out.index(b"\x1b[?25l"), out.rindex(b"\x1b[?25h")
+        self.assertLess(hidden, out.index(b"\x1b[?2026h"))
+        self.assertGreater(shown, out.rindex(b"\x1b[?2026l"))
+        self.assertEqual(out.count(b"\x1b[?25l"), 1)
+
+    def test_the_cursor_is_shown_after_ctrl_c(self):
+        out = run_on_a_pty(WAITING_CHILD, interrupt_after=b"OPEN")
+        self.assertIn(b"KeyboardInterrupt", out)
+        self.assertIn(b"clip.mp4", out)
+        self.assertGreater(out.rindex(b"\x1b[?25h"), out.rindex(b"\x1b[?25l"))
+        self.assertIsNone(re.search(rb"(?<!\r)\n", out), out)
 
 
 if __name__ == "__main__":

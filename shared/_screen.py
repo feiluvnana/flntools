@@ -158,6 +158,10 @@ class Screen:
             self.dest.flush()
 
 
+# Synchronized output (DEC private mode 2026, from the "synchronized updates" spec of kitty and
+# iTerm2): the terminal holds what is written between the two and shows it as one frame. Terminals
+# that don't know the mode ignore it.
+SYNC_BEGIN, SYNC_END = "\x1b[?2026h", "\x1b[?2026l"
 HIDE_CURSOR = "\x1b[?25l"
 SHOW_CURSOR = "\x1b[?25h"
 

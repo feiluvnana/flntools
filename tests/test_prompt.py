@@ -24,7 +24,10 @@ try:
 except ImportError:
     HAS_PTY = False
 
+from unittest.mock import patch
+
 from shared import log, prompt, theme
+from shared._log import live_area
 from shared._screen import Paste, paste_text
 from shared._theme import Screen
 
@@ -564,15 +567,20 @@ class LiveAreaTest(PromptCase):
     def test_prompt_while_bar_is_open_on_tty(self):
         self.screen._tty = True
         self.keys("enter")
-        with log.progress("run", total=2) as bar:
+        now = [100.0]
+        live_area(self.screen).threaded = False
+        with patch("shared._log.clock", lambda: now[0]), log.progress("run", total=2) as bar:
             bar.advance()
+            now[0] += 1  # old enough to be drawn
+            live_area(self.screen).tick()
             self.assertIs(prompt.confirm("Go?", default=True), True)
         output = self.screen.dest.getvalue()
-        cleared = output.index("\x1b[1A\x1b[J")
+        cleared = output.index("\x1b[1A\r\x1b[J")
         self.assertLess(output.index("• run"), cleared)
         self.assertLess(cleared, output.index("Go?"))
-        self.assertIn("✓ Go? Yes\n\x1b[?25h\x1b[?2004l• run", output)
-        self.assertTrue(output.endswith("✓ run ━━━━━━━━━━────────── 1/2\n"))
+        # The prompt shows the cursor again; the area is still open, so it is hidden once more.
+        # No row was on the screen when the block ended, so its line is written plainly.
+        self.assertTrue(output.endswith("✓ Go? Yes\n\x1b[?25h\x1b[?2004l\x1b[?25l✓ run ━━━━━━━━━━────────── 1/2\n\x1b[?25h"))
 
     def test_two_threads_ask_one_at_a_time(self):
         first_asking, second_started = threading.Event(), threading.Event()
