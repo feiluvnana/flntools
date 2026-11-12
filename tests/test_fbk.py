@@ -8,12 +8,81 @@ from fakes import FakeSession
 from test_dash import INSTAGRAM
 
 from flnd.session import Options
-from flnd.source import Target
+from flnd.source import Target, TargetError
 from flnd.sources.fbk import Facebook, image_extension, media_items
 
 SITE = "https://www.facebook.com"
 STAMP = 1700000000
 DAY = datetime.fromtimestamp(STAMP).date()
+USER = "user"
+SINGLE = "single posts and videos aren't supported yet"
+
+# Every form fbk reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
+# The kinds and values are the keys of targets.db and the history, so a change here is a migration.
+ROUTES = [
+    ("fbk:example.page", (USER, "example.page")),
+    ("fbk:@example.page", (USER, "example.page")),
+    ("fbk:100012345678901", (USER, "100012345678901")),
+    ("fbk:facebook.com/example.page", (USER, "example.page")),
+    ("https://www.facebook.com/example.page", (USER, "example.page")),
+    ("https://facebook.com/example.page/", (USER, "example.page")),
+    ("https://www.facebook.com/@example.page", (USER, "example.page")),
+    ("https://fb.com/example.page", (USER, "example.page")),
+    ("https://m.facebook.com/example.page/photos", (USER, "example.page")),
+    ("https://mobile.facebook.com/example.page", (USER, "example.page")),
+    # A profile's tab is the profile.
+    ("https://www.facebook.com/example.page/photos", (USER, "example.page")),
+    ("https://www.facebook.com/example.page/photos_by", (USER, "example.page")),
+    ("https://www.facebook.com/example.page/photos_of", (USER, "example.page")),
+    ("https://www.facebook.com/example.page/photos_albums", (USER, "example.page")),
+    ("https://www.facebook.com/example.page/photos/a.1/2", (USER, "example.page")),
+    ("https://www.facebook.com/example.page/reels_tab", (USER, "example.page")),
+    ("https://www.facebook.com/example.page/videos_by", (USER, "example.page")),
+    ("https://www.facebook.com/example.page/videos/2", (USER, "example.page")),
+    ("https://www.facebook.com/profile.php?id=100012345678901", (USER, "100012345678901")),
+    # Changed: a profile's id is digits (`{user:\d+}`), so a non-numeric id is refused, where it was read as a name.
+    ("https://www.facebook.com/profile.php?id=abc", "can't read"),
+    # A name that starts like a page of the site is still a profile.
+    ("https://www.facebook.com/watchman", (USER, "watchman")),
+    ("https://www.facebook.com/example.page/posts/123", SINGLE),
+    ("https://www.facebook.com/example.page/posts", SINGLE),
+    # Changed: `about` isn't a tab, so it now reads the profile. Only the listed pages are refused.
+    ("https://www.facebook.com/example.page/about", (USER, "example.page")),
+    ("https://www.facebook.com/watch/?v=123", SINGLE),
+    ("fbk:facebook.com/watch/?v=1", SINGLE),
+    ("https://fb.com/example.page/posts/1", SINGLE),
+    ("https://fb.com/watch/?v=1", SINGLE),
+    ("https://fb.com/reel/1", SINGLE),
+    ("https://fb.com/reels/1", SINGLE),
+    ("https://fb.com/videos/1", SINGLE),
+    ("https://fb.com/photo/?fbid=1", SINGLE),
+    ("https://fb.com/photos/1", SINGLE),
+    ("https://fb.com/groups/x", SINGLE),
+    ("https://fb.com/events/x", SINGLE),
+    ("https://fb.com/stories/x/1", SINGLE),
+    ("https://fb.com/story.php?story_fbid=1", SINGLE),
+    ("https://fb.com/profile.php?id=100012345678901", (USER, "100012345678901")),
+    ("https://fb.com/people/example/100012345678901", (USER, "100012345678901")),
+    ("https://fb.com/@example.page", (USER, "example.page")),
+    ("https://www.facebook.com/reel/123", SINGLE),
+    ("https://www.facebook.com/reels/123", SINGLE),
+    ("https://www.facebook.com/videos/123", SINGLE),
+    ("https://www.facebook.com/photo/?fbid=1", SINGLE),
+    ("https://www.facebook.com/photos/abc", SINGLE),
+    ("https://www.facebook.com/groups/x", SINGLE),
+    ("https://www.facebook.com/events/x", SINGLE),
+    ("https://www.facebook.com/stories/x/1", SINGLE),
+    ("https://www.facebook.com/story.php?story_fbid=1", SINGLE),
+    # Changed: `people/<id>` is the new route. A `people` path without an id is refused, with the
+    # "can't read" message rather than SINGLE, since the name pattern skips `people`.
+    ("https://www.facebook.com/people/example", "(single posts and videos|can't read)"),
+    ("https://www.facebook.com/people/example/100012345678901", (USER, "100012345678901")),
+    ("https://www.facebook.com/profile.php", "can't read"),
+    ("https://www.facebook.com/", "can't read"),
+    ("fbk:example.com/example.page", "can't read"),
+    ("fbk:not a name", "can't read"),
+    ("fbk:ex-ample", "can't read"),
+]
 
 
 def embedded(*results):
@@ -50,6 +119,18 @@ def with_dash(node, manifest):
     result = dict(node["videoDeliveryResponseFragment"]["videoDeliveryResponseResult"],
                   dash_manifests=[{"manifest_xml": manifest, "failure_reason": None}])
     return {**node, "videoDeliveryResponseFragment": {"videoDeliveryResponseResult": result}}
+
+
+class RoutesTest(unittest.TestCase):
+    def test_every_form(self):
+        for text, expected in ROUTES:
+            with self.subTest(text=text):
+                value = text.removeprefix("fbk:")
+                if isinstance(expected, tuple):
+                    self.assertEqual(Facebook().resolve(value), Target("fbk", *expected))
+                else:
+                    with self.assertRaisesRegex(TargetError, f"^fbk: {expected}"):
+                        Facebook().resolve(value)
 
 
 class WalkerTest(unittest.TestCase):

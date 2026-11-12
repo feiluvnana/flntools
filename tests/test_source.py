@@ -103,6 +103,44 @@ class OrderTest(unittest.TestCase):
         self.assertEqual(str(caught.exception), "exm: story links aren't supported; give the profile")
         self.assertIsNone(caught.exception.url)
 
+    def test_a_more_specific_route_beats_a_refusal(self):
+        class Narrow(Source):
+            code, name, domains = "nrw", "Narrow", ("example.com",)
+            unsupported = {"example.com/i": "that's not a profile"}
+
+            @target("example.com/i/web/status/{id:\\d+}")
+            def post(self, session, id): ...
+
+            @target("example.com/*/status/{id:\\d+}")
+            def other(self, session, id): ...
+
+            @target("example.com/{user}")
+            def user(self, session, user): ...
+
+            def run(self, session): ...
+
+        # Four literal segments (host, i, web, status) beat the refusal's two (host, i).
+        self.assertEqual(Narrow().resolve("https://example.com/i/web/status/123"), Target("nrw", "post", "123"))
+        for text in ("https://example.com/i", "https://example.com/i/flow/login"):
+            with self.assertRaises(TargetError) as caught:
+                Narrow().resolve(text)
+            self.assertEqual(str(caught.exception), "nrw: that's not a profile")
+
+    def test_an_equally_specific_route_does_not_beat_a_refusal(self):
+        # `example.com/*/status/<id>` has two literals (host, status), the same as the refusal's.
+        class Equal(Source):
+            code, name, domains = "eql", "Equal", ("example.com",)
+            unsupported = {"example.com/status": "no"}
+
+            @target("example.com/*/status/{id:\\d+}")
+            def post(self, session, id): ...
+
+            def run(self, session): ...
+
+        with self.assertRaises(TargetError) as caught:
+            Equal().resolve("https://example.com/status/123")
+        self.assertEqual(str(caught.exception), "eql: no")
+
     def test_a_subclass_keeps_its_bases_routes_and_replaces_one_by_name(self):
         class Child(Example):
             @target(r"example.com/u/{user}")
@@ -311,9 +349,12 @@ class RouteTablesTest(unittest.TestCase):
 def first_match(source, text):
     """The pattern that reads `text` for `source`, as `Source.resolve` tries them, or None."""
     url = _parse(text, source.domains)
-    patterns = [pattern for pattern, _ in source._refusals] + \
-        [pattern for route in source.routes for pattern in route._patterns]
-    return next((pattern for pattern in patterns if pattern.match(text, url) is not None), None)
+    refusal = next((pattern for pattern, _ in source._refusals if pattern.match(text, url) is not None), None)
+    routes = [pattern for route in source.routes for pattern in route._patterns]
+    # A route pattern with more literal segments than the refusal wins over it, as in `resolve`.
+    found = next((pattern for pattern in routes if pattern.match(text, url) is not None
+                  and (refusal is None or pattern.literals > refusal.literals)), None)
+    return found or refusal
 
 
 if __name__ == "__main__":

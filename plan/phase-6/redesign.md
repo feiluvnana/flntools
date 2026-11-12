@@ -232,7 +232,7 @@ The whole syntax, in five rules:
 
 Then:
 - **Every pattern has exactly one placeholder.** Its value is `Target.value`, which names the target's folder and starts its history keys. Two captures would make a target's identity ambiguous: tik's video URL holds a user and an id, so the user is a `*`.
-- **Order decides.** The source's `unsupported` patterns are tried first. Then routes are tried in the order the class declares them, and within a route its patterns in order. `post` comes before `user`, so `instagram.com/p/ABC` is never read as the user `p`.
+- **Order decides.** The source's `unsupported` patterns are tried first. Then routes are tried in the order the class declares them, and within a route its patterns in order. `post` comes before `user`, so `instagram.com/p/ABC` is never read as the user `p`. The most specific pattern wins: a route pattern with more literal segments than the matching `unsupported` one (`{…}` and `*` aren't literal; the host counts as one) is read instead of refused, so twt's `x.com/i` refusal doesn't catch `x.com/i/web/status/<id>` (user, 2026-11-12).
 - **A URL on the source's domains that nothing matches** is followed once with a HEAD request and matched again: short links, as Phase 6 decided. A second miss is a `TargetError` listing the forms.
 - **Mistakes fail at import, not at run time.** When the class is created, each pattern is compiled, and each placeholder must name the method's parameter. Two routes with the same pattern are an error.
 

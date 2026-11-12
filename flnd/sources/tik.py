@@ -27,9 +27,8 @@ from pathlib import PurePosixPath
 from typing import Any, Dict, List, NamedTuple
 from urllib.parse import urlsplit
 
-from flnd.common.target import link, name, unreadable
 from flnd.session import Session
-from flnd.source import FetchError, Source, Target
+from flnd.source import FetchError, Source, target
 from shared import fmt, selector
 
 # The user agent TikTok's embed page and CDN have always been sent: a desktop Chrome.
@@ -43,7 +42,6 @@ CAPTCHA_TEXT = re.compile(r"Drag the slider|Drag the puzzle|Verify to continue|S
 # The page's visible text: scripts and styles hold strings no reader sees.
 VISIBLE_TEXT = "//body//text()[not(ancestor::script) and not(ancestor::style)]"
 POST_LINKS = 'a[href*="/video/"]::attr(href), a[href*="/photo/"]::attr(href)'
-VIDEO_ID_DIGITS = 16
 # Seconds to let the profile settle before looking for a captcha, and to wait for a tab to take a click.
 SETTLE = 5.0
 CLICK_TIMEOUT = 10.0
@@ -90,33 +88,28 @@ class TikTok(Source):
 
     code = "tik"
     name = "TikTok"
+    # The short-link hosts, vm. and vt.tiktok.com, are subdomains of this one: a short link is read by
+    # the engine, which follows it once when no route matches.
     domains = ("tiktok.com",)
-    short_links = ("vm.tiktok.com", "vt.tiktok.com")
-    kinds_of_target = ("user", "video")
-    examples = ("tik:example_creator", "tik:@example_creator", "https://www.tiktok.com/@example_creator",
-                "https://www.tiktok.com/@example_creator/video/7301234567890123456", "tik:7301234567890123456")
     needs = ("sessionid", "sid_tt")
     categories = ("videos", "stories", "playlists", "reposts", "liked", "favorites", "profile")
     single_kinds = ("video",)
     user_agent = TIKTOK_UA
     browser_args = ("--no-sandbox",)
 
-    def resolve(self, text: str) -> Target:
-        """A user name, or one video: a URL with /video/ or /photo/, or an id of 16 or more digits."""
-        found = link(text, self.domains)
-        if found is None:
-            if text.isdigit() and len(text) >= VIDEO_ID_DIGITS:
-                return Target(self.code, "video", text)
-            user = name(text)
-        else:
-            parts = found.parts
-            for kind, video_id in zip(parts, parts[1:]):
-                if kind in ("video", "photo") and video_id.isdigit():
-                    return Target(self.code, "video", video_id)
-            user = name(parts[0]) if parts and parts[0].startswith("@") else None
-        if not user:
-            raise unreadable(self, text)
-        return Target(self.code, "user", user)
+    # The routes only read targets: step 6 gives them their bodies, and until then `run` reads the
+    # target they give from `session.target`. `video` comes before `user`, so a 16-digit id is never
+    # a user name. A video or photo URL with no user before it is read too, as the old reader did.
+    @target(r"{id:\d{16,}}", r"tiktok.com/*/video/{id:\d+}", r"tiktok.com/*/photo/{id:\d+}",
+            r"tiktok.com/video/{id:\d+}", r"tiktok.com/photo/{id:\d+}")
+    def video(self, session: Session, id: str) -> None:
+        """One video or photo post, by its id: `Target("tik", "video", "7301234567890123456")`."""
+
+    # The link's `@` is written in the pattern, so its regex is spelled out: a default `{user}` would
+    # drop a second `@`, and `tiktok.com/@@name` is refused as it always was.
+    @target("{user}", r"tiktok.com/@{user:[\w.]+}")
+    def user(self, session: Session, user: str) -> None:
+        """A profile, by its user name; a `@` in front of it is dropped."""
 
     def run(self, session: Session) -> None:
         if session.target.kind == "video":

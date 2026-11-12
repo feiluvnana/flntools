@@ -6,7 +6,7 @@ import unittest
 from fakes import FakeSession
 
 from flnd.session import Options
-from flnd.source import FetchError, Target
+from flnd.source import FetchError, Target, TargetError
 from flnd.sources.twt import QUERIES, Twitter, read_timeline_page
 
 API = "https://x.com/i/api/graphql/"
@@ -63,16 +63,78 @@ USER = {"data": {"user": {"result": {"rest_id": USER_ID,
                                      "banner": {"image_url": "https://pbs.example/profile_banners/42/1683721221"}}}}}
 
 
-class ResolveTest(unittest.TestCase):
-    def test_status_links_are_one_tweet(self):
-        for text in ("https://x.com/example_handle/status/1790000000000000000",
-                     "https://twitter.com/example_handle/status/1790000000000000000/photo/1",
-                     "x.com/i/web/status/1790000000000000000"):
-            with self.subTest(text=text):
-                self.assertEqual(Twitter().resolve(text), Target("twt", "post", "1790000000000000000"))
+# Every form twt reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
+# The kinds and values are the keys of targets.db and the history, so a change here is a migration.
+# A refusal is matched by a fragment both the old and the new message contain.
+NOT_A_PROFILE = "(?:can't read|that's not a profile)"
+ROUTES = [
+    ("twt:example_handle", ("user", "example_handle")),
+    ("twt:@example_handle", ("user", "example_handle")),
+    ("twt:example.handle", ("user", "example.handle")),
+    ("twt:x.com", ("user", "x.com")),
+    ("twt:44196397", ("user", "44196397")),
+    ("twt:1234567890123456789", ("user", "1234567890123456789")),
+    ("https://x.com/example_handle", ("user", "example_handle")),
+    ("x.com/example_handle", ("user", "example_handle")),
+    ("twitter.com/example_handle", ("user", "example_handle")),
+    ("https://twitter.com/example_handle/media", ("user", "example_handle")),
+    ("https://www.x.com/example_handle/", ("user", "example_handle")),
+    ("https://mobile.twitter.com/example_handle", ("user", "example_handle")),
+    ("http://x.com/example_handle#top", ("user", "example_handle")),
+    ("https://x.com/example_handle?lang=en", ("user", "example_handle")),
+    ("https://x.com/@example_handle", ("user", "example_handle")),
+    ("https://x.com/example.handle", ("user", "example.handle")),
+    ("https://x.com/example_handle/status/abc", ("user", "example_handle")),
+    ("https://x.com/example_handle/status/1790000000000000000/", ("post", "1790000000000000000")),
+    ("https://x.com/example_handle/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("https://x.com/example_handle/status/1790000000000000000?s=20", ("post", "1790000000000000000")),
+    ("https://twitter.com/example_handle/status/1790000000000000000/photo/1", ("post", "1790000000000000000")),
+    ("https://www.twitter.com/example_handle/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("twt:x.com/example_handle/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("twt:twitter.com/example_handle/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("https://x.com/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("https://twitter.com/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("https://x.com/i/web/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("https://twitter.com/i/web/status/1790000000000000000", ("post", "1790000000000000000")),
+    ("https://x.com/home", NOT_A_PROFILE),
+    ("https://x.com/explore", NOT_A_PROFILE),
+    ("https://x.com/search?q=example", NOT_A_PROFILE),
+    ("https://x.com/settings", NOT_A_PROFILE),
+    ("https://x.com/notifications", NOT_A_PROFILE),
+    ("https://x.com/messages/1", NOT_A_PROFILE),
+    ("https://x.com/hashtag/tag", NOT_A_PROFILE),
+    ("https://x.com/i", NOT_A_PROFILE),
+    ("https://x.com/i/flow/login", NOT_A_PROFILE),
+    ("https://twitter.com/home", NOT_A_PROFILE),
+    ("https://twitter.com/explore", NOT_A_PROFILE),
+    ("https://twitter.com/search?q=example", NOT_A_PROFILE),
+    ("https://twitter.com/settings", NOT_A_PROFILE),
+    ("https://twitter.com/notifications", NOT_A_PROFILE),
+    ("https://twitter.com/messages/1", NOT_A_PROFILE),
+    ("https://twitter.com/hashtag/tag", NOT_A_PROFILE),
+    ("https://twitter.com/i/flow/login", NOT_A_PROFILE),
+    ("twt:https://x.com/explore", NOT_A_PROFILE),
+    ("twt:not a name", "can't read"),
+    ("twt:ex-ample", "can't read"),
+    ("twt:", "can't read"),
+    ("twt:example.com/someone", "can't read"),
+    ("twt:https://example.com/someone", "can't read"),
+    ("https://notx.com/example_handle", "can't read"),
+    ("https://x.com/", "can't read"),
+    ("https://x.com/example handle", "can't read"),
+]
 
-    def test_a_number_is_still_a_user(self):
-        self.assertEqual(Twitter().resolve("1790000000000000000"), Target("twt", "user", "1790000000000000000"))
+
+class RoutesTest(unittest.TestCase):
+    def test_every_form(self):
+        for text, expected in ROUTES:
+            with self.subTest(text=text):
+                value = text.removeprefix("twt:")
+                if isinstance(expected, tuple):
+                    self.assertEqual(Twitter().resolve(value), Target("twt", *expected))
+                else:
+                    with self.assertRaisesRegex(TargetError, f"^twt: {expected}"):
+                        Twitter().resolve(value)
 
 
 class TimelineTest(unittest.TestCase):

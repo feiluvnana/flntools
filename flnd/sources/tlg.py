@@ -19,11 +19,11 @@ import json
 import re
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from flnd import __version__
-from flnd.common.target import link, unreadable
 from flnd.session import Session
-from flnd.source import FetchError, LoginError, Source, Target
+from flnd.source import FetchError, LoginError, Source, Target, TargetError, target
 
 TELEGRAM_WEB = "https://web.telegram.org/"
 # Telegram's production data centers, as every client ships them; Telethon moves on from there itself.
@@ -53,20 +53,28 @@ class Telegram(Source):
     code = "tlg"
     name = "Telegram"
     domains = ("t.me", "telegram.org")
-    kinds_of_target = ("chat",)
-    examples = ("tlg:@examplechannel", "https://t.me/examplechannel", '"tlg:Lens Club"', "tlg:-1001234567890",
-                "https://t.me/c/1234567890/55", "https://t.me/+AbCdEf123")
     # Its content is naturally typed, so the types are the categories.
     categories = ("photo", "video", "file")
     login_methods = ("browser", "qr", "phone")
     requires_login = True
     wait = flood_wait
 
+    # The route only reads the target's kind: `resolve` below reads its text, since no pattern can say
+    # a chat title or a `t.me/c/<n>` link. Step 6 gives the route its body.
+    @target(shown="tlg:<@username, chat title or id>")
+    def chat(self, session: Session, chat: str) -> None:
+        """A chat, by its username, invite link, id or title: `Target("tlg", "chat", "examplechannel")`."""
+
     def resolve(self, text: str) -> Target:
-        """A username, a t.me link, an invite, a chat id or a chat title; see `examples`."""
-        found = link(text, self.domains)
-        if found is not None:
-            parts = [part for part in found.parts if part != "s"] if found.host == "t.me" else []
+        """A username, a t.me link, an invite, a chat id or a chat title, read as the `chat` route's forms."""
+        scheme = text.lower().startswith(("http://", "https://"))
+        url = urlsplit(text if scheme else f"https://{text}") if "/" in text or scheme else None
+        host = (url.hostname or "").lower() if url is not None else ""
+        if url is not None and any(host == domain or host.endswith("." + domain) for domain in self.domains):
+            # The desktop, mobile and old mobile sites are t.me's own; a link on telegram.org names no chat.
+            for prefix in ("www.", "m.", "mobile."):
+                host = host.removeprefix(prefix)
+            parts = [part for part in url.path.split("/") if part and part != "s"] if host == "t.me" else []
             if parts[:1] == ["c"] and len(parts) > 1 and parts[1].isdigit():
                 value = f"-100{parts[1]}"
             elif parts[:1] == ["joinchat"] and len(parts) > 1:
@@ -74,13 +82,13 @@ class Telegram(Source):
             elif parts and (parts[0].startswith("+") or USERNAME.fullmatch(parts[0])):
                 value = parts[0]
             else:
-                raise unreadable(self, text)
+                value = None
         elif text.startswith("@"):
-            if not USERNAME.fullmatch(text[1:]):
-                raise unreadable(self, text)
-            value = text[1:]
+            value = text[1:] if USERNAME.fullmatch(text[1:]) else None
         else:
             value = text.strip()
+        if value is None:
+            raise TargetError(f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}")
         return Target(self.code, "chat", value)
 
     def login(self, session: Session, method: str) -> None:

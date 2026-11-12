@@ -22,9 +22,8 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 from urllib.parse import unquote, urlsplit
 
-from flnd.common.target import link, unreadable
 from flnd.session import Session
-from flnd.source import FetchError, Source, Target
+from flnd.source import FetchError, Source, target
 from shared import crypto
 
 if TYPE_CHECKING:
@@ -51,12 +50,16 @@ class Loibus(Source):
     code = "loi"
     name = "LOIBUS"
     domains = ("loix.cc", "moegoat.com")
-    kinds_of_target = ("post",)
-    examples = ("loi:5930", "https://loix.cc/lois/5930")
     # Without it: the info and images only, no archives.
     needs = ("access-token",)
     # Its content is naturally typed, so the types are the categories.
     categories = ("photo", "archive")
+
+    # The routes only read targets: step 6 gives them their bodies, and until then `run` reads the
+    # target they give from `session.target`.
+    @target(r"{id:\d+}", r"loix.cc/lois/{id:\d+}", r"moegoat.com/lois/{id:\d+}")
+    def post(self, session: Session, id: str) -> None:
+        """One post, by its id: `Target("loi", "post", "5930")`, or a post's URL on either site."""
 
     def headers(self, cookies: Mapping[str, str]) -> Mapping[str, str]:
         """The site's referer and origin, and the login's Bearer token, which `sign` keeps for the API only."""
@@ -69,18 +72,6 @@ class Loibus(Source):
             request.headers.pop("authorization", None)
             return request
         return sign_request(request, now_ms=_clock_ms())
-
-    def resolve(self, text: str) -> Target:
-        """A post id, or a post URL: `5930`, `https://loix.cc/lois/5930`."""
-        found = link(text, self.domains)
-        if found is None:
-            post_id = text.strip() if text.strip().isdigit() else None
-        else:
-            post_id = next((post for part, post in zip(found.parts, found.parts[1:])
-                            if part == "lois" and post.isdigit()), None)
-        if post_id is None:
-            raise unreadable(self, text)
-        return Target(self.code, "post", post_id)
 
     def run(self, session: Session) -> None:
         post = session.fetch_json(f"{API}lois/{session.target.value}").get("data")

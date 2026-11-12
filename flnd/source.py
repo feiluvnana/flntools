@@ -4,7 +4,10 @@ A source is one class. Its fields say what the site is (`code`, `domains`, `need
 say which targets it reads, and `run(session)` downloads one of them. A route is a method marked
 `@target(*patterns)`: the method's name is the target's kind, and each pattern is one form people
 write. The default `Source.resolve` reads a target's text through the routes:
-1. the source's `unsupported` patterns first, each refusing with its own message;
+1. the source's `unsupported` patterns first, each refusing with its own message, unless a route
+   pattern matches the same text and is more specific: it has more literal segments (the host
+   counts as one; `{…}` and `*` don't), so twt's `x.com/i` refusal doesn't catch
+   `x.com/i/web/status/<id>`;
 2. then each route in the order the class declares it, and each route's patterns in order;
 3. the first pattern that matches gives `Target(code, kind, value)`, its one placeholder's value.
 
@@ -161,6 +164,9 @@ class _Pattern:
         self.names: list[str] = []
         self.regexes = [_compile(segment, text, self.names) for segment in self.segments]
         self.query = [(key, _compile(value, text, self.names)) for key, _, value in self.keys]
+        # How specific the pattern is: its literal segments, the host being one. A code pattern has none.
+        self.literals = (self.host is not None) + sum(
+            1 for segment in self.segments if self.host is not None and not set(segment) & set("{}*"))
 
     def match(self, text: str, url: _Url | None) -> str | None:
         """The captured value when `text` (or its `url`, for a domain pattern) matches; "" for no placeholder."""
@@ -394,18 +400,26 @@ class Source(ABC):
             The target the first matching route reads.
 
         Raises:
-            TargetError: an `unsupported` pattern matched, with its message; or nothing matched,
-                listing `forms`, with `url` set when the text is a link on the source's domains.
+            TargetError: an `unsupported` pattern matched, with its message, and no route pattern
+                that matches too has more literal segments than it; or nothing matched, listing
+                `forms`, with `url` set when the text is a link on the source's domains.
         """
         url = _parse(text, self.domains)
-        for pattern, message in self._refusals:
-            if pattern.match(text, url) is not None:
-                raise TargetError(f"{self.code}: {message}")
+        # The most specific pattern wins (user, 2026-11-12): a refusal for a whole path (`x.com/i`)
+        # shouldn't catch a longer, readable link under it (`x.com/i/web/status/<id>`), while the
+        # catch-all routes (`{user}`) are less specific than any refusal and never reopen one.
+        refused = next(((pattern, message) for pattern, message in self._refusals
+                        if pattern.match(text, url) is not None), None)
         for route in self.routes:
             for pattern in route._patterns:
                 value = pattern.match(text, url)
-                if value is not None:
+                if value is None:
+                    continue
+                if refused is None or pattern.literals > refused[0].literals:
                     return Target(self.code, route.kind, value)
+                break
+        if refused is not None:
+            raise TargetError(f"{self.code}: {refused[1]}")
         link = None if url is None else text if _is_url(text) else f"https://{text}"
         raise TargetError(f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}", url=link)
 

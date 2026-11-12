@@ -20,7 +20,6 @@ from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
 from flnd.common import auth
-from flnd.engine import resolve
 from flnd.engine import Engine
 from flnd.session import Options
 from flnd.source import LoginError, Target, TargetError
@@ -34,6 +33,43 @@ CREDENTIALS = {"api_id": "12345", "api_hash": "0123456789abcdef0123456789abcdef"
 # Which kind of message each of Telegram's server-side filters returns.
 KIND_OF_FILTER = {"InputMessagesFilterPhotos": "photo", "InputMessagesFilterVideo": "video",
                   "InputMessagesFilterDocument": "file"}
+ROUTES = [
+    ("tlg:@examplechannel", ("chat", "examplechannel")),
+    ("tlg:examplechannel", ("chat", "examplechannel")),
+    ("tlg:Lens Club", ("chat", "Lens Club")),
+    ("tlg:  Lens Club  ", ("chat", "Lens Club")),
+    ("tlg:-1001234567890", ("chat", "-1001234567890")),
+    ("tlg:a/b", ("chat", "a/b")),
+    ("tlg:https://example.com/x", ("chat", "https://example.com/x")),
+    ("tlg:", ("chat", "")),
+    ("tlg:   ", ("chat", "")),
+    ("https://t.me/examplechannel", ("chat", "examplechannel")),
+    ("t.me/examplechannel", ("chat", "examplechannel")),
+    ("tlg:https://t.me/examplechannel", ("chat", "examplechannel")),
+    ("https://www.t.me/examplechannel", ("chat", "examplechannel")),
+    ("https://t.me/example_channel", ("chat", "example_channel")),
+    ("https://t.me/s/examplechannel", ("chat", "examplechannel")),
+    ("https://t.me/examplechannel/123", ("chat", "examplechannel")),
+    ("https://t.me/examplechannel?single", ("chat", "examplechannel")),
+    ("https://t.me/c/1234567890/55", ("chat", "-1001234567890")),
+    ("https://t.me/c/1234567890", ("chat", "-1001234567890")),
+    ("https://t.me/+AbCdEf123", ("chat", "+AbCdEf123")),
+    ("https://t.me/+", ("chat", "+")),
+    ("https://t.me/joinchat/AbCdEf123", ("chat", "+AbCdEf123")),
+    # `joinchat` alone is 8 letters, so it reads as a username, as it always has.
+    ("https://t.me/joinchat", ("chat", "joinchat")),
+    ("https://t.me/", "can't read 'https://t.me/'"),
+    ("https://t.me/s/", "can't read 'https://t.me/s/'"),
+    ("https://t.me/c/abc", "can't read 'https://t.me/c/abc'"),
+    ("https://t.me/abc", "can't read 'https://t.me/abc'"),
+    ("https://t.me/1abcd", "can't read 'https://t.me/1abcd'"),
+    ("https://t.me/ex-ample", "can't read 'https://t.me/ex-ample'"),
+    ("https://x.t.me/examplechannel", "can't read 'https://x.t.me/examplechannel'"),
+    ("https://telegram.org/examplechannel", "can't read 'https://telegram.org/examplechannel'"),
+    ("https://web.telegram.org/", "can't read 'https://web.telegram.org/'"),
+    ("tlg:@", "can't read '@'"),
+    ("tlg:@bad name", "can't read '@bad name'"),
+]
 
 
 def message(number, kind, *, day=DAY, name=None, content=b"media", size=None):
@@ -172,25 +208,24 @@ def stored(home):
         return dict(secrets)
 
 
-class ResolveTest(unittest.TestCase):
-    def test_every_form_is_a_chat(self):
-        rows = [
-            ("tlg:@examplechannel", "examplechannel"), ("tlg:examplechannel", "examplechannel"),
-            ("https://t.me/examplechannel", "examplechannel"), ("t.me/examplechannel", "examplechannel"),
-            ("https://t.me/s/examplechannel", "examplechannel"), ("https://t.me/examplechannel/123", "examplechannel"),
-            ("tlg:Lens Club", "Lens Club"), ("tlg:-1001234567890", "-1001234567890"),
-            ("https://t.me/c/1234567890/55", "-1001234567890"), ("https://t.me/+AbCdEf123", "+AbCdEf123"),
-            ("https://t.me/joinchat/AbCdEf123", "+AbCdEf123"),
-        ]
-        for text, value in rows:
+class RoutesTest(unittest.TestCase):
+    def test_every_form(self):
+        for text, expected in ROUTES:
             with self.subTest(text=text):
-                self.assertEqual(resolve(text, SOURCES), Target("tlg", "chat", value))
+                value = text.removeprefix("tlg:")
+                if isinstance(expected, tuple):
+                    self.assertEqual(Telegram().resolve(value), Target("tlg", *expected))
+                else:
+                    with self.assertRaisesRegex(TargetError, f"^tlg: {expected}"):
+                        Telegram().resolve(value)
 
-    def test_unreadable_forms_list_the_accepted_ones(self):
-        for text in ("https://t.me/", "https://t.me/c/abc", "tlg:@", "tlg:@bad name"):
-            with self.subTest(text=text), self.assertRaisesRegex(TargetError, "tlg:@examplechannel"):
-                resolve(text, SOURCES)
+    def test_a_refusal_lists_the_shown_form(self):
+        with self.assertRaises(TargetError) as caught:
+            Telegram().resolve("@bad name")
+        self.assertEqual(str(caught.exception), "tlg: can't read '@bad name'; write it like tlg:<@username, chat title or id>")
 
+
+class ResolveTest(unittest.TestCase):
     def test_declarations(self):
         self.assertEqual((Telegram.categories, Telegram.single_kinds), (("photo", "video", "file"), ()))
         self.assertEqual((Telegram.login_methods, Telegram.requires_login), (("browser", "qr", "phone"), True))

@@ -21,9 +21,8 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
-from flnd.common.target import link, name, unreadable
 from flnd.session import Session
-from flnd.source import FetchError, Source, Target
+from flnd.source import FetchError, Source, target
 from shared import fmt, selector
 
 # The user agent Twitter's API has always been sent: a desktop Chrome.
@@ -65,8 +64,6 @@ TIMELINES = (
     Timeline("reposts", "UserRepostsTimeline", "/reposts"),
     Timeline("replies", "UserRepliesTimeline", "/with_replies"),
 )
-# Paths on x.com that are pages of the site, not profiles.
-NOT_PROFILES = {"home", "explore", "search", "i", "settings", "notifications", "messages", "hashtag"}
 BANNER_SIZE = "1500x500"
 
 
@@ -76,9 +73,17 @@ class Twitter(Source):
     code = "twt"
     name = "Twitter/X"
     domains = ("x.com", "twitter.com")
-    kinds_of_target = ("user", "post")
-    examples = ("twt:example_handle", "twt:@example_handle", "twt:44196397", "https://x.com/example_handle",
-                "https://x.com/example_handle/status/1790000000000000000")
+    # Paths on the site that are pages of it, not profiles. `x.com/i` also covers `x.com/i/*`, except the tweet links `post` reads (more literal segments win).
+    unsupported = {
+        "x.com/home": "that's not a profile", "twitter.com/home": "that's not a profile",
+        "x.com/explore": "that's not a profile", "twitter.com/explore": "that's not a profile",
+        "x.com/search": "that's not a profile", "twitter.com/search": "that's not a profile",
+        "x.com/settings": "that's not a profile", "twitter.com/settings": "that's not a profile",
+        "x.com/notifications": "that's not a profile", "twitter.com/notifications": "that's not a profile",
+        "x.com/messages": "that's not a profile", "twitter.com/messages": "that's not a profile",
+        "x.com/hashtag": "that's not a profile", "twitter.com/hashtag": "that's not a profile",
+        "x.com/i": "that's not a profile", "twitter.com/i": "that's not a profile",
+    }
     needs = ("auth_token",)
     categories = ("posts", "media", "highlights", "reposts", "replies", "profile")
     single_kinds = ("post",)
@@ -97,18 +102,17 @@ class Twitter(Source):
             "cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()]),
         }
 
-    def resolve(self, text: str) -> Target:
-        """A screen name, a number (a user id), or one tweet: a URL with /status/<id>."""
-        found = link(text, self.domains)
-        if found is None:
-            user = name(text)
-        elif (tweet_id := status_id(found.parts)) is not None:
-            return Target(self.code, "post", tweet_id)
-        else:
-            user = name(found.parts[0]) if found.parts and found.parts[0] not in NOT_PROFILES else None
-        if not user:
-            raise unreadable(self, text)
-        return Target(self.code, "user", user)
+    # The routes only read targets: step 6 gives them their bodies. `post` comes before `user`, so
+    # x.com/status/<id> is never the user "status".
+    @target(r"x.com/*/status/{tweet_id:\d+}", r"twitter.com/*/status/{tweet_id:\d+}",
+            r"x.com/status/{tweet_id:\d+}", r"twitter.com/status/{tweet_id:\d+}",
+            r"x.com/i/web/status/{tweet_id:\d+}", r"twitter.com/i/web/status/{tweet_id:\d+}")
+    def post(self, session: Session, tweet_id: str) -> None:
+        """One tweet, by its id: `Target("twt", "post", "1790000000000000000")`."""
+
+    @target("{user}", "x.com/{user}", "twitter.com/{user}")
+    def user(self, session: Session, user: str) -> None:
+        """A profile, by its screen name, or a number, which is a user id and never a tweet."""
 
     def run(self, session: Session) -> None:
         if session.target.kind == "post":
@@ -212,14 +216,6 @@ class Twitter(Source):
                     session.scroll(count=lambda: found[0])
         session.folder = None
         session.info("{tweets} read in the browser", tweets=fmt.count(found[0], "tweet"))
-
-
-def status_id(parts: list[str]) -> str | None:
-    """The tweet id in a URL's path parts (`<user>/status/<id>`, `i/web/status/<id>`), or None."""
-    for part, tweet_id in zip(parts, parts[1:]):
-        if part == "status" and tweet_id.isdigit():
-            return tweet_id
-    return None
 
 
 def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:

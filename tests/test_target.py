@@ -93,7 +93,7 @@ class ShortLinkTest(unittest.TestCase):
 
         self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow), Target("tik", "video", "7301234567890123456"))
         self.assertEqual(read("tik:vm.tiktok.com/ZMabc123/", follow), Target("tik", "video", "7301234567890123456"))
-        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/", "vm.tiktok.com/ZMabc123/"])
+        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/", "https://vm.tiktok.com/ZMabc123/"])
 
     def test_other_links_are_not_followed(self):
         def follow(url):
@@ -127,6 +127,7 @@ class RefusedTest(unittest.TestCase):
             ("https://www.instagram.com/stories/example_user/123/", "ins: story links aren't supported; give the "
                                                                    "profile, and its stories come with it"),
             ("https://www.facebook.com/example.page/posts/123", "fbk: single posts and videos aren't supported yet"),
+            ("https://x.com/explore", "twt: that's not a profile"),
         ]
         for text, message in rows:
             with self.subTest(text=text), self.assertRaisesRegex(TargetError, "^" + message):
@@ -141,10 +142,10 @@ class RefusedTest(unittest.TestCase):
                                                 "https://www.instagram.com/…/p/<code>/, "
                                                 "https://www.instagram.com/…/reel/<code>/, https://www.instagram.com/…/reels/<code>/, "
                                                 "https://www.instagram.com/…/tv/<code>/, https://www.instagram.com/<user>/")
-        # A source not yet ported to routes still lists its examples.
-        with self.assertRaisesRegex(TargetError, "^twt: can't read 'not a name'; write it like twt:example_handle, "):
+        # twt's forms are generated from its routes, so its first form is twt:<user>.
+        with self.assertRaisesRegex(TargetError, "^twt: can't read 'not a name'; write it like twt:<user>, "):
             read("twt:not a name")
-        for text in ("ins:", "tik:https://www.tiktok.com/", "twt:https://x.com/explore"):
+        for text in ("ins:", "tik:https://www.tiktok.com/"):
             with self.subTest(text=text), self.assertRaisesRegex(TargetError, "can't read"):
                 read(text)
 

@@ -179,7 +179,7 @@ class DownloadTest(RunsCase):
         self.assertEqual(code, 0)
         self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, and Telegram.", stdout)
         self.assertIn("Sources: tik, fbk, ins, twt, loi", stdout)
-        self.assertIn("https://www.facebook.com/profile.php?id=100012345678901", stdout)
+        self.assertIn("https://www.facebook.com/profile.php?id=<user>", stdout)
         for command in ("download", "sync", "login", "logout"):
             self.assertIn(command, stdout)
         self.assertNotIn("auth", stdout)

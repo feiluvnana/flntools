@@ -22,14 +22,15 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
-from flnd.common.target import link, name, unreadable
 from flnd.session import Session
-from flnd.source import Source, Target, TargetError
+from flnd.source import Source, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import embedded_results
 from shared import fmt, selector
 
 SITE = "https://www.facebook.com"
+# What a single post, reel or video is refused with: only a profile is read.
+SINGLE_POST = "single posts and videos aren't supported yet; give the profile"
 
 
 class Tab(NamedTuple):
@@ -60,9 +61,6 @@ TILES = {"TimelineAppCollectionItem"}
 # The profile header's cover and pictures are the profile category's, not any tab's.
 NOT_MEDIA = {"profile_header_renderer"}
 TIMESTAMPS = ("creation_time", "publish_time", "post_timestamp", "timestamp", "created_time")
-# Paths on facebook.com that are pages of the site, not profiles.
-NOT_PROFILES = {"watch", "reel", "reels", "videos", "photo", "photos", "groups", "events", "stories", "story.php"}
-TAB_PATHS = {path for tab in TABS for path in tab.paths if path}
 
 
 class Header(NamedTuple):
@@ -75,38 +73,31 @@ class Header(NamedTuple):
     paths: set[str]
 
 
-def is_profile(parts: list[str]) -> bool:
-    """Whether a facebook.com path is a profile or one of its tabs, such as `example.page/photos`."""
-    return parts[0] not in NOT_PROFILES and (len(parts) == 1 or parts[1] in TAB_PATHS)
-
-
 class Facebook(Source):
     """Facebook profiles, read in a browser that is logged in with the saved cookies."""
 
     code = "fbk"
     name = "Facebook"
     domains = ("facebook.com", "fb.com", "fb.watch")
-    short_links = ("fb.watch",)
-    examples = ("fbk:example.page", "fbk:100012345678901", "https://www.facebook.com/profile.php?id=100012345678901")
     needs = ("c_user", "xs")
     categories = (*(tab.category for tab in TABS), "stories", "profile")
+    # Refused before any route. Each page is exact, so a profile named `watchman` still reads; `*/posts`
+    # also refuses a profile's `/posts/<id>`. A profile's other pages (about, friends) read as the profile.
+    unsupported = {f"{host}/{path}": SINGLE_POST for host in ("facebook.com", "fb.com")
+                   for path in ("*/posts", "watch", "reel", "reels", "videos", "photo", "photos", "groups",
+                                "events", "stories", "story.php")}
 
-    def resolve(self, text: str) -> Target:
-        found = link(text, self.domains)
-        if found is None:
-            user = name(text)
-        elif found.parts[:1] == ["profile.php"]:
-            user = found.query.get("id")
-        elif found.parts and is_profile(found.parts):
-            user = name(found.parts[0])
-        elif found.parts:
-            raise TargetError(f"{self.code}: single posts and videos aren't supported yet; "
-                              f"give the profile, for example {self.examples[0]}")
-        else:
-            user = None
-        if not user:
-            raise unreadable(self, text)
-        return Target(self.code, "user", user)
+    # The routes only read targets: step 6 gives them their bodies, and until then `run` reads the
+    # target they give from `session.target`. `profile.php?id=` and `people/*/<id>` come before the
+    # name pattern, which skips `profile.php` and `people` so their own forms, or a refusal, decide.
+    # `@name` has its own pattern: the name pattern's custom regex takes no `@`, which `{user}` alone would.
+    @target("{user}",
+            r"facebook.com/profile.php?id={user:\d+}", r"fb.com/profile.php?id={user:\d+}",
+            r"facebook.com/people/*/{user:\d+}", r"fb.com/people/*/{user:\d+}",
+            r"facebook.com/@{user}", r"fb.com/@{user}",
+            r"facebook.com/{user:(?!profile\.php$|people$)[\w.]+}", r"fb.com/{user:(?!profile\.php$|people$)[\w.]+}")
+    def user(self, session: Session, user: str) -> None:
+        """A profile, by its user name or its id: `Target("fbk", "user", "example.page")`."""
 
     def run(self, session: Session) -> None:
         profile = f"{SITE}/{session.target.value}"

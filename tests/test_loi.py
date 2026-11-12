@@ -71,16 +71,43 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(Loibus().headers({})["referer"], "https://loix.cc/")
 
 
-class ResolveTest(unittest.TestCase):
-    def test_an_id_or_a_post_url(self):
-        for text in ("5930", "https://loix.cc/lois/5930", "loix.cc/lois/5930?x=1", "https://www.loix.cc/lois/5930/"):
-            with self.subTest(text=text):
-                self.assertEqual(Loibus().resolve(text), Target("loi", "post", "5930"))
+# Every form loi reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
+# The kinds and values are the keys of targets.db and the history, so a change here is a migration.
+ROUTES = [
+    ("loi:5930", ("post", "5930")),
+    ("loi:https://www.loix.cc/lois/5930?ref=1", ("post", "5930")),
+    ("https://loix.cc/lois/5930", ("post", "5930")),
+    ("loix.cc/lois/5930", ("post", "5930")),
+    ("loix.cc/lois/5930?x=1", ("post", "5930")),
+    ("https://www.loix.cc/lois/5930/", ("post", "5930")),
+    ("http://loix.cc/lois/5930#top", ("post", "5930")),
+    ("https://m.loix.cc/lois/5930", ("post", "5930")),
+    ("https://mobile.loix.cc/lois/5930", ("post", "5930")),
+    ("https://loix.cc/lois/5930/lois/7", ("post", "5930")),
+    ("https://moegoat.com/lois/5930", ("post", "5930")),
+    ("https://www.moegoat.com/lois/5930/", ("post", "5930")),
+    ("https://loix.cc/lois/0", ("post", "0")),
+    ("example_user", "can't read"),
+    ("loi:abc", "can't read"),
+    ("https://loix.cc/library/loier/7", "can't read"),
+    ("https://loix.cc/lois/", "can't read"),
+    ("https://loix.cc/lois/abc", "can't read"),
+    ("https://loix.cc/", "can't read"),
+    ("loix.cc/5930", "can't read"),
+    ("https://example.com/lois/5930", "can't read"),
+]
 
-    def test_anything_else_is_refused(self):
-        for text in ("example_user", "https://loix.cc/library/loier/7", "https://loix.cc/"):
-            with self.subTest(text=text), self.assertRaises(TargetError):
-                Loibus().resolve(text)
+
+class RoutesTest(unittest.TestCase):
+    def test_every_form(self):
+        for text, expected in ROUTES:
+            with self.subTest(text=text):
+                value = text.removeprefix("loi:")
+                if isinstance(expected, tuple):
+                    self.assertEqual(Loibus().resolve(value), Target("loi", *expected))
+                else:
+                    with self.assertRaisesRegex(TargetError, f"^loi: {expected}"):
+                        Loibus().resolve(value)
 
 
 def encrypt(text):
