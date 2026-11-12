@@ -130,10 +130,11 @@ class ProfileTest(unittest.TestCase):
         self.assertNotIn(f"{SITE}/p/R1/", session.visited)
         self.assertIsNone(session.folder)
 
-    def test_defaults_leave_out_tagged_and_reposts(self):
+    def test_without_from_every_tab_is_read(self):
         session = self.run_profile(options=Options())
-        self.assertEqual(session.visited, [f"{SITE}/someone/", f"{SITE}/someone/reels/", f"{SITE}/stories/someone/",
-                                           f"{SITE}/stories/highlights/9001/"])
+        self.assertEqual(session.visited, self.run_profile().visited)
+        self.assertIn(f"{SITE}/someone/tagged/", session.visited)
+        self.assertIn(f"{SITE}/someone/reposts/", session.visited)
 
     def test_the_profile_alone_loads_the_profile_page_once(self):
         session = self.run_profile(options=Options(categories=("profile",)))

@@ -81,7 +81,7 @@ class Twitter(Source):
                 "https://x.com/example_handle/status/1790000000000000000")
     needs = ("auth_token",)
     categories = ("posts", "media", "highlights", "reposts", "replies", "profile")
-    default_categories = ("posts", "media", "highlights", "profile")
+    single_kinds = ("post",)
     user_agent = CHROME
     # This browser never hid navigator.webdriver, so stealth stays off.
     stealth = False

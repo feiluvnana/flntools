@@ -144,8 +144,8 @@ class RunTest(unittest.TestCase):
         self.assertIn("[Link](https://pan.example/s/1) (Password: `abcd`)", info)
         self.assertEqual(session.state["quota"], {"day": datetime.date.today().isoformat(), "posts": [5930]})
 
-    def test_the_defaults_never_ask_for_links(self):
-        session = self.session()
+    def test_from_photo_never_asks_for_links(self):
+        session = self.session(categories=("photo",))
         Loibus().run(session)
         self.assertEqual(self.requested(session), ["lois/5930"])
         self.assertEqual(len(session.saved), 2)

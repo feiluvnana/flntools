@@ -191,8 +191,7 @@ class ResolveTest(unittest.TestCase):
                 resolve(text, SOURCES)
 
     def test_declarations(self):
-        self.assertEqual((Telegram.categories, Telegram.default_categories), (("photo", "video", "file"),
-                                                                             ("photo", "video")))
+        self.assertEqual((Telegram.categories, Telegram.single_kinds), (("photo", "video", "file"), ()))
         self.assertEqual((Telegram.login_methods, Telegram.requires_login), (("browser", "qr", "phone"), True))
         self.assertIs(Telegram.wait, flood_wait)
 
@@ -419,15 +418,15 @@ class DownloadTest(DownloadCase):
     def test_until_asks_from_the_next_day(self):
         self.download(until=datetime.date(2026, 1, 4))
         midnight = datetime.datetime(2026, 1, 5, tzinfo=datetime.timezone.utc)
-        self.assertEqual(self.telegram.asked, [("photo", midnight), ("video", midnight)])
+        self.assertEqual(self.telegram.asked, [("photo", midnight), ("video", midnight), ("file", midnight)])
         self.assertEqual(self.telegram.downloads, [5])
 
-    def test_the_defaults_are_photos_and_videos_and_a_second_run_downloads_nothing(self):
-        self.assertEqual(self.download(), 4)
-        self.assertEqual([kind for kind, _ in self.telegram.asked], ["photo", "video"])
+    def test_without_from_every_kind_and_a_second_run_downloads_nothing(self):
+        self.assertEqual(self.download(), 5)
+        self.assertEqual([kind for kind, _ in self.telegram.asked], ["photo", "video", "file"])
         self.assertEqual((self.folder / "video" / "2026-01-05_13.mp4").read_bytes(), b"video")
         self.assertEqual(self.download(), 0)
-        self.assertEqual(len(self.telegram.downloads), 4)
+        self.assertEqual(len(self.telegram.downloads), 5)
         # One client per run, closed at its end, on the group's own loop.
         self.assertEqual([client.connected for client in self.telegram.clients], [False, False])
         self.assertEqual(self.telegram.threads, {"flnd-tlg"})

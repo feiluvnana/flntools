@@ -130,13 +130,15 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(cursors, [None, "c1", "c2"])
         self.assertIn("posts: 3 pages read", session.messages)
 
-    def test_defaults_leave_out_reposts_and_replies(self):
+    def test_without_from_every_timeline_is_read(self):
         session = FakeSession(Target("twt", "user", "someone"), json={
             url("UserByScreenName"): USER, url("UserOriginalsTimeline"): page(), url("UserMedia"): page(),
-            url("UserHighlightsTweets"): page()})
+            url("UserHighlightsTweets"): page(), url("UserRepostsTimeline"): page(),
+            url("UserRepliesTimeline"): page()})
         Twitter().run(session)
         self.assertEqual([request_url.rsplit("/", 1)[-1] for _, request_url, _ in session.requests],
-                         ["UserByScreenName", "UserOriginalsTimeline", "UserMedia", "UserHighlightsTweets"])
+                         ["UserByScreenName", "UserOriginalsTimeline", "UserMedia", "UserHighlightsTweets",
+                          "UserRepostsTimeline", "UserRepliesTimeline"])
 
     def test_a_refused_timeline_switches_to_the_browser(self):
         session = FakeSession(Target("twt", "user", "someone"), options=Options(categories=("posts", "media")), json={

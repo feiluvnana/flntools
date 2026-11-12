@@ -90,7 +90,6 @@ class Facebook(Source):
     examples = ("fbk:example.page", "fbk:100012345678901", "https://www.facebook.com/profile.php?id=100012345678901")
     needs = ("c_user", "xs")
     categories = (*(tab.category for tab in TABS), "stories", "profile")
-    default_categories = ("posts", "photos", "albums", "reels", "videos", "stories", "profile")
 
     def resolve(self, text: str) -> Target:
         found = link(text, self.domains)
@@ -235,7 +234,7 @@ def save_media(session: Session, data: dict, tab: str, *, album: str | None = No
             folder = tab
         extension = "mp4" if item.kind == "video" else image_extension(item.url)
         file_name = f"{item.day}_{item.id}.{extension}" if item.day else f"{item.id}.{extension}"
-        # The category is the tab it was found on, wherever its folder is: tagged photos are opt-in.
+        # The category is the tab it was found on, wherever its folder is, so `--from` picks tagged photos by their tab.
         session.save(item.url, file_name, category=tab, date=item.day, folder=folder, key=item.id,
                      headers={"Referer": f"{SITE}/"}, audio=item.audio)
         count += 1

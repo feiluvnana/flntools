@@ -58,7 +58,6 @@ class Telegram(Source):
                 "https://t.me/c/1234567890/55", "https://t.me/+AbCdEf123")
     # Its content is naturally typed, so the types are the categories.
     categories = ("photo", "video", "file")
-    default_categories = ("photo", "video")
     login_methods = ("browser", "qr", "phone")
     requires_login = True
     wait = flood_wait

@@ -57,7 +57,6 @@ class Loibus(Source):
     needs = ("access-token",)
     # Its content is naturally typed, so the types are the categories.
     categories = ("photo", "archive")
-    default_categories = ("photo",)
 
     def headers(self, cookies: Mapping[str, str]) -> Mapping[str, str]:
         """The site's referer and origin, and the login's Bearer token, which `sign` keeps for the API only."""

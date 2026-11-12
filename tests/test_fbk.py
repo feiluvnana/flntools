@@ -150,11 +150,14 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(session.visited, [f"{SITE}/a", f"{SITE}/a/videos_by"])
         self.assertIn("! the profile header wasn't found; its pictures and stories are skipped", session.messages)
 
-    def test_tagged_is_opt_in(self):
+    def test_tagged_is_taken_without_from_and_left_out_by_another_from(self):
         pages = {f"{SITE}/a": embedded(header("photos_of"))}
         session = FakeSession(Target("fbk", "user", "a"), pages=pages)
         Facebook().run(session)
-        self.assertNotIn(f"{SITE}/a/photos_of", session.visited)
+        self.assertIn(f"{SITE}/a/photos_of", session.visited)
+        posts = FakeSession(Target("fbk", "user", "a"), options=Options(categories=("posts",)), pages=pages)
+        Facebook().run(posts)
+        self.assertNotIn(f"{SITE}/a/photos_of", posts.visited)
         tagged = FakeSession(Target("fbk", "user", "a"), options=Options(categories=("tagged",)), pages=pages)
         Facebook().run(tagged)
         self.assertEqual(tagged.visited, [f"{SITE}/a", f"{SITE}/a/photos_of"])

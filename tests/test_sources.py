@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fakes import FakeSession
 
+from flnd.session import Options, selected
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
 from flnd.sources.fbk import Facebook
@@ -56,23 +57,30 @@ class RegistryTest(unittest.TestCase):
         for source in SOURCES.values():
             methods = ("browser", "qr", "phone") if source is Telegram else ("browser", "file")
             self.assertEqual((source.concurrency, source.pause, source.login_methods), (4, 5.0, methods))
-            self.assertTrue(set(source.default_categories) <= set(source.categories), source.code)
 
-    def test_categories_and_their_defaults(self):
-        # engine.md's categories table: other people's content (tagged, reposts, liked, replies) is opt-in.
+    def test_categories_and_single_post_kinds(self):
+        # Without --from a target gets every category; a single post's kind has none.
         table = {
-            Instagram: ("posts reels tagged reposts stories highlights profile", "posts reels stories highlights profile"),
-            Facebook: ("posts photos tagged albums reels videos stories profile",
-                       "posts photos albums reels videos stories profile"),
-            TikTok: ("videos stories playlists reposts liked favorites profile", "videos stories playlists profile"),
-            Twitter: ("posts media highlights reposts replies profile", "posts media highlights profile"),
-            Loibus: ("photo archive", "photo"),
-            Telegram: ("photo video file", "photo video"),
+            Instagram: ("posts reels tagged reposts stories highlights profile", "post"),
+            Facebook: ("posts photos tagged albums reels videos stories profile", ""),
+            TikTok: ("videos stories playlists reposts liked favorites profile", "video"),
+            Twitter: ("posts media highlights reposts replies profile", "post"),
+            Loibus: ("photo archive", ""),
+            Telegram: ("photo video file", ""),
         }
-        for source, (categories, defaults) in table.items():
+        for source, (categories, single) in table.items():
             with self.subTest(source=source.code):
-                self.assertEqual((source.categories, source.default_categories),
-                                 (tuple(categories.split()), tuple(defaults.split())))
+                self.assertEqual((source.categories, source.single_kinds),
+                                 (tuple(categories.split()), tuple(single.split())))
+
+    def test_without_from_every_category_is_taken(self):
+        for source in SOURCES.values():
+            with self.subTest(source=source.code):
+                self.assertEqual(selected(Options(), source), source.categories)
+                self.assertEqual(selected(Options(categories=("all",)), source), source.categories)
+        self.assertEqual(selected(Options(categories=("reels", "media")), Instagram), ("reels",))
+        # None of the names is this source's: every category, as without --from.
+        self.assertEqual(selected(Options(categories=("media",)), Instagram), Instagram.categories)
 
 
 class GuardTest(unittest.TestCase):

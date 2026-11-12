@@ -63,10 +63,12 @@ class Source(ABC):
     # What a target can point to, and one example per accepted form, for help and errors.
     kinds_of_target: ClassVar[tuple[str, ...]] = ("user",)
     examples: ClassVar[tuple[str, ...]] = ()
-    # What `--from` can take from this source, and what it takes without `--from`: the account's
-    # own content. Other people's (tagged, reposts, liked) is opt-in.
+    # What `--from` can take from this source; without `--from`, a target gets every one.
     categories: ClassVar[tuple[str, ...]] = ()
-    default_categories: ClassVar[tuple[str, ...]] = ()
+    # Target kinds that are one post, downloaded whole (ins "post", tik "video"). A post has no
+    # categories (tagged or reposts describe a profile's tab, not a post), so `--from` with one is
+    # a usage error rather than a filter that silently drops every file.
+    single_kinds: ClassVar[tuple[str, ...]] = ()
     # Cookie names, any one of which proves a login.
     needs: ClassVar[tuple[str, ...]] = ()
     requires_login: ClassVar[bool] = False

@@ -96,7 +96,7 @@ class TikTok(Source):
                 "https://www.tiktok.com/@example_creator/video/7301234567890123456", "tik:7301234567890123456")
     needs = ("sessionid", "sid_tt")
     categories = ("videos", "stories", "playlists", "reposts", "liked", "favorites", "profile")
-    default_categories = ("videos", "stories", "playlists", "profile")
+    single_kinds = ("video",)
     user_agent = TIKTOK_UA
     browser_args = ("--no-sandbox",)
 

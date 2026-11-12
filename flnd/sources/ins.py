@@ -67,7 +67,7 @@ class Instagram(Source):
                 "https://www.instagram.com/p/C1abcDEFghi/", "https://www.instagram.com/reel/C1abcDEFghi/")
     needs = ("sessionid",)
     categories = ("posts", "reels", "tagged", "reposts", "stories", "highlights", "profile")
-    default_categories = ("posts", "reels", "stories", "highlights", "profile")
+    single_kinds = ("post",)
 
     def resolve(self, text: str) -> Target:
         """A user name, or one post: a URL with /p/<code>, /reel/<code> or /tv/<code>."""

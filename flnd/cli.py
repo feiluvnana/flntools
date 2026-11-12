@@ -22,7 +22,7 @@ from typing import Annotated, Optional
 from flnd import __version__, auth, sync as syncing
 from flnd.compress import Choice, parse_choice
 from flnd.engine import Engine
-from flnd.session import Options, unknown_categories
+from flnd.session import Options, single_targets, unknown_categories
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
 from flnd.target import TargetError
@@ -40,14 +40,14 @@ def describe() -> str:
 
 def epilog() -> str:
     examples = "\n".join(f"  {example}" for source in SOURCES.values() for example in source.examples)
-    categories = "\n".join(f"  {code}: {', '.join(_marked(source))}" for code, source in SOURCES.items())
+    categories = "\n".join(f"  {code}: {', '.join(source.categories)}" for code, source in SOURCES.items())
     return f"""\
 Target format:
   <source>:<name, id or URL>, or a bare URL
   Sources: {", ".join(SOURCES)}
 {examples}
 
-Categories (--from; * is downloaded without --from):
+Categories (--from; without it, every one; not for a single post's link):
 {categories}
 
 Examples:
@@ -62,10 +62,6 @@ Examples:
   flnd login
   flnd logout all
 """
-
-
-def _marked(source: type[Source]) -> list[str]:
-    return [name + ("*" if name in source.default_categories else "") for name in source.categories]
 
 
 app = cli.App("flnd", version=__version__, description=describe(), epilog=epilog())
@@ -94,8 +90,8 @@ def download(
 
     Args:
         targets: source:value pairs or URLs; read one per line from stdin when none are given.
-        categories: what to take from each source, such as posts,reels or all; a comma list or repeated.
-            Without it, each source's own content; other people's (tagged, reposts) only when named.
+        categories: what to take from each source, such as posts,reels; a comma list or repeated.
+            Without it, every category. Not for a single post's link, which is downloaded whole.
         time: only items dated from one day to another, both included, as 2026-01-01,2026-06-30;
             leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
         image: compress each photo, replacing it when smaller, metadata (GPS too) stripped: a format
@@ -197,7 +193,7 @@ def _resolve(engine: Engine, targets: list[str]) -> list:
 def _categories(categories: list[str], resolved: list) -> tuple[str, ...]:
     names = tuple(dict.fromkeys(categories))
     sources = list(dict.fromkeys(SOURCES[target.source] for target in resolved)) or list(SOURCES.values())
-    if problem := unknown_categories(names, sources):
+    if problem := unknown_categories(names, sources) or single_targets(resolved, SOURCES):
         raise cli.UsageError(problem)
     return names
 

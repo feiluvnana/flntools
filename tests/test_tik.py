@@ -139,8 +139,9 @@ class TikTokTest(unittest.TestCase):
         self.assertIn("liked: nothing public on this account", session.messages)
         self.assertIsNone(session.folder)
 
-    def test_tabs_are_opt_in(self):
-        session = FakeSession(Target("tik", "user", "someone"), pages={PROFILE: profile_page("repost-tab")})
+    def test_tabs_not_asked_for_are_not_read(self):
+        session = FakeSession(Target("tik", "user", "someone"), options=Options(categories=("videos",)),
+                              pages={PROFILE: profile_page("repost-tab")})
         TikTok().run(session)
         self.assertFalse(any("public" in message for message in session.messages))
 

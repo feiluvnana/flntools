@@ -44,7 +44,7 @@ def make_source(code, run, **declared):
         return Target(code, "user", text.lstrip("@"))
 
     attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "examples": (f"{code}:a",),
-                  "categories": ("posts", "reels", "files"), "default_categories": ("posts", "reels"),
+                  "categories": ("posts", "reels", "files"),
                   "resolve": resolve, "run": lambda self, session: run(session), **declared}
     return type(f"Source_{code}", (Source,), attributes)
 
@@ -353,8 +353,10 @@ class SaveTest(EngineCase):
         source = make_source("aaa", lambda session: seen.append(session.categories))
         for categories in (None, ("all",), ("files",), ("media",)):
             self.run_engine(source, targets=["aaa:a"], options=Options(categories=categories))
-        # A name the source doesn't have is ignored, and with none of its own it takes its defaults.
-        self.assertEqual(seen, [("posts", "reels"), ("posts", "reels", "files"), ("files",), ("posts", "reels")])
+        # Without --from every category; a name the source doesn't have is ignored, and with none of
+        # its own it takes every category, as without --from.
+        every = ("posts", "reels", "files")
+        self.assertEqual(seen, [every, every, ("files",), every])
 
     def test_no_limit_and_folder_none(self):
         # flnd has no download limit: every file a source saves is downloaded (simplify.md).

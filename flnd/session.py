@@ -112,7 +112,7 @@ class Options:
     whose saved settings differ separately. It is hashable, so it can key those groups.
     """
 
-    # `--from`: None means each source's `default_categories`, and "all" every one.
+    # `--from`: None (or "all") means every category of each source.
     categories: tuple[str, ...] | None = None
     # `--time`'s two days, both included; None is no limit on that side.
     since: datetime.date | None = None
@@ -128,15 +128,13 @@ def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
 
         selected(Options(categories=("reels", "media")), Instagram)     # ("reels",)
 
-    A name the source doesn't have is ignored; when none of the names is the source's, it
-    downloads its default categories, as without `--from`.
+    Without `--from`, or with `all`, it is every category. A name the source doesn't have is
+    ignored; when none of the names is the source's, it takes every category, as without `--from`.
     """
     names = options.categories
-    if names is None:
-        return source.default_categories
-    if ALL in names:
+    if names is None or ALL in names:
         return source.categories
-    return tuple(name for name in source.categories if name in names) or source.default_categories
+    return tuple(name for name in source.categories if name in names) or source.categories
 
 
 def unknown_categories(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None:
@@ -147,6 +145,21 @@ def unknown_categories(names: Sequence[str], sources: Sequence[type[Source]]) ->
         return None
     lists = "; ".join(f"{source.code}: {', '.join(source.categories)}" for source in sources)
     return f"no source here has {', '.join(map(repr, unknown))}: use all, or {lists}"
+
+
+def single_targets(targets: Sequence[Target], sources: Mapping[str, type[Source]]) -> str | None:
+    """Why `--from` can't be used with these targets, naming the first single post; None when it can.
+
+        single_targets([Target("ins", "post", "C1abc")], SOURCES)     # "--from applies to profiles and chats; …"
+
+    A post has no categories: tagged or reposts describe a profile's tab, not a post. Filtering
+    one by `--from` would only ever drop every file, so the command refuses it before it starts.
+    """
+    for target in targets:
+        if target.kind in sources[target.source].single_kinds:
+            return (f"--from applies to profiles and chats; {target} is one post, downloaded whole: "
+                    "give it without --from")
+    return None
 
 
 def wanted(categories: tuple[str, ...], options: Options, *, category: str | None = None,

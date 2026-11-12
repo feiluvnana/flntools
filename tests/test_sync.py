@@ -381,7 +381,7 @@ class FetchTest(SyncCase):
             self.sync()
         self.assertEqual(compressed, ["d.jpg"])
 
-    def test_sync_takes_each_sources_default_categories(self):
+    def test_sync_takes_every_category(self):
         runs = []
         self.download(Options(categories=("files",)), image=WEBP_MID)
         with mock.patch.object(Engine, "run", lambda engine, targets, options: runs.append(options) or 0):

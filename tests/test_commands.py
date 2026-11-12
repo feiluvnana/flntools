@@ -118,6 +118,24 @@ class DownloadTest(RunsCase):
         self.assertEqual(self.run_app("download", "tik:a", "ins:b", "--from", "all")[0], 0)
         self.assertEqual(self.runs[1][2].categories, ("all",))
 
+    def test_from_with_a_single_post_is_a_usage_error(self):
+        message = ("✗ --from applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
+                   "give it without --from")
+        for targets in (("https://www.instagram.com/p/C1abcDEFghi/",),
+                        ("ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/")):
+            with self.subTest(targets=targets):
+                code, _, out = self.run_app("download", *targets, "--from", "tagged")
+                self.assertEqual(code, 2)
+                self.assertIn(message, out)
+        for target in ("https://x.com/example_handle/status/1790000000000000000",
+                       "https://www.tiktok.com/@example_creator/video/7301234567890123456"):
+            with self.subTest(target=target):
+                self.assertEqual(self.run_app("download", target, "--from", "posts,videos")[0], 2)
+        self.assertEqual(self.runs, [])
+        # Without --from the same link downloads whole; a loi post has categories and takes --from.
+        self.assertEqual(self.run_app("download", "https://www.instagram.com/p/C1abcDEFghi/")[0], 0)
+        self.assertEqual(self.run_app("download", "loi:5930", "--from", "photo")[0], 0)
+
     def test_targets_from_stdin(self):
         self.pipe("ins:a\n\n# a comment\ntwt:b\n")
         self.assertEqual(self.run_app("download")[0], 0)
@@ -312,7 +330,7 @@ class ExitStatusTest(FlndCase):
         def resolve(self, text):
             return Target(self.code, "user", text)
 
-        common = {"name": "Test", "examples": (), "categories": ("posts",), "default_categories": ("posts",),
+        common = {"name": "Test", "examples": (), "categories": ("posts",),
                   "resolve": resolve, "run": run}
         patcher = mock.patch.dict(sources.SOURCES, {
             "aaa": type("Aaa", (Source,), {"code": "aaa", "domains": ("aaa.example",), **common}),

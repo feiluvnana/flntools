@@ -103,19 +103,23 @@ flnd download ins:example_user --from reels,tagged --time 2026-01-01,
 flnd download twt:example_handle --time 2026-01-01,2026-06-30
 flnd download twt:example_handle --time ,2026-06-30
 
-# Everything, other people's content too: reposts, replies, liked
-flnd download twt:example_handle tik:example_creator --from all
+# Without --from, everything: other people's content too (tagged, reposts, replies, liked)
+flnd download twt:example_handle tik:example_creator
 
 # Only the profile pictures
 flnd download fbk:example.page ins:example_user --from profile
 
-# One TikTok video, one Instagram post or reel, one tweet
+# One TikTok video, one Instagram post or reel, one tweet; a post's link is downloaded whole, and
+# --from with one is an error, since a post has no categories
 flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456
 flnd download https://www.instagram.com/p/C1abcDEFghi/
 flnd download https://x.com/example_handle/status/1790000000000000000
 
 # A LOIBUS post with its VIP archives; the unzip password is in the post's info.md
-flnd download https://loix.cc/lois/5930 --from all
+flnd download https://loix.cc/lois/5930
+
+# Only its info and preview images, without using the daily VIP quota
+flnd download https://loix.cc/lois/5930 --from photo
 
 # Smaller files: photos as WebP, videos at most 720p; the originals are replaced, and this is
 # saved for the target, so later downloads and syncs do the same
@@ -132,8 +136,9 @@ flnd download ins:example_user --image off
 
 Every source takes the same options:
 
-- `--from`: which categories to take, such as `posts,reels`, or `all` (`flnd --help` lists them).
-  Without it, each source's own content; other people's (tagged, reposts) only when named;
+- `--from`: which categories to take, such as `posts,reels` (`flnd --help` lists them). Without it,
+  every category, other people's content (tagged, reposts) included. It applies to profiles and
+  chats only: with a single post's link among the targets, it is an error;
 - `--time <since>,<until>`: only items dated in that range, both days included (YYYY-MM-DD). Leave a
   side empty for no limit: `--time 2026-01-01,` or `--time ,2026-06-30`. `*` works too, quoted
   (`--time 2026-01-01,'*'`), since zsh stops at a bare `*` with "no matches found";
@@ -208,8 +213,8 @@ flnd logout all             # removes every login
 
 A full browser export works: only the source's own cookies are kept, in `.flnd/cookies/<source>.txt`.
 A source that isn't logged in still downloads with public access, and says so. LOIBUS without a
-login gives a post's info and preview images only; its archives (`--from archive`) need a VIP login,
-and count against the account's daily quota.
+login gives a post's info and preview images only; its archives need a VIP login,
+and count against the account's daily quota (`--from photo` leaves them out).
 
 ---
 
@@ -222,8 +227,8 @@ Files are saved with platform-optimized subfolder layouts and automatic deduplic
 ├── ins/<username>/
 │   ├── posts/                  # Feed photos and every carousel item
 │   ├── reels/                  # Reels not already saved from the grid
-│   ├── tagged/                 # Tagged posts (opt-in)
-│   ├── reposts/                # Reposts (opt-in)
+│   ├── tagged/                 # Tagged posts
+│   ├── reposts/                # Reposts
 │   ├── stories/                # Active 24h stories
 │   ├── highlights/<title>/     # Story highlights
 │   └── profile/                # HD profile picture
@@ -231,7 +236,7 @@ Files are saved with platform-optimized subfolder layouts and automatic deduplic
 ├── fbk/<username_or_id>/
 │   ├── posts/                  # Timeline posts
 │   ├── photos/                 # Uploaded photos
-│   ├── tagged/                 # Tagged photos (opt-in)
+│   ├── tagged/                 # Tagged photos
 │   ├── albums/<album_title>/   # Photo albums
 │   ├── reels/                  # Facebook reels
 │   ├── videos/                 # HD videos
@@ -243,21 +248,21 @@ Files are saved with platform-optimized subfolder layouts and automatic deduplic
 │   ├── images/                 # Photo mode slides
 │   ├── stories/                # Active stories
 │   ├── albums/<playlist>/      # Series/playlists
-│   ├── reposts/, liked/, favorites/   # Opt-in; liked and favorites only when public
+│   ├── reposts/, liked/, favorites/   # Liked and favorites only when public
 │   └── profile/                # Profile picture
 │
 ├── twt/<username>/
 │   ├── posts/                  # Media from the user's own tweets
 │   ├── images/, videos/        # Media tab items not already in posts/
 │   ├── highlights/             # Highlights tab
-│   ├── reposts/                # Media of retweets (opt-in)
-│   ├── replies/                # Media of the user's replies (opt-in)
+│   ├── reposts/                # Media of retweets
+│   ├── replies/                # Media of the user's replies
 │   └── profile/                # Avatar and banner
 │
 ├── loi/<post id>/<author>/<post id> <title>/
 │   ├── info.md                 # The post's fields, download links and unzip password
 │   ├── images/                 # Preview images
-│   └── <archive>.7z            # VIP archives (--from archive), saved as the site sends them
+│   └── <archive>.7z            # VIP archives, saved as the site sends them
 │
 └── <source>/<post id>/         # A single post, reel, tweet or video given by its link
 ```
