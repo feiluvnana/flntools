@@ -114,6 +114,10 @@ SKIP_IN_PROFILE = shutil.ignore_patterns("Cache", "Code Cache", "GPUCache", "Ser
 Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
 
 
+# Parts of the messages Playwright fails a read with when the page navigates under it.
+NAVIGATING = ("Execution context was destroyed", "page is navigating")
+
+
 class _NeverRaised(Exception):
     """Stands for Playwright's error classes until `open` imports them, so nothing is caught by mistake."""
 
@@ -781,7 +785,7 @@ class Page:
         # Imported here, so a script that only drives the browser doesn't need parsel.
         from shared._selector import parse
 
-        return parse(self.raw.content())
+        return parse(self._steady(self.raw.content, "<html></html>", "read the page"))
 
     @property
     def url(self) -> str:
@@ -803,13 +807,39 @@ class Page:
         """Close the tab."""
         self.raw.close()
 
+    def _steady(self, read: Callable[[], Any], fallback: Any, what: str, *, tries: int = 3) -> Any:
+        """Run a read that evaluates in the page; if the page navigates meanwhile, wait for it and read again.
+
+        Playwright fails an evaluation with "Execution context was destroyed" (or says the page is
+        navigating) when the page moves on under it. That is a moment, not a failure: wait for the
+        load, retry, and after `tries` attempts log a warning and return `fallback`. Other errors go up.
+        """
+        for attempt in range(tries):
+            try:
+                return read()
+            except PlaywrightError as error:
+                if not any(text in str(error) for text in NAVIGATING):
+                    raise
+                if attempt + 1 == tries:
+                    log.warn("could not {what}, the page kept navigating: {error}", what=what,
+                             error=_first_line(error))
+                    return fallback
+                try:
+                    self.raw.wait_for_load_state("load", timeout=10000)
+                except PlaywrightError:
+                    # Still moving, or closed; the next read decides.
+                    pass
+        return fallback
+
     def _progress_marker(self, target: Locator | None, count: Callable[[], int] | None) -> tuple[int, int, int]:
         """The numbers whose rise is progress: the scrolled height, `count()` and the responses seen."""
-        height = self.raw.evaluate(PAGE_HEIGHT) if target is None else target.evaluate(ELEMENT_HEIGHT)
+        height = self._steady(lambda: self.raw.evaluate(PAGE_HEIGHT) if target is None
+                              else target.evaluate(ELEMENT_HEIGHT), 0, "measure the page")
         return height, count() if count is not None else 0, self._responses_seen
 
     def _at_bottom(self, target: Locator | None) -> bool:
-        return self.raw.evaluate(NEAR_BOTTOM) if target is None else target.evaluate(ELEMENT_NEAR_BOTTOM)
+        return self._steady(lambda: self.raw.evaluate(NEAR_BOTTOM) if target is None
+                            else target.evaluate(ELEMENT_NEAR_BOTTOM), False, "measure the page")
 
     def _wait_for_progress(self, target: Locator | None, before: tuple[int, ...], count: Callable[[], int] | None,
                            longest: float) -> tuple[int, int, int]:
@@ -823,7 +853,7 @@ class Page:
 
     def _area(self, target: Locator | None) -> tuple[float, float, float, float]:
         """The visible part of what scrolls, as (x, y, width, height) in the viewport's pixels."""
-        width, height = self.raw.evaluate(VIEWPORT)
+        width, height = self._steady(lambda: self.raw.evaluate(VIEWPORT), (1280, 720), "measure the page")
         if target is None:
             return 0.0, 0.0, width, height
         try:

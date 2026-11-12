@@ -1039,6 +1039,40 @@ class ScrollTimingTest(BrowserCase):
         self.assertTrue(all(2.4 <= gap <= 2.4 * 1.4 + 1e-9 for gap in self.gaps(feed)))
 
 
+class NavigationRaceTest(BrowserCase):
+    """Reads that evaluate in the page survive "Execution context was destroyed" once or twice."""
+
+    def page(self, failures):
+        errors = [browser.PlaywrightError("Page.content: Execution context was destroyed, most likely "
+                                          "because of a navigation")] * failures
+        loads = []
+
+        def content():
+            if errors:
+                raise errors.pop()
+            return "<html><body><p id='x'>hi</p></body></html>"
+
+        raw = SimpleNamespace(content=content, wait_for_load_state=lambda state, timeout: loads.append(state))
+        return browser.Page(raw, SimpleNamespace(_headless=True)), loads  # type: ignore[arg-type]
+
+    def test_a_read_that_hits_a_navigation_waits_for_the_load_and_reads_again(self):
+        page, loads = self.page(1)
+        self.assertEqual(page.document.css("#x::text").first, "hi")
+        self.assertEqual(loads, ["load"])
+
+    def test_a_page_that_keeps_navigating_warns_and_reads_as_empty(self):
+        page, loads = self.page(10)
+        self.assertEqual(page.document.css("#x::text").all, [])
+        self.assertEqual(len(loads), 2)
+        self.assertTrue(any("kept navigating" in line for line in self.lines()))
+
+    def test_another_error_is_not_swallowed(self):
+        raw = SimpleNamespace(content=mock.Mock(side_effect=browser.PlaywrightError("Target closed")))
+        page = browser.Page(raw, SimpleNamespace(_headless=True))  # type: ignore[arg-type]
+        with self.assertRaises(browser.PlaywrightError):
+            page.document
+
+
 class HandoffTest(BrowserCase):
     def setUp(self):
         super().setUp()
