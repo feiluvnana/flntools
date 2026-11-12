@@ -175,12 +175,6 @@ shared.log.progress(label: str, *, total: float | None = None, show: Callable[[A
 shared.log.warn(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.media: module
 shared.media.BrokenError(shared.media.Error, shared.BrokenError)
-shared.media.Container(muxer: str, video: str | None, audio: str, video_holds: str, audio_holds: str)
-shared.media.Container.audio: field -> str
-shared.media.Container.audio_holds: field -> str
-shared.media.Container.muxer: field -> str
-shared.media.Container.video: field -> str | None
-shared.media.Container.video_holds: field -> str
 shared.media.Error(shared.Error)
 shared.media.Info(path: Path, kind: str, animated: bool, format: str, size: int, width: int | None = None, height: int | None = None, duration: float | None = None, frames: int | None = None, fps: float | None = None, bitrate: int | None = None, video: str | None = None, audio: str | None = None, sample_rate: int | None = None, channels: int | None = None, created: datetime | None = None, location: tuple[float, float] | None = None, tags: dict[str, str] = <factory>)
 shared.media.Info.animated: field -> bool
@@ -201,29 +195,35 @@ shared.media.Info.size: field -> int
 shared.media.Info.tags: field -> dict[str, str]
 shared.media.Info.video: field -> str | None
 shared.media.Info.width: field -> int | None
-shared.media.Preset(quality: int, video_resolution: int | None, photo_resolution: int | None, fps: float | None, speed: str, audio_bitrate: int)
-shared.media.Preset.audio_bitrate: field -> int
-shared.media.Preset.fps: field -> float | None
-shared.media.Preset.photo_resolution: field -> int | None
-shared.media.Preset.quality: field -> int
-shared.media.Preset.speed: field -> str
-shared.media.Preset.video_resolution: field -> int | None
+shared.media.KindError(shared.media.Error, ValueError)
+shared.media.Media()
+shared.media.Media.audio(*, bitrate: int | None = None, format: str | None = None) -> Media
+shared.media.Media.check() -> Media
+shared.media.Media.close() -> None
+shared.media.Media.codec: property -> str | None
+shared.media.Media.compress(level: str = 'mid', *, format: str | None = None, codec: str | None = None, quality: int | None = None, resolution: int | None = None, fps: float | None = None, audio_bitrate: int | None = None, strip: bool = True, progress: Progress | None = None) -> Media
+shared.media.Media.convert(format: str, *, quality: int = 90, fps: float | None = None, codec: str | None = None) -> Media
+shared.media.Media.created: property -> datetime | None
+shared.media.Media.crop(box: tuple[int, int, int, int]) -> Media
+shared.media.Media.duration: property -> float | None
+shared.media.Media.format: property -> str
+shared.media.Media.fps: property -> float | None
+shared.media.Media.frames(*, dest: PathLike, every: float | None = None, at: Sequence[float] | None = None, count: int | None = None, format: str = 'jpg', quality: int = 90, limit: int | None = 1000) -> list[Path]
+shared.media.Media.height: property -> int | None
+shared.media.Media.info: property -> Info
+shared.media.Media.kind: property -> str
+shared.media.Media.location: property -> tuple[float, float] | None
+shared.media.Media.merge(*others: Media | PathLike, audio: Media | PathLike | None = None, format: str | None = None, fps: float | None = None, duration: float | None = None, progress: Progress | None = None) -> Media
+shared.media.Media.resize(*, width: int | None = None, height: int | None = None) -> Media
+shared.media.Media.save(dest: PathLike | None = None) -> Path
+shared.media.Media.size: property -> int
+shared.media.Media.tags: property -> dict[str, str]
+shared.media.Media.trim(*, start: float = 0.0, end: float | None = None, exact: bool = True) -> Media
+shared.media.Media.width: property -> int | None
 shared.media.UnsafeError(shared.media.Error, shared.UnsafeError)
-shared.media.audio: module
-shared.media.audio.extract(src: PathLike, *, dest: PathLike, bitrate: int | None = None) -> Path
-shared.media.check(path: PathLike) -> None
-shared.media.compress(src: PathLike, *, dest: PathLike | None = None, format: str | None = None, preset: str = 'mid', quality: int | None = None, resolution: int | None = None, fps: float | None = None, codec: str | None = None, audio_bitrate: int | None = None, strip: bool = True, progress: Progress | None = None) -> Path | None
-shared.media.convert(src: PathLike, *, dest: PathLike, quality: int = 90, fps: float | None = None, codec: str | None = None) -> Path
-shared.media.image: module
-shared.media.image.crop(src: PathLike, *, box: tuple[int, int, int, int], dest: PathLike | None = None, quality: int = 90, strip: bool = False) -> Path
-shared.media.image.resize(src: PathLike, *, dest: PathLike | None = None, width: int | None = None, height: int | None = None, resolution: int | None = None, quality: int = 90, strip: bool = False) -> Path
-shared.media.kind_of(extension: str) -> str | None
-shared.media.probe(path: PathLike) -> Info
+shared.media.kind(name: str) -> str | None
+shared.media.open(path: PathLike) -> Media
 shared.media.sniff(path: PathLike) -> str | None
-shared.media.video: module
-shared.media.video.frames(src: PathLike, *, dest_dir: PathLike, every: float | None = None, at: Sequence[float] | None = None, count: int | None = None, format: str = 'jpg', quality: int = 90, limit: int | None = 1000) -> list[Path]
-shared.media.video.merge(sources: Sequence[PathLike], *, dest: PathLike, audio: PathLike | None = None, fps: float | None = None, duration: float | None = None, progress: Progress | None = None) -> Path
-shared.media.video.trim(src: PathLike, *, start: float = 0.0, end: float | None = None, dest: PathLike | None = None, exact: bool = True) -> Path
 shared.prompt: module
 shared.prompt.Error(shared.Error)
 shared.prompt.Keymap()

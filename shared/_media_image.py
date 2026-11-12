@@ -1,77 +1,34 @@
-"""media.image: what only means something for a still photo.
+"""What `Media.resize` and `Media.crop` do to a still photo, through Pillow. Private: callers use `media`.
 
-    media.image.resize("a.jpg", width=1200, dest="a.small.jpg")
-    media.image.crop("a.jpg", box=(0, 0, 1080, 1080), dest="a.square.jpg")
+Each function takes a Pillow image already turned upright (as displayed) and returns a new one;
+`Media._edit` opens the photo, calls one, and saves the result into the chain's temporary file.
+Loaded on first use, so `from shared import media` never imports Pillow.
+
+    photo = _pillow.upright(_pillow.open(path), keep=True)
+    smaller = fitted(photo, 1200, None)
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from shared import _atomic, _media, _pillow
-from shared._media import PathLike
+from shared import _pillow
 
-__all__ = ["crop", "resize"]
-
-
-def resize(src: PathLike, *, dest: PathLike | None = None, width: int | None = None, height: int | None = None,
-           resolution: int | None = None, quality: int = 90, strip: bool = False) -> Path:
-    """Scale a photo, keeping its aspect ratio, and return the path written.
-
-        media.image.resize("a.jpg", width=1200)                     # replaces a.jpg
-        media.image.resize("a.jpg", width=800, height=800, dest="a.thumb.webp")
-
-    `width` and/or `height` give a box to fit into, scaling up when it is larger; `resolution`
-    caps the shorter side instead, never scaling up. Give exactly one of the two ways.
-    Sizes are as displayed. No `dest=` replaces `src`. Metadata is kept unless `strip`.
-    """
-    if (width is None and height is None) == (resolution is None):
-        raise ValueError("give width= and/or height=, or resolution=")
-    return _edit(src, dest, quality, strip, lambda photo: _fitted(photo, width, height, resolution))
+__all__ = ["cut", "fitted"]
 
 
-def crop(src: PathLike, *, box: tuple[int, int, int, int], dest: PathLike | None = None, quality: int = 90,
-         strip: bool = False) -> Path:
-    """Keep the part of a photo inside `box`, (left, top, right, bottom) as displayed, and return the path.
-
-        media.image.crop("a.jpg", box=(0, 0, 1080, 1080), dest="a.square.jpg")
-
-    A box that is empty or reaches outside the photo raises `ValueError`.
-    """
-    left, top, right, bottom = box
-
-    def cut(photo: Any) -> Any:
-        if not (0 <= left < right <= photo.width and 0 <= top < bottom <= photo.height):
-            raise ValueError(f"box {box} isn't inside the {photo.width}x{photo.height} photo")
-        cropped = photo.crop(box)
-        cropped.info = photo.info
-        return cropped
-
-    return _edit(src, dest, quality, strip, cut)
-
-
-def _edit(src: PathLike, dest: PathLike | None, quality: int, strip: bool, change: Any) -> Path:
-    src = Path(src)
-    out = Path(dest) if dest is not None else src
-    extension = _media.writable(out)
-    if extension not in _media.STILLS:
-        raise ValueError(f"{out.name}: media.image writes photos, not {extension}")
-    if dest is not None and out.exists():
-        raise FileExistsError(f"{out} already exists")
-    info = _media.probe(src)
-    if info.kind != "image" or info.animated:
-        raise ValueError(f"{src.name} isn't a still photo; use media.convert, which keeps animation, "
-                         "or media.video.frames")
-    photo = _pillow.open(src)
-    assert photo is not None
-    with _atomic.writing(out, replace=dest is None) as part:
-        _pillow.save(change(_pillow.upright(photo, keep=not strip)), part, _media.STILLS[extension], quality=quality)
-    return out
-
-
-def _fitted(photo: Any, width: int | None, height: int | None, resolution: int | None) -> Any:
-    if resolution is not None:
-        return _pillow.shrink(photo, resolution)
+def fitted(photo: Any, width: int | None, height: int | None) -> Any:
+    """`photo` scaled to fit inside `width` x `height` (either may be None), keeping its aspect ratio, up or down."""
     scale = min(width / photo.width if width else float("inf"), height / photo.height if height else float("inf"))
     return _pillow.resized(photo, (max(1, round(photo.width * scale)), max(1, round(photo.height * scale))))
+
+
+def cut(photo: Any, box: tuple[int, int, int, int]) -> Any:
+    """The part of `photo` inside `box`, (left, top, right, bottom), keeping its metadata; ValueError when it doesn't fit."""
+    left, top, right, bottom = box
+    if not (0 <= left < right <= photo.width and 0 <= top < bottom <= photo.height):
+        raise ValueError(f"box {box} isn't inside the {photo.width}x{photo.height} photo")
+    cropped = photo.crop(box)
+    # Pillow's crop drops `info`, which holds the EXIF and ICC profile the save writes back.
+    cropped.info = photo.info
+    return cropped

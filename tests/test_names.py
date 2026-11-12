@@ -26,15 +26,10 @@ PREFIXES = ("get_", "do_", "to_", "load_from_", "make_", "create_")
 RENAMED = {"out": "dest", "dest_dir": "dest", "preset": "level"}
 POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
 
-# Every breach today's code has, by the module it is in (`media.video`'s under `media`). Each module's
+# Every breach today's code has, by the module it is in. Each module's
 # step-4 commit renames its names and removes its own entries here, with the api.txt diff that shows
 # the renames. Nothing else is exempt: a new name that breaks a convention fails.
-ALLOWED: dict[str, tuple[str, ...]] = {
-    "shared.media": (
-        "shared.media.compress: option preset, not level",
-        "shared.media.video.frames: option dest_dir, not dest",
-    ),
-}
+ALLOWED: dict[str, tuple[str, ...]] = {}
 
 
 def breaches() -> set[str]:

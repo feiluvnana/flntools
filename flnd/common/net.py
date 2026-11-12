@@ -307,7 +307,7 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
     Raises:
         NotMediaError: with `kind`, the last mirror sent a web page or JSON, such as a login wall.
         media.UnsafeError: with `kind`, media refused the last mirror's file, such as a decompression bomb.
-        media.BrokenError: with `kind`, the last mirror's file still failed `media.check` after three tries.
+        media.BrokenError: with `kind`, the last mirror's file still failed `Media.check` after three tries.
         IncompleteError: the last mirror's body still ended early after three tries.
         httpx.HTTPError: the last mirror's connection still failed after three tries.
         Exception: whatever the last mirror's `fetch` function raised after three tries.
@@ -319,7 +319,7 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
     """
     from shared import media
 
-    # A cut-off body (IncompleteError, or a BrokenError from media.check) may come whole next time.
+    # A cut-off body (IncompleteError, or a BrokenError from Media.check) may come whole next time.
     # A web page or a refused file is the same answer on every try, so it fails at once (fixes #9).
     # `final` matters only for a `fetch` function, whose retryable is every Exception: a URL
     # mirror never retries these two anyway, since neither is in its retryable list.
@@ -386,14 +386,16 @@ def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
                 row.caption("merging")
                 from shared import media
 
-                # The merge goes straight onto `dest`: media writes it through its own
-                # `.<name>.<random>.part` and renames it once complete, so it is atomic and matches
-                # PART_GLOB too, while ffmpeg still picks the container from `dest`'s real extension.
-                # media refuses to write over a file, so an empty one, which holds nothing and which
+                # The merge writes a temporary `.<name>.<random>.part` beside `part`, in `dest`'s
+                # folder, so it matches PART_GLOB, and `save` renames it onto `dest` once complete.
+                # `format` is `dest`'s real extension, since `part`'s name doesn't say the container.
+                # `save` refuses to write over a file, so an empty one, which holds nothing and which
                 # the session would download again anyway, is removed first.
                 if dest.is_file() and dest.stat().st_size == 0:
                     dest.unlink()
-                media.video.merge([part], audio=sound, dest=dest)
+                # `with` drops the merged file's temporary copy if `save` fails.
+                with media.open(part) as video:
+                    video.merge(audio=sound, format=dest.suffix).save(dest)
                 return dest
             if kind is not None:
                 dest = _as_media(part, dest, kind, known)

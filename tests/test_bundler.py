@@ -154,7 +154,7 @@ class RealBuildTest(unittest.TestCase):
             video.write_bytes(sample("v.mp4").read_bytes())
             script = Path(folder) / "probe.py"
             script.write_text("import sys\nfrom shared import media\n"
-                              "print(media.probe(sys.argv[1]).kind, media.probe(sys.argv[2]).video)\n")
+                              "print(media.open(sys.argv[1]).kind, media.open(sys.argv[2]).codec)\n")
             built = bundler.build(script, name="probe", dest=Path(folder) / "dist")
             program = built / ("probe.exe" if sys.platform == "win32" else "probe")
             result = subprocess.run([str(program), str(photo), str(video)], capture_output=True, text=True,

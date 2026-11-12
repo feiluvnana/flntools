@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 PART_GLOB = ".*.part"
 # What `media.sniff` names a server's web page or JSON answer: a login wall or an error page.
 PAGES = (".html", ".json")
-# The kinds of saved file, in `media.kind_of`'s words; each gets its extension from its content.
+# The kinds of saved file, in `media.kind`'s words; each gets its extension from its content.
 IMAGE, VIDEO, AUDIO = "image", "video", "audio"
 # How an error names each kind.
 NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
@@ -44,11 +44,11 @@ def kind_of(name: str) -> str | None:
         files.kind_of("posts/a.heic")     # "image"
 
     Args:
-        name: a file name or path; only its extension is read, through `media.kind_of`, the one table.
+        name: a file name or path; only its extension is read, through `media.kind`, the one table.
     """
     from shared import media
 
-    return media.kind_of(Path(name).suffix)
+    return media.kind(Path(name).suffix)
 
 
 def target_folder(home: Path, target: Target) -> Path:
@@ -135,7 +135,7 @@ def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
     Args:
         path: the file to check; it is never changed.
         kind: what the file should be, `IMAGE`, `VIDEO` or `AUDIO`, named in the error for a web page.
-        decode: whether to check the whole file with `media.check` (a photo decoded, a video's packets
+        decode: whether to check the whole file with `Media.check` (a photo decoded, a video's packets
             read); False only sniffs its first bytes, for a download whose size was already verified.
 
     Returns:
@@ -157,7 +157,7 @@ def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
         raise NotMediaError(f"got a web page instead of {NOUNS.get(kind, kind)}")
     if decode:
         try:
-            media.check(path)
+            media.open(path).check()
         except (RuntimeError, ImportError, TimeoutError) as error:
             # These say the check can't run here, not that the file is bad; BrokenError and UnsafeError
             # are about the file itself, so they reach the caller, which decides whether to retry or delete.

@@ -55,11 +55,20 @@ with log.group("download") as rows:
     assert_type(rows.add("ins:example", total=12).total, Optional[float])
 log.multi("download")  # pyright: ignore[reportAttributeAccessIssue]
 
-assert_type(media.probe("a.jpg"), media.Info)
-assert_type(media.compress("a.jpg", preset="low"), Optional[Path])
-assert_type(media.video.frames("a.mp4", dest_dir="frames"), list[Path])
-assert_type(media.image.resize("a.jpg", width=100), Path)
-media.compress("a.jpg", "low")  # pyright: ignore[reportCallIssue]
+clip = media.open("a.mp4")
+assert_type(clip, media.Media)
+assert_type(clip.info, media.Info)
+assert_type(clip.duration, Optional[float])
+assert_type(clip.trim(end=10).compress("low", format="mp4"), media.Media)
+assert_type(clip.compress("low").save(), Path)
+assert_type(clip.frames(dest="frames"), list[Path])
+assert_type(media.open("a.jpg").resize(width=100).crop((0, 0, 50, 50)), media.Media)
+assert_type(media.kind("a.jpg"), Optional[str])
+with media.open("a.mov") as opened:
+    assert_type(opened, media.Media)
+clip.trim(0, 10)  # pyright: ignore[reportCallIssue]
+clip.frames(dest_dir="frames")  # pyright: ignore[reportCallIssue]
+media.probe("a.jpg")  # pyright: ignore[reportAttributeAccessIssue]
 
 jar = cookies.load("cookies.txt").filter(domain="example.com")
 assert_type(jar, cookies.Jar)

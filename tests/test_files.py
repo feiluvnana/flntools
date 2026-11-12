@@ -79,7 +79,7 @@ class CheckedTest(FilesCase):
         path.write_bytes(whole[:300])
         with self.assertRaises(media.BrokenError):
             files.checked(path, "image")
-        with mock.patch("shared.media.check", side_effect=media.UnsafeError("too many pixels")), \
+        with mock.patch("shared.media.open", side_effect=media.UnsafeError("too many pixels")), \
                 self.assertRaises(media.UnsafeError):
             files.checked(path, "image")
 
@@ -88,13 +88,13 @@ class CheckedTest(FilesCase):
         path = self.tmp / "v.mp4"
         path.write_bytes(b"\0\0\0\x18ftypisom" + bytes(100))
         for error in (RuntimeError("shared.media needs ffmpeg"), ImportError("no Pillow"), TimeoutError("stalled")):
-            with mock.patch("shared.media.check", side_effect=error):
+            with mock.patch("shared.media.open", side_effect=error):
                 self.assertEqual(files.checked(path, "video"), ".mp4")
 
     def test_without_decode_the_file_is_only_sniffed(self):
         path = self.tmp / "a.jpg"
         path.write_bytes(jpeg())
-        with mock.patch("shared.media.check", side_effect=AssertionError("decoded")):
+        with mock.patch("shared.media.open", side_effect=AssertionError("decoded")):
             self.assertEqual(files.checked(path, "image", decode=False), ".jpg")
 
 

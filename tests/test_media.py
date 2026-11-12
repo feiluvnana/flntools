@@ -1,3 +1,11 @@
+"""shared.media: `media.open`, each `Media` read and transform on real samples, `sniff`, `kind`, and the safety rules.
+
+Pillow and ffmpeg run for real on the samples `media_samples` generates; a test that needs ffmpeg
+to fail swaps one runner (`_ffmpeg.encode`) or uses a fake ffmpeg script. The screen is a fake
+one where a progress row is read. `ChainTest` pins C6's temporary-files row.
+"""
+
+import gc
 import os
 import subprocess
 import sys
@@ -28,6 +36,22 @@ def write(folder: Path, name: str, data: bytes) -> Path:
 
 def parts(folder: Path) -> list[str]:
     return [path.name for path in folder.iterdir() if path.name.endswith(".part")]
+
+
+def converted(src: Path, dest: Path, **options) -> Path:
+    """`src` converted to the format `dest`'s extension names, and saved there."""
+    return media.open(src).convert(dest.suffix, **options).save(dest)
+
+
+def shrink(src: Path, dest: Path | None = None, **options) -> Path | None:
+    """`src` compressed and saved, as flnd does it: to `dest` (in its format), or over `src`; None when not smaller."""
+    original = media.open(src)
+    if dest is not None and "format" not in options and dest.suffix != src.suffix:
+        options["format"] = dest.suffix
+    out = original.compress(**options)
+    if out is original or out.size >= original.size:
+        return None
+    return out.save(dest)
 
 
 class SniffTest(unittest.TestCase):
@@ -68,8 +92,8 @@ class SniffTest(unittest.TestCase):
         self.assertEqual(run_python(code).stdout.strip(), ".html")
 
 
-class KindOfTest(unittest.TestCase):
-    """`media.kind_of`, the one table of file kinds that flnd reads too."""
+class KindTest(unittest.TestCase):
+    """`media.kind`, the one table of file kinds that flnd reads too."""
 
     def test_kinds_by_extension(self):
         rows = {".jpg": "image", "JPEG": "image", ".heic": "image", ".heif": "image", ".gif": "image",
@@ -79,10 +103,16 @@ class KindOfTest(unittest.TestCase):
                 ".flac": "audio", ".wav": "audio", ".zip": None, ".7z": None, ".md": None, "": None}
         for extension, kind in rows.items():
             with self.subTest(extension=extension):
-                self.assertEqual(media.kind_of(extension), kind)
+                self.assertEqual(media.kind(extension), kind)
+
+    def test_a_name_or_a_path_reads_its_extension(self):
+        rows = {"posts/a.heic": "image", "clip.MP4": "video", "a.m4a": "audio", "a.zip": None}
+        for name, kind in rows.items():
+            with self.subTest(name=name):
+                self.assertEqual(media.kind(name), kind)
 
     def test_every_level_is_a_preset(self):
-        # flnd's --image, --video and --audio levels are media's preset names, and the old names are gone.
+        # flnd's --image, --video and --audio levels are media's level names, and the old names are gone.
         self.assertEqual(tuple(_media.PRESETS), ("best", "high", "mid", "low"))
 
 
@@ -96,32 +126,34 @@ class LazyImportTest(unittest.TestCase):
                 "print('PIL' in sys.modules, 'shared._media_video' in sys.modules, 'imageio_ffmpeg' in sys.modules)")
         self.assertEqual(run_python(code).stdout.strip(), "False False False")
 
-    def test_namespaces_share_the_errors(self):
+    def test_the_old_names_and_namespaces_are_gone(self):
+        # One `Media` object replaced the module functions and media.image, media.video and media.audio.
+        for name in ("probe", "check", "compress", "convert", "kind_of", "image", "video", "audio", "Preset",
+                     "Container", "nothing"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(media, name))
         from shared import _media_video
 
-        self.assertIs(media.video, _media_video)
-        self.assertIs(media.image.__dict__["_media"].BrokenError, media.BrokenError)
-        with self.assertRaises(AttributeError):
-            media.nothing  # noqa: B018
+        self.assertIs(_media_video._media.BrokenError, media.BrokenError)
 
     @needs_pillow
     def test_photo_without_pillow(self):
         code = ("import sys; sys.modules['PIL'] = None\nfrom shared import media\n"
-                f"try:\n    media.probe({str(sample('srgb.jpg'))!r})\nexcept ImportError as error:\n    print(error)")
+                f"try:\n    media.open({str(sample('srgb.jpg'))!r}).info\nexcept ImportError as error:\n    print(error)")
         self.assertEqual(run_python(code).stdout.strip(),
                          "shared.media needs Pillow for photos: pip install 'flntools[media]'")
 
     @needs_ffmpeg()
     def test_video_without_pillow(self):
         code = ("import sys; sys.modules['PIL'] = None\nfrom shared import media\n"
-                f"print(media.probe({str(sample('v.mp4'))!r}).video)")
+                f"print(media.open({str(sample('v.mp4'))!r}).info.video)")
         self.assertEqual(run_python(code).stdout.strip(), "mpeg4")
 
 
 @needs_pillow
 class PhotoProbeTest(unittest.TestCase):
     def test_exif_photo(self):
-        info = media.probe(sample("exif.jpg"))
+        info = media.open(sample("exif.jpg")).info
         self.assertEqual((info.kind, info.format, info.animated, info.frames), ("image", "jpeg", False, 1))
         self.assertEqual((info.width, info.height), (40, 80))  # orientation 6 swaps them
         self.assertEqual(info.created, datetime(2024, 5, 1, 10, 30, tzinfo=timezone(timedelta(hours=9))))
@@ -133,7 +165,7 @@ class PhotoProbeTest(unittest.TestCase):
         self.assertEqual(info.size, sample("exif.jpg").stat().st_size)
 
     def test_unknown_date_and_zero_gps(self):
-        info = media.probe(sample("zero.jpg"))
+        info = media.open(sample("zero.jpg")).info
         self.assertIsNone(info.created)
         self.assertIsNone(info.location)
         self.assertEqual(info.tags["DateTimeOriginal"], "0000:00:00 00:00:00")
@@ -141,12 +173,12 @@ class PhotoProbeTest(unittest.TestCase):
     def test_formats(self):
         for name, format in (("rgba.png", "png"), ("anim.webp", "webp"), ("anim.gif", "gif"), ("tiny.heic", "heif")):
             with self.subTest(name=name):
-                self.assertEqual(media.probe(sample(name)).format, format)
+                self.assertEqual(media.open(sample(name)).info.format, format)
 
     def test_animation(self):
         for name in ("anim.gif", "anim.webp", "anim.png"):
             with self.subTest(name=name):
-                info = media.probe(sample(name))
+                info = media.open(sample(name)).info
                 self.assertTrue(info.animated)
                 self.assertEqual(info.frames, 4)
                 self.assertAlmostEqual(info.duration or 0, 0.5)
@@ -155,32 +187,32 @@ class PhotoProbeTest(unittest.TestCase):
     def test_png_named_jpg(self):
         renamed = Path(tempfile.mkdtemp(dir=FOLDER)) / "real.jpg"
         renamed.write_bytes(sample("rgba.png").read_bytes())
-        self.assertEqual(media.probe(renamed).format, "png")
+        self.assertEqual(media.open(renamed).info.format, "png")
 
     def test_every_writable_format_reads_back(self):
         folder = Path(tempfile.mkdtemp(dir=FOLDER))
         for extension, format in _media.STILLS.items():
             with self.subTest(extension=extension):
-                written = media.convert(sample("srgb.jpg"), dest=folder / f"x{extension}")
-                self.assertEqual(media.probe(written).format, format.lower())
+                written = converted(sample("srgb.jpg"), folder / f"x{extension}")
+                self.assertEqual(media.open(written).info.format, format.lower())
 
 
 @needs_ffmpeg()
 class VideoProbeTest(unittest.TestCase):
     def test_video_only(self):
-        info = media.probe(sample("v.mp4"))
+        info = media.open(sample("v.mp4")).info
         self.assertEqual((info.kind, info.format, info.video, info.audio), ("video", "mp4", "mpeg4", None))
         self.assertEqual((info.width, info.height, info.fps), (64, 48, 10.0))
         self.assertAlmostEqual(info.duration or 0, 1.0, places=1)
 
     def test_audio_only(self):
-        info = media.probe(sample("a.m4a"))
+        info = media.open(sample("a.m4a")).info
         self.assertEqual((info.kind, info.format, info.audio, info.sample_rate, info.channels),
                          ("audio", "m4a", "aac", 44100, 1))
         self.assertIsNone(info.width)
 
     def test_metadata_and_rotation(self):
-        info = media.probe(sample("meta.mp4"))
+        info = media.open(sample("meta.mp4")).info
         self.assertEqual((info.width, info.height), (48, 64))
         self.assertEqual(info.created, datetime(2024, 5, 1, 10, 0, tzinfo=timezone.utc))
         self.assertEqual(info.location, (48.8577, 2.295))
@@ -191,7 +223,7 @@ class VideoProbeTest(unittest.TestCase):
         for name, format in (("x.avi", "avi"), ("x.ts", "ts"), ("x.mpg", "mpeg"), ("x.flv", "flv"),
                              ("x.wmv", "asf"), ("tone.flac", "flac"), ("tone.wav", "wav"), ("tone.aiff", "aiff")):
             with self.subTest(name=name):
-                info = media.probe(sample(name))
+                info = media.open(sample(name)).info
                 self.assertEqual(info.format, format)
 
 
@@ -251,7 +283,7 @@ class ConvertPhotoTest(unittest.TestCase):
         self.folder = Path(tempfile.mkdtemp(dir=FOLDER))
 
     def test_orientation_applied_and_metadata_kept(self):
-        out = media.convert(sample("exif.jpg"), dest=self.folder / "x.png")
+        out = converted(sample("exif.jpg"), self.folder / "x.png")
         with Image.open(out) as image:
             self.assertEqual(image.size, (40, 80))
             self.assertNotIn(0x0112, image.getexif())
@@ -259,53 +291,56 @@ class ConvertPhotoTest(unittest.TestCase):
             self.assertEqual(image.info["icc_profile"], wide_profile())
 
     def test_transparency_flattened_onto_white(self):
-        out = media.convert(sample("rgba.png"), dest=self.folder / "x.jpg")
+        out = converted(sample("rgba.png"), self.folder / "x.jpg")
         with Image.open(out) as image:
             self.assertEqual(image.mode, "RGB")
             self.assertGreater(min(image.getpixel((5, 5))), 240)
 
     def test_quality_changes_size(self):
-        low = media.convert(sample("big.jpg"), dest=self.folder / "low.webp", quality=30)
-        high = media.convert(sample("big.jpg"), dest=self.folder / "high.webp", quality=90)
+        low = converted(sample("big.jpg"), self.folder / "low.webp", quality=30)
+        high = converted(sample("big.jpg"), self.folder / "high.webp", quality=90)
         self.assertLess(low.stat().st_size, high.stat().st_size)
 
     def test_ico_is_scaled_to_256(self):
-        out = media.convert(sample("big.jpg"), dest=self.folder / "x.ico")
-        self.assertLessEqual(max(media.probe(out).width or 0, media.probe(out).height or 0), 256)
+        out = converted(sample("big.jpg"), self.folder / "x.ico")
+        self.assertLessEqual(max(media.open(out).info.width or 0, media.open(out).info.height or 0), 256)
 
     def test_heic(self):
-        out = media.convert(sample("tiny.heic"), dest=self.folder / "x.png")
-        self.assertEqual(media.probe(out).width, 64)
+        out = converted(sample("tiny.heic"), self.folder / "x.png")
+        self.assertEqual(media.open(out).info.width, 64)
 
     def test_animations_keep_frames(self):
         for source, extension in (("anim.webp", ".gif"), ("anim.gif", ".png"), ("anim.png", ".webp")):
             with self.subTest(source=source):
-                out = media.convert(sample(source), dest=self.folder / f"{source}{extension}")
-                info = media.probe(out)
+                out = converted(sample(source), self.folder / f"{source}{extension}")
+                info = media.open(out).info
                 self.assertEqual((info.frames, info.animated), (4, True))
                 self.assertAlmostEqual(info.duration or 0, 0.5)
 
     def test_animated_to_still_format(self):
-        with self.assertRaisesRegex(ValueError, "media.video.frames"):
-            media.convert(sample("anim.webp"), dest=self.folder / "x.jpg")
+        with self.assertRaisesRegex(media.KindError, r"\.frames\(\)"):
+            converted(sample("anim.webp"), self.folder / "x.jpg")
 
     def test_refusals(self):
-        with self.assertRaisesRegex(ValueError, "media.video.merge"):
-            media.convert(sample("srgb.jpg"), dest=self.folder / "x.mp4")
-        with self.assertRaisesRegex(ValueError, ".xyz"):
-            media.convert(sample("srgb.jpg"), dest=self.folder / "x.xyz")
-        with self.assertRaisesRegex(ValueError, "fps="):
-            media.convert(sample("srgb.jpg"), dest=self.folder / "x.png", fps=10)
+        with self.assertRaisesRegex(media.KindError, r"use \.merge\(\) to make a video"):
+            converted(sample("srgb.jpg"), self.folder / "x.mp4")
+        with self.assertRaisesRegex(ValueError, "xyz"):
+            converted(sample("srgb.jpg"), self.folder / "x.xyz")
+        with self.assertRaisesRegex(media.KindError, "fps="):
+            converted(sample("srgb.jpg"), self.folder / "x.png", fps=10)
         existing = write(self.folder, "taken.png", b"x")
         with self.assertRaises(FileExistsError):
-            media.convert(sample("srgb.jpg"), dest=existing)
+            converted(sample("srgb.jpg"), existing)
         self.assertEqual(parts(self.folder), [])
+        gc.collect()
+        self.assertEqual(parts(FOLDER), [])
 
     def test_failure_leaves_no_part(self):
         with mock.patch.object(_media._pillow, "save", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
-                media.convert(sample("srgb.jpg"), dest=self.folder / "x.png")
+                converted(sample("srgb.jpg"), self.folder / "x.png")
         self.assertEqual(list(self.folder.iterdir()), [])
+        self.assertEqual(parts(FOLDER), [])
 
 
 @needs_ffmpeg("libx264", "libvpx-vp9", "libopus", "libmp3lame", "libvorbis")
@@ -314,59 +349,59 @@ class ConvertVideoTest(unittest.TestCase):
         self.folder = Path(tempfile.mkdtemp(dir=FOLDER))
 
     def test_copy_when_the_container_holds_the_codecs(self):
-        out = media.convert(sample("av.mkv"), dest=self.folder / "x.mp4")
-        info = media.probe(out)
+        out = converted(sample("av.mkv"), self.folder / "x.mp4")
+        info = media.open(out).info
         self.assertEqual((info.video, info.audio), ("mpeg4", "aac"))
 
     def test_encoded_when_it_does_not(self):
-        info = media.probe(media.convert(sample("vp9.webm"), dest=self.folder / "x.mp4"))
+        info = media.open(converted(sample("vp9.webm"), self.folder / "x.mp4")).info
         self.assertEqual((info.video, info.audio), ("vp9", "opus") if False else ("vp9", info.audio))
         self.assertIn(info.audio, ("aac", "opus"))
 
     def test_webm(self):
-        info = media.probe(media.convert(sample("big.mp4"), dest=self.folder / "x.webm"))
+        info = media.open(converted(sample("big.mp4"), self.folder / "x.webm")).info
         self.assertEqual((info.format, info.video, info.audio), ("webm", "vp9", "opus"))
 
     def test_gif_is_at_most_15_fps(self):
-        info = media.probe(media.convert(sample("big.mp4"), dest=self.folder / "x.gif"))
+        info = media.open(converted(sample("big.mp4"), self.folder / "x.gif")).info
         self.assertTrue(info.animated)
         self.assertLessEqual(info.fps or 99, 15.5)
 
     def test_animation_to_video(self):
         for source in ("anim.gif", "anim.webp"):
             with self.subTest(source=source):
-                info = media.probe(media.convert(sample(source), dest=self.folder / f"{source}.mp4"))
+                info = media.open(converted(sample(source), self.folder / f"{source}.mp4")).info
                 self.assertEqual(info.video, "h264")
                 self.assertAlmostEqual(info.duration or 0, 0.5, delta=0.15)
 
     def test_video_to_webp_animation(self):
-        info = media.probe(media.convert(sample("v.mp4"), dest=self.folder / "x.webp"))
+        info = media.open(converted(sample("v.mp4"), self.folder / "x.webp")).info
         self.assertTrue(info.animated)
         self.assertEqual(info.frames, 10)
 
     def test_fps(self):
-        info = media.probe(media.convert(sample("big.mp4"), dest=self.folder / "x.mp4", fps=30))
+        info = media.open(converted(sample("big.mp4"), self.folder / "x.mp4", fps=30)).info
         self.assertEqual(info.fps, 30.0)
 
     def test_audio(self):
         for extension, codec in ((".mp3", "mp3"), (".opus", "opus"), (".ogg", "vorbis"), (".wav", "pcm_s16le")):
             with self.subTest(extension=extension):
-                info = media.probe(media.convert(sample("tone.flac"), dest=self.folder / f"x{extension}"))
+                info = media.open(converted(sample("tone.flac"), self.folder / f"x{extension}")).info
                 self.assertEqual(info.audio, codec)
-        self.assertEqual(media.probe(media.convert(sample("a.m4a"), dest=self.folder / "y.m4a")).audio, "aac")
+        self.assertEqual(media.open(converted(sample("a.m4a"), self.folder / "y.m4a")).info.audio, "aac")
 
     def test_metadata_kept(self):
-        info = media.probe(media.convert(sample("meta.mp4"), dest=self.folder / "x.mkv"))
+        info = media.open(converted(sample("meta.mp4"), self.folder / "x.mkv")).info
         self.assertEqual(info.created, datetime(2024, 5, 1, 10, 0, tzinfo=timezone.utc))
         self.assertEqual(info.tags["title"].split("\n")[0], "hi")
 
     def test_kind_changes_are_refused(self):
-        with self.assertRaisesRegex(ValueError, "use media.video.frames to get photos"):
-            media.convert(sample("v.mp4"), dest=self.folder / "x.jpg")
-        with self.assertRaisesRegex(ValueError, "media.audio.extract"):
-            media.convert(sample("av.mkv"), dest=self.folder / "x.mp3")
+        with self.assertRaisesRegex(media.KindError, r"use \.frames\(\) to get photos"):
+            converted(sample("v.mp4"), self.folder / "x.jpg")
+        with self.assertRaisesRegex(media.KindError, r"use \.audio\(\)"):
+            converted(sample("av.mkv"), self.folder / "x.mp3")
         with self.assertRaisesRegex(ValueError, "h265"):
-            media.convert(sample("v.mp4"), dest=self.folder / "x.webm", codec="h265")
+            converted(sample("v.mp4"), self.folder / "x.webm", codec="h265")
 
 
 def record(built: list):
@@ -390,25 +425,25 @@ class FakeScreenCase(unittest.TestCase):
 
 @needs_pillow
 class CompressPhotoTest(FakeScreenCase):
-    def test_presets_shrink_in_order(self):
+    def test_levels_shrink_in_order(self):
         sizes = []
-        for preset in ("low", "mid", "high"):
-            out = media.compress(sample("big.jpg"), dest=self.folder / f"{preset}.jpg", preset=preset)
+        for level in ("low", "mid", "high"):
+            out = shrink(sample("big.jpg"), dest=self.folder / f"{level}.jpg", level=level)
             assert out is not None
-            media.check(out)
+            media.open(out).check()
             sizes.append(out.stat().st_size)
         self.assertLess(sizes[0], sizes[1])
         self.assertLess(sizes[1], sizes[2])
         self.assertLess(sizes[2], sample("big.jpg").stat().st_size)
-        self.assertEqual((media.probe(self.folder / "low.jpg").width, media.probe(self.folder / "low.jpg").height),
-                         (2048, 1536))
+        low = media.open(self.folder / "low.jpg")
+        self.assertEqual((low.width, low.height), (2048, 1536))
 
     def test_best_keeps_the_full_resolution_and_strips_metadata(self):
-        best = media.compress(sample("exif.jpg"), dest=self.folder / "best.jpg", preset="best")
-        high = media.compress(sample("exif.jpg"), dest=self.folder / "high.jpg", preset="high")
+        best = shrink(sample("exif.jpg"), dest=self.folder / "best.jpg", level="best")
+        high = shrink(sample("exif.jpg"), dest=self.folder / "high.jpg", level="high")
         if best is None or high is None:
             self.skipTest("the sample is already smaller than quality 95")
-        before, after = media.probe(sample("exif.jpg")), media.probe(best)
+        before, after = media.open(sample("exif.jpg")).info, media.open(best).info
         self.assertEqual((after.width, after.height), (before.width, before.height))
         self.assertIsNone(after.location)
         self.assertGreater(best.stat().st_size, high.stat().st_size)
@@ -417,87 +452,94 @@ class CompressPhotoTest(FakeScreenCase):
         for name in ("big.jpg", "noise.gif"):
             with self.subTest(name=name):
                 path = fresh(name)
-                before = media.probe(path)
-                out = media.compress(path, preset="low", quality=40, resolution=100)
+                before = media.open(path).info
+                out = shrink(path, level="low", quality=40, resolution=100)
                 self.assertEqual(out, path)
-                self.assertEqual(media.probe(path).format, before.format)
+                self.assertEqual(media.open(path).info.format, before.format)
                 self.assertEqual(len(list(path.parent.iterdir())), 1)
 
     def test_stripped(self):
-        out = media.compress(sample("exif.jpg"), dest=self.folder / "x.jpg", quality=10)
+        out = shrink(sample("exif.jpg"), dest=self.folder / "x.jpg", quality=10)
         assert out is not None
         with Image.open(out) as image:
             self.assertEqual(image.size, (40, 80))
             self.assertEqual(len(image.getexif()), 0)
             self.assertNotIn("xmp", image.info)
             self.assertEqual(image.info["icc_profile"], wide_profile())
-        srgb = media.compress(sample("srgb.jpg"), dest=self.folder / "s.jpg", quality=10)
+        srgb = shrink(sample("srgb.jpg"), dest=self.folder / "s.jpg", quality=10)
         assert srgb is not None
         with Image.open(srgb) as image:
             self.assertNotIn("icc_profile", image.info)
 
     def test_strip_false_keeps_exif(self):
-        out = media.compress(sample("exif.jpg"), dest=self.folder / "x.jpg", quality=10, strip=False)
-        info = media.probe(out or self.folder / "missing")
+        out = shrink(sample("exif.jpg"), dest=self.folder / "x.jpg", quality=10, strip=False)
+        info = media.open(out or self.folder / "missing").info
         self.assertEqual(info.tags["DateTimeOriginal"], "2024:05:01 10:30:00")
         self.assertIsNotNone(info.location)
 
     def test_format(self):
         path = fresh("tiny.heic")
-        self.assertIsNone(media.compress(path))
-        out = media.compress(path, format="jpg", quality=10)
+        photo = media.open(path)
+        # HEIC can't shrink in its own format, so compress hands back the same object.
+        self.assertIs(photo.compress(), photo)
+        out = photo.compress(format="jpg", quality=10).save()
         self.assertEqual(out, path.with_suffix(".jpg"))
         self.assertFalse(path.exists())
-        with self.assertRaisesRegex(ValueError, "use media.video.merge"):
-            media.compress(sample("srgb.jpg"), format="mp4")
-        with self.assertRaisesRegex(ValueError, "different formats"):
-            media.compress(sample("srgb.jpg"), format="jpg", dest=self.folder / "x.webp")
+        with self.assertRaisesRegex(media.KindError, r"use \.merge\(\)"):
+            media.open(sample("srgb.jpg")).compress(format="mp4")
+        with self.assertRaisesRegex(ValueError, "convert it first"):
+            media.open(sample("srgb.jpg")).compress(format="jpg").save(self.folder / "x.webp")
 
     def test_existing_new_name(self):
         path = fresh("tiny.heic")
         write(path.parent, "tiny.jpg", b"taken")
         with self.assertRaises(FileExistsError):
-            media.compress(path, format="jpg")
+            media.open(path).compress(format="jpg").save()
         self.assertTrue(path.exists())
+        self.assertEqual((path.parent / "tiny.jpg").read_bytes(), b"taken")
+        gc.collect()
+        self.assertEqual(parts(path.parent), [])
 
-    def test_not_smaller_returns_none(self):
+    def test_a_result_that_isnt_smaller_is_still_returned_and_the_original_kept(self):
         path = fresh("small.png")
         before = path.read_bytes()
-        self.assertIsNone(media.compress(path))
+        out = media.open(path).compress()
+        self.assertGreaterEqual(out.size, len(before))
         self.assertEqual(path.read_bytes(), before)
-        self.assertIn("compressing saved nothing", self.screen.dest.getvalue())
+        out.close()
+        self.assertEqual(parts(path.parent), [])
 
     def test_bad_settings(self):
-        for settings in ({"preset": "tiny"}, {"codec": "av1"}, {"quality": 0}, {"quality": 101}, {"fps": 0},
+        for settings in ({"level": "tiny"}, {"codec": "av1"}, {"quality": 0}, {"quality": 101}, {"fps": 0},
                          {"audio_bitrate": 8_000}):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
-                media.compress(sample("srgb.jpg"), **settings)
+                shrink(sample("srgb.jpg"), **settings)
 
 
 @needs_ffmpeg("libx264", "libx265", "libvpx-vp9", "libopus", "libmp3lame")
 class CompressVideoTest(FakeScreenCase):
     def compressed(self, name: str, **settings) -> media.Info:
-        out = media.compress(sample(name), dest=self.folder / f"{len(list(self.folder.iterdir()))}"
-                             f"{settings.pop('extension', Path(name).suffix)}", progress=lambda *_: None, **settings)
+        out = shrink(sample(name), dest=self.folder / f"{len(list(self.folder.iterdir()))}{Path(name).suffix}",
+                     progress=lambda *_: None, **settings)
         assert out is not None
-        return media.probe(out)
+        return media.open(out).info
 
     def test_presets(self):
         sizes = []
         for preset in ("low", "mid", "high"):
-            info = self.compressed("big.mp4", preset=preset)
-            media.check(info.path)
+            info = self.compressed("big.mp4", level=preset)
+            media.open(info.path).check()
             self.assertEqual((info.video, info.audio), ("h264", "aac"))
             self.assertAlmostEqual(info.duration or 0, 3.0, delta=0.1)
             sizes.append(info.size)
-        self.assertLessEqual(media.probe(self.folder / "0.mp4").fps or 99, 30)
+        self.assertLessEqual(media.open(self.folder / "0.mp4").info.fps or 99, 30)
         self.assertLess(sizes[0], sizes[1])
         self.assertLess(sizes[1], sizes[2])
         self.assertLess(sizes[2], sample("big.mp4").stat().st_size)
 
     def test_resolution(self):
         self.assertEqual((self.compressed("big.mp4", resolution=240).width,), (240,))
-        self.assertEqual(self.compressed("big.mp4", resolution=240, preset="low").height, 426)
+        self.assertEqual(self.compressed("big.mp4", resolution=240, level="low").height, 426)
         self.assertEqual(self.compressed("big.mp4", resolution=2000).width, 360)
 
     def test_stripped(self):
@@ -524,7 +566,7 @@ class CompressVideoTest(FakeScreenCase):
         self.assertEqual(self.compressed("av.mkv", quality=40, audio_bitrate=32_000).format, "mkv")
         self.assertEqual(self.compressed("tone.mp3", audio_bitrate=64_000).audio, "mp3")
         path = fresh("x.flv")
-        out = media.compress(path, quality=40, audio_bitrate=32_000, progress=lambda *_: None)
+        out = shrink(path, quality=40, audio_bitrate=32_000, progress=lambda *_: None)
         self.assertEqual(out, path.with_suffix(".mp4"))
         self.assertFalse(path.exists())
 
@@ -532,7 +574,7 @@ class CompressVideoTest(FakeScreenCase):
         built = []
         with record(built):
             for codec, extension in (("h264", ".mp4"), ("h265", ".mp4"), ("vp9", ".webm")):
-                media.compress(sample("big.mp4"), dest=self.folder / f"crf{codec}{extension}", quality=80,
+                shrink(sample("big.mp4"), dest=self.folder / f"crf{codec}{extension}", quality=80,
                                codec=codec)
         crfs = [args[args.index("-crf") + 1] for args in built]
         self.assertEqual(crfs, ["23", "27", "34"])
@@ -543,29 +585,29 @@ class CompressVideoTest(FakeScreenCase):
         built = []
         with record(built):
             for preset in ("low", "mid"):  # the x264 speed is the one thing only a preset sets
-                media.compress(sample("big.mp4"), dest=self.folder / f"{preset}.mp4", preset=preset, quality=60,
+                shrink(sample("big.mp4"), dest=self.folder / f"{preset}.mp4", level=preset, quality=60,
                                resolution=1080, fps=30, audio_bitrate=96_000)
         self.assertEqual(built[0][:-1], built[1][:-1])
 
     def test_h265(self):
-        self.assertEqual(self.compressed("big.mp4", codec="h265", preset="low").video, "hevc")
+        self.assertEqual(self.compressed("big.mp4", codec="h265", level="low").video, "hevc")
 
     def test_lossless_audio_left_alone(self):
-        self.assertIsNone(media.compress(sample("tone.flac")))
-        out = media.compress(fresh("tone.flac"), format="opus", progress=lambda *_: None)
+        self.assertIsNone(shrink(sample("tone.flac")))
+        out = shrink(fresh("tone.flac"), format="opus", progress=lambda *_: None)
         assert out is not None
-        self.assertEqual((out.suffix, media.probe(out).audio), (".opus", "opus"))
+        self.assertEqual((out.suffix, media.open(out).info.audio), (".opus", "opus"))
 
     def test_progress_grows(self):
         seen = []
-        media.compress(sample("big.mp4"), dest=self.folder / "p.mp4", preset="low",
+        shrink(sample("big.mp4"), dest=self.folder / "p.mp4", level="low",
                        progress=lambda done, total: seen.append((done, total)))
         self.assertTrue(seen)
         self.assertEqual([done for done, _ in seen], sorted(done for done, _ in seen))
         self.assertAlmostEqual(seen[-1][0], 3.0, delta=0.2)
 
     def test_default_progress_bar(self):
-        media.compress(sample("big.mp4"), dest=self.folder / "bar.mp4", preset="low")
+        shrink(sample("big.mp4"), dest=self.folder / "bar.mp4", level="low")
         self.assertIn("big.mp4", self.screen.dest.getvalue())
 
 
@@ -613,8 +655,8 @@ class FakeFfmpegTest(unittest.TestCase):
     @needs_pillow
     def test_no_ffmpeg_at_all(self):
         code = ("import sys; sys.modules['imageio_ffmpeg'] = None\nfrom shared import media\n"
-                f"print(media.probe({str(sample('srgb.jpg'))!r}).kind)\n"
-                f"try:\n    media.probe({str(sample('v.mp4'))!r})\nexcept RuntimeError as error:\n    print(error)")
+                f"print(media.open({str(sample('srgb.jpg'))!r}).info.kind)\n"
+                f"try:\n    media.open({str(sample('v.mp4'))!r}).info\nexcept RuntimeError as error:\n    print(error)")
         lines = run_python(code, env={"PATH": str(self.folder)}).stdout.strip().splitlines()
         self.assertEqual(lines[0], "image")
         self.assertTrue(lines[1].startswith("shared.media needs ffmpeg for videos and audio"), lines)
@@ -633,7 +675,7 @@ class CheckTest(unittest.TestCase):
     def test_good_files_pass(self):
         for name in ("v.mp4", "a.m4a", "av.mkv", "tone.flac", "exif.jpg", "anim.gif", "tiny.heic"):
             with self.subTest(name=name):
-                media.check(sample(name))
+                media.open(sample(name)).check()
 
     def test_truncated(self):
         for name, keep in (("big.jpg", 0.5), ("v.mp4", 0.7)):
@@ -641,13 +683,13 @@ class CheckTest(unittest.TestCase):
                 data = sample(name).read_bytes()
                 cut = write(self.folder, name, data[:int(len(data) * keep)])
                 with self.assertRaisesRegex(media.BrokenError, name):
-                    media.check(cut)
+                    media.open(cut).check()
 
     def test_not_media(self):
         for name, data in (("r.mp4", os.urandom(3000)), ("r.jpg", os.urandom(3000)),
                            ("page.mp4", b"<html>x</html>"), ("page.jpg", b"<html>x</html>")):
             with self.subTest(name=name), self.assertRaises(media.BrokenError):
-                media.check(write(self.folder, name, data))
+                media.open(write(self.folder, name, data)).check()
 
 
 @needs_ffmpeg()
@@ -662,32 +704,32 @@ class SafetyTest(unittest.TestCase):
 
     def test_hls_playlist_is_refused(self):
         with self.assertRaises(media.UnsafeError):
-            media.probe(self.playlist("list.m3u8"))
+            media.open(self.playlist("list.m3u8")).info
         with self.assertRaises(media.BrokenError):
-            media.probe(self.playlist("clip.mp4"))
+            media.open(self.playlist("clip.mp4")).info
         out = self.folder / "out.mkv"
         with self.assertRaises(ValueError):
-            media.convert(self.playlist("list2.m3u8"), dest=out)
+            converted(self.playlist("list2.m3u8"), out)
         self.assertFalse(out.exists())
 
     def test_concat_list_and_dash_are_refused(self):
         concat = write(self.folder, "list.mp4", f"ffconcat version 1.0\nfile '{sample('v.mp4')}'\n".encode())
         with self.assertRaises(media.UnsafeError):
-            media.probe(concat)
+            media.open(concat).info
         dash = write(self.folder, "x.mpd", b'<?xml version="1.0"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011"/>')
         with self.assertRaises(ValueError):
-            media.probe(dash)
+            media.open(dash).info
 
     def test_names_that_look_like_options_or_protocols(self):
         for name in ("-y.mp4", "http:x.mp4", "concat:a.mp4|b.mp4"):
             with self.subTest(name=name):
                 path = self.folder / name
                 path.write_bytes(sample("v.mp4").read_bytes())
-                self.assertEqual(media.probe(path).video, "mpeg4")
+                self.assertEqual(media.open(path).info.video, "mpeg4")
 
     def test_ffreport_writes_nothing(self):
         with mock.patch.dict(os.environ, {"FFREPORT": f"file={self.folder}/report.log"}):
-            media.probe(sample("v.mp4"))
+            media.open(sample("v.mp4")).info
         self.assertFalse((self.folder / "report.log").exists())
 
     @needs_pillow
@@ -698,9 +740,9 @@ class SafetyTest(unittest.TestCase):
         eps = write(self.folder, "x.eps", b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nshowpage\n")
         with mock.patch.dict(os.environ, {"PATH": f"{self.folder}{os.pathsep}{os.environ['PATH']}"}):
             with self.assertRaises(media.UnsafeError):
-                media.probe(eps)
+                media.open(eps).info
             with self.assertRaises(media.UnsafeError):
-                media.convert(eps, dest=self.folder / "x.png")
+                converted(eps, self.folder / "x.png")
         self.assertFalse(marker.exists())
 
     @needs_pillow
@@ -715,18 +757,18 @@ class SafetyTest(unittest.TestCase):
         png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"\0" * 100)) + chunk(
             b"IEND", b"")
         with self.assertRaises(media.UnsafeError):
-            media.probe(write(self.folder, "bomb.png", png))
+            media.open(write(self.folder, "bomb.png", png)).info
         frames = [Image.new("P", (4000, 4000), index) for index in range(14)]
         frames[0].save(self.folder / "bomb.gif", save_all=True, append_images=frames[1:])
         with self.assertRaises(media.UnsafeError):
-            media.probe(self.folder / "bomb.gif")
+            media.open(self.folder / "bomb.gif").info
 
     @needs_pillow
     def test_truncated_images_stay_refused(self):
         from PIL import ImageFile
 
-        media.probe(sample("exif.jpg"))
-        media.convert(sample("exif.jpg"), dest=self.folder / "x.png")
+        media.open(sample("exif.jpg")).info
+        converted(sample("exif.jpg"), self.folder / "x.png")
         self.assertFalse(ImageFile.LOAD_TRUNCATED_IMAGES)
 
     def test_interrupt_leaves_no_part_and_no_child(self):
@@ -735,8 +777,9 @@ class SafetyTest(unittest.TestCase):
 
         dest = self.folder / "out.mp4"
         with mock.patch.object(_ffmpeg, "encode", side_effect=interrupt), self.assertRaises(KeyboardInterrupt):
-            media.compress(sample("v.mp4"), dest=dest, progress=lambda *_: None)
+            shrink(sample("v.mp4"), dest=dest, progress=lambda *_: None)
         self.assertEqual(parts(self.folder), [])
+        self.assertEqual(parts(FOLDER), [])
         self.assertFalse(dest.exists())
 
     def test_interrupt_during_a_real_encode(self):
@@ -748,10 +791,115 @@ class SafetyTest(unittest.TestCase):
             raise KeyboardInterrupt
 
         with self.assertRaises(KeyboardInterrupt):
-            media.compress(sample("big.mp4"), dest=dest, quality=10, progress=progress)
+            shrink(sample("big.mp4"), dest=dest, quality=10, progress=progress)
         self.assertEqual(parts(self.folder), [])
+        self.assertEqual(parts(FOLDER), [])
         children = subprocess.run(["pgrep", "-P", str(os.getpid())], capture_output=True, text=True).stdout.split()
         self.assertEqual(children, [])
+
+
+@needs_ffmpeg("libx264")
+class ChainTest(unittest.TestCase):
+    """C6's temporary-files row, and redesign's chains: each transform a new `Media`, only `save` writing."""
+
+    def test_trim_then_compress_then_save(self):
+        source = fresh("big.mp4")
+        dest = source.parent / "short.mp4"
+        out = media.open(source).trim(start=0.5, end=1.5).compress("low", progress=lambda *_: None)
+        self.assertEqual(out.kind, "video")
+        self.assertAlmostEqual(out.duration or 0, 1.0, delta=0.1)
+        self.assertEqual(out.save(dest), dest)
+        self.assertEqual(media.open(dest).codec, "h264")
+        # A transform never writes the file the chain started from.
+        self.assertEqual(source.read_bytes(), sample("big.mp4").read_bytes())
+        self.assertEqual(parts(source.parent), [])
+
+    def test_trimming_a_photo_is_a_kind_error(self):
+        with self.assertRaisesRegex(media.KindError, "trim is for videos, audio and animations; srgb.jpg is a photo"):
+            media.open(sample("srgb.jpg")).trim(end=1.0)
+        self.assertTrue(issubclass(media.KindError, media.Error))
+
+    @needs_pillow
+    def test_save_without_dest_writes_over_the_original(self):
+        path = fresh("big.jpg")
+        before = path.stat().st_size
+        out = media.open(path).compress("low")
+        self.assertEqual(path.stat().st_size, before)
+        self.assertEqual(out.save(), path)
+        self.assertLess(path.stat().st_size, before)
+        self.assertEqual([child.name for child in path.parent.iterdir()], ["big.jpg"])
+
+    @needs_pillow
+    def test_save_with_a_new_format_replaces_the_original_under_its_new_name(self):
+        path = fresh("tiny.heic")
+        saved = media.open(path).compress("low", format="jpg").save()
+        self.assertEqual(saved, path.with_suffix(".jpg"))
+        self.assertFalse(path.exists())
+        self.assertEqual(media.open(saved).format, "jpeg")
+
+    @needs_pillow
+    def test_save_refuses_a_file_the_chain_didnt_start_from(self):
+        path = fresh("big.jpg")
+        taken = path.parent / "taken.jpg"
+        taken.write_bytes(b"x")
+        with self.assertRaises(FileExistsError):
+            media.open(path).resize(width=10).save(taken)
+        self.assertEqual(taken.read_bytes(), b"x")
+        self.assertEqual(parts(path.parent), [])
+
+    @needs_pillow
+    def test_save_leaves_no_temporary_file(self):
+        path = fresh("big.jpg")
+        media.open(path).resize(width=100).compress("low").save(path.parent / "small.jpg")
+        self.assertEqual(parts(path.parent), [])
+
+    @needs_pillow
+    def test_close_drops_the_chains_temporary_files(self):
+        path = fresh("big.jpg")
+        with media.open(path) as photo:
+            smaller = photo.resize(width=100)
+            square = smaller.crop((0, 0, 50, 50))
+            self.assertEqual(len(parts(path.parent)), 2)
+            self.assertEqual(square.width, 50)
+        self.assertEqual(square.width, 50)  # what was read stays readable after close
+        self.assertEqual(parts(path.parent), [])
+        with self.assertRaisesRegex(ValueError, "closed"):
+            smaller.compress("low")
+
+    @needs_pillow
+    def test_an_exception_leaves_no_temporary_file(self):
+        path = fresh("big.jpg")
+        with mock.patch.object(_media._pillow, "save", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            media.open(path).compress("low")
+        self.assertEqual(parts(path.parent), [])
+
+    @needs_pillow
+    def test_collection_drops_the_temporary_file(self):
+        path = fresh("big.jpg")
+        out = media.open(path).resize(width=100)
+        self.assertEqual(len(parts(path.parent)), 1)
+        del out
+        gc.collect()
+        self.assertEqual(parts(path.parent), [])
+
+    @needs_pillow
+    def test_the_temporary_file_is_beside_the_file_the_chain_started_from(self):
+        path = fresh("big.jpg")
+        with media.open(path).resize(width=100) as out:
+            self.assertEqual(out.info.path.parent, path.parent)
+            self.assertTrue(out.info.path.name.startswith(".big.jpg."))
+
+    @needs_pillow
+    def test_the_records_fields_are_properties(self):
+        photo = media.open(sample("exif.jpg"))
+        self.assertEqual((photo.kind, photo.format, photo.width, photo.height), ("image", "jpeg", 40, 80))
+        self.assertEqual(photo.size, sample("exif.jpg").stat().st_size)
+        self.assertEqual(photo.tags["Model"], "Pixel 99")
+        self.assertIsNotNone(photo.created)
+        self.assertIsNotNone(photo.location)
+        self.assertIsNone(photo.codec)
+        self.assertIsInstance(photo.info, media.Info)
+        self.assertIs(photo.check(), photo)
 
 
 if __name__ == "__main__":

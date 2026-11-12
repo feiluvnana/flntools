@@ -3,10 +3,10 @@
 The three kinds of saved file go through one table, `KINDS`: each kind's option, the formats it
 takes, and whether its encodes wait for the run's one-at-a-time lock (videos only, since one x264
 encode already uses every core). A setting is a `Choice(format, level)`, read from the command
-line or `targets.db` by `parse_choice`; its level is one of `media.compress`'s presets.
+line or `targets.db` by `parse_choice`; its level is one of `Media.compress`'s levels.
 
-`compress_file` compresses one file with one choice, calls `shared.media.compress`, and turns its
-result into the file's history fields. It catches exactly what `media` raises for a file it can't
+`compress_file` compresses one file with one choice through `shared.media` (`media.open(path).compress(level)`,
+saved over the original only when smaller), and turns the result into the file's history fields. It catches exactly what `media` raises for a file it can't
 compress (`ValueError`, `FileExistsError`, `RuntimeError`, `TimeoutError`, `ImportError`), warns
 once per kind of error per run, and leaves the original in place. `Compressor` is one run's
 compressing on top of it: the encode lock, and the kinds this machine turned out unable to
@@ -33,7 +33,7 @@ from shared import log
 if TYPE_CHECKING:
     from flnd.session import Options
 
-# The levels, best first: `media.compress`'s preset names, so the CLI, the history and media agree.
+# The levels, best first: `Media.compress`'s level names, so the CLI, the history and media agree.
 LEVELS = ("best", "high", "mid", "low")
 # A format alone re-encodes anyway, so it takes the level that loses nothing visible at a fair size.
 FORMAT_LEVEL = "high"
@@ -239,7 +239,7 @@ def compress_file(path: Path, kind: str, choice: Choice, warned: set[type[Except
     Args:
         path: the saved file; replaced by its compressed copy only when that is smaller.
         kind: a key of `KINDS`; a video's format is read as a container, a codec, or both.
-        choice: the format (None keeps the file's own) and the level, which is media's preset.
+        choice: the format (None keeps the file's own) and the level, which is media's level.
         warned: the kinds of error already warned of in this run, one set for the whole run; the
             first error of each kind is a warning, the ones after it only a debug line.
 
@@ -277,23 +277,31 @@ def compress_file(path: Path, kind: str, choice: Choice, warned: set[type[Except
         _warn(warned, error, path)
         return {"compressed": "none"}
     try:
-        out = media.compress(path, preset=choice.level, format=format, codec=codec)
+        # `with` drops the compressed copy's temporary file whenever it isn't saved, an error included.
+        with media.open(path) as original:
+            out = original.compress(choice.level, format=format, codec=codec)
+            if out.size < original.size:
+                saved: Path | None = out.save()
+            else:
+                saved = None
+                if out is not original:
+                    log.info("{name}: compressing saved nothing; kept the original", name=path.name)
     except (ValueError, OSError) as error:
-        # This file only: unreadable or refused (ValueError, BrokenError and UnsafeError among them),
+        # This file only: unreadable or refused (ValueError; BrokenError, UnsafeError and KindError among them),
         # or an OSError: its new name taken (FileExistsError), ffmpeg stalled or took too long on it
         # (TimeoutError), or the file vanished, can't be opened (PermissionError) or the disk is full.
         # Each is about this file or this moment, so it fails this file and the run goes on.
-        # `media.compress` writes to a temporary part first, so the original is untouched.
+        # A transform writes to a temporary file and only `save` replaces the original, so it is untouched.
         _warn(warned, error, path)
-        out = None
+        saved = None
     except (RuntimeError, ImportError) as error:
         # This machine: no ffmpeg, an ffmpeg too old or without the encoder, or no Pillow. Every
         # other file of the kind would fail the same way, and installing it fixes them all.
         _warn(warned, error, path)
         return None
-    if out is None:
+    if saved is None:
         return {"path": str(path), "size": size, "compressed": "none", "original_size": size}
-    return {"path": str(out), "size": out.stat().st_size, "compressed": str(choice), "original_size": size}
+    return {"path": str(saved), "size": saved.stat().st_size, "compressed": str(choice), "original_size": size}
 
 
 def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], kind: str, choice: Choice,

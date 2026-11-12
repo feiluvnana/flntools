@@ -1,8 +1,8 @@
 """flnd sync and the saved target settings: plan, record, download's use of them, repair, fetch and the summary.
 
 Each test runs on a temporary `.flnd` with test sources on `httpx.MockTransport` (see `EngineCase`),
-and the fake screen. `shared.media.compress` is replaced wherever a test only needs to know what was
-compressed with what.
+and the fake screen. `shared.media.open` is replaced by `test_engine.FakeMedia` wherever a test only
+needs to know what was compressed with what.
 """
 
 import datetime
@@ -12,7 +12,7 @@ from unittest import mock
 
 import httpx
 from media_samples import needs_pillow
-from test_engine import CDN, EngineCase, history, make_source, noise
+from test_engine import CDN, EngineCase, FakeMedia, compressing, history, make_source, noise
 
 from flnd import sync
 from flnd.common.compress import Choice
@@ -168,12 +168,10 @@ class DownloadAppliesTest(SyncCase):
         self.compressed = []
 
         def compress(path, **settings):
-            self.compressed.append((Path(path).name, settings["format"], settings["preset"]))
+            self.compressed.append((Path(path).name, settings["format"], settings["level"]))
             return None
 
-        patcher = mock.patch("shared.media.compress", compress)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.enterContext(compressing(compress))
 
     def test_a_changed_setting_compresses_the_files_already_saved_first(self):
         self.download()
@@ -206,14 +204,14 @@ class DownloadAppliesTest(SyncCase):
         self.assertEqual(sorted(name for name, _, _ in self.compressed), ["b.jpg", "c.jpg"])
 
     def shrink(self, fail_on=None):
-        """Replace `shared.media.compress` with one that writes a smaller copy, in the format asked for.
+        """Replace `shared.media.open` with a `FakeMedia` whose compress writes a smaller copy, in the format asked for.
 
         Args:
             fail_on: the call, counted from 1, that raises KeyboardInterrupt instead, as Ctrl-C would.
         """
         def compress(path, **settings):
             path = Path(path)
-            self.compressed.append((path.name, settings["format"], settings["preset"]))
+            self.compressed.append((path.name, settings["format"], settings["level"]))
             if len(self.compressed) == fail_on:
                 raise KeyboardInterrupt
             out = path.with_suffix(f".{settings['format']}") if settings["format"] else path
@@ -222,7 +220,7 @@ class DownloadAppliesTest(SyncCase):
             out.write_bytes(body[:len(body) // 2])
             return out
 
-        return mock.patch("shared.media.compress", compress)
+        return compressing(compress)
 
     def test_a_compressed_file_updates_its_history_row(self):
         self.download()
@@ -272,7 +270,7 @@ class DownloadAppliesTest(SyncCase):
     def test_only_the_changed_kind_is_applied(self):
         self.site.files["v.mp4"] = b"\0\0\0\x18ftypisom" + bytes(64)
         self.site.serve()
-        with mock.patch("shared.media.check"):
+        with mock.patch.object(FakeMedia, "check", lambda self: self):
             self.download()
             self.download(video=Choice("h265", "low"))
         self.assertEqual(self.compressed, [("v.mp4", None, "low")])
@@ -307,13 +305,17 @@ class RepairTest(SyncCase):
         (folder / "u.mp3").write_bytes(b"")
         decoded = []
 
+        real_open = media.open
+
         def check(path, *args, **options):
             # One bad packet in s.mp3, which a decode would find; repair must not decode audio.
+            # Only a decoding check opens the file, so an open stands for the decode here.
             decoded.append(Path(path).name)
             if Path(path).suffix == ".mp3":
                 raise media.BrokenError(f"{Path(path).name}: a bad packet")
+            return real_open(path)
 
-        with mock.patch("shared.media.check", check):
+        with mock.patch("shared.media.open", check):
             [line] = self.sync()
         self.assertFalse([name for name in decoded if name.endswith(".mp3")])
         self.assertEqual((folder / "s.mp3").read_bytes(), mp3)
@@ -377,7 +379,7 @@ class FetchTest(SyncCase):
             targets["aaa:a"] = {**targets["aaa:a"], "image": "webp,mid"}
         self.site.files["d.jpg"] = noise("JPEG")
         self.site.serve()
-        with mock.patch("shared.media.compress", compress):
+        with compressing(compress):
             self.sync()
         self.assertEqual(compressed, ["d.jpg"])
 

@@ -1,3 +1,9 @@
+"""`Media.trim`, `Media.frames` and `Media.merge`: anything with a timeline, on the generated samples.
+
+ffmpeg runs for real; `built_commands` wraps its two runners to record each command, so a test can
+pin that DASH and like clips are copied, never encoded, and that no image2 reader is ever used.
+"""
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +30,10 @@ def built_commands():
     return commands, patches
 
 
+def parts(folder: Path) -> list[str]:
+    return [path.name for path in folder.iterdir() if path.name.endswith(".part")]
+
+
 class VideoCase(unittest.TestCase):
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp(dir=FOLDER))
@@ -32,85 +42,89 @@ class VideoCase(unittest.TestCase):
 @needs_ffmpeg("libx264", "libmp3lame")
 class TrimTest(VideoCase):
     def test_exact(self):
-        info = media.probe(media.video.trim(sample("big.mp4"), start=1.0, end=2.0, dest=self.folder / "a.mp4"))
-        self.assertAlmostEqual(info.duration or 0, 1.0, delta=1 / 60 + 0.03)
-        self.assertEqual(info.video, "h264")
+        clip = media.open(sample("big.mp4")).trim(start=1.0, end=2.0)
+        self.assertAlmostEqual(clip.duration or 0, 1.0, delta=1 / 60 + 0.03)
+        self.assertEqual(clip.codec, "h264")
 
     def test_copy(self):
-        info = media.probe(media.video.trim(sample("big.mp4"), start=1.0, end=2.0, dest=self.folder / "b.mp4",
-                                            exact=False))
+        info = media.open(sample("big.mp4")).trim(start=1.0, end=2.0, exact=False).info
         self.assertEqual((info.video, info.audio), ("mpeg4", "aac"))
         self.assertGreaterEqual(info.duration or 0, 0.9)
 
     def test_audio_trims_exactly(self):
-        info = media.probe(media.video.trim(sample("tone.mp3"), start=0.25, end=0.75, dest=self.folder / "c.mp3"))
-        self.assertAlmostEqual(info.duration or 0, 0.5, delta=0.06)
+        clip = media.open(sample("tone.mp3")).trim(start=0.25, end=0.75)
+        self.assertAlmostEqual(clip.duration or 0, 0.5, delta=0.06)
 
     def test_animation(self):
-        out = media.video.trim(sample("anim.gif"), start=0.1, end=0.3, dest=self.folder / "d.gif")
-        self.assertEqual(media.probe(out).frames, 1)
+        out = media.open(sample("anim.gif")).trim(start=0.1, end=0.3).save(self.folder / "d.gif")
+        self.assertEqual(media.open(out).info.frames, 1)
 
     def test_in_place(self):
         path = fresh("big.mp4")
-        media.video.trim(path, start=2.0, exact=False)
-        self.assertLess(media.probe(path).duration or 9, 2.0)
+        media.open(path).trim(start=2.0, exact=False).save()
+        self.assertLess(media.open(path).duration or 9, 2.0)
 
     def test_bad_times(self):
         for start, end in ((2.0, 1.0), (1.0, 1.0), (-1.0, None), (5.0, None)):
             with self.subTest(start=start, end=end), self.assertRaises(ValueError):
-                media.video.trim(sample("big.mp4"), start=start, end=end, dest=self.folder / f"{start}.mp4")
-        with self.assertRaises(ValueError):
-            media.video.trim(sample("srgb.jpg"), end=1.0, dest=self.folder / "x.jpg")
+                media.open(sample("big.mp4")).trim(start=start, end=end)
+        with self.assertRaises(media.KindError):
+            media.open(sample("srgb.jpg")).trim(end=1.0)
 
 
 @needs_ffmpeg()
 class FramesTest(VideoCase):
     def test_every(self):
-        paths = media.video.frames(sample("big.mp4"), every=1.0, dest_dir=self.folder)
+        paths = media.open(sample("big.mp4")).frames(every=1.0, dest=self.folder)
         self.assertEqual([path.name for path in paths], ["big_00000.000.jpg", "big_00001.000.jpg",
                                                          "big_00002.000.jpg"])
         with Image.open(paths[0]) as image:
             self.assertEqual(image.size, (360, 640))
 
     def test_at_and_count(self):
-        at = media.video.frames(sample("big.mp4"), at=[2.5, 0.5], dest_dir=self.folder / "at")
+        clip = media.open(sample("big.mp4"))
+        at = clip.frames(at=[2.5, 0.5], dest=self.folder / "at")
         self.assertEqual([path.name for path in at], ["big_00000.500.jpg", "big_00002.500.jpg"])
-        counted = media.video.frames(sample("big.mp4"), count=4, dest_dir=self.folder / "count", format="png")
+        counted = clip.frames(count=4, dest=self.folder / "count", format="png")
         self.assertEqual(len(counted), 4)
         self.assertEqual(counted, sorted(counted))
         self.assertEqual(counted[0].name, "big_00000.375.png")
 
     def test_every_frame(self):
-        self.assertEqual(len(media.video.frames(sample("v.mp4"), dest_dir=self.folder)), 10)
+        self.assertEqual(len(media.open(sample("v.mp4")).frames(dest=self.folder)), 10)
 
     def test_rotated_video_is_upright(self):
-        paths = media.video.frames(sample("meta.mp4"), count=1, dest_dir=self.folder)
+        paths = media.open(sample("meta.mp4")).frames(count=1, dest=self.folder)
         with Image.open(paths[0]) as image:
             self.assertEqual(image.size, (48, 64))
 
     def test_animation(self):
-        paths = media.video.frames(sample("anim.gif"), dest_dir=self.folder, format="png")
+        paths = media.open(sample("anim.gif")).frames(dest=self.folder, format="png")
         self.assertEqual([path.name for path in paths], ["anim_00000.000.png", "anim_00000.100.png",
                                                          "anim_00000.300.png", "anim_00000.400.png"])
 
+    def test_a_trimmed_clip_names_its_frames_after_the_file_it_started_from(self):
+        paths = media.open(sample("big.mp4")).trim(end=1.0, exact=False).frames(count=1, dest=self.folder)
+        self.assertTrue(paths[0].name.startswith("big_"))
+
     def test_limit(self):
         with self.assertRaisesRegex(ValueError, "limit"):
-            media.video.frames(sample("big.mp4"), dest_dir=self.folder / "limited", limit=5)
+            media.open(sample("big.mp4")).frames(dest=self.folder / "limited", limit=5)
         self.assertFalse((self.folder / "limited").exists())
 
     def test_existing_name(self):
         (self.folder / "v_00000.000.jpg").write_bytes(b"x")
         with self.assertRaises(FileExistsError):
-            media.video.frames(sample("v.mp4"), every=0.5, dest_dir=self.folder)
+            media.open(sample("v.mp4")).frames(every=0.5, dest=self.folder)
         self.assertEqual(len(list(self.folder.iterdir())), 1)
 
     def test_refusals(self):
         with self.assertRaises(ValueError):
-            media.video.frames(sample("v.mp4"), every=1.0, count=2, dest_dir=self.folder)
+            media.open(sample("v.mp4")).frames(every=1.0, count=2, dest=self.folder)
         with self.assertRaises(ValueError):
-            media.video.frames(sample("v.mp4"), format="mp4", dest_dir=self.folder)
-        with self.assertRaises(ValueError):
-            media.video.frames(sample("srgb.jpg"), dest_dir=self.folder)
+            media.open(sample("v.mp4")).frames(format="mp4", dest=self.folder)
+        with self.assertRaisesRegex(media.KindError, "frames is for videos and animations; srgb.jpg is a photo"):
+            media.open(sample("srgb.jpg")).frames(dest=self.folder)
 
 
 @needs_ffmpeg("libx264", "libvpx-vp9", "libopus")
@@ -124,24 +138,26 @@ class MergeTest(VideoCase):
             paths.append(path)
         return paths
 
+    def slideshow(self, **options) -> media.Media:
+        first, *rest = self.photos()
+        return media.open(first).merge(*rest, **options)
+
     def test_slideshow(self):
-        info = media.probe(media.video.merge(self.photos(), dest=self.folder / "s.mp4", duration=2.0))
-        self.assertAlmostEqual(info.duration or 0, 6.0, delta=0.1)
-        self.assertEqual((info.width, info.height, info.video), (64, 48, "h264"))
+        out = self.slideshow(duration=2.0)
+        self.assertAlmostEqual(out.duration or 0, 6.0, delta=0.1)
+        self.assertEqual((out.width, out.height, out.codec, out.format), (64, 48, "h264", "mp4"))
 
     def test_frames_at_fps(self):
-        info = media.probe(media.video.merge(self.photos(), dest=self.folder / "f.mp4", fps=10))
-        self.assertAlmostEqual(info.duration or 0, 0.3, delta=0.05)
+        self.assertAlmostEqual(self.slideshow(fps=10).duration or 0, 0.3, delta=0.05)
 
     def test_animations(self):
-        for extension in (".gif", ".webp"):
+        for extension in ("gif", "webp"):
             with self.subTest(extension=extension):
-                info = media.probe(media.video.merge(self.photos(), dest=self.folder / f"a{extension}"))
+                info = self.slideshow(format=extension).info
                 self.assertEqual((info.animated, info.frames, info.width), (True, 3, 64))
 
     def test_photos_with_audio(self):
-        info = media.probe(media.video.merge(self.photos(), dest=self.folder / "m.mp4", audio=sample("a.m4a"),
-                                             duration=0.2))
+        info = self.slideshow(audio=sample("a.m4a"), duration=0.2).info
         self.assertEqual(info.audio, "aac")
         self.assertAlmostEqual(info.duration or 0, 0.6, delta=0.1)
 
@@ -149,27 +165,29 @@ class MergeTest(VideoCase):
         commands, patches = built_commands()
         with patches[0], patches[1]:
             for extension in (".mp4", ".mkv"):
-                info = media.probe(media.video.merge([sample("v.mp4")], audio=sample("a.m4a"),
-                                                     dest=self.folder / f"d{extension}"))
+                saved = media.open(sample("v.mp4")).merge(audio=sample("a.m4a"), format=extension).save(
+                    self.folder / f"d{extension}")
+                info = media.open(saved).info
                 self.assertEqual((info.video, info.audio), ("mpeg4", "aac"))
                 self.assertAlmostEqual(info.duration or 0, 1.0, delta=0.1)
         self.assertTrue(all("copy" in command for command in commands))
 
     def test_dash_errors(self):
         with self.assertRaisesRegex(media.BrokenError, "no audio stream"):
-            media.video.merge([sample("v.mp4")], audio=sample("v.mp4"), dest=self.folder / "x.mp4")
+            media.open(sample("v.mp4")).merge(audio=sample("v.mp4"))
         with self.assertRaises(RuntimeError):
-            media.video.merge([sample("v.mp4")], audio=sample("a.m4a"), dest=self.folder / "x.webm")
+            media.open(sample("v.mp4")).merge(audio=sample("a.m4a"), format="webm")
         self.assertEqual(list(self.folder.iterdir()), [])
+        self.assertEqual(parts(FOLDER), [])
         truncated = self.folder / "cut.m4a"
         truncated.write_bytes(sample("a.m4a").read_bytes()[:3000])
         with self.assertRaises(media.BrokenError):
-            media.video.merge([sample("v.mp4")], audio=truncated, dest=self.folder / "y.mp4")
+            media.open(sample("v.mp4")).merge(audio=truncated)
 
     def test_clips_join_by_copy(self):
         commands, patches = built_commands()
         with patches[0], patches[1]:
-            info = media.probe(media.video.merge([sample("av.mp4"), sample("av.mp4")], dest=self.folder / "j.mp4"))
+            info = media.open(sample("av.mp4")).merge(sample("av.mp4")).info
         self.assertEqual(info.video, "mpeg4")
         self.assertAlmostEqual(info.duration or 0, 2.0, delta=0.1)
         concat = [command for command in commands if "concat" in command]
@@ -181,19 +199,21 @@ class MergeTest(VideoCase):
     def test_different_clips_are_encoded(self):
         webm = self.folder / "other.webm"
         run("-f", "lavfi", "-i", "testsrc=size=32x32:rate=25:duration=1", "-c:v", "libvpx-vp9", str(webm))
-        info = media.probe(media.video.merge([sample("av.mp4"), webm], dest=self.folder / "e.mp4"))
+        info = media.open(sample("av.mp4")).merge(webm).info
         self.assertEqual((info.video, info.width, info.height, info.audio), ("h264", 64, 48, "aac"))
         self.assertAlmostEqual(info.duration or 0, 2.0, delta=0.15)
 
     def test_refusals(self):
         with self.assertRaises(ValueError):
-            media.video.merge([], dest=self.folder / "x.mp4")
+            self.slideshow(audio=sample("a.m4a"), format="gif")
+        with self.assertRaises(media.KindError):
+            media.open(self.photos()[0]).merge(sample("v.mp4"))
         with self.assertRaises(ValueError):
-            media.video.merge(self.photos(), audio=sample("a.m4a"), dest=self.folder / "x.gif")
+            self.slideshow(fps=2, duration=1)
+        with self.assertRaises(media.KindError):
+            media.open(sample("a.m4a")).merge(sample("a.m4a"))
         with self.assertRaises(ValueError):
-            media.video.merge([*self.photos(), sample("v.mp4")], dest=self.folder / "x.mp4")
-        with self.assertRaises(ValueError):
-            media.video.merge(self.photos(), fps=2, duration=1, dest=self.folder / "x.mp4")
+            self.slideshow(format="jpg")
 
 
 if __name__ == "__main__":

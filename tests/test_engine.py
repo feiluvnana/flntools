@@ -39,6 +39,69 @@ def noise(format, size=(64, 48)):
     return out.getvalue()
 
 
+class FakeMedia:
+    """Stands in for `media.open(path)`'s `Media` in compress tests: `compress` calls the test's function.
+
+    The function is `compress(path, **settings)`, with the level as `settings["level"]`. It returns
+    None for "nothing smaller", or the path of a smaller file it wrote, which `save` then returns.
+    """
+
+    def __init__(self, path, compress, check):
+        self.path, self._compress, self._check = Path(path), compress, check
+        self.size = self.path.stat().st_size
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def close(self):
+        pass
+
+    def check(self):
+        if self._check:
+            REAL_OPEN(self.path).check()
+        return self
+
+    def compress(self, level, **settings):
+        out = self._compress(self.path, level=level, **settings)
+        return self if out is None else FakeResult(Path(out))
+
+
+class FakeResult:
+    """What `FakeMedia.compress` returns for a smaller file: `size`, and `save` giving its path."""
+
+    def __init__(self, path):
+        self.path = path
+        self.size = path.stat().st_size
+
+    def save(self, dest=None):
+        return self.path
+
+
+REAL_OPEN = media.open
+
+
+def compressing(compress=None, *, check=True, **options):
+    """Patch `media.open` with `FakeMedia`, compressing with `compress` or a `mock.Mock(**options)`.
+
+        with compressing(side_effect=TimeoutError("stalled")) as compress:
+            ...
+        compress.assert_called_once()
+
+    With `check` (the default), `Media.check` still runs for real, as a download's check does.
+    """
+    fake = compress or mock.Mock(**options)
+
+    @contextmanager
+    def patched():
+        with mock.patch("shared.media.open", lambda path: FakeMedia(path, fake, check)):
+            yield fake
+
+    return patched()
+
+
 def make_source(code, run, **declared):
     """A test source: `code:<name>` resolves to that user, and `run(session)` is the given function."""
     def resolve(self, text):
@@ -509,7 +572,7 @@ class MediaSaveTest(EngineCase):
     def test_without_ffmpeg_dash_videos_fail_with_medias_own_error(self):
         # No hint of flnd's own: ffmpeg comes with a required dependency, and media's error names it.
         missing = RuntimeError("shared.media needs ffmpeg for videos and audio: install ffmpeg on your PATH")
-        with mock.patch("shared._media_video.merge", side_effect=missing):
+        with mock.patch("shared.media.open", side_effect=missing):
             self.run_engine(self.saver("1.mp4", "2.mp4", audio=f"{CDN}/a.m4a"), targets=["aaa:a"])
         self.assertFalse(any("ffmpeg not found" in line for line in self.lines()))
         self.assertEqual(sum("✗ 1.mp4: RuntimeError shared.media needs ffmpeg" in line
@@ -525,8 +588,8 @@ class MediaSaveTest(EngineCase):
         self.assertEqual(self.files(), ["big.jpg", "v.mp4"])
         saved = self.target_dir("aaa", "a") / "big.jpg"
         self.assertLess(saved.stat().st_size, len(served))
-        media.check(saved)
-        self.assertEqual(media.probe(saved).width, 2048)
+        media.open(saved).check()
+        self.assertEqual(media.open(saved).width, 2048)
         row = history(self.home)["aaa:big.jpg"]
         self.assertEqual((row["compressed"], row["size"], row["original_size"]),
                          ("low", saved.stat().st_size, len(served)))
@@ -544,21 +607,21 @@ class MediaSaveTest(EngineCase):
         rows = history(self.home)
         self.assertEqual(self.files(), ["a.jpg", "tiny.jpg"] if rows["aaa:tiny.png"]["compressed"] != "none"
                          else ["a.jpg", "tiny.png"])
-        self.assertEqual(media.probe(self.target_dir("aaa", "a") / "a.jpg").format, "jpeg")
+        self.assertEqual(media.open(self.target_dir("aaa", "a") / "a.jpg").format, "jpeg")
         self.assertTrue(rows["aaa:a.jpg"]["path"].endswith("a.jpg"))
 
     def test_audio_is_a_third_kind_named_by_its_content_and_compressed_with_audio(self):
         calls = []
 
         def compress(path, **settings):
-            calls.append((Path(path).name, settings["preset"], settings["format"]))
+            calls.append((Path(path).name, settings["level"], settings["format"]))
             return None
 
         self.serve_file("song.mp3", b"ID3" + bytes(64))
         self.serve_file("voice.mp3", b"\0\0\0\x18ftypM4A " + bytes(64))
         self.serve_file("a.jpg", noise("JPEG"))
         # media.check would need these to be real audio; the kind and the naming are what's tested here.
-        with mock.patch("shared.media.check"), mock.patch("shared.media.compress", compress):
+        with compressing(compress, check=False):
             self.run_engine(self.saver("song.mp3", "voice.mp3", "a.jpg"), targets=["aaa:a"],
                             options=Options(audio=Choice("opus", "mid")))
         self.assertEqual(sorted(calls), [("song.mp3", "mid", "opus"), ("voice.m4a", "mid", "opus")])
@@ -575,7 +638,7 @@ class MediaSaveTest(EngineCase):
 
     def test_a_broken_photo_is_kept_and_recorded_as_none(self):
         self.serve_file("a.jpg", noise("JPEG"))
-        with mock.patch("shared.media.compress", side_effect=media.BrokenError("a.jpg: corrupt")):
+        with compressing(side_effect=media.BrokenError("a.jpg: corrupt")):
             self.run_engine(self.saver("a.jpg"), targets=["aaa:a"], options=Options(image=Choice(None, "low")))
         self.assertEqual(history(self.home)["aaa:a.jpg"]["compressed"], "none")
         self.assertIn("! a.jpg: not compressed: a.jpg: corrupt", self.lines())
@@ -596,7 +659,7 @@ class MediaSaveTest(EngineCase):
 
         for number in range(3):
             self.serve_file(f"{number}.webm", b"\x1a\x45\xdf\xa3webm" + bytes(64))
-        with mock.patch("shared.media.compress", compress):
+        with compressing(compress):
             self.run_engine(self.saver("0.webm", "1.webm", "2.webm"), targets=["aaa:a"],
                             options=Options(video=Choice("mp4", "low")))
         self.assertEqual(max(overlaps), 1)
@@ -618,7 +681,7 @@ class MediaSaveTest(EngineCase):
         self.serve_file("1.mp4", b"\0\0\0\x18ftypisom" + bytes(64))
         self.serve_file("2.mp4", b"\0\0\0\x18ftypisom" + bytes(64))
         self.serve_file("a.jpg", noise("JPEG"))
-        with mock.patch("shared.media.compress", compress):
+        with compressing(compress):
             self.run_engine(self.saver("1.mp4", "2.mp4", "a.jpg", declared={"concurrency": 1}), targets=["aaa:a"],
                             options=Options(image=Choice(None, "low"), video=Choice(None, "low")))
         self.assertEqual(sorted(calls), ["1.mp4", "a.jpg"])
@@ -629,7 +692,7 @@ class MediaSaveTest(EngineCase):
 
     def test_ctrl_c_during_an_encode_keeps_the_original_and_no_compressed_row(self):
         self.serve_file("v.mp4", b"\0\0\0\x18ftypisom" + bytes(64))
-        with mock.patch("shared.media.compress", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+        with compressing(side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
             self.run_engine(self.saver("v.mp4"), targets=["aaa:a"], options=Options(video=Choice(None, "low")))
         self.assertEqual(self.files(), ["v.mp4"])
         self.assertNotIn("compressed", history(self.home)["aaa:v.mp4"])
@@ -642,8 +705,8 @@ class MediaSaveTest(EngineCase):
                         if "libx265" in encoders() else Options(video=Choice(None, "low")))
         saved = self.target_dir("aaa", "a") / "big.mp4"
         self.assertLess(saved.stat().st_size, len(served))
-        media.check(saved)
-        self.assertEqual(media.probe(saved).video, "hevc" if "libx265" in encoders() else "h264")
+        media.open(saved).check()
+        self.assertEqual(media.open(saved).codec, "hevc" if "libx265" in encoders() else "h264")
         self.assertEqual(history(self.home)["aaa:big.mp4"]["compressed"], "h265,low" if "libx265" in encoders()
                          else "low")
 

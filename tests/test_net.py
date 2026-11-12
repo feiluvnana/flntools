@@ -386,7 +386,7 @@ class MediaDownloadTest(NetCase):
         """Fix 9: a file media refuses (a decompression bomb) is refused again on every attempt."""
         body = photo("JPEG")
         with self.client(*(chunked(body) for _ in range(3))) as http, self.assertRaises(media.UnsafeError), \
-                mock.patch("shared.media.check", side_effect=media.UnsafeError("too many pixels")):
+                mock.patch("shared.media.open", side_effect=media.UnsafeError("too many pixels")):
             self.download(http, "https://cdn.example/a.jpg", kind="image")
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.names(), [])
@@ -421,12 +421,12 @@ class MediaDownloadTest(NetCase):
 
     def test_a_download_with_a_known_size_is_not_decoded(self):
         with self.client(httpx.Response(200, content=photo("JPEG"))) as http, \
-                mock.patch("shared.media.check", side_effect=AssertionError("decoded")):
+                mock.patch("shared.media.open", side_effect=AssertionError("decoded")):
             self.assertTrue(self.download(http, "https://cdn.example/a.jpg", kind="image"))
 
     def test_without_ffmpeg_video_checks_are_skipped(self):
         with self.client(chunked(b"\0\0\0\x18ftypisom" + bytes(100))) as http, \
-                mock.patch("shared.media.check", side_effect=RuntimeError("shared.media needs ffmpeg")):
+                mock.patch("shared.media.open", side_effect=RuntimeError("shared.media needs ffmpeg")):
             self.assertEqual(self.download(http, "https://cdn.example/v.mp4", "v.mp4", kind="video").name, "v.mp4")
 
 
@@ -450,7 +450,7 @@ class DashDownloadTest(NetCase):
     def test_video_and_audio_are_merged_and_both_parts_deleted(self):
         with self.client() as http:
             saved = self.merged(http)
-        info = media.probe(saved)
+        info = media.open(saved).info
         self.assertEqual((info.video, info.audio is not None), ("mpeg4", True))
         self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
         self.assertEqual(len(self.lines()), 1)
@@ -460,7 +460,7 @@ class DashDownloadTest(NetCase):
         with self.client(**{self.AUDIO: [chunked(sound[: len(sound) * 7 // 10]), chunked(sound)],
                             self.VIDEO: [httpx.Response(200, content=sample("v.mp4").read_bytes())] * 2}) as http:
             saved = self.merged(http)
-        self.assertIsNotNone(media.probe(saved).audio)
+        self.assertIsNotNone(media.open(saved).info.audio)
         self.assertEqual(len(self.requests), 4)
         self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
 
