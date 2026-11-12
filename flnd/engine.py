@@ -652,7 +652,12 @@ def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[
 
 
 def owner(text: str, sources: Mapping[str, type[Source]]) -> type[Source] | None:
-    """The source whose domains a URL belongs to, or None: `owner("https://x.com/example_handle", SOURCES)` is Twitter."""
+    """The source whose domains a URL belongs to, or None: `owner("https://x.com/example_handle", SOURCES)` is Twitter.
+
+    Args:
+        text: the text as typed; only a URL, with or without a scheme, can have an owner.
+        sources: the sources to look through, in order; the first whose domain matches wins.
+    """
     return next((source for source in sources.values() if _on(text, source.domains)), None)
 
 
@@ -680,6 +685,8 @@ def _stop_waits_on_ctrl_c() -> Iterator[None]:
     """
     net.stopping.clear()
     net.stopping_now.clear()
+    # Python sets signal handlers only on the main thread, so from any other thread (a script's worker)
+    # Ctrl-C keeps its default behaviour rather than raising here.
     if threading.current_thread() is not threading.main_thread():
         yield
         return
@@ -692,6 +699,8 @@ def _stop_waits_on_ctrl_c() -> Iterator[None]:
             net.stopping.set()
             return
         net.stopping_now.set()
+        # A Python handler is callable and is called as it would have been; SIG_DFL and SIG_IGN are not,
+        # so the Ctrl-C raises KeyboardInterrupt itself, as it does by default.
         if callable(previous):
             previous(number, frame)
         else:
@@ -820,6 +829,8 @@ def _check_browser() -> None:
 
 
 def _follow(url: str) -> str:
+    """Where a short link leads, from one HEAD request; a network failure is a `TargetError` naming the link."""
+    # Only a network failure is turned into the target's message; any other error is a bug and propagates.
     try:
         return net.follow(url)
     except httpx.HTTPError as error:
@@ -868,6 +879,8 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
     run.client = run.run_async(manager.__aenter__())
     try:
         yield
+    # Every error, Ctrl-C included, goes to the source's `__aexit__` first, which may suppress it by returning
+    # true; if it doesn't, the error is raised again unchanged.
     except BaseException as error:
         if not run.run_async(manager.__aexit__(type(error), error, error.__traceback__)):
             raise
@@ -876,7 +889,14 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
 
 
 def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done, sync: bool = False) -> None:
-    """Each target of one source through the job, with a person's pause between them."""
+    """Each target of one source through the job, with a person's pause between them.
+
+    Args:
+        run: the source's resources for the run.
+        rows: each target's place in the run, its target and its progress row.
+        done: filled with each target's report as it ends, keyed by its place.
+        sync: passed on to the job; see `job.download`.
+    """
     for index, (number, target, row) in enumerate(rows):
         if index and not net.stopping.is_set():
             # Back-to-back targets are what a script looks like, so a person's pause comes between them.

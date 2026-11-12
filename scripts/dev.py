@@ -501,7 +501,6 @@ def run(command: list[str], *, capture_output: bool = False) -> subprocess.Compl
 # list when it meets the standard (lint fails while it stays), and none joins it; empty, lint is always strict.
 EXPLAINING: set[str] = {
     "flnd/common/net.py",
-    "flnd/engine.py",
     "flnd/job.py",
     "flnd/session.py",
     "flnd/site.py",
