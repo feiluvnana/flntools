@@ -47,7 +47,7 @@ The WIP commit saves a listed image post straight from the grid, with its date f
 
 ### 5. Pace
 
-Instagram's pace is its known budgets: 275 GraphQL calls per 10 minutes and 75 `/api/v1/` calls per 11 minutes, with a 1 s floor ([pace](pace.md)). That makes a 2,000-post tagged tab about 10–25 minutes of requests instead of hours. The WIP commit's 0.2 s scroll goes, and scrolling, now only the fallback, pauses 1.5 s.
+Instagram's pace is its known budgets: 275 GraphQL calls per 10 minutes and 75 `/api/v1/` calls per 11 minutes, with a 1 s floor ([pace](pace.md)). That makes a 2,000-post tagged tab about 10–25 minutes of requests instead of hours. The WIP commit's fixed 0.2 s scroll goes. Scrolling, now only the fallback, waits for each page of posts to arrive and then scrolls again after a learned floor of at least 0.3 s ([session](session.md#scrolling-on-the-pages-own-time)).
 
 ## Every source: API first, the page as fallback
 

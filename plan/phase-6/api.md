@@ -221,7 +221,7 @@ flnd no longer calls it: `--unpack` and `--zip` go ([cli](cli.md#--unpack-and---
 | `Page.on_response(match, handler, *, lines=False)` | yes | — |
 | `Page.on_request(match, handler)` | no caller once the session's goes | — : the pair of `on_response` |
 | `Page.wait_for_selector`, `wait_for_url`, `wait_for_load` | no caller once the session's go | — : the waits a script needs most |
-| `Page.scroll(*, by, count, limit, more, idle=4, delay=2.0, max=200, onscroll)` | yes | `idle` becomes **seconds** with no progress (10.0), and `max` defaults to None, no cap ([session](session.md#scroll)); `by` and `limit` stay |
+| `Page.scroll(*, by, count, limit, more, idle=4, delay=2.0, max=200, onscroll)` | yes | **waits for progress, not a clock**: each scroll waits until the page grows, `count()` rises or a response arrives, up to `delay` (3.0), then a `pause` floor (new, 0.3). `idle` becomes **seconds** with no progress (10.0), and `max` defaults to None, no cap ([session](session.md#scroll)); `by` and `limit` stay |
 | `Page.handoff(*, until, message, poll, timeout)` | yes | — |
 | `Page.fetch(url, *, method="GET", headers=None, body=None)` | — | **new**: a request sent by the page's own `fetch()`, returning `(status, headers, text)`; about 20 lines ([ins](ins.md#three-ways-to-reach-an-api)) |
 | `Page.selector`, `Page.raw`, `Page.close` | yes | — |

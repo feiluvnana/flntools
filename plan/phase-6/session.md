@@ -37,7 +37,7 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 
 | | Was | Phase 6 |
 | --- | --- | --- |
-| pause between scrolls | `delay=2.0` (0.2 in the WIP commit) | 1.5 s ±40%, the session's constant; tik passes 2.5. Requests are paced separately ([pace](pace.md)) |
+| pause between scrolls | a fixed `delay=2.0` (0.2 in the WIP commit) | **as short as the page allows**: the next scroll comes as soon as the page shows something new, after at least 0.3 s ([below](#scrolling-on-the-pages-own-time)) |
 | end of the feed | 4 scrolls in a row at the bottom with no progress (8 s at 2.0, 2 s at 0.2) | **10 s** at the bottom with no progress, however many scrolls that is |
 | most scrolls | 200, then it stops silently | none: the feed's end, `--limit` or `more()` stop it |
 | `count` | required to see progress | defaults to the number of files saved into this folder so far |
@@ -45,7 +45,24 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 - **The end is a time, not a count**, so a faster or slower `delay` doesn't change when a slow feed is given up on. "No progress" is as now: the page height, `count()` and the `on_response` traffic all stayed the same.
 - **No `max`.** 200 scrolls is about 2,400 posts on Instagram, so large accounts were cut off without a word. A feed that never ends is caught by the end rule: it keeps growing only while there's something new.
 - **`count` defaults to the saves.** tik's `counts`, twt's `found = [0]` and fbk's `feed.found` exist only to feed `count=`, so they go. ins keeps its own count, because it lists posts that are saved later.
-- `by=`, `idle=` and `max=` go from the session and from `shared` `Page.scroll`; no source passed them.
+- `by=`, `idle=` and `max=` go from the session; `shared` `Page.scroll` keeps `by` and `limit` ([api](api.md#browser-529-lines)).
+
+#### Scrolling on the page's own time
+
+A fixed pause is always wrong. It is too long when the page has already loaded the next posts, and too short when the site is slow. So a scroll waits for **progress**, not for a clock:
+1. Scroll (the wheel, in uneven steps, as now).
+2. Wait until one of these happens, checked every 50 ms:
+   - the page grew;
+   - `count()` rose;
+   - a matching `on_response` arrived;
+   - **or** `delay` passed (3 s by default).
+3. Pause the **floor**, 0.3 s ±40%, so two scrolls never come back to back, then scroll again.
+
+So on a fast connection a feed scrolls about 2–3 times a second, as fast as its pages arrive, and on a slow one it waits each page out without giving up early. While nothing loads (at the bottom), the 10 s end rule above still decides when the feed has ended.
+
+- **The floor is learned**, like a request [pace](pace.md#design). A captcha or a throttle during a scroll doubles it, up to 5 s. 50 scrolls in a row without one shrink it by 20%, never below 0.3 s. It's saved in the source's `state`, so tik, whose captcha is the usual signal, finds its own speed and keeps it. tik's fixed `delay=2.5` goes.
+- **The page's own requests aren't flnd's to space out**, and scrolling is the fallback once the [API-first](ins.md#every-source-api-first-the-page-as-fallback) path is in, so scrolling fast costs little.
+- `Page.scroll` in `shared` does this wait. Its `delay` becomes the longest wait for progress, and `pause=0.3` is the floor between scrolls. The session passes the learned floor.
 
 ### Pace
 
@@ -70,6 +87,7 @@ Every request to a source's own domains (`fetch_json`, in-page calls and `goto`)
 - `tests/fakes.py` `FakeSession` implements the new protocol and nothing else; a test checks that its public names equal `Session`'s.
 - `tests/typing/usage.py`: `session.open_page` and `session.challenged` don't type-check.
 - Scroll: a page that stops growing ends after 10 s on the fake clock, whatever `delay` is; one that grows for 300 scrolls isn't cut off; `count` defaults to the saves.
+- A page that grows 0.1 s after each scroll is scrolled again after 0.3 s, not after `delay`. One that grows only after 2 s is waited for. A captcha doubles the floor, and 50 clean scrolls shrink it back toward 0.3 s.
 - `goto`: a 429 with `Retry-After: 30` waits 30 s and loads again; a 404 returns False with a warning.
 - `goto` and `fetch_json` call the pace's `wait_turn` before and `record` after; a CDN URL calls neither ([pace](pace.md#tests)).
 - `throttled` waits on the backoff, and a second call during the wait doesn't add another.

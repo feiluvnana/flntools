@@ -61,7 +61,7 @@ A wait of more than 15 s shows on the source's row (`ins: pacing, 42 s`), so a s
 
 With Instagram's budgets, a 2,000-post tagged tab (about 170 GraphQL pages, and post queries for the videos among them) takes about 10–25 minutes of requests. A fixed 3 s pace takes about 2 hours, and gallery-dl's 6–12 s about 4–8 hours.
 
-**Scrolling** isn't paced by this. It's the fallback, and a page's own requests while scrolling aren't flnd's to space out. A scroll pauses 1.5 s ±40%, the session's own constant, and tik passes `delay=2.5` as it does today ([session](session.md#scroll)).
+**Scrolling** isn't paced by this. It's the fallback, and a page's own requests while scrolling aren't flnd's to space out. A scroll waits for the page's progress rather than a clock, with a learned floor of 0.3 s or more ([session](session.md#scrolling-on-the-pages-own-time)).
 
 ## Code
 
