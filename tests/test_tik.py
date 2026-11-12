@@ -1,16 +1,24 @@
-"""TikTok: the profile's lists and tabs, the captcha, the picture, and one video from its embed page. No network."""
+"""TikTok: its routes, the names and keys of every file it saves, the captcha, the tabs, and one video from its embed page.
+
+What is faked: the site's answers (`FakeSite` through `collect`), and the browser's tab, by `FakeTab`,
+which hands the profile's JSON responses to whoever watches for them when the source scrolls. No
+network, no browser, no wait is slept.
+"""
 
 import json
 import os
 import time
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 
-from fakes import FakeSession
+from fakes import FakeSite, Seen, collect
 
 from flnd.session import Options
 from flnd.source import Target, TargetError
-from flnd.sources.tik import TIKTOK_UA, TikTok, best_video, posted_on
+from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
+from shared import selector
+from shared._browser import Subscription
 
 DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")
 PROFILE = "https://www.tiktok.com/@someone"
@@ -79,6 +87,25 @@ class RoutesTest(unittest.TestCase):
                         TikTok().resolve(value)
 
 
+CDN = "https://cdn.example"
+API = "https://www.tiktok.com"
+
+
+def video(video_id, url, **extra):
+    """One video as the web API gives it."""
+    return {"id": video_id, "video": {"playAddr": url}, **extra}
+
+
+def photo(video_id, *urls, **extra):
+    """One photo-mode post as the web API gives it, one picture per URL."""
+    return {"id": video_id, "imagePost": {"images": [{"imageURL": {"urlList": [url]}} for url in urls]}, **extra}
+
+
+def embed_page(item):
+    data = {"props": {"pageProps": {"itemStruct": item}}}
+    return f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script></html>'
+
+
 def profile_page(*tabs, video_count=2):
     data = {"__DEFAULT_SCOPE__": {"webapp.user-detail": {"userInfo": {
         "user": {"avatarLarger": "https://p16.example/tos-avt/abc123~tplv-cropcenter:1080:1080.jpeg?x=1"},
@@ -88,125 +115,242 @@ def profile_page(*tabs, video_count=2):
             f"{json.dumps(data)}</script></body></html>")
 
 
-def clip(video_id, url):
-    return {"id": video_id, "createTime": 1700000000, "video": {"playAddr": url}}
+class FakeTab:
+    """The browser's tab as `watch_responses` and the source use it: responses are delivered when the page scrolls.
+
+    Args:
+        seen: what the `FakeSite` records, which `html` may read (the back-offs, the pages loaded).
+        feeds: (URL, JSON) responses the site would send, in order. One goes to every watcher whose
+            match takes its URL, on the first scroll or wait after that watcher started; one nobody
+            watches for stays until somebody does, as a tab's list comes only once it is clicked.
+        html: the page's HTML, or a function of the tab giving it.
+    """
+
+    def __init__(self, seen, feeds=(), html=""):
+        self.seen = seen
+        self.pending = list(feeds)
+        self.html = html
+        self.handlers = []
+        self.scrolls = 0
+        self.raw = mock.MagicMock()
+
+    @property
+    def document(self):
+        return selector.parse(self.html(self) if callable(self.html) else self.html)
+
+    def on_response(self, match, handler, *, lines=False):
+        matches = (lambda url: match in url) if isinstance(match, str) else match
+        entry = (matches, handler)
+        self.handlers.append(entry)
+        return Subscription(lambda: self.handlers.remove(entry) if entry in self.handlers else None)
+
+    def deliver(self):
+        for url, data in list(self.pending):
+            handlers = [handler for matches, handler in self.handlers if matches(url)]
+            if handlers:
+                self.pending.remove((url, data))
+                for handler in handlers:
+                    handler(data, None)
+
+    def scroll(self, *, until=None, **options):
+        self.scrolls += 1
+        self.deliver()
+        return 1
+
+    def wait(self, css=None, *, idle=False, timeout=30.0):
+        self.deliver()
+
+
+def run(text, *, feeds=(), html="", pages=None, options=Options(), cookies=None):
+    """What the job would download for `text`, with `FakeTab` as the browser: (saved files, seen, tab)."""
+    seen = Seen()
+    tab = FakeTab(seen, feeds, html)
+    with mock.patch.object(FakeSite, "page", property(lambda site: tab)):
+        saved = collect(TikTok, text, html=pages, options=options, seen=seen, cookies=cookies)
+    return saved, seen, tab
+
+
+# What the profile `someone` answers with while it scrolls, in the order the old source got them: the
+# post feed, the two story feeds, then each tab's. Ids that name a date by themselves (createTime 0,
+# or none), a playlist with a `/` and a `:`, a carousel, and a video repeated in the reposts.
+POSTS = {"hasMore": False, "itemList": [
+    video("7300000000000000001", f"{CDN}/v1", createTime=1700000000),
+    video("7300000000000000002", f"{CDN}/v2", createTime=1700000001, playlist={"name": "Road Trip"}),
+    photo("7300000000000000003", f"{CDN}/p1a.jpeg", f"{CDN}/p1b", createTime="1700000500"),
+    photo("7300000000000000004", f"{CDN}/p2a", f"{CDN}/p2b.jpg", createTime=1700000600, playlist={"name": "A/B"}),
+    video("7300000000000000005", f"{CDN}/v3", createTime=0),
+    video("5", f"{CDN}/v4"),
+    {"id": "7300000000000000006", "createTime": 1700000700, "video": {"bitrateInfo": [
+        {"Bitrate": 9, "PlayAddr": {"Width": 1, "Height": 1, "UrlList": [f"{CDN}/best"]}}]}},
+    {"id": "7300000000000000007", "createTime": 1700000800},
+]}
+STORIES = {"storyList": [video("7310000000000000001", f"{CDN}/s1", createTime=1700001000),
+                         photo("7310000000000000002", f"{CDN}/s2.jpeg", createTime=1700001001)]}
+STORIES_2 = {"story_list": [{"aweme_id": "7310000000000000003", "create_time": 1700001002,
+                             "video": {"playAddr": f"{CDN}/s3"}}]}
+REPOSTS = {"itemList": [video("7300000000000000001", f"{CDN}/v1", createTime=1700000000),
+                        video("7320000000000000001", f"{CDN}/r1", createTime=1700002000, playlist={"name": "Ignored"}),
+                        photo("7320000000000000002", f"{CDN}/r2a.jpeg", f"{CDN}/r2b", createTime=1700002001)]}
+FAVORITES = {"itemList": [video("7330000000000000001", f"{CDN}/f1", createTime=1700003000)]}
+LIKED = {"itemList": [photo("7340000000000000001", f"{CDN}/l1a", createTime=1700004000)]}
+FEEDS = [(f"{API}/api/post/item_list/?count=30", POSTS), (f"{API}/api/story/item_list/?id=1", STORIES),
+         (f"{API}/api/user/story/?id=1", STORIES_2), (f"{API}/api/repost/item_list/?count=30", REPOSTS),
+         (f"{API}/api/user/collect/item_list/?count=30", FAVORITES), (f"{API}/api/favorite/item_list/?count=30", LIKED)]
+TABS = profile_page("repost-tab", "favorites-tab", "liked-tab", video_count=8)
+
+# Single posts from the embed page, and what the source they were written for (`run(session)`, before
+# step 6) saved for each: (path, history key), recorded by running that source on the same data.
+EMBEDS = {
+    "7234567890123456789": video("7234567890123456789", f"{CDN}/e1", createTime=1700000000),
+    "7234567890123456790": photo("7234567890123456790", f"{CDN}/e2a.jpeg", f"{CDN}/e2b"),
+    "7234567890123456791": video("7234567890123456791", f"{CDN}/e3.mp4", createTime="1700000100",
+                                 playlist={"name": "Trip/2: A"}),
+}
+EMBED_PAIRS = {
+    "7234567890123456789": [("videos/2023-11-14_7234567890123456789.mp4", "7234567890123456789")],
+    "7234567890123456790": [("images/2023-05-18_7234567890123456790_1.jpg", "7234567890123456790_1"),
+                            ("images/2023-05-18_7234567890123456790_2.jpg", "7234567890123456790_2")],
+    "7234567890123456791": [("albums/Trip_2_A/2023-11-14_7234567890123456791.mp4", "7234567890123456791")],
+}
+PROFILE_PAIRS = [
+    ("profile/avatar_abc123.jpg", "profile/avatar_abc123.jpg"),
+    ("videos/2023-11-14_7300000000000000001.mp4", "7300000000000000001"),
+    ("albums/Road_Trip/2023-11-14_7300000000000000002.mp4", "7300000000000000002"),
+    ("images/2023-11-14_7300000000000000003_1.jpg", "7300000000000000003_1"),
+    ("images/2023-11-14_7300000000000000003_2.jpg", "7300000000000000003_2"),
+    ("albums/A_B/2023-11-14_7300000000000000004_1.jpg", "7300000000000000004_1"),
+    ("albums/A_B/2023-11-14_7300000000000000004_2.jpg", "7300000000000000004_2"),
+    ("videos/2023-11-11_7300000000000000005.mp4", "7300000000000000005"),
+    ("videos/5.mp4", "5"),
+    ("videos/2023-11-14_7300000000000000006.mp4", "7300000000000000006"),
+    ("stories/2023-11-14_7310000000000000001.mp4", "7310000000000000001"),
+    ("stories/2023-11-14_7310000000000000002_1.jpg", "7310000000000000002_1"),
+    ("stories/2023-11-14_7310000000000000003.mp4", "7310000000000000003"),
+    ("reposts/2023-11-14_7320000000000000001.mp4", "7320000000000000001"),
+    ("reposts/2023-11-14_7320000000000000002_1.jpg", "7320000000000000002_1"),
+    ("reposts/2023-11-14_7320000000000000002_2.jpg", "7320000000000000002_2"),
+    ("favorites/2023-11-14_7330000000000000001.mp4", "7330000000000000001"),
+    ("liked/2023-11-14_7340000000000000001_1.jpg", "7340000000000000001_1"),
+]
+
+
+def pairs(saved):
+    return [(item.path, item.key) for item in saved]
+
+
+class NamesAndKeysTest(unittest.TestCase):
+    """Phase 6 rule: no history migrations, so every name and key is what `run(session)` gave for the same data."""
+
+    def test_a_single_post_from_the_embed_page(self):
+        for video_id, item in EMBEDS.items():
+            with self.subTest(video_id=video_id):
+                saved, _, _ = run(f"tik:{video_id}", pages={f"{API}/embed/v2/{video_id}": embed_page(item)})
+                self.assertEqual(pairs(saved), EMBED_PAIRS[video_id])
+
+    def test_a_profile_with_every_category_and_its_tabs(self):
+        saved, _, _ = run("tik:someone", feeds=FEEDS, html=TABS, options=Options(categories=("all",)))
+        # The old source saved the tabs in another order (favorites before liked); no id is in both.
+        self.assertEqual(sorted(pairs(saved)), sorted(PROFILE_PAIRS))
+        self.assertEqual(len({key for _, key in pairs(saved)}), len(PROFILE_PAIRS))
+
+    def test_the_formats_decide_the_dates_in_utc(self):
+        """Fix #15: 2026-01-01 23:30 UTC is 2026-01-01 on every machine, not 2026-01-02 in Kiritimati (UTC+14)."""
+        late = int(datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc).timestamp())
+        early = int(datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc).timestamp())
+        feeds = [(f"{API}/api/post/item_list/", {"hasMore": False, "itemList": [
+            video("1", f"{CDN}/a", createTime=late), video("2", f"{CDN}/b", createTime=str(early)),
+            video(str(late << 32), f"{CDN}/c")]})]
+        for zone in ("Pacific/Kiritimati", "America/Los_Angeles"):
+            with self.subTest(zone=zone), far_off_timezone(zone):
+                saved, _, _ = run("tik:someone", feeds=feeds, html=profile_page(), options=Options(categories=("videos",)))
+                self.assertEqual([item.path for item in saved], [
+                    "videos/2026-01-01_1.mp4", "videos/2026-01-01_2.mp4", f"videos/2026-01-01_{late << 32}.mp4"])
 
 
 class TikTokTest(unittest.TestCase):
     def test_single_video_from_the_embed_page(self):
         video_id = "7234567890123456789"
-        next_data = {"props": {"pageProps": {"itemStruct": {
-            "id": video_id, "createTime": 1700000000, "video": {"playAddr": "https://v.example/clip.mp4"}}}}}
-        page = f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script></html>'
-        session = FakeSession(Target("tik", "video", video_id), cookies={"sessionid": "s", "tt_chain_token": "t"},
-                              html={f"https://www.tiktok.com/embed/v2/{video_id}": page})
-        TikTok().run(session)
-        self.assertEqual(session.paths(), [f"videos/{DAY}_{video_id}.mp4"])
-        self.assertEqual(session.saved[0]["headers"], {"Referer": "https://www.tiktok.com/", "User-Agent": TIKTOK_UA,
-                                                       "Cookie": "tt_chain_token=t; sessionid=s"})
-        self.assertEqual(session.requests[0][2], {"timeout": 20.0, "follow_redirects": False})
+        item = video(video_id, "https://v.example/clip.mp4", createTime=1700000000)
+        saved, seen, _ = run(f"tik:{video_id}", pages={f"{API}/embed/v2/{video_id}": embed_page(item)},
+                             cookies={"sessionid": "s", "tt_chain_token": "t"})
+        self.assertEqual([item.path for item in saved], [f"videos/{DAY}_{video_id}.mp4"])
+        self.assertEqual(saved[0].post.headers, {"Referer": "https://www.tiktok.com/", "User-Agent": TIKTOK_UA,
+                                                 "Cookie": "tt_chain_token=t; sessionid=s"})
+        self.assertEqual(seen.requests[0][2]["timeout"], 20.0)
+        self.assertEqual(seen.requests[0][2]["follow_redirects"], False)
 
     def test_a_refused_embed_is_a_warning(self):
-        session = FakeSession(Target("tik", "video", "7234567890123456789"))
-        TikTok().run(session)
-        self.assertEqual(session.saved, [])
-        self.assertTrue(session.messages[0].startswith("! HTTP 404"))
+        saved, seen, _ = run("tik:7234567890123456789")
+        self.assertEqual(saved, [])
+        self.assertTrue(seen.messages[0].startswith("! HTTP 404"))
 
-    def test_profile_items_photos_stories_and_playlists(self):
-        items = {"hasMore": False, "itemList": [
-            {"id": "7300000000000000001", "createTime": 1700000000, "video": {"playAddr": "https://v/1.mp4"},
-             "playlist": {"name": "Trip"}},
-            {"id": "7300000000000000002", "createTime": 1700000000,
-             "imagePost": {"images": [{"imageURL": {"urlList": ["https://i/a.jpg"]}},
-                                      {"imageURL": {"urlList": ["https://i/b.jpg"]}}]}},
-        ]}
-        story = {"storyList": [{"id": "7300000000000000003", "createTime": 1700000000,
-                                "video": {"playAddr": "https://v/s.mp4"}}]}
+    def test_a_playlist_item_belongs_to_playlists_and_not_to_videos(self):
+        for category, albums in (("videos", False), ("playlists", True)):
+            with self.subTest(category=category):
+                saved, _, _ = run("tik:someone", feeds=FEEDS[:1], html=profile_page(),
+                                  options=Options(categories=(category,)))
+                self.assertEqual([item.path.startswith("albums/") for item in saved], [albums] * len(saved))
+                self.assertEqual(len(saved), 3 if albums else 6)
 
-        def scrolled(session):
-            session.respond("https://www.tiktok.com/api/post/item_list/?count=30", items)
-            session.respond("https://www.tiktok.com/api/user/story/?id=1", story)
-
-        session = FakeSession(Target("tik", "user", "someone"), on_scroll=scrolled)
-        TikTok().run(session)
-        stamp = DAY
-        self.assertEqual(session.paths(), [f"albums/Trip/{stamp}_7300000000000000001.mp4",
-                                           f"images/{stamp}_7300000000000000002_1.jpg",
-                                           f"images/{stamp}_7300000000000000002_2.jpg",
-                                           f"stories/{stamp}_7300000000000000003.mp4"])
-        self.assertEqual([item["category"] for item in session.saved], ["playlists", "videos", "videos", "stories"])
-        self.assertEqual(session.visited, ["https://www.tiktok.com/@someone"])
+    def test_the_posts_are_filed_by_categories_in_the_declared_order(self):
+        self.assertEqual(TikTok.categories, ("videos", "stories", "playlists", "reposts", "liked", "favorites", "profile"))
+        self.assertEqual(TikTok.single_kinds, ("video",))
 
     def test_an_unsolved_captcha_backs_off_and_reloads_until_it_is_gone(self):
-        class Challenged(FakeSession):
-            def challenged(self):
-                super().challenged()
-                if self.challenges == 2:
-                    self.page_html = "<body><p>feed</p></body>"
-
-        session = Challenged(Target("tik", "user", "someone"),
-                             page_html="<body><div id='captcha_container'>Drag the slider</div></body>")
-        TikTok().run(session)
-        self.assertEqual(session.challenges, 2)
-        self.assertEqual(session.visited, ["https://www.tiktok.com/@someone"] * 3)
+        captcha = "<body><div id='captcha_container'>Drag the slider</div></body>"
+        saved, seen, _ = run("tik:someone", html=lambda tab: captcha if len(tab.seen.back_offs) < 2 else "<body><p>feed</p></body>")
+        self.assertEqual(len(seen.back_offs), 2)
+        self.assertEqual(seen.visited, [PROFILE] * 3)
 
     def test_a_captcha_over_the_grid_is_waited_out_and_the_grid_read_again(self):
-        class Challenged(FakeSession):
-            def challenged(self):
-                super().challenged()
-                self.page_html = "<body><p>feed</p></body>"
+        feed = [(f"{API}/api/post/item_list/?count=30",
+                 {"hasMore": False, "itemList": [video("7300000000000000001", f"{CDN}/1.mp4", createTime=1700000000)]})]
 
-        def scrolled(session):
-            if session.challenges:
-                session.respond("https://www.tiktok.com/api/post/item_list/?count=30",
-                                {"hasMore": False, "itemList": [clip("7300000000000000001", "https://v/1.mp4")]})
-            else:
-                session.page_html = "<body><div id='captcha_container'>Drag the slider</div></body>"
+        class Walled(FakeTab):
+            """The grid is covered once the page has scrolled, and the feed comes only after the back-off."""
 
-        session = Challenged(Target("tik", "user", "someone"), on_scroll=scrolled, page_html="<body></body>")
-        TikTok().run(session)
-        self.assertEqual(session.challenges, 1)
-        self.assertEqual(session.paths(), [f"videos/{DAY}_7300000000000000001.mp4"])
+            def deliver(self):
+                if self.seen.back_offs:
+                    super().deliver()
+
+        seen = Seen()
+        tab = Walled(seen, feed, lambda tab: "<body><div id='captcha_container'>Drag the slider</div></body>"
+                     if tab.scrolls and not tab.seen.back_offs else "<body></body>")
+        with mock.patch.object(FakeSite, "page", property(lambda site: tab)):
+            saved = collect(TikTok, "tik:someone", seen=seen, options=Options(categories=("videos",)))
+        self.assertEqual(len(seen.back_offs), 1)
+        self.assertEqual([item.path for item in saved], [f"videos/{DAY}_7300000000000000001.mp4"])
 
     def test_captcha_words_in_scripts_are_not_a_captcha(self):
-        session = FakeSession(Target("tik", "user", "someone"),
-                              page_html="<body><script>var t = 'Verify to continue';</script><p>feed</p></body>")
-        TikTok().run(session)
-        self.assertEqual(session.challenges, 0)
+        _, seen, _ = run("tik:someone", html="<body><script>var t = 'Verify to continue';</script><p>feed</p></body>")
+        self.assertEqual(seen.back_offs, [])
 
     def test_walled_api_falls_back_to_page_links(self):
         video_id = "7234567890123456789"
-        next_data = {"props": {"pageProps": {"itemStruct": {
-            "id": video_id, "createTime": 1700000000, "video": {"playAddr": "https://v.example/clip.mp4"}}}}}
-        embed = f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script>'
-        session = FakeSession(Target("tik", "user", "someone"), html={f"https://www.tiktok.com/embed/v2/{video_id}": embed},
-                              page_html=f'<body><a href="/@someone/video/{video_id}">clip</a></body>')
-        TikTok().run(session)
-        self.assertEqual(session.paths(), [f"videos/{DAY}_{video_id}.mp4"])
+        item = video(video_id, "https://v.example/clip.mp4", createTime=1700000000)
+        saved, _, _ = run("tik:someone", html=f'<body><a href="/@someone/video/{video_id}">clip</a></body>',
+                          pages={f"{API}/embed/v2/{video_id}": embed_page(item)},
+                          options=Options(categories=("videos",)))
+        self.assertEqual([item.path for item in saved], [f"videos/{DAY}_{video_id}.mp4"])
 
     def test_profile_picture_and_tabs(self):
-        def scrolled(session):
-            session.respond("https://www.tiktok.com/api/post/item_list/?count=30",
-                            {"hasMore": False, "itemList": [clip("7300000000000000001", "https://v/1.mp4")]})
-            session.respond("https://www.tiktok.com/api/repost/item_list/?count=30",
-                            {"itemList": [clip("7300000000000000009", "https://v/9.mp4")]})
-
-        session = FakeSession(Target("tik", "user", "someone"), options=Options(categories=("all",)), on_scroll=scrolled,
-                              pages={PROFILE: profile_page("repost-tab", "liked-tab")})
-        TikTok().run(session)
-        self.assertEqual(session.paths(), ["profile/avatar_abc123.jpg", f"videos/{DAY}_7300000000000000001.mp4",
-                                           f"reposts/{DAY}_7300000000000000009.mp4"])
-        self.assertEqual([item["category"] for item in session.saved], ["profile", "videos", "reposts"])
-        self.assertIn("videos: 1 found; the profile lists 2", session.messages)
-        self.assertIn("favorites: not public on this account", session.messages)
-        self.assertIn("liked: nothing public on this account", session.messages)
-        self.assertIsNone(session.folder)
+        one = {"hasMore": False, "itemList": [video("7300000000000000001", f"{CDN}/1.mp4", createTime=1700000000)]}
+        feeds = [(f"{API}/api/post/item_list/?count=30", one), FEEDS[3]]
+        saved, seen, _ = run("tik:someone", feeds=feeds, html=profile_page("repost-tab", "liked-tab"),
+                             options=Options(categories=("all",)))
+        self.assertEqual([item.post.category for item in saved], ["videos", "reposts", "reposts", "reposts", "profile"])
+        self.assertEqual(saved[-1].path, "profile/avatar_abc123.jpg")
+        self.assertIn("videos: 1 found; the profile lists 2", seen.messages)
+        self.assertIn("favorites: not public on this account", seen.messages)
+        self.assertIn("liked: nothing public on this account", seen.messages)
 
     def test_tabs_not_asked_for_are_not_read(self):
-        session = FakeSession(Target("tik", "user", "someone"), options=Options(categories=("videos",)),
-                              pages={PROFILE: profile_page("repost-tab")})
-        TikTok().run(session)
-        self.assertFalse(any("public" in message for message in session.messages))
+        _, seen, _ = run("tik:someone", html=profile_page("repost-tab"), options=Options(categories=("videos",)))
+        self.assertFalse(any("public" in message for message in seen.messages))
+
+    def test_the_profile_is_opened_once_for_every_category(self):
+        _, seen, _ = run("tik:someone", feeds=FEEDS, html=TABS, options=Options(categories=("all",)))
+        self.assertEqual(seen.visited, [PROFILE])
 
     def test_the_best_video_address(self):
         self.assertEqual(best_video({"playAddr": {"urlList": ["https://v/a.mp4"]}}), "https://v/a.mp4")
@@ -245,16 +389,6 @@ class TikTokTest(unittest.TestCase):
         # The watermarked copy is never saved, even when it is all there is.
         self.assertIsNone(best_video({"downloadAddr": "https://v/wm.mp4"}))
         self.assertIsNone(best_video({"downloadAddr": {"urlList": ["https://v/wm.mp4"]}, "playAddr": ""}))
-
-    def test_dates_are_utc(self):
-        """Fix #15: 2026-01-01 23:30 UTC is 2026-01-01 on every machine, not 2026-01-02 in Kiritimati (UTC+14)."""
-        stamp = int(datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc).timestamp())
-        with far_off_timezone("Pacific/Kiritimati"):
-            self.assertEqual(posted_on({"createTime": stamp}, "1"), "2026-01-01")
-            self.assertEqual(posted_on({}, str(stamp << 32)), "2026-01-01")
-        stamp = int(datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc).timestamp())
-        with far_off_timezone("America/Los_Angeles"):
-            self.assertEqual(posted_on({"createTime": str(stamp)}, "1"), "2026-01-01")
 
 
 def rendition(url, width, height, bitrate, **extra):

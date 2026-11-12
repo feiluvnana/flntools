@@ -48,7 +48,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(Twitter.needs, ("auth_token",))
         self.assertEqual(Loibus.needs, ("access-token",))
         self.assertEqual((Twitter.user_agent, Twitter.stealth), (CHROME, False))
-        self.assertEqual((TikTok.user_agent, TikTok.browser_args), (TIKTOK_UA, ("--no-sandbox",)))
+        self.assertEqual(TikTok.user_agent, TIKTOK_UA)
         self.assertIsNone(Instagram.user_agent)
         for source in SOURCES.values():
             methods = ("browser", "qr", "phone") if source is Telegram else ("browser", "file")
