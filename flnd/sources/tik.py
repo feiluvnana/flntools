@@ -14,6 +14,9 @@ back empty while the profile counts videos), that list is read as before: the pr
 the browser, and its JSON responses are read while the page scrolls (`watch_responses`), with one
 warning. One video, by id or URL, is read from the public embed page, without a browser.
 
+2026-11-12: TikTok's WAF answers flnd's own client with a challenge page, and in-page fetches from /explore
+get the same, so a profile run falls back to the profile page and waits out its captcha.
+
     flnd download tik:example_creator --from videos,playlists
     flnd download https://www.tiktok.com/@example_creator/video/7301234567890123456
 

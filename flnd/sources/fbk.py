@@ -374,9 +374,13 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
             for rest in responses.arrived():
                 yield from posts(rest, profile.owner)
                 state = page_info(rest) or state
+            # A response whose connection has no next page isn't known to be the tab's own feed: the
+            # profile's Tiles feed (`ProfileCometTilesFeedPaginationQuery`, its intro photos) answers
+            # first on some loads, with `has_next_page` false, which is not the end of the posts. Keep
+            # scrolling; the real feed's page, or the end of the scroll, comes after it.
             if state[0]:
                 replay, cursor = captured, state[1]
-            break
+                break
     if replay is not None and cursor:
         refused = yield from replayed(site, replay, cursor, lambda line: posts(line, profile.owner))
         if refused:

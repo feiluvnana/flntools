@@ -270,6 +270,7 @@ JSON = {
     **info(PK["T1"], {"code": "T1", "taken_at": STAMP, "carousel_media": [
         image("https://cdn.example/t0.jpg"), image("https://cdn.example/t1.jpg")]}),
     f"{API}/feed/reels_media/": reels_media,
+    f"{API}/feed/user/42/story/": {"reel": {"id": "42", "items": REELS["42"]}, "status": "ok"},
 }
 PAGES = {
     f"{SITE}/someone/": embedded(PROFILE, HIGHLIGHTS),
@@ -476,8 +477,9 @@ class ProfileTest(unittest.TestCase):
         seen = Seen()
         read(options=Options(categories=("stories", "highlights", "profile")), seen=seen)
         self.assertEqual(seen.visited, [f"{SITE}/someone/"])
-        reels = [options["params"] for _, url, options in seen.requests]
-        self.assertEqual(reels, [[("reel_ids", "42")], [("reel_ids", "highlight:9001")]])
+        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests],
+                         ["/feed/user/42/story/", "/feed/reels_media/"])
+        self.assertEqual(seen.requests[1][2]["params"], [("reel_ids", "highlight:9001")])
 
     def test_a_profile_page_that_embeds_nothing_gives_its_user_and_highlights_by_its_own_calls(self):
         # 2026-11, live: the page's HTML holds neither the user nor the highlights; its GraphQL calls do.
@@ -486,8 +488,9 @@ class ProfileTest(unittest.TestCase):
         seen = Seen()
         read(options=Options(categories=("stories", "highlights")), pages=pages, watch=watch, seen=seen)
         self.assertEqual(seen.visited, [f"{SITE}/someone/"])
-        reels = [options["params"] for _, url, options in seen.requests]
-        self.assertEqual(reels, [[("reel_ids", "42")], [("reel_ids", "highlight:9001")]])
+        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests],
+                         ["/feed/user/42/story/", "/feed/reels_media/"])
+        self.assertEqual(seen.requests[1][2]["params"], [("reel_ids", "highlight:9001")])
 
     def test_highlights_are_asked_for_five_at_a_time(self):
         nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(7)]
@@ -496,15 +499,42 @@ class ProfileTest(unittest.TestCase):
         read(options=Options(categories=("highlights",)), pages=pages, seen=seen)
         self.assertEqual([len(options["params"]) for _, _, options in seen.requests], [5, 2])
 
-    def test_a_refused_reels_api_falls_back_to_the_story_page(self):
+    def test_a_refused_story_api_falls_back_to_the_story_page(self):
         seen = Seen()
-        refused = {**JSON, f"{API}/feed/reels_media/": FetchError("HTTP 400", status=400)}
+        refused = {**JSON, f"{API}/feed/user/42/story/": FetchError("HTTP 400", status=400)}
         saved = read(options=Options(categories=("stories",)), json=refused, seen=seen)
         self.assertEqual([item.path for item in saved], [f"stories/{DAY}_5001.jpg", "stories/5003.mp4"])
         self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/someone/"])
         # flnd's client was refused first, then the tab's call: one warning each.
         self.assertIn("! Instagram refused flnd's own client; sending its API calls from the page", seen.messages)
-        self.assertTrue(any(message.startswith("! stories: the reels API refused") for message in seen.messages))
+        self.assertTrue(any(message.startswith("! stories: the story API refused") for message in seen.messages))
+
+    def test_an_answer_that_is_not_a_reel_is_a_refusal_and_a_missing_reel_is_no_stories(self):
+        # 2026-11, live: the story endpoint can send the home page, which isn't JSON.
+        for answer in ("<html>home</html>", {"status": "ok"}):
+            with self.subTest(answer=answer):
+                seen = Seen()
+                saved = read(options=Options(categories=("stories",)), json={**JSON, f"{API}/feed/user/42/story/": answer},
+                             seen=seen)
+                self.assertEqual(len(saved), 2)
+                self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/someone/"])
+                self.assertEqual(len([m for m in seen.messages if m.startswith("! stories: the story API")]), 1)
+        seen = Seen()
+        saved = read(options=Options(categories=("stories",)), seen=seen,
+                     json={**JSON, f"{API}/feed/user/42/story/": {"reel": None, "status": "ok"}})
+        self.assertEqual(saved, [])
+        self.assertEqual(seen.visited, [f"{SITE}/someone/"])
+
+    def test_a_refused_reels_api_is_warned_of_once_and_not_asked_again(self):
+        nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(7)]
+        pages = {**PAGES, f"{SITE}/someone/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}}),
+                 **{f"{SITE}/stories/highlights/{n}/": "<html></html>" for n in range(7)}}
+        seen = Seen()
+        refused = {**JSON, f"{API}/feed/reels_media/": FetchError("HTTP 500", status=500)}
+        read(options=Options(categories=("highlights",)), pages=pages, json=refused, seen=seen)
+        # 7 highlights are two calls of 5 and 2; the second is never made.
+        self.assertEqual(len([url for _, url, _ in seen.requests if url.endswith("/reels_media/")]), 1)
+        self.assertEqual(len([m for m in seen.messages if m.startswith("! highlights: the reels API refused")]), 1)
 
     def test_a_throttled_response_backs_off_and_the_scroll_goes_on(self):
         seen = Seen()

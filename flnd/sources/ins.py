@@ -11,8 +11,10 @@ Everything is read with the saved cookies, API first and the page as the fallbac
      rule). Anything else (a reel, a carousel, a thumbnail) becomes a lazy post, dated by its `pk`, whose
      files come from `/api/v1/media/<pk>/info/` only once the engine knows the post is new and in
      `--time`. A post with no `pk` is read from its own page instead.
-  3. Stories and highlights come from `/api/v1/feed/reels_media/`, at most 5 reels a call, with the
-     story pages as the fallback. The profile page gives the user's id and the highlights.
+  3. Stories come from `/api/v1/feed/user/<id>/story/`, and highlights from `/api/v1/feed/reels_media/`
+     (at most 5 reels a call), each with the story pages as the fallback. An API that refuses (the
+     reels one answered HTTP 500 in 2026-11) is warned of once and not asked again that run. The
+     profile page gives the user's id and the highlights.
   4. Every throttle is waited out through `site.back_off`, never skipped: a 429, a body asking to
      "wait a few minutes" or saying `require_login`, and a page that lands on `/accounts/login/` or
      `/challenge/`. `/accounts/suspended/` is a hard stop (`LoginError`): the account itself is in
@@ -183,13 +185,13 @@ class Instagram(Source):
 
     @user.category(key="")
     def stories(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's active stories, from the reels API, else their page; their key is their path, as before routes."""
+        """The profile's active stories, from the user's story API, else their page; their key is their path, as before routes."""
         profile.describe(site)
-        reels = self.api.reels(site, [profile.id], "stories") if profile.id else None
-        if reels is None:
+        stories = self.api.stories(site, profile.id) if profile.id else None
+        if stories is None:
             yield from story_posts(site, f"{SITE}/stories/{profile.user}/", "stories")
             return
-        yield from reel_posts(site, reels.get(str(profile.id), []), "stories")
+        yield from reel_posts(site, stories, "stories")
 
     @user.category(key="")
     def highlights(self, site: Site, profile: Profile) -> Iterator[Post]:
@@ -231,6 +233,8 @@ class Api:
         self.claim = "0"
         # Whether the tab sends the calls (`fetch(in_page=True)`), once Instagram refused flnd's client.
         self.in_page = False
+        # The APIs Instagram refused this run, so a refusal is warned of once and never asked again.
+        self.refused: set[str] = set()
 
     def headers(self, cookies: Mapping[str, str]) -> dict[str, str]:
         """The headers Instagram's web client sends its API, as gallery-dl sends them.
@@ -317,12 +321,16 @@ class Api:
             Each reel's stories by its id; None, with a warning, when the API refused, so the story
             pages are read instead.
         """
+        if "reels" in self.refused:
+            return None
         try:
             data = self.get(site, f"{API}/feed/reels_media/", params=[("reel_ids", str(reel)) for reel in reel_ids])
         except FetchError as error:
+            self.refused.add("reels")
             site.warn("{what}: the reels API refused ({error}); reading the story pages", what=what, error=error)
             return None
         if not isinstance(data, dict):
+            self.refused.add("reels")
             site.warn("{what}: the reels API isn't there; reading the story pages", what=what)
             return None
         found: dict[str, list[dict]] = {}
@@ -330,6 +338,33 @@ class Api:
             if isinstance(reel, dict):
                 found[str(reel.get("id", ""))] = [item for item in reel.get("items") or [] if isinstance(item, dict)]
         return found
+
+    def stories(self, site: Site, user_id: Any) -> list[dict] | None:
+        """One user's active stories from `/api/v1/feed/user/<id>/story/`; None, with a warning, when the API refused.
+
+        Args:
+            site: the target's site.
+            user_id: the user's id.
+
+        Returns:
+            The reel's stories, none when the user has no active story; None when the API refused
+            or answered something that isn't a reel (2026-11: it can send the home page instead), so
+            the story pages are read. A refusal is remembered: later calls return None unasked.
+        """
+        if "story" in self.refused:
+            return None
+        try:
+            data = self.get(site, f"{API}/feed/user/{user_id}/story/")
+        except FetchError as error:
+            self.refused.add("story")
+            site.warn("stories: the story API refused ({error}); reading the story pages", error=error)
+            return None
+        # `reel` is null while the user has no story; an answer with no `reel` at all isn't this API's.
+        if not isinstance(data, dict) or "reel" not in data or not isinstance(data["reel"], (dict, type(None))):
+            self.refused.add("story")
+            site.warn("stories: the story API isn't there; reading the story pages")
+            return None
+        return [item for item in (data["reel"] or {}).get("items") or [] if isinstance(item, dict)]
 
     def _waited(self, site: Site, response: http.Response | None, *, refused: bool) -> bool:
         """Whether a call's answer was a throttle, now waited out, or a refusal that moved the calls into the tab.

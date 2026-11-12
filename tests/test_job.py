@@ -361,6 +361,8 @@ class SyncStopTest(JobCase):
         super().setUp()
         self.ids = [f"p{number}" for number in range(8)]
         self.listed, self.finished, self.fail_at = [], [], []
+        # Files of a post that has other than its one picture, by id.
+        self.files = {}
         test = self
 
         class Feed(Source):
@@ -378,7 +380,8 @@ class SyncStopTest(JobCase):
                         if post_id in test.fail_at:
                             raise FetchError("cut")
                         test.listed.append(post_id)
-                        yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, 1))
+                        files = test.files.get(post_id, [File(f"{CDN}/{post_id}.jpg")])
+                        yield Post(post_id, files, date=datetime.date(2026, 1, 1))
                 finally:
                     test.finished.append(True)
 
@@ -405,6 +408,18 @@ class SyncStopTest(JobCase):
         self.assertEqual(sorted(path.name for path in report.targets[0].written), ["2026-01-01_n1.jpg", "2026-01-01_n2.jpg"])
         # It stopped early, so the record is the earlier one, still there.
         self.assertIn("posts", self.record())
+
+    def test_posts_with_no_files_or_only_text_neither_count_nor_break_the_saved_run(self):
+        """A reply with nothing to save, between saved posts, must not reset the run of 5 (twt replies)."""
+        self.assertTrue(self.engine.download(["fed:example_user"]).ok)
+        text = File.text("note.txt", "a note")
+        # Saved posts with a no-file post and a text-only post between them: 5 saved still end it.
+        self.ids = ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4", "p5", "p6", "p7"]
+        self.files = {"none1": [], "none2": [], "text1": [text]}
+        self.listed.clear()
+        self.engine.sync(["fed:example_user"])
+        self.assertEqual(self.listed, ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4"])
+        self.assertEqual(self.finished[-1], True)
 
     def test_a_saved_run_shorter_than_5_does_not_stop_it(self):
         self.engine.download(["fed:example_user"])

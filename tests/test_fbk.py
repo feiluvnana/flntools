@@ -525,6 +525,24 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual((form["doc_id"], form["fb_dtsg"], form["lsd"]), ("9001", "dtsg", "lsd"))
         self.assertIn("posts: 4 files found", run.seen.messages)
 
+    def test_a_connection_with_no_next_page_scrolled_first_is_not_the_end_of_the_tab(self):
+        """2026-11, live: the profile's Tiles feed answers first with `has_next_page` false; the posts come after it."""
+        sent = []
+
+        def graphql(url, request):
+            sent.append(json.loads(dict(parse_qsl(request["data"]))["variables"])["cursor"])
+            return lines(photo("4"), info_line(""))
+
+        seen = Seen()
+        pages = {f"{SITE}/a": embedded(header(user_id="42"), photo("1", owner="42"))}
+        scrolls = {f"{SITE}/a": [[Sent(photo("2", owner="42"), timeline_request("tiles")),
+                                  Sent(info_line(""), timeline_request("tiles"))],
+                                 [Sent(photo("3", owner="42"), timeline_request()),
+                                  Sent(info_line("c3"), timeline_request())]]}
+        saved = read("fbk:a", pages=pages, scrolls=scrolls, seen=seen, categories=("posts",), html={GRAPHQL: graphql})
+        self.assertEqual(sent, ["c3"])
+        self.assertEqual([s.key for s in saved], ["1", "2", "3", "4"])
+
     def test_a_blocked_replay_is_waited_out_and_asked_again(self):
         run = self.replayed(['{"__dr": "CometErrorRoot.react"}'])
         self.assertEqual(run.sent, ["c2", "c2"])

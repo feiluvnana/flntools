@@ -21,7 +21,8 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
   posts come first and may be old: Instagram and TikTok pin up to 3, X up to 1.
 - **Saved-run stop** (A9 rule 3). Under `sync`, a `newest_first` category whose last listing
   reached its end (`targets.db`'s `complete`) ends after 5 posts in a row whose files were all
-  already saved: sync has caught up with that feed, and its generator is closed. Without that
+  already saved: sync has caught up with that feed, and its generator is closed. A post with
+  no file to save (none, or text only) neither counts nor breaks the run. Without that
   record, or under `download`, the listing goes to the end. A category ended this way isn't
   recorded again; its earlier record stands.
 - **Saved.** A file already on disk, or whose history row points at a file, is skipped, and so
@@ -164,7 +165,7 @@ def wanted(source: type[Source], route: Route, options: Options) -> tuple[Catego
 
 
 def posts(source: Source, site: Site, target: Target, options: Options, *, run_async: RunAsync,
-          ended: Callable[[str], None] | None = None, saved: Callable[[], bool] | None = None,
+          ended: Callable[[str], None] | None = None, saved: Callable[[], bool | None] | None = None,
           listed: Collection[str] = ()) -> Generator[Post, None, None]:
     """Every post the target's route and wanted categories yield that `--time` keeps, its `category` set.
 
@@ -300,8 +301,9 @@ class Job:
         self.folder = disk.target_folder(self.settings.home, target)
         self.skipped = 0
         # Whether the post `queue` last took had every file already saved (none queued), which
-        # `sync`'s saved-run stop counts.
-        self.caught_up = False
+        # `sync`'s saved-run stop counts; None for a post with no file to save (none, or text only),
+        # which neither counts nor breaks the run.
+        self.caught_up: bool | None = False
         self._categories = {category.name: category for route in self.source.routes for category in route.categories}
         self._pool: worker.Pool | None = None
         self._encodes: worker.Pool | None = None
@@ -374,7 +376,7 @@ class Job:
             except BaseException:
                 self._ended()
                 raise
-        self.caught_up = found > 0 and not fresh
+        self.caught_up = (not fresh) if found else (False if fresh else None)
         return True
 
     def wait(self, row: Any = None) -> None:
@@ -732,7 +734,7 @@ class _Refresh:
 
 
 def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range, run_async: RunAsync,
-          saved: Callable[[], bool] | None) -> Generator[Post, None, bool]:
+          saved: Callable[[], bool | None] | None) -> Generator[Post, None, bool]:
     """The posts a route or category yielded, its `category` set, that `--time` keeps; see the module.
 
     Its return value, read with `yield from`, is True when the method's posts ran out by
@@ -746,7 +748,8 @@ def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range, run_a
         time: `--time`.
         run_async: runs one step of an async generator, or a coroutine, on the source's loop.
         saved: asked after each post the caller has handled whether it was all saved already; 5 in
-            a row end the method (`sync`'s saved-run stop). None never stops at saved posts.
+            a row end the method (`sync`'s saved-run stop). It answers None for a post with no file
+            to save, which neither counts nor breaks the run. None never stops at saved posts.
     """
     if inspect.iscoroutine(yielded):
         yielded = run_async(yielded)
@@ -764,7 +767,9 @@ def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range, run_a
                 older = 0
                 yield post
                 if saved is not None:
-                    already = already + 1 if saved() else 0
+                    caught_up = saved()
+                    if caught_up is not None:
+                        already = already + 1 if caught_up else 0
                     if already >= SAVED_IN_A_ROW:
                         log.info("{category}: {count} saved posts in a row, caught up", category=category,
                                  count=already)
