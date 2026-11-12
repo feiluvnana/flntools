@@ -10,7 +10,8 @@ from test_engine import CDN, EngineCase, history, make_source, noise
 
 from flnd import sync
 from flnd.engine import Engine
-from flnd.session import Options, compress, video_format
+from flnd.compress import compress_file
+from flnd.session import Options, video_format
 from flnd.target import Target
 from shared import kv
 
@@ -52,7 +53,7 @@ class SyncCase(EngineCase):
 
     def sync(self, texts=(), steps=sync.STEPS, source=None, **overrides):
         engine = self.engine(source)
-        chosen = sync.plan(engine, list(texts), overrides)
+        chosen = sync.plan(engine, engine.resolve(list(texts)), overrides)
         if steps != ("info",):
             for target, options in chosen:
                 sync.record(self.home, [target], options)
@@ -94,7 +95,7 @@ class PlanTest(SyncCase):
         self.assertEqual((options.compress_image, options.compress_video, options.format_video),
                          ("small", "small", "h265"))
         self.sync(steps=("repair",), compress_video=None, format_video=None)
-        [(target, options)] = sync.plan(self.engine(), ["aaa:a"], {})
+        [(target, options)] = sync.plan(self.engine(), [Target("aaa", "user", "a")], {})
         self.assertEqual((options.compress_image, options.compress_video), ("small", None))
 
     def test_since_and_until_are_never_recorded(self):
@@ -124,6 +125,30 @@ class RepairTest(SyncCase):
         self.assertEqual((folder / "b.jpg").read_bytes(), whole)
         self.assertTrue(history(self.home)["aaa:a.jpg"]["path"].endswith("a.webp"))
         self.assertEqual((line.repaired, line.missing), (3, 0))
+
+    def test_repair_removes_every_temp_file_flnd_writes(self):
+        """Fix 13: each temporary file a download or `write` makes, left by a run killed before its rename, goes."""
+        import os
+
+        real_replace, left = os.replace, []
+
+        def killed_after(src, dst):
+            # The rename happens, then the part is put back, as a run killed at that point would leave it.
+            real_replace(src, dst)
+            Path(src).write_bytes(b"left over")
+            left.append(Path(src))
+
+        def run(session):
+            session.save(f"{CDN}/a.jpg", "a.jpg", category="posts")
+            session.folder = "post"
+            session.write("info.md", "# Title\n")
+
+        with mock.patch.object(os, "replace", killed_after):
+            self.download(source=make_source("aaa", run))
+        self.assertEqual(sorted(path.name.split(".")[1] for path in left), ["a", "info"])
+        self.sync(steps=("repair",), source=make_source("aaa", run))
+        self.assertEqual([path for path in left if path.exists()], [])
+        self.assertEqual(self.names(), ["a.jpg", "info.md"])
 
     def test_a_name_already_taken_is_reported_and_left(self):
         self.download()
@@ -216,7 +241,7 @@ class VideoFormatTest(unittest.TestCase):
 
         with mock.patch("shared.media.compress", fake), mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
             for name, value in (("a.mp4", "h265"), ("b.webm", "h265"), ("c.mp4", "vp9"), ("d.webm", "mkv:h265")):
-                compress(Path(name), "video", Options(compress_video="small", format_video=value))
+                compress_file(Path(name), "video", Options(compress_video="small", format_video=value), set())
         self.assertEqual(calls, [("a.mp4", None, "h265"), ("b.webm", "mp4", "h265"), ("c.mp4", "webm", "vp9"),
                                  ("d.webm", "mkv", "h265")])
 

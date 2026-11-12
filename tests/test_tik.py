@@ -1,16 +1,18 @@
 """TikTok: the profile's lists and tabs, the captcha, the picture, and one video from its embed page. No network."""
 
 import json
+import os
+import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fakes import FakeSession
 
 from flnd.session import Options
-from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
+from flnd.sources.tik import TIKTOK_UA, TikTok, best_video, posted_on
 from flnd.target import Target
 
-DAY = datetime.fromtimestamp(1700000000).strftime("%Y-%m-%d")
+DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")
 PROFILE = "https://www.tiktok.com/@someone"
 
 
@@ -149,6 +151,76 @@ class TikTokTest(unittest.TestCase):
                          "https://v/high.mp4")
         self.assertIsNone(best_video({}))
 
+    def test_best_video_is_the_largest_bitrate_file(self):
+        """Fix #16: the largest file of bitrateInfo wins over playAddr, by pixels and then by bitrate."""
+        video = {"playAddr": "https://v/play.mp4", "downloadAddr": "https://v/watermarked.mp4", "bitrateInfo": [
+            rendition("https://v/720.mp4", 720, 1280, 2_000_000),
+            rendition("https://v/1080-low.mp4", 1080, 1920, 1_000_000),
+            rendition("https://v/1080-high.mp4", 1080, 1920, 3_000_000),
+            rendition("https://v/540.mp4", 540, 960, 9_000_000),
+        ]}
+        self.assertEqual(best_video(video), "https://v/1080-high.mp4")
+
+    def test_best_video_skips_dash(self):
+        for dash in ({"Format": "dash"}, {"GearName": "adapt_1080_dash"}, {"UrlKey": "v0_bytevc1_1080p_dash"},
+                     {"manifest": "https://v/1080/manifest.mpd"}):
+            with self.subTest(dash=dash):
+                marks = dict(dash)
+                url = marks.pop("manifest", "https://v/1080.mp4")
+                video = {"bitrateInfo": [rendition("https://v/720.mp4", 720, 1280, 1),
+                                         rendition(url, 1080, 1920, 5, **marks)]}
+                self.assertEqual(best_video(video), "https://v/720.mp4")
+
+    def test_best_video_falls_back_to_play_addr_never_download_addr(self):
+        dash_only = [rendition("https://v/1080.mp4", 1080, 1920, 1, Format="dash")]
+        self.assertEqual(best_video({"playAddr": "https://v/play.mp4", "downloadAddr": "https://v/wm.mp4",
+                                     "bitrateInfo": dash_only}), "https://v/play.mp4")
+        self.assertEqual(best_video({"playAddr": {"urlList": ["https://v/play.mp4"]},
+                                     "bitrateInfo": [{"Bitrate": 1, "PlayAddr": {"UrlList": []}}]}),
+                         "https://v/play.mp4")
+        # The watermarked copy is never saved, even when it is all there is.
+        self.assertIsNone(best_video({"downloadAddr": "https://v/wm.mp4"}))
+        self.assertIsNone(best_video({"downloadAddr": {"urlList": ["https://v/wm.mp4"]}, "playAddr": ""}))
+
+    def test_dates_are_utc(self):
+        """Fix #15: 2026-01-01 23:30 UTC is 2026-01-01 on every machine, not 2026-01-02 in Kiritimati (UTC+14)."""
+        stamp = int(datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc).timestamp())
+        with far_off_timezone("Pacific/Kiritimati"):
+            self.assertEqual(posted_on({"createTime": stamp}, "1"), "2026-01-01")
+            self.assertEqual(posted_on({}, str(stamp << 32)), "2026-01-01")
+        stamp = int(datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc).timestamp())
+        with far_off_timezone("America/Los_Angeles"):
+            self.assertEqual(posted_on({"createTime": str(stamp)}, "1"), "2026-01-01")
+
+
+def rendition(url, width, height, bitrate, **extra):
+    """One bitrateInfo entry as TikTok's web API gives it; `extra` sets Format or GearName, or UrlKey."""
+    entry = {"Bitrate": bitrate, "GearName": f"normal_{width}_0", "Format": "mp4",
+             "PlayAddr": {"Width": width, "Height": height, "UrlKey": f"v0_h264_{width}p", "UrlList": [url]}}
+    if "UrlKey" in extra:
+        entry["PlayAddr"]["UrlKey"] = extra.pop("UrlKey")
+    return {**entry, **extra}
+
+
+class far_off_timezone:
+    """Sets the process's local timezone with TZ and tzset, where the platform has them (not Windows)."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        if not hasattr(time, "tzset"):
+            raise unittest.SkipTest("no time.tzset on this platform")
+        self.previous = os.environ.get("TZ")
+        os.environ["TZ"] = self.name
+        time.tzset()
+
+    def __exit__(self, *exc_info):
+        if self.previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self.previous
+        time.tzset()
 
 if __name__ == "__main__":
     unittest.main()

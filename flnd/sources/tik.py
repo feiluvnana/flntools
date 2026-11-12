@@ -22,7 +22,7 @@ Folder layout, under `.flnd/downloads/tik/<username>/`:
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, NamedTuple
 from urllib.parse import urlsplit
@@ -294,22 +294,65 @@ def posted_on(raw: Dict[str, Any], item_id: str) -> str:
     create_time = raw.get("createTime") or raw.get("create_time")
     if isinstance(create_time, str) and create_time.isdigit():
         create_time = int(create_time)
+    # UTC, as twt and tlg: a local day would name the same video differently, and put it on the
+    # other side of --since, on two machines (fix #15, 2026-11). 100000000 (1973) tells a real
+    # Unix time from a placeholder 0 or a small number.
     if isinstance(create_time, (int, float)) and create_time > 100000000:
-        return datetime.fromtimestamp(create_time).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(create_time, timezone.utc).strftime("%Y-%m-%d")
     stamp = int(item_id) >> 32 if item_id.isdigit() else 0
-    return datetime.fromtimestamp(stamp).strftime("%Y-%m-%d") if stamp > 100000000 else ""
+    return datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%d") if stamp > 100000000 else ""
 
 
 def best_video(video: Dict[str, Any]) -> str | None:
-    """The video's play address, or its download address, or else its highest-bitrate file."""
-    for key in ("playAddr", "downloadAddr"):
-        address = video.get(key)
-        if isinstance(address, dict):
-            address = (address.get("urlList") or [None])[0]
-        if address:
-            return address
-    bitrates = video.get("bitrateInfo") or []
-    if not bitrates:
-        return None
-    best = max(bitrates, key=lambda bitrate: bitrate.get("Bitrate", 0))
-    return (selector.select(best).jmespath("PlayAddr.UrlList").all or [None])[0]
+    """The URL of the video's best file: the largest MP4 of `bitrateInfo`, else `playAddr`.
+
+        url = best_video(item["video"])   # "https://v16-webapp.tiktok.com/…"
+
+    Args:
+        video: an item's `video` object from TikTok's web API.
+
+    Returns:
+        The URL of the `bitrateInfo` entry with the most pixels (width × height), then the highest
+        `Bitrate`, skipping DASH entries; else `playAddr`; else None, and the post has no video to save.
+
+    `downloadAddr` is never used, even when it is all there is: it is TikTok's copy with the
+    watermark and the closing card burnt in, so it isn't the post as published.
+
+    The ranking by pixels, with `playAddr` as the fallback and never `downloadAddr`, follows
+    gallery-dl. The DASH skip and the `Bitrate` tie-break are flnd's own (fix #16, 2026-11), and
+    `_is_dash`'s marks stay unconfirmed until a live check.
+    """
+    candidates = [(_pixels(entry), entry.get("Bitrate") or 0, urls[0]) for entry in video.get("bitrateInfo") or []
+                  if isinstance(entry, dict) and not _is_dash(entry)
+                  and (urls := selector.select(entry).jmespath("PlayAddr.UrlList").all)]
+    if candidates:
+        return max(candidates, key=lambda candidate: candidate[:2])[2]
+    address = video.get("playAddr")
+    if isinstance(address, dict):
+        address = (address.get("urlList") or [None])[0]
+    return address or None
+
+
+def _pixels(entry: Dict[str, Any]) -> int:
+    """A `bitrateInfo` entry's width × height, or 0 when TikTok leaves either out."""
+    size = entry.get("PlayAddr") or {}
+    # 2026-11: sizes come as numbers, but a string or null must only rank the file last, not fail the post.
+    try:
+        return int(size.get("Width") or 0) * int(size.get("Height") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_dash(entry: Dict[str, Any]) -> bool:
+    """Whether a `bitrateInfo` entry is a DASH stream (video only, or a manifest), not a whole MP4.
+
+    2026-11, unconfirmed until a live check: a DASH entry is taken to be marked by `Format` "dash",
+    "dash" in its `GearName` or `PlayAddr.UrlKey`, or a `.mpd` manifest URL. Neither gallery-dl nor
+    yt-dlp skips DASH entries today, so there was no known rule to copy, and all four marks are
+    checked to be safe: a DASH file saved as an MP4 would have no sound.
+    """
+    play = entry.get("PlayAddr") or {}
+    marks = (str(entry.get("Format") or ""), str(entry.get("GearName") or ""), str(play.get("UrlKey") or ""))
+    urls = play.get("UrlList") or []
+    return (any("dash" in mark.lower() for mark in marks)
+            or any(urlsplit(str(url)).path.lower().endswith(".mpd") for url in urls))

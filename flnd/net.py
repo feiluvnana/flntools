@@ -12,7 +12,6 @@ import os
 import random
 import threading
 import time
-import uuid
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
@@ -20,6 +19,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar, Union
 
 import httpx
 
+from flnd import files
+from flnd.files import NotMediaError
 from flnd.sources.base import FetchError, Wait
 from shared import fmt, log
 
@@ -179,10 +180,6 @@ class IncompleteError(Exception):
     """A body that ended before its Content-Length."""
 
 
-class NotMediaError(ValueError):
-    """A web page or JSON where a photo or video was expected: a login wall or an error page."""
-
-
 class RateLimited(Exception):
     """A 429: the source backs off, then sends the request again."""
 
@@ -211,17 +208,28 @@ def patiently(send: Callable[[], T], backoff: Backoff) -> T:
 
 
 def retrying(attempt: Callable[[], T], *, wait: Wait, retryable: tuple[type[BaseException], ...],
-             attempts: int = ATTEMPTS) -> T:
+             attempts: int = ATTEMPTS, final: tuple[type[BaseException], ...] = ()) -> T:
     """Call `attempt` until it returns, retrying `retryable` errors up to `attempts` tries in all.
 
         response = retrying(send, wait=1.0, retryable=(httpx.NetworkError,))
+
+    Args:
+        attempt: one try; what it returns is returned.
+        wait: the source's wait between tries, as `retry_wait` reads it.
+        retryable: the errors worth another try; any other error is raised at once.
+        attempts: how many tries in all before the last error is raised.
+        final: errors raised at once even when they are also `retryable`, because another try
+            would get the same answer, such as a login wall in place of a photo.
+
+    Raises:
+        The last error, once `attempts` tries have failed, or the first one not worth another try.
     """
     number = 1
     while True:
         try:
             return attempt()
         except retryable as error:
-            if number >= attempts:
+            if number >= attempts or isinstance(error, final):
                 raise
             if isinstance(error, RetryableStatus):
                 error.response.close()
@@ -273,29 +281,65 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
         net.download(http, ["https://a.example/f.7z", "https://b.example/f.7z"], Path("f.7z"), label="f.7z",
                      backoff=Backoff("loi"))
 
-    Each mirror gets three attempts. A failed mirror is logged, and the next one tried. A refusal
-    (a 4xx other than 429) on the last mirror is logged and gives None; any other failure there
-    is raised. The file appears under its name only once complete.
+    Args:
+        http: the source's client from `client`, which sends its cookies and signs its requests.
+        source: a URL, mirror URLs tried in order, or a `fetch(dest, progress)` function that
+            writes the file to `dest` and reports `progress(done, total)` in bytes.
+        dest: where the file goes; with `kind`, its extension may change to match the content.
+        label: the file's name on its progress bar and in log lines, such as "posts/a.jpg".
+        backoff: the source's `Backoff`, which every request waits on and every 429 pauses.
+        headers: extra headers for each URL request, such as a Referer; None sends only the client's.
+        wait: the source's wait between attempts, in seconds or as a function (see `retry_wait`).
+        size: the file's size in bytes when the source knows it, shown on the bar for a `fetch`
+            function; None when unknown, and then a `fetch`'s file with a `kind` is decoded to check it.
+        kind: "photo" or "video" to check the file is media and name it by its content; None saves
+            any file (an archive, a document) as it comes, under `dest`'s name.
+        audio: the URL of a separate audio stream (DASH), downloaded after the video and merged
+            into `dest` with it; None when the video has its own sound.
 
-    With `kind` ("photo" or "video"), the content decides the extension, a web page fails the
-    attempt, and a file whose size couldn't be verified must pass `media.check`. `audio` is the URL
-    of a separate audio stream (DASH), downloaded after the video and merged with it.
+    Returns:
+        The path written, which differs from `dest` when `kind` renamed it; None when the last
+        mirror refused the file (a 4xx other than 429), which is logged.
+
+    Raises:
+        NotMediaError: with `kind`, the last mirror sent a web page or JSON, such as a login wall.
+        media.UnsafeError: with `kind`, media refused the last mirror's file, such as a decompression bomb.
+        media.BrokenError: with `kind`, the last mirror's file still failed `media.check` after three tries.
+        IncompleteError: the last mirror's body still ended early after three tries.
+        httpx.HTTPError: the last mirror's connection still failed after three tries.
+        Exception: whatever the last mirror's `fetch` function raised after three tries.
+
+    Each mirror gets three attempts, and a 429 is waited out on the same mirror without costing
+    one. A failed mirror is logged with why, and the next one tried; only the last mirror's error
+    reaches the caller. The file appears under its name only once complete, and a failed attempt
+    leaves no `.part` behind. This makes network requests and can take minutes.
     """
+    from shared import media
+
+    # A cut-off body (IncompleteError, or a BrokenError from media.check) may come whole next time.
+    # A web page or a refused file is the same answer on every try, so it fails at once (fixes #9).
+    # `final` matters only for a `fetch` function, whose retryable is every Exception: a URL
+    # mirror never retries these two anyway, since neither is in its retryable list.
+    final = (NotMediaError, media.UnsafeError)
     mirrors: list[str | Fetch] = [source] if isinstance(source, str) or callable(source) else list(source)
     for number, mirror in enumerate(mirrors, start=1):
         retryable = (Exception,) if callable(mirror) else (*CONNECTION_ERRORS, RetryableStatus, IncompleteError,
-                                                           ValueError)
+                                                           media.BrokenError)
         try:
             save = partial(_save_once, http, mirror, dest, label, headers, size, backoff, kind, audio)
-            return retrying(partial(patiently, save, backoff), wait=wait, retryable=retryable)
+            return retrying(partial(patiently, save, backoff), wait=wait, retryable=retryable, final=final)
         except FetchError as error:
             if number == len(mirrors):
                 log.error("{label}: {error}", label=label, error=error)
                 return None
-        except Exception:
+            reason = error
+        except Exception as error:
+            # Any error of a mirror that isn't the last is worth trying the next mirror for; the last
+            # one's error is the caller's, which records the file as failed.
             if number == len(mirrors):
                 raise
-        log.warn("mirror {n} failed; trying next", n=number)
+            reason = error
+        log.warn("mirror {n} failed: {reason}; trying next", n=number, reason=reason)
     return None
 
 
@@ -321,10 +365,11 @@ def _base_transport() -> httpx.BaseTransport:
 def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
                headers: Mapping[str, str] | None, size: int | None, backoff: Backoff, kind: str | None,
                audio: str | None) -> Path:
+    """Download `mirror` (and `audio`) once into `.part` files, check it, and rename it onto `dest`."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Random part names, so two runs never write into each other's files.
-    part, sound, merged = (dest.with_name(f".{dest.name}.{uuid.uuid4().hex[:8]}{end}")
-                           for end in (".part", ".audio.part", f".merge{dest.suffix}"))
+    # Named `.<name>.<random>.part`, so two runs never write into each other's files, and whatever
+    # a killed run leaves is removed by `flnd sync`'s repair (fixes #13).
+    part, sound = files.part_for(dest), files.part_for(dest)
     try:
         with _Row(label) as row:
             if callable(mirror):
@@ -338,15 +383,21 @@ def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
                 row.caption("merging")
                 from shared import media
 
-                media.video.merge([part], audio=sound, dest=merged)
-                os.replace(merged, dest)
+                # The merge goes straight onto `dest`: media writes it through its own
+                # `.<name>.<random>.part` and renames it once complete, so it is atomic and matches
+                # PART_GLOB too, while ffmpeg still picks the container from `dest`'s real extension.
+                # media refuses to write over a file, so an empty one, which holds nothing and which
+                # the session would download again anyway, is removed first.
+                if dest.is_file() and dest.stat().st_size == 0:
+                    dest.unlink()
+                media.video.merge([part], audio=sound, dest=dest)
                 return dest
             if kind is not None:
                 dest = _as_media(part, dest, kind, known)
         os.replace(part, dest)
         return dest
     finally:
-        for path in (part, sound, merged):
+        for path in (part, sound):
             path.unlink(missing_ok=True)
 
 
@@ -361,7 +412,7 @@ def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Map
         total = int(length) if length.isdigit() else None
         row.start(total)
         written = 0
-        with _open_part(part) as file:
+        with files.open_new(part) as file:
             for chunk in response.iter_bytes(CHUNK_SIZE):
                 file.write(chunk)
                 written += len(chunk)
@@ -374,17 +425,12 @@ def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Map
 
 
 def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
-    """Where a downloaded photo or video goes, named by its content; a web page or a broken file raises."""
-    from shared import media
+    """Where a downloaded photo or video goes, named by its content; a web page or a broken file raises.
 
-    extension = media.sniff(part)
-    if extension in (".html", ".json"):
-        raise NotMediaError(f"got a web page instead of a {kind}")
-    if not known:
-        try:
-            media.check(part)
-        except (RuntimeError, ImportError) as error:
-            log.debug("{name}: not checked: {error}", name=dest.name, error=error)
+    A file whose size matched Content-Length (`known`) is only sniffed: decoding it would cost
+    time and catch nothing the size didn't. See `files.checked` for what raises.
+    """
+    extension = files.checked(part, kind, decode=not known)
     if extension is None or same_extension(extension, dest.suffix):
         return dest
     return dest.with_suffix(extension)
@@ -422,8 +468,3 @@ class _Row:
 
     def caption(self, text: str) -> None:
         self.bar.caption = text
-
-
-def _open_part(part: Path) -> Any:
-    # O_EXCL, so the part is always new; 0644, so the saved file is readable like any download.
-    return os.fdopen(os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb")

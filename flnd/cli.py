@@ -122,7 +122,7 @@ def download(
     log.info("Storage: {path}", path=(HOME / "downloads").resolve())
     total = engine.run(resolved, options)
     log.ok("Complete. {n} files", n=total)
-    return 0
+    return _status(engine)
 
 
 @app.command
@@ -168,12 +168,11 @@ def sync(
         if overrides.get(f"compress_{kind}") == "off":
             overrides.update({f"compress_{kind}": None, f"format_{kind}": None})
     engine = Engine(home=HOME, locale=locale, timezone=timezone)
+    # Resolved here once, for --from and the plan alike: a short link costs a HEAD request each time.
+    resolved = _resolve(engine, targets) if targets else []
     if categories is not None:
-        overrides["categories"] = _categories(categories, _resolve(engine, targets) if targets else [])
-    try:
-        chosen = syncing.plan(engine, targets, overrides)
-    except TargetError as error:
-        raise cli.UsageError(str(error)) from None
+        overrides["categories"] = _categories(categories, resolved)
+    chosen = syncing.plan(engine, resolved, overrides)
     for target, options in chosen:
         if problem := compress_problem(options):
             raise cli.UsageError(f"{target}: {problem}")
@@ -183,7 +182,18 @@ def sync(
     if "fetch" in steps:
         log.info("Storage: {path}", path=(HOME / "downloads").resolve())
     syncing.run(engine, chosen, steps)
-    return 0
+    return _status(engine)
+
+
+def _status(engine: Engine) -> int:
+    """The exit status of `download` and `sync`: 1 when a target failed, so a script can tell; 0 otherwise.
+
+        return _status(engine)
+
+    A rate-limit wait, a skipped file, or one file of a target that failed while the target went
+    on, isn't a failed target.
+    """
+    return 1 if engine.failed else 0
 
 
 def _resolve(engine: Engine, targets: list[str]) -> list:

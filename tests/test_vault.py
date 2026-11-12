@@ -65,18 +65,39 @@ class KeyTest(VaultCase):
         self.assertEqual(vault.key(self.home), secret)
         self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
 
-    def test_losing_the_race_reads_the_winner(self):
+    def test_key_is_created_where_hard_links_fail(self):
+        # Fix #2: FAT, exFAT and some network drives refuse os.link with a plain OSError.
+        with mock.patch.object(vault.os, "link", side_effect=OSError("operation not permitted")):
+            secret = vault.key(self.home)
+        self.assertEqual(len(secret), 32)
+        self.assertEqual(vault.key(self.home), secret)
+        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
+
+    def test_two_creators_end_with_one_key(self):
+        """Fix #2: the loser of the create race reads the winner's key, even while it is still short."""
         winner = os.urandom(32)
-        real_link = os.link
+        real_open = os.open
+        finish = threading.Timer(0.05, lambda: (self.home / "secret.key").write_bytes(winner))
 
-        def other_run_wins(source, target):
-            Path(target).write_bytes(winner)
-            raise FileExistsError(target)
+        def other_run_wins(path, flags, *args, **kwargs):
+            if Path(path).name == "secret.key" and flags & os.O_EXCL:
+                # The other run has created the file and written only part of its key so far.
+                (self.home / "secret.key").write_bytes(winner[:5])
+                finish.start()
+                raise FileExistsError(path)
+            return real_open(path, flags, *args, **kwargs)
 
-        with mock.patch.object(vault.os, "link", other_run_wins):
+        self.home.mkdir(parents=True)
+        with mock.patch.object(vault.os, "open", other_run_wins):
             self.assertEqual(vault.key(self.home), winner)
-        self.assertEqual(sorted(entry.name for entry in self.home.iterdir()), ["secret.key"])
-        self.assertIs(os.link, real_link)
+        finish.join()
+        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
+
+    def test_a_failed_write_leaves_no_key(self):
+        with mock.patch.object(vault.os, "fdopen", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                vault.key(self.home)
+        self.assertEqual(list(self.home.iterdir()), [])
 
     def test_many_threads_agree_on_one_key(self):
         keys = []
@@ -95,8 +116,22 @@ class KeyTest(VaultCase):
 
     def test_a_damaged_key_is_refused(self):
         self.home.mkdir(parents=True)
-        (self.home / "secret.key").write_bytes(b"")
-        with self.assertRaisesRegex(ValueError, "damaged: it should hold 32 bytes, not 0"):
+        for content in (b"", b"x" * 5, b"x" * 33):
+            with self.subTest(size=len(content)):
+                (self.home / "secret.key").write_bytes(content)
+                with mock.patch.object(vault, "KEY_WAIT", 0.05), \
+                        self.assertRaisesRegex(ValueError, f"damaged: it should hold 32 bytes, not {len(content)}"):
+                    vault.key(self.home)
+
+    def test_a_dangling_symlink_key_is_refused_in_time(self):
+        """A dangling link at secret.key can be neither read nor created, so it once spun forever at 100% CPU."""
+        self.home.mkdir(parents=True)
+        try:
+            (self.home / "secret.key").symlink_to(self.home / "missing.key")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks aren't supported here")
+        with mock.patch.object(vault, "KEY_WAIT", 0.05), \
+                self.assertRaisesRegex(ValueError, "damaged: it exists but can't be read.*delete it"):
             vault.key(self.home)
 
 

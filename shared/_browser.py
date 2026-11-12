@@ -66,22 +66,37 @@ def connect(*, profile: str | Path | None = None, cdp: str | None = None, headle
     missing Chromium raises `RuntimeError`. The browser keeps its own user agent, except that
     headless mode's "HeadlessChrome" is reported as "Chrome".
     """
-    launch_only = profile is not None or not headless or args or not stealth or locale or timezone
-    if cdp is not None and launch_only:
-        raise ValueError("connect(cdp=...) uses the running browser as it is: "
-                         "profile, headless, locale, timezone, args and stealth don't apply")
-    playwright = _start_playwright()
+    # A copy from installed_profile is claimed at once, so it is deleted however connect ends
+    # without a launched browser: the copy holds the profile's logins (Telegram Web's among them).
+    copy = Path(profile) if profile is not None and Path(profile) in _installed_copies else None
+    copied_from = _installed_copies.pop(copy) if copy is not None else None
+    launched = False
     try:
-        if cdp is None:
-            return _launch(playwright, profile, headless=headless, viewport=viewport, locale=locale,
-                           timezone=timezone, args=args, stealth=stealth)
-        remote = playwright.chromium.connect_over_cdp(cdp)
-        context = remote.contexts[0] if remote.contexts else remote.new_context()
-        # Closing a browser reached over CDP only disconnects; the context is the user's, so it stays open.
-        return Browser(context, close_steps=[remote.close, playwright.stop], headless=False, page_viewport=viewport)
-    except BaseException:
-        playwright.stop()
-        raise
+        launch_only = profile is not None or not headless or args or not stealth or locale or timezone
+        if cdp is not None and launch_only:
+            raise ValueError("connect(cdp=...) uses the running browser as it is: "
+                             "profile, headless, locale, timezone, args and stealth don't apply")
+        playwright = _start_playwright()
+        try:
+            if cdp is None:
+                started = _launch(playwright, profile, copied_from, headless=headless, viewport=viewport,
+                                  locale=locale, timezone=timezone, args=args, stealth=stealth)
+            else:
+                remote = playwright.chromium.connect_over_cdp(cdp)
+                context = remote.contexts[0] if remote.contexts else remote.new_context()
+                # Closing a browser reached over CDP only disconnects; the context is the user's, so it stays open.
+                started = Browser(context, close_steps=[remote.close, playwright.stop], headless=False,
+                                  page_viewport=viewport)
+            launched = True
+            return started
+        # Any exception, Ctrl-C included, stops Playwright's driver before it goes on up.
+        except BaseException:
+            playwright.stop()
+            raise
+    finally:
+        # Once launched, the Browser's close deletes the copy, after Chrome has stopped writing into it.
+        if copy is not None and not launched:
+            shutil.rmtree(copy, ignore_errors=True)
 
 
 def installed_profile(browser: str = "chrome", profile: str = "Default") -> Path:
@@ -97,11 +112,19 @@ def installed_profile(browser: str = "chrome", profile: str = "Default") -> Path
     root = Path.home() / PROFILE_ROOTS[sys.platform if sys.platform in ("darwin", "win32") else "linux"]
     if not (root / profile).is_dir():
         raise FileNotFoundError(f"no {browser} profile named {profile!r} in {root}")
+    # mkdtemp makes the folder with mode 0700, so on a shared machine no other user can read the
+    # copy, which holds the profile's logins. Windows ignores the mode; the user's temp folder is private there.
     copy = Path(tempfile.mkdtemp(prefix=f"shared-{browser}-"))
-    # Whatever its name, the copy holds the profile as Default, and connect opens Default.
-    shutil.copytree(root / profile, copy / "Default", ignore=SKIP_IN_PROFILE, ignore_dangling_symlinks=True)
-    if (root / "Local State").is_file():
-        shutil.copy2(root / "Local State", copy / "Local State")
+    try:
+        # Whatever its name, the copy holds the profile as Default, and connect opens Default.
+        shutil.copytree(root / profile, copy / "Default", ignore=SKIP_IN_PROFILE, ignore_dangling_symlinks=True)
+        if (root / "Local State").is_file():
+            shutil.copy2(root / "Local State", copy / "Local State")
+    # Any exception, Ctrl-C included, deletes the half-made copy before it goes on up: it isn't in
+    # _installed_copies yet, so nothing else would delete it, and it may already hold the profile's logins.
+    except BaseException:
+        shutil.rmtree(copy, ignore_errors=True)
+        raise
     _installed_copies[copy] = browser
     return copy
 
@@ -423,24 +446,24 @@ def _start_playwright() -> Playwright:
     return sync_playwright().start()
 
 
-def _launch(playwright: Playwright, profile: str | Path | None, *, headless: bool, viewport: tuple[int, int],
-            locale: str | None, timezone: str | None, args: Sequence[str], stealth: bool) -> Browser:
+def _launch(playwright: Playwright, profile: str | Path | None, copied_from: str | None, *, headless: bool,
+            viewport: tuple[int, int], locale: str | None, timezone: str | None, args: Sequence[str],
+            stealth: bool) -> Browser:
+    """Launch a browser for `connect`; `copied_from` is the browser an `installed_profile` copy came from.
+
+    `connect` deletes the copy when this raises; on success, the Browser's close deletes it.
+    """
     launch_options: dict[str, Any] = {"headless": headless, "args": [*LAUNCH_ARGS, *args]}
     context_options: dict[str, Any] = {"viewport": {"width": viewport[0], "height": viewport[1]}}
     if locale is not None:
         context_options["locale"] = locale
     if timezone is not None:
         context_options["timezone_id"] = timezone
-    copy = Path(profile) if profile is not None and Path(profile) in _installed_copies else None
-    channels = (CHANNELS[_installed_copies.pop(copy)],) if copy is not None else LAUNCH_CHANNELS
+    copy = Path(profile) if profile is not None and copied_from is not None else None
+    channels = (CHANNELS[copied_from],) if copied_from is not None else LAUNCH_CHANNELS
     if copy is not None:
         launch_options["args"].append("--profile-directory=Default")
-    try:
-        context, close_steps = _start_context(playwright, profile, channels, launch_options, context_options)
-    except BaseException:
-        if copy is not None:
-            shutil.rmtree(copy, ignore_errors=True)
-        raise
+    context, close_steps = _start_context(playwright, profile, channels, launch_options, context_options)
     if stealth:
         context.add_init_script(HIDE_WEBDRIVER)
     if copy is not None:

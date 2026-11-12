@@ -50,6 +50,9 @@ class Engine:
                  sources: Mapping[str, type[Source]] = SOURCES):
         self.home, self.limit, self.headless = home, limit, headless
         self.locale, self.timezone, self.sources = locale, timezone, sources
+        # Every target that ended at error, over all of this engine's runs: `flnd sync` runs one per
+        # settings group, and the command's exit status covers them all.
+        self.failed: list[Target] = []
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
         """Every target as its source reads it, stopping at the first bad one with `TargetError`.
@@ -65,9 +68,19 @@ class Engine:
         """Download every target, and return how many files were written.
 
             engine.run(engine.resolve(["ins:example_user"]), Options(categories=("reels",), unpack=True))
+            exit_status = 1 if engine.failed else 0
 
-        Each target ends its row at ok or error; one failing never stops the others. A rate limit
-        is waited out, however long it takes; Ctrl-C ends the wait.
+        Args:
+            targets: the targets to download, as `resolve` gives them.
+            options: what to take from each target and what to do with the files.
+
+        Returns:
+            How many files were written; one skipped as already saved or filtered out isn't counted.
+
+        Each target ends its row at ok or error; one failing never stops the others, and is added to
+        `failed`. A whole source that can't start (its `logged_in` or `connect` raises) fails each of
+        its targets. A rate limit is waited out, however long it takes, and isn't a failure; Ctrl-C
+        ends the wait.
         """
         groups: dict[str, list[Target]] = {}
         for target in targets:
@@ -81,8 +94,16 @@ class Engine:
             for result in worker.race(partial(_run_group, settings), work, concurrency=max(len(work), 1)):
                 if result.ok:
                     total += result.value or 0
-                else:
-                    log.error("{source}: {error}", source=result.item[0].code, error=result.error)
+                    continue
+                # The whole group stopped before or between its targets: the targets it never reached
+                # failed too, or `log.multi` would end their rows at ok.
+                source, group_rows = result.item
+                log.error("{source}: {error}", source=source.code, error=result.error)
+                for _, row in group_rows:
+                    if not row.finished:
+                        row.caption = str(result.error)
+                        row.fail()
+        self.failed += [target for _, group_rows in work for target, row in group_rows if row.outcome == "error"]
         return total
 
     def login(self, source: Source, method: str) -> None:

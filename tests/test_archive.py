@@ -263,6 +263,22 @@ class SafetyTest(ArchiveCase):
                 self.assert_refused(archive.UnsafeError, tarred)
                 self.assertFalse((self.root / "evil.txt").exists())
 
+    def test_ntfs_streams_and_reserved_names_are_refused(self):
+        """Fix #3: `a:b` writes NTFS stream `b` of file `a`, and Windows' device names can't be files."""
+        for name in ("x/a:b", "a:b", "NUL", "dir/com1.txt", "Lpt9", "con.txt", "aux/x.txt", "x/prn", "nul.tar.gz"):
+            with self.subTest(name=name):
+                zipped = zip_with(self.root / "reserved.zip", {"ok.txt": b"ok", name: b"x"})
+                self.assert_refused(archive.UnsafeError, zipped)
+                tarred = tar_with(self.root / "reserved.tar", [("ok.txt", tarfile.REGTYPE, b""), (name, tarfile.REGTYPE, b"")])
+                self.assert_refused(archive.UnsafeError, tarred)
+
+    def test_names_like_reserved_ones_are_allowed(self):
+        for name in ("console", "com10", "nul_x", "lpt0.txt", "dir/connect.txt", "auxiliary/x"):
+            with self.subTest(name=name):
+                shutil.rmtree(self.out, ignore_errors=True)
+                zipped = zip_with(self.root / "fine.zip", {name: b"x"})
+                self.assertEqual(archive.unzip(zipped, self.out), [self.out / name])
+
     def test_links_are_always_refused(self):
         linked = zip_with(self.root / "link.zip", {"ok.txt": b"ok", "inside": b"ok.txt"}, mode=stat.S_IFLNK | 0o777)
         self.assert_refused(archive.UnsafeError, linked)

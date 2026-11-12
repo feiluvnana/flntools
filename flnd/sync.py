@@ -15,9 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Mapping, MutableMapping, Sequence
 
-from flnd import net
+from flnd import files, net
+from flnd.compress import compress_file
 from flnd.engine import HISTORY_FILE, HISTORY_TABLE, Engine
-from flnd.session import PHOTO, VIDEO, Options, compress, media_kind
+from flnd.session import PHOTO, VIDEO, Options, media_kind
 from flnd.target import Target, TargetError
 from shared import fmt, kv, log
 
@@ -46,7 +47,22 @@ class Line:
 
 
 def record(home: Path, targets: Sequence[Target], options: Options) -> None:
-    """Save each target's settings in `targets.db`, keyed `<code>:<value>`, replacing what was there."""
+    """Save each target's settings in `targets.db`, keyed `<code>:<value>`, replacing what was there.
+
+        sync.record(Path(".flnd"), engine.resolve(["ins:example_user"]), Options(compress_video="small"))
+
+    Args:
+        home: flnd's folder, `.flnd`, which holds `targets.db`; the file is created when missing.
+        targets: the targets just downloaded, as `Engine.resolve` gives them.
+        options: the run's options; only the `SETTINGS` fields are kept, since `--since` and
+            `--until` describe one run, not the target.
+
+    Raises:
+        OSError: `targets.db` can't be created or written.
+
+    Each row also keeps the target's kind, so `plan` can rebuild it without resolving it again,
+    and the time it was recorded, in UTC.
+    """
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     with kv.open(home / TARGETS_FILE, table=TARGETS_TABLE) as saved:
         for target in targets:
@@ -54,19 +70,25 @@ def record(home: Path, targets: Sequence[Target], options: Options) -> None:
                 "kind": target.kind, **{name: getattr(options, name) for name in SETTINGS}, "at": now}
 
 
-def plan(engine: Engine, texts: Sequence[str], overrides: Mapping[str, Any]) -> list[tuple[Target, Options]]:
+def plan(engine: Engine, targets: Sequence[Target], overrides: Mapping[str, Any]) -> list[tuple[Target, Options]]:
     """Each target to sync, with its recorded settings and `overrides` on top.
 
-    With no `texts`, every recorded target and every unrecorded folder under `downloads/<code>/`;
-    otherwise those targets, resolved as `flnd download` does (raising `TargetError`).
+        chosen = sync.plan(engine, engine.resolve(["ins:example_user"]), {"zip": True})
+
+    Args:
+        engine: the engine whose home holds `targets.db` and `downloads/`, and whose sources count.
+        targets: only these, already resolved, so a short link isn't followed a second time; when
+            empty, every recorded target and every unrecorded folder under `downloads/<code>/`.
+        overrides: settings, by `Options` field name, that replace the recorded ones.
+
+    Returns:
+        (target, options) for each target, in the order given or recorded.
     """
     rows: dict[str, Any] = {}
     if (engine.home / TARGETS_FILE).is_file():
         with kv.open(engine.home / TARGETS_FILE, table=TARGETS_TABLE) as saved:
             rows = dict(saved.items())
-    if texts:
-        targets = engine.resolve(texts)
-    else:
+    if not targets:
         targets = [Target(code, row["kind"], value) for key, row in rows.items()
                    for code, value in [key.split(":", 1)] if code in engine.sources]
         targets += list(_unrecorded(engine, targets))
@@ -76,7 +98,26 @@ def plan(engine: Engine, texts: Sequence[str], overrides: Mapping[str, Any]) -> 
 def run(engine: Engine, chosen: Sequence[tuple[Target, Options]], steps: Sequence[str]) -> list[Line]:
     """Run the `steps` over every chosen target, each step for every target before the next, and sum up.
 
+        lines = sync.run(engine, sync.plan(engine, [], {}), ("repair", "fetch"))
+
+    Args:
+        engine: the engine whose home holds the downloads and their history; its `failed` lists
+            the targets whose fetch failed.
+        chosen: (target, options) for each target, as `plan` gives them.
+        steps: which of `STEPS` to run, in `STEPS`' order whatever the order given: "repair"
+            removes leftover parts and broken files, "fetch" downloads what is new or was lost,
+            "compress" compresses what the options want, and "info" prints the summary table.
+
+    Returns:
+        One `Line` per chosen target, in the same order, counting what its folder holds after
+        the sync, whichever steps ran.
+
+    Raises:
+        OSError: the history can't be opened or written.
+
     The fetch runs targets with the same settings together, so different sources run at once.
+    It makes network requests and can take hours; repair deletes broken files, which can't be
+    undone, and compress replaces originals with their smaller copies.
     """
     lines = [Line(str(target)) for target, _ in chosen]
     folders = [_folder(engine.home, target) for target, _ in chosen]
@@ -92,9 +133,11 @@ def run(engine: Engine, chosen: Sequence[tuple[Target, Options]], steps: Sequenc
             engine.run(targets, options)
     with _history(engine.home) as history:
         videos = {"on": True}
+        # The kinds of compress error already warned of, for the whole compress step.
+        warned: set[type[Exception]] = set()
         for (_, options), line, folder in zip(chosen, lines, folders):
             if "compress" in steps:
-                _compress(history, folder, options, line, videos)
+                _compress(history, folder, options, line, videos, warned)
             _tally(history, folder, line)
     if "info" in steps:
         _summary(lines)
@@ -136,10 +179,12 @@ def _rows(history: MutableMapping[str, Any], folder: Path) -> list[tuple[str, di
 
 
 def _repair(history: MutableMapping[str, Any], folder: Path, line: Line) -> None:
+    """Remove leftover parts, forget files that are gone or broken, and rename files to match their content."""
     from shared import media
 
-    # Parts an interrupted run left behind; nothing else is downloading into the folder yet.
-    for stale in folder.rglob(".*.part") if folder.is_dir() else ():
+    # Parts an interrupted run left behind; nothing else is downloading into the folder yet. Every
+    # temporary file flnd writes matches PART_GLOB (`files.part_for`), so this finds them all.
+    for stale in folder.rglob(files.PART_GLOB) if folder.is_dir() else ():
         stale.unlink(missing_ok=True)
     rows = _rows(history, folder)
     with log.progress(f"repair {line.target}", total=len(rows)) as bar:
@@ -149,10 +194,21 @@ def _repair(history: MutableMapping[str, Any], folder: Path, line: Line) -> None
             if not path.is_file():
                 line.lost[key] = path.name
                 continue
-            if media_kind(path.name) is None:
+            kind = media_kind(path.name)
+            if kind is None:
                 continue
-            extension = media.sniff(path)
-            if extension in (".html", ".json") or _broken(path):
+            # The same check a download passes, so a file kept here would have been kept then.
+            try:
+                extension, broken = files.checked(path, kind), False
+            except (files.NotMediaError, media.BrokenError):
+                extension, broken = None, True
+            except media.UnsafeError as error:
+                # A file media refuses to open isn't known to be broken, so it is kept, and still
+                # named by its first bytes. Files that can't be checked here (no ffmpeg) are kept by
+                # `files.checked` itself.
+                log.debug("{name}: not checked: {error}", name=path.name, error=error)
+                extension, broken = media.sniff(path), False
+            if broken:
                 path.unlink()
                 del history[key]
                 line.lost[key] = path.name
@@ -168,21 +224,12 @@ def _repair(history: MutableMapping[str, Any], folder: Path, line: Line) -> None
                 line.repaired += 1
 
 
-def _broken(path: Path) -> bool:
-    from shared import media
-
-    try:
-        media.check(path)
-    except media.BrokenError:
-        return True
-    except (media.UnsafeError, RuntimeError, ImportError, TimeoutError) as error:
-        # Refused, or not checkable here (no ffmpeg): not known to be broken, so it is kept.
-        log.debug("{name}: not checked: {error}", name=path.name, error=error)
-    return False
-
-
 def _compress(history: MutableMapping[str, Any], folder: Path, options: Options, line: Line,
-              videos: dict[str, bool]) -> None:
+              videos: dict[str, bool], warned: set[type[Exception]]) -> None:
+    """Compress the target's files that the options want compressed and that aren't yet, recording each.
+
+    Once one file can't be compressed on this machine at all, no more videos are tried this run.
+    """
     wanted = {PHOTO: options.compress_image, VIDEO: options.compress_video}
     todo = [(key, row, kind) for key, row in _rows(history, folder)
             if "compressed" not in row and (kind := media_kind(row["path"])) and wanted[kind]
@@ -194,11 +241,12 @@ def _compress(history: MutableMapping[str, Any], folder: Path, options: Options,
             bar.advance()
             if kind == VIDEO and not videos["on"]:
                 continue
-            try:
-                fields = compress(Path(row["path"]), kind, options)
-            except RuntimeError as error:
+            fields = compress_file(Path(row["path"]), kind, options, warned)
+            if fields is None:
+                # No ffmpeg, encoder or extra here; compress_file has said which. Photos go on.
+                if videos["on"]:
+                    log.warn("video compression stops for this run")
                 videos["on"] = False
-                log.warn("video compression stops for this run: {error}", error=error)
                 continue
             history[key] = {**row, **fields}
 
@@ -218,11 +266,11 @@ def _tally(history: MutableMapping[str, Any], folder: Path, line: Line) -> None:
         else:
             log.warn("{target}: {name} is missing; its post may be gone", target=line.target, name=name)
     line.missing = len(gone)
-    files = [path for path in folder.rglob("*") if path.is_file() and not path.name.startswith(".")] \
+    on_disk = [path for path in folder.rglob("*") if path.is_file() and not path.name.startswith(".")] \
         if folder.is_dir() else []
-    kinds = [media_kind(path.name) for path in files]
-    line.files, line.photos, line.videos = len(files), kinds.count(PHOTO), kinds.count(VIDEO)
-    line.size = sum(path.stat().st_size for path in files)
+    kinds = [media_kind(path.name) for path in on_disk]
+    line.files, line.photos, line.videos = len(on_disk), kinds.count(PHOTO), kinds.count(VIDEO)
+    line.size = sum(path.stat().st_size for path in on_disk)
     line.saved = sum(row["original_size"] - row["size"] for _, row in rows
                      if row.get("compressed") not in (None, "none") and "original_size" in row)
 

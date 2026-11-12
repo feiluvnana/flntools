@@ -1,6 +1,8 @@
 """flnd/net.py: retries, signing, backing off, mirrors and atomic downloads, on httpx.MockTransport."""
 
+import fnmatch
 import io
+import os
 import stat
 import tempfile
 import unittest
@@ -11,7 +13,7 @@ import httpx
 
 from media_samples import needs_ffmpeg, needs_pillow, sample
 
-from flnd import net
+from flnd import files, net
 from flnd.sources.base import FetchError
 from shared import media, theme
 from shared._theme import Screen
@@ -265,7 +267,43 @@ class DownloadTest(NetCase):
         with self.client(httpx.Response(404), httpx.Response(200, content=b"7z")) as http:
             self.assertTrue(self.download(http, ["https://a.example/f.7z", "https://b.example/f.7z"], "f.7z"))
         self.assertEqual([request.url.host for request in self.requests], ["a.example", "b.example"])
-        self.assertIn("! mirror 1 failed; trying next", self.lines())
+        self.assertIn("! mirror 1 failed: HTTP 404 for https://a.example/f.7z; trying next", self.lines())
+
+    def test_a_failed_mirror_logs_why(self):
+        """Fix 9: the warning names the reason, not only the mirror's number."""
+        with self.client(httpx.ConnectError("refused"), httpx.ConnectError("refused"), httpx.ConnectError("refused"),
+                         httpx.Response(200, content=b"7z")) as http:
+            self.assertTrue(self.download(http, ["https://a.example/f.7z", "https://b.example/f.7z"], "f.7z"))
+        self.assertIn("! mirror 1 failed: refused; trying next", self.lines())
+
+    def test_an_incomplete_body_is_still_retried(self):
+        """Fix 9: only a page that isn't media fails at once; a cut-off body costs three attempts as before."""
+        short = httpx.Response(200, headers={"content-length": "10"}, content=b"12345")
+        with self.client(short) as http, self.assertRaises(net.IncompleteError):
+            self.download(http, "https://cdn.example/a.jpg")
+        self.assertEqual(len(self.requests), 3)
+        self.assertEqual(list((self.tmp / "posts").iterdir()), [])
+
+    def test_open_part_passes_o_binary(self):
+        """Fix 1: without O_BINARY, Windows opens the part in text mode and writes every \\n byte as \\r\\n.
+
+        `os.O_BINARY` exists only on Windows, so it is patched in here, and the spy strips the bit
+        before the real `os.open` sees it, so the test runs on every platform.
+        """
+        body = b"line\nnext\r\n\n\x00\x1aend\n"
+        binary, real_open, created = 0x8000, os.open, []
+
+        def spy(path, flags, mode=0o777, *args, **kwargs):
+            if flags & os.O_CREAT:
+                created.append(flags)
+            return real_open(path, flags & ~binary, mode, *args, **kwargs)
+
+        with self.client(httpx.Response(200, content=body)) as http, \
+                mock.patch.object(os, "O_BINARY", binary, create=True), mock.patch.object(os, "open", spy):
+            self.assertTrue(self.download(http, "https://cdn.example/a.bin", "a.bin"))
+        self.assertEqual((self.tmp / "posts" / "a.bin").read_bytes(), body)
+        self.assertTrue(created)
+        self.assertTrue(all(flags & binary for flags in created), created)
 
     def test_a_fetch_function_with_progress(self):
         def fetch(dest, progress):
@@ -278,6 +316,17 @@ class DownloadTest(NetCase):
         self.assertEqual(self.requests, [])
         self.assertEqual(self.lines(), ["✓ posts/m.mp4 ━━━━━━━━━━━━━━━━━━━━ 5.0 B/5.0 B"])
 
+    def test_a_fetch_function_that_gets_a_web_page_is_called_once(self):
+        """Fix 9: a fetch function retries every Exception, so `final` is what stops a login wall costing three tries."""
+        for error in (files.NotMediaError("got a web page instead of a photo"), media.UnsafeError("too many pixels")):
+            with self.subTest(error=type(error).__name__):
+                fetch = mock.Mock(side_effect=error)
+                with self.client(httpx.Response(200)) as http, self.assertRaises(type(error)):
+                    self.download(http, fetch, "m.mp4")
+                fetch.assert_called_once()
+                self.assertEqual(self.sleeps, [])
+                self.assertEqual(list((self.tmp / "posts").iterdir()), [])
+
     def test_a_429_on_a_download_pauses_and_retries(self):
         with self.client(httpx.Response(429), httpx.Response(200, content=b"ok")) as http:
             self.assertTrue(self.download(http, "https://cdn.example/a.jpg"))
@@ -287,7 +336,7 @@ class DownloadTest(NetCase):
         with self.client(httpx.Response(429), httpx.Response(429), httpx.Response(200, content=b"ok")) as http:
             self.assertTrue(self.download(http, ["https://a.example/f", "https://b.example/f"]))
         self.assertEqual({request.url.host for request in self.requests}, {"a.example"})
-        self.assertNotIn("! mirror 1 failed; trying next", self.lines())
+        self.assertFalse(any("mirror 1 failed" in line for line in self.lines()))
 
 
 def photo(format, size=(32, 24)):
@@ -324,13 +373,30 @@ class MediaDownloadTest(NetCase):
         with self.client(httpx.Response(200, content=sample("v.mp4").read_bytes())) as http:
             self.assertEqual(self.download(http, "https://cdn.example/v.mp4", "v.mp4", kind="video").name, "v.mp4")
 
-    def test_a_web_page_is_retried_then_fails_and_nothing_is_saved(self):
+    def test_a_web_page_is_requested_once_and_nothing_is_saved(self):
+        """Fix 9: a login wall is the same page on every attempt, so it fails at once instead of three times."""
         page = httpx.Response(200, content=b"<!doctype html><title>Log in</title>")
-        with self.client(page) as http, self.assertRaises(ValueError) as caught:
+        with self.client(page) as http, self.assertRaises(net.NotMediaError) as caught:
             self.download(http, "https://cdn.example/a.jpg", kind="photo")
         self.assertEqual(str(caught.exception), "got a web page instead of a photo")
-        self.assertEqual(len(self.requests), 3)
+        self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.names(), [])
+
+    def test_an_unsafe_file_is_requested_once(self):
+        """Fix 9: a file media refuses (a decompression bomb) is refused again on every attempt."""
+        body = photo("JPEG")
+        with self.client(*(chunked(body) for _ in range(3))) as http, self.assertRaises(media.UnsafeError), \
+                mock.patch("shared.media.check", side_effect=media.UnsafeError("too many pixels")):
+            self.download(http, "https://cdn.example/a.jpg", kind="photo")
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.names(), [])
+
+    def test_a_web_page_on_a_mirror_is_logged_with_why(self):
+        page = httpx.Response(200, content=b"<!doctype html><title>Log in</title>")
+        with self.client(page, httpx.Response(200, content=photo("JPEG"))) as http:
+            self.assertTrue(self.download(http, ["https://a.example/a.jpg", "https://b.example/a.jpg"], kind="photo"))
+        self.assertEqual(len(self.requests), 2)
+        self.assertIn("! mirror 1 failed: got a web page instead of a photo; trying next", self.lines())
 
     def test_files_and_archives_are_never_renamed(self):
         with self.client(httpx.Response(200, content=photo("WEBP"))) as http:
@@ -397,6 +463,19 @@ class DashDownloadTest(NetCase):
         self.assertIsNotNone(media.probe(saved).audio)
         self.assertEqual(len(self.requests), 4)
         self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
+
+    def test_merge_temp_files_are_named_part(self):
+        """Fix 13: every file a DASH download writes before its rename matches what `flnd sync` repair removes."""
+        real_replace, moved = os.replace, []
+
+        def spy(src, dst):
+            moved.append(Path(src).name)
+            return real_replace(src, dst)
+
+        with self.client() as http, mock.patch.object(os, "replace", spy):
+            self.merged(http)
+        self.assertTrue(moved)
+        self.assertEqual([name for name in moved if not fnmatch.fnmatch(name, files.PART_GLOB)], [])
 
     def test_a_container_that_cant_hold_the_streams_fails_at_once(self):
         with self.client() as http, self.assertRaises(RuntimeError):

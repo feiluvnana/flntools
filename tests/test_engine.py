@@ -135,6 +135,43 @@ class GroupsTest(EngineCase):
         self.assertIn("✓ aaa:good", lines)
 
 
+    def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
+        # Fix 5: before it, only the error line was written and log.multi ended the rows at ok.
+        def connect(self, session):
+            raise RuntimeError("tlg: the saved login no longer works")
+
+        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", lambda session: None, connect=connect),
+                                                 "bbb": make_source("bbb", lambda session: None)})
+        engine.run(engine.resolve(["aaa:a", "aaa:b", "bbb:c"]), Options())
+        lines = self.lines()
+        self.assertIn("✗ aaa: tlg: the saved login no longer works", lines)
+        self.assertFalse(any(line.startswith("✓ aaa:") for line in lines), lines)
+        self.assertEqual(sum(line.startswith("✗ aaa:a") or line.startswith("✗ aaa:b") for line in lines), 2)
+        self.assertIn("✓ bbb:c", lines)
+        self.assertEqual([str(target) for target in engine.failed], ["aaa:a", "aaa:b"])
+
+    def test_a_group_whose_logged_in_raises_ends_its_rows_failed(self):
+        def logged_in(self, session):
+            raise RuntimeError("can't read the login")
+
+        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", lambda session: None, logged_in=logged_in)})
+        engine.run(engine.resolve(["aaa:a"]), Options())
+        self.assertFalse(any(line.startswith("✓ aaa:a") for line in self.lines()), self.lines())
+        self.assertEqual([str(target) for target in engine.failed], ["aaa:a"])
+
+    def test_failed_lists_only_the_targets_that_failed(self):
+        def run(session):
+            if session.target.value == "bad":
+                raise RuntimeError("blocked")
+
+        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", run)})
+        engine.run(engine.resolve(["aaa:good"]), Options())
+        self.assertEqual(engine.failed, [])
+        engine.run(engine.resolve(["aaa:bad", "aaa:good"]), Options())
+        # It adds up over every run of one engine, as flnd sync runs one per settings group.
+        self.assertEqual([str(target) for target in engine.failed], ["aaa:bad"])
+
+
 class LoginStateTest(EngineCase):
     def test_not_logged_in_is_a_hint_and_public_access_goes_on(self):
         ran = []
@@ -350,7 +387,30 @@ class SaveTest(EngineCase):
         self.assertEqual((folder / "info.md").read_text(), "# Title\n")
         self.assertEqual((folder / "f.7z").read_bytes(), b"/f.7z")
         self.assertEqual((folder / "m.mp4").read_bytes(), b"fetched")
-        self.assertIn("! mirror 1 failed; trying next", self.lines())
+        self.assertIn(f"! mirror 1 failed: HTTP 404 for {CDN}/dead.7z; trying next", self.lines())
+
+    def test_write_temp_file_is_named_part(self):
+        """Fix 13: `write`'s temporary file is a `.<name>.<random>.part`, which `flnd sync` repair removes."""
+        import fnmatch
+        import os
+
+        from flnd import files
+
+        real_replace, moved = os.replace, []
+
+        def spy(src, dst):
+            moved.append(Path(src).name)
+            return real_replace(src, dst)
+
+        def run(session):
+            session.folder = "post"
+            session.write("info.md", "# Title\n")
+
+        with mock.patch.object(os, "replace", spy):
+            self.run_engine(make_source("aaa", run), targets=["aaa:a"])
+        [name] = [name for name in moved if name.startswith(".info.md.")]
+        self.assertTrue(fnmatch.fnmatch(name, files.PART_GLOB), name)
+        self.assertEqual((self.target_dir("aaa", "a") / "post" / "info.md").read_bytes(), b"# Title\n")
 
     def test_failed_downloads_are_named(self):
         def run(session):

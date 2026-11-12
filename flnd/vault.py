@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 import os
-import tempfile
+import time
 from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 
@@ -20,6 +20,11 @@ DB_FILE = "secrets.db"
 KEY_FILE = "secret.key"
 TABLE = "secrets"
 KEY_SIZE = 32
+# How long a key file shorter than KEY_SIZE may be another run's key still being written, in
+# seconds, before it counts as damaged; 32 bytes are written in microseconds, so 2 s is ample.
+KEY_WAIT = 2.0
+# How often a short key file is read again while waiting, in seconds.
+KEY_POLL = 0.01
 
 
 def open(home: Path, code: str) -> Vault:
@@ -84,22 +89,72 @@ def key(home: Path) -> bytes:
 
         secret = vault.key(Path(".flnd"))
 
-    The new key is written to a temp file and linked into place, so the key file is never
-    seen empty, and when two runs race, both end up with the one that was linked first.
+    Args:
+        home: flnd's folder, `.flnd`; it is created when missing.
+
+    Returns:
+        The 32-byte key.
+
+    Raises:
+        ValueError: the key file holds anything but 32 bytes, or exists but can't be read (a
+            dangling symlink), and still does after `KEY_WAIT`.
+        OSError: the folder or the key file can't be created or read.
+
+    When two runs create the key at once, the first one to create the file wins and the other
+    reads its key: both end with the same one. No temporary file is written.
     """
     path = home / KEY_FILE
-    if not path.exists():
-        home.mkdir(parents=True, exist_ok=True)
-        handle, temp_path = tempfile.mkstemp(dir=home, prefix=f".{KEY_FILE}.")
+    # A short key may be another run's that is still being written, so it is read again until
+    # `KEY_WAIT` has passed; only then is it damaged (a run that died while writing it).
+    deadline = time.monotonic() + KEY_WAIT
+    while True:
         try:
-            with os.fdopen(handle, "wb") as file:
-                file.write(crypto.random_key(KEY_SIZE))
-            os.link(temp_path, path)
-        except FileExistsError:
-            pass
-        finally:
-            os.unlink(temp_path)
-    secret = path.read_bytes()
-    if len(secret) != KEY_SIZE:
-        raise ValueError(f"{path} is damaged: it should hold {KEY_SIZE} bytes, not {len(secret)}")
+            secret = path.read_bytes()
+        except FileNotFoundError:
+            created = _create_key(path)
+            if created is not None:
+                return created
+            # Lost the race: the winner's file exists now, maybe still short, so read it again. A
+            # path that exists but can't be read, such as a dangling symlink (O_EXCL refuses it,
+            # read_bytes finds nothing), loses every time, so it too gives up at the deadline
+            # instead of spinning forever.
+            if time.monotonic() >= deadline:
+                raise ValueError(f"{path} is damaged: it exists but can't be read, such as a broken link; "
+                                 "delete it, then log in again")
+            time.sleep(KEY_POLL)
+            continue
+        if len(secret) == KEY_SIZE:
+            return secret
+        # A run killed between creating the file and writing it leaves it empty for good, so the
+        # message says how to get out: without the key, the secrets it sealed can't be read anyway.
+        if len(secret) > KEY_SIZE or time.monotonic() >= deadline:
+            raise ValueError(f"{path} is damaged: it should hold {KEY_SIZE} bytes, not {len(secret)}; "
+                             "delete it, then log in again")
+        time.sleep(KEY_POLL)
+
+
+def _create_key(path: Path) -> bytes | None:
+    """Create the key file with a new key, and return the key, or None when another run created it first."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # O_EXCL makes "first creator wins" without a hard link: `os.link`, used before 2026-11, is
+    # refused with a plain OSError on FAT, exFAT and some network drives, so `flnd login tlg`
+    # failed there. O_BINARY (Windows only, 0 elsewhere) keeps the C runtime from turning a
+    # 0x0A byte of the key into 0x0D 0x0A. Mode 0600: the key is as private as the cookie files.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    try:
+        handle = os.open(path, flags, 0o600)
+    except FileExistsError:
+        return None
+    # The winner writes into the published file, so a reader can see it empty or short for a
+    # moment. That is safe because the key is only 32 bytes, written in one write of a fresh
+    # file, and every reader (key() above) treats a short file as "not written yet" and reads
+    # again until KEY_WAIT has passed, never using a short key. A key that fails to be written
+    # is removed, so no run is left with a damaged file.
+    secret = crypto.random_key(KEY_SIZE)
+    try:
+        with os.fdopen(handle, "wb") as file:
+            file.write(secret)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     return secret

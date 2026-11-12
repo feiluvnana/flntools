@@ -1,6 +1,8 @@
 import importlib
 import json
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -116,6 +118,74 @@ class ImportTest(BrowserCase):
                         {"stealth": False}, {"locale": "fr-FR"}, {"timezone": "Europe/Paris"}):
             with self.assertRaises(ValueError, msg=options):
                 browser.connect(cdp="http://127.0.0.1:9", **options)
+
+
+class ProfileCopyTest(BrowserCase):
+    """Fix #14: the copy holds Telegram Web's login, so it must never stay in the temp folder. No browser."""
+
+    def setUp(self):
+        super().setUp()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name)
+        platform = sys.platform if sys.platform in ("darwin", "win32") else "linux"
+        (self.home / browser.PROFILE_ROOTS[platform] / "Default").mkdir(parents=True)
+        (self.home / browser.PROFILE_ROOTS[platform] / "Default" / "Preferences").write_text("{}")
+        self.copy = self.new_copy()
+
+    def new_copy(self) -> Path:
+        with mock.patch.object(Path, "home", return_value=self.home):
+            copy = browser.installed_profile("chrome", "Default")
+        self.addCleanup(shutil.rmtree, copy, True)
+        return copy
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no POSIX modes")
+    def test_profile_copy_folder_is_private(self):
+        self.assertEqual(stat.S_IMODE(self.copy.stat().st_mode), 0o700)
+
+    def test_profile_copy_deleted_without_playwright(self):
+        with mock.patch.object(browser, "_start_playwright", side_effect=ImportError("no playwright")):
+            with self.assertRaises(ImportError):
+                browser.connect(profile=self.copy)
+        self.assertFalse(self.copy.exists())
+        self.assertNotIn(self.copy, browser._installed_copies)
+
+    def test_profile_copy_deleted_on_ctrl_c_before_launch(self):
+        with mock.patch.object(browser, "_start_playwright", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                browser.connect(profile=self.copy)
+        self.assertFalse(self.copy.exists())
+
+    def test_profile_copy_deleted_when_the_launch_fails(self):
+        for error in (KeyboardInterrupt(), RuntimeError("Chromium is not installed")):
+            with self.subTest(error=error):
+                copy, playwright = self.new_copy(), mock.Mock()
+                with mock.patch.object(browser, "_start_playwright", return_value=playwright), \
+                        mock.patch.object(browser, "_start_context", side_effect=error):
+                    with self.assertRaises(type(error)):
+                        browser.connect(profile=copy)
+                self.assertFalse(copy.exists())
+                playwright.stop.assert_called_once()
+
+    def test_profile_copy_deleted_when_the_copy_fails(self):
+        """A copy that fails half way, Ctrl-C included, must not leave the profile's logins in the temp folder."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        for error in (OSError("disk full"), KeyboardInterrupt()):
+            with self.subTest(error=error):
+                with mock.patch.object(Path, "home", return_value=self.home), \
+                        mock.patch.object(tempfile, "tempdir", temp.name), \
+                        mock.patch.object(shutil, "copytree", side_effect=error) as copytree:
+                    with self.assertRaises(type(error)):
+                        browser.installed_profile("chrome", "Default")
+                # The copy was started inside the private temp folder, so an empty glob means it was deleted.
+                self.assertTrue(str(copytree.call_args.args[1]).startswith(temp.name))
+                self.assertEqual(list(Path(temp.name).glob("shared-chrome-*")), [])
+
+    def test_profile_copy_deleted_when_cdp_is_misused(self):
+        with self.assertRaises(ValueError):
+            browser.connect(profile=self.copy, cdp="http://127.0.0.1:9")
+        self.assertFalse(self.copy.exists())
 
 
 @needs_chromium

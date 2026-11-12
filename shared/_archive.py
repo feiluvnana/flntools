@@ -49,6 +49,11 @@ RAR_MAGIC = b"Rar!\x1a\x07"
 COMPRESSION_MAGIC = {b"\x1f\x8b": "gz", b"BZh": "bz2", b"\xfd7zXZ\x00": "xz", b"\x28\xb5\x2f\xfd": "zst"}
 RAR_KINDS: dict[str, Kind] = {"File": "file", "Directory": "dir"}
 DRIVE = re.compile(r"[A-Za-z]:")
+# Windows' device names: a file named CON, NUL, COM1… opens the device instead, with any extension
+# ("con.txt") and whatever its case. COM0, LPT0 and COM10 are ordinary names. Windows also drops
+# trailing spaces before the extension ("con .txt"), so those are stripped before comparing.
+RESERVED_NAMES = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)),
+                            *(f"LPT{n}" for n in range(1, 10))})
 UNRAR_BAD_PASSWORD = 11
 CHUNK_SIZE = 1024 * 1024
 NO_ZSTD = "zstd needs Python 3.14 or later"
@@ -465,11 +470,21 @@ def _decompress(path: Path, compression: str) -> IO[bytes]:
 
 
 def _safe_name(raw: str) -> str:
+    """The entry name as a relative path joined by `/`, or `UnsafeError` when it can't be written safely.
+
+    Names Windows would misread are refused on every platform, so an archive unpacks the same
+    everywhere: a `:` anywhere (a drive, or an NTFS alternate data stream: `x/a:b` writes stream
+    `b` of file `a`) and a device name such as `NUL` or `com1.txt` as any part of the path.
+    """
     # Windows treats a backslash as a separator, so it counts as one everywhere.
     name = raw.replace("\\", "/")
     parts = [part for part in name.split("/") if part not in ("", ".")]
     if name.startswith("/") or DRIVE.match(name) or ".." in parts:
         raise UnsafeError(f"refusing {raw!r}: it would land outside dest")
+    if ":" in name:
+        raise UnsafeError(f"refusing {raw!r}: a ':' names an NTFS stream or a drive on Windows")
+    if any(part.split(".")[0].rstrip(" ").upper() in RESERVED_NAMES for part in parts):
+        raise UnsafeError(f"refusing {raw!r}: Windows reserves that name for a device")
     return "/".join(parts)
 
 

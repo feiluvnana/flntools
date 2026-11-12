@@ -10,9 +10,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
-import os
 import queue
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping, MutableMapp
 
 import httpx
 
-from flnd import net, vault
+from flnd import files, net, vault
 from flnd.sources.base import FetchError, Source
 from flnd.target import Target
 from shared import fmt, kv, log, prompt, theme
@@ -193,6 +191,8 @@ class Settings:
     encoding: threading.Lock = field(default_factory=threading.Lock)
     videos_off: bool = False
     hinted: set[str] = field(default_factory=set)
+    # The kinds of compress error already warned of, so a stalled ffmpeg on every file warns once.
+    compress_warned: set[type[Exception]] = field(default_factory=set)
 
     @property
     def downloads(self) -> Path:
@@ -458,20 +458,21 @@ class TargetSession:
         return True
 
     def write(self, name: str, text: str) -> bool:
-        """Save a text file, such as loi's `info.md`, in the current folder, atomically; False when it is None."""
+        """Save a text file, such as loi's `info.md`, in the current folder, atomically; False when it is None.
+
+            session.write("info.md", "# Title\\n")
+
+        Args:
+            name: the file name in the current folder.
+            text: the file's text, saved as UTF-8 with `\\n` line endings on every platform.
+
+        Returns:
+            True when written; False when `folder` is None.
+        """
         if self.folder is None:
             return False
-        dest = self._path(self.folder, name)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        handle, temp_path = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as file:
-                file.write(text)
-            os.chmod(temp_path, 0o644)
-            os.replace(temp_path, dest)
-        except BaseException:
-            Path(temp_path).unlink(missing_ok=True)
-            raise
+        # Through a `.<name>.<random>.part`, which `flnd sync`'s repair removes if a run dies mid-write.
+        files.write_atomic(self._path(self.folder, name), text)
         return True
 
     @property
@@ -636,8 +637,8 @@ class TargetSession:
             self._handover_thread.start()
         self._handover.put(file)
 
-    def _hand_over(self, pool: worker.Pool, files: queue.SimpleQueue[_File | None]) -> None:
-        while (file := files.get()) is not None:
+    def _hand_over(self, pool: worker.Pool, waiting: queue.SimpleQueue[_File | None]) -> None:
+        while (file := waiting.get()) is not None:
             pool.submit(self._download, file)
 
     def _end_handover(self, *, dropping: bool) -> None:
@@ -672,7 +673,11 @@ class TargetSession:
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
         if file.kind == PHOTO and options.compress_image:
-            row.update(compress(saved, PHOTO, options))
+            # Imported here: flnd.compress needs this module's options and tables.
+            from flnd.compress import compress_file
+
+            # None (no Pillow or encoder) leaves the row without "compressed", for a later sync to retry.
+            row.update(compress_file(saved, PHOTO, options, self._settings.compress_warned) or {})
         self._settings.history[file.key] = row
         if file.kind == VIDEO and options.compress_video and not self._settings.videos_off:
             self._encoder().submit(self._compress_video, file, row)
@@ -692,11 +697,14 @@ class TargetSession:
         with settings.encoding:
             if settings.videos_off:
                 return
-            try:
-                fields = compress(Path(row["path"]), VIDEO, settings.options)
-            except RuntimeError as error:
+            # Imported here: flnd.compress needs this module's options and tables.
+            from flnd.compress import compress_file
+
+            fields = compress_file(Path(row["path"]), VIDEO, settings.options, settings.compress_warned)
+            if fields is None:
+                # No ffmpeg or encoder here: every other video would fail the same way.
                 settings.videos_off = True
-                log.warn("video compression stops for this run: {error}", error=error)
+                log.warn("video compression stops for this run")
                 return
             settings.history[file.key] = {**row, **fields}
 
@@ -814,32 +822,6 @@ def compress_problem(options: Options) -> str | None:
     except ValueError as error:
         return str(error)
     return None
-
-
-def compress(path: Path, kind: str, options: Options) -> dict[str, Any]:
-    """Compress one saved photo or video with the options' preset and format, and return its history fields.
-
-    The file is replaced only when the result is smaller; otherwise, or when it can't be read, it
-    stays as it was and is recorded as "none". A missing ffmpeg or encoder raises `RuntimeError`.
-    """
-    from shared import media
-
-    if kind == PHOTO:
-        preset, (format, codec) = options.compress_image, (options.format_image, None)
-    else:
-        preset, (format, codec) = options.compress_video, video_format(options.format_video)
-        if codec and not format and codec not in CODECS_IN.get(path.suffix.lower()[1:], ("h264", "h265")):
-            # A codec alone keeps the file's container when it can hold it.
-            format = "webm" if codec == "vp9" else "mp4"
-    size = path.stat().st_size
-    try:
-        out = media.compress(path, preset=preset or "balanced", format=format, codec=codec)
-    except (ValueError, FileExistsError) as error:
-        log.warn("{name}: not compressed: {error}", name=path.name, error=error)
-        out = None
-    if out is None:
-        return {"path": str(path), "size": size, "compressed": "none", "original_size": size}
-    return {"path": str(out), "size": out.stat().st_size, "compressed": preset, "original_size": size}
 
 
 def _show_steps(steps: float) -> str:

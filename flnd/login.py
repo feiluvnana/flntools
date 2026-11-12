@@ -19,8 +19,6 @@ if TYPE_CHECKING:
 
 COOKIE_METHODS = ("browser", "file")
 BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave", "chromium": "Chromium"}
-# Cookie files from before `flnd login`, still read when `.flnd/cookies/<code>.txt` is missing.
-LEGACY_DIRS = (Path("E:/flntools/.flnd/cookies"), Path("E:/.flnd/cookies"))
 
 
 def from_browser(source: Source, *, browser: str, profile: str | None = None) -> list[dict]:
@@ -68,9 +66,19 @@ def store(source: Source, jar: list[dict], *, home: Path, origin: str) -> str:
 
 
 def load(home: Path, code: str) -> list[dict]:
-    """The source's saved cookies, ready for a browser or a client, or `[]` when it never logged in."""
-    folders = (home / "cookies", *LEGACY_DIRS)
-    for path in (folder / f"{code}{suffix}" for folder in folders for suffix in (".txt", ".json")):
+    """The source's saved cookies, ready for a browser or a client, or `[]` when it never logged in.
+
+        jar = login.load(Path(".flnd"), "ins")
+
+    Args:
+        home: flnd's folder, `.flnd`.
+        code: the source's code, such as "ins".
+
+    Returns:
+        The cookies of `.flnd/cookies/<code>.txt`, or else of `<code>.json`, with `fix_domains` applied.
+    """
+    folder = home / "cookies"
+    for path in (folder / f"{code}{suffix}" for suffix in (".txt", ".json")):
         if path.is_file():
             return fix_domains(cookies.load_from_file(path))
     return []

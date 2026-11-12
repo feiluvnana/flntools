@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from flnd import cli as flnd_cli
+from flnd import sources
 from flnd.engine import Engine
 from flnd.session import Options
 from flnd.sources.base import Source
@@ -243,11 +244,71 @@ class SyncCommandTest(RunsCase):
             self.assertIn(message, out)
         self.assertEqual(len(self.synced), 2)
 
+    def test_a_short_link_is_resolved_once(self):
+        # Fix 11: cli.sync and sync.plan each resolved the targets, so a short link made two HEAD requests.
+        followed = []
+
+        def follow(url):
+            followed.append(url)
+            return "https://www.tiktok.com/@example_creator/video/7301234567890123456"
+
+        with mock.patch("flnd.net.follow", follow):
+            self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/")[0], 0)
+            self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/", "--from", "videos")[0], 0)
+        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"] * 2)
+        self.assertEqual([chosen for chosen, _ in self.synced][0][0][0], Target("tik", "video", "7301234567890123456"))
+
     def test_only_info_saves_nothing(self):
         self.run_app("download", "ins:example_user")
         self.run_app("sync", "--only", "info", "--compress-video", "small")
         self.run_app("sync", "--only", "info")
         self.assertEqual(dict(self.synced[1][0])[Target("ins", "user", "example_user")], Options())
+
+
+class ExitStatusTest(FlndCase):
+    """Fix 4 and 5: download and sync exit 1 when a target failed, so a script or cron job can tell."""
+
+    def setUp(self):
+        super().setUp()
+
+        def run(self, session):
+            if session.target.value == "bad":
+                raise RuntimeError("blocked")
+
+        def connect(self, session):
+            raise RuntimeError("the saved login no longer works")
+
+        def resolve(self, text):
+            return Target(self.code, "user", text)
+
+        common = {"name": "Test", "examples": (), "categories": ("posts",), "default_categories": ("posts",),
+                  "resolve": resolve, "run": run}
+        patcher = mock.patch.dict(sources.SOURCES, {
+            "aaa": type("Aaa", (Source,), {"code": "aaa", "domains": ("aaa.example",), **common}),
+            "bbb": type("Bbb", (Source,), {"code": "bbb", "domains": ("bbb.example",), "connect": connect, **common})})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # No person's pause between targets: these sources make no request.
+        pauses = mock.patch("flnd.engine._sleep", lambda seconds: None)
+        pauses.start()
+        self.addCleanup(pauses.stop)
+
+    def test_download_exits_1_when_a_target_failed(self):
+        code, _, out = self.run_app("download", "aaa:bad", "aaa:good")
+        self.assertEqual(code, 1, out)
+        self.assertIn("✗ aaa:bad: blocked", out)
+        self.assertEqual(self.run_app("download", "aaa:good")[0], 0)
+
+    def test_download_exits_1_when_a_source_cant_start(self):
+        code, _, out = self.run_app("download", "bbb:good")
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("✓ bbb:good", out)
+
+    def test_sync_exits_1_when_a_target_failed(self):
+        self.run_app("download", "aaa:bad", "aaa:good")
+        code, _, out = self.run_app("sync")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.run_app("sync", "aaa:good")[0], 0)
 
 
 class LoginFileTest(FlndCase):
