@@ -32,9 +32,6 @@ class RegistryTest(unittest.TestCase):
             self.assertTrue(isinstance(source.name, str) and source.name)
             self.assertTrue(isinstance(source.domains, tuple) and source.domains, code)
             self.assertTrue(source.forms, code)
-            self.assertTrue(set(source.short_links) <= {host for host in source.short_links
-                                                        if any(host == d or host.endswith("." + d)
-                                                               for d in source.domains)}, code)
 
     def test_codes_and_order(self):
         self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt", "loi", "tlg"])

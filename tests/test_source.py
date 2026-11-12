@@ -94,7 +94,6 @@ class OrderTest(unittest.TestCase):
     def test_routes_are_tried_in_declaration_order(self):
         # `post` comes first, so /p/<code> is never the user "p".
         self.assertEqual(read("https://example.com/p/C1abc"), Target("exm", "post", "C1abc"))
-        self.assertEqual(Example.kinds_of_target, ("post", "video", "user"))
         self.assertEqual([route.kind for route in Example.routes], ["post", "video", "user"])
 
     def test_unsupported_beats_a_route(self):
@@ -249,27 +248,8 @@ class FormsTest(unittest.TestCase):
 
             def run(self, session): ...
 
-        self.assertEqual((Chats.forms, Chats.kinds_of_target), (("cht:<chat name>",), ("chat",)))
+        self.assertEqual((Chats.forms, [route.kind for route in Chats.routes]), (("cht:<chat name>",), ["chat"]))
         self.assertEqual(Chats().resolve("Lens Club"), Target("cht", "chat", "Lens Club"))
-
-    def test_a_source_without_routes_keeps_its_resolve_and_examples(self):
-        class Old(Source):
-            code, name, domains = "old", "Old", ("example.com",)
-            examples = ("old:example_user",)
-            short_links = ("short.example.com",)
-
-            def resolve(self, text):
-                return Target(self.code, "user", text)
-
-            def run(self, session): ...
-
-        self.assertEqual((Old.forms, Old.kinds_of_target, Old.routes), (("old:example_user",), ("user",), ()))
-        self.assertEqual(Old().resolve("example_user"), Target("old", "user", "example_user"))
-        followed = []
-        self.assertEqual(resolve("https://short.example.com/x", {"old": Old},
-                                 follow=lambda url: followed.append(url) or "example_user"),
-                         Target("old", "user", "example_user"))
-        self.assertEqual(followed, ["https://short.example.com/x"])
 
 
 class ClassCreationTest(unittest.TestCase):
@@ -322,13 +302,6 @@ class ClassCreationTest(unittest.TestCase):
 
     def test_unsupported_captures_nothing(self):
         self.assertRefused("captures nothing", lambda: self.declare(unsupported={"example.com/{user}": "no"}))
-
-    def test_a_source_with_routes_drops_what_they_replace(self):
-        user = target("{user}")(lambda self, session, user: None)
-        for field, value in [("examples", ("bad:a",)), ("short_links", ("example.com",)),
-                             ("kinds_of_target", ("user",))]:
-            with self.subTest(field=field):
-                self.assertRefused(f"drop {field}", lambda: self.declare(user=user, **{field: value}))
 
 
 class RouteTablesTest(unittest.TestCase):

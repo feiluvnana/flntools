@@ -136,8 +136,8 @@ def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[
         text: one target, as typed or listed.
         sources: the sources by code.
         follow: where a link leads, from one HEAD request. A link on a source's site that no route
-            matches is followed once and read again (short links such as `vm.tiktok.com/…`), as is
-            one on a hand-written source's `short_links`; None reads every link as it is.
+            matches is followed once and read again (short links such as `vm.tiktok.com/…`); None
+            reads every link as it is.
 
     Raises:
         TargetError: the text is empty, names no source, or its source can't read it, with what
@@ -160,9 +160,6 @@ def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[
             choices = ", ".join(f"{code}:{cleaned}" for code in sources)
             raise TargetError(f'which source is "{cleaned}"? Write it as {choices}')
         source = found()
-    # A source that still writes its own `resolve` names its short-link hosts, followed first.
-    if follow is not None and _on(cleaned, source.short_links):
-        cleaned = follow(cleaned)
     try:
         return source.resolve(cleaned)
     except TargetError as miss:

@@ -26,10 +26,8 @@ flnd.source.Source.browser_args: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.concurrency: attribute -> ClassVar[int]
 flnd.source.Source.connect(session: Session) -> Any
-flnd.source.Source.examples: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.forms: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.headers(cookies: Mapping[str, str]) -> Mapping[str, str]
-flnd.source.Source.kinds_of_target: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.logged_in(session: Session) -> bool
 flnd.source.Source.login(session: Session, method: str) -> None
 flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
@@ -39,7 +37,6 @@ flnd.source.Source.requires_login: attribute -> ClassVar[bool]
 flnd.source.Source.resolve(text: str) -> Target
 flnd.source.Source.routes: attribute -> ClassVar[tuple[Route, ...]]
 flnd.source.Source.run(session: Session) -> Any
-flnd.source.Source.short_links: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.sign(request: httpx.Request) -> httpx.Request
 flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.stealth: attribute -> ClassVar[bool]

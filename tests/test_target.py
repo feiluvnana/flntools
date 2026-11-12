@@ -2,7 +2,6 @@
 
 import unittest
 
-from flnd.common.target import link
 from flnd.engine import resolve
 from flnd.source import Target, TargetError
 from flnd.sources import SOURCES
@@ -154,14 +153,7 @@ class RefusedTest(unittest.TestCase):
             read("  ")
 
 
-class LinkTest(unittest.TestCase):
-    def test_domains_and_their_subdomains_only(self):
-        self.assertEqual(link("https://www.instagram.com/a/?hl=en", ("instagram.com",)),
-                         ("instagram.com", ["a"], {"hl": "en"}))
-        self.assertIsNone(link("https://notinstagram.com/a", ("instagram.com",)))
-        self.assertIsNone(link("https://instagram.com.evil.example/a", ("instagram.com",)))
-        self.assertIsNone(link("example.user", ("instagram.com",)))
-
+class TargetTest(unittest.TestCase):
     def test_target_prints_as_code_and_value(self):
         self.assertEqual(str(Target("tik", "video", "1")), "tik:1")
 

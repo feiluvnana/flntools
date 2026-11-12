@@ -36,10 +36,6 @@ patterns generate, such as `ins:<user>`, so what's shown can't drift from what's
 Phase 6, step 5: routes only read targets. The engine still calls `run(session)` with the target a
 route gave, and a route's method body isn't called. Step 6 gives routes their bodies and adds
 `Post`, `File`, `Site`, `Login` and `pages` here; it also renames `session` to `site`.
-
-Sources that still write their own `resolve` (with `flnd.common.target`'s `link`, `name` and
-`unreadable`) keep working: a source with no routes is read by its `resolve`, and its `examples`
-stand in for the generated forms until it's ported.
 """
 
 from __future__ import annotations
@@ -316,14 +312,6 @@ class Source(ABC):
     routes: ClassVar[tuple[Route, ...]] = ()
     # The forms help and refusals list: generated from the routes when the class is created.
     forms: ClassVar[tuple[str, ...]] = ()
-    # What a target can point to: the routes' kinds, set when the class is created. A source
-    # without routes declares it.
-    kinds_of_target: ClassVar[tuple[str, ...]] = ("user",)
-    # Until a source is ported to routes: its short-link hosts (also in `domains`), followed before
-    # its own `resolve`, and one example per accepted form, standing in for `forms`. A source with
-    # routes declares neither: its unmatched links are followed, and its forms are generated.
-    short_links: ClassVar[tuple[str, ...]] = ()
-    examples: ClassVar[tuple[str, ...]] = ()
     # What `--from` can take from this source; without `--from`, a target gets every one.
     categories: ClassVar[tuple[str, ...]] = ()
     # Target kinds that are one post, downloaded whole (ins "post", tik "video"). A post has no
@@ -347,12 +335,11 @@ class Source(ABC):
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any):
-        """Collect and check the class's routes and `unsupported`, and generate its forms and kinds.
+        """Collect and check the class's routes and `unsupported`, and generate its forms.
 
         Raises:
             TypeError: a pattern on a host outside `domains`, a pattern given twice, a placeholder in
-                `unsupported`, or a source with routes that still declares `examples`,
-                `short_links` or `kinds_of_target`.
+                `unsupported`.
         """
         super().__init_subclass__(**kwargs)
         # A subclass keeps its base's routes; one of the same name replaces it in place.
@@ -374,12 +361,7 @@ class Source(ABC):
                 raise TypeError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
             seen.add(key)
         if not cls.routes:
-            cls.forms = cls.examples
             return
-        stale = [field for field in ("examples", "short_links", "kinds_of_target") if field in vars(cls)]
-        if stale:
-            raise TypeError(f"{cls.__name__} has routes, so drop {', '.join(stale)}: the routes give them")
-        cls.kinds_of_target = tuple(route.kind for route in cls.routes)
         code = getattr(cls, "code", "")
         forms = [form for route in cls.routes for form in route.forms(code)]
         # `ins:<user>` is the form people write most, so the forms after `code:` come first.
