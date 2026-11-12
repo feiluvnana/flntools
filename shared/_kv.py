@@ -53,6 +53,8 @@ LIVE = "(expires IS NULL OR expires > ?)"
 # How long a call waits for another connection's write to finish before it fails, in seconds:
 # long enough for any one flnd write, short enough that a stuck process shows up as an error.
 BUSY_TIMEOUT = 5.0
+# How long `open` waits before trying the switch to WAL mode again, in seconds; a switch takes microseconds.
+WAL_RETRY = 0.01
 
 
 class Error(shared.Error):
@@ -106,7 +108,7 @@ def open(path: PathLike, *, table: str = "default", timeout: float = BUSY_TIMEOU
         # WAL: readers never block the writer or each other, so a long `flnd sync` reading the
         # history doesn't stop a `flnd download` writing to it. Files written before were in WAL
         # already; on a new file it is set once and sqlite remembers it.
-        connection.execute("PRAGMA journal_mode=WAL")
+        _wal(connection, timeout)
         connection.execute(SCHEMA)
         link = _Link(connection)
         store = link.owner = Store(link, table)
@@ -114,6 +116,25 @@ def open(path: PathLike, *, table: str = "default", timeout: float = BUSY_TIMEOU
         connection.close()
         raise
     return store
+
+
+def _wal(connection: sqlite3.Connection, timeout: float) -> None:
+    """Switch the file to WAL mode, waiting up to `timeout` seconds while another connection is switching it too.
+
+    Changing the journal mode takes the file's exclusive lock, and sqlite doesn't always wait out
+    its busy timeout for it: two threads or processes opening a new file at once (two sources'
+    first run, each opening `sources.db`) saw "database is locked" at once. So it is tried again,
+    briefly, until `timeout`; any other error, or one still locked then, is raised.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error) or time.monotonic() >= deadline:
+                raise
+            time.sleep(WAL_RETRY)
 
 
 class Store(MutableMapping[str, Any]):

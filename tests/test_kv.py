@@ -384,5 +384,49 @@ def _run_threads(target, count):
         thread.join()
 
 
+class FirstOpenTest(unittest.TestCase):
+    def test_threads_opening_a_new_file_at_once_all_get_it(self):
+        """Two sources' first run each opened `sources.db` at once, and one failed with "database is locked"."""
+        for attempt in range(5):
+            with tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / "new.db"
+                barrier, errors = threading.Barrier(8), []
+
+                def open_it(number):
+                    barrier.wait()
+                    try:
+                        with kv.open(path, table=f"t{number}") as store:
+                            store["k"] = number
+                    except sqlite3.Error as error:
+                        errors.append(error)
+
+                threads = [threading.Thread(target=open_it, args=(number,)) for number in range(8)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+                self.assertEqual(errors, [], f"attempt {attempt}")
+
+    def test_a_locked_switch_is_tried_again_and_other_errors_are_not(self):
+        calls = []
+
+        class Connection:
+            def execute(self, statement):
+                calls.append(statement)
+                if len(calls) < 3:
+                    raise sqlite3.OperationalError("database is locked")
+
+        from shared import _kv as kv_module
+        kv_module._wal(Connection(), 1.0)
+        self.assertEqual(len(calls), 3)
+
+        class Broken:
+            def execute(self, statement):
+                raise sqlite3.OperationalError("disk I/O error")
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "disk I/O"):
+            kv_module._wal(Broken(), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
