@@ -2,7 +2,8 @@
 
 `Media` checks the kind and the arguments that need only the probe record, then calls one of these
 with the record and the chain's temporary path (`frames` gets the folder to write into instead).
-Video goes through ffmpeg, animations and photos through Pillow. Loaded on first use.
+Video goes through ffmpeg, animations and photos through Pillow, both reached only through
+`_ffmpeg` and `_pillow`, so there is no `.raw`. Loaded on first use.
 
     trim(info, part, ".mp4", start=12.5, end=30, exact=True)
     merge([video], part, ".mp4", track, fps=None, duration=None, progress=None)      # DASH: copied
@@ -30,11 +31,21 @@ def trim(info: Info, part: Path, extension: str, *, start: float, end: float | N
 
     `exact` re-encodes the video at the "high" level's quality, so the cut is exactly at `start`;
     otherwise streams are copied and a video starts at the keyframe before it. Metadata is kept.
+
+    Args:
+        info: the probe of the file to cut.
+        part: the temporary file to write; the caller renames it into place.
+        extension: the format to write, with its dot, of the same kind as `info`, or an animation.
+        start: seconds from the beginning, 0 or more.
+        end: seconds from the beginning, after `start`; None runs to the end.
+        exact: True to cut exactly at `start` by re-encoding; False to copy the streams.
     """
+    # An animated photo has frames, not a timeline of streams, so Pillow cuts its frame list.
     if info.kind == "image":
         frames, delays = _pillow.animation(_photo(info), start=start, end=end)
         _pillow.save_animation(frames, delays, part, _media.ANIMATIONS[extension], quality=90)
         return
+    # `-ss` before the input seeks to the keyframe at or before `start`; a re-encode then drops the frames before it.
     window = ["-ss", f"{start:g}", *(["-t", f"{end - start:g}"] if end is not None else [])]
     args, copied = _media.output(extension, video=info.video, audio=info.audio, quality=90, speed="slow",
                                  codec=_default_codec(extension) if exact and info.video else None,
@@ -48,7 +59,27 @@ def trim(info: Info, part: Path, extension: str, *, start: float, end: float | N
 
 def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequence[float] | None,
            count: int | None, format: str, quality: int, limit: int | None) -> list[Path]:
-    """Save the chosen frames of a video or animation into `folder` as `<stem>_<seconds>.<ext>`; see `Media.frames`."""
+    """Save the chosen frames of a video or animation into `folder` as `<stem>_<seconds>.<ext>`; see `Media.frames`.
+
+    Args:
+        info: the probe of the video or animation to read.
+        stem: the file name the frames are named after, without its extension.
+        folder: the folder to write into; made when missing.
+        every: seconds between frames, from the start; None when `at` or `count` chooses them.
+        at: the times to take, in seconds; None when `every` or `count` chooses them.
+        count: how many frames, spread evenly through the file; None when `every` or `at` chooses.
+        format: the photo format, such as "jpg" or "png", with or without its dot.
+        quality: 1-100, for a lossy format.
+        limit: the most frames allowed, checked before anything is written; None for no limit.
+
+    Returns:
+        The paths written, in time order.
+
+    Raises:
+        ValueError: more than one of `every`, `at` and `count`; a non-positive `every` or `count`;
+            a time outside the file; an unknown `format`; or more frames than `limit`.
+        FileExistsError: a frame's name is taken, checked before anything is written.
+    """
     if sum(choice is not None for choice in (every, at, count)) > 1:
         raise ValueError("give at most one of every=, at= and count=")
     if (every is not None and every <= 0) or (count is not None and count < 1):
@@ -57,11 +88,14 @@ def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequ
     if extension not in _media.STILLS:
         raise ValueError(f"media can't write frames as {format!r}")
     duration = info.duration or 0.0
+    # With `count`, each frame sits in the middle of one of `count` equal slices, not at the very ends.
     times = sorted(at) if at is not None else (
         [(index + 0.5) * duration / count for index in range(count)] if count else None)
     if times and (times[0] < 0 or times[-1] > duration):
         raise ValueError(f"at= must be within 0 and {duration:.3f} s")
+    # A stream with no frame rate is counted at 30 fps, the usual default.
     rate = info.fps or 30.0
+    # The 1e-9 tolerance keeps float error in duration / every from adding one frame at an exact multiple.
     expected = len(times) if times else math.ceil(duration / every - 1e-9) if every else round(duration * rate)
     if limit is not None and expected > limit:
         raise ValueError(f"that is {expected} frames, more than limit={limit}; pass a larger limit= or limit=None")
@@ -78,7 +112,17 @@ def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequ
 
 
 def _pictures(info: Info, times: list[float] | None, every: float | None, rate: float) -> Any:
-    """(seconds, Pillow image) pairs for the frames chosen, in time order."""
+    """(seconds, Pillow image) pairs for the frames chosen, in time order.
+
+    Args:
+        info: the probe of the video or animation.
+        times: the times to take, in seconds, or None for a step of `every` (or every frame).
+        every: seconds between frames, or None.
+        rate: the frames per second to pick from, the source's or 30.
+
+    Yields:
+        One `(seconds, RGB image)` pair per frame chosen.
+    """
     if info.kind == "image":
         photo = _photo(info)
         starts, clock = [], 0.0
@@ -101,6 +145,7 @@ def _pictures(info: Info, times: list[float] | None, every: float | None, rate: 
             yield index * step, picture
         return
     # Each time picks the frame shown then; the frames are decoded once, with ffmpeg's select filter.
+    # The 1e-6 nudge lands a time that float error leaves just under a frame boundary on that frame.
     wanted = sorted({math.floor(t * rate + 1e-6) for t in times})
     picked = dict(zip(wanted, _media.decoded(
         info, f"fps={rate:g},select='{'+'.join(f'eq(n,{n})' for n in wanted)}'", width, height)))
@@ -110,10 +155,27 @@ def _pictures(info: Info, times: list[float] | None, every: float | None, rate: 
 
 
 def _steps(duration: float, every: float) -> list[float]:
+    """The start times of each `every`-second step through `duration`, the first at 0."""
     return [index * every for index in range(math.ceil(duration / every - 1e-9))]
 
 
 def _save_frames(pictures: Any, folder: Path, extension: str, quality: int, name: Any) -> list[Path]:
+    """Write each picture into `folder` under its `name`, through a hidden folder so a failure leaves nothing behind.
+
+    Args:
+        pictures: `(seconds, image)` pairs, in time order.
+        folder: the folder to finish in; made when missing.
+        extension: the photo extension, with its dot.
+        quality: 1-100, for a lossy format.
+        name: maps a time to the final path of its frame.
+
+    Returns:
+        The final paths, in order.
+
+    Raises:
+        FileExistsError: a final name is taken by the time the frames are moved in; the frames
+            already moved are left, the rest are removed with the hidden folder.
+    """
     folder.mkdir(parents=True, exist_ok=True)
     # Frames go to a hidden folder next to `dest` first, so a failure leaves no half set behind.
     work = folder.parent / f".{folder.name}.{secrets.token_hex(4)}.part"
@@ -124,6 +186,7 @@ def _save_frames(pictures: Any, folder: Path, extension: str, quality: int, name
             final = name(seconds)
             _pillow.save(picture, work / final.name, _media.STILLS[extension], quality=quality)
             saved.append((work / final.name, final))
+        # Checked again just before the moves: a file may have appeared while the frames were decoded.
         for part, final in saved:
             if final.exists():
                 raise FileExistsError(f"{final} already exists")
@@ -141,6 +204,15 @@ def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *, 
     one's size and shown `duration` seconds each (default 1.0), or played at `fps`. Clips sharing
     codecs, size and frame rate are copied; others are encoded to the first clip's size. One clip
     with a track is DASH: both streams copied as they are. The inputs are never changed.
+
+    Args:
+        infos: the probes of the photos or the clips, in play order; the first one sets the size.
+        part: the temporary file to write; the caller renames it into place.
+        extension: the format to write: a video container, or an animated ".gif", ".webp" or ".png".
+        track: the probe of a soundtrack to add, or None for no added sound.
+        fps: the rate photos play at, one per frame; None when `duration` is used instead.
+        duration: seconds each photo shows; None for 1.0 seconds, or when `fps` is used.
+        progress: `progress(done, total)` in seconds, called while an encode runs; None for none.
     """
     animation = extension in _media.STILLS
     kinds = {info.kind for info in infos}
@@ -160,11 +232,13 @@ def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *, 
 
 def _slideshow(infos: list[Info], part: Path, extension: str, rate: float, track: Info | None,
                progress: Progress | None) -> None:
+    """Letterbox each photo onto the first one's size and write them as one animation or video at `rate` a second."""
     from PIL import ImageOps
 
     width, height = _pillow.upright(_photo(infos[0]), keep=False).size
+    # H.264 needs even sides, so the size is trimmed to even for a video; an animation takes any size.
     if extension not in _media.ANIMATIONS:
-        width, height = width - width % 2, height - height % 2  # H.264 needs even sides
+        width, height = width - width % 2, height - height % 2
     pictures = (ImageOps.pad(_pillow.upright(_photo(info), keep=False).convert("RGB"), (width, height),
                              color="black") for info in infos)
     if extension in _media.ANIMATIONS:
@@ -180,6 +254,7 @@ def _slideshow(infos: list[Info], part: Path, extension: str, rate: float, track
 
 
 def _dash(video: Info, track: Info, part: Path, extension: str) -> None:
+    """Join one video and a separate audio file into one container, copying both streams as they are."""
     # Both streams are copied as they are; ffmpeg reads every packet, so a truncated part fails here.
     _ffmpeg.run(["-n", "-xerror", *_ffmpeg.source(video.path), *_ffmpeg.source(track.path), "-map", "0:v:0",
                  "-map", "1:a:0", "-c", "copy", *_media.muxer(extension), _ffmpeg.target(part)],
@@ -187,20 +262,25 @@ def _dash(video: Info, track: Info, part: Path, extension: str) -> None:
 
 
 def _join(infos: list[Info], part: Path, extension: str, track: Info | None, progress: Progress | None) -> None:
+    """Concatenate the clips into `part`, copying them when they match, else encoding them to the first clip's size."""
     box = _media.CONTAINERS[extension]
     first = infos[0]
+    # Clips can be copied only when they share codecs, size and frame rate, so concat can join the packets as they are.
     alike = len({(info.video, info.width, info.height, info.fps, info.audio) for info in infos}) == 1
     if alike and _media.holds(box.video_holds, first.video) and _media.holds(box.audio_holds, first.audio):
         _concat_copy(infos, part, extension, track)
         return
+    # Even sides, as H.264 needs; the first clip's size is the one every other clip is fitted to.
     width, height = (first.width or 2) // 2 * 2, (first.height or 2) // 2 * 2
     rate = first.fps or 30.0
     sound = track is None and any(info.audio for info in infos)
     graph = []
     for index, info in enumerate(infos):
+        # Each clip is fitted inside the frame and padded with black to its size, at one shared frame rate.
         graph.append(f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
                      f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate:g},format=yuv420p[v{index}]")
         if sound:  # a clip without audio gets silence, so the sound stays in sync
+            # Every clip's sound is resampled to 48 kHz stereo, so the concat joins streams of one format.
             graph.append(f"[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{index}]" if info.audio
                          else f"anullsrc=r=48000:cl=stereo,atrim=duration={info.duration or 0:g}[a{index}]")
     pads = "".join(f"[v{index}]" + (f"[a{index}]" if sound else "") for index in range(len(infos)))
@@ -215,6 +295,7 @@ def _join(infos: list[Info], part: Path, extension: str, track: Info | None, pro
 
 
 def _concat_copy(infos: list[Info], part: Path, extension: str, track: Info | None) -> None:
+    """Join the clips by copying their packets, through a concat list written here."""
     # The concat reader is refused for anything from outside, because a list can name any file.
     # This list is written here, naming only clips probe has accepted.
     with tempfile.TemporaryDirectory() as folder:
@@ -233,6 +314,7 @@ def _default_codec(extension: str) -> str:
 
 
 def _photo(info: Info) -> Any:
+    """The opened Pillow image of `info`'s file; BrokenError when Pillow doesn't read it as a photo."""
     photo = _pillow.open(info.path)
     if photo is None:
         raise _media.BrokenError(f"{info.path.name}: not a photo")

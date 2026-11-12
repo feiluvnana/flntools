@@ -15,7 +15,8 @@ one run of its text tower turns them into embeddings, kept for the process. The 
 image runs need is the shortest the graph takes, a start and an end token.
 
 ONNX Runtime and NumPy are the `classify` extra. When they are missing, a terminal is asked once
-whether to install them into the running Python; a bundled flnd carries them.
+whether to install them into the running Python; a bundled flnd carries them. This module wraps
+ONNX Runtime and NumPy, and has no `.raw`, since `labels` returns plain pairs.
 
     from shared import media
     media.open("a.jpg").labels()                    # [("food", 0.71)]
@@ -135,7 +136,27 @@ _failed: BaseException | None = None
 
 
 def labels(info: _media.Info, *, top: int, threshold: float, choices: Sequence[str]) -> list[tuple[str, float]]:
-    """The labels from `choices` that best describe `info`'s photo, video or animation, best first; see `Media.labels`."""
+    """The labels from `choices` that best describe `info`'s photo, video or animation, best first.
+
+    Args:
+        info: the probe of the photo, video or animation to score.
+        top: the most labels to return, at least 1.
+        threshold: the score, from 0 to 1, a label needs to be returned; `nsfw` needs at least 0.5.
+        choices: the labels to score against, each one of `media.LABELS`, with no repeats kept.
+
+    Returns:
+        `(label, score)` pairs, best first, scores rounded to 4 places; `[("other", score)]` when none
+        reaches the threshold.
+
+    Raises:
+        ValueError: a label isn't in `PROMPTS`, `choices` is empty, `top` is below 1, or `threshold`
+            is outside 0 to 1.
+        BrokenError: the picture, or a video's frames, can't be read.
+        ImportError, RuntimeError: the model or its packages are missing, and see `_session`.
+
+    Blocks until the model has loaded, which on first use may ask a question in a terminal and
+    download about 150 MB; the scoring itself runs under the session's lock.
+    """
     names = list(dict.fromkeys(choices))
     if unknown := [name for name in names if name not in PROMPTS]:
         raise ValueError(f"unknown label {unknown[0]!r}; labels are {', '.join(PROMPTS)}")

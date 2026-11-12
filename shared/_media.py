@@ -123,19 +123,30 @@ class Info:
 
 
 class _Preset(NamedTuple):
+    # Encoder quality, 1-100, on the one scale every codec maps from.
     quality: int
+    # Cap in pixels on a video's shorter side; None keeps the full size.
     video_resolution: int | None
+    # Cap in pixels on a photo's longer side; None keeps the full size.
     photo_resolution: int | None
+    # Frame-rate cap; None keeps the source's rate.
     fps: float | None
+    # x264's speed preset, such as "medium" or "slow".
     speed: str
+    # Bits per second for the audio stream.
     audio_bitrate: int
 
 
 class _Container(NamedTuple):
+    # The ffmpeg muxer name, as `-f` takes it.
     muxer: str
+    # The encoder for video, or None for an audio-only container.
     video: str | None
+    # The encoder for audio, used when the stream can't be copied.
     audio: str
+    # The codecs this container can hold as they are, space-separated, or "*" for any; "" for none.
     video_holds: str
+    # The audio codecs this container can hold as they are, space-separated, or "*" for any.
     audio_holds: str
 
 
@@ -207,8 +218,9 @@ def open(path: PathLike) -> Media:
         RuntimeError: a video or audio file, and no ffmpeg 4.4 or later is found.
         TimeoutError: ffmpeg took longer than 30 s to read the file's header.
 
-    A photo's header and EXIF are read by Pillow, without decoding pixels; a video or audio file
-    is one short ffmpeg run. Safe to call from several threads at once.
+    A photo's header and EXIF are read by Pillow, without decoding pixels (an animated WebP's frames
+    are decoded once, for their delays); a video or audio file is one short ffmpeg run. Safe to call
+    from several threads at once.
     """
     return Media._opened(Path(path))
 
@@ -827,6 +839,7 @@ class Media:
 def _probe(path: Path) -> Info:
     """Read what `path` holds and its metadata, without decoding pictures or frames; see `open` for what raises."""
     extension = sniff(path)
+    # Refused signatures are all four bytes long, so this reads exactly the ones in REFUSED.
     with path.open("rb") as file:
         if file.read(4) in REFUSED:
             raise UnsafeError(f"{path.name}: PostScript, PDF and WMF files are refused")
@@ -885,8 +898,11 @@ def sniff(path: PathLike) -> str | None:
 
     Safe to call from several threads at once.
     """
+    # Every check below reads within these 192 bytes; the ftyp brands and WebM's name sit within the first 64.
     with Path(path).open("rb") as file:
         head = file.read(192)
+    # Signatures are the first bytes each format starts with: magic numbers from the format specs,
+    # checked in this order so a shared prefix (RIFF, OggS) is resolved by the rest of the header.
     for prefix, extension in ((b"\xff\xd8\xff", ".jpg"), (b"\x89PNG\r\n\x1a\n", ".png"), (b"GIF87a", ".gif"),
                               (b"GIF89a", ".gif"), (b"II*\0", ".tif"), (b"MM\0*", ".tif"), (b"BM", ".bmp"),
                               (b"\0\0\1\0", ".ico"), (b"FLV", ".flv"), (b"fLaC", ".flac"), (b"ID3", ".mp3")):
@@ -985,13 +1001,44 @@ def transcode(info: Info, part: Path, extension: str, *, quality: int, codec: st
               fps: float | None = None, resolution: int | None = None, speed: str = "medium",
               audio_bitrate: int | None = None, strip: bool = False, copy: bool = True,
               progress: Progress | None = None) -> None:
-    """Write `info`'s file to `part` as `extension`, of the same kind (a video may become an animation)."""
+    """Write `info`'s file to `part` as `extension`, re-encoding what the format can't hold as it is.
+
+        transcode(info, part, ".mp4", quality=80, resolution=1080)
+
+    Args:
+        info: the probe of the file to read; its path is the input.
+        part: the temporary file to write; the caller renames it into place.
+        extension: the format to write, such as ".jpg" or ".mp4". It is of the same kind as `info`,
+            except that a video may become an animation (".gif", ".webp", ".png").
+        quality: 1-100, for whatever is encoded.
+        codec: "h264", "h265" or "vp9", for a video; None takes the format's own.
+        fps: a frame-rate cap, or None to keep the source's rate.
+        resolution: a cap in pixels on the shorter side of a video, or the longer side of a photo;
+            None keeps the full size.
+        speed: x264's speed preset: "medium" for the mid and low levels, "slow" for best and high.
+        audio_bitrate: bits per second for a re-encoded audio stream; None takes the codec's default.
+        strip: drop metadata, chapters and extra streams (EXIF, GPS, XMP and ffmpeg tags).
+        copy: copy the streams when the new container holds them as they are. False always re-encodes.
+        progress: `progress(done, total)` in seconds, called only while a video or audio is encoded;
+            a copy or a photo reports nothing.
+
+    Raises:
+        BrokenError: a photo can't be decoded, or ffmpeg fails on the file.
+        RuntimeError: ffmpeg or the encoder isn't available.
+        TimeoutError: a stream copy runs past 10 minutes, or an encode makes no progress for 60 s.
+
+    Runs on the caller's thread and blocks until ffmpeg or Pillow finishes; a video encode can take minutes.
+    """
+    # A still photo is decoded in process; `keep` leaves EXIF in when the caller didn't ask to strip it.
     if info.kind == "image" and not info.animated:
         photo = _pillow.upright(_pillow.open(info.path) or _not_photo(info), keep=not strip)
+        # `optimize` is on only when re-encoding (`copy` False): Pillow's extra pass is slower and shrinks the file.
         _pillow.save(_pillow.shrink(photo, resolution), part, STILLS[extension], quality=quality, optimize=not copy)
+    # An animated photo stays animated: Pillow decodes each frame and writes them back with their delays.
     elif info.kind == "image" and extension in ANIMATIONS:
         frames, delays = _pillow.animation(_pillow.open(info.path) or _not_photo(info), resolution=resolution, fps=fps)
         _pillow.save_animation(frames, delays, part, ANIMATIONS[extension], quality=quality)
+    # A video written as an animated picture goes through ffmpeg's GIF or frame path.
     elif extension in ANIMATIONS:
         _video_to_animation(info, part, extension, quality=quality, fps=fps, resolution=resolution)
     else:
@@ -1043,6 +1090,7 @@ def muxer(extension: str) -> list[str]:
 
 
 def _filters(resolution: int | None, fps: float | None, source_fps: float | None) -> str:
+    """ffmpeg's `-vf` chain: the scale cap, the frame-rate cap when the source is faster, and square pixels."""
     # -2 keeps both sides even, which H.264 needs; the shorter side is capped, never scaled up.
     size = ("scale='if(gte(iw,ih),-2,min(iw,{0}))':'if(gte(iw,ih),min(ih,{0}),-2)'".format(resolution)
             if resolution else "scale=trunc(iw/2)*2:trunc(ih/2)*2")
@@ -1051,6 +1099,7 @@ def _filters(resolution: int | None, fps: float | None, source_fps: float | None
 
 
 def _video_codec(extension: str, codec: str | None, quality: int, speed: str) -> list[str]:
+    """ffmpeg's video encoder options for `extension`, mapping `quality` onto each encoder's own scale."""
     encoder = _ffmpeg.need(CODECS[codec] if codec else CONTAINERS[extension].video or "libx264")
     # One quality scale for every encoder: 70, 80, 90 give x264 CRF 28, 23, 19 and VP9 40, 34, 28.
     if encoder == "libvpx-vp9":
@@ -1062,6 +1111,7 @@ def _video_codec(extension: str, codec: str | None, quality: int, speed: str) ->
 
 
 def _audio_codec(encoder: str, bitrate: int | None) -> list[str]:
+    """ffmpeg's audio encoder options: the encoder, and its bitrate or quality, as the codec takes them."""
     if encoder == "libvorbis" and encoder not in _ffmpeg.encoders():
         encoder = "libopus"  # Opus in Ogg, when this ffmpeg has no libvorbis
     _ffmpeg.need(encoder)
@@ -1073,6 +1123,18 @@ def _audio_codec(encoder: str, bitrate: int | None) -> list[str]:
 
 
 def holds(codecs: str, codec: str | None) -> bool:
+    """Whether a container can hold `codec` as it is, given its space-separated `codecs` list.
+
+        holds(MP4[0], "h264")      # True
+        holds("*", "flac")         # True: MKV holds anything
+
+    Args:
+        codecs: the codecs the container holds, space-separated, or "*" for any; "" for none.
+        codec: the stream's codec as ffmpeg names it, or None for no stream, which is always held.
+
+    Returns:
+        True when the stream can be copied into the container unchanged.
+    """
     return codec is None or codecs == "*" or codec in codecs.split()
 
 
@@ -1087,16 +1149,30 @@ def _inputs(info: Info) -> tuple[list[str], Any]:
 
 
 def raw_input(width: int, height: int, rate: float) -> list[str]:
-    """Input options for raw RGB frames that media writes to ffmpeg's stdin itself."""
+    """Input options for raw RGB frames that media writes to ffmpeg's stdin itself.
+
+    Args:
+        width: the frame's width in pixels.
+        height: the frame's height in pixels.
+        rate: the frames per second the frames play at.
+
+    Returns:
+        ffmpeg's input arguments, which must be followed by the frames on stdin.
+    """
+    # `source` whitelists the `file` protocol only, so this one input names `pipe` itself to read stdin.
     return ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", f"{rate:g}",
             "-protocol_whitelist", "pipe", "-i", "pipe:0"]
 
 
 def _video_to_animation(info: Info, part: Path, extension: str, *, quality: int, fps: float | None,
                         resolution: int | None) -> None:
+    """Write a video as an animated GIF, WebP or PNG at most `fps` frames a second, GIF's 15 by default."""
+    # GIF's 15 fps by default: a GIF stores every frame, so a faster rate makes a much bigger file.
     rate = min(fps or GIF_FPS, info.fps or GIF_FPS)
     if extension == ".gif":
         size = _filters(resolution, None, None).removesuffix(",setsar=1")
+        # GIF holds 256 colours per frame. palettegen builds one palette from the whole clip and paletteuse
+        # applies it, so the colours stay close to the video's.
         graph = f"fps={rate:g},{size},split[a][b];[a]palettegen[p];[b][p]paletteuse"
         _ffmpeg.encode(["-n", *_ffmpeg.source(info.path), "-map", "0:v:0", "-vf", graph, "-f", "gif",
                         _ffmpeg.target(part)], name=info.path.name, duration=info.duration, progress=None)
@@ -1107,7 +1183,21 @@ def _video_to_animation(info: Info, part: Path, extension: str, *, quality: int,
 
 
 def decoded(info: Info, graph: str, width: int, height: int) -> Iterator[Any]:
-    """The frames `graph` picks from a video, decoded by ffmpeg into Pillow images, upright."""
+    """The frames `graph` picks from a video, decoded by ffmpeg into Pillow images, upright.
+
+    Args:
+        info: the probe of the video to read.
+        graph: an ffmpeg filter chain that picks the frames, such as "fps=15"; it runs before the scale.
+        width: the frame width in pixels, which every frame is scaled to.
+        height: the frame height in pixels, which every frame is scaled to.
+
+    Yields:
+        One Pillow RGB image per frame, in time order.
+
+    Raises:
+        BrokenError: ffmpeg fails on the file; raised after the last frame, once iteration ends.
+        TimeoutError: ffmpeg makes no progress for 60 s.
+    """
     Image = _pillow.load()
     command = [*_ffmpeg.source(info.path), "-map", "0:v:0", "-vf", f"{graph},scale={width}:{height},setsar=1",
                *_ffmpeg.passthrough(), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]

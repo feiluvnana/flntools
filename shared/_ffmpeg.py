@@ -1,8 +1,13 @@
 """Find and run the ffmpeg program for shared.media, safely. Private: callers use `media`.
 
-Every command is built here or in media's files from fixed options and the caller's paths.
-Inputs are `file:` + an absolute path, behind a protocol and format whitelist, so a hostile
-download can't make ffmpeg read another file, a playlist or a URL.
+It wraps the ffmpeg program, found through imageio-ffmpeg when that is installed and else on PATH,
+and runs it as a subprocess, so there is no library object and no `.raw`. Every command is built
+here or in media's files from fixed options and the caller's paths. Inputs are `file:` + an
+absolute path, behind a protocol and format whitelist, so a hostile download can't make ffmpeg
+read another file, a playlist or a URL. Each run is one of three shapes: `run` waits for the end
+and returns stderr, `encode` reports progress, and `frames_out` yields raw frames from stdout.
+
+    run(["-xerror", *source(path), "-map", "0", "-c", "copy", "-f", "null", "-"], name=path.name, timeout=COPY_TIMEOUT)
 """
 
 from __future__ import annotations
@@ -27,9 +32,13 @@ __all__ = ["encode", "encoders", "exe", "failure", "ffmetadata", "found", "frame
 
 # Readers that never open another file or URL. hls, dash, concat, image2 and the *_pipe readers are left out.
 READERS = "mov,matroska,avi,mpegts,mpeg,flv,asf,ogg,mp3,aac,flac,wav,aiff,caf,amr,gif"
+# The oldest build the options here work on; `found` refuses an older one by its printed version.
 MIN_VERSION = (4, 4)
+# Reading a header or listing encoders is normally quick, so 30 s only catches a hung ffmpeg.
 PROBE_TIMEOUT = 30.0
+# A stream copy reads the whole file, so it gets ten minutes, which `media.check` documents.
 COPY_TIMEOUT = 600.0
+# An encode writes progress about twice a second; a minute with none means ffmpeg has stopped.
 STALL = 60.0
 NO_FFMPEG = ("shared.media needs ffmpeg for videos and audio: pip install 'flntools[media]', "
              "or install ffmpeg on your PATH")
@@ -45,6 +54,8 @@ def exe() -> str:
 def found() -> tuple[str, tuple[int, int] | None]:
     """The ffmpeg path and its version, looked up once; a failed lookup is tried again on the next call."""
     path = None
+    # imageio-ffmpeg ships its own binary; it raises RuntimeError when there's none for this platform,
+    # and then the ffmpeg on PATH is the fallback, so that error is not an error here.
     try:
         import imageio_ffmpeg
 
@@ -56,6 +67,7 @@ def found() -> tuple[str, tuple[int, int] | None]:
         raise RuntimeError(NO_FFMPEG)
     text = subprocess.run([path, "-hide_banner", "-version"], capture_output=True, text=True, timeout=PROBE_TIMEOUT,
                           env=_env()).stdout
+    # A git or other build that prints no version number is accepted: its `None` skips the check.
     if (version := parse_version(text)) and version < MIN_VERSION:
         raise RuntimeError(f"ffmpeg {'.'.join(map(str, version))} is too old; shared.media needs 4.4 or later")
     return path, version
@@ -69,8 +81,12 @@ def parse_version(text: str) -> tuple[int, int] | None:
 
 @functools.cache
 def encoders() -> frozenset[str]:
+    """The names of every encoder this ffmpeg build has, looked up once; `need` checks one of them."""
     text = subprocess.run([exe(), "-hide_banner", "-encoders"], capture_output=True, text=True,
                           timeout=PROBE_TIMEOUT, env=_env()).stdout
+    # Each encoder line starts with a six-character flag column (type V, A or S, then frame, slice,
+    # experimental, band and direct-rendering flags) and then its name; matching the column keeps
+    # a description line from passing as an encoder.
     return frozenset(re.findall(r"^ [VAS][F.][S.][X.][B.][D.] (\S+)", text, re.MULTILINE))
 
 
@@ -94,12 +110,31 @@ def source(path: Path) -> list[str]:
 
 
 def target(path: Path) -> str:
+    """The ffmpeg input or output name for `path`: `file:` plus its absolute path, so nothing else is named.
+
+        target(Path("clip.mp4"))    # "file:/abs/path/clip.mp4"
+    """
     # file: + an absolute path can't start with "-" or name another protocol.
     return f"file:{Path(path).resolve()}"
 
 
 def run(args: list[str], *, name: str, timeout: float, level: str = "error") -> str:
-    """Run ffmpeg to the end and return its stderr; a failure raises the matching media error."""
+    """Run ffmpeg to the end and return its stderr; a failure raises the matching media error.
+
+    Args:
+        args: ffmpeg's arguments after the fixed `-hide_banner -nostdin -v LEVEL`; `source` and
+            `target` name the files.
+        name: the file's name, for messages.
+        timeout: seconds for the whole run, the limit for a stream copy.
+        level: ffmpeg's `-v` log level; "error" keeps stderr to what went wrong.
+
+    Returns:
+        ffmpeg's stderr, decoded with replacement characters.
+
+    Raises:
+        TimeoutError: the run took longer than `timeout`; ffmpeg is killed by `subprocess`.
+        UnsafeError, RuntimeError, BrokenError: ffmpeg failed, as `failure` sorts it.
+    """
     command = [exe(), "-hide_banner", "-nostdin", "-v", level, *args]
     try:
         done = subprocess.run(command, capture_output=True, timeout=timeout, env=_env())
@@ -113,26 +148,63 @@ def run(args: list[str], *, name: str, timeout: float, level: str = "error") -> 
 
 def encode(args: list[str], *, name: str, duration: float | None, progress: Callable[..., Any] | None,
            feed: Iterable[bytes] | None = None) -> None:
-    """Run an encode, reporting seconds done to `progress(done, total)`, killed after STALL quiet seconds."""
+    """Run an encode, reporting seconds done to `progress(done, total)`, and kill it after STALL quiet seconds.
+
+    Args:
+        args: ffmpeg's arguments; the last one is the output file, and `-progress` goes before it.
+        name: the file's name, for messages.
+        duration: the media's length in seconds, the total `progress` gets; None when unknown.
+        progress: `progress(done, total)`, called with seconds encoded so far, or None for no report.
+        feed: raw frames written to ffmpeg's stdin, for an input that isn't a file; None for none.
+
+    Raises:
+        TimeoutError: ffmpeg made no progress for `STALL` seconds, and was killed.
+        UnsafeError, RuntimeError, BrokenError: ffmpeg failed, as `failure` sorts it.
+
+    Blocks the calling thread until the encode ends; `progress` runs on that thread.
+    """
+    # `-progress pipe:1` sends key=value lines to stdout; the output is then the last argument.
     with _started([*args[:-1], "-progress", "pipe:1", "-nostats", args[-1]], name=name, feed=feed) as (out, kick):
         for line in out:
             kick()
+            # out_time_us is in microseconds of output written, so /1e6 gives seconds.
             if line.startswith(b"out_time_us=") and line[12:].strip().isdigit() and progress:
                 done = int(line[12:]) / 1e6
                 progress(min(done, duration) if duration else done, duration)
 
 
 def frames_out(args: list[str], *, name: str, size: int, feed: Iterable[bytes] | None = None) -> Iterator[bytes]:
-    """Run ffmpeg writing raw frames of `size` bytes to its stdout, and yield each frame."""
+    """Run ffmpeg writing raw frames of `size` bytes to its stdout, and yield each frame.
+
+    Args:
+        args: ffmpeg's arguments, ending with a raw output to `pipe:1`.
+        name: the file's name, for messages.
+        size: the bytes in one frame, such as width x height x 3 for RGB.
+        feed: raw frames written to ffmpeg's stdin, for an input that isn't a file; None for none.
+
+    Yields:
+        Each whole frame, as `size` bytes, in order.
+
+    Raises:
+        TimeoutError: ffmpeg made no progress for `STALL` seconds. A failed run raises after the
+            last frame, once the generator is exhausted.
+    """
     with _started(args, name=name, feed=feed) as (out, kick):
         while frame := out.read(size):
             kick()
+            # A short read can only be the end of the stream, not a whole frame, so it is dropped.
             if len(frame) == size:
                 yield frame
 
 
 @contextmanager
 def _started(args: list[str], *, name: str, feed: Iterable[bytes] | None) -> Iterator[tuple[IO[bytes], Callable]]:
+    """Start ffmpeg with `args`, yield its stdout and a `kick` to call on each line, and check its exit when done.
+
+    A watcher thread kills ffmpeg after STALL quiet seconds, and a feeder thread writes `feed` to its
+    stdin. On exit, whatever happened, ffmpeg is killed if still running; a run that failed then
+    raises its stderr as the media error.
+    """
     # stderr goes to a file, so a chatty ffmpeg can't fill a pipe and deadlock.
     with tempfile.TemporaryFile() as errors, subprocess.Popen(
             [exe(), "-hide_banner", "-nostdin", "-v", "error", *args], env=_env(), stdout=subprocess.PIPE,
@@ -160,9 +232,11 @@ def _started(args: list[str], *, name: str, feed: Iterable[bytes] | None) -> Ite
 
 
 def _watch(process: subprocess.Popen, quiet: threading.Event, stalled: threading.Event) -> None:
+    """Kill `process` when `quiet` isn't set for STALL seconds, recording that in `stalled`; runs on its own thread."""
     # Each progress line or frame sets `quiet`; STALL seconds without one kill ffmpeg.
     while process.poll() is None:
         if not quiet.wait(STALL):
+            # Checked again: ffmpeg may have exited in the same moment the wait timed out.
             if process.poll() is None:
                 stalled.set()
                 process.kill()
@@ -171,22 +245,36 @@ def _watch(process: subprocess.Popen, quiet: threading.Event, stalled: threading
 
 
 def _feed(process: subprocess.Popen, chunks: Iterable[bytes]) -> None:
+    """Write `chunks` to `process`'s stdin, then close it; runs on its own thread."""
     assert process.stdin is not None
     try:
         for chunk in chunks:
             process.stdin.write(chunk)
         process.stdin.close()
     except (BrokenPipeError, OSError, ValueError):
+        # ffmpeg stopped reading (a broken pipe) or was killed; its exit status is the error to report, not this.
         pass
 
 
 def failure(name: str, stderr: str) -> Exception:
-    """The error for a failed run, named by ffmpeg's first message."""
+    """The error for a failed run, named by ffmpeg's first message.
+
+    Args:
+        name: the file's name, for the message.
+        stderr: ffmpeg's stderr from the failed run.
+
+    Returns:
+        `UnsafeError` when ffmpeg refused an input by the whitelist; `RuntimeError` when the
+        container can't hold a codec or header write failed, which is a setting rather than a
+        bad file; else `BrokenError` with ffmpeg's first message.
+    """
     lines = [re.sub(r"^\[[^]]+ @ 0x[0-9a-f]+\] ", "", line).strip() for line in stderr.splitlines()]
     lines = [line for line in lines if line and not line.startswith("Last message repeated")]
     first = lines[0] if lines else "ffmpeg failed"
+    # ffmpeg's wording for a refused input, from `-protocol_whitelist` or `-format_whitelist`.
     if "not on whitelist" in stderr:
         return _media.UnsafeError(f"{name}: refused by the input rules ({first})")
+    # These messages come from the muxer, and the code shows its last line rather than the first.
     if "supported in container" in stderr or "Could not write header" in stderr:
         return RuntimeError(f"{name}: {lines[-1]}")
     return _media.BrokenError(f"{name}: {first}")
@@ -200,7 +288,21 @@ def _env() -> dict[str, str]:
 
 
 def probe(path: Path, *, format: str | None) -> _media.Info:
-    """Info for a video or audio file from one ffmpeg run: the stream summary and ffmetadata."""
+    """Info for a video or audio file from one ffmpeg run: the stream summary and ffmetadata.
+
+    Args:
+        path: the file to read, passed to ffmpeg as a whitelisted `file:` input.
+        format: the format to report, given without its dot, such as "mp4"; None reports
+            ffmpeg's own reader name instead.
+
+    Returns:
+        The file's `Info`, with the video or audio fields that ffmpeg's summary named.
+
+    Raises:
+        TimeoutError: ffmpeg took longer than `PROBE_TIMEOUT` to open the file.
+        UnsafeError, RuntimeError, BrokenError: ffmpeg refused or failed to read it, or it has no
+            video or audio stream.
+    """
     # bitexact keeps ffmpeg from adding its own `encoder` tag to the metadata it prints.
     command = [exe(), "-hide_banner", "-nostdin", "-v", "info", *source(path), "-fflags", "+bitexact",
                "-f", "ffmetadata", "pipe:1"]
