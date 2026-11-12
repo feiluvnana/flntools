@@ -2,19 +2,24 @@
 
 What it fakes: the site and the browser. `fakes.collect` runs the routes and categories on a `FakeSite`,
 whose tab (`FeedSite`) delivers the pages' embedded results, the responses of a first load, and one
-batch of responses per scroll. No network and no browser.
+batch of responses per scroll, a response optionally with the request the page sent for it, which a
+replay sends again (its answers are the site's `html` fixtures). No network and no browser; a
+`back_off` only records.
 """
 
 import datetime
 import json
 import unittest
+from types import SimpleNamespace
+from typing import Any, NamedTuple
 from unittest import mock
+from urllib.parse import parse_qsl, urlencode
 
 from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
 from flnd.session import Options
-from flnd.source import FetchError, LoginError, Target, TargetError
+from flnd.source import FetchError, Target, TargetError
 from flnd.sources.fbk import Facebook, image_extension, media_items
 from shared import browser
 
@@ -219,8 +224,11 @@ class FeedPage:
 
     def deliver(self, batch):
         for result in batch:
+            # A `Sent` comes with the request the page sent for it, as Playwright's response has it.
+            data, response = (result.data, SimpleNamespace(request=result.request)) if isinstance(result, Sent) \
+                else (result, None)
             for handler in list(self.handlers):
-                handler(result, None)
+                handler(data, response)
 
     def scroll(self, *, until=None, **options):
         self.scrolled += 1
@@ -232,26 +240,47 @@ class FeedPage:
         self.deliver(self.early.pop(self._page.url, []))
 
 
-class FeedSite(FakeSite):
-    """A `FakeSite` whose tab delivers responses; see `FeedPage`."""
+class Sent(NamedTuple):
+    """A response a scroll brings, with the request the page sent for it."""
 
-    def __init__(self, *args, scrolls=(), early=(), redirects=(), **options):
+    data: Any
+    request: Any
+
+
+class FeedSite(FakeSite):
+    """A `FakeSite` whose tab delivers responses; see `FeedPage`.
+
+    Args:
+        lifted: what a `back_off` changes, as a block lifting would: `{url: page}` replaces those
+            pages, and every redirect goes.
+    """
+
+    def __init__(self, *args, scrolls=(), early=(), redirects=(), lifted=None, **options):
         super().__init__(*args, **options)
         self.feed = FeedPage(self, dict(scrolls), dict(early), dict(redirects))
+        self.lifted = lifted
 
     @property
     def page(self):
         return self.feed
 
+    def back_off(self, reason, *, retry_after=None):
+        super().back_off(reason, retry_after=retry_after)
+        if self.lifted is not None:
+            self._pages.update(self.lifted)
+            self.feed.redirects.clear()
 
-def read(text="fbk:example.page", *, pages=None, scrolls=None, early=None, redirects=None, seen=None, **options):
+
+def read(text="fbk:example.page", *, pages=None, scrolls=None, early=None, redirects=None, seen=None, lifted=None,
+         html=None, **options):
     """What the job would download for `text`, through a `FeedSite`; `options` are `Options`'."""
     def site(*args, **kwargs):
-        return FeedSite(*args, scrolls=scrolls or {}, early=early or {}, redirects=redirects or {}, **kwargs)
+        return FeedSite(*args, scrolls=scrolls or {}, early=early or {}, redirects=redirects or {}, lifted=lifted,
+                        **kwargs)
 
     with mock.patch("fakes.FakeSite", site):
         return collect(Facebook, text, pages=PROFILE_PAGES if pages is None else pages, options=Options(**options),
-                       seen=seen)
+                       seen=seen, html=html)
 
 
 # What fbk saved before the port, from the old `run(session)` on the same pages and scrolls, as (path, history key).
@@ -421,14 +450,106 @@ class ProfileTest(unittest.TestCase):
         saved = read("fbk:a", pages=pages, categories=("posts",), since=datetime.date(2023, 11, 16))
         self.assertEqual([s.key for s in saved], ["2"])
 
-    def test_being_blocked_stops_the_target(self):
+    def test_being_blocked_is_waited_out_and_the_page_loaded_again(self):
+        """flows.md #8: a block is seen, never mistaken for an empty tab, and waited out (the user's rule)."""
         pages = {f"{SITE}/a": "<html><body>You've been temporarily blocked from using this feature</body></html>"}
-        with self.assertRaisesRegex(FetchError, "temporarily blocked"):
-            read("fbk:a", pages=pages)
+        seen = Seen()
+        saved = read("fbk:a", pages=pages, seen=seen, categories=("posts",),
+                     lifted={f"{SITE}/a": embedded(header(), photo("1"))})
+        self.assertEqual(seen.back_offs, ["Facebook says you've been temporarily blocked"])
+        self.assertEqual(seen.visited, [f"{SITE}/a"] * 2)
+        self.assertEqual([s.key for s in saved], ["1"])
 
-    def test_a_login_page_stops_the_target(self):
-        with self.assertRaisesRegex(LoginError, "flnd login fbk"):
-            read("fbk:a", pages={}, redirects={f"{SITE}/a": f"{SITE}/login/?next=%2Fa"})
+    def test_a_login_page_is_waited_out_and_the_page_loaded_again(self):
+        seen = Seen()
+        saved = read("fbk:a", pages={}, seen=seen, categories=("posts",),
+                     redirects={f"{SITE}/a": f"{SITE}/login/?next=%2Fa"},
+                     lifted={f"{SITE}/a": embedded(header(), photo("1"))})
+        self.assertEqual(len(seen.back_offs), 1)
+        self.assertIn("flnd login fbk", seen.back_offs[0])
+        self.assertEqual([s.key for s in saved], ["1"])
+
+
+GRAPHQL = f"{SITE}/api/graphql/"
+
+
+def timeline_request(cursor="c1"):
+    """The timeline's next-page request as Playwright shows it: a form POST with its tokens."""
+    body = urlencode({"av": "42", "fb_dtsg": "dtsg", "lsd": "lsd", "doc_id": "9001",
+                      "fb_api_req_friendly_name": "ProfileCometTimelineFeedRefetchQuery",
+                      "variables": json.dumps({"count": 3, "cursor": cursor, "id": "42"})})
+    return SimpleNamespace(url=GRAPHQL, method="POST", post_data=body,
+                           headers={"content-type": "application/x-www-form-urlencoded", "x-fb-lsd": "lsd",
+                                    "x-fb-friendly-name": "ProfileCometTimelineFeedRefetchQuery",
+                                    "user-agent": "Chrome", "cookie": "c_user=42"})
+
+
+def info_line(cursor):
+    """A streamed line with the timeline's `page_info`; "" for the last page."""
+    return {"label": "ProfileCometTimelineFeed_user$stream$timeline_list_feed_units",
+            "data": {"page_info": {"has_next_page": bool(cursor), "end_cursor": cursor or None}}}
+
+
+def lines(*values):
+    return "\n".join(json.dumps(value) for value in values)
+
+
+class ReplayTest(unittest.TestCase):
+    def replayed(self, answers, *, tail=()):
+        """The posts tab: photo 1 embedded, photo 2 scrolled with its request, then the replies to the replay."""
+        pending = list(answers)
+        sent = []
+
+        def graphql(url, request):
+            sent.append(json.loads(dict(parse_qsl(request["data"]))["variables"])["cursor"])
+            return pending.pop(0) if pending else lines(photo("4"), info_line(""))
+
+        seen = Seen()
+        pages = {f"{SITE}/a": embedded(header(user_id="42"), photo("1", owner="42"))}
+        scrolls = {f"{SITE}/a": [[Sent(photo("2", owner="42"), timeline_request()),
+                                  Sent(info_line("c2"), timeline_request())], *tail]}
+        saved = read("fbk:a", pages=pages, scrolls=scrolls, seen=seen, categories=("posts",), html={GRAPHQL: graphql})
+        return SimpleNamespace(saved=saved, seen=seen, sent=sent)
+
+    def test_the_timelines_own_request_is_replayed_with_the_next_cursor(self):
+        run = self.replayed([lines(photo("3"), info_line("c3"))])
+        self.assertEqual(run.sent, ["c2", "c3"])
+        self.assertEqual([s.key for s in run.saved], ["1", "2", "3", "4"])
+        # Named and keyed as a scrolled tab's files: <date>_<id> under the tab, keyed by the id.
+        self.assertEqual([s.path for s in run.saved], [f"posts/2023-11-15_{n}.jpg" for n in "1234"])
+        method, url, options = run.seen.requests[0]
+        self.assertEqual((method, url, options["in_page"]), ("POST", GRAPHQL, True))
+        self.assertEqual(options["headers"], {"content-type": "application/x-www-form-urlencoded", "x-fb-lsd": "lsd",
+                                              "x-fb-friendly-name": "ProfileCometTimelineFeedRefetchQuery"})
+        form = dict(parse_qsl(options["data"]))
+        self.assertEqual((form["doc_id"], form["fb_dtsg"], form["lsd"]), ("9001", "dtsg", "lsd"))
+        self.assertIn("posts: 4 files found", run.seen.messages)
+
+    def test_a_blocked_replay_is_waited_out_and_asked_again(self):
+        run = self.replayed(['{"__dr": "CometErrorRoot.react"}'])
+        self.assertEqual(run.sent, ["c2", "c2"])
+        self.assertEqual(run.seen.back_offs, ["Facebook says you've been temporarily blocked"])
+        self.assertEqual([s.key for s in run.saved], ["1", "2", "4"])
+
+    def test_a_refused_replay_warns_once_and_scrolls_on(self):
+        run = self.replayed([FetchError("HTTP 400", status=400)], tail=[[photo("5", owner="42")]])
+        self.assertEqual([m for m in run.seen.messages if m.startswith("!")],
+                         ["! posts: the page's API refused a replay; scrolling instead"])
+        self.assertEqual([s.key for s in run.saved], ["1", "2", "5"])
+
+    def test_an_answer_without_a_next_page_marker_is_a_refusal(self):
+        run = self.replayed([lines(photo("3"))], tail=[[photo("5", owner="42")]])
+        self.assertTrue(any("refused a replay" in m for m in run.seen.messages))
+        self.assertEqual([s.key for s in run.saved], ["1", "2", "5"])
+
+    def test_a_comment_lists_page_info_is_not_the_tabs(self):
+        from flnd.sources.fbk import page_info
+        comment = {"data": {"node": {"story": {"feedback": {"comments": {"page_info": {"has_next_page": True,
+                                                                                         "end_cursor": "x"}}}}}}}
+        self.assertIsNone(page_info(comment))
+        self.assertEqual(page_info(info_line("c9")), (True, "c9"))
+        self.assertEqual(page_info({"data": {"node": {"timeline_list_feed_units": {
+            "page_info": {"has_next_page": False, "end_cursor": "z"}}}}}), (False, "z"))
 
 
 if __name__ == "__main__":

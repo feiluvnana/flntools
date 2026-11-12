@@ -3,12 +3,20 @@
 How it works: everything is read in a browser logged in with the saved cookies.
   1. The route loads the profile page once. Its header, embedded in the HTML (`meta_results`), gives
      the profile and cover photos, the story buckets, and which tabs the profile has.
-  2. Each tab category goes to its tab and scrolls it to its end (`watch_responses`). The Comet
-     GraphQL results the page embeds and the ones its scrolling loads are read for photos (the
-     largest image) and videos (the DASH manifest's best video, merged with its audio, or else the
-     HD progressive URL), each with its real date. One media item is one post of one file.
+  2. Each tab category goes to its tab, reads the Comet GraphQL results the page embeds, and
+     scrolls only until the page sends its own next-page `/api/graphql/` POST. That request (its
+     `doc_id`, `fb_dtsg`, `lsd` and `variables`) is kept and sent again from the tab with each
+     new `cursor` (`Replay`), one small request a page. A replay Facebook refuses (not a block)
+     warns once, and the tab is scrolled to its end instead, as before. Results are read for
+     photos (the largest image) and videos (the DASH manifest's best video, merged with its audio,
+     or else the HD progressive URL), each with its real date. One media item is one post of one file.
   3. The albums category opens each album its tab lists and scrolls it.
-  4. The stories category reads each story bucket from its page.
+  4. The stories category reads each story bucket from its page: there is one per profile, and its
+     page holds them all.
+
+A block is seen and waited out (`site.back_off`), never mistaken for the end of a tab: a page that
+says "temporarily blocked", a GraphQL answer that is Comet's error page (`CometErrorRoot.react`),
+and a page or answer sent to `/login`. The request is then made again, as long as it takes.
 
 The site's quirks it works around:
   - the response bodies are newline-delimited JSON, so they are read with `lines=True`;
@@ -29,18 +37,23 @@ A file is keyed by its id in the history, and a profile picture by its path. Dat
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import PurePosixPath
-from typing import Any, Iterator, NamedTuple
+from typing import TYPE_CHECKING, Any, Callable, Generator, Iterator, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
-from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
+from flnd.source import FetchError, File, Post, Site, Source, day, pages, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import meta_results
+from flnd.sources.common.replay import Replay
 from flnd.sources.common.watch import watch_responses
 from shared import fmt, selector
+
+if TYPE_CHECKING:
+    from shared import http
 
 SITE = "https://www.facebook.com"
 # What a single post, reel or video is refused with: only a profile is read.
@@ -84,6 +97,18 @@ FEED = "graphql"
 FIRST_STAMP = 100_000_000
 # What the page says when Facebook stops a session that went too fast. Seen 2025; gallery-dl stops on it too.
 BLOCKED = "temporarily blocked"
+# What the countdown says while a block or a login wall is waited out.
+TEMPORARILY_BLOCKED = "Facebook says you've been temporarily blocked"
+LOGIN_WALL = "Facebook asked for a login (if it keeps asking, run `flnd login fbk` again)"
+# What a GraphQL answer holds instead of data when Facebook blocks it: Comet's error page (gallery-dl's sign).
+COMET_ERROR = "CometErrorRoot.react"
+# The variable a profile tab's pagination query takes its cursor in.
+CURSOR = "cursor"
+# Facebook's anti-JSON-hijacking prefix, which some answers start with.
+HIJACK_PREFIX = "for (;;);"
+# How deep under a line's `data` a tab's `page_info` sits (data → node → connection → page_info); a
+# deeper one is a comment list's or a nested story's, which isn't the tab's next page.
+PAGE_INFO_DEPTH = 3
 
 
 class Header(NamedTuple):
@@ -131,6 +156,8 @@ class Facebook(Source):
     name = "Facebook"
     domains = ("facebook.com", "fb.com", "fb.watch")
     needs = ("c_user", "xs")
+    # No known limit, and its block is the harshest (plan/phase-6/pace.md), so it starts slower and learns.
+    pace = 1.5
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"), `album` the
     # album's title when it has one. Each file is named by `post_of`, which spells the extension exactly
     # (the CDN's `stp=dst-<format>`), so `filename` only names a file given without a name.
@@ -154,11 +181,8 @@ class Facebook(Source):
     def user(self, site: Site, user: str) -> Profile:
         """A profile, by its user name or its id: `Target("fbk", "user", "example.page")`.
 
-        Loads the profile page once, and reads its header; every category receives the result.
-
-        Raises:
-            FetchError: Facebook says the session is temporarily blocked.
-            LoginError: Facebook sent the browser to its login page.
+        Loads the profile page once, and reads its header; every category receives the result. A
+        block or a login wall on the way is waited out (`read_page`).
         """
         url = f"{SITE}/{user}"
         # Subscribed before the page loads, so the responses of its first load are kept as well.
@@ -272,22 +296,26 @@ def read_page(site: Site, url: str) -> list[Any] | None:
         The results, which are empty for a page that loaded without any (its responses may still
         carry the feed); None when the tab is not on the page, so there is nothing to scroll.
 
-    Raises:
-        FetchError: the page says the session is temporarily blocked. A hard stop, never waited out:
-            more requests only prolong a block.
-        LoginError: Facebook sent the browser to its login page, so the saved login no longer works.
+    A page that says the session is temporarily blocked, or that Facebook sent to its login page,
+    is waited out with `site.back_off` and loaded again, as long as it takes (the user decided on
+    2026-11-12 that flnd waits out every block and challenge). A login that really expired keeps
+    the countdown going, which says to log in again.
     """
-    results = meta_results(site, url)
-    if results:
-        return results
-    # A page with no results is not loaded, or Facebook's refusal, or just a page without any: the tab says which.
-    page = site.page
-    if "/login" in urlsplit(page.url).path:
-        raise LoginError("fbk: Facebook asked for a login; run `flnd login fbk` again")
-    if BLOCKED in page.document.text.lower():
-        raise FetchError("fbk: Facebook says you've been temporarily blocked; wait a while before downloading again")
-    # `Site.goto` keeps the tab where it was when a page fails, so the tab not being on the page means it didn't load.
-    return [] if _place(page.url) == _place(url) else None
+    while True:
+        results = meta_results(site, url)
+        if results:
+            return results
+        # A page with no results is not loaded, or Facebook's refusal, or just a page without any: the tab says which.
+        page = site.page
+        if "/login" in urlsplit(page.url).path:
+            site.back_off(LOGIN_WALL)
+            continue
+        if BLOCKED in page.document.text.lower():
+            site.back_off(TEMPORARILY_BLOCKED)
+            continue
+        # `Site.goto` keeps the tab where it was when a page fails, so the tab not being on the page means it didn't load.
+        return [] if _place(page.url) == _place(url) else None
+
 
 
 def _place(url: str) -> tuple[str, str]:
@@ -307,12 +335,24 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
 
     A path-less tab (posts) is the profile page itself: its results are the ones the route already read, which
     are read with no owner filter (the header that names the owner came from them).
+
+    The tab is scrolled until the page sends its own next-page request, which is then replayed with
+    each cursor. A tab that has no further page, or whose requests can't be replayed, is scrolled to
+    its end; so is one whose replay is refused, after one warning.
     """
     path = tab_path(tab, profile.paths)
     if path is None:
         site.info("{tab}: this profile has no such tab", tab=tab.category)
         return
-    found = 0
+    found = [0]
+
+    def posts(result: Any, owner: str | None) -> Iterator[Post]:
+        for post in media_posts(result, tab.category, owner=owner):
+            found[0] += 1
+            yield post
+
+    replay: Replay | None = None
+    cursor: str | None = None
     with watch_responses(site, FEED, scroll=True, lines=True) as responses:
         if path or profile.results is None:
             results = read_page(site, f"{profile.url}/{path}")
@@ -323,14 +363,127 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
         else:
             first, owner = [*profile.results, *profile.early], None
         for result in first:
-            for post in media_posts(result, tab.category, owner=owner):
-                found += 1
-                yield post
+            yield from posts(result, owner)
         for result in responses:
-            for post in media_posts(result, tab.category, owner=profile.owner):
-                found += 1
-                yield post
-    site.info("{tab}: {files} found", tab=tab.category, files=fmt.count(found, "file"))
+            yield from posts(result, profile.owner)
+            captured = Replay.of(responses.request, cursor=CURSOR)
+            state = page_info(result)
+            if captured is None or state is None:
+                continue
+            # The other lines of this response are here already; one of them may hold the next page.
+            for rest in responses.arrived():
+                yield from posts(rest, profile.owner)
+                state = page_info(rest) or state
+            if state[0]:
+                replay, cursor = captured, state[1]
+            break
+    if replay is not None and cursor:
+        refused = yield from replayed(site, replay, cursor, lambda line: posts(line, profile.owner))
+        if refused:
+            # The tab is still where the scroll left it: scrolling on reads the rest; a repeat has the same key.
+            site.warn("{tab}: the page's API refused a replay; scrolling instead", tab=tab.category)
+            with watch_responses(site, FEED, scroll=True, lines=True) as responses:
+                for result in responses:
+                    yield from posts(result, profile.owner)
+    site.info("{tab}: {files} found", tab=tab.category, files=fmt.count(found[0], "file"))
+
+
+def replayed(site: Site, replay: Replay, cursor: str,
+             posts: Callable[[Any], Iterator[Post]]) -> Generator[Post, None, bool]:
+    """A tab's pages from `cursor` on, by replay; the generator's value is True when a replay was refused.
+
+    Args:
+        site: the target's site.
+        replay: the tab's own next-page request.
+        cursor: the first page's cursor.
+        posts: gives the posts of one result line.
+
+    A block is waited out and the same page asked again (`replay_lines`); a refusal, or an answer
+    without a next-page marker, is a refusal, and the caller scrolls instead.
+    """
+    try:
+        for lines in pages(lambda following: replay_lines(site, replay, following or cursor), next_cursor):
+            for line in lines:
+                yield from posts(line)
+    except FetchError:
+        return True
+    return False
+
+
+def replay_lines(site: Site, replay: Replay, cursor: str) -> list[Any]:
+    """One page of a tab by replay, as its JSON lines; a block or a login wall waited out and the page asked again.
+
+    Raises:
+        FetchError: the replay was refused, or its answer holds no `page_info`, so it isn't a page of the tab.
+    """
+    while True:
+        try:
+            response = replay.send(site, cursor)
+        except FetchError as error:
+            if error.response is not None and blocked(error.response):
+                site.back_off(TEMPORARILY_BLOCKED)
+                continue
+            raise
+        if "/login" in urlsplit(response.url).path:
+            site.back_off(LOGIN_WALL)
+            continue
+        if blocked(response):
+            site.back_off(TEMPORARILY_BLOCKED)
+            continue
+        found = json_lines(response.text)
+        if not any(page_info(line) is not None for line in found):
+            raise FetchError("its answer holds no next page")
+        return found
+
+
+def blocked(response: http.Response) -> bool:
+    """Whether an answer is Facebook's block: Comet's error page, or its "temporarily blocked" words."""
+    text = response.text
+    return COMET_ERROR in text or BLOCKED in text.lower()
+
+
+def json_lines(text: str) -> list[Any]:
+    """An answer's newline-delimited JSON, one value a line; a line that isn't JSON is left out."""
+    found = []
+    for line in text.removeprefix(HIJACK_PREFIX).splitlines():
+        if not line.strip():
+            continue
+        try:
+            found.append(json.loads(line))
+        # Facebook mixes in lines that aren't JSON now and then; the rest of the answer still counts.
+        except ValueError:
+            continue
+    return found
+
+
+def page_info(line: Any) -> tuple[bool, str | None] | None:
+    """Whether a result line says the tab has a next page, and its cursor; None when the line says nothing.
+
+    The `page_info` is looked for in `data` at most 3 objects deep, never inside a list, which is
+    where the tab's connection keeps it and a comment list's never is.
+    """
+    level = [line.get("data")] if isinstance(line, dict) else []
+    for _ in range(PAGE_INFO_DEPTH + 1):
+        nested = []
+        for node in level:
+            if not isinstance(node, dict):
+                continue
+            info = node.get("page_info")
+            if isinstance(info, dict) and ("end_cursor" in info or "has_next_page" in info):
+                cursor = info.get("end_cursor")
+                return bool(info.get("has_next_page") and cursor), str(cursor) if cursor else None
+            nested += [value for value in node.values() if isinstance(value, dict)]
+        level = nested
+    return None
+
+
+def next_cursor(lines: list[Any]) -> str | None:
+    """The cursor of the page after these lines; None when it is the last."""
+    for line in lines:
+        state = page_info(line)
+        if state is not None:
+            return state[1] if state[0] else None
+    return None
 
 
 def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str | None = None) -> Iterator[Post]:
