@@ -104,6 +104,29 @@ class CompressFileTest(EngineCase):
 
 
 @needs_pillow
+class RealPhotoTest(EngineCase):
+    """Through the real `media.open`, not `FakeMedia`: compressing must never swap a file for one that isn't smaller."""
+
+    def test_an_already_small_photo_stays_byte_for_byte_and_is_recorded_as_not_compressed(self):
+        import io
+
+        from PIL import Image
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), (200, 30, 30)).save(buffer, "JPEG", quality=5, optimize=True)
+        folder = self.home / "files"
+        folder.mkdir(parents=True)
+        path = folder / "tiny.jpg"
+        path.write_bytes(buffer.getvalue())
+        before = path.read_bytes()
+        fields = compress_file(path, "image", Choice(None, "low"), set())
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(fields, {"path": str(path), "size": len(before), "compressed": "none",
+                                  "original_size": len(before)})
+        self.assertEqual(sorted(entry.name for entry in folder.iterdir()), ["tiny.jpg"])
+
+
+@needs_pillow
 class EngineCompressTest(EngineCase):
     def saver(self, *names):
         def run(session):

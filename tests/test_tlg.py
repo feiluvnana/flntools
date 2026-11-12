@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fakes import FakeSession
+from playwright.sync_api import Error as PlaywrightError
 from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswordNeededError
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
@@ -24,7 +25,7 @@ from flnd.engine import Engine
 from flnd.session import Options
 from flnd.source import LoginError, Target, TargetError
 from flnd.sources import SOURCES
-from flnd.sources.tlg import QR_CODES, Telegram, flood_wait, from_web_storage, half_blocks
+from flnd.sources.tlg import QR_CODES, Telegram, flood_wait, from_web_storage, half_blocks, read_telegram_web
 from shared import fmt
 
 DAY = datetime.date(2026, 1, 5)
@@ -213,6 +214,50 @@ def decode_session(string):
     # Telethon's StringSession: version "1", then base64 of dc (1 byte), IPv4 (4), port (2) and the 256-byte key.
     dc, ip, port, key = struct.unpack(">B4sH256s", base64.urlsafe_b64decode(string[1:]))
     return dc, ".".join(map(str, ip)), port, key
+
+
+class FakeTab:
+    def __init__(self, url, evaluate):
+        self.url, self.raw = url, SimpleNamespace(evaluate=evaluate)
+
+
+class FakeChrome:
+    def __init__(self, tab):
+        self.tab = tab
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return None
+
+    def open(self, url, **options):
+        return self.tab
+
+
+class ReadTelegramWebTest(unittest.TestCase):
+    def read(self, tab):
+        # `browser.open` sets PlaywrightError when it starts the driver; the fake open does not.
+        with mock.patch("shared._browser.open", lambda **options: FakeChrome(tab)), \
+                mock.patch("shared._browser.PlaywrightError", PlaywrightError):
+            return read_telegram_web()
+
+    def test_the_storage_of_a_tab_that_reached_telegram_web(self):
+        self.assertEqual(self.read(FakeTab("https://web.telegram.org/k/", lambda script: {"dc": "2"})), {"dc": "2"})
+
+    def test_a_failed_navigation_is_a_login_error_not_a_traceback(self):
+        def evaluate(script):
+            raise AssertionError("a tab still on about:blank must not be read")
+
+        with self.assertRaisesRegex(LoginError, "could not open Telegram Web.*try a QR code instead"):
+            self.read(FakeTab("about:blank", evaluate))
+
+    def test_a_playwright_error_while_reading_is_a_login_error(self):
+        def evaluate(script):
+            raise PlaywrightError("Execution context was destroyed")
+
+        with self.assertRaisesRegex(LoginError, "can't read Telegram Web in Chrome.*try a QR code instead"):
+            self.read(FakeTab("https://web.telegram.org/a/", evaluate))
 
 
 class WebStorageTest(unittest.TestCase):

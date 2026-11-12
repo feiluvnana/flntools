@@ -856,6 +856,22 @@ class CookiesTest(BrowserCase):
         self.assertNotIn("s3cr3t-value", self.lines()[0])
 
 
+class PageContextTest(unittest.TestCase):
+    def test_with_closes_the_tab_even_when_the_block_raises(self):
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                closed = []
+                tab = browser.Page(SimpleNamespace(close=lambda: closed.append(1)), None)  # type: ignore[arg-type]
+                try:
+                    with tab as inside:
+                        self.assertIs(inside, tab)
+                        if fails:
+                            raise KeyError("x")
+                except KeyError:
+                    self.assertTrue(fails)
+                self.assertEqual(closed, [1])
+
+
 class SubscriptionTest(unittest.TestCase):
     def test_stop_runs_once_and_with_stops(self):
         stops = []

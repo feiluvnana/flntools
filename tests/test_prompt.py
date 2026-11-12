@@ -33,7 +33,7 @@ class PromptCase(unittest.TestCase):
     def tearDown(self):
         self.scope.__exit__(None, None, None)
         prompt.keymap = prompt.Keymap()
-        prompt.keys = True
+        prompt.keys_shown = True
 
     def keys(self, *names):
         self.screen.readkey = iter(names).__next__
@@ -126,7 +126,7 @@ class KeysLineTest(PromptCase):
         self.assertEqual(self.frames(), ["┃ Name", "┃ > x", "✓ Name: x"])
 
     def test_off_everywhere(self):
-        prompt.keys = False
+        prompt.keys_shown = False
         self.keys("enter", "enter")
         prompt.choose("Pick", ["a"])
         prompt.choose("Pick", ["a"], keys=True)

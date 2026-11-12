@@ -431,6 +431,7 @@ class Page:
         title = tab.document.css("h1").text
 
     Made by `Browser.open` or `Browser.pages`, not directly. Use it only on the browser's thread.
+    `with chrome.open(url) as tab:` closes the tab at the end of the block.
     """
 
     def __init__(self, raw: RawPage, browser: Browser):
@@ -764,6 +765,12 @@ class Page:
     def title(self) -> str:
         """The page's `<title>`, or "" without one."""
         return self.raw.title()
+
+    def __enter__(self) -> Page:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def close(self) -> None:
         """Close the tab."""

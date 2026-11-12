@@ -24,7 +24,7 @@ import textwrap
 import time
 import unicodedata
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterator, Literal, NamedTuple
 
 import shared
@@ -73,9 +73,11 @@ class LogRecord(NamedTuple):
     bar: Bar | None = None
 
 
-class Bar(NamedTuple):
+# A dataclass, not a NamedTuple: a tuple's own `count` method would clash with the `count` field.
+@dataclass(frozen=True)
+class Bar:
     label: str
-    done: float
+    count: float
     total: float | None
     caption: str
     finished: bool
@@ -339,15 +341,15 @@ def _bar_cells(theme: Theme, bar: Bar) -> str:
             return ""
         frames = theme.glyphs.spin
         return frames[int(time.monotonic() * 10) % len(frames)]
-    done = max(bar.done, 0)
+    done = max(bar.count, 0)
     filled = BAR_CELLS if bar.total <= 0 else round(BAR_CELLS * min(done, bar.total) / bar.total)
     return theme.glyphs.bar.full * filled + theme.glyphs.bar.empty * (BAR_CELLS - filled)
 
 
 def _count(bar: Bar) -> str:
     if bar.total is not None:
-        return f"{bar.show(bar.done)}/{bar.show(bar.total)}"
-    return bar.show(bar.done) if bar.done > 0 else ""
+        return f"{bar.show(bar.count)}/{bar.show(bar.total)}"
+    return bar.show(bar.count) if bar.count > 0 else ""
 
 
 def detect_color(stream) -> ColorDepth:

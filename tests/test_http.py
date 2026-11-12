@@ -241,6 +241,19 @@ class ResponseTest(unittest.TestCase):
         self.assertIs(page.json, page.json)
         self.assertIs(page.html, page.html)
 
+    def test_hashes_by_identity_and_passes_between_threads(self):
+        page = http.Response(200, "https://example.com/", {"A": "1"}, b"x")
+        same = http.Response(200, "https://example.com/", {"A": "1"}, b"x")
+        self.assertEqual(hash(page), hash(page))
+        self.assertEqual({page: 1}[page], 1)
+        self.assertEqual(len({page, same}), 2)
+        self.assertNotEqual(page, same)
+        seen = []
+        thread = threading.Thread(target=lambda: seen.extend([page.status, page.text, hash(page)]))
+        thread.start()
+        thread.join()
+        self.assertEqual(seen, [200, "x", hash(page)])
+
     def test_frozen_with_read_only_headers(self):
         page = http.Response(200, "https://example.com/", {"A": "1"})
         with self.assertRaises(AttributeError):

@@ -140,7 +140,7 @@ class ChangedError(Error, shared.BrokenError):
     """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Response:
     """One HTTP response with its whole body read: status, URL, headers, and the body as text, JSON or HTML.
 
@@ -154,6 +154,10 @@ class Response:
     threads. `text`, `json` and `html` are worked out on first read and kept, so reading one twice
     costs nothing and a response never fetched as HTML never loads parsel. Two threads reading the
     same one for the first time at once may each work it out; they get equal values.
+
+    Two responses are equal only when they are the same object, and a response hashes by identity,
+    so it can be a dict key or a set member. The headers are an unhashable mapping, so a field-by-field
+    hash isn't possible; compare `status`, `url` or `content` when that is what you mean.
 
     Args:
         status: the HTTP status, such as 200.

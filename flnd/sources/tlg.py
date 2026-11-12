@@ -260,12 +260,24 @@ async def two_step(session: Session, client: Any) -> None:
 
 def read_telegram_web() -> dict[str, str]:
     """Telegram Web's local storage, from a copy of Chrome's default profile, in a browser nobody sees."""
+    from urllib.parse import urlparse
+
     from shared import browser
 
     try:
         with browser.open(profile="Default", headless=True) as chrome:
             page = chrome.open(TELEGRAM_WEB, idle=True)
-            return page.raw.evaluate("Object.assign({}, localStorage)")
+            # `Browser.open` logs a failed navigation and returns the tab still on about:blank, whose
+            # evaluate would raise; so check where the tab is and say it plainly.
+            if urlparse(page.url).hostname != urlparse(TELEGRAM_WEB).hostname:
+                raise LoginError("tlg: Chrome could not open Telegram Web; check the connection, "
+                                 "or try a QR code instead")
+            try:
+                return page.raw.evaluate("Object.assign({}, localStorage)")
+            # Playwright's Error is what evaluate raises when the tab navigated away or closed meanwhile;
+            # `browser.PlaywrightError` is that class, which sources may not import, and is set once open has run.
+            except browser.PlaywrightError as error:
+                raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None
     except (OSError, RuntimeError, ValueError) as error:
         raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None
 

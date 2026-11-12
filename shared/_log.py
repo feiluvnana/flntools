@@ -168,14 +168,14 @@ class Progress:
     made under the screen's lock, so two threads advancing one row lose no count.
     """
 
-    def __init__(self, label: str, total: float | None, show: Callable[[Any], str], group: Group):
+    def __init__(self, label: str, total: float | None, show: Callable[[Any], str], _group: Group):
         self.label = label
-        self.show = show
+        self._show = show
         self._total = total
         self._caption = ""
         self._count: float = 0
-        self._group = group
-        self.outcome: str | None = None
+        self._group = _group
+        self._outcome: str | None = None
 
     @property
     def count(self) -> float:
@@ -184,14 +184,19 @@ class Progress:
 
     @count.setter
     def count(self, value: float) -> None:
-        with self._group.live.screen.lock:
+        with self._group._live.screen.lock:
             self._count = max(value, 0)
-            self._group.changed()
+            self._group._redraw()
+
+    @property
+    def outcome(self) -> str | None:
+        """How the row ended, "ok" or "error"; None while it runs."""
+        return self._outcome
 
     @property
     def finished(self) -> bool:
         """Whether the row has ended, at ok or at error."""
-        return self.outcome is not None
+        return self._outcome is not None
 
     @property
     def total(self) -> float | None:
@@ -200,9 +205,9 @@ class Progress:
 
     @total.setter
     def total(self, value: float | None) -> None:
-        with self._group.live.screen.lock:
+        with self._group._live.screen.lock:
             self._total = value
-            self._group.changed()
+            self._group._redraw()
 
     @property
     def caption(self) -> str:
@@ -211,9 +216,9 @@ class Progress:
 
     @caption.setter
     def caption(self, value: str) -> None:
-        with self._group.live.screen.lock:
+        with self._group._live.screen.lock:
             self._caption = value
-            self._group.changed()
+            self._group._redraw()
 
     def advance(self, n: float = 1) -> None:
         """Add `n` to `count`, at once, so threads advancing one row lose no count.
@@ -221,7 +226,7 @@ class Progress:
         Args:
             n: how much more is done, in the unit of `total`; a negative `n` takes back, down to 0.
         """
-        with self._group.live.screen.lock:
+        with self._group._live.screen.lock:
             self.count = self._count + n
 
     def finish(self) -> None:
@@ -233,17 +238,17 @@ class Progress:
         self._end("error")
 
     def _end(self, outcome: str) -> None:
-        with self._group.live.screen.lock:
+        with self._group._live.screen.lock:
             if self.finished:
                 return
-            self.outcome = outcome
+            self._outcome = outcome
             if outcome == "ok":
                 self._caption = ""
-            self._group.changed(force=True)
+            self._group._redraw(force=True)
 
     def _record(self) -> LogRecord:
-        level = "info" if self.outcome is None else self.outcome
-        view = Bar(self.label, self._count, self._total, self._caption, self.finished, self.show)
+        level = "info" if self._outcome is None else self._outcome
+        view = Bar(self.label, self._count, self._total, self._caption, self.finished, self._show)
         return LogRecord(level, self.label, view)
 
 
@@ -257,11 +262,11 @@ class Group:
     """
 
     def __init__(self, theme: Theme, title: str):
-        self.theme = theme
-        self.title = title
-        self.bars: list[Progress] = []
-        self.outcome: str | None = None
-        self.live = live_area(theme.screen)
+        self._theme = theme
+        self._title = title
+        self._bars: list[Progress] = []
+        self._outcome: str | None = None
+        self._live = live_area(theme.screen)
 
     def add(self, label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress:
         """Open a row at the bottom of the group, and return it.
@@ -272,29 +277,29 @@ class Group:
             show: how a count and the total are written, such as `fmt.size`.
         """
         bar = Progress(label, total, show, self)
-        with self.live.screen.lock:
-            self.bars.append(bar)
-        self.changed(force=True)
-        self.live.start_spinner()
+        with self._live.screen.lock:
+            self._bars.append(bar)
+        self._redraw(force=True)
+        self._live.start_spinner()
         return bar
 
-    def changed(self, force: bool = False) -> None:
+    def _redraw(self, force: bool = False) -> None:
         """Redraw the live area, at most every 0.1 s unless `force`."""
-        self.live.changed(force)
+        self._live.redraw(force)
 
-    def rows(self) -> list[tuple[str, str]]:
+    def _rows(self) -> list[tuple[str, str]]:
         """(level, drawn line) for the title row and each bar row."""
-        records = [bar._record() for bar in self.bars]
-        if self.title:
-            records.insert(0, LogRecord("info" if self.outcome is None else self.outcome, self.title))
-        return [(record.level, render(self.theme, record)) for record in records]
+        records = [bar._record() for bar in self._bars]
+        if self._title:
+            records.insert(0, LogRecord("info" if self._outcome is None else self._outcome, self._title))
+        return [(record.level, render(self._theme, record)) for record in records]
 
-    def end(self, outcome: str) -> None:
+    def _end(self, outcome: str) -> None:
         """End every unfinished row and the title at this outcome."""
-        with self.live.screen.lock:
-            for bar in self.bars:
+        with self._live.screen.lock:
+            for bar in self._bars:
                 bar._end(outcome)
-            self.outcome = outcome
+            self._outcome = outcome
 
 
 class LiveArea:
@@ -317,7 +322,7 @@ class LiveArea:
     def open(self, group: Group) -> None:
         with self.screen.lock:
             self.groups.append(group)
-        self.changed(force=True)
+        self.redraw(force=True)
 
     def close(self, group: Group) -> None:
         """Remove a group's rows and write its final lines above the live area.
@@ -327,7 +332,7 @@ class LiveArea:
         with self.screen.lock:
             self.groups = [open_group for open_group in self.groups if open_group is not group]
             quiet = log.level == "quiet"
-            self.write_lines([line for level, line in group.rows() if not quiet or level == "error"])
+            self.write_lines([line for level, line in group._rows() if not quiet or level == "error"])
 
     def write_lines(self, lines: list[str]) -> None:
         with self.screen.lock:
@@ -339,7 +344,7 @@ class LiveArea:
                 text = self._erase() + text + self._draw_rows()
             self.screen.write(text)
 
-    def changed(self, force: bool = False) -> None:
+    def redraw(self, force: bool = False) -> None:
         with self.screen.lock:
             if not self.screen.tty or self.asking_thread is not None:
                 return
@@ -377,10 +382,10 @@ class LiveArea:
                 if not self._has_spinner():
                     self.spinner = None
                     return
-                self.changed(force=True)
+                self.redraw(force=True)
 
     def _has_spinner(self) -> bool:
-        return any(bar.total is None and not bar.finished for group in self.groups for bar in group.bars)
+        return any(bar.total is None and not bar.finished for group in self.groups for bar in group._bars)
 
     def _erase(self) -> str:
         erase = f"\r\x1b[{self.drawn_rows}A\x1b[J" if self.drawn_rows else ""
@@ -391,7 +396,7 @@ class LiveArea:
         width = self.screen.width
         # Under log.level "quiet", running bars are not drawn at all.
         groups = [] if log.level == "quiet" else self.groups
-        rows = _cap_rows([fit(row, width) for group in groups for _, row in group.rows()], self.screen.height)
+        rows = _cap_rows([fit(row, width) for group in groups for _, row in group._rows()], self.screen.height)
         self.drawn_rows = len(rows)
         self.last_draw = time.monotonic()
         return "".join(row + "\n" for row in rows)
@@ -424,16 +429,16 @@ def render(theme: Theme, record: LogRecord) -> str:
 
 @contextmanager
 def _ending(group: Group) -> Iterator[None]:
-    group.live.open(group)
-    group.live.start_spinner()
+    group._live.open(group)
+    group._live.start_spinner()
     try:
         yield
     except BaseException:
-        group.end("error")
-        group.live.close(group)
+        group._end("error")
+        group._live.close(group)
         raise
-    group.end("ok")
-    group.live.close(group)
+    group._end("ok")
+    group._live.close(group)
 
 
 def _field_names(message: str) -> set[str]:

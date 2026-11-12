@@ -199,15 +199,7 @@ shared.log: Log
 shared.log.Error(shared.Error)
 shared.log.Group(theme: Theme, title: str)
 shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress
-shared.log.Group.bars: attribute -> list[Progress]
-shared.log.Group.changed(force: bool = False) -> None
-shared.log.Group.end(outcome: str) -> None
-shared.log.Group.live: attribute
-shared.log.Group.outcome: attribute -> str | None
-shared.log.Group.rows() -> list[tuple[str, str]]
-shared.log.Group.theme: attribute
-shared.log.Group.title: attribute
-shared.log.Progress(label: str, total: float | None, show: Callable[[Any], str], group: Group)
+shared.log.Progress(label: str, total: float | None, show: Callable[[Any], str], _group: Group)
 shared.log.Progress.advance(n: float = 1) -> None
 shared.log.Progress.caption: property, settable -> str
 shared.log.Progress.count: property, settable -> float
@@ -215,8 +207,7 @@ shared.log.Progress.fail() -> None
 shared.log.Progress.finish() -> None
 shared.log.Progress.finished: property -> bool
 shared.log.Progress.label: attribute
-shared.log.Progress.outcome: attribute -> str | None
-shared.log.Progress.show: attribute
+shared.log.Progress.outcome: property -> str | None
 shared.log.Progress.total: property, settable -> float | None
 shared.log.debug(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.error(message: str = '', /, *args: Any, **fields: Any) -> None
@@ -296,7 +287,7 @@ shared.prompt.choose(message: str, options: Sequence | Mapping, *, many: bool = 
 shared.prompt.confirm(message: str, *, description: str = '', default: bool = False, yes: str = 'Yes', no: str = 'No', keys: bool | None = None, validate: Validate | None = None) -> bool
 shared.prompt.defaults() -> Iterator[None]
 shared.prompt.keymap: Keymap
-shared.prompt.keys: bool
+shared.prompt.keys_shown: bool
 shared.selector: module
 shared.selector.BrokenError(shared.selector.Error, shared.BrokenError)
 shared.selector.Error(shared.Error)
@@ -327,9 +318,9 @@ shared.style.modifiers: field -> frozenset
 shared.style.paint(text: str, depth: str) -> str
 shared.style.strip(text: str) -> str
 shared.theme: Theme
-shared.theme.Bar(label: str, done: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str)
+shared.theme.Bar(label: str, count: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str)
 shared.theme.Bar.caption: field -> str
-shared.theme.Bar.done: field -> float
+shared.theme.Bar.count: field -> float
 shared.theme.Bar.finished: field -> bool
 shared.theme.Bar.label: field -> str
 shared.theme.Bar.show: field -> Callable[[Any], str]

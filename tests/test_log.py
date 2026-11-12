@@ -185,7 +185,7 @@ class PipeProgressTest(LogCase):
                 ins.caption = "reel 3"
                 twt.finish()
                 fbk.fail()
-                self.assertEqual(jobs.bars, [ins, twt, fbk])
+                self.assertEqual(jobs._bars, [ins, twt, fbk])
                 raise RuntimeError
         self.assertEqual(self.lines(), [
             "✗ download",
@@ -246,7 +246,7 @@ class TtyProgressTest(LogCase):
             rows = visible_screen(self.output())
             self.assertEqual(rows[:2], ["• download", "• a ──────────────────── 0/1"])
             self.assertEqual(rows[2:], ["… 4 more"])
-            jobs.changed(force=True)
+            jobs._redraw(force=True)
             self.assertEqual(len(visible_screen(self.output())), 3)
 
     def test_rows_cut_to_width(self):
@@ -395,7 +395,7 @@ class ThreadTest(LogCase):
                 thread.join()
             self.assertEqual(errors, [])
             self.assertEqual(shared_row.count, workers * steps)
-            self.assertEqual([row.count for row in rows.bars[1:]], [steps] * workers)
+            self.assertEqual([row.count for row in rows._bars[1:]], [steps] * workers)
         screen = visible_screen(self.output())
         self.assertEqual(sum(line.startswith("• job ") for line in screen), workers * steps // 50)
         self.assertIn(f"✓ all ━━━━━━━━━━━━━━━━━━━━ {workers * steps}/{workers * steps}", screen)

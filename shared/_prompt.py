@@ -6,7 +6,7 @@ the answer is submitted, then replaced by one done line. While it's open, `share
 other threads' lines and live rows, and asks from other threads wait their turn. Without a
 terminal, or inside `with prompt.defaults():`, nothing is read: each question answers its default
 at once, and one without a default raises `Error`. Which keys do what is `prompt.keymap`, and
-whether the help line of keys is shown is `prompt.keys`. It wraps no library and has no `.raw`.
+whether the help line of keys is shown is `prompt.keys_shown`. It wraps no library and has no `.raw`.
 
     from shared import prompt
 
@@ -29,7 +29,7 @@ from shared._log import live_area
 from shared._style import strip
 from shared._theme import PromptView, Theme, fit
 
-__all__ = ["Error", "Keymap", "ask", "choose", "confirm", "defaults", "keymap", "keys"]
+__all__ = ["Error", "Keymap", "ask", "choose", "confirm", "defaults", "keymap", "keys_shown"]
 
 Validate = Callable[[Any], "str | None"]
 
@@ -46,7 +46,7 @@ GUIDE_ACTIONS = {
 RENAMED = {"accept": "submit"}
 
 # Whether questions show the help line of keys; `keys=` overrides it for one question.
-keys = True
+keys_shown = True
 
 
 class Error(shared.Error):
@@ -108,7 +108,7 @@ def ask(message: str, *, secret: bool = False, default: str | None = None, place
             the question stays open, None accepts.
         mask: the character drawn for each hidden one, with `secret`; None is • in Unicode and *
             in ASCII. Ignored without `secret`.
-        keys: show the help line of keys; None follows `prompt.keys`.
+        keys: show the help line of keys; None follows `prompt.keys_shown`.
 
     Returns:
         The text as typed, not stripped.
@@ -141,7 +141,7 @@ def confirm(message: str, *, description: str = "", default: bool = False, yes: 
         default: the button selected at first, and the answer without a terminal or inside `defaults()`.
         yes: the label of the yes button.
         no: the label of the no button.
-        keys: show the help line of keys; None follows `prompt.keys`.
+        keys: show the help line of keys; None follows `prompt.keys_shown`.
         validate: called with the answer on submit; a string it returns is shown as an error and
             the question stays open, None accepts.
 
@@ -198,7 +198,7 @@ def choose(message: str, options: Sequence | Mapping, *, many: bool = False, def
         description: more lines under the title, wrapped to the screen.
         validate: called with the answer on submit; a string it returns is shown as an error and
             the question stays open, None accepts.
-        keys: show the help line of keys; None follows `prompt.keys`.
+        keys: show the help line of keys; None follows `prompt.keys_shown`.
 
     Returns:
         One value, or with `many` a list of values: `str` and `list[str]` to a type checker when
@@ -356,7 +356,7 @@ class _Question:
         )
 
     def _help_keys(self) -> tuple:
-        if not (keys if self.show_keys is None else self.show_keys):
+        if not (keys_shown if self.show_keys is None else self.show_keys):
             return ()
         listed = []
         for action in GUIDE_ACTIONS[self.kind]:
