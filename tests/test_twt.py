@@ -1,4 +1,9 @@
-"""Twitter / X: timelines from the GraphQL API, each category, the profile, one tweet, and the browser fallback."""
+"""Twitter / X: timelines from the GraphQL API, each category, the profile, one tweet, stale query ids
+refreshed from x.com's script, and the browser fallback.
+
+What is faked: the API's and x.com's answers (`FakeSite` through `collect`), and the browser's scroll
+(`browser`). No network.
+"""
 
 import json
 import unittest
@@ -207,8 +212,8 @@ def pairs(saved):
 
 
 def queries(seen):
-    """The GraphQL query each request asked."""
-    return [request_url.rsplit("/", 1)[-1] for _, request_url, _ in seen.requests]
+    """The GraphQL query each request asked; x.com's page and script, read for a refresh, left out."""
+    return [request_url.rsplit("/", 1)[-1] for _, request_url, _ in seen.requests if request_url.startswith(API)]
 
 
 class NamesAndKeysTest(unittest.TestCase):
@@ -361,8 +366,90 @@ class OneTweetTest(unittest.TestCase):
     def test_a_refused_tweet_is_a_warning(self):
         seen = Seen()
         collect(Twitter, "twt:https://x.com/someone/status/1790", seen=seen)
-        self.assertEqual(len(seen.messages), 1)
-        self.assertTrue(seen.messages[0].startswith("! tweet 1790: HTTP 404"), seen.messages)
+        # A 404 may be a stale id: x.com's script is asked once (here it can't be read), then the tweet is warned of.
+        self.assertEqual(len(seen.messages), 2)
+        self.assertTrue(seen.messages[0].startswith("! the API's query ids look stale"), seen.messages)
+        self.assertTrue(seen.messages[1].startswith("! tweet 1790: HTTP 404"), seen.messages)
+
+
+HOME = "https://x.com/"
+SCRIPT = "https://abs.twimg.com/responsive-web/client-web/main.abc123de.js"
+# x.com's page: its main script, and the feature switches' values (the user's config after the defaults wins).
+HOME_PAGE = (f'<html><script src="{SCRIPT}"></script><script>window.__INITIAL_STATE__={{"featureSwitch":'
+             '{"defaultConfig":{"rweb_video_screen_enabled":{"value":false},"view_counts_everywhere_api_enabled":'
+             '{"value":true},"longform_notetweets_inline_media_enabled":{"value":false}},"user":{"config":'
+             '{"longform_notetweets_inline_media_enabled":{"value":true}}}}};</script></html>')
+# The web app's main script, as its bundler writes each operation.
+MAIN_JS = ('e.exports={queryId:"NEWmedia42",operationName:"UserMedia",operationType:"query",metadata:{featureSwitches:'
+           '["rweb_video_screen_enabled","view_counts_everywhere_api_enabled","longform_notetweets_inline_media_enabled",'
+           '"not_in_the_page"],fieldToggles:["withArticlePlainText"]}};'
+           'e.exports={queryId:"NEWuser42",operationName:"UserByScreenName",operationType:"query",metadata:'
+           '{featureSwitches:["view_counts_everywhere_api_enabled"],fieldToggles:[]}};'
+           'e.exports={queryId:"other",operationName:"SomethingElse",operationType:"mutation",metadata:'
+           '{featureSwitches:[],fieldToggles:[]}}')
+
+
+class RefreshTest(unittest.TestCase):
+    """ins.md and flows.md: a stale query id is refreshed from x.com's own script, once, before the browser takes over."""
+
+    def run_media(self, media, *, home=HOME_PAGE, script=MAIN_JS, seen=None):
+        with browser({"UserMedia": page(item(tweet("333", [photo("b")])))}):
+            return collect(Twitter, "twt:someone", options=Options(categories=("media",)), seen=seen,
+                           json={url("UserByScreenName"): USER, url("UserMedia"): FetchError("HTTP 400", status=400),
+                                 f"{API}NEWmedia42/UserMedia": media},
+                           html={HOME: home, SCRIPT: script})
+
+    def test_a_stale_id_is_refreshed_and_the_query_sent_again_with_the_web_apps_flags(self):
+        seen = Seen()
+        saved = self.run_media(pages(page(item(tweet("111", [photo("a")])))), seen=seen)
+        self.assertEqual([item.path for item in saved], [f"images/{DAY}_111_0.jpg"])
+        self.assertEqual(seen.visited, [])
+        urls = [request_url for _, request_url, _ in seen.requests]
+        self.assertEqual(urls[2:5], [HOME, SCRIPT, f"{API}NEWmedia42/UserMedia"])
+        features = json.loads(seen.requests[4][2]["params"]["features"])
+        # Exactly the operation's switches, with the page's values; one the page doesn't name is false.
+        self.assertEqual(features, {"rweb_video_screen_enabled": False, "view_counts_everywhere_api_enabled": True,
+                                    "longform_notetweets_inline_media_enabled": True, "not_in_the_page": False})
+        self.assertIn("refreshed 2 query ids from x.com's script", seen.messages)
+
+    def test_the_refreshed_table_is_kept_for_the_next_run(self):
+        from fakes import FakeSite
+        source = Twitter()
+        site = FakeSite(Target("twt", "user", "someone"), html={HOME: HOME_PAGE, SCRIPT: MAIN_JS})
+        self.assertTrue(source.graph.refresh(site))
+        self.assertEqual(site.state["graphql.queries"]["UserMedia"]["id"], "NEWmedia42")
+        later = Twitter()
+        next_site = FakeSite(Target("twt", "user", "someone"), json={f"{API}NEWuser42/UserByScreenName": USER})
+        next_site.state.update(site.state)
+        self.assertEqual(later.graph.get(next_site, "UserByScreenName", {"screen_name": "someone"}), USER)
+
+    def test_a_refresh_that_doesnt_help_leaves_the_timeline_to_the_browser(self):
+        seen = Seen()
+        saved = self.run_media(FetchError("HTTP 400", status=400), seen=seen)
+        self.assertEqual(seen.visited, ["https://x.com/someone/media"])
+        self.assertEqual([item.path for item in saved], [f"images/{DAY}_333_0.jpg"])
+
+    def test_a_script_without_the_queries_is_a_warning_and_the_browser_takes_over(self):
+        seen = Seen()
+        self.run_media(pages(page()), script="nothing here", seen=seen)
+        self.assertIn("! the API's query ids look stale, and x.com's script lists none of them", seen.messages)
+        self.assertEqual(seen.visited, ["https://x.com/someone/media"])
+
+    def test_a_refresh_is_tried_once_a_run(self):
+        seen = Seen()
+        with browser({}):
+            collect(Twitter, "twt:someone", options=Options(categories=("posts", "media")), seen=seen,
+                    json={url("UserByScreenName"): USER,
+                          url("UserOriginalsTimeline"): FetchError("HTTP 404", status=404)})
+        self.assertEqual([u for _, u, _ in seen.requests].count(HOME), 1)
+
+    def test_a_refusal_that_isnt_stale_is_not_refreshed(self):
+        seen = Seen()
+        with browser({}):
+            collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
+                    json={url("UserByScreenName"): USER,
+                          url("UserOriginalsTimeline"): FetchError("HTTP 403", status=403)})
+        self.assertNotIn(HOME, [u for _, u, _ in seen.requests])
 
 
 class PrepareTest(unittest.TestCase):

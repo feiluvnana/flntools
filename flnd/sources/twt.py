@@ -10,6 +10,13 @@ reads the same GraphQL responses (`watch_responses`), and so do the categories a
     flnd download twt:example_handle --from posts,profile
     flnd download https://x.com/example_handle/status/1790000000000000000
 
+Query ids and feature flags: the web client's GraphQL ids change now and then, and each query
+wants the feature flags the web app sends for it. When a query is refused as stale (a 400 or 404),
+`Graph` reads x.com's page and its main script once a run: the script lists each operation's
+`queryId` and the `featureSwitches` it takes, and the page the switches' values. The query is then
+sent again once with the current id and the web app's own flags, and the table is kept in the
+source's `state`, so the next run starts with it. Only when that fails too does the browser take over.
+
 What the site does that the code works around:
   - the API wants the web client's public bearer token, the login's `ct0` cookie echoed in
     `x-csrf-token`, and a Chrome user agent, sent to x.com only (`prepare`); the media servers
@@ -34,6 +41,7 @@ One tweet, `https://x.com/<user>/status/<id>`, lands in `.flnd/downloads/twt/<id
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -67,8 +75,25 @@ QUERIES = {
     "UserRepliesTimeline": "fpl-c0_APDI3nZ1CeeBMbg",
     "TweetResultByRestId": "U8lc5aomF5krJzZ9vJ9wxg",
 }
-FEATURES = json.dumps({"responsive_web_graphql_timeline_navigation_enabled": True,
-                       "responsive_web_media_download_video_enabled": True})
+# The flags sent before the web app's own are known: a refresh replaces them with each query's
+# `featureSwitches` and the values x.com's page gives them.
+FEATURES = {"responsive_web_graphql_timeline_navigation_enabled": True,
+            "responsive_web_media_download_video_enabled": True}
+HOME = "https://x.com/"
+# The web app's main script, which x.com's page loads: it holds every operation's query id.
+MAIN_SCRIPT = re.compile(r"https://abs\.twimg\.com/responsive-web/client-web(?:-legacy)?/main\.[\w.-]+\.js")
+# One operation in that script, as the web app's bundler writes it (to be confirmed by a live run):
+# `queryId:"…",operationName:"UserMedia",operationType:"query",metadata:{featureSwitches:["a","b"],…}`.
+OPERATION = re.compile(r'queryId:"(?P<id>[\w-]+)",operationName:"(?P<name>\w+)",operationType:"\w+",'
+                       r"metadata:\{featureSwitches:\[(?P<features>[^\]]*)\]")
+# A feature switch's value in the page's `__INITIAL_STATE__` (`featureSwitch.defaultConfig` and the
+# user's own config after it, which wins): `"rweb_video_screen_enabled":{"value":false}`.
+SWITCH = re.compile(r'"(?P<name>[a-z0-9_]+)":\{"value":(?P<value>true|false)\b')
+# What a stale query id is answered with: a 404 for an id the API no longer knows, a 400 for a
+# query whose variables or features it no longer takes.
+STALE = frozenset({400, 404})
+# Where the refreshed table is kept in the source's `state`.
+STATE_KEY = "graphql.queries"
 # Tweets asked for per page: what the web app itself asks for, 2.5 times fewer requests than 20.
 PAGE_SIZE = 50
 # A tweet's `created_at`, as Twitter writes it: `Mon Nov 09 10:00:00 +0000 2026`, always UTC.
@@ -137,6 +162,10 @@ class Twitter(Source):
     filename = "{date}_{id}_{n}"
     key = "{id}_{n}"
 
+    def __init__(self) -> None:
+        # The GraphQL query table for this run; one source instance serves the whole run.
+        self.graph = Graph()
+
     def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
         """Twitter's API headers on every request to x.com, with the CSRF token the jar holds now.
 
@@ -166,7 +195,7 @@ class Twitter(Source):
         """One tweet, by its id: `Target("twt", "post", "1790000000000000000")`; its media, in the target's own folder."""
         variables = {"tweetId": tweet_id, "withCommunity": False, "includePromotedContent": False, "withVoice": False}
         try:
-            data = get(site, "TweetResultByRestId", variables)
+            data = self.graph.get(site, "TweetResultByRestId", variables)
         except (FetchError, http.Error) as error:
             site.warn("tweet {id}: {error}", id=tweet_id, error=error)
             return
@@ -185,7 +214,7 @@ class Twitter(Source):
             query, variables = "UserByScreenName", {"screen_name": user}
         found = None
         try:
-            found = selector.parse(get(site, query, variables)).jmespath("data.user.result").first
+            found = selector.parse(self.graph.get(site, query, variables)).jmespath("data.user.result").first
         except (FetchError, http.Error) as error:
             site.warn("{query}: {error}", query=query, error=error)
         if isinstance(found, dict) and found.get("rest_id"):
@@ -274,7 +303,7 @@ class Twitter(Source):
             variables = {"userId": user_id, "count": PAGE_SIZE, "includePromotedContent": False, "withVoice": True}
             if cursor:
                 variables["cursor"] = cursor
-            tweets, following = read_timeline_page(get(site, timeline.query, variables))
+            tweets, following = read_timeline_page(self.graph.get(site, timeline.query, variables))
             # Every page repeats the pinned tweet, and the last one still has a bottom cursor,
             # so the end is the first page with no tweet not seen before.
             new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen]
@@ -323,20 +352,85 @@ class Twitter(Source):
                   tweets=fmt.count(found, "tweet"))
 
 
-def get(site: Site, query: str, variables: dict) -> Any:
-    """One GraphQL query's JSON: `get(site, "UserMedia", {"userId": "42", "count": 50})`.
+class Graph:
+    """The GraphQL queries one run sends: their ids and feature flags, refreshed from x.com's script when stale.
 
-    Args:
-        site: the target's site.
-        query: a key of `QUERIES`.
-        variables: the query's `variables`.
+        data = Graph().get(site, "UserMedia", {"userId": "42", "count": 50})
 
-    Raises:
-        FetchError: no answer, or a refusal (with its `status`).
-        http.Error: the answer isn't JSON.
+    It starts from the table the source's `state` kept from an earlier refresh, else from the
+    built-in `QUERIES` and `FEATURES`. A refresh is tried once a run, on the first stale answer.
     """
-    return site.fetch(f"{API}{QUERIES[query]}/{query}", follow_redirects=False,
-                      params={"variables": json.dumps(variables), "features": FEATURES}).json
+
+    def __init__(self) -> None:
+        # Each operation's id and flags, by its name; None until the first query reads `state`.
+        self.queries: dict[str, dict[str, Any]] | None = None
+        self.refreshed = False
+
+    def get(self, site: Site, query: str, variables: dict) -> Any:
+        """One GraphQL query's JSON; a stale query id refreshed once and the query sent again.
+
+        Args:
+            site: the target's site.
+            query: a key of `QUERIES`.
+            variables: the query's `variables`.
+
+        Raises:
+            FetchError: no answer, or a refusal (with its `status`) that a refresh didn't cure.
+            http.Error: the answer isn't JSON.
+        """
+        try:
+            return self._get(site, query, variables)
+        except FetchError as error:
+            if error.status not in STALE or self.refreshed or not self.refresh(site):
+                raise
+        return self._get(site, query, variables)
+
+    def refresh(self, site: Site) -> bool:
+        """Read the current query ids and flags from x.com's page and main script, once a run; False when it couldn't.
+
+        Each operation takes exactly the flags its `featureSwitches` list, with the value the page
+        gives each one; a switch the page doesn't name is sent as false, which X accepts (it refuses
+        only a missing one). The table is kept in `state` for the next run.
+        """
+        self.refreshed = True
+        try:
+            home = site.fetch(HOME).text
+            found = MAIN_SCRIPT.search(home)
+            if found is None:
+                raise FetchError("x.com's page names no main script")
+            script = site.fetch(found[0]).text
+        except (FetchError, http.Error) as error:
+            site.warn("the API's query ids look stale, and x.com's script couldn't be read: {error}", error=error)
+            return False
+        switches = {match["name"]: match["value"] == "true" for match in SWITCH.finditer(home)}
+        queries = {}
+        for match in OPERATION.finditer(script):
+            if match["name"] in QUERIES:
+                names = re.findall(r'"([\w]+)"', match["features"])
+                queries[match["name"]] = {"id": match["id"], "features": {name: switches.get(name, False)
+                                                                           for name in names}}
+        if not queries:
+            site.warn("the API's query ids look stale, and x.com's script lists none of them")
+            return False
+        self._table(site).update(queries)
+        site.state[STATE_KEY] = dict(self._table(site))
+        site.info("refreshed {n} from x.com's script", n=fmt.count(len(queries), "query id"))
+        return True
+
+    def _get(self, site: Site, query: str, variables: dict) -> Any:
+        """One GraphQL query's JSON with the table's id and flags for it."""
+        entry = self._table(site).get(query) or {}
+        features = entry.get("features") or FEATURES
+        return site.fetch(f"{API}{entry.get('id') or QUERIES[query]}/{query}", follow_redirects=False,
+                          params={"variables": json.dumps(variables), "features": json.dumps(features)}).json
+
+    def _table(self, site: Site) -> dict[str, dict[str, Any]]:
+        """The query table: what `state` kept from an earlier refresh, read on first use."""
+        if self.queries is None:
+            kept = site.state.get(STATE_KEY)
+            self.queries = {name: dict(entry) for name, entry in kept.items()
+                            if isinstance(entry, dict) and name in QUERIES} if isinstance(kept, dict) else {}
+        return self.queries
 
 
 def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
