@@ -1,7 +1,7 @@
 """Small helpers for scripts.
 
 The terminal modules are stdlib only and load at once. The others load on first use,
-so `from shared import log` never imports Playwright, parsel, cryptography, or Pillow.
+so `from shared import log` never imports Playwright, httpx, parsel, cryptography, or Pillow.
 A module whose extra is missing raises an ImportError that names the extra to install.
 
 Every error `shared` raises is a `shared.Error`. Each module has its own `Error` under it, with
@@ -60,17 +60,20 @@ if TYPE_CHECKING:
     from shared import _bundler as bundler
     from shared import _cookies as cookies
     from shared import _crypto as crypto
+    from shared import _http as http
     from shared import _kv as kv
     from shared import _media as media
     from shared import _selector as selector
     from shared import _worker as worker
 
-LAZY_MODULES = ("archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler", "media")
+LAZY_MODULES = (
+    "archive", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
+)
 
 __all__ = [
     "Error", "UnsafeError", "BrokenError", "RefusedError",
     "cli", "fmt", "log", "prompt", "style", "theme",
-    "archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler", "media",
+    "archive", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
 ]
 
 

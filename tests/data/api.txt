@@ -109,6 +109,27 @@ shared.fmt.date(value: _datetime.date | float, *, pattern: str | None = None) ->
 shared.fmt.duration(seconds: float) -> str
 shared.fmt.filename(text: str, *, fallback: str = 'untitled', maxlen: int = 200) -> str
 shared.fmt.size(n: int) -> str
+shared.http: module
+shared.http.ChangedError(shared.http.Error, shared.BrokenError)
+shared.http.Error(shared.Error)
+shared.http.IncompleteError(shared.http.Error, shared.BrokenError)
+shared.http.RateLimitedError(shared.http.Error)
+shared.http.RateLimitedError.retry_after: attribute
+shared.http.RateLimitedError.status: attribute
+shared.http.RefusedError(shared.http.Error, shared.RefusedError)
+shared.http.RefusedError.status: attribute
+shared.http.Response(status: int, url: str, headers: Mapping[str, str], content: bytes = b'')
+shared.http.Response.content: field -> bytes
+shared.http.Response.headers: field -> Mapping[str, str]
+shared.http.Response.html: property -> Selection
+shared.http.Response.json: property -> Any
+shared.http.Response.ok: property -> bool
+shared.http.Response.status: field -> int
+shared.http.Response.text: property -> str
+shared.http.Response.url: field -> str
+shared.http.ServerError(shared.http.Error)
+shared.http.ServerError.status: attribute
+shared.http.fetch(url: str, *, method: str = 'GET', client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
 shared.kv: module
 shared.kv.ClosedError(shared.kv.Error, RuntimeError)
 shared.kv.Error(shared.Error)

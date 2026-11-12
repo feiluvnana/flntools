@@ -436,6 +436,11 @@ browser = [
     { name = "cryptography" },
     { name = "playwright" },
 ]
+http = [
+    { name = "httpx" },
+    { name = "parsel" },
+    { name = "python-jsonpath" },
+]
 media = [
     { name = "imageio-ffmpeg" },
     { name = "pi-heif" },
@@ -461,9 +466,11 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'browser'", specifier = ">=42" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", marker = "extra == 'http'", specifier = ">=0.27.0" },
     { name = "imageio-ffmpeg", specifier = ">=0.6" },
     { name = "imageio-ffmpeg", marker = "extra == 'media'", specifier = ">=0.6" },
     { name = "parsel", specifier = ">=1.9.0" },
+    { name = "parsel", marker = "extra == 'http'", specifier = ">=1.9.0" },
     { name = "parsel", marker = "extra == 'selector'", specifier = ">=1.9.0" },
     { name = "pi-heif", specifier = ">=1.0" },
     { name = "pi-heif", marker = "extra == 'media'", specifier = ">=1.0" },
@@ -473,12 +480,13 @@ requires-dist = [
     { name = "playwright", marker = "extra == 'browser'", specifier = "==1.65.*" },
     { name = "py7zr", marker = "extra == 'archive'" },
     { name = "python-jsonpath" },
+    { name = "python-jsonpath", marker = "extra == 'http'" },
     { name = "python-jsonpath", marker = "extra == 'selector'" },
     { name = "pyzipper", marker = "extra == 'archive'" },
     { name = "qrcode", specifier = ">=7.4" },
     { name = "telethon", specifier = ">=1.36" },
 ]
-provides-extras = ["archive", "selector", "browser", "media"]
+provides-extras = ["archive", "selector", "http", "browser", "media"]
 
 [package.metadata.requires-dev]
 dev = [

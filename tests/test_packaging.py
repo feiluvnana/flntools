@@ -31,10 +31,10 @@ class PublicNamesTest(unittest.TestCase):
     def test_all_lists_every_lazy_module(self):
         self.assertLessEqual(set(shared.LAZY_MODULES), set(shared.__all__))
 
-    def test_http_is_gone(self):
-        self.assertNotIn("http", shared.__all__)
-        with self.assertRaises(AttributeError):
-            shared.http  # noqa: B018
+    def test_http_is_back(self):
+        # Phase 4 removed `http`; Phase 6's D3 brought it back as `fetch` and `Response`.
+        self.assertIn("http", shared.LAZY_MODULES)
+        self.assertTrue(callable(shared.http.fetch))
 
 
 def run_python(code: str) -> subprocess.CompletedProcess:
@@ -67,6 +67,13 @@ class LazyImportTest(unittest.TestCase):
     def test_missing_extras(self):
         message = missing_extra_message("selector", "parsel")
         self.assertEqual(message, "shared.selector needs parsel: pip install 'flntools[selector]'")
+
+    def test_missing_httpx_names_the_http_extra(self):
+        self.assertEqual(missing_extra_message("http", "httpx"), "shared.http needs httpx: pip install 'flntools[http]'")
+
+    def test_http_loads_on_first_use(self):
+        code = "import sys, shared\nprint('httpx' in sys.modules, shared.http is sys.modules['shared._http'])"
+        self.assertEqual(run_python(code).stdout.strip(), "False True")
 
     def test_media_loads_on_first_use(self):
         code = "import sys, shared\nprint('shared._media' in sys.modules, shared.media is sys.modules['shared._media'])"
