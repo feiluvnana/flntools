@@ -4,10 +4,25 @@ The screen is a `Screen` over StringIO with its `readkey` replaced by a list of 
 test presses keys and reads back the frames drawn. Nothing else is faked.
 """
 
+import os
+import re
+import struct
+import sys
 import threading
 import time
 import unittest
 from io import StringIO
+from pathlib import Path
+
+try:
+    import fcntl
+    import pty
+    import select
+    import termios
+
+    HAS_PTY = True
+except ImportError:
+    HAS_PTY = False
 
 from shared import log, prompt, theme
 from shared._screen import Paste, paste_text
@@ -585,6 +600,69 @@ class LiveAreaTest(PromptCase):
         self.assertEqual(answers, {"first": "first", "second": "second"})
         self.assertEqual(self.frames(), ["┃ First", "┃ > first_", "✓ First: first", "┃ Second", "┃ > second_",
                                          "✓ Second: second"])
+
+
+CHILD = """
+import sys
+sys.path.insert(0, {root!r})
+from shared import prompt
+choice = prompt.choose("Log in to", ["TikTok (tik)", "Facebook (fbk)", "Telegram (tlg)"], keys=False)
+secret = prompt.ask("Token", secret=True, keys=False)
+sys.stdout.write("RESULT %s %d\\n" % (choice, len(secret)))
+sys.stdout.flush()
+"""
+
+
+@unittest.skipUnless(HAS_PTY, "needs a POSIX pty")
+class RealTerminalCase(unittest.TestCase):
+    """Run the prompts on a real pty and check the raw bytes the terminal receives.
+
+    The fake-screen tests above can't catch this: a `Screen` over StringIO never has a terminal
+    line discipline, so raw mode clearing OPOST (which turns the terminal's newline into a bare
+    line feed and staircases every line) goes unnoticed there.
+    """
+
+    def test_every_line_break_is_crlf_and_paste_survives(self):
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(TERM="xterm-256color", COLUMNS="100", LINES="30")
+            os.execv(sys.executable, [sys.executable, "-c", CHILD.format(root=str(Path(__file__).parent.parent))])
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+        out = b""
+
+        def pump(until: bytes, timeout=10.0) -> None:
+            nonlocal out
+            end = time.monotonic() + timeout
+            while until not in out and time.monotonic() < end:
+                if select.select([fd], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except OSError:
+                        return
+                    if not chunk:
+                        return
+                    out += chunk
+
+        try:
+            pump(b"Telegram")
+            os.write(fd, b"\x1b[B")  # down
+            pump(b"Telegram")
+            time.sleep(0.2)
+            os.write(fd, b"\r")
+            pump(b"Token")
+            time.sleep(0.2)
+            os.write(fd, b"\x1b[200~" + b"x" * 32 + b"\x1b[201~")
+            time.sleep(0.2)
+            os.write(fd, b"\r")
+            pump(b"RESULT")
+            pump(b"\n", 2)
+        finally:
+            os.close(fd)
+            os.waitpid(pid, 0)
+        self.assertIn(b"Log in to", out)
+        self.assertRegex(out, rb"RESULT .+ 32")
+        self.assertIn(b"\n", out)
+        self.assertIsNone(re.search(rb"(?<!\r)\n", out), out)
 
 
 if __name__ == "__main__":

@@ -117,6 +117,7 @@ class Screen:
                 saved = termios.tcgetattr(fd)
                 tty.setraw(fd)
                 self._raw = True
+                _keep_output_processing(fd)
             except termios.error:
                 saved = None
         self.write(PASTE_ON)
@@ -227,6 +228,15 @@ def _readkey_from_stream(stream) -> str:
     return key_name(char.decode() if isinstance(char, bytes) else char)
 
 
+def _keep_output_processing(fd: int) -> None:
+    """Undo what `tty.setraw` does to output: with OPOST off a newline no longer returns to column 0."""
+    import termios
+
+    attrs = termios.tcgetattr(fd)
+    attrs[1] |= termios.OPOST | termios.ONLCR
+    termios.tcsetattr(fd, termios.TCSANOW, attrs)
+
+
 def _readkey_posix(fd: int, raw: bool = False) -> str:
     """Read one key; `raw` says the terminal is already raw (held by `Screen.reading`)."""
     import select
@@ -237,6 +247,7 @@ def _readkey_posix(fd: int, raw: bool = False) -> str:
     try:
         if saved is not None:
             tty.setraw(fd)
+            _keep_output_processing(fd)
         data = os.read(fd, 1)
         if data == b"\x1b":
             # An escape sequence arrives in one burst; a lone escape key does not.
