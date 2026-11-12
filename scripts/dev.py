@@ -506,7 +506,6 @@ EXPLAINING: set[str] = {
     "shared/_cli.py",
     "shared/_ffmpeg.py",
     "shared/_http.py",
-    "shared/_log.py",
     "shared/_media.py",
     "shared/_media_image.py",
     "shared/_media_video.py",
