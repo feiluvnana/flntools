@@ -56,7 +56,15 @@ def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
 
 
 def unknown_categories(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None:
-    """Why `--from names` can't be used with these sources, listing the names per source; None when it can."""
+    """Why `--from names` can't be used with these sources, listing the names per source; None when it can.
+
+    Args:
+        names: the names `--from` gave, after splitting on commas; `all` is always known.
+        sources: the sources the targets belong to, whose categories are the known names.
+
+    Returns:
+        The message the command shows as a usage error, or None when every name is known.
+    """
     known = {category for source in sources for category in source.categories}
     unknown = [name for name in names if name != ALL and name not in known]
     if not unknown:
@@ -84,9 +92,13 @@ def single_targets(targets: Sequence[Target], sources: Mapping[str, type[Source]
 class Settings:
     """What one run shares across every source: flnd's folder, the options, the history and the compressing."""
 
+    # flnd's folder, where the downloads, history, logins and settings are kept.
     home: Path
+    # What the run downloads and how it compresses it, shared by every source.
     options: Options
+    # The history of downloads, one row per file key, shared by every source of the run.
     history: MutableMapping[str, Any]
+    # Whether a person can be asked a question, which a source's own login needs.
     interactive: bool = False
     # One for the whole run, so videos encode one at a time across sources and each error warns once.
     compressor: Compressor = field(default_factory=Compressor)
