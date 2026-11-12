@@ -39,7 +39,7 @@ The [source](source.md) step covers it: 18 fields and 7 hooks become **8 fields 
 | `viewport`, `concurrency`, `pause` | never overridden | **removed**: engine constants |
 | `browser_args`, `stealth` | tik `--no-sandbox`, twt `False` | **removed**: every source hides `navigator.webdriver` and keeps the sandbox |
 | `wait` | tlg's flood wait | **removed**: tlg calls `session.throttled(retry_after=…)` |
-| — | | **`pace`** (new, 1.0 s): between page loads and API calls, and between scrolls |
+| — | | **`pace`** (new): a `Pace(floor, budgets)`, or a number for the floor; with the site's rate headers and a learned gap ([pace](pace.md)) |
 | `resolve(text)`, `run(session)` | required | — |
 | `headers(cookies)`, `sign(request)` | headers for every request, CDNs included; signing | merged into **`prepare(request, cookies)`**, only for the source's `domains` |
 | `login(session, method)`, `connect(session)` | tlg | — |

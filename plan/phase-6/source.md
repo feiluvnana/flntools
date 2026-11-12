@@ -32,7 +32,7 @@ class Instagram(Source):
     categories = {"posts": True, "reels": True, "stories": True, "highlights": True, "profile": True,
                   "tagged": False, "reposts": False}
     cookies = ("sessionid",)
-    pace = 3.0
+    pace = Pace(floor=1.0, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
 
     def resolve(self, text): ...
     def run(self, session): ...
@@ -47,7 +47,7 @@ class Instagram(Source):
 | `categories` | `{name: taken by default}`, in the source's order | `categories` and `default_categories` |
 | `cookies` | cookie names, any one of which proves a cookie login | `needs` |
 | `logins` | the `flnd login` methods, `("browser", "file")` by default | `login_methods` |
-| `pace` | the least seconds between two page loads or API calls, and the pause between scrolls; 1.0 by default, ±40% | `scroll_delay` and `pace` as planned in [session](session.md#pace), merged |
+| `pace` | how fast it may send requests to its own domains: a floor in seconds, and known budgets per kind of request; a number is shorthand for the floor ([pace](pace.md)) | new |
 
 | Hook | Means | Was |
 | --- | --- | --- |

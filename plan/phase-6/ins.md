@@ -14,7 +14,7 @@ Checked in code on 2026-11-12:
 
 ### 1. Read posts through the API, not their pages
 
-For a listed post with a `pk`, ins fetches `https://www.instagram.com/api/v1/media/<pk>/info/`. Its `items[0]` has the same shape as a post page's `xdt_api__v1__media__shortcode__web_info.items[0]`, so `save_post` and `post_files` are unchanged. One small JSON request replaces a whole page load: no HTML, scripts or images.
+For a listed post, ins reads it with **the GraphQL post query its own page sends** (captured once from a post page and [replayed](#three-ways-to-reach-an-api) with each shortcode), because GraphQL's budget is about four times `/api/v1/`'s ([pace](pace.md)). The fallback, when that query can't be captured, is `https://www.instagram.com/api/v1/media/<pk>/info/`. Both return the post in the shape of a post page's `xdt_api__v1__media__shortcode__web_info.items[0]`, so `save_post` and `post_files` are unchanged. One small JSON request replaces a whole page load: no HTML, scripts or images.
 
 - It goes through `session.fetch_json`, so it is paced, its 429 is backed off by the engine, and its cookies are the browser's.
 - `Instagram.prepare(request, cookies)` (new, [source](source.md)) adds `X-IG-App-ID: 936619743392459`, `X-CSRFToken: <csrftoken>`, `X-Requested-With: XMLHttpRequest` and `Referer: https://www.instagram.com/`. They go only to `instagram.com` ([api](api.md#source-flndsourcesbasepy)), never to the CDN.
@@ -47,7 +47,7 @@ The WIP commit saves a listed image post straight from the grid, with its date f
 
 ### 5. Pace
 
-`Instagram.pace = 3.0`: at least 3 s, ±40%, between two API calls or page loads, so a 2,000-post tagged tab takes about 2 hours of requests, not a burst of 2,000. The same `pace` is the pause between scrolls ([source](source.md)); the WIP commit's 0.2 s goes.
+Instagram's pace is its known budgets: 275 GraphQL calls per 10 minutes and 75 `/api/v1/` calls per 11 minutes, with a 1 s floor ([pace](pace.md)). That makes a 2,000-post tagged tab about 10–25 minutes of requests instead of hours. The WIP commit's 0.2 s scroll goes, and scrolling, now only the fallback, pauses 1.5 s.
 
 ## Every source: API first, the page as fallback
 
@@ -95,7 +95,7 @@ Checked in code on 2026-11-12. "Live" means the way is confirmed by hand on a te
 
 - **Lines:** about 25 per browser source for the replay loop and the first-request capture, about 75 in all. That is offset by the scroll counters and end rules they no longer need on the main path. The scroll code stays as the fallback, so the [scripts](scripts.md) estimates rise by about 10 a source.
 - **Requests:** a tagged tab of 2,000 posts takes about 170 GraphQL pages of 12. Today that's about 2,000 post-page loads on top of the scroll; after, 170 small JSON calls plus the media info calls for the posts that need them.
-- **Pace:** API calls keep each source's `pace` ([source](source.md)), so "faster" means fewer and smaller requests, not more of them per second.
+- **Pace:** API calls follow each source's [pace](pace.md): its headers, its known budgets, and a learned gap with a floor. "Faster" means fewer and smaller requests, each as soon as the site allows.
 
 ## Live checks
 

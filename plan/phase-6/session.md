@@ -37,7 +37,7 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 
 | | Was | Phase 6 |
 | --- | --- | --- |
-| pause between scrolls | `delay=2.0` (0.2 in the WIP commit) | the source's `pace`, 1.0 s by default, ±40%; tik 2.5, ins 3.0 ([source](source.md)) |
+| pause between scrolls | `delay=2.0` (0.2 in the WIP commit) | 1.5 s ±40%, the session's constant; tik passes 2.5. Requests are paced separately ([pace](pace.md)) |
 | end of the feed | 4 scrolls in a row at the bottom with no progress (8 s at 2.0, 2 s at 0.2) | **10 s** at the bottom with no progress, however many scrolls that is |
 | most scrolls | 200, then it stops silently | none: the feed's end, `--limit` or `more()` stop it |
 | `count` | required to see progress | defaults to the number of files saved into this folder so far |
@@ -49,7 +49,7 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 
 ### Pace
 
-**`Source.pace`**, 1.0 s by default and ±40%, is the least time between two page loads (`goto`) or two `fetch_json` calls of one source, and the pause between scrolls ([source](source.md)). Today nothing paces page loads at all, so ins opened one post page after another as fast as they loaded ([ins](ins.md)). ins sets 3.0.
+Every request to a source's own domains (`fetch_json`, in-page calls and `goto`) waits for its turn under the source's [pace](pace.md): the site's rate-limit headers, its known budgets, and a gap learned per source with a floor. Today nothing paces page loads at all, so ins opened one post page after another as fast as they loaded. CDN downloads aren't paced; `concurrency` limits them.
 
 ### Exit status
 
@@ -71,5 +71,5 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 - `tests/typing/usage.py`: `session.open_page` and `session.challenged` don't type-check.
 - Scroll: a page that stops growing ends after 10 s on the fake clock, whatever `delay` is; one that grows for 300 scrolls isn't cut off; `count` defaults to the saves.
 - `goto`: a 429 with `Retry-After: 30` waits 30 s and loads again; a 404 returns False with a warning.
-- Two `goto`s within the source's `pace` sleep the difference, with the jitter seeded.
+- `goto` and `fetch_json` call the pace's `wait_turn` before and `record` after; a CDN URL calls neither ([pace](pace.md#tests)).
 - `throttled` waits on the backoff, and a second call during the wait doesn't add another.

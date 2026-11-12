@@ -96,6 +96,7 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 2. [setup](phase-6/setup.md): `uv sync` with a committed `uv.lock`, the browser downloaded only when there is no Chrome, every task in a stdlib `scripts/dev.py`, and a Makefile that runs the same on every OS.
 3. [cli](phase-6/cli.md): `flnd download`, `sync` (repair and fetch only, no options), `login` and `logout`; `--time <since>,<until>`; `--image`, `--video`, `--audio` `<format>,<level>`; `--unpack`, `--zip`, `--locale`, `--timezone` and `install-browser` gone, and with them `shared.archive`; Google Chrome only, with Chromium offered when it's missing.
    [source](phase-6/source.md): 8 fields and 5 hooks instead of 18 and 7.
+   [pace](phase-6/pace.md): requests as fast as each site allows: its rate headers, Instagram's known budgets, and a learned gap above a floor.
    [session](phase-6/session.md): 26 members instead of 35; scrolling ends after 10 s without progress and has no cap; page loads and API calls are paced and checked for 429s and login walls.
 4. [api](phase-6/api.md): every public API with its change or none; flnd's own APIs lose what flnd doesn't use, and `shared`'s are kept or removed by how useful they are.
 5. [ins](phase-6/ins.md): tagged and reposts posts read through Instagram's media info API, skipped before any request when already saved or out of range, and every throttle waited out.

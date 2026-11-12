@@ -14,6 +14,7 @@ Phase 6 makes flntools quicker to set up, the same on every OS, smaller to read,
 | too many options and commands | [cli](cli.md): `download` keeps `--from`, merges `--since` and `--until` into `--time <since>,<until>`, and gains `--image`, `--video`, `--audio` `<format>,<level>`; `--unpack`, `--zip`, `--locale` and `--timezone` go; `sync` becomes `sync`, which only repairs and fetches new posts, with no options; `login` asks for everything; `logout <sources…>` or `all`; `install-browser` goes, and flnd uses Chrome, offering Chromium only when Chrome is missing |
 | the source scripts are long and hard to read | [scripts](scripts.md): extension guessing deleted (the content already decides it); `save_post`, `day` and `meta_results` in `flnd/sources/common.py`; 1,378 lines become about 1,280, each script reading top to bottom |
 | some files are saved without their date | [dates](dates.md): the engine puts the date in the name from `save(date=)`, sets every file's modified time to it, and falls back to the CDN's `Last-Modified`, then the download day |
+| the pace should be as small as the sites allow | [pace](pace.md): each site's own rate headers, Instagram's known budgets (275 GraphQL calls per 10 min, 75 `/api/v1/` per 11 min), and a gap learned per source above a floor (twt 0.5 s, tik 1 s, fbk 1.5 s) |
 | a classifier for photos and videos | [classify](classify.md): `media.classify(path)`, a small CLIP-style model on ONNX Runtime, downloaded on first use; `--classify` names files `<labels>_<date>_<name>` |
 | the code needs more comments | [comments](comments.md): a docstring standard for every module, class and function, and more *why* comments at every rule a reader has to work out |
 
@@ -24,7 +25,7 @@ The audit also found 15 bugs, among them corrupted downloads on Windows, failed 
 Each step ends with `check` green and is pushed on its own.
 1. [fixes](fixes.md): the bugs, each with a test that fails first.
 2. [setup](setup.md): `uv.lock`, dependency groups, `scripts/dev.py`, the thin Makefile, and no browser download.
-3. [cli](cli.md), [source](source.md) and [session](session.md): the lean `Source`; four commands with `--image`/`--video`/`--audio`; Chrome only; the smaller session protocol and its defaults, with `goto` checked and paced; `compress.py` and `files.py` split out of `session.py`.
+3. [cli](cli.md), [source](source.md), [pace](pace.md) and [session](session.md): the lean `Source` and its pace; four commands with `--image`/`--video`/`--audio`; Chrome only; the smaller session protocol and its defaults, with `goto` checked and paced; `compress.py` and `files.py` split out of `session.py`.
 4. [api](api.md): the removals and private names in `shared`, and `python-jsonpath` gone.
 5. [ins](ins.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with live runs of the test accounts.
 6. [scripts](scripts.md) and [dates](dates.md): the sources rewritten on the new session and helpers, with every file dated by the engine.
