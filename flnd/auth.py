@@ -49,7 +49,7 @@ KEY_WAIT = 2.0
 KEY_POLL = 0.01
 
 
-def from_browser(source: Source, *, browser: str, profile: str | None = None) -> list[dict]:
+def from_browser(source: Source, *, browser: str, profile: str | None = None) -> cookies.Jar:
     """The source's cookies from an installed browser, for each of its domains.
 
         jar = auth.from_browser(Instagram(), browser="firefox")
@@ -64,30 +64,30 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
             Keychain, Windows' app-bound encryption); the message suggests a cookie file.
     """
     try:
-        return [cookie for domain in source.domains
-                for cookie in cookies.load_from_browser(domain, browser=browser, profile=profile)]
+        return _own(source, cookies.from_browser(browser, profile=profile))
     # Every way reading a browser fails: a missing file (OSError), the platform refusing
-    # (RuntimeError), a value that won't decrypt (CookieError is a ValueError), or no `cryptography`.
+    # (RuntimeError), a value that won't decrypt (cookies.Error is a ValueError), or no `cryptography`.
     except (OSError, RuntimeError, ValueError, ImportError) as error:
         raise LoginError(f"{source.code}: can't read {BROWSERS.get(browser, browser)}'s cookies: {error}; "
                          "try a cookie file instead") from None
 
 
-def from_file(source: Source, path: Path) -> list[dict]:
+def from_file(source: Source, path: Path) -> cookies.Jar:
     """The source's cookies from a Netscape or JSON cookie file; a whole browser export works.
 
         jar = auth.from_file(Twitter(), Path("~/Downloads/cookies.txt").expanduser())
 
     Raises:
-        LoginError: the file is missing, unreadable, or not a cookie file.
+        LoginError: the file is missing, unreadable, over 16 MB, or not a cookie file.
     """
     try:
-        return [cookie for domain in source.domains for cookie in cookies.load_from_file(path, domain=domain)]
+        return _own(source, cookies.load(path))
+    # cookies.Error and its UnsafeError are ValueErrors; a missing or unreadable file is an OSError.
     except (OSError, ValueError) as error:
         raise LoginError(f"{source.code}: can't read {path}: {error}") from None
 
 
-def store(source: Source, jar: list[dict], *, home: Path, origin: str) -> str:
+def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     """Check that the jar proves a login, save it as the source's cookie file, and say so.
 
         auth.store(Instagram(), jar, home=Path(".flnd"), origin="Chrome")   # "ins: logged in from Chrome (14 cookies)"
@@ -101,19 +101,18 @@ def store(source: Source, jar: list[dict], *, home: Path, origin: str) -> str:
     Raises:
         LoginError: none of the source's `needs` cookies is in the jar.
     """
-    names = {cookie["name"] for cookie in jar}
-    if source.needs and not names.intersection(source.needs):
+    if source.needs and not any(name in jar for name in source.needs):
         raise LoginError(f"{source.code}: no {' or '.join(source.needs)} for {source.domains[0]} in {origin}; "
                          "log in there first")
     path = cookie_file(home, source.code)
-    cookies.to_file(fix_domains(jar), path)
+    fix_domains(jar).save(path)
     # One cookie file per source, so an old JSON file can't shadow the new one.
     path.with_suffix(".json").unlink(missing_ok=True)
     return f"{source.code}: logged in from {origin} ({len(jar)} cookies)"
 
 
-def load(home: Path, code: str) -> list[dict]:
-    """The source's saved cookies, ready for a browser or a client, or `[]` when it never logged in.
+def load(home: Path, code: str) -> cookies.Jar:
+    """The source's saved cookies, ready for a browser or a client, or an empty jar when it never logged in.
 
         jar = auth.load(Path(".flnd"), "ins")
 
@@ -126,8 +125,8 @@ def load(home: Path, code: str) -> list[dict]:
     """
     for path in _cookie_files(home, code):
         if path.is_file():
-            return fix_domains(cookies.load_from_file(path))
-    return []
+            return fix_domains(cookies.load(path))
+    return cookies.Jar()
 
 
 def logged_in(home: Path, code: str) -> bool:
@@ -169,11 +168,16 @@ def _cookie_files(home: Path, code: str) -> list[Path]:
     return [home / "cookies" / f"{code}{suffix}" for suffix in COOKIE_SUFFIXES]
 
 
-def fix_domains(jar: list[dict]) -> list[dict]:
+def fix_domains(jar: cookies.Jar) -> cookies.Jar:
     """flnd's legacy fix-up: every domain gets a leading dot, and every path defaults to `/`."""
     # Exported files often hold host-only domains; the dot lets every subdomain see the cookie, as flnd always did.
-    return [{**cookie, "domain": "." + cookie.get("domain", "").lstrip("."), "path": cookie.get("path") or "/"}
-            for cookie in jar]
+    return cookies.Jar({**cookie, "domain": "." + cookie.get("domain", "").lstrip("."), "path": cookie.get("path") or "/"}
+                       for cookie in jar)
+
+
+def _own(source: Source, jar: cookies.Jar) -> cookies.Jar:
+    """The cookies of `jar` for the source's domains and their subdomains, domain by domain."""
+    return cookies.Jar(cookie for domain in source.domains for cookie in jar.filter(domain=domain))
 
 
 def secrets(home: Path, code: str) -> Vault:

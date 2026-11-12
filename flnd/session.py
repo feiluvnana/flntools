@@ -28,6 +28,7 @@ from shared import fmt, kv, log, prompt, theme
 if TYPE_CHECKING:
     from shared import worker
     from shared._browser import Browser, Match, Page
+    from shared._cookies import Jar
     from shared._selector import Selection
 
 T = TypeVar("T")
@@ -192,7 +193,7 @@ class SourceRun:
 
     source: Source
     settings: Settings
-    jar: list[dict]
+    jar: Jar
     http: httpx.Client
     backoff: net.Backoff
     client: Any = None

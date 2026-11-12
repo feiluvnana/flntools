@@ -90,7 +90,7 @@ class EngineCase(unittest.TestCase):
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
-        cookies.to_file(jar, auth.cookie_file(self.home, code))
+        cookies.Jar(jar).save(auth.cookie_file(self.home, code))
 
     def lines(self):
         return self.screen.out.getvalue().splitlines()
@@ -656,7 +656,7 @@ class FakeBrowser:
         self.urls = []
         self.closed = False
         self.cookies = self
-        self.all = [{"name": "csrftoken", "value": "late", "domain": ".aaa.example", "path": "/"}]
+        self.all = cookies.Jar([{"name": "csrftoken", "value": "late", "domain": ".aaa.example", "path": "/"}])
         self.listeners = []
 
     def add(self, jar):

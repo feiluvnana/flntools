@@ -10,7 +10,7 @@ from typing_extensions import assert_type
 
 from flnd.session import Session, TargetSession
 from flnd.sources.base import Source
-from shared import media, prompt, theme, worker
+from shared import cookies, media, prompt, theme, worker
 from tests.fakes import FakeSession
 
 
@@ -39,6 +39,14 @@ assert_type(media.compress("a.jpg", preset="low"), Optional[Path])
 assert_type(media.video.frames("a.mp4", dest_dir="frames"), list[Path])
 assert_type(media.image.resize("a.jpg", width=100), Path)
 media.compress("a.jpg", "low")  # pyright: ignore[reportCallIssue]
+
+jar = cookies.load("cookies.txt").filter(domain="example.com")
+assert_type(jar, cookies.Jar)
+assert_type(jar.merge(cookies.from_browser("firefox")), cookies.Jar)
+assert_type(jar.header, str)
+assert_type(jar["sessionid"], str)
+assert_type(jar.save("out.txt"), Path)
+cookies.load("cookies.txt", domain="example.com")  # pyright: ignore[reportCallIssue]
 
 
 class StringDomains(Source):

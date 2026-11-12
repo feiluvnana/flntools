@@ -116,7 +116,7 @@ class Backoff:
             _sleep(min(1.0, left))
 
 
-def client(*, user_agent: str | None, headers: Mapping[str, str], jar: list[dict],
+def client(*, user_agent: str | None, headers: Mapping[str, str], jar: Iterable[dict],
            sign: Callable[[httpx.Request], httpx.Request], wait: Wait, backoff: Backoff) -> httpx.Client:
     """An httpx client for one source: its user agent, headers and cookies, signing and retries.
 
@@ -132,7 +132,7 @@ def client(*, user_agent: str | None, headers: Mapping[str, str], jar: list[dict
 
 
 def cookie_jar(jar: Iterable[dict]) -> httpx.Cookies:
-    """A cookie jar in the `cookies` module's shape as `httpx.Cookies`, keeping domains and paths."""
+    """A `shared.cookies.Jar`, or any cookie dicts in its shape, as `httpx.Cookies`, keeping domains and paths."""
     cookies = httpx.Cookies()
     for cookie in jar:
         cookies.set(cookie["name"], cookie["value"], domain=cookie.get("domain", ""), path=cookie.get("path") or "/")

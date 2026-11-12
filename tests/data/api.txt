@@ -31,8 +31,8 @@ shared.browser.Browser.open_page(url: str | None = None, *, idle: bool = False, 
 shared.browser.Browser.pages: property -> list[Page]
 shared.browser.Browser.raw: attribute
 shared.browser.Cookies(context: BrowserContext)
-shared.browser.Cookies.add(jar: list[dict]) -> None
-shared.browser.Cookies.all: property -> list[dict]
+shared.browser.Cookies.add(jar: Jar | Iterable[dict]) -> None
+shared.browser.Cookies.all: property -> Jar
 shared.browser.Cookies.clear_all() -> None
 shared.browser.Error(shared.Error)
 shared.browser.Page(raw: RawPage, browser: Browser)
@@ -77,13 +77,18 @@ shared.cli.arg(help: str | None = None, metavar: str | None = None, nargs: str |
 shared.cli.opt(*flags: str, help: str | None = None, metavar: str | None = None, choices: Any = None, type: Callable[[str], Any] | None = None, stdin: bool = False) -> Opt
 shared.cli.run(fn: Callable) -> typing.NoReturn
 shared.cookies: module
-shared.cookies.CookieError(shared.cookies.Error, ValueError)
-shared.cookies.Error(shared.Error)
-shared.cookies.load_from_browser(domain: str, *, browser: str = 'chrome', profile: str | None = None) -> list[Cookie]
-shared.cookies.load_from_file(path: PathLike, *, domain: str | None = None) -> list[Cookie]
+shared.cookies.Error(shared.Error, ValueError)
+shared.cookies.Jar(cookies: Iterable[Cookie] = ())
+shared.cookies.Jar.filter(*, domain: str | None = None, names: Iterable[str] | None = None) -> Jar
+shared.cookies.Jar.header: property -> str
+shared.cookies.Jar.merge(other: Jar | Iterable[Cookie]) -> Jar
+shared.cookies.Jar.names: property -> list[str]
+shared.cookies.Jar.raw: property -> list[Cookie]
+shared.cookies.Jar.save(dest: PathLike) -> Path
+shared.cookies.UnsafeError(shared.cookies.Error, shared.UnsafeError)
+shared.cookies.from_browser(browser: str = 'chrome', *, profile: str | None = None) -> Jar
+shared.cookies.load(path: PathLike) -> Jar
 shared.cookies.profiles(browser: str = 'chrome') -> list[str]
-shared.cookies.to_file(jar: list[Cookie], path: PathLike) -> None
-shared.cookies.to_header(jar: list[Cookie]) -> str
 shared.crypto: module
 shared.crypto.Error(shared.Error, ValueError)
 shared.crypto.blake2b(data: HashInput) -> str

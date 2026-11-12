@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from shared import log, theme
+from shared import cookies, log, theme
 from shared import _browser as browser
 from shared._theme import Screen
 
@@ -370,7 +370,7 @@ class ConnectTest(BrowserCase):
             b.cookies.add([{"name": "sid", "value": "1", "domain": "site.test", "expires": time.time() + 3600}])
             self.assertEqual(len(b.cookies.all), 1)
         with browser.connect() as b:
-            self.assertEqual(b.cookies.all, [])
+            self.assertEqual(len(b.cookies.all), 0)
 
     def test_headless_reports_its_own_user_agent(self):
         with browser.connect() as b:
@@ -512,18 +512,23 @@ class BrowserTest(PageCase):
         pages[-1].close()
 
     def test_cookies(self):
-        self.browser.cookies.add([{"name": "sid", "value": "1", "domain": ".site.test", "secure": True},
-                                  {"name": "csrf", "value": "2", "domain": "site.test", "path": "/api"}])
-        stored = {cookie["name"]: (cookie["domain"], cookie["path"]) for cookie in self.browser.cookies.all}
+        self.browser.cookies.add(cookies.Jar([{"name": "sid", "value": "1", "domain": ".site.test", "secure": True},
+                                              {"name": "csrf", "value": "2", "domain": "site.test", "path": "/api"}]))
+        jar = self.browser.cookies.all
+        self.assertIsInstance(jar, cookies.Jar)
+        stored = {cookie["name"]: (cookie["domain"], cookie["path"]) for cookie in jar}
         self.assertEqual(stored, {"sid": (".site.test", "/"), "csrf": ("site.test", "/api")})
+        self.assertEqual(jar.filter(names="sid").header, "sid=1")
         self.browser.cookies.clear_all()
-        self.assertEqual(self.browser.cookies.all, [])
+        self.assertEqual(len(self.browser.cookies.all), 0)
 
     def test_one_bad_cookie_among_good_ones(self):
-        self.browser.cookies.add([{"name": "bad", "value": "x"}, {"name": "good", "value": "1", "domain": "site.test"}])
+        self.browser.cookies.add([{"name": "bad", "value": "s3cr3t-value"},
+                                  {"name": "good", "value": "1", "domain": "site.test"}])
         self.assertEqual([cookie["name"] for cookie in self.browser.cookies.all], ["good"])
         self.assertEqual(len(self.lines()), 1)
         self.assertTrue(self.lines()[0].startswith("! cookie bad was rejected: "))
+        self.assertNotIn("s3cr3t-value", self.lines()[0])
         self.browser.cookies.clear_all()
 
 
@@ -688,6 +693,39 @@ class ScrollTest(PageCase):
             runs.append(self.wheels())
         self.assertEqual(runs[0], runs[1])
         self.assertTrue(any(delta < 0 for delta in runs[0]))
+
+
+class FakeContext:
+    """A `BrowserContext` that keeps cookies, and rejects any without a domain, quoting it whole."""
+
+    def __init__(self):
+        self.stored = []
+
+    def add_cookies(self, cookies):
+        for cookie in cookies:
+            if "domain" not in cookie:
+                raise browser.PlaywrightError(f"Invalid cookie {cookie}")
+            self.stored.append(cookie)
+
+    def cookies(self):
+        return [dict(cookie) for cookie in self.stored]
+
+
+class CookiesTest(BrowserCase):
+    def test_a_jar_goes_in_and_comes_out(self):
+        jar = cookies.Jar([{"name": "sid", "value": "1", "domain": ".example.com"}])
+        live = browser.Cookies(FakeContext())  # type: ignore[arg-type]
+        live.add(jar)
+        self.assertEqual(live.all, cookies.Jar([{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"}]))
+        self.assertEqual(live.all.header, "sid=1")
+
+    def test_a_rejected_cookie_is_logged_without_its_value(self):
+        live = browser.Cookies(FakeContext())  # type: ignore[arg-type]
+        live.add([{"name": "bad", "value": "s3cr3t-value"}, {"name": "good", "value": "1", "domain": "example.com"}])
+        self.assertEqual(live.all.names, ["good"])
+        self.assertEqual(len(self.lines()), 1)
+        self.assertTrue(self.lines()[0].startswith("! cookie bad was rejected: Invalid cookie"))
+        self.assertNotIn("s3cr3t-value", self.lines()[0])
 
 
 class FakeRawPage:

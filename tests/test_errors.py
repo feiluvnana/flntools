@@ -22,7 +22,8 @@ ERRORS = [
     (archive.PasswordError, "archive", ValueError, shared.RefusedError),
     (media.BrokenError, "media", ValueError, shared.BrokenError),
     (media.UnsafeError, "media", ValueError, shared.UnsafeError),
-    (cookies.CookieError, "cookies", ValueError, None),
+    (cookies.Error, "cookies", ValueError, None),       # CookieError, renamed to its base in step 4
+    (cookies.UnsafeError, "cookies", ValueError, shared.UnsafeError),  # new in step 4: a file over 16 MB
     (crypto.Error, "crypto", ValueError, None),       # crypto's one error, renamed to its base in step 4
     (kv.ClosedError, "kv", RuntimeError, None),      # kv raised these builtins until step 4
     (kv.UnstorableError, "kv", TypeError, None),

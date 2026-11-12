@@ -79,7 +79,7 @@ class FlndCase(unittest.TestCase):
         return path
 
     def saved(self, code):
-        return cookies.load_from_file(Path(".flnd/cookies") / f"{code}.txt")
+        return cookies.load(Path(".flnd/cookies") / f"{code}.txt").raw
 
 
 class RunsCase(FlndCase):
@@ -450,13 +450,15 @@ class LoginBrowserTest(LoginCase):
                       "twitter.com": [{"name": "guest_id", "value": "g", "domain": ".twitter.com", "path": "/",
                                        "expires": -1, "secure": True, "httpOnly": False, "sameSite": "Lax"}]}
 
-        def load_from_browser(domain, *, browser="chrome", profile=None):
-            self.reads.append((domain, browser, profile))
+        # The whole profile comes back, another site's cookie included; flnd keeps the source's own.
+        def from_browser(browser="chrome", *, profile=None):
+            self.reads.append((browser, profile))
             if browser == "edge":
                 raise RuntimeError("can't read edge cookies on Windows")
-            return self.store.get(domain, [])
+            other = {"name": "auth_token", "value": "o", "domain": "example.com", "path": "/"}
+            return cookies.Jar([*(cookie for jar in self.store.values() for cookie in jar), other])
 
-        patcher = mock.patch("shared._cookies.load_from_browser", load_from_browser)
+        patcher = mock.patch("shared._cookies.from_browser", from_browser)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -469,18 +471,19 @@ class LoginBrowserTest(LoginCase):
                    "✓ Read cookies from: Firefox", "✓ Profile: work", "✓ twt: logged in from Firefox (2 cookies)"]
         lines = out.splitlines()
         self.assertEqual([line for line in lines if line in answers], answers)
-        self.assertEqual(self.reads, [("x.com", "firefox", "work"), ("twitter.com", "firefox", "work")])
+        # One read of the profile for both of the source's domains.
+        self.assertEqual(self.reads, [("firefox", "work")])
         self.assertEqual([cookie["domain"] for cookie in self.saved("twt")], [".x.com", ".twitter.com"])
 
     def test_the_default_profile_is_preselected_and_one_profile_is_not_asked(self):
         self.profiles = ["Default", "work"]
         self.assertEqual(self.login("twt", "enter", "enter", "enter")[0], 0)
-        self.assertEqual(self.reads[0], ("x.com", "chrome", "Default"))
+        self.assertEqual(self.reads[0], ("chrome", "Default"))
         self.reads.clear()
         self.profiles = ["Default"]
         code, out = self.login("twt", "enter", "enter")
         self.assertEqual(code, 0)
-        self.assertEqual(self.reads[0], ("x.com", "chrome", "Default"))
+        self.assertEqual(self.reads[0], ("chrome", "Default"))
         self.assertEqual(out.count("✓ Profile:"), 1)
 
     def test_a_missing_needs_cookie_and_an_unreadable_browser(self):
@@ -520,7 +523,7 @@ class OwnLoginTest(LoginCase):
 class LogoutTest(FlndCase):
     def log_in(self, *codes):
         for code in codes:
-            cookies.to_file([{"name": "a", "value": "1", "domain": ".x.example"}], Path(".flnd/cookies") / f"{code}.txt")
+            cookies.Jar([{"name": "a", "value": "1", "domain": ".x.example"}]).save(Path(".flnd/cookies") / f"{code}.txt")
 
     def test_named_sources(self):
         self.log_in("ins", "twt")

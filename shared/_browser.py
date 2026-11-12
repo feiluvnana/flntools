@@ -13,10 +13,11 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, Union
 
 import shared
 from shared import _prompt as prompt
+from shared._cookies import Jar
 from shared._log import log
 
 if TYPE_CHECKING:
@@ -235,35 +236,46 @@ class Browser:
 
 
 class Cookies:
-    """The live browser's cookie jar, in the `cookies` module's shape.
+    """The live browser's cookie jar, as a `shared.cookies.Jar`.
 
-        b.cookies.add(cookies.load_from_file("ins.txt")); b.cookies.all; b.cookies.clear_all()
+        b.cookies.add(cookies.load("ins.txt")); b.cookies.all.header; b.cookies.clear_all()
     """
 
     def __init__(self, context: BrowserContext):
         self._context = context
 
     @property
-    def all(self) -> list[dict]:
-        """A snapshot of every cookie."""
-        return [dict(cookie) for cookie in self._context.cookies()]
+    def all(self) -> Jar:
+        """A snapshot of every cookie, as a `Jar`; it doesn't follow later changes in the browser."""
+        return Jar(dict(cookie) for cookie in self._context.cookies())
 
-    def add(self, jar: list[dict]) -> None:
+    def add(self, jar: Jar | Iterable[dict]) -> None:
         """Add each cookie unchanged, except that `path` defaults to `/`.
 
+            b.cookies.add(cookies.load("ins.txt"))
             b.cookies.add([{"name": "sid", "value": "1", "domain": ".example.com"}])
 
-        One at a time, so a rejected cookie is logged and the rest still go in.
+        Args:
+            jar: a `Jar`, or any iterable of cookie dicts in Playwright's shape.
+
+        One at a time, so a rejected cookie is logged by name and the rest still go in. The
+        log line never holds the cookie's value, even when Playwright's error quotes it.
         """
         for cookie in jar:
             try:
                 self._context.add_cookies([{**cookie, "path": cookie.get("path") or "/"}])  # type: ignore[list-item]
             except PlaywrightError as error:
-                log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""), error=_first_line(error))
+                log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
+                         error=_without(_first_line(error), str(cookie.get("value", ""))))
 
     def clear_all(self) -> None:
         """Delete every cookie in the browser."""
         self._context.clear_cookies()
+
+
+def _without(text: str, secret: str) -> str:
+    """`text` with every occurrence of `secret` replaced by `…`, so a log line can't leak it."""
+    return text.replace(secret, "…") if secret else text
 
 
 class Page:

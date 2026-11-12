@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from flnd import auth
-from shared import crypto, kv
+from shared import cookies, crypto, kv
 
 
 class AuthCase(unittest.TestCase):
@@ -34,7 +34,7 @@ class CookieFileTest(AuthCase):
         previous = Path.cwd()
         os.chdir(self.home.parent)
         try:
-            self.assertEqual(auth.load(self.home, "ins"), [])
+            self.assertEqual(auth.load(self.home, "ins"), cookies.Jar())
         finally:
             os.chdir(previous)
 

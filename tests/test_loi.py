@@ -207,7 +207,7 @@ class EngineTest(EngineCase):
     def setUp(self):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc", "path": "/"}]
-        cookies.to_file(jar, auth.cookie_file(self.home, "loi"))
+        cookies.Jar(jar).save(auth.cookie_file(self.home, "loi"))
         self.routes.update({f"{API}lois/5930": httpx.Response(200, json={"data": {**POST, "images": []}}),
                             f"{API}user/info": httpx.Response(200, json=USER)})
 
@@ -257,7 +257,7 @@ class LoginTest(unittest.TestCase):
         jar = [{"name": name, "value": "v", "domain": "loix.cc", "path": "/"} for name in names]
         jar.append({"name": "access-token", "value": "other", "domain": "example.com", "path": "/"})
         path = self.root / "cookies.txt"
-        cookies.to_file(jar, path)
+        cookies.Jar(jar).save(path)
         return path
 
     def test_a_cookie_file(self):
@@ -273,8 +273,8 @@ class LoginTest(unittest.TestCase):
 
     def test_the_browser(self):
         store = {"loix.cc": [{"name": "access-token", "value": "v", "domain": ".loix.cc", "path": "/"}]}
-        with mock.patch("shared._cookies.load_from_browser",
-                        lambda domain, *, browser, profile=None: store.get(domain, [])):
+        with mock.patch("shared._cookies.from_browser",
+                        lambda browser="chrome", *, profile=None: cookies.Jar(c for jar in store.values() for c in jar)):
             jar = auth.from_browser(Loibus(), browser="chrome")
             self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="Chrome"),
                              "loi: logged in from Chrome (1 cookies)")

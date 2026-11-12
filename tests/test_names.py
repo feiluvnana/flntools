@@ -45,12 +45,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
         "shared.cli.arg: positional option stdin",
         "shared.cli.arg: positional option type",
     ),
-    "shared.cookies": (
-        "shared.cookies.load_from_browser: prefix load_from_",
-        "shared.cookies.load_from_file: prefix load_from_",
-        "shared.cookies.to_file: prefix to_",
-        "shared.cookies.to_header: prefix to_",
-    ),
     "shared.fmt": (
         "shared.fmt.date: positional option pattern",
     ),
