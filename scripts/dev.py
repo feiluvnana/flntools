@@ -501,7 +501,6 @@ def run(command: list[str], *, capture_output: bool = False) -> subprocess.Compl
 # list when it meets the standard (lint fails while it stays), and none joins it; empty, lint is always strict.
 EXPLAINING: set[str] = {
     "shared/_browser.py",
-    "shared/_http.py",
 }
 
 BASELINE = ROOT / "tests" / "data" / "code_baseline.json"

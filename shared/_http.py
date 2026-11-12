@@ -22,8 +22,8 @@ None. What a request carries (cookies, signing, pacing, back-off) is left to the
 
 A `Response` is a frozen value made from the body already read: it holds no connection, so
 there is nothing to close, and it has no `.raw`, since `browser.Page.fetch` (and later flnd's
-`site.fetch`) returns the same type from other libraries. This module wraps httpx; the `http` extra brings it,
-and parsel for `Response.html`.
+`site.fetch`) returns the same type from other libraries. This module wraps httpx; the `http`
+extra brings it, and parsel for `Response.html`.
 
 `download` streams one file into a hidden `.<name>.<random>.part` beside `dest`, checks its
 size and then the caller's `check`, and renames it onto `dest` through `atomic`. A server that
@@ -41,8 +41,8 @@ No message or log line here holds a cookie or an `Authorization` value: messages
 the URL without its query, and the status, and any text from httpx is scrubbed of the request's
 secret header values first.
 
-Threads: `fetch` and `download` may be called from many threads at once, sharing the module's client or one of
-the caller's (httpx's `Client` is safe to share between threads). The per-host slots are one
+Threads: `fetch` and `download` may be called from many threads at once, sharing the module's client
+or one of the caller's (httpx's `Client` is safe to share between threads). The per-host slots are one
 `threading.BoundedSemaphore` per host, made under a lock, so every thread sees the same 6.
 """
 
@@ -329,9 +329,11 @@ def fetch(url: str, *, method: str = "GET", client: httpx.Client | None = None,
     """
     if attempts < 1:
         raise ValueError(f"attempts must be at least 1, not {attempts}")
+    # Built once, so every attempt sends the same method, URL, headers and body.
     sender = client if client is not None else _client()
     request = sender.build_request(method, url, headers=headers, params=params, data=data, json=json,
                                    timeout=timeout)
+    # One pass per attempt: a dead connection or a 5xx waits and goes round again; anything else returns or raises.
     attempt = 1
     while True:
         try:
@@ -430,9 +432,11 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
         raise ValueError(f"attempts must be at least 1, not {attempts}")
     if parts != "auto" and (isinstance(parts, bool) or not isinstance(parts, int) or parts < 1):
         raise ValueError(f'parts must be "auto" or a number from 1, not {parts!r}')
+    # The name is settled from the first mirror's URL, so every mirror writes the same file.
     path = _destination(dest, mirrors[0])
     path.parent.mkdir(parents=True, exist_ok=True)
     sender = client if client is not None else _client()
+    # The progress row and the claim on `path` last for the whole call, across every mirror.
     with ExitStack() as stack:
         bar = stack.enter_context(log.progress(label, total=size, show=fmt.size)) if label is not None else None
         taken = stack.enter_context(_claimed(path))
@@ -595,8 +599,11 @@ _claims_lock = threading.Lock()
 class _Segment:
     """One byte range of a file being downloaded: `start` to `end` (exclusive; None to the end), `done` written."""
 
+    # The first byte of the range.
     start: int
+    # One past the last byte of the range; None when the server gave no length, so it runs to the end.
     end: int | None
+    # Bytes of the range written so far, counted from `start`.
     done: int = 0
 
     @property
@@ -614,13 +621,16 @@ class _Segment:
 class _State:
     """A part being written: where it is, where it came from, and its segments."""
 
+    # The part file being written, a hidden `.<name>.<random>.part` beside `dest`.
     part: Path
+    # The URL it came from; the sidecar keeps it without its query.
     url: str
     # The strong `ETag` or the `Last-Modified` the server sent, sent back as `If-Range`; None
     # when it sent neither, and then the part can't be resumed.
     validator: str | None
     # The file's length from the server; None when it didn't say.
     size: int | None
+    # The byte ranges of the file, one unless it is split, each with how much of it is written.
     segments: list[_Segment]
 
     @property
@@ -659,10 +669,13 @@ class _Stopped(Exception):
 class _Stream:
     """One open response of a download and the host slot it holds, both released by `close`."""
 
+    # The open response, whose body is read as it arrives.
     response: httpx.Response
+    # The host slot this stream holds; released even when closing the response fails.
     slot: threading.BoundedSemaphore
 
     def close(self) -> None:
+        """Close the response and give the host slot back."""
         try:
             self.response.close()
         finally:
@@ -679,6 +692,7 @@ class _Report:
         self.lock = threading.Lock()
 
     def __call__(self, done: int, total: int | None) -> None:
+        """Report `done` of `total` bytes to the row and the callback, one caller at a time."""
         with self.lock:
             if self.bar is not None:
                 self.bar.total = total
@@ -693,6 +707,21 @@ class _Transfer:
     def __init__(self, client: httpx.Client, url: str, dest: Path, *, headers: Mapping[str, str] | None,
                  size: int | None, parts: Literal["auto"] | int, resume: bool, attempts: int, timeout: float,
                  check: Callable[[Path], Any] | None, report: _Report):
+        """One mirror's transfer, with the options `download` was given; nothing is requested until `run`.
+
+        Args:
+            client: the client every request of this mirror is sent on.
+            url: this mirror's URL.
+            dest: the file to write, as `download` resolved it from its `dest`.
+            headers: headers for every request, over the client's own; None for none.
+            size: the file's size in bytes when the caller knows it, else None.
+            parts: "auto", 1, or a number of ranges, as `download` documents.
+            resume: whether a resumable part may be kept and resumed.
+            attempts: how many tries in all, at least 1.
+            timeout: seconds each request may wait to connect, and between bytes.
+            check: the caller's check on the complete part, or None.
+            report: the progress sink shared by every mirror of the call.
+        """
         self.client, self.url, self.dest = client, url, dest
         self.headers = dict(headers or {})
         self.size, self.parts, self.resume, self.attempts, self.timeout = size, parts, resume, attempts, timeout
@@ -810,6 +839,7 @@ class _Transfer:
                     # Every range writes at its own offset into one file of the full length.
                     file.truncate(total)
             if count > 1 and total is not None:
+                # Ceiling division, so equal ranges cover every byte; the last one may be shorter.
                 step = -(-total // count)
                 segments = [_Segment(start, min(start + step, total)) for start in range(0, total, step)]
             else:
@@ -1087,7 +1117,7 @@ def _claimed(dest: Path) -> Iterator[bool]:
 
 
 def _resumable(dest: Path) -> _State | None:
-    """The newest part an earlier call left for `dest`, read from its sidecar, or None; broken leftovers are deleted."""
+    """The newest part an earlier call left for `dest`, read from its sidecar; broken leftovers are deleted, or None."""
     prefix, suffix = f".{dest.name}.", f".part{INFO_SUFFIX}"
     try:
         names = [name for name in os.listdir(dest.parent) if name.startswith(prefix) and name.endswith(suffix)]
@@ -1148,7 +1178,7 @@ def _write_all(file: io.FileIO, data: bytes) -> None:
 
 
 def _open_part(part: Path, *, create: bool = False) -> io.FileIO:
-    """Open a download's part for writing bytes, unbuffered: create it (it must not exist yet), or write into it in place.
+    """Open a download's part for unbuffered writing: create it (it must be new), or write into it in place.
 
     Unbuffered, so a write that returned is the system's: the ranges of a split file record
     what they wrote in one shared `.part.json`, and a buffer in one range's handle would let
@@ -1158,6 +1188,7 @@ def _open_part(part: Path, *, create: bool = False) -> io.FileIO:
     # O_TRUNC an existing part keeps its bytes, and each range seeks to its own place. Windows
     # opens files in text mode without O_BINARY, and would write every \n as \r\n.
     flags = os.O_WRONLY | (os.O_CREAT | os.O_EXCL if create else 0) | getattr(os, "O_BINARY", 0)
+    # 0o644: the owner writes and others only read; the process's umask may narrow that further.
     handle = os.open(part, flags, 0o644)
     try:
         return os.fdopen(handle, "wb", buffering=0)
