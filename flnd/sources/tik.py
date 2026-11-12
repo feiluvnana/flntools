@@ -71,16 +71,17 @@ FEEDS = (
 TABS = (("reposts", "repost-tab"), ("favorites", "favorites-tab"), ("liked", "liked-tab"))
 
 
-def feed_of(response: Any) -> Feed | None:
-    return next((feed for feed in FEEDS if feed.api in response.url), None)
+def feed_of(url: str) -> Feed | None:
+    """The feed whose API `url` calls, or None."""
+    return next((feed for feed in FEEDS if feed.api in url), None)
 
 
-def is_feed(response: Any) -> bool:
-    return feed_of(response) is not None
+def is_feed(url: str) -> bool:
+    return feed_of(url) is not None
 
 
 def has_captcha(session: Session) -> bool:
-    page = session.page.selector
+    page = session.page.document
     return bool(page.css(CAPTCHA_CSS)) or bool(CAPTCHA_TEXT.search(" ".join(page.xpath(VISIBLE_TEXT).all)))
 
 
@@ -145,7 +146,7 @@ class TikTok(Source):
         has_more = [True]
 
         def on_items(session: Session, data: Any, response: Any) -> None:
-            feed = feed_of(response)
+            feed = feed_of(response.url)
             if feed is None or session.folder is None or not isinstance(data, dict):
                 return
             if feed.category == "videos" and "hasMore" in data:
@@ -159,7 +160,7 @@ class TikTok(Source):
         profile = f"https://www.tiktok.com/@{username}"
         if not self._open_profile(session, profile):
             return
-        user = session.page.selector.script(PAGE_DATA).jmespath(USER).first or {}
+        user = session.page.document.script(PAGE_DATA).jmespath(USER).first or {}
         if session.wants(category="profile"):
             self._save_avatar(session, selector.parse(user).jmespath("user.avatarLarger").first)
         if any(session.wants(category=category) for category in ("videos", "stories", "playlists")):
@@ -200,7 +201,7 @@ class TikTok(Source):
     def _read_tab(self, session: Session, category: str, tab: str, count: Any) -> None:
         """Open one profile tab and scroll it to its end; one line when the account doesn't show it."""
         css = f'[data-e2e="{tab}"]'
-        if not session.page.selector.css(css):
+        if not session.page.document.css(css):
             session.info("{tab}: not public on this account", tab=category)
             return
         try:
@@ -215,7 +216,7 @@ class TikTok(Source):
 
     def _download_linked_posts(self, session: Session) -> None:
         """When the API was walled, read each post linked on the page from its embed page."""
-        linked_ids = [match.group(2) for href in session.page.selector.css(POST_LINKS).all
+        linked_ids = [match.group(2) for href in session.page.document.css(POST_LINKS).all
                       if (match := re.search(r"/(video|photo)/(\d+)", href))]
         for video_id in dict.fromkeys(linked_ids):
             self._download_single_embed(session, video_id)

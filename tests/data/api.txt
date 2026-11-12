@@ -25,33 +25,31 @@ shared.archive.unzip(parts: PathLike | Sequence[PathLike], dest: PathLike, *, pa
 shared.archive.zip(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, split: int | None = None) -> list[Path]
 shared.browser: module
 shared.browser.Browser(context: BrowserContext, *, close_steps: list[Callable[[], Any]], headless: bool, page_viewport: tuple[int, int] | None = None)
+shared.browser.Browser.add_cookies(jar: Jar | Iterable[dict]) -> None
+shared.browser.Browser.clear_cookies() -> None
 shared.browser.Browser.close() -> None
-shared.browser.Browser.cookies: attribute
-shared.browser.Browser.open_page(url: str | None = None, *, idle: bool = False, timeout: float = 30.0) -> Page
+shared.browser.Browser.cookies: property -> Jar
+shared.browser.Browser.open(url: str | None = None, *, idle: bool = False, timeout: float = 30.0) -> Page
 shared.browser.Browser.pages: property -> list[Page]
 shared.browser.Browser.raw: attribute
-shared.browser.Cookies(context: BrowserContext)
-shared.browser.Cookies.add(jar: Jar | Iterable[dict]) -> None
-shared.browser.Cookies.all: property -> Jar
-shared.browser.Cookies.clear_all() -> None
 shared.browser.Error(shared.Error)
 shared.browser.Page(raw: RawPage, browser: Browser)
 shared.browser.Page.browser: attribute
 shared.browser.Page.close() -> None
+shared.browser.Page.document: property -> Selection
 shared.browser.Page.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> int | None
 shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, poll: float = 1.0, timeout: float | None = None) -> bool
-shared.browser.Page.on_request(match: Match, handler: Callable[[Request], Any]) -> Callable[[], None]
-shared.browser.Page.on_response(match: Match, handler: Callable[[Any, Response], Any], *, lines: bool = False) -> Callable[[], None]
+shared.browser.Page.on_request(match: Match, handler: Callable[[Request], Any]) -> Subscription
+shared.browser.Page.on_response(match: Match, handler: Callable[[Any, Response], Any], *, lines: bool = False) -> Subscription
 shared.browser.Page.raw: attribute
-shared.browser.Page.scroll(*, by: str | Callable[[RawPage], Any] | None = None, count: Callable[[], int] | None = None, limit: int | None = None, more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0, pause: float = 0.3, max: int | None = None, progress: Callable[[], int] | None = None, onscroll: Callable[[], Any] | None = None) -> int
-shared.browser.Page.selector: property -> Selection
+shared.browser.Page.scroll(*, within: str | Locator | None = None, until: Callable[[], bool] | None = None, count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0, pause: float = 0.3, on_step: Callable[[], Any] | None = None) -> int
 shared.browser.Page.title: property -> str
 shared.browser.Page.url: property -> str
-shared.browser.Page.wait_for_load(*, idle: bool = False, timeout: float = 30.0) -> None
-shared.browser.Page.wait_for_selector(css: str, *, timeout: float = 30.0) -> None
-shared.browser.Page.wait_for_url(pattern: str | re.Pattern[str] | Callable[[str], bool], *, timeout: float = 30.0) -> None
-shared.browser.connect(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = True, viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser
-shared.browser.installed_profile(browser: str = 'chrome', profile: str = 'Default') -> Path
+shared.browser.Page.wait(css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None, idle: bool = False, timeout: float = 30.0) -> None
+shared.browser.Subscription(stop: Callable[[], None])
+shared.browser.Subscription.stop() -> None
+shared.browser.WaitError(shared.browser.Error)
+shared.browser.open(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = False, viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser
 shared.bundler: module
 shared.bundler.Error(shared.Error)
 shared.bundler.build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Iterable[PathLike] = (), out: PathLike = 'dist') -> Path

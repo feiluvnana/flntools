@@ -235,8 +235,8 @@ class BrowserChoiceTest(BrowserTestCase):
         with mock.patch.object(cookies, "_PLATFORM", "win32"):
             with self.assertRaises(RuntimeError) as caught:
                 cookies.from_browser("edge")
-        self.assertIn("browser.connect(cdp=", str(caught.exception))
-        self.assertIn("b.cookies.all", str(caught.exception))
+        self.assertIn("browser.open(cdp=", str(caught.exception))
+        self.assertIn("then b.cookies", str(caught.exception))
 
     def test_missing_cryptography(self):
         make_chromium_db(self.home / "Library/Application Support/Google/Chrome/Default/Network/Cookies", 24, [

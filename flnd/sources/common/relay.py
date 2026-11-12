@@ -4,7 +4,7 @@ A page's first load doesn't fetch its own data. The server puts the results the 
 would have returned into `<script type="application/json">` blocks, under `__bbox.result`, so a
 source reads them there as well as from the responses that come later.
 
-    for result in embedded_results(session.page.selector):
+    for result in embedded_results(session.page.document):
         on_graphql(session, result, None)
 """
 

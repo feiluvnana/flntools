@@ -18,7 +18,7 @@ browser, a live `shared.browser` and an HTTP header without conversion.
   The CBC decryption is private to this module, as Chromium's store is its one user, and needs
   `cryptography`. Since Chromium 130 (database version 24) each value starts with a SHA-256 of
   its host, which also proves the key was right. Windows' Chromium uses app-bound encryption
-  that only the browser can undo, so there it is refused, pointing to `browser.connect(cdp=…)`.
+  that only the browser can undo, so there it is refused, pointing to `browser.open(cdp=…)`.
   Firefox stores its values in plain text in `cookies.sqlite`, and `profiles.ini` names its
   profiles.
 
@@ -301,8 +301,8 @@ def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
     - macOS: the first read of a Chromium-family browser shows a Keychain prompt ("Chrome Safe
       Storage"). Allow it once.
     - Linux: the browser's key comes from the desktop keyring through `secret-tool`.
-    - Windows: only Firefox. For the Chromium family, use `browser.connect(cdp=…)`, then
-      `b.cookies.all`: a running browser's cookies need no decryption.
+    - Windows: only Firefox. For the Chromium family, use `browser.open(cdp=…)`, then
+      `b.cookies`: a running browser's cookies need no decryption.
     """
     if browser == "firefox":
         return Jar(_load_firefox(profile))
@@ -311,7 +311,7 @@ def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
     if _PLATFORM == "win32":
         # Chrome 127 and later use app-bound encryption, which only Chrome itself can undo.
         raise RuntimeError(
-            f"can't read {browser} cookies on Windows: use browser.connect(cdp=…), then b.cookies.all"
+            f"can't read {browser} cookies on Windows: use browser.open(cdp=…), then b.cookies"
         )
     return Jar(_load_chromium(browser, profile or "Default"))
 

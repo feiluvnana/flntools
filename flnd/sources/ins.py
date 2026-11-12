@@ -52,8 +52,8 @@ STORIES = ("data.xdt_api__v1__feed__reels_media__connection.edges[].node.items[]
            " || data.xdt_api__v1__feed__reels_media.reels_media[].items[]")
 
 
-def is_graphql(response: Any) -> bool:
-    return "graphql" in response.url
+def is_graphql(url: str) -> bool:
+    return "graphql" in url
 
 
 class Instagram(Source):
@@ -169,7 +169,7 @@ def load(session: Session, profile: Profile, url: str) -> bool:
     """Go to `url` and read the results its HTML embeds, as the later responses are read; False if it didn't load."""
     if not session.goto(url):
         return False
-    for result in embedded_results(session.page.selector):
+    for result in embedded_results(session.page.document):
         profile.on_result(session, result, None)
     return True
 
@@ -178,7 +178,7 @@ def save_post_page(session: Session, code: str, *, category: str, folder: str) -
     """Open one post's page and save its files, every carousel item included."""
     if not session.goto(f"{SITE}/p/{code}/"):
         return
-    found = [post for result in embedded_results(session.page.selector) if (post := post_media(result))]
+    found = [post for result in embedded_results(session.page.document) if (post := post_media(result))]
     if not found:
         session.warn("post {code}: its page holds no post; skipped", code=code)
         return
@@ -200,7 +200,7 @@ def save_story_page(session: Session, url: str, *, category: str, folder: str) -
     """Open a story or highlight page and save each of its stories."""
     if not session.goto(url):
         return
-    stories = [story for result in embedded_results(session.page.selector) for story in story_items(result)]
+    stories = [story for result in embedded_results(session.page.document) for story in story_items(result)]
     for story in stories:
         file = best_file(story)
         if file is None:

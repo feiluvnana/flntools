@@ -30,10 +30,6 @@ POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR
 # step-4 commit renames its names and removes its own entries here, with the api.txt diff that shows
 # the renames. Nothing else is exempt: a new name that breaks a convention fails.
 ALLOWED: dict[str, tuple[str, ...]] = {
-    "shared.browser": (
-        "shared.browser.Page.scroll: option progress, not a progress(done, total) callback",
-        "shared.browser.installed_profile: positional option profile",
-    ),
     "shared.bundler": (
         "shared.bundler.build: option out, not dest",
     ),

@@ -259,12 +259,12 @@ async def two_step(session: Session, client: Any) -> None:
 
 
 def read_telegram_web() -> dict[str, str]:
-    """Telegram Web's local storage, from a copy of Chrome's default profile."""
+    """Telegram Web's local storage, from a copy of Chrome's default profile, in a browser nobody sees."""
     from shared import browser
 
     try:
-        with browser.connect(profile=browser.installed_profile()) as connected:
-            page = connected.open_page(TELEGRAM_WEB, idle=True)
+        with browser.open(profile="Default", headless=True) as chrome:
+            page = chrome.open(TELEGRAM_WEB, idle=True)
             return page.raw.evaluate("Object.assign({}, localStorage)")
     except (OSError, RuntimeError, ValueError) as error:
         raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None

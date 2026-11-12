@@ -189,7 +189,7 @@ def read_page(session: Session, url: str, feed: Feed) -> list[Any] | None:
     """Go to a page and read the results its HTML embeds, as the later responses are read; None if it didn't load."""
     if not session.goto(url):
         return None
-    results = embedded_results(session.page.selector)
+    results = embedded_results(session.page.document)
     for result in results:
         feed.on_result(session, result, None)
     return results
@@ -245,7 +245,7 @@ def save_stories(session: Session, url: str) -> None:
     """Open one story bucket's page and save each story's photo or video."""
     if not session.goto(url):
         return
-    cards = [card for result in embedded_results(session.page.selector)
+    cards = [card for result in embedded_results(session.page.document)
              for card in selector.parse(result).jmespath(STORY_CARDS).all if isinstance(card, dict)]
     for card in cards:
         day = posted_on(card)

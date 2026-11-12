@@ -129,10 +129,10 @@ class FakeSession:
         """Feed `data` to every handler whose match takes `url`, as the browser would."""
         response = FakeResponse(url)
         for matches, handler in list(self._handlers):
-            if matches(response):
+            if matches(url):
                 handler(self, data, response)
 
-    def scroll(self, *, by: str | Callable[[Any], Any] | None = None, count: Callable[[], int] | None = None,
+    def scroll(self, *, within: Any = None, count: Callable[[], int] | None = None,
                more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0,
                max: int | None = None) -> int:
         if self.on_scroll is not None:
@@ -212,9 +212,10 @@ class FakeSession:
         return answer(url, request) if callable(answer) else answer
 
 
-def _matcher(match: Match) -> Callable[[Any], bool]:
+def _matcher(match: Match) -> Callable[[str], bool]:
+    # As shared.browser reads `match`: a substring of the URL, a regex searched in it, or a predicate over it.
     if isinstance(match, str):
-        return lambda response: match in response.url
+        return lambda url: match in url
     if isinstance(match, re.Pattern):
-        return lambda response: match.search(response.url) is not None
+        return lambda url: match.search(url) is not None
     return match

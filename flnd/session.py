@@ -27,7 +27,7 @@ from shared import fmt, kv, log, prompt, theme
 
 if TYPE_CHECKING:
     from shared import worker
-    from shared._browser import Browser, Match, Page
+    from shared._browser import Browser, Match, Page, Subscription
     from shared._cookies import Jar
     from shared._selector import Selection
 
@@ -70,7 +70,7 @@ class Session(Protocol):
     def on_response(self, match: Match, handler: Callable[[Session, Any, Any], Any], *,
                     lines: bool = False) -> Callable[[], None]: ...
     def on_request(self, match: Match, handler: Callable[[Session, Any], Any]) -> Callable[[], None]: ...
-    def scroll(self, *, by: str | Callable[[Any], Any] | None = None, count: Callable[[], int] | None = None,
+    def scroll(self, *, within: Any = None, count: Callable[[], int] | None = None,
                more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0,
                max: int | None = None) -> int: ...
     def wait_for_selector(self, css: str, *, timeout: float = 30.0) -> None: ...
@@ -359,29 +359,40 @@ class TargetSession:
         """Call `handler(session, request)` for each matching request; returns a stop function, like `on_response`."""
         return self._listen(_Listener("request", match, lambda request: handler(self, request)))
 
-    def scroll(self, *, by: str | Callable[[Any], Any] | None = None, count: Callable[[], int] | None = None,
+    def scroll(self, *, within: Any = None, count: Callable[[], int] | None = None,
                more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0,
                max: int | None = None) -> int:
         """`page.scroll` under a `scroll <folder>` spinner.
 
+        `within` is the element that scrolls (a CSS selector or a locator; None is the page),
+        `more` is asked before each scroll and False stops, and `max` is the most scrolls.
         `idle` is the seconds at the bottom with no progress that end the feed, and `delay` the
         longest wait for progress after one scroll.
         """
+        steps = [0]
+
+        def until() -> bool:
+            return (max is not None and steps[0] >= max) or (more is not None and not more())
+
+        def on_step() -> None:
+            steps[0] += 1
+            bar.advance()
+
         with log.progress(f"scroll {self.folder or self.target}", show=_show_steps) as bar:
-            return self.page.scroll(by=by, count=count, more=more, idle=idle, delay=delay, max=max,
-                                    onscroll=bar.advance)
+            return self.page.scroll(within=within, until=until, count=count, idle=idle, wait=delay,
+                                    on_step=on_step)
 
     def wait_for_selector(self, css: str, *, timeout: float = 30.0) -> None:
-        """`page.wait_for_selector` on the current tab: `session.wait_for_selector("article")`."""
-        self.page.wait_for_selector(css, timeout=timeout)
+        """`page.wait(css)` on the current tab: `session.wait_for_selector("article")`."""
+        self.page.wait(css, timeout=timeout)
 
     def wait_for_url(self, pattern: Any, *, timeout: float = 30.0) -> None:
-        """`page.wait_for_url` on the current tab: `session.wait_for_url("**/reels/")`."""
-        self.page.wait_for_url(pattern, timeout=timeout)
+        """`page.wait(url=pattern)` on the current tab: `session.wait_for_url("**/reels/")`."""
+        self.page.wait(url=pattern, timeout=timeout)
 
     def wait_for_load(self, *, idle: bool = False, timeout: float = 30.0) -> None:
-        """`page.wait_for_load` on the current tab: `session.wait_for_load(idle=True)`."""
-        self.page.wait_for_load(idle=idle, timeout=timeout)
+        """`page.wait()` on the current tab, for the load or with `idle` a quiet network: `session.wait_for_load(idle=True)`."""
+        self.page.wait(idle=idle, timeout=timeout)
 
     def handoff(self, *, until: Callable[[], bool], message: str, poll: float = 1.0,
                 timeout: float | None = None) -> bool:
@@ -523,7 +534,7 @@ class TargetSession:
         It returns how many files were written, after logging each failed one.
         """
         if self._browser is not None:
-            self._run.http.cookies.update(net.cookie_jar(self._browser.cookies.all))
+            self._run.http.cookies.update(net.cookie_jar(self._browser.cookies))
             self._browser.close()
             self._browser = self._page = None
         self._end_handover(dropping=error is not None)
@@ -547,7 +558,7 @@ class TargetSession:
               soft: bool = False) -> httpx.Response:
         if self._browser is not None:
             # Cookies the site set in the browser reach the client too, as a logged-in page would send them.
-            self._run.http.cookies.update(net.cookie_jar(self._browser.cookies.all))
+            self._run.http.cookies.update(net.cookie_jar(self._browser.cookies))
         try:
             response = self._run.http.request(method, url, headers=dict(headers or {}), **request)
         except httpx.HTTPError as error:
@@ -559,7 +570,7 @@ class TargetSession:
     def _open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         if self._browser is None:
             self._browser = self._connect()
-        self._page = self._browser.open_page()
+        self._page = self._browser.open()
         for listener in self._listeners:
             listener.attach(self._page)
         return _loaded(self._page.goto(url, idle=idle, timeout=timeout))
@@ -580,13 +591,12 @@ class TargetSession:
         from shared import browser
 
         source, settings = self._source, self._settings
-        # Visible, so a person can solve a captcha in it; no locale or timezone, so the browser keeps
-        # the computer's own, which match where the connection comes from. Without Google Chrome,
-        # connect asks once to download Chromium, or raises naming Chrome.
-        connected = browser.connect(headless=False, viewport=source.viewport, args=source.browser_args,
-                                    stealth=source.stealth)
-        connected.cookies.add(self._run.jar)
-        return connected
+        # Visible (open's default), so a person can solve a captcha in it; no locale or timezone, so
+        # the browser keeps the computer's own, which match where the connection comes from. Without
+        # Google Chrome, open asks once to download Chromium, or raises naming Chrome.
+        opened = browser.open(viewport=source.viewport, args=source.browser_args, stealth=source.stealth)
+        opened.add_cookies(self._run.jar)
+        return opened
 
     def _target_dir(self) -> Path:
         return files.target_folder(self._settings.home, self.target)
@@ -716,18 +726,18 @@ class _Listener:
     match: Match
     callback: Callable[..., Any]
     lines: bool = False
-    stops: list[Callable[[], None]] = field(default_factory=list)
+    subscriptions: list[Subscription] = field(default_factory=list)
 
     def attach(self, page: Page) -> None:
         if self.event == "response":
-            self.stops.append(page.on_response(self.match, self.callback, lines=self.lines))
+            self.subscriptions.append(page.on_response(self.match, self.callback, lines=self.lines))
         else:
-            self.stops.append(page.on_request(self.match, self.callback))
+            self.subscriptions.append(page.on_request(self.match, self.callback))
 
     def detach(self) -> None:
-        for stop in self.stops:
-            stop()
-        self.stops.clear()
+        for subscription in self.subscriptions:
+            subscription.stop()
+        self.subscriptions.clear()
 
 
 def check_category(source: Source, category: str) -> None:

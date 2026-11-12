@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import mock
 
 import httpx
@@ -648,21 +649,20 @@ class MediaSaveTest(EngineCase):
 
 
 class FakeBrowser:
-    """Stands in for `browser.connect()`: records options, opened URLs and listeners; holds cookies."""
+    """Stands in for `browser.open()`: records options, opened URLs and listeners; holds cookies."""
 
     def __init__(self, **options):
         self.options = options
         self.added = []
         self.urls = []
         self.closed = False
-        self.cookies = self
-        self.all = cookies.Jar([{"name": "csrftoken", "value": "late", "domain": ".aaa.example", "path": "/"}])
+        self.cookies = cookies.Jar([{"name": "csrftoken", "value": "late", "domain": ".aaa.example", "path": "/"}])
         self.listeners = []
 
-    def add(self, jar):
+    def add_cookies(self, jar):
         self.added.extend(jar)
 
-    def open_page(self):
+    def open(self):
         browser = self
 
         class Page:
@@ -674,7 +674,7 @@ class FakeBrowser:
 
             def on_response(self, match, callback, lines=False):
                 browser.listeners.append(callback)
-                return lambda: browser.listeners.remove(callback)
+                return SimpleNamespace(stop=lambda: browser.listeners.remove(callback))
 
         return Page()
 
@@ -691,7 +691,7 @@ class BrowserTest(EngineCase):
             self.browsers.append(FakeBrowser(**options))
             return self.browsers[-1]
 
-        patcher = mock.patch("shared._browser.connect", connect)
+        patcher = mock.patch("shared._browser.open", connect)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -714,9 +714,9 @@ class BrowserTest(EngineCase):
         source = make_source("aaa", run, viewport=(800, 600), browser_args=("--no-sandbox",), stealth=False)
         self.run_engine(source, targets=["aaa:a"])
         connected = self.browsers[0]
-        # Visible, and with the computer's own language and timezone: flnd passes no locale= or timezone=.
-        self.assertEqual(connected.options, {"headless": False, "viewport": (800, 600), "args": ("--no-sandbox",),
-                                             "stealth": False})
+        # Visible (open's default, so no headless=), and with the computer's own language and
+        # timezone: flnd passes no locale= or timezone=.
+        self.assertEqual(connected.options, {"viewport": (800, 600), "args": ("--no-sandbox",), "stealth": False})
         self.assertEqual([cookie["name"] for cookie in connected.added], ["sid"])
         self.assertEqual(connected.added[0]["domain"], ".aaa.example")
         self.assertEqual(connected.urls, ["https://aaa.example/a", "https://aaa.example/a/tab"])
@@ -741,7 +741,7 @@ class BrowserTest(EngineCase):
         def connect(**options):
             raise RuntimeError("flnd needs Google Chrome: install it from https://www.google.com/chrome/")
 
-        with mock.patch("shared._browser.connect", connect):
+        with mock.patch("shared._browser.open", connect):
             self.run_engine(make_source("aaa", lambda session: session.open_page("https://aaa.example/a")),
                             targets=["aaa:a"])
         self.assertIn("✗ aaa:a: flnd needs Google Chrome: install it from https://www.google.com/chrome/", self.lines())

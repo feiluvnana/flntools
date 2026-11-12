@@ -1,4 +1,32 @@
-"""Playwright's sync API as two small wrappers: `connect()` gives a `Browser`, and `open_page()` a `Page`."""
+"""Drive a real browser with Playwright's sync API: `browser.open()` gives a `Browser`, and `Browser.open(url)` a `Page`.
+
+How it works: `open` starts Playwright's driver and launches Google Chrome through Playwright's
+`chrome` channel, or attaches to a running browser over CDP. The browser runs incognito, in a
+profile folder, or in a private copy of an installed Chrome profile named by `profile="Default"`.
+A `Browser` wraps Playwright's `BrowserContext`: it opens tabs, and moves cookies in and out as
+`shared.cookies.Jar`s. A `Page` wraps one Playwright `Page`: it loads URLs (`goto`), waits for an
+element, a URL or a quiet network (`wait`), watches JSON responses and requests (`on_response`,
+`on_request`, each a `Subscription`), scrolls a feed at a person's pace until it ends (`scroll`),
+hands a captcha to a person (`handoff`), and reads the live page as a `shared.selector.Selection`
+(`document`). Everything else is on `.raw`: the `BrowserContext` of a `Browser`, and the
+`playwright.sync_api.Page` of a `Page`. Importing this module doesn't load Playwright; `open`
+does, and raises `ImportError` naming the `browser` extra when it's missing.
+
+    from shared import browser
+
+    with browser.open(profile="Default") as chrome:          # a copy of your Chrome's profile
+        tab = chrome.open("https://example.com/", idle=True)
+        tab.wait(".grid")
+        with tab.on_response("graphql", lambda data, response: found.append(data)):
+            tab.scroll(until=lambda: len(found) > 100)
+        tab.document.css("h1").text, tab.url, tab.title
+
+Threads: Playwright's sync API is single-threaded. A `Browser`, its `Page`s and their
+`Subscription`s may be used only on the thread that called `open`, and handlers run on that
+thread, inside whichever call is waiting (`goto`, `wait`, `scroll`, `handoff`). Several threads
+may each open their own browser, as flnd's sources do; the only thing they share is the offer to
+download Chromium, which is behind a lock.
+"""
 
 from __future__ import annotations
 
@@ -22,10 +50,10 @@ from shared._log import log
 
 if TYPE_CHECKING:
     from shared._selector import Selection
-    from playwright.sync_api import BrowserContext, Playwright, Request, Response
+    from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
-__all__ = ["Browser", "Cookies", "Error", "Page", "connect", "installed_profile"]
+__all__ = ["Browser", "Error", "Page", "Subscription", "WaitError", "open"]
 
 LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled", "--disable-infobars"]
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -33,10 +61,14 @@ PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHei
 # Half a screen from the end counts as the bottom, so the odd small scroll up doesn't reset the end rule.
 NEAR_BOTTOM = ("(() => { const page = document.scrollingElement || document.documentElement;"
                " return page.scrollTop + innerHeight * 1.5 >= page.scrollHeight; })()")
+# The same two reads for `scroll(within=…)`, on the element that scrolls instead of the page.
+ELEMENT_HEIGHT = "element => element.scrollHeight"
+ELEMENT_NEAR_BOTTOM = "element => element.scrollTop + element.clientHeight * 1.5 >= element.scrollHeight"
 VIEWPORT = "[innerWidth, innerHeight]"
 PROFILE_ROOTS = {"darwin": "Library/Application Support/Google/Chrome", "linux": ".config/google-chrome",
                  "win32": "AppData/Local/Google/Chrome/User Data"}
-CHANNELS = {"chrome": "chrome"}
+# A copy of an installed profile opens only in Google Chrome: its cookies are sealed with Chrome's key.
+PROFILE_CHANNEL: str | None = "chrome"
 # Where Playwright's `chrome` channel finds Google Chrome: the same paths as its registry
 # (`_createChromiumChannel` in the driver, Playwright 1.65). On Windows each is tried under
 # %LOCALAPPDATA%, %PROGRAMFILES% and %PROGRAMFILES(X86)%, as Playwright does.
@@ -50,24 +82,30 @@ NEEDS_CHROME = "flnd needs Google Chrome: install it from https://www.google.com
 INSTALL_PERCENT = re.compile(r"(\d+)% of")
 # Caches are big and Chrome rebuilds them, so a profile copy leaves them out.
 SKIP_IN_PROFILE = shutil.ignore_patterns("Cache", "Code Cache", "GPUCache", "Service Worker")
-Match = Union[str, "re.Pattern[str]", Callable[[Any], bool]]
+# What `on_response` and `on_request` take: a substring of the URL, a regex searched in it, or a
+# predicate over it.
+Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
 
-# connect sets this to Playwright's error class, so importing this module never loads Playwright.
+
+class _NeverRaised(Exception):
+    """Stands for Playwright's error classes until `open` imports them, so nothing is caught by mistake."""
+
+
+# open sets these to Playwright's error classes, so importing this module never loads Playwright.
 PlaywrightError: type[Exception] = Exception
+PlaywrightTimeout: type[Exception] = _NeverRaised
 # Every random choice in scrolling comes from here, so a test can seed it.
 _random = random.Random()
 # Scrolling reads the time here, and waits on Playwright's clock, so a test can fake both.
 _clock = time.monotonic
 # Seconds between two checks for a scroll's progress: short next to a page's load, cheap for the page.
 POLL = 0.05
-# Copies made by installed_profile, and the browser each came from. connect deletes a copy on close.
-_installed_copies: dict[Path, str] = {}
 # Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
 _chromium_declined = False
 # The error the Chromium download failed with, raised again without asking for the rest of the process.
 _chromium_failed: RuntimeError | None = None
-# Each source's session connects on its own thread, so two can find Chromium missing at once:
-# the check, the question and the download are one step, or both would ask and both download.
+# Each source's session opens its browser on its own thread, so two can find Chromium missing at
+# once: the check, the question and the download are one step, or both would ask and both download.
 _chromium_offer = threading.Lock()
 
 
@@ -75,47 +113,80 @@ class Error(shared.Error):
     """The base of every error `shared.browser` raises."""
 
 
-def connect(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = True,
-            viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None,
-            args: Sequence[str] = (), stealth: bool = True) -> Browser:
-    """Start or attach to a browser, and return it as a `Browser` for a `with` block.
+class WaitError(Error):
+    """`Page.wait`'s condition didn't come true within its `timeout`.
 
-        with browser.connect(headless=False) as b:
-            page = b.open_page("https://example.com/")
+    Not a subclass of the builtin `TimeoutError`, which is an `OSError`: a page that is slow to
+    show an element isn't a failure of the operating system, and `except OSError` mustn't catch it.
+    """
 
-    `profile=None` is incognito: nothing is kept. A folder is a persistent profile, and
-    `installed_profile()` a copy of your Chrome's, opened with real Chrome. `cdp=` attaches to a
-    running browser's DevTools endpoint (`http://127.0.0.1:9222`, or a cloud browser's `wss://` URL)
-    and leaves it running. A local Chrome only allows that when started with `--remote-debugging-port`
-    and its own `--user-data-dir`, not your default profile. With `cdp=`, `profile`, `headless`,
-    `locale`, `timezone`, `args` and `stealth` raise `ValueError`, and `viewport` is set on each page opened.
 
-    `locale` ("fr-FR") and `timezone` ("Europe/Paris") set the browser's language and clock;
-    `None` keeps the system's.
+def open(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = False,
+         viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None,
+         args: Sequence[str] = (), stealth: bool = True) -> Browser:
+    """Launch or attach to a browser, and return it as a `Browser` for a `with` block.
+
+        with browser.open() as chrome:                       # a visible, incognito Google Chrome
+            tab = chrome.open("https://example.com/")
+        with browser.open(profile="Profile 1") as chrome: ...  # a copy of that installed profile
+        with browser.open(profile=Path(".flnd/browser")) as chrome: ...  # a folder, kept between runs
+
+    Args:
+        profile: None runs incognito, and nothing is kept. A `str` with no path separator is the
+            name of an installed Google Chrome profile ("Default", "Profile 1"): it is copied to a
+            private temporary folder, without its caches, and opened in Google Chrome itself, so
+            Chrome can stay open and nothing is written back; the copy is deleted on close, or
+            when `open` fails. A `Path`, or a `str` with a separator ("./profile"), is a folder
+            used as a persistent profile, created when missing, in whichever browser `open`
+            launches. Pass `Path("Default")` for a folder of that name in the current directory.
+        cdp: a running browser's DevTools endpoint (`http://127.0.0.1:9222`, or a cloud browser's
+            `wss://` URL) to attach to instead of launching one; it keeps running after close. A
+            local Chrome allows that only when started with `--remote-debugging-port` and its own
+            `--user-data-dir`, not your default profile.
+        headless: run without a window. False, the default, shows one, so a person can solve a
+            captcha; headless mode reports "Chrome" where it would say "HeadlessChrome".
+        viewport: the tabs' (width, height) in CSS pixels; with `cdp=`, set on each tab opened.
+        locale: the browser's language, such as "fr-FR"; None keeps the system's.
+        timezone: the browser's clock, such as "Europe/Paris"; None keeps the system's.
+        args: more command-line switches for the browser, after `LAUNCH_ARGS`.
+        stealth: hide `navigator.webdriver` and the "controlled by automated software" bar.
+
+    Returns:
+        A `Browser`; `close()` or the end of `with` stops it.
+
+    Raises:
+        ValueError: `cdp=` together with `profile`, `headless=True`, `locale`, `timezone`, `args`
+            or `stealth=False`, which only apply to a browser launched here; or an empty `profile`.
+        FileNotFoundError: no installed Chrome profile has the name `profile`.
+        ImportError: Playwright isn't installed (the `browser` extra).
+        RuntimeError: Google Chrome isn't installed and the Chromium download was declined, wasn't
+            possible to ask (no terminal), or failed.
 
     It launches Google Chrome, installed the usual way, through Playwright's `chrome` channel:
     Playwright's own Chromium differs in codecs and fonts, which fingerprinting sees. Without
-    Chrome, it uses the Chromium it downloaded before, in Chrome's new headless mode. With neither,
-    it asks once, in a terminal, whether to download Chromium (about 200 MB) with Playwright's own
-    installer, under a progress row; that question holds the live rows while it's open. On no,
-    or without a terminal, it raises `RuntimeError` saying to install Chrome. The browser keeps
-    its own user agent, except that headless mode's "HeadlessChrome" is reported as "Chrome".
+    Chrome, it uses the Chromium it downloaded before, in Chrome's new headless mode when
+    headless. With neither, it asks once, in a terminal, whether to download Chromium (about
+    200 MB) with Playwright's own installer, under a progress row; that question holds the live
+    rows while it's open. A copied profile never falls back to Chromium. The browser keeps its
+    own user agent. Call it from the thread that will use the browser (see the module's docstring).
     """
-    # A copy from installed_profile is claimed at once, so it is deleted however connect ends
-    # without a launched browser: the copy holds the profile's logins (Telegram Web's among them).
-    copy = Path(profile) if profile is not None and Path(profile) in _installed_copies else None
-    copied_from = _installed_copies.pop(copy) if copy is not None else None
+    launch_only = profile is not None or headless or args or not stealth or locale or timezone
+    if cdp is not None and launch_only:
+        raise ValueError("open(cdp=...) uses the running browser as it is: "
+                         "profile, headless, locale, timezone, args and stealth don't apply")
+    name = _profile_name(profile)
+    # Copied before Playwright starts, so a misspelt name fails at once. From here the copy holds
+    # the profile's logins (Telegram Web's among them), so it is deleted however open ends
+    # without a launched browser.
+    copy = _copy_profile(name) if name is not None else None
     launched = False
     try:
-        launch_only = profile is not None or not headless or args or not stealth or locale or timezone
-        if cdp is not None and launch_only:
-            raise ValueError("connect(cdp=...) uses the running browser as it is: "
-                             "profile, headless, locale, timezone, args and stealth don't apply")
         playwright = _start_playwright()
         try:
             if cdp is None:
-                started = _launch(playwright, profile, copied_from, headless=headless, viewport=viewport,
-                                  locale=locale, timezone=timezone, args=args, stealth=stealth)
+                started = _launch(playwright, copy if copy is not None else profile, copied=copy is not None,
+                                  headless=headless, viewport=viewport, locale=locale, timezone=timezone,
+                                  args=args, stealth=stealth)
             else:
                 remote = playwright.chromium.connect_over_cdp(cdp)
                 context = remote.contexts[0] if remote.contexts else remote.new_context()
@@ -134,47 +205,65 @@ def connect(*, profile: str | Path | None = None, cdp: str | None = None, headle
             shutil.rmtree(copy, ignore_errors=True)
 
 
-def installed_profile(browser: str = "chrome", profile: str = "Default") -> Path:
-    """Copy your installed Chrome's profile to a temp folder, for `connect(profile=…)`.
+def _profile_name(profile: str | Path | None) -> str | None:
+    """The installed Chrome profile `profile` names, or None when it is a folder (or None).
 
-        with browser.connect(profile=browser.installed_profile("chrome", "Profile 1"), headless=False) as b: ...
-
-    The copy avoids Chrome's profile lock, so Chrome can stay open. Changes aren't written back,
-    and `connect` deletes the copy on close.
+    A name is a `str` with no path separator: profile names never have one, and a folder can
+    always be written with one (`./profile`) or as a `Path`.
     """
-    if browser not in CHANNELS:
-        raise ValueError(f"browser must be one of {', '.join(CHANNELS)}, not {browser!r}")
-    root = Path.home() / PROFILE_ROOTS[sys.platform if sys.platform in ("darwin", "win32") else "linux"]
-    if not (root / profile).is_dir():
-        raise FileNotFoundError(f"no {browser} profile named {profile!r} in {root}")
+    if profile is None or not isinstance(profile, str):
+        return None
+    if not profile:
+        raise ValueError("profile is empty: give a Chrome profile's name, such as 'Default', or a folder")
+    separators = {"/", os.sep, os.altsep} - {None}
+    if any(separator in profile for separator in separators) or profile in (".", ".."):
+        return None
+    return profile
+
+
+def _profile_root() -> Path:
+    """The folder that holds Google Chrome's profiles on this platform."""
+    return Path.home() / PROFILE_ROOTS[sys.platform if sys.platform in ("darwin", "win32") else "linux"]
+
+
+def _copy_profile(name: str) -> Path:
+    """Copy the installed Chrome profile `name` to a new private temporary folder, as its `Default`.
+
+    Raises `FileNotFoundError` when Chrome has no profile of that name. A copy that fails half
+    way is deleted before the error goes on.
+    """
+    root = _profile_root()
+    if not (root / name).is_dir():
+        raise FileNotFoundError(f"no Chrome profile named {name!r} in {root}")
     # mkdtemp makes the folder with mode 0700, so on a shared machine no other user can read the
     # copy, which holds the profile's logins. Windows ignores the mode; the user's temp folder is private there.
-    copy = Path(tempfile.mkdtemp(prefix=f"shared-{browser}-"))
+    copy = Path(tempfile.mkdtemp(prefix="shared-chrome-"))
     try:
-        # Whatever its name, the copy holds the profile as Default, and connect opens Default.
-        shutil.copytree(root / profile, copy / "Default", ignore=SKIP_IN_PROFILE, ignore_dangling_symlinks=True)
+        # Whatever its name, the copy holds the profile as Default, and _launch opens Default.
+        shutil.copytree(root / name, copy / "Default", ignore=SKIP_IN_PROFILE, ignore_dangling_symlinks=True)
         if (root / "Local State").is_file():
             shutil.copy2(root / "Local State", copy / "Local State")
-    # Any exception, Ctrl-C included, deletes the half-made copy before it goes on up: it isn't in
-    # _installed_copies yet, so nothing else would delete it, and it may already hold the profile's logins.
+    # Any exception, Ctrl-C included, deletes the half-made copy before it goes on up: nothing
+    # else knows of it yet, and it may already hold the profile's logins.
     except BaseException:
         shutil.rmtree(copy, ignore_errors=True)
         raise
-    _installed_copies[copy] = browser
     return copy
 
 
 class Browser:
-    """A connected browser: open pages in it, and read or add its cookies. `raw` is the `BrowserContext`.
+    """A running browser: open tabs in it, and read or add its cookies. `raw` is Playwright's `BrowserContext`.
 
-        with browser.connect() as b:
-            page = b.open_page("https://example.com/"); b.cookies.all; b.pages
+        with browser.open() as chrome:
+            tab = chrome.open("https://example.com/")
+            chrome.add_cookies(cookies.load("example_cookies.txt")); chrome.cookies.header; chrome.pages
+
+    Made by `browser.open`, not directly. Use it only on the thread that opened it.
     """
 
     def __init__(self, context: BrowserContext, *, close_steps: list[Callable[[], Any]], headless: bool,
                  page_viewport: tuple[int, int] | None = None):
         self.raw = context
-        self.cookies = Cookies(context)
         self._close_steps = close_steps
         self._headless = headless
         self._page_viewport = page_viewport
@@ -188,12 +277,19 @@ class Browser:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def open_page(self, url: str | None = None, *, idle: bool = False, timeout: float = 30.0) -> Page:
+    def open(self, url: str | None = None, *, idle: bool = False, timeout: float = 30.0) -> Page:
         """Open a new tab, and go to `url` when given.
 
-            page = b.open_page("https://example.com/", idle=True)
+            tab = chrome.open("https://example.com/", idle=True)
 
-        A navigation error is logged and leaves the page open on `about:blank`.
+        Args:
+            url: where the tab goes, as `Page.goto`; None leaves it on `about:blank`.
+            idle: also wait until the network has been quiet for a moment, not only for `load`.
+            timeout: seconds before the navigation counts as failed.
+
+        Returns:
+            The tab, which `close()` closes; the browser's close closes it too. A navigation error
+            is logged, not raised, and leaves the tab open on `about:blank`.
         """
         raw = self.raw.new_page()
         if self._page_viewport is not None:
@@ -209,13 +305,44 @@ class Browser:
         """Every open tab, including ones the site or a person opened."""
         return [self._wrap(raw) for raw in self.raw.pages]
 
+    @property
+    def cookies(self) -> Jar:
+        """Every cookie in the browser, as a `shared.cookies.Jar`: a snapshot, which doesn't follow later changes."""
+        return Jar(dict(cookie) for cookie in self.raw.cookies())
+
+    def add_cookies(self, jar: Jar | Iterable[dict]) -> None:
+        """Add each cookie to the browser unchanged, except that `path` defaults to `/`.
+
+            chrome.add_cookies(cookies.load("example_cookies.txt"))
+            chrome.add_cookies([{"name": "sid", "value": "1", "domain": ".example.com"}])
+
+        Args:
+            jar: a `Jar`, or any iterable of cookie dicts in Playwright's shape.
+
+        They go in one at a time, so a rejected cookie is logged by name and the rest still go
+        in. The log line never holds the cookie's value, even when Playwright's error quotes it.
+        """
+        for cookie in jar:
+            try:
+                self.raw.add_cookies([{**cookie, "path": cookie.get("path") or "/"}])  # type: ignore[list-item]
+            # Playwright's Error is what a cookie it won't take (no domain, a bad expiry) raises;
+            # anything else is a real failure and goes on up.
+            except PlaywrightError as error:
+                log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
+                         error=_without(_first_line(error), str(cookie.get("value", ""))))
+
+    def clear_cookies(self) -> None:
+        """Delete every cookie in the browser."""
+        self.raw.clear_cookies()
+
     def close(self) -> None:
-        """Close the pages, the context, the browser and Playwright, in order: the same as leaving `with`.
+        """Close the tabs, the context, the browser and Playwright, in order: the same as leaving `with`.
 
-            b.close()
+            chrome.close()
 
-        An attached (`cdp=`) browser keeps running. A failure while closing is logged once, and
-        never raised, so it can't hide the error that made a `with` block exit.
+        An attached (`cdp=`) browser keeps running, and a copied profile is deleted once the
+        browser has stopped. A failure while closing is logged once, and never raised, so it
+        can't hide the error that made a `with` block exit. A second call does nothing.
         """
         if self._closed:
             return
@@ -224,6 +351,7 @@ class Browser:
         for step in [page.raw.close for page in self._opened] + self._close_steps:
             try:
                 step()
+            # Every step runs even when one fails, so Playwright's driver is always stopped.
             except Exception as error:
                 failures.append(error)
         if failures:
@@ -235,54 +363,47 @@ class Browser:
         return self._wrappers[raw]
 
 
-class Cookies:
-    """The live browser's cookie jar, as a `shared.cookies.Jar`.
-
-        b.cookies.add(cookies.load("ins.txt")); b.cookies.all.header; b.cookies.clear_all()
-    """
-
-    def __init__(self, context: BrowserContext):
-        self._context = context
-
-    @property
-    def all(self) -> Jar:
-        """A snapshot of every cookie, as a `Jar`; it doesn't follow later changes in the browser."""
-        return Jar(dict(cookie) for cookie in self._context.cookies())
-
-    def add(self, jar: Jar | Iterable[dict]) -> None:
-        """Add each cookie unchanged, except that `path` defaults to `/`.
-
-            b.cookies.add(cookies.load("ins.txt"))
-            b.cookies.add([{"name": "sid", "value": "1", "domain": ".example.com"}])
-
-        Args:
-            jar: a `Jar`, or any iterable of cookie dicts in Playwright's shape.
-
-        One at a time, so a rejected cookie is logged by name and the rest still go in. The
-        log line never holds the cookie's value, even when Playwright's error quotes it.
-        """
-        for cookie in jar:
-            try:
-                self._context.add_cookies([{**cookie, "path": cookie.get("path") or "/"}])  # type: ignore[list-item]
-            except PlaywrightError as error:
-                log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
-                         error=_without(_first_line(error), str(cookie.get("value", ""))))
-
-    def clear_all(self) -> None:
-        """Delete every cookie in the browser."""
-        self._context.clear_cookies()
-
-
 def _without(text: str, secret: str) -> str:
     """`text` with every occurrence of `secret` replaced by `…`, so a log line can't leak it."""
     return text.replace(secret, "…") if secret else text
 
 
-class Page:
-    """One tab. `raw` is the Playwright `Page`, for `click`, `fill`, `evaluate` and everything else.
+class Subscription:
+    """A handler added by `Page.on_response` or `Page.on_request`, until `stop()` or the end of `with`.
 
-        page = b.open_page("https://example.com/")
-        page.on_response("graphql", handler); page.scroll(count=lambda: len(posts)); title = page.selector.css("h1").text
+        with tab.on_response("graphql", handler):
+            tab.scroll()
+        watching = tab.on_request("/api/", handler); ...; watching.stop()
+
+    Stop it on the browser's thread, as everything else here.
+    """
+
+    def __init__(self, stop: Callable[[], None]):
+        self._stop = stop
+        self._stopped = False
+
+    def __enter__(self) -> Subscription:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.stop()
+
+    def stop(self) -> None:
+        """Remove the handler, so it isn't called again; a second call does nothing."""
+        if not self._stopped:
+            self._stopped = True
+            self._stop()
+
+
+class Page:
+    """One tab. `raw` is Playwright's `Page`, for `click`, `fill`, `evaluate` and everything else.
+
+        tab = chrome.open("https://example.com/")
+        with tab.on_response("graphql", handler):
+            tab.scroll(count=lambda: len(posts))
+        title = tab.document.css("h1").text
+
+    Made by `Browser.open` or `Browser.pages`, not directly. Use it only on the browser's thread.
     """
 
     def __init__(self, raw: RawPage, browser: Browser):
@@ -293,7 +414,7 @@ class Page:
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> int | None:
         """Go to `url`, and return the HTTP status of its main response.
 
-            status = page.goto("https://example.com/", idle=True)
+            status = tab.goto("https://example.com/", idle=True)
             if status is None or status >= 400: ...
 
         Args:
@@ -315,119 +436,167 @@ class Page:
             return None
         return response.status if response is not None else None
 
+    def wait(self, css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None,
+             idle: bool = False, timeout: float = 30.0) -> None:
+        """Wait until an element matches `css`, the URL matches `url`, and with `idle` the network is quiet.
+
+            tab.wait(".grid")
+            tab.wait(url="**/reels/")
+            tab.wait(idle=True)
+            tab.wait()                     # the `load` event
+
+        Args:
+            css: a CSS selector; waits until a visible element matches it. None doesn't wait for one.
+            url: a glob ("**/feed/"), a compiled regex or a predicate over the URL; waits until the
+                tab's URL matches it. None doesn't wait for one.
+            idle: also wait until the network has been quiet for 500 ms. With neither `css` nor
+                `url`, False waits for the `load` event instead.
+            timeout: seconds for every condition together, not for each.
+
+        Raises:
+            WaitError: `timeout` seconds passed first. Its message names what was waited for.
+
+        The conditions are waited for in the order above. Handlers keep running during the wait.
+        """
+        deadline = time.monotonic() + timeout
+
+        def left() -> float:
+            # Playwright reads a timeout of 0 as "no timeout", so the last moment is 1 ms, not 0.
+            return max(1.0, (deadline - time.monotonic()) * 1000)
+
+        what = "the page to load"
+        try:
+            if css is not None:
+                what = f"an element to match {css!r}"
+                self.raw.wait_for_selector(css, timeout=left())
+            if url is not None:
+                what = f"the URL to match {url!r}" if not callable(url) else "the URL to match a predicate"
+                self.raw.wait_for_url(url, timeout=left())
+            if idle or (css is None and url is None):
+                what = "the network to go quiet" if idle else "the page to load"
+                self.raw.wait_for_load_state("networkidle" if idle else "load", timeout=left())
+        # Only Playwright's TimeoutError is "too slow"; any other error (a closed tab) goes on up as it is.
+        except PlaywrightTimeout:
+            raise WaitError(f"waited {timeout:g} s for {what}") from None
+
     def on_response(self, match: Match, handler: Callable[[Any, Response], Any], *,
-                    lines: bool = False) -> Callable[[], None]:
-        """Call `handler(parsed, response)` for each matching JSON response, and return a function that stops it.
+                    lines: bool = False) -> Subscription:
+        """Call `handler(data, response)` with each matching response's JSON, until the subscription stops.
 
-            stop = page.on_response("graphql", lambda parsed, response: posts.extend(parsed["items"]))
+            with tab.on_response("graphql", lambda data, response: posts.extend(data["items"])):
+                tab.scroll()
 
-        `match` is a URL substring, a compiled regex, or a function of the response. `lines=True`
-        parses newline-delimited JSON, one call per line. A body that isn't JSON is skipped, and an
-        exception in `handler` is logged while later responses keep arriving.
+        Args:
+            match: a substring of the response's URL, a compiled regex searched in it, or a
+                predicate over it (`lambda url: url.endswith("/feed")`).
+            handler: called with the parsed body and Playwright's `Response`.
+            lines: parse the body as newline-delimited JSON, with one call per line.
+
+        Returns:
+            A `Subscription`: `stop()` it, or use it in a `with` block.
+
+        A body that isn't JSON is skipped, and an exception in `handler` is logged while later
+        responses keep arriving. Each matching response also counts as progress for `scroll`.
         """
         matches = _matcher(match)
 
         def listener(response: Response) -> None:
-            if not matches(response):
+            if not matches(response.url):
                 return
             self._responses_seen += 1
             for parsed in _json_bodies(response, lines):
                 try:
                     handler(parsed, response)
+                # A handler is a source's code, called from inside Playwright's event loop: an
+                # exception that went on up would be lost there, and stop every later response.
                 except Exception as error:
                     log.warn("on_response handler failed for {url}: {error}", url=response.url,
                              error=f"{type(error).__name__} {error}".strip())
 
         self.raw.on("response", listener)
-        return lambda: self.raw.remove_listener("response", listener)
+        return Subscription(lambda: self.raw.remove_listener("response", listener))
 
-    def on_request(self, match: Match, handler: Callable[[Request], Any]) -> Callable[[], None]:
-        """Call `handler(request)` for each matching request, and return a function that stops it.
+    def on_request(self, match: Match, handler: Callable[[Request], Any]) -> Subscription:
+        """Call `handler(request)` for each matching request, until the subscription stops.
 
-            stop = page.on_request("/api/", lambda request: urls.append(request.url))
+            with tab.on_request("/api/", lambda request: urls.append(request.url)): ...
+
+        Args:
+            match: a substring of the request's URL, a compiled regex searched in it, or a predicate over it.
+            handler: called with Playwright's `Request`.
+
+        Returns:
+            A `Subscription`: `stop()` it, or use it in a `with` block.
         """
         matches = _matcher(match)
 
         def listener(request: Request) -> None:
-            if matches(request):
+            if matches(request.url):
                 handler(request)
 
         self.raw.on("request", listener)
-        return lambda: self.raw.remove_listener("request", listener)
+        return Subscription(lambda: self.raw.remove_listener("request", listener))
 
-    def wait_for_selector(self, css: str, *, timeout: float = 30.0) -> None:
-        """Wait until an element matches `css`, as in `page.wait_for_selector("article")`.
+    def scroll(self, *, within: str | Locator | None = None, until: Callable[[], bool] | None = None,
+               count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0, pause: float = 0.3,
+               on_step: Callable[[], Any] | None = None) -> int:
+        """Scroll like a person until the feed ends, as fast as it loads, and return the number of scrolls.
 
-        Each `wait_for_*` raises Playwright's `TimeoutError` when `timeout` seconds pass first.
-        """
-        self.raw.wait_for_selector(css, timeout=timeout * 1000)
-
-    def wait_for_url(self, pattern: str | re.Pattern[str] | Callable[[str], bool], *, timeout: float = 30.0) -> None:
-        """Wait until the URL matches a glob, a regex or a function, as in `page.wait_for_url("**/reels/")`."""
-        self.raw.wait_for_url(pattern, timeout=timeout * 1000)
-
-    def wait_for_load(self, *, idle: bool = False, timeout: float = 30.0) -> None:
-        """Wait until the page has loaded, and with `idle=True` the network is quiet: `page.wait_for_load(idle=True)`."""
-        self.raw.wait_for_load_state("networkidle" if idle else "load", timeout=timeout * 1000)
-
-    def scroll(self, *, by: str | Callable[[RawPage], Any] | None = None, count: Callable[[], int] | None = None,
-               limit: int | None = None, more: Callable[[], bool] | None = None, idle: float = 10.0,
-               delay: float = 3.0, pause: float = 0.3, max: int | None = None,
-               progress: Callable[[], int] | None = None, onscroll: Callable[[], Any] | None = None) -> int:
-        """Scroll like a person until the feed ends, as fast as the page loads, and return the number of scrolls.
-
-            page.scroll(count=lambda: len(posts), limit=500)
+            tab.scroll(count=lambda: len(posts), until=lambda: len(posts) >= 500)
+            tab.scroll(within="[role=dialog] .list")      # a list that scrolls inside the page
 
         Each scroll moves the mouse and turns the wheel in uneven steps. It then waits for the
-        page's progress, checked every 50 ms: the page grew, `count()` rose, `progress()` rose, or
-        an `on_response` handler's response arrived. Then it pauses `pause` seconds plus 0 to 40%,
+        page's progress, checked every 50 ms: the page (or `within`) grew, `count()` rose, or an
+        `on_response` handler's response arrived. Then it pauses `pause` seconds plus 0 to 40%,
         so two scrolls never come back to back, and scrolls again. A fast page is scrolled two or
         three times a second; a slow one is waited out.
 
         Args:
-            by: replaces the wheel: a JS expression to evaluate, or a `(raw_page) -> None` function.
-            count: the number of items found so far; a rise is progress. None leaves it out.
-            limit: stop once `count()` reaches it. None, or no `count`, has no limit.
-            more: called before each scroll; False stops. None always goes on.
-            idle: seconds at the bottom of the page with no progress after which the feed has
-                ended, however many scrolls that takes.
-            delay: the longest wait for progress after one scroll, in seconds.
+            within: the element that scrolls, as a CSS selector (its first match) or a Playwright
+                `Locator`: the mouse goes over it, and its own height and end are watched. None
+                scrolls the page.
+            until: called before each scroll; True stops. None goes on until the feed ends.
+            count: a number whose rise is progress, such as the items found so far, or any traffic
+                the caller watches. None leaves it out.
+            idle: seconds at the end with no progress after which the feed has ended, however
+                many scrolls that takes.
+            wait: the longest wait for progress after one scroll, in seconds.
             pause: the least seconds between the end of that wait and the next scroll: the floor,
                 which a caller raises when the site has asked it to slow down.
-            max: the most scrolls. None (the default) has no cap: the end rule, `limit` and
-                `more` stop it.
-            progress: a counter of other traffic the caller watches; a rise is progress.
-            onscroll: called after each scroll's pause, such as a spinner's advance.
+            on_step: called after each scroll's pause, such as a spinner's advance.
 
         Returns:
             The number of scrolls done.
 
+        Raises:
+            Error: `within` matches no visible element.
+
         Waits run on Playwright's clock, so `on_*` handlers keep running during them.
         """
-        marker = self._progress_marker(count, progress)
-        quiet_since: float | None = None                # when the scrolls with no progress at the bottom began
+        target = self.raw.locator(within).first if isinstance(within, str) else within
+        # Checked at once: a locator's reads would otherwise wait 30 s for an element that never comes.
+        if target is not None and not target.is_visible():
+            raise Error("scroll(within=…) found no visible element to scroll")
+        marker = self._progress_marker(target, count)
+        quiet_since: float | None = None                # when the scrolls with no progress at the end began
         scrolls = 0
-        while max is None or scrolls < max:
-            if count is not None and limit is not None and count() >= limit:
-                break
-            if more is not None and not more():
-                break
+        while until is None or not until():
             started = _clock()
-            self._move(by)
+            self._move(target)
             scrolls += 1
-            # Away from the bottom there is nothing to wait for: feeds load more only when their end
-            # comes into view. At the bottom, the wait never runs past the end of the quiet spell.
-            at_bottom = self.raw.evaluate(NEAR_BOTTOM)
+            # Away from the end there is nothing to wait for: feeds load more only when their end
+            # comes into view. At the end, the wait never runs past the end of the quiet spell.
+            at_bottom = self._at_bottom(target)
             if not at_bottom:
                 longest = 0.0
             elif quiet_since is None:
-                longest = delay
+                longest = wait
             else:
-                longest = min(delay, quiet_since + idle - _clock())
-            previous, marker = marker, self._wait_for_progress(marker, count, progress, longest)
+                longest = min(wait, quiet_since + idle - _clock())
+            previous, marker = marker, self._wait_for_progress(target, marker, count, longest)
             self._pause(pause)
-            if onscroll is not None:
-                onscroll()
+            if on_step is not None:
+                on_step()
             if any(now > before for now, before in zip(marker, previous)) or not at_bottom:
                 quiet_since = None
                 continue
@@ -435,14 +604,14 @@ class Page:
                 quiet_since = started
             if _clock() - quiet_since >= idle:
                 break
-            self._jiggle(pause)
+            self._jiggle(target, pause)
         return scrolls
 
     def handoff(self, *, until: Callable[[], bool], message: str, poll: float = 1.0,
                 timeout: float | None = None) -> bool:
         """Wait for a person to do a step, such as a captcha or a login, and return whether it got done.
 
-            page.handoff(until=lambda: not page.raw.locator("#captcha").count(), message="Solve the captcha")
+            tab.handoff(until=lambda: not tab.raw.locator("#captcha").count(), message="Solve the captcha")
 
         It shows `message` and a spinner, and polls `until()` every `poll` seconds. False means
         `timeout` passed first. A headless browser raises `RuntimeError`, because nobody can see it.
@@ -462,10 +631,10 @@ class Page:
         return True
 
     @property
-    def selector(self) -> Selection:
+    def document(self) -> Selection:
         """The live page as a `selector.Selection`, read fresh each time.
 
-            page.selector.css("h1").text; page.selector.script("__NEXT_DATA__").jmespath("props").first
+            tab.document.css("h1").text; tab.document.script(id="__NEXT_DATA__").jmespath("props").first
 
         It is a snapshot: a later change to the page needs another read. The HTML is `.raw.get()`.
         Needs the `selector` extra, and raises `selector.UnsafeError` when the page is over 64 MB.
@@ -477,44 +646,64 @@ class Page:
 
     @property
     def url(self) -> str:
+        """The tab's current URL."""
         return self.raw.url
 
     @property
     def title(self) -> str:
+        """The page's `<title>`, or "" without one."""
         return self.raw.title()
 
     def close(self) -> None:
         """Close the tab."""
         self.raw.close()
 
-    def _progress_marker(self, count: Callable[[], int] | None,
-                         progress: Callable[[], int] | None) -> tuple[int, int, int, int]:
-        """The numbers whose rise is progress: page height, `count()`, responses seen and `progress()`."""
-        return (self.raw.evaluate(PAGE_HEIGHT), count() if count is not None else 0, self._responses_seen,
-                progress() if progress is not None else 0)
+    def _progress_marker(self, target: Locator | None, count: Callable[[], int] | None) -> tuple[int, int, int]:
+        """The numbers whose rise is progress: the scrolled height, `count()` and the responses seen."""
+        height = self.raw.evaluate(PAGE_HEIGHT) if target is None else target.evaluate(ELEMENT_HEIGHT)
+        return height, count() if count is not None else 0, self._responses_seen
 
-    def _wait_for_progress(self, before: tuple[int, ...], count: Callable[[], int] | None,
-                           progress: Callable[[], int] | None, longest: float) -> tuple[int, int, int, int]:
+    def _at_bottom(self, target: Locator | None) -> bool:
+        return self.raw.evaluate(NEAR_BOTTOM) if target is None else target.evaluate(ELEMENT_NEAR_BOTTOM)
+
+    def _wait_for_progress(self, target: Locator | None, before: tuple[int, ...], count: Callable[[], int] | None,
+                           longest: float) -> tuple[int, int, int]:
         """Poll every `POLL` seconds until a number of `before` rose or `longest` seconds passed; return the marker."""
         deadline = _clock() + longest
         while True:
-            marker = self._progress_marker(count, progress)
+            marker = self._progress_marker(target, count)
             if any(now > then for now, then in zip(marker, before)) or _clock() >= deadline:
                 return marker
             self.raw.wait_for_timeout(POLL * 1000)
 
-    def _move(self, by: str | Callable[[RawPage], Any] | None) -> None:
-        if isinstance(by, str):
-            self.raw.evaluate(by)
-        elif by is not None:
-            by(self.raw)
-        else:
-            width, height = self.raw.evaluate(VIEWPORT)
-            self.raw.mouse.move(width * _random.uniform(0.25, 0.75), height * _random.uniform(0.3, 0.7),
-                                steps=_random.randint(2, 6))
-            self._wheel(height * _random.uniform(0.6, 0.9))
-            if _random.random() < 1 / 8:
-                self._wheel(-height * _random.uniform(0.1, 0.25))
+    def _area(self, target: Locator | None) -> tuple[float, float, float, float]:
+        """The visible part of what scrolls, as (x, y, width, height) in the viewport's pixels."""
+        width, height = self.raw.evaluate(VIEWPORT)
+        if target is None:
+            return 0.0, 0.0, width, height
+        try:
+            # A short timeout: the element was there a moment ago, so one that is gone now won't come back.
+            box = target.bounding_box(timeout=1000)
+        # Only Playwright's TimeoutError means "gone"; it is reported as the element missing, below.
+        except PlaywrightTimeout:
+            box = None
+        if box is None:
+            raise Error("scroll(within=…) found no visible element to scroll")
+        # Only the part inside the viewport can be under the mouse.
+        top, bottom = max(box["y"], 0.0), min(box["y"] + box["height"], height)
+        left, right = max(box["x"], 0.0), min(box["x"] + box["width"], width)
+        if bottom <= top or right <= left:
+            raise Error("scroll(within=…) found its element outside the viewport")
+        return left, top, right - left, bottom - top
+
+    def _move(self, target: Locator | None) -> None:
+        """One scroll: the mouse over the area, then the wheel down most of its height, now and then a little back up."""
+        left, top, width, height = self._area(target)
+        self.raw.mouse.move(left + width * _random.uniform(0.25, 0.75), top + height * _random.uniform(0.3, 0.7),
+                            steps=_random.randint(2, 6))
+        self._wheel(height * _random.uniform(0.6, 0.9))
+        if _random.random() < 1 / 8:
+            self._wheel(-height * _random.uniform(0.1, 0.25))
 
     def _wheel(self, distance: float) -> None:
         weights = [_random.uniform(0.5, 1.5) for _ in range(_random.randint(3, 6))]
@@ -527,30 +716,32 @@ class Page:
         # Jitter only adds: a floor is the least a site is given, so it is never cut short.
         self.raw.wait_for_timeout(floor * _random.uniform(1.0, 1.4) * 1000)
 
-    def _jiggle(self, floor: float) -> None:
-        # Most feeds load the next page when their end comes back into view, so up a screen and down wakes them.
-        height = self.raw.evaluate(VIEWPORT)[1]
+    def _jiggle(self, target: Locator | None, floor: float) -> None:
+        # Most feeds load the next page when their end comes back into view, so up a screen and down
+        # wakes them. The mouse is still over the area from the scroll before.
+        height = self._area(target)[3]
         self._wheel(-height)
         self._pause(floor)
         self._wheel(height)
 
 
 def _start_playwright() -> Playwright:
-    global PlaywrightError
+    """Start Playwright's driver, and point `PlaywrightError` and `PlaywrightTimeout` at its error classes."""
+    global PlaywrightError, PlaywrightTimeout
     try:
-        from playwright.sync_api import Error, sync_playwright
+        from playwright.sync_api import Error, TimeoutError, sync_playwright
     except ImportError:
         raise ImportError("shared.browser needs playwright: pip install 'flntools[browser]'") from None
-    PlaywrightError = Error
+    PlaywrightError, PlaywrightTimeout = Error, TimeoutError
     return sync_playwright().start()
 
 
-def _launch(playwright: Playwright, profile: str | Path | None, copied_from: str | None, *, headless: bool,
+def _launch(playwright: Playwright, profile: str | Path | None, *, copied: bool, headless: bool,
             viewport: tuple[int, int], locale: str | None, timezone: str | None, args: Sequence[str],
             stealth: bool) -> Browser:
-    """Launch a browser for `connect`; `copied_from` is the browser an `installed_profile` copy came from.
+    """Launch a browser for `open`; `copied` says `profile` is a copy of an installed Chrome profile.
 
-    `connect` deletes the copy when this raises; on success, the Browser's close deletes it.
+    `open` deletes the copy when this raises; on success, the Browser's close deletes it.
     """
     launch_options: dict[str, Any] = {"headless": headless, "args": [*LAUNCH_ARGS, *args]}
     context_options: dict[str, Any] = {"viewport": {"width": viewport[0], "height": viewport[1]}}
@@ -558,22 +749,22 @@ def _launch(playwright: Playwright, profile: str | Path | None, copied_from: str
         context_options["locale"] = locale
     if timezone is not None:
         context_options["timezone_id"] = timezone
-    copy = Path(profile) if profile is not None and copied_from is not None else None
-    # A copy of Chrome's profile opens only in Chrome: its cookies are sealed with Chrome's key.
-    channel = CHANNELS[copied_from] if copied_from is not None else _channel(playwright)
-    if copy is not None:
+    # A copy of Chrome's profile opens only in Chrome, so it never asks to download Chromium.
+    channel = PROFILE_CHANNEL if copied else _channel(playwright)
+    if copied:
         launch_options["args"].append("--profile-directory=Default")
     context, close_steps = _open_context(playwright, profile, channel, launch_options, context_options)
     if stealth:
         context.add_init_script(HIDE_WEBDRIVER)
-    if copy is not None:
+    if copied:
+        copy = Path(str(profile))
         # Removed after Chrome has closed, or Chrome would still be writing into it.
         close_steps.append(lambda: shutil.rmtree(copy, ignore_errors=True))
     return Browser(context, close_steps=close_steps, headless=headless)
 
 
 def _channel(playwright: Playwright) -> str:
-    """The channel `connect` launches: `chrome` when Google Chrome is installed, `chromium` otherwise.
+    """The channel `open` launches: `chrome` when Google Chrome is installed, `chromium` otherwise.
 
     Without Chrome or a downloaded Chromium, it asks to download Chromium, and raises
     `RuntimeError(NEEDS_CHROME)` on no or without a terminal. A failed download raises its
@@ -595,7 +786,7 @@ def _channel(playwright: Playwright) -> str:
             raise _chromium_failed
         # confirm opens log's question, which holds other threads' live rows until it's answered.
         # Without a terminal it answers its default, no, at once. A no is kept for the process, so
-        # a run that connects once per source asks only once.
+        # a run that opens a browser once per source asks only once.
         if _chromium_declined or not prompt.confirm(CHROMIUM_QUESTION, default=False):
             _chromium_declined = True
             raise RuntimeError(NEEDS_CHROME)
@@ -620,7 +811,7 @@ def _chrome_installed() -> bool:
 def _install_chromium() -> None:
     """Download Chromium with Playwright's own installer, under a progress row, into Playwright's user cache.
 
-    `--no-shell` skips the separate headless shell: `connect` runs Chromium itself in Chrome's
+    `--no-shell` skips the separate headless shell: `open` runs Chromium itself in Chrome's
     new headless mode (the `chromium` channel), so the shell would never be used.
 
     Raises:
@@ -646,7 +837,7 @@ def _install_chromium() -> None:
                                f"{installer.returncode}: {last}")
 
 
-def _open_context(playwright: Playwright, profile: str | Path | None, channel: str,
+def _open_context(playwright: Playwright, profile: str | Path | None, channel: str | None,
                   launch_options: dict[str, Any], context_options: dict[str, Any]) -> tuple[BrowserContext, list]:
     headless = launch_options["headless"]
     if profile is None:
@@ -672,7 +863,7 @@ def _headful_user_agent(remote: Any) -> str:
     return agent.replace("HeadlessChrome", "Chrome")
 
 
-def _headful_user_agent_of(playwright: Playwright, channel: str) -> str:
+def _headful_user_agent_of(playwright: Playwright, channel: str | None) -> str:
     # A persistent profile can't be relaunched with a new user agent, so a throwaway browser reads it first.
     remote = playwright.chromium.launch(channel=channel, headless=True)
     try:
@@ -685,11 +876,12 @@ def _first_line(error: BaseException) -> str:
     return (str(error).splitlines() or [""])[0]
 
 
-def _matcher(match: Match) -> Callable[[Any], bool]:
+def _matcher(match: Match) -> Callable[[str], bool]:
+    """`match` as a predicate over a URL."""
     if isinstance(match, str):
-        return lambda event: match in event.url
+        return lambda url: match in url
     if isinstance(match, re.Pattern):
-        return lambda event: match.search(event.url) is not None
+        return lambda url: match.search(url) is not None
     if callable(match):
         return match
     raise TypeError(f"match must be a str, a compiled regex, or a function, not {type(match).__name__}")

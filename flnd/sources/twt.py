@@ -203,7 +203,7 @@ class Twitter(Source):
             for tweet in tweets:
                 save_tweet(session, tweet, session.folder, user_id)
 
-        session.on_response(lambda response: any(f"/{timeline.query}" in response.url for timeline in timelines),
+        session.on_response(lambda url: any(f"/{timeline.query}" in url for timeline in timelines),
                             on_timeline)
         for timeline in timelines:
             if session.wants(category=timeline.category):
