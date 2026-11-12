@@ -297,6 +297,8 @@ class TargetSite:
             self._before(url)
             self._document = None
             status = page.goto(url, idle=idle, timeout=timeout)
+            # A page load doesn't go through the client's transport, so its 429 is counted here, and the
+            # page's own headers stand in for a response for the pacer and the Retry-After.
             if self._document is not None:
                 self._after(url, SimpleNamespace(headers=self._document))
             if status == 429:
@@ -347,11 +349,22 @@ class TargetSite:
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:
-        """A `log.info` line naming the target: `site.info("{n} stories", n=3)`."""
+        """A `log.info` line naming the target: `site.info("{n} stories", n=3)`.
+
+        Args:
+            message: the text, with `{name}` fields filled in from `fields`.
+            **fields: the values the message's fields take.
+        """
+        # The target's name is put in front of the message as a field, so its text can't break the format.
         log.info("{target}: " + message, target=str(self.target), **fields)
 
     def warn(self, message: str, **fields: Any) -> None:
-        """A `log.warn` line naming the target, like `info`."""
+        """A `log.warn` line naming the target, like `info`.
+
+        Args:
+            message: the text, with `{name}` fields filled in from `fields`.
+            **fields: the values the message's fields take.
+        """
         log.warn("{target}: " + message, target=str(self.target), **fields)
 
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
@@ -483,7 +496,12 @@ class LoginSite:
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:
-        """A `log.info` line naming the source."""
+        """A `log.info` line naming the source, the way `TargetSite.info` names a target.
+
+        Args:
+            message: the text, with `{name}` fields filled in from `fields`.
+            **fields: the values the message's fields take.
+        """
         log.info("{code}: " + message, code=self._run.source.code, **fields)
 
 
