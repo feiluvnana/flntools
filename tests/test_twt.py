@@ -5,9 +5,8 @@ import unittest
 
 from fakes import FakeSession
 
-from flnd.common.target import Target
 from flnd.session import Options
-from flnd.sources.base import FetchError
+from flnd.source import FetchError, Target
 from flnd.sources.twt import QUERIES, Twitter, read_timeline_page
 
 API = "https://x.com/i/api/graphql/"

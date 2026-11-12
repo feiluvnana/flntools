@@ -1,8 +1,10 @@
-"""Target resolution: every row of engine.md's targets table, bare URLs, and the refusals."""
+"""Reading targets through the engine: every source's forms, bare URLs, short links and the refusals. No network."""
 
 import unittest
 
-from flnd.common.target import Target, TargetError, link, resolve
+from flnd.common.target import link
+from flnd.engine import resolve
+from flnd.source import Target, TargetError
 from flnd.sources import SOURCES
 
 
@@ -123,20 +125,25 @@ class RefusedTest(unittest.TestCase):
     def test_refused_forms_have_a_hint(self):
         rows = [
             ("https://www.instagram.com/stories/example_user/123/", "ins: story links aren't supported; give the "
-                                                                   "profile, for example ins:example_user"),
+                                                                   "profile, and its stories come with it"),
             ("https://www.facebook.com/example.page/posts/123", "fbk: single posts and videos aren't supported yet"),
         ]
         for text, message in rows:
             with self.subTest(text=text), self.assertRaisesRegex(TargetError, "^" + message):
                 read(text)
 
-    def test_unreadable_forms_list_the_examples(self):
+    def test_unreadable_forms_list_the_forms(self):
         with self.assertRaises(TargetError) as caught:
             read("ins:not a name")
-        self.assertEqual(str(caught.exception), "ins: can't read 'not a name'; write it like ins:example_user, "
-                                                "ins:@example_user, https://www.instagram.com/example_user/, "
-                                                "https://www.instagram.com/p/C1abcDEFghi/, "
-                                                "https://www.instagram.com/reel/C1abcDEFghi/")
+        self.assertEqual(str(caught.exception), "ins: can't read 'not a name'; write it like ins:<user>, "
+                                                "https://www.instagram.com/p/<code>/, https://www.instagram.com/reel/<code>/, "
+                                                "https://www.instagram.com/reels/<code>/, https://www.instagram.com/tv/<code>/, "
+                                                "https://www.instagram.com/…/p/<code>/, "
+                                                "https://www.instagram.com/…/reel/<code>/, https://www.instagram.com/…/reels/<code>/, "
+                                                "https://www.instagram.com/…/tv/<code>/, https://www.instagram.com/<user>/")
+        # A source not yet ported to routes still lists its examples.
+        with self.assertRaisesRegex(TargetError, "^twt: can't read 'not a name'; write it like twt:example_handle, "):
+            read("twt:not a name")
         for text in ("ins:", "tik:https://www.tiktok.com/", "twt:https://x.com/explore"):
             with self.subTest(text=text), self.assertRaisesRegex(TargetError, "can't read"):
                 read(text)

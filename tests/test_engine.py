@@ -21,10 +21,9 @@ from media_samples import encoders, needs_ffmpeg, needs_pillow, sample
 from flnd import engine as engine_module
 from flnd.common import auth, net
 from flnd.common.compress import Choice
-from flnd.common.target import Target
 from flnd.engine import Engine
 from flnd.session import Options, TargetSession
-from flnd.sources.base import FetchError, Source
+from flnd.source import FetchError, Source, Target
 from shared import cookies, kv, media, theme
 from shared._theme import Screen
 

@@ -21,8 +21,7 @@ import httpx
 
 from flnd.common import auth, files, net
 from flnd.common.compress import KINDS, Choice, Compressor, choice_of
-from flnd.common.target import Target
-from flnd.sources.base import FetchError, Source
+from flnd.source import FetchError, Source, Target
 from shared import atomic, fmt, kv, log, prompt, theme
 
 if TYPE_CHECKING:

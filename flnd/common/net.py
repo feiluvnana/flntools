@@ -21,7 +21,7 @@ import httpx
 
 from flnd.common import files
 from flnd.common.files import NotMediaError
-from flnd.sources.base import FetchError, Wait
+from flnd.source import FetchError, Wait
 from shared import atomic, fmt, log
 
 ATTEMPTS = 3

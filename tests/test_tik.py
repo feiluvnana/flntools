@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 
 from fakes import FakeSession
 
-from flnd.common.target import Target
 from flnd.session import Options
+from flnd.source import Target
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video, posted_on
 
 DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")

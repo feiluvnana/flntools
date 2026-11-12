@@ -6,6 +6,54 @@ flnd.engine.Engine.login(source: Source, method: str) -> None
 flnd.engine.Engine.resolve(texts: Sequence[str]) -> list[Target]
 flnd.engine.Engine.run(targets: Sequence[Target], options: Options) -> int
 flnd.engine.Engine.sources: attribute
+flnd.source: module
+flnd.source.Error(Exception)
+flnd.source.FetchError(flnd.source.Error)
+flnd.source.FetchError.status: attribute
+flnd.source.LoginError(flnd.source.Error)
+flnd.source.Pace(floor: float = 0.5, budgets: Mapping[str, tuple[int, float]] = <factory>)
+flnd.source.Pace.budgets: field -> Mapping[str, tuple[int, float]]
+flnd.source.Pace.floor: field -> float
+flnd.source.Pace.of(value: Pace | float) -> Pace
+flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None)
+flnd.source.Route.forms(code: str) -> list[str]
+flnd.source.Route.function: attribute
+flnd.source.Route.kind: attribute
+flnd.source.Route.patterns: attribute
+flnd.source.Route.shown: attribute
+flnd.source.Source()
+flnd.source.Source.browser_args: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.concurrency: attribute -> ClassVar[int]
+flnd.source.Source.connect(session: Session) -> Any
+flnd.source.Source.examples: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.forms: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.headers(cookies: Mapping[str, str]) -> Mapping[str, str]
+flnd.source.Source.kinds_of_target: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.logged_in(session: Session) -> bool
+flnd.source.Source.login(session: Session, method: str) -> None
+flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.needs: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.pause: attribute -> ClassVar[float]
+flnd.source.Source.requires_login: attribute -> ClassVar[bool]
+flnd.source.Source.resolve(text: str) -> Target
+flnd.source.Source.routes: attribute -> ClassVar[tuple[Route, ...]]
+flnd.source.Source.run(session: Session) -> Any
+flnd.source.Source.short_links: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.sign(request: httpx.Request) -> httpx.Request
+flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.stealth: attribute -> ClassVar[bool]
+flnd.source.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
+flnd.source.Source.user_agent: attribute -> ClassVar[str | None]
+flnd.source.Source.viewport: attribute -> ClassVar[tuple[int, int]]
+flnd.source.Source.wait: attribute -> ClassVar[Wait]
+flnd.source.Target(source: str, kind: str, value: str)
+flnd.source.Target.kind: field -> str
+flnd.source.Target.source: field -> str
+flnd.source.Target.value: field -> str
+flnd.source.TargetError(flnd.source.Error, ValueError)
+flnd.source.TargetError.url: attribute
+flnd.source.target(*patterns: str, shown: str | None = None) -> Callable[[Callable[..., Any]], Route]
 shared: module
 shared.BrokenError(shared.Error, ValueError)
 shared.Error(Exception)

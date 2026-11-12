@@ -7,8 +7,8 @@ from datetime import date, datetime
 from fakes import FakeSession
 from test_dash import INSTAGRAM
 
-from flnd.common.target import Target
 from flnd.session import Options
+from flnd.source import Target, TargetError
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.ins import Instagram, best_file, is_complete, post_files, tab_media, taken_on
 from shared import selector
@@ -49,16 +49,51 @@ PROFILE = {"data": {"user": {"id": "42", "hd_profile_pic_url_info": {"url": "htt
 HIGHLIGHTS = {"data": {"highlights": {"edges": [{"node": {"id": "highlight:9001", "title": "Trip/2026"}}]}}}
 
 
-class ResolveTest(unittest.TestCase):
-    def test_posts_and_reels_are_single_posts(self):
-        for text in ("https://www.instagram.com/p/C1abcDEFghi/", "https://www.instagram.com/reel/C1abcDEFghi/?igsh=1",
-                     "instagram.com/example_user/p/C1abcDEFghi", "ins:https://www.instagram.com/tv/C1abcDEFghi/"):
-            with self.subTest(text=text):
-                self.assertEqual(Instagram().resolve(text.removeprefix("ins:")), Target("ins", "post", "C1abcDEFghi"))
+# Every form ins reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
+# The kinds and values are the keys of targets.db and the history, so a change here is a migration.
+ROUTES = [
+    ("ins:example_user", ("user", "example_user")),
+    ("ins:@example_user", ("user", "example_user")),
+    ("ins:example.user", ("user", "example.user")),
+    ("ins:instagram.com/example_user", ("user", "example_user")),
+    ("https://www.instagram.com/example_user/", ("user", "example_user")),
+    ("https://instagram.com/example_user/?hl=en", ("user", "example_user")),
+    ("instagram.com/example_user", ("user", "example_user")),
+    ("http://instagram.com/example_user#top", ("user", "example_user")),
+    ("https://www.instagram.com/@example_user", ("user", "example_user")),
+    # A profile's tab is the profile.
+    ("https://m.instagram.com/example_user/reels/", ("user", "example_user")),
+    ("https://www.instagram.com/example_user/tagged/", ("user", "example_user")),
+    ("https://www.instagram.com/p/C1abcDEFghi/", ("post", "C1abcDEFghi")),
+    ("https://www.instagram.com/p/C1a-bc_DEF/", ("post", "C1a-bc_DEF")),
+    ("https://www.instagram.com/reel/C1abcDEFghi/?igsh=1", ("post", "C1abcDEFghi")),
+    ("ins:https://www.instagram.com/reel/C1abcDEFghi/", ("post", "C1abcDEFghi")),
+    ("https://www.instagram.com/reels/C1abcDEFghi/", ("post", "C1abcDEFghi")),
+    ("https://www.instagram.com/tv/C1abcDEFghi/", ("post", "C1abcDEFghi")),
+    ("instagram.com/example_user/p/C1abcDEFghi", ("post", "C1abcDEFghi")),
+    ("https://www.instagram.com/example_user/reel/C1abcDEFghi/", ("post", "C1abcDEFghi")),
+    ("https://www.instagram.com/example_user/reels/C1abcDEFghi/", ("post", "C1abcDEFghi")),
+    ("https://www.instagram.com/example_user/tv/C1abcDEFghi/", ("post", "C1abcDEFghi")),
+    ("https://www.instagram.com/stories/example_user/3141592653589793238/", "story links aren't supported"),
+    ("https://www.instagram.com/stories/highlights/17900000000000000/", "story links aren't supported"),
+    ("ins:not a name", "can't read"),
+    ("ins:ex-ample", "can't read"),
+    ("https://www.instagram.com/", "can't read"),
+    ("ins:example.com/example_user", "can't read"),
+    ("ins:https://example.com/example_user", "can't read"),
+]
 
-    def test_the_reels_tab_is_still_the_profile(self):
-        self.assertEqual(Instagram().resolve("https://www.instagram.com/example_user/reels/"),
-                         Target("ins", "user", "example_user"))
+
+class RoutesTest(unittest.TestCase):
+    def test_every_form(self):
+        for text, expected in ROUTES:
+            with self.subTest(text=text):
+                value = text.removeprefix("ins:")
+                if isinstance(expected, tuple):
+                    self.assertEqual(Instagram().resolve(value), Target("ins", *expected))
+                else:
+                    with self.assertRaisesRegex(TargetError, f"^ins: {expected}"):
+                        Instagram().resolve(value)
 
 
 class MediaTest(unittest.TestCase):

@@ -16,9 +16,9 @@ from test_engine import CDN, EngineCase, FakeMedia, compressing, history, make_s
 
 from flnd import sync
 from flnd.common.compress import Choice
-from flnd.common.target import Target
 from flnd.engine import Engine
 from flnd.session import Options
+from flnd.source import Target
 from shared import kv
 
 WEBP_MID = Choice("webp", "mid")

@@ -28,11 +28,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 # A source's own login (tlg) raises it too, so it lives in base; `auth.LoginError` is the same class.
-from flnd.sources.base import LoginError
+from flnd.source import LoginError
 from shared import cookies, crypto, fmt, kv
 
 if TYPE_CHECKING:
-    from flnd.sources.base import Source
+    from flnd.source import Source
 
 # The browsers `from_browser` reads cookies from, by `shared.cookies` name, with the name a person knows.
 BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave", "chromium": "Chromium"}

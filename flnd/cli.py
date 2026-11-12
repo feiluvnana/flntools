@@ -22,11 +22,10 @@ from typing import Annotated, Optional
 from flnd import __version__, sync as syncing
 from flnd.common import auth
 from flnd.common.compress import Choice, parse_choice
-from flnd.common.target import TargetError
 from flnd.engine import Engine
 from flnd.session import Options, single_targets, unknown_categories
+from flnd.source import Source, TargetError
 from flnd.sources import SOURCES
-from flnd.sources.base import Source
 from shared import cli, cookies, fmt, log, prompt, theme
 
 HOME = Path(".flnd")
@@ -40,13 +39,14 @@ def describe() -> str:
 
 
 def epilog() -> str:
-    examples = "\n".join(f"  {example}" for source in SOURCES.values() for example in source.examples)
+    # Each form a source's routes read, placeholders in angle brackets, so help can't drift from them.
+    forms = "\n".join(f"  {form}" for source in SOURCES.values() for form in source.forms)
     categories = "\n".join(f"  {code}: {', '.join(source.categories)}" for code, source in SOURCES.items())
     return f"""\
 Target format:
   <source>:<name, id or URL>, or a bare URL
   Sources: {", ".join(SOURCES)}
-{examples}
+{forms}
 
 Categories (--from; without it, every one; not for a single post's link):
 {categories}

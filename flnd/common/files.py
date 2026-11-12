@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from shared import fmt, log
 
 if TYPE_CHECKING:
-    from flnd.common.target import Target
+    from flnd.source import Target
 
 # What every temporary file flnd writes matches (`shared.atomic`'s part names), and what `flnd sync`'s repair deletes.
 PART_GLOB = ".*.part"

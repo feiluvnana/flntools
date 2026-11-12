@@ -4,7 +4,7 @@ Target resolution, help, login and logout all read it, so adding a source means 
 class and adding it here.
 """
 
-from flnd.sources.base import Source
+from flnd.source import Source
 from flnd.sources.fbk import Facebook
 from flnd.sources.ins import Instagram
 from flnd.sources.loi import Loibus

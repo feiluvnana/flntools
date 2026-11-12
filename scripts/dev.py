@@ -44,9 +44,9 @@ DEFAULT_PYTHON = "3.14"
 FFMPEG_SOURCE_HEADER = ("ffmpeg-source\n"
                         "The ffmpeg program in this bundle, as it reports itself. The source offer is in ffmpeg.txt.\n")
 
-# The modules the API snapshot lists, each through its `__all__`. Step 5 adds "flnd.source", the
-# module sources are written against, here: once it exists with an `__all__`, it is listed like these.
-API_MODULES = ("shared", "flnd.engine")
+# The modules the API snapshot lists, each through its `__all__`: the toolkit, the module sources
+# are written against, and the engine.
+API_MODULES = ("shared", "flnd.source", "flnd.engine")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.

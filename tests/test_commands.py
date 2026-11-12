@@ -15,10 +15,9 @@ from flnd import cli as flnd_cli
 from flnd import sources
 from flnd.common import auth
 from flnd.common.compress import Choice
-from flnd.common.target import Target
 from flnd.engine import Engine
 from flnd.session import Options
-from flnd.sources.base import Source
+from flnd.source import Source, Target
 from shared import cookies, kv, theme
 from shared._theme import Screen
 

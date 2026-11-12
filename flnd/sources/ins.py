@@ -24,9 +24,8 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
-from flnd.common.target import Target, TargetError, link, name, unreadable
 from flnd.session import Session
-from flnd.sources.base import Source
+from flnd.source import Source, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import embedded_results
 from shared import fmt, selector
@@ -34,8 +33,6 @@ from shared import fmt, selector
 SITE = "https://www.instagram.com"
 # The profile's tabs, in the order they are read, and their paths under the profile.
 TABS = (("posts", ""), ("reels", "reels/"), ("tagged", "tagged/"), ("reposts", "reposts/"))
-# The part of a URL before a post's code: /p/<code>/, /reel/<code>/, and /<user>/p/<code>/ too.
-POST_PATHS = {"p", "reel", "reels", "tv"}
 CDN_HEADERS = {"Referer": f"{SITE}/"}
 # Where each profile tab's result lists its posts; the name Instagram uses now comes first.
 TAB_CONNECTIONS = {
@@ -62,28 +59,24 @@ class Instagram(Source):
     code = "ins"
     name = "Instagram"
     domains = ("instagram.com",)
-    kinds_of_target = ("user", "post")
-    examples = ("ins:example_user", "ins:@example_user", "https://www.instagram.com/example_user/",
-                "https://www.instagram.com/p/C1abcDEFghi/", "https://www.instagram.com/reel/C1abcDEFghi/")
     needs = ("sessionid",)
     categories = ("posts", "reels", "tagged", "reposts", "stories", "highlights", "profile")
     single_kinds = ("post",)
+    # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.
+    unsupported = {"instagram.com/stories": "story links aren't supported; give the profile, and its stories come with it"}
 
-    def resolve(self, text: str) -> Target:
-        """A user name, or one post: a URL with /p/<code>, /reel/<code> or /tv/<code>."""
-        found = link(text, self.domains)
-        if found is None:
-            user = name(text)
-        elif (code := post_code(found.parts)) is not None:
-            return Target(self.code, "post", code)
-        elif found.parts[:1] == ["stories"]:
-            raise TargetError(f"{self.code}: story links aren't supported; give the profile, "
-                              f"for example {self.examples[0]}, and its stories come with it")
-        else:
-            user = name(found.parts[0]) if found.parts else None
-        if not user:
-            raise unreadable(self, text)
-        return Target(self.code, "user", user)
+    # The routes only read targets: step 6 gives them their bodies, and until then `run` reads the
+    # target they give from `session.target`. `post` comes before `user`, so instagram.com/p/<code>
+    # is never the user "p". A post's code is base64url, so it takes `-` as well as `\w`.
+    @target(r"instagram.com/p/{code:[\w-]+}", r"instagram.com/reel/{code:[\w-]+}", r"instagram.com/reels/{code:[\w-]+}",
+            r"instagram.com/tv/{code:[\w-]+}", r"instagram.com/*/p/{code:[\w-]+}", r"instagram.com/*/reel/{code:[\w-]+}",
+            r"instagram.com/*/reels/{code:[\w-]+}", r"instagram.com/*/tv/{code:[\w-]+}")
+    def post(self, session: Session, code: str) -> None:
+        """One post or reel, by its code: `Target("ins", "post", "C1abcDEFghi")`."""
+
+    @target("{user}", "instagram.com/{user}")
+    def user(self, session: Session, user: str) -> None:
+        """A profile, by its user name; a tab's URL (/reels/, /tagged/) is its profile too."""
 
     def run(self, session: Session) -> None:
         if session.target.kind == "post":
@@ -155,14 +148,6 @@ class Profile:
                 self.saved.add(code)
             else:
                 self.incomplete.append((tab, code))
-
-
-def post_code(parts: list[str]) -> str | None:
-    """The post code in a URL's path parts, or None when it points to no post."""
-    for kind, code in zip(parts, parts[1:]):
-        if kind in POST_PATHS:
-            return code
-    return None
 
 
 def load(session: Session, profile: Profile, url: str) -> bool:

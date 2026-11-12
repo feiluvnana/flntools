@@ -9,10 +9,9 @@ from pathlib import Path
 
 from fakes import FakeSession
 
-from flnd.common.target import Target
 from flnd.session import Options, selected
+from flnd.source import Source, Target
 from flnd.sources import SOURCES
-from flnd.sources.base import Source
 from flnd.sources.fbk import Facebook
 from flnd.sources.ins import Instagram
 from flnd.sources.loi import Loibus
@@ -32,7 +31,7 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(source.code, code)
             self.assertTrue(isinstance(source.name, str) and source.name)
             self.assertTrue(isinstance(source.domains, tuple) and source.domains, code)
-            self.assertTrue(source.examples, code)
+            self.assertTrue(source.forms, code)
             self.assertTrue(set(source.short_links) <= {host for host in source.short_links
                                                         if any(host == d or host.endswith("." + d)
                                                                for d in source.domains)}, code)

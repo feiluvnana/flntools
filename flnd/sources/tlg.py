@@ -21,9 +21,9 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Mapping, Sequence
 
 from flnd import __version__
-from flnd.common.target import Target, link, unreadable
+from flnd.common.target import link, unreadable
 from flnd.session import Session
-from flnd.sources.base import FetchError, LoginError, Source
+from flnd.source import FetchError, LoginError, Source, Target
 
 TELEGRAM_WEB = "https://web.telegram.org/"
 # Telegram's production data centers, as every client ships them; Telethon moves on from there itself.

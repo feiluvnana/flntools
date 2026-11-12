@@ -9,7 +9,7 @@ from typing import ClassVar, Iterator, Optional
 from typing_extensions import assert_type
 
 from flnd.session import Session, TargetSession
-from flnd.sources.base import Source
+from flnd.source import Source
 from shared import cookies, log, media, prompt, theme, worker
 from tests.fakes import FakeSession
 

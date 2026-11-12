@@ -27,9 +27,9 @@ from pathlib import PurePosixPath
 from typing import Any, Dict, List, NamedTuple
 from urllib.parse import urlsplit
 
-from flnd.common.target import Target, link, name, unreadable
+from flnd.common.target import link, name, unreadable
 from flnd.session import Session
-from flnd.sources.base import FetchError, Source
+from flnd.source import FetchError, Source, Target
 from shared import fmt, selector
 
 # The user agent TikTok's embed page and CDN have always been sent: a desktop Chrome.

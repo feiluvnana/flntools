@@ -15,10 +15,9 @@ from unittest import mock
 import httpx
 
 from flnd.common.net import Download
-from flnd.common.target import Target
 from flnd.session import Options, Session, check_category, selected, wanted
+from flnd.source import FetchError, Source, Target
 from flnd.sources import SOURCES
-from flnd.sources.base import FetchError, Source
 from shared import selector
 from shared._browser import Browser, Match, Page
 from shared._selector import Selection

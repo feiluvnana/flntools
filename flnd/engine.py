@@ -13,15 +13,15 @@ import time
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
-from typing import Any, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, MutableMapping, Sequence
+from urllib.parse import urlsplit
 
 import httpx
 
 from flnd.common import auth, net
-from flnd.common.target import Target, TargetError, resolve
 from flnd.session import Options, Settings, SourceRun, TargetSession
+from flnd.source import Source, Target, TargetError
 from flnd.sources import SOURCES
-from flnd.sources.base import Source
 from shared import kv, log, worker
 
 __all__ = ["Engine"]
@@ -121,6 +121,75 @@ class Engine:
     def _settings(self, options: Options, history: MutableMapping[str, Any], *,
                   interactive: bool = False) -> Settings:
         return Settings(home=self.home, options=options, history=history, interactive=interactive)
+
+
+def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[[str], str] | None = None) -> Target:
+    """Read one target as people write it, and return it resolved by its source.
+
+        resolve("ins:@example_user", SOURCES)                     # Target("ins", "user", "example_user")
+        resolve("https://x.com/example_handle", SOURCES)          # Target("twt", "user", "example_handle")
+
+    `code:value` goes to that source's `resolve`. A bare URL finds its source by domain. Anything
+    else is refused, because it could belong to any source.
+
+    Args:
+        text: one target, as typed or listed.
+        sources: the sources by code.
+        follow: where a link leads, from one HEAD request. A link on a source's site that no route
+            matches is followed once and read again (short links such as `vm.tiktok.com/…`), as is
+            one on a hand-written source's `short_links`; None reads every link as it is.
+
+    Raises:
+        TargetError: the text is empty, names no source, or its source can't read it, with what
+            to write instead.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        raise TargetError("a target can't be empty")
+    code, colon, value = cleaned.partition(":")
+    if colon and not _is_url(cleaned):
+        code = code.strip().lower()
+        if code not in sources:
+            raise TargetError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
+        source, cleaned = sources[code](), value.strip()
+        if not cleaned:
+            raise TargetError(f"{source.code}: can't read {value!r}; write it like {', '.join(source.forms)}")
+    else:
+        found = owner(cleaned, sources)
+        if found is None:
+            choices = ", ".join(f"{code}:{cleaned}" for code in sources)
+            raise TargetError(f'which source is "{cleaned}"? Write it as {choices}')
+        source = found()
+    # A source that still writes its own `resolve` names its short-link hosts, followed first.
+    if follow is not None and _on(cleaned, source.short_links):
+        cleaned = follow(cleaned)
+    try:
+        return source.resolve(cleaned)
+    except TargetError as miss:
+        # Only a link no route matched carries `url`; a refusal (an `unsupported` link) is final.
+        if follow is None or miss.url is None:
+            raise
+        url = miss.url
+    # Followed once only: a second miss is the refusal, listing the forms.
+    return source.resolve(follow(url))
+
+
+def owner(text: str, sources: Mapping[str, type[Source]]) -> type[Source] | None:
+    """The source whose domains a URL belongs to, or None: `owner("https://x.com/example_handle", SOURCES)` is Twitter."""
+    return next((source for source in sources.values() if _on(text, source.domains)), None)
+
+
+def _on(text: str, domains: Sequence[str]) -> bool:
+    """Whether `text` is a URL, with or without a scheme, on one of `domains` or their subdomains."""
+    # Without a scheme, only a slash tells a link (instagram.com/example_user) from a name (example.user).
+    if not domains or ("/" not in text and not _is_url(text)):
+        return False
+    host = (urlsplit(text if _is_url(text) else f"https://{text}").hostname or "").lower()
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
+def _is_url(text: str) -> bool:
+    return text.lower().startswith(("http://", "https://"))
 
 
 @contextmanager
