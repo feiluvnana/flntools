@@ -218,18 +218,21 @@ shared.prompt.keymap: Keymap
 shared.prompt.keys: bool
 shared.prompt.secret(message: str, *, description: str = '', default: str | None = None, mask: str | None = None, keys: bool | None = None, validate: Validate | None = None) -> str
 shared.selector: module
+shared.selector.BrokenError(shared.selector.Error, shared.BrokenError)
 shared.selector.Error(shared.Error)
 shared.selector.Selection(raw: Raw)
 shared.selector.Selection.all: property -> list[Any]
 shared.selector.Selection.css(query: str) -> Selection
 shared.selector.Selection.first: property -> Any
 shared.selector.Selection.jmespath(query: str) -> Selection
+shared.selector.Selection.json: property -> Selection
 shared.selector.Selection.jsonpath(query: str) -> Selection
 shared.selector.Selection.raw: property -> Raw
 shared.selector.Selection.script(id: str | None = None, *, pattern: str | None = None) -> Selection
 shared.selector.Selection.text: property -> str
 shared.selector.Selection.xpath(query: str) -> Selection
-shared.selector.select(source: Any, query: str = '') -> Selection
+shared.selector.UnsafeError(shared.selector.Error, shared.UnsafeError)
+shared.selector.parse(source: Any) -> Selection
 shared.style: Chain
 shared.style.Error(shared.Error)
 shared.style.bg: field -> tuple | None

@@ -105,10 +105,10 @@ class FakeSession:
         answer = self._answer(self._html, url, request)
         if isinstance(answer, FetchError):
             raise answer
-        return selector.select(answer)
+        return selector.parse(answer)
 
     def select(self, value: Any) -> Selection:
-        return selector.select(value)
+        return selector.parse(value)
 
     def open_page(self, url: str) -> Page:
         self.visited.append(url)

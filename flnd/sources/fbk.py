@@ -171,9 +171,9 @@ class Feed:
 
 def album_links(data: Any) -> dict[str, str]:
     """The albums a result lists, as {url: title}: each album's tile on the albums tab."""
-    tiles = selector.select(data).jsonpath("$..[?@.__typename == 'TimelineAppCollectionItem']").all
-    return {tile["url"]: selector.select(tile).jmespath("title.text").first or "album"
-            for tile in tiles if selector.select(tile).jmespath("node.__typename").first == "Album" and tile.get("url")}
+    tiles = selector.parse(data).jsonpath("$..[?@.__typename == 'TimelineAppCollectionItem']").all
+    return {tile["url"]: selector.parse(tile).jmespath("title.text").first or "album"
+            for tile in tiles if selector.parse(tile).jmespath("node.__typename").first == "Album" and tile.get("url")}
 
 
 def save_pictures(session: Session, header: Header) -> None:
@@ -204,10 +204,10 @@ def tab_path(tab: Tab, paths: set[str]) -> str | None:
 
 def read_header(result: Any) -> Header | None:
     """The profile header's pictures, story buckets and tab paths, or None when this result isn't it."""
-    user = selector.select(result).jmespath(HEADER).first
+    user = selector.parse(result).jmespath(HEADER).first
     if not isinstance(user, dict):
         return None
-    found = selector.select(user)
+    found = selector.parse(user)
     picture = found.jmespath("profilePicLarge.uri").first
     picture_id = found.jmespath("profilePhoto.id").first
     cover = found.jmespath("cover_photo.photo.image.uri").first
@@ -215,7 +215,7 @@ def read_header(result: Any) -> Header | None:
     sections = found.jmespath("profile_tabs.profile_user.timeline_nav_app_sections.edges[].node").all
     paths = {section.get("tab_key") for section in sections} | {
         collection.get("tab_key") for section in sections
-        for collection in selector.select(section).jmespath("all_collections.nodes").all}
+        for collection in selector.parse(section).jmespath("all_collections.nodes").all}
     return Header(user_id=user.get("id"), picture=(picture, picture_id or "picture") if picture else None,
                   cover=(cover, cover_id or "cover") if cover else None,
                   story_buckets=[str(node["id"]) for node in found.jmespath("story_bucket.nodes").all if node.get("id")],
@@ -246,10 +246,10 @@ def save_stories(session: Session, url: str) -> None:
     if not session.goto(url):
         return
     cards = [card for result in embedded_results(session.page.selector)
-             for card in selector.select(result).jmespath(STORY_CARDS).all if isinstance(card, dict)]
+             for card in selector.parse(result).jmespath(STORY_CARDS).all if isinstance(card, dict)]
     for card in cards:
         day = posted_on(card)
-        for media in selector.select(card).jmespath("attachments[].media").all:
+        for media in selector.parse(card).jmespath("attachments[].media").all:
             item = video_item(media, day) or photo_item(media, day)
             if item is not None:
                 extension = "mp4" if item.kind == "video" else image_extension(item.url)
@@ -286,7 +286,7 @@ def media_items(data: Any, day: date | None = None, seen: set[str] | None = None
         return
     day = posted_on(data) or day
     item = video_item(data, day) or photo_item(data, day)
-    owned_by = selector.select(data).jmespath("owner.id || video_owner.id").first
+    owned_by = selector.parse(data).jmespath("owner.id || video_owner.id").first
     if item is not None and item.id not in seen and not (owner and owned_by and owned_by != owner):
         seen.add(item.id)
         yield item
@@ -304,10 +304,10 @@ def video_item(node: dict, day: date | None) -> Item | None:
     if not ("Video" in typename or "Reel" in typename or "progressive_urls" in node):
         return None
     video_id = str(node.get("id") or node.get("video_id") or "")
-    if video_id and (streams := dash.best(selector.select(node).jmespath(MANIFEST).first)):
+    if video_id and (streams := dash.best(selector.parse(node).jmespath(MANIFEST).first)):
         return Item(video_id, streams.video, "video", day, audio=streams.audio)
-    progressive = selector.select(node).jmespath(PROGRESSIVE).all
-    hd = [entry for entry in progressive if selector.select(entry).jmespath("metadata.quality").first == "HD"]
+    progressive = selector.parse(node).jmespath(PROGRESSIVE).all
+    hd = [entry for entry in progressive if selector.parse(entry).jmespath("metadata.quality").first == "HD"]
     url = next((entry.get("progressive_url") for entry in hd + progressive if entry.get("progressive_url")), None)
     url = url or next((node[key] for key in VIDEO_URLS if node.get(key)), None)
     return Item(video_id, url, "video", day) if video_id and url else None
@@ -323,10 +323,10 @@ def photo_item(node: dict, day: date | None) -> Item | None:
             or any(key in node for key in ("large_share_image", "viewer_image", "photo_image"))):
         return None
     photo_id = str(node.get("id") or node.get("photo_id") or node.get("legacy_photo_id") or "")
-    url = selector.select(node).jmespath(PHOTO_URL).first
+    url = selector.parse(node).jmespath(PHOTO_URL).first
     if not photo_id or not url:
         return None
-    return Item(photo_id, url, "image", day, selector.select(node).jmespath("album.name").first)
+    return Item(photo_id, url, "image", day, selector.parse(node).jmespath("album.name").first)
 
 
 def posted_on(node: dict) -> date | None:

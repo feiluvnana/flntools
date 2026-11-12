@@ -319,13 +319,13 @@ class TargetSession:
         from shared import selector
 
         method = request.pop("method", "GET")
-        return selector.select(self._send(method, url, request.pop("headers", None), request))
+        return selector.parse(self._send(method, url, request.pop("headers", None), request))
 
     def select(self, value: Any) -> Selection:
-        """`selector.select(value)`: a selection over HTML, JSON text, or data already parsed."""
+        """`selector.parse(value)`: a selection over HTML, JSON text, or data already parsed."""
         from shared import selector
 
-        return selector.select(value)
+        return selector.parse(value)
 
     def open_page(self, url: str) -> Page:
         """Open a tab at `url`, connecting this target's browser with the source's settings on first use.

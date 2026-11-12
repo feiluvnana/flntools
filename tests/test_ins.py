@@ -89,7 +89,7 @@ class MediaTest(unittest.TestCase):
         self.assertEqual(tab_media({"data": {}}, "posts"), [])
 
     def test_embedded_results_are_found_in_the_page(self):
-        page = selector.select(embedded(PROFILE, HIGHLIGHTS))
+        page = selector.parse(embedded(PROFILE, HIGHLIGHTS))
         self.assertEqual(embedded_results(page), [PROFILE, HIGHLIGHTS])
 
 

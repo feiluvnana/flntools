@@ -224,7 +224,7 @@ def picture_name(url: str) -> str:
 
 def tab_media(result: Any, tab: str) -> list[dict]:
     """The posts one profile tab's result lists: `tab_media(result, "reels")`."""
-    found = selector.select(result)
+    found = selector.parse(result)
     for path in TAB_CONNECTIONS[tab]:
         connection = found.jmespath(f"data.{path}").first
         if isinstance(connection, dict):
@@ -246,25 +246,25 @@ def is_complete(media: dict) -> bool:
 
 def post_media(result: Any) -> dict | None:
     """The post a post's own page shows, or None when this result isn't it."""
-    media = selector.select(result).jmespath(POST).first
+    media = selector.parse(result).jmespath(POST).first
     return media if isinstance(media, dict) else None
 
 
 def story_items(result: Any) -> list[dict]:
     """The stories of a story or highlight page."""
-    return [item for item in selector.select(result).jmespath(STORIES).all if isinstance(item, dict)]
+    return [item for item in selector.parse(result).jmespath(STORIES).all if isinstance(item, dict)]
 
 
 def listed_highlights(result: Any) -> list[tuple[str, str]]:
     """The profile's highlights as `(id, title)`, from the result that lists them."""
-    nodes = selector.select(result).jmespath("data.highlights.edges[].node").all
+    nodes = selector.parse(result).jmespath("data.highlights.edges[].node").all
     return [(str(node["id"]).removeprefix("highlight:"), node.get("title") or "highlight")
             for node in nodes if isinstance(node, dict) and node.get("id")]
 
 
 def profile_picture(result: Any) -> str | None:
     """The largest profile picture of the profile's user, from the result that describes them."""
-    return selector.select(result).jmespath("data.user.hd_profile_pic_url_info.url").first
+    return selector.parse(result).jmespath("data.user.hd_profile_pic_url_info.url").first
 
 
 def post_files(media: dict) -> list[tuple[str, str, str | None]]:
@@ -283,7 +283,7 @@ def best_file(media: dict) -> tuple[str, str, str | None] | None:
     videos = media.get("video_versions") or []
     if videos:
         return max(videos, key=_area)["url"], "mp4", None
-    images = selector.select(media).jmespath("image_versions2.candidates").all
+    images = selector.parse(media).jmespath("image_versions2.candidates").all
     if images:
         url = max(images, key=_area)["url"]
         return url, image_extension(url), None

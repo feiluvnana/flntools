@@ -132,7 +132,7 @@ class TikTok(Source):
             session.warn("{err} on embed endpoint for {id}", err=error, id=video_id)
             return
         data = page.script("__NEXT_DATA__").first
-        item_struct = selector.select(data).jmespath("props.pageProps.itemStruct").first if data else None
+        item_struct = selector.parse(data).jmespath("props.pageProps.itemStruct").first if data else None
         if not item_struct:
             session.warn("Could not extract item data from embed HTML for {id}", id=video_id)
             return
@@ -161,7 +161,7 @@ class TikTok(Source):
             return
         user = session.page.selector.script(PAGE_DATA).jmespath(USER).first or {}
         if session.wants(category="profile"):
-            self._save_avatar(session, selector.select(user).jmespath("user.avatarLarger").first)
+            self._save_avatar(session, selector.parse(user).jmespath("user.avatarLarger").first)
         if any(session.wants(category=category) for category in ("videos", "stories", "playlists")):
             # A captcha can cover the grid after the page loaded; the list then never comes.
             while True:
@@ -169,7 +169,7 @@ class TikTok(Source):
                 if counts["videos"] or not has_captcha(session):
                     break
                 self._wait_out_captcha(session, profile)
-            listed = selector.select(user).jmespath("stats.videoCount").first
+            listed = selector.parse(user).jmespath("stats.videoCount").first
             session.info("videos: {n} found; the profile lists {listed}", n=counts["videos"], listed=listed)
             if not counts["videos"] and session.wants(category="videos"):
                 self._download_linked_posts(session)
@@ -262,21 +262,21 @@ class TikTok(Source):
     def _extract_tiktok_items(self, data: Dict[str, Any], *, category: str) -> List[Dict[str, Any]]:
         """Parse itemList / storyList from TikTok API into structured media items."""
         items = []
-        raw_list = selector.select(data).jmespath("itemList || storyList || story_list").all
+        raw_list = selector.parse(data).jmespath("itemList || storyList || story_list").all
 
         for raw in raw_list:
             item_id = str(raw.get("id") or raw.get("aweme_id") or "")
             if not item_id:
                 continue
             date_str = posted_on(raw, item_id)
-            playlist_name = selector.select(raw).jmespath("playlist.name || playlist_info.name").first
+            playlist_name = selector.parse(raw).jmespath("playlist.name || playlist_info.name").first
             common = {"id": item_id, "date": date_str, "category": category, "playlist": playlist_name}
 
             # 1. Photo mode carousel
-            images = selector.select(raw).jmespath("imagePost.images").all
+            images = selector.parse(raw).jmespath("imagePost.images").all
             if images:
                 for idx, img in enumerate(images):
-                    url_list = selector.select(img).jmespath(
+                    url_list = selector.parse(img).jmespath(
                         "imageURL.urlList || displayImage.urlList || thumbnail.urlList").all
                     if url_list:
                         items.append({**common, "url": url_list[0], "kind": "image", "idx": idx + 1})
@@ -322,7 +322,7 @@ def best_video(video: Dict[str, Any]) -> str | None:
     """
     candidates = [(_pixels(entry), entry.get("Bitrate") or 0, urls[0]) for entry in video.get("bitrateInfo") or []
                   if isinstance(entry, dict) and not _is_dash(entry)
-                  and (urls := selector.select(entry).jmespath("PlayAddr.UrlList").all)]
+                  and (urls := selector.parse(entry).jmespath("PlayAddr.UrlList").all)]
     if candidates:
         return max(candidates, key=lambda candidate: candidate[:2])[2]
     address = video.get("playAddr")

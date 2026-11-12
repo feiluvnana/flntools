@@ -456,12 +456,12 @@ class Page:
             page.selector.css("h1").text; page.selector.script("__NEXT_DATA__").jmespath("props").first
 
         It is a snapshot: a later change to the page needs another read. The HTML is `.raw.get()`.
-        Needs the `selector` extra.
+        Needs the `selector` extra, and raises `selector.UnsafeError` when the page is over 64 MB.
         """
         # Imported here, so a script that only drives the browser doesn't need parsel.
-        from shared._selector import select
+        from shared._selector import parse
 
-        return select(self.raw.content())
+        return parse(self.raw.content())
 
     @property
     def url(self) -> str:

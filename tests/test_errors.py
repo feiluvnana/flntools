@@ -26,6 +26,8 @@ ERRORS = [
     (crypto.Error, "crypto", ValueError, None),       # crypto's one error, renamed to its base in step 4
     (kv.ClosedError, "kv", RuntimeError, None),      # kv raised these builtins until step 4
     (kv.UnstorableError, "kv", TypeError, None),
+    (selector.BrokenError, "selector", ValueError, shared.BrokenError),  # json's ValueError until step 4
+    (selector.UnsafeError, "selector", ValueError, shared.UnsafeError),  # new in step 4; a ValueError as its kind is
     (cli.UsageError, "cli", Exception, None),
     (prompt.PromptError, "prompt", Exception, None),
     (worker.TaskError, "worker", Exception, None),

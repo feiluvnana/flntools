@@ -139,7 +139,7 @@ class Twitter(Source):
         except FetchError as error:
             session.warn("{query}: {error}", query=query, error=error)
             return None
-        user = selector.select(data).jmespath("data.user.result").first
+        user = selector.parse(data).jmespath("data.user.result").first
         return user if isinstance(user, dict) and user.get("rest_id") else None
 
     def _read_timeline(self, session: Session, user_id: str, timeline: Timeline) -> bool:
@@ -179,7 +179,7 @@ class Twitter(Source):
         except FetchError as error:
             session.warn("tweet {id}: {error}", id=tweet_id, error=error)
             return
-        tweet = selector.select(data).jmespath("data.tweetResult.result").first
+        tweet = selector.parse(data).jmespath("data.tweetResult.result").first
         if not isinstance(tweet, dict) or not unwrap(tweet).get("legacy"):
             session.warn("tweet {id} isn't there, or isn't visible to this login", id=tweet_id)
             return
@@ -224,7 +224,7 @@ def status_id(parts: list[str]) -> str | None:
 
 def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
     """One timeline page's tweets, and the cursor of the next page (None at the end)."""
-    instructions = selector.select(data).jmespath(
+    instructions = selector.parse(data).jmespath(
         "data.user.result.timeline.timeline.instructions || data.user.result.timeline_v2.timeline.instructions").all
     tweets, cursor = [], None
     for entry in timeline_entries(instructions):
@@ -233,7 +233,7 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
             cursor = content.get("value")
         items = [item.get("item", item) for item in content.get("items", [])] or [content]
         for item in items:
-            tweet = selector.select(item).jmespath("itemContent.tweet_results.result").first
+            tweet = selector.parse(item).jmespath("itemContent.tweet_results.result").first
             if isinstance(tweet, dict):
                 tweets.append(tweet)
     return tweets, cursor
@@ -258,7 +258,7 @@ def unwrap(tweet: dict) -> dict:
 def tweet_id_of(tweet: dict) -> str:
     """A tweet's id, inside its visibility wrapper or not."""
     tweet = unwrap(tweet)
-    return str(tweet.get("rest_id") or selector.select(tweet).jmespath("legacy.id_str").first or "")
+    return str(tweet.get("rest_id") or selector.parse(tweet).jmespath("legacy.id_str").first or "")
 
 
 def save_tweet(session: Session, tweet: dict, category: str, user_id: str | None, *,
@@ -270,7 +270,7 @@ def save_tweet(session: Session, tweet: dict, category: str, user_id: str | None
     """
     tweet = unwrap(tweet)
     legacy = tweet.get("legacy") or {}
-    retweeted = selector.select(legacy).jmespath("retweeted_status_result.result").first
+    retweeted = selector.parse(legacy).jmespath("retweeted_status_result.result").first
     if category == "reposts":
         if not isinstance(retweeted, dict):
             return
@@ -281,7 +281,7 @@ def save_tweet(session: Session, tweet: dict, category: str, user_id: str | None
     if category == "replies" and (legacy.get("user_id_str") != user_id or not legacy.get("in_reply_to_status_id_str")):
         return
     tweet_id, day = tweet_id_of(tweet), posted_on(legacy.get("created_at"))
-    for index, media in enumerate(selector.select(legacy).jmespath("extended_entities.media").all):
+    for index, media in enumerate(selector.parse(legacy).jmespath("extended_entities.media").all):
         file = best_file(media)
         if file is None:
             continue
@@ -299,7 +299,7 @@ def best_file(media: dict) -> tuple[str, str] | None:
     if media.get("type") == "photo" and media.get("media_url_https"):
         url = media["media_url_https"]
         return f"{url}?name=orig", PurePosixPath(urlsplit(url).path).suffix.lstrip(".") or "jpg"
-    variants = selector.select(media).jmespath("video_info.variants").all
+    variants = selector.parse(media).jmespath("video_info.variants").all
     mp4s = [variant for variant in variants if variant.get("content_type") == "video/mp4"]
     if not mp4s:
         return None
@@ -308,8 +308,8 @@ def best_file(media: dict) -> tuple[str, str] | None:
 
 def save_profile(session: Session, user: dict) -> None:
     """Save the user's avatar at its original size, and their banner at its largest."""
-    avatar = selector.select(user).jmespath("avatar.image_url || legacy.profile_image_url_https").first
-    banner = selector.select(user).jmespath("banner.image_url || legacy.profile_banner_url").first
+    avatar = selector.parse(user).jmespath("avatar.image_url || legacy.profile_image_url_https").first
+    banner = selector.parse(user).jmespath("banner.image_url || legacy.profile_banner_url").first
     if avatar:
         # "_normal" is the 48px version; without it the URL gives the picture as uploaded.
         original = avatar.replace("_normal.", ".")

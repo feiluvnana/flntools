@@ -61,9 +61,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
         "shared.media.compress: option preset, not level",
         "shared.media.video.frames: option dest_dir, not dest",
     ),
-    "shared.selector": (
-        "shared.selector.select: positional option query",
-    ),
     "shared.theme": (
         "shared.theme.Screen: option out, not dest",
     ),

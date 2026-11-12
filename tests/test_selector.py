@@ -1,11 +1,18 @@
+"""`shared.selector`: `parse` over each kind of source, each query, `script`, `json`, the errors and the size limit.
+
+Responses are faked by two small classes with httpx's and Playwright's shapes; nothing else is.
+"""
+
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 try:
     import jmespath
     import jsonpath
     import parsel
+    import shared
     from shared import selector
 except ImportError:  # the selector extra is missing
     selector = None
@@ -45,7 +52,7 @@ class FakePlaywrightResponse:
 
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")
-class SelectTest(unittest.TestCase):
+class ParseTest(unittest.TestCase):
     def test_each_html_source(self):
         with tempfile.TemporaryDirectory() as folder:
             file = Path(folder) / "page.html"
@@ -54,7 +61,7 @@ class SelectTest(unittest.TestCase):
                        FakePlaywrightResponse(HTML, "text/html")]
             for source in sources:
                 with self.subTest(type(source).__name__):
-                    page = selector.select(source)
+                    page = selector.parse(source)
                     self.assertIsInstance(page.raw, parsel.Selector)
                     self.assertEqual(page.css("a[href*='/video/']::attr(href)").all, ["/video/1", "/video/2"])
 
@@ -68,25 +75,29 @@ class SelectTest(unittest.TestCase):
                        FakeHttpxResponse(text, "text/plain")]
             for source in sources:
                 with self.subTest(type(source).__name__):
-                    self.assertEqual(selector.select(source).jmespath("a.b[1]").first, 2)
+                    self.assertEqual(selector.parse(source).jmespath("a.b[1]").first, 2)
 
     def test_json_content_type_with_broken_json_raises(self):
-        with self.assertRaises(ValueError):
-            selector.select(FakePlaywrightResponse("<html>", "application/json"))
+        for error in (selector.BrokenError, selector.Error, shared.BrokenError, ValueError):
+            with self.subTest(error.__qualname__), self.assertRaises(error):
+                selector.parse(FakePlaywrightResponse("<html>", "application/json"))
 
     def test_bad_type(self):
         with self.assertRaises(TypeError):
-            selector.select(42)
+            selector.parse(42)
 
-    def test_query_shortcut(self):
-        self.assertEqual(selector.select(HTML, "h1 b::text").first, "User")
-        self.assertEqual(selector.select(DATA, "data.user.id").first, "9")
+    def test_parse_takes_no_query(self):
+        # `select(source, query)` went in step 4: the query is always chained, so there is one spelling.
+        with self.assertRaises(TypeError):
+            selector.parse(HTML, "h1 b::text")  # type: ignore[call-arg]
+        self.assertEqual(selector.parse(HTML).css("h1 b::text").first, "User")
+        self.assertEqual(selector.parse(DATA).jmespath("data.user.id").first, "9")
 
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")
 class HtmlTest(unittest.TestCase):
     def setUp(self):
-        self.page = selector.select(HTML)
+        self.page = selector.parse(HTML)
 
     def test_css_and_xpath(self):
         self.assertEqual(self.page.css("li a::text").all, ["one", "two", "about"])
@@ -99,7 +110,7 @@ class HtmlTest(unittest.TestCase):
 
     def test_text_collapses_whitespace(self):
         self.assertEqual(self.page.css("h1").text, "Example User")
-        self.assertEqual(selector.select("<p>a\n\n  b</p><p>c</p>").css("p").text, "a b c")
+        self.assertEqual(selector.parse("<p>a\n\n  b</p><p>c</p>").css("p").text, "a b c")
 
     def test_empty_selection(self):
         missing = self.page.css("h2")
@@ -124,7 +135,7 @@ class HtmlTest(unittest.TestCase):
 @unittest.skipIf(selector is None, "the selector extra is not installed")
 class JmespathTest(unittest.TestCase):
     def setUp(self):
-        self.data = selector.select(DATA)
+        self.data = selector.parse(DATA)
 
     def test_path_projection_and_index(self):
         self.assertEqual(self.data.jmespath("data.user.id").first, "9")
@@ -162,29 +173,29 @@ class JmespathTest(unittest.TestCase):
 class JsonpathTest(unittest.TestCase):
     def test_key_at_any_depth_in_document_order(self):
         data = {"a": {"url": 1, "b": {"url": 2}}, "list": [{"url": 3}, [{"x": {"url": 4}}]]}
-        self.assertEqual(selector.select(data).jsonpath("$..url").all, [1, 2, 3, 4])
+        self.assertEqual(selector.parse(data).jsonpath("$..url").all, [1, 2, 3, 4])
 
     def test_matches_are_json_values(self):
-        found = selector.select(DATA).jsonpath("$..node")
+        found = selector.parse(DATA).jsonpath("$..node")
         self.assertEqual(found.all, [{"id": 1}, {"id": 2}])
         self.assertEqual(found.jmespath("id").all, [1, 2])
 
     def test_keyword_like_key(self):
-        self.assertEqual(selector.select({"a": {"missing": 1}}).jsonpath("$..missing").all, [1])
+        self.assertEqual(selector.parse({"a": {"missing": 1}}).jsonpath("$..missing").all, [1])
 
     def test_no_match(self):
-        self.assertEqual(selector.select(DATA).jsonpath("$..absent").all, [])
-        self.assertIsNone(selector.select(DATA).jsonpath("$..absent").first)
+        self.assertEqual(selector.parse(DATA).jsonpath("$..absent").all, [])
+        self.assertIsNone(selector.parse(DATA).jsonpath("$..absent").first)
 
     def test_invalid_expression_raises(self):
         with self.assertRaises(jsonpath.JSONPathSyntaxError):
-            selector.select(DATA).jsonpath("$..[")
+            selector.parse(DATA).jsonpath("$..[")
 
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")
 class ScriptTest(unittest.TestCase):
     def setUp(self):
-        self.page = selector.select(HTML)
+        self.page = selector.parse(HTML)
 
     def test_by_id(self):
         data = self.page.script("__NEXT_DATA__")
@@ -200,7 +211,7 @@ class ScriptTest(unittest.TestCase):
         self.assertIsNone(self.page.script(pattern=r"nothing = (\{\})").first)
 
     def test_broken_json_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(selector.BrokenError):
             self.page.script("broken")
 
     def test_neither_or_both_raise(self):
@@ -208,6 +219,78 @@ class ScriptTest(unittest.TestCase):
             self.page.script()
         with self.assertRaises(ValueError):
             self.page.script("a", pattern="b")
+
+
+@unittest.skipIf(selector is None, "the selector extra is not installed")
+class JsonTest(unittest.TestCase):
+    def setUp(self):
+        self.page = selector.parse(HTML)
+
+    def test_text_node(self):
+        data = self.page.css("script#__NEXT_DATA__::text").json
+        self.assertEqual(data.jmespath("props.user").first, "someone")
+        self.assertIsInstance(data.raw, parsel.SelectorList)
+
+    def test_element_text_is_joined_as_it_is(self):
+        # Whitespace is kept, unlike `.text`, so a JSON string with two spaces keeps them.
+        page = selector.parse('<div id="d">{"a": "x  y",\n <b>"b": 2}</b></div>')
+        self.assertEqual(page.css("#d").json.first, {"a": "x  y", "b": 2})
+
+    def test_json_string_is_parsed(self):
+        api = selector.parse({"payload": '{"user": {"id": 7}}', "list": ["[1]", "2"]})
+        self.assertEqual(api.jmespath("payload").json.jmespath("user.id").first, 7)
+        self.assertEqual(api.jmespath("list").json.all, [[1], 2])
+
+    def test_parsed_json_is_kept(self):
+        data = self.page.script(id="__NEXT_DATA__")
+        self.assertEqual(data.json.all, data.all)
+        self.assertEqual(self.page.script(id="__NEXT_DATA__").json.jmespath("props").first, {"user": "someone"})
+        self.assertEqual(selector.parse(DATA).jmespath("data.user.edges").json.jmespath("node.id").all, [1, 2])
+
+    def test_empty(self):
+        self.assertFalse(self.page.css("h2::text").json)
+        self.assertIsNone(self.page.css("h2").json.first)
+
+    def test_broken_json_raises(self):
+        for source in (self.page.css("h1"), self.page.css("script#broken::text"), selector.parse({"a": "{x"}).jmespath("a")):
+            with self.subTest(repr(source)), self.assertRaises(selector.BrokenError):
+                source.json
+
+
+@unittest.skipIf(selector is None, "the selector extra is not installed")
+class SizeTest(unittest.TestCase):
+    """C6: text over 64 MB is refused before it is parsed, whatever it comes in."""
+
+    def test_limit_is_64_mb(self):
+        self.assertEqual(selector.MAX_SIZE, 64 * 1024 * 1024)
+
+    def test_over_64_mb_is_refused(self):
+        text = "a" * (selector.MAX_SIZE + 1)
+        with tempfile.TemporaryDirectory() as folder:
+            file = Path(folder) / "big.html"
+            with open(file, "wb") as big:  # sparse: the size is set without writing 64 MB
+                big.truncate(selector.MAX_SIZE + 1)
+            sources = [text, text.encode(), file, FakeHttpxResponse(text, "text/html"),
+                       FakePlaywrightResponse(text, "application/json")]
+            for source in sources:
+                with self.subTest(type(source).__name__):
+                    for error in (selector.UnsafeError, selector.Error, shared.UnsafeError, ValueError):
+                        with self.assertRaises(error):
+                            selector.parse(source)
+
+    def test_the_limit_itself_is_allowed(self):
+        with mock.patch.object(selector, "MAX_SIZE", 8):
+            self.assertEqual(selector.parse("<p>a</p>").css("p::text").first, "a")
+            self.assertEqual(selector.parse(b'"abcdef"').first, "abcdef")
+            with self.assertRaises(selector.UnsafeError):
+                selector.parse("<p>ab</p>")
+            with self.assertRaises(selector.UnsafeError):
+                selector.parse({"a": "[1, 2, 3]"}).jmespath("a").json
+
+    def test_parsed_data_has_no_limit(self):
+        # Data already parsed was never text here, so there is nothing to refuse.
+        with mock.patch.object(selector, "MAX_SIZE", 8):
+            self.assertEqual(selector.parse({"key": "a long value"}).jmespath("key").first, "a long value")
 
 
 if __name__ == "__main__":
