@@ -467,6 +467,12 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(self.prepared("https://x.com/i/api/graphql/q/UserMedia", {"ct0": "d"}).headers["x-csrf-token"], "d")
         self.assertNotIn("x-twitter-auth-type", self.prepared("https://x.com/", {}).headers)
 
+    def test_the_page_and_its_script_get_no_api_headers(self):
+        # 2026-11, live: x.com answered the bearer token on its home page with 401, so no refresh could read the ids.
+        request = self.prepared("https://x.com/", {"auth_token": "a", "ct0": "c"})
+        self.assertEqual([name for name in ("authorization", "x-csrf-token", "x-twitter-auth-type")
+                          if name in request.headers], [])
+
 
 class LoginStaysAtHomeTest(EngineCase):
     """Through the engine: what the API and the media servers each receive, with a `ct0` that rotates."""

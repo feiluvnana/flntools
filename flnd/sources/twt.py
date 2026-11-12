@@ -167,7 +167,7 @@ class Twitter(Source):
         self.graph = Graph()
 
     def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
-        """Twitter's API headers on every request to x.com, with the CSRF token the jar holds now.
+        """Twitter's API headers on every request to x.com's API, with the CSRF token the jar holds now.
 
         Args:
             request: the request about to be sent; only x.com's and twitter.com's reach here.
@@ -178,6 +178,9 @@ class Twitter(Source):
             The same request, with the headers set. No `cookie` header: the client's jar sends
             x.com's own cookies, and a media server never sees the login.
         """
+        # The page and its script (`Graph.refresh` reads them) are answered 401 to the API's bearer token.
+        if not request.url.path.startswith("/i/api/"):
+            return request
         request.headers["authorization"] = TWITTER_BEARER
         # The API checks that this equals the `ct0` cookie it also receives (double-submit CSRF).
         request.headers["x-csrf-token"] = cookies.get("ct0", "")

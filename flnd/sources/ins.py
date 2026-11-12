@@ -427,12 +427,19 @@ class Profile:
         site.info("{tab}: {posts} listed", tab=tab, posts=fmt.count(len(self.listed[tab]), "post"))
 
     def describe(self, site: Site) -> None:
-        """Load the profile's own page for its id, picture and highlights, unless a tab's results gave them."""
+        """Load the profile's own page for its id, picture and highlights, unless a tab's results gave them.
+
+        2026-11: the page no longer embeds the user or the highlights; its own GraphQL calls bring
+        them, so those are read too, once the network is quiet.
+        """
         if self.described:
             return
-        if load(site, f"{SITE}/{self.user}/"):
-            for result in embedded_results(site.page.document):
-                self.note(result)
+        with watch_responses(site, is_graphql) as responses:
+            if load(site, f"{SITE}/{self.user}/"):
+                for result in embedded_results(site.page.document):
+                    self.note(result)
+                for result in responses:
+                    self.note(result)
 
     def note(self, result: Any) -> None:
         """Note the profile's id, picture and highlights from one result."""

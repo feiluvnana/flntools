@@ -479,6 +479,16 @@ class ProfileTest(unittest.TestCase):
         reels = [options["params"] for _, url, options in seen.requests]
         self.assertEqual(reels, [[("reel_ids", "42")], [("reel_ids", "highlight:9001")]])
 
+    def test_a_profile_page_that_embeds_nothing_gives_its_user_and_highlights_by_its_own_calls(self):
+        # 2026-11, live: the page's HTML holds neither the user nor the highlights; its GraphQL calls do.
+        pages = {**PAGES, f"{SITE}/someone/": "<html></html>"}
+        watch = FakeWatch({f"{SITE}/someone/": [PROFILE, HIGHLIGHTS]})
+        seen = Seen()
+        read(options=Options(categories=("stories", "highlights")), pages=pages, watch=watch, seen=seen)
+        self.assertEqual(seen.visited, [f"{SITE}/someone/"])
+        reels = [options["params"] for _, url, options in seen.requests]
+        self.assertEqual(reels, [[("reel_ids", "42")], [("reel_ids", "highlight:9001")]])
+
     def test_highlights_are_asked_for_five_at_a_time(self):
         nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(7)]
         pages = {**PAGES, f"{SITE}/someone/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}})}
