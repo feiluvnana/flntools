@@ -1,8 +1,12 @@
-"""flnd's HTTP: the client factory, the one retry layer, signing, backing off, and atomic downloads.
+"""flnd's HTTP: the client factory, the one retry layer, signing, backing off, and downloads.
 
-API requests are retried by the client's transport. File downloads skip that, and `download`
-retries them itself, including errors raised while the body streams, so a dead connection
-costs three attempts in all. A 429 is not an attempt: the source waits it out and tries again.
+API requests are retried by the client's transport. A file's transfer is `shared.http.download`'s
+(resume, ranges, the per-host limit, its own three attempts), whose requests the transport sends
+once, signed and after the source's back-off. What stays here is flnd's own: mirrors tried in
+order and logged, the media check (`files.checked`) and naming a file by its content, the DASH
+audio merge, and a 429, which pauses the whole source and is then waited out on the same mirror,
+never costing an attempt. `download` resumes every file (redesign B6) and splits a big one into
+ranges only on the CDNs in `SPLIT_HOSTS` (D6).
 """
 
 from __future__ import annotations
@@ -12,17 +16,18 @@ import os
 import random
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from functools import partial
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterable, Mapping, MutableMapping, Sequence, TypeVar, Union
+from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, MutableMapping, Sequence, TypeVar, Union
+from urllib.parse import urlsplit
 
 import httpx
 
 from flnd.common import files
 from flnd.common.files import NotMediaError
 from flnd.source import FetchError, Fetch, Wait
-from shared import atomic, fmt, log
+from shared import atomic, fmt, http, log
 
 ATTEMPTS = 3
 MAX_RETRY_AFTER = 60.0
@@ -31,9 +36,15 @@ FIRST_BACKOFF = 30.0
 MAX_BACKOFF = 15 * 60.0
 # Seconds added to a rate limit's reset time, so a clock a little behind the server's isn't refused again.
 RESET_SLACK = 5.0
-CHUNK_SIZE = 64 * 1024
-# The request extension that sends a request once, for downloads that retry on their own.
-ONE_ATTEMPT = "flnd.one_attempt"
+# The request extension `shared.http.download` puts on its requests, which the transport sends
+# once: `download` retries on its own, and resumes, so another layer of retries would only
+# multiply the attempts.
+ONE_ATTEMPT = "shared.http.download"
+# The hosts whose CDNs passed a live check of `Range` and 4 connections at once (redesign D6), so
+# a big file from them downloads in ranges; a host matches itself and its subdomains. Every other
+# host gets one connection per file. It starts empty and grows by one entry as each CDN (fbcdn,
+# cdninstagram, tiktokcdn, twimg, loi's mirrors) passes its check by hand.
+SPLIT_HOSTS: frozenset[str] = frozenset()
 CONNECTION_ERRORS = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)
 # Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
@@ -49,8 +60,14 @@ _clock = time.monotonic
 _random = random.Random()
 
 
-# Set when Ctrl-C is pressed, so every thread waiting out a rate limit stops at once.
+# Set by the first Ctrl-C (redesign D8): every thread waiting out a rate limit stops at once, and
+# the job stops listing and lets the running downloads finish.
 stopping = threading.Event()
+# Set by a second Ctrl-C: downloads stop at their next chunk, keeping their resumable parts.
+stopping_now = threading.Event()
+# The headers `download` is collecting on this thread, which the transport fills from each
+# file response it sends (see `_recording`); None while no download is running here.
+_seen = threading.local()
 
 
 class Backoff:
@@ -167,7 +184,15 @@ class Transport(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         if request.extensions.get(ONE_ATTEMPT):
             self.backoff.wait_turn()
-            return self.inner.handle_request(self.sign(request))
+            response = self.inner.handle_request(self.sign(request))
+            if response.status_code == 429:
+                # The pause starts here, where Twitter's reset time is still in the headers;
+                # `http.download` then raises, and `download` waits the pause out.
+                self.backoff.hit("rate limited", retry_after=rate_limit_wait(response.headers))
+            seen = getattr(_seen, "headers", None)
+            if seen is not None and response.status_code in (200, 206):
+                seen.update((name.lower(), value) for name, value in response.headers.items())
+            return response
         attempt = partial(patiently, partial(self._attempt, request), self.backoff)
         try:
             return retrying(attempt, wait=self.wait, retryable=(*CONNECTION_ERRORS, RetryableStatus))
@@ -188,10 +213,6 @@ class RetryableStatus(Exception):
         super().__init__(f"HTTP {response.status_code}")
         self.response = response
         self.retry_after = retry_after_seconds(response.headers.get("retry-after"))
-
-
-class IncompleteError(Exception):
-    """A body that ended before its Content-Length."""
 
 
 class RateLimited(Exception):
@@ -287,26 +308,28 @@ def retry_after_seconds(value: str | None) -> float | None:
     return max(0.0, when.timestamp() - time.time())
 
 
-def download(http: httpx.Client, source: Download, dest: Path, *, label: str, backoff: Backoff,
+def download(client: httpx.Client, source: Download, dest: Path, *, label: str, backoff: Backoff,
              headers: Mapping[str, str] | None = None, wait: Wait = 1.0, size: int | None = None,
              kind: str | None = None, audio: str | None = None,
-             received: MutableMapping[str, str] | None = None) -> Path | None:
-    """Save one file atomically under a progress bar, and return the path written, or None.
+             received: MutableMapping[str, str] | None = None) -> Path:
+    """Save one file under a progress bar, resuming what an earlier try left, and return the path written.
 
-        net.download(http, ["https://a.example/f.7z", "https://b.example/f.7z"], Path("f.7z"), label="f.7z",
+        net.download(client, ["https://a.example/f.7z", "https://b.example/f.7z"], Path("f.7z"), label="f.7z",
                      backoff=Backoff("loi"))
 
     Args:
-        http: the source's client from `client`, which sends its cookies and signs its requests.
+        client: the source's client from `client`, which sends its cookies and signs its requests.
         source: a URL, mirror URLs tried in order, or a `fetch(dest, progress)` function that
             writes the file to `dest` and reports `progress(done, total)` in bytes.
         dest: where the file goes; with `kind`, its extension may change to match the content.
         label: the file's name on its progress bar and in log lines, such as "posts/a.jpg".
         backoff: the source's `Backoff`, which every request waits on and every 429 pauses.
         headers: extra headers for each URL request, such as a Referer; None sends only the client's.
-        wait: the source's wait between attempts, in seconds or as a function (see `retry_wait`).
-        size: the file's size in bytes when the source knows it, shown on the bar for a `fetch`
-            function; None when unknown, and then a `fetch`'s file with a `kind` is decoded to check it.
+        wait: the source's wait between attempts of a `fetch` function or a DASH merge, in
+            seconds or as a function (see `retry_wait`); a URL's own attempts are `http.download`'s.
+        size: the file's size in bytes when the source knows it: the bar's total until the server
+            says, and the size checked when it sends none; None when unknown, and then a file
+            with a `kind` is decoded to check it, unless the server sent its length.
         kind: "image", "video" or "audio" (`files.kind_of`) to check the file is media and name it
             by its content; None saves any file (an archive, a document) as it comes, under `dest`'s
             name. `files.SNIFF` lets the content decide: `dest` has no extension yet, and media gets
@@ -317,41 +340,47 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
             such as its `last-modified`, for a URL mirror; None keeps none.
 
     Returns:
-        The path written, which differs from `dest` when `kind` renamed it; None when the last
-        mirror refused the file (a 4xx other than 429), which is logged.
+        The path written, which differs from `dest` when `kind` renamed it.
 
     Raises:
+        FetchError: the last mirror refused the file (a 4xx other than 429), with its `status`,
+            so the job can refresh an expired link (a 403 or 410); a resumable part is kept.
         NotMediaError: with `kind`, the last mirror sent a web page or JSON, such as a login wall.
         media.UnsafeError: with `kind`, media refused the last mirror's file, such as a decompression bomb.
         media.BrokenError: with `kind`, the last mirror's file still failed `Media.check` after three tries.
-        IncompleteError: the last mirror's body still ended early after three tries.
-        httpx.HTTPError: the last mirror's connection still failed after three tries.
+        http.IncompleteError: the last mirror's body still ended early after three tries.
+        http.Error: the last mirror's connection still failed after three tries.
+        KeyboardInterrupt: a second Ctrl-C (`stopping_now`), which keeps a resumable part.
         Exception: whatever the last mirror's `fetch` function raised after three tries.
 
-    Each mirror gets three attempts, and a 429 is waited out on the same mirror without costing
-    one. A failed mirror is logged with why, and the next one tried; only the last mirror's error
-    reaches the caller. The file appears under its name only once complete, and a failed attempt
-    leaves no `.part` behind. This makes network requests and can take minutes.
+    Each mirror gets three attempts, each resuming where the last stopped, and a 429 is waited
+    out on the same mirror without costing one. A failed mirror is logged with why, and the next
+    one tried; only the last mirror's error reaches the caller. The file appears under its name
+    only once complete and checked. A resumable part (from a server that sends an `ETag` or a
+    `Last-Modified`) and its `.part.json` are kept through any failure, a Ctrl-C or a crash, and
+    the next call for the same `dest` resumes them, even with a fresh URL; any other part is
+    deleted. This makes network requests and can take minutes.
     """
     from shared import media
 
-    # A cut-off body (IncompleteError, or a BrokenError from Media.check) may come whole next time.
     # A web page or a refused file is the same answer on every try, so it fails at once (fixes #9).
-    # `final` matters only for a `fetch` function, whose retryable is every Exception: a URL
-    # mirror never retries these two anyway, since neither is in its retryable list.
+    # `final` matters only for a `fetch` function, whose retryable is every Exception: a URL's
+    # own attempts are `http.download`'s, which retries neither of these.
     final = (NotMediaError, media.UnsafeError)
     mirrors: list[str | Fetch] = [source] if isinstance(source, str) or callable(source) else list(source)
     for number, mirror in enumerate(mirrors, start=1):
-        retryable = (Exception,) if callable(mirror) else (*CONNECTION_ERRORS, RetryableStatus, IncompleteError,
-                                                           media.BrokenError)
         try:
-            save = partial(_save_once, http, mirror, dest, label, headers, size, backoff, kind, audio, received)
-            return retrying(partial(patiently, save, backoff), wait=wait, retryable=retryable, final=final)
-        except FetchError as error:
+            if callable(mirror):
+                save = partial(_save_fetch, mirror, dest, label, size, kind)
+                return retrying(partial(patiently, save, backoff), wait=wait, retryable=(Exception,), final=final)
+            if audio is not None:
+                return _save_dash(client, mirror, audio, dest, label, headers, backoff, wait)
+            return _save_url(client, mirror, dest, label, headers, size, backoff, kind, received)
+        except http.RefusedError as error:
+            refused = FetchError(f"HTTP {error.status} for {_where(str(mirror))}", status=error.status)
             if number == len(mirrors):
-                log.error("{label}: {error}", label=label, error=error)
-                return None
-            reason = error
+                raise refused from None
+            reason: BaseException = refused
         except Exception as error:
             # Any error of a mirror that isn't the last is worth trying the next mirror for; the last
             # one's error is the caller's, which records the file as failed.
@@ -359,7 +388,7 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
                 raise
             reason = error
         log.warn("mirror {n} failed: {reason}; trying next", n=number, reason=reason)
-    return None
+    raise ValueError("download needs a URL or a fetch function")
 
 
 def follow(url: str) -> str:
@@ -381,27 +410,126 @@ def _base_transport() -> httpx.BaseTransport:
     return httpx.HTTPTransport()
 
 
-def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
-               headers: Mapping[str, str] | None, size: int | None, backoff: Backoff, kind: str | None,
-               audio: str | None, received: MutableMapping[str, str] | None = None) -> Path:
-    """Download `mirror` (and `audio`) once into `.part` files, check it, and rename it onto `dest`."""
+def _save_url(client: httpx.Client, url: str, dest: Path, label: str, headers: Mapping[str, str] | None,
+              size: int | None, backoff: Backoff, kind: str | None,
+              received: MutableMapping[str, str] | None) -> Path:
+    """Download one URL with `http.download`, check it as `kind`, and save it under the name its content calls for."""
+    seen: dict[str, str] = {}
+
+    def check(part: Path) -> Path:
+        # A length the server sent was checked by `http.download` already, so the file is only
+        # sniffed; without one (a chunked body), it is decoded, which finds a cut-off photo.
+        known = "content-length" in seen or size is not None
+        # The name its content calls for, which `http.download` renames the part onto in one
+        # step: a crash never leaves `a.jpg` holding a PNG, which the job would take as saved.
+        return _sniffed(part, dest, known) if kind == files.SNIFF else _as_media(part, dest, kind or "", known)
+
+    with _Row(label) as row:
+        named = _transfer(client, url, dest, headers=headers, size=size, backoff=backoff,
+                          check=check if kind is not None else None, progress=row.follow(), seen=seen)
+    if received is not None:
+        received.update(seen)
+    return named
+
+
+def _save_dash(client: httpx.Client, video: str, audio: str, dest: Path, label: str,
+               headers: Mapping[str, str] | None, backoff: Backoff, wait: Wait) -> Path:
+    """Download a DASH video and its `audio` stream, and save them merged as `dest`, trying the whole three times."""
+    from shared import media
+
+    # Both streams are only inputs, named to match PART_GLOB, so a run killed before the merge
+    # leaves nothing `flnd sync`'s repair doesn't remove; deleted however the merge ends.
+    streams = [dest.with_name(f".{dest.name}.{name}.part") for name in ("video", "audio")]
+    with _Row(label) as row:
+        attempt = 1
+        while True:
+            try:
+                for url, stream in zip((video, audio), streams):
+                    _transfer(client, url, stream, headers=headers, size=None, backoff=backoff, check=None,
+                              progress=row.follow())
+                # The merge is a stream copy by ffmpeg, which `stopping_now` can't reach; it is
+                # bounded by ffmpeg's copy timeout (10 min), and the terminal's Ctrl-C reaches
+                # ffmpeg too, being in the same process group, which ends it. So a second Ctrl-C
+                # before it starts stops here, and one during it stops ffmpeg.
+                if stopping_now.is_set():
+                    raise KeyboardInterrupt
+                row.caption("merging")
+                # The merge writes a temporary `.<name>.<random>.part` in `dest`'s folder, so it
+                # matches PART_GLOB, and `save` renames it onto `dest` once complete. `format` is
+                # `dest`'s real extension, since the streams' names don't say the container. `save`
+                # refuses to write over a file, so an empty one, which holds nothing and which the
+                # job would download again anyway, is removed first.
+                if dest.is_file() and dest.stat().st_size == 0:
+                    dest.unlink()
+                # `with` drops the merged file's temporary copy if `save` fails.
+                with media.open(streams[0]) as clip:
+                    clip.merge(audio=streams[1], format=dest.suffix).save(dest)
+                return dest
+            except media.BrokenError as error:
+                # A stream cut short without a length to tell (a chunked body) fails the merge;
+                # it may come whole next time. Other merge errors would fail the same way again.
+                if attempt >= ATTEMPTS:
+                    raise
+                seconds = retry_wait(wait, error, attempt)
+                log.debug("retry {n} in {time}: {error}", n=attempt, time=fmt.duration(seconds), error=error)
+                _sleep(seconds)
+                attempt += 1
+            finally:
+                for stream in streams:
+                    stream.unlink(missing_ok=True)
+
+
+def _transfer(client: httpx.Client, url: str, dest: Path, *, headers: Mapping[str, str] | None,
+              size: int | None, backoff: Backoff, check: Callable[[Path], Any] | None,
+              progress: Callable[[int, int | None], None], seen: dict[str, str] | None = None) -> Path:
+    """`http.download` of one URL onto `dest`, as often as a 429 asks: each pause is waited out, then it resumes.
+
+    Returns the path written: `dest`, or the one `check` returned. `seen`, when given, is filled
+    with the file responses' headers, from the transport (`_recording`).
+    """
+    while True:
+        try:
+            with _recording(seen):
+                saved = http.download(url, dest, client=client, headers=headers, size=size, parts=split_parts(url),
+                                      check=check, progress=progress)
+        except http.RateLimitedError as error:
+            # The transport started the pause from the headers; this counts it for a client
+            # whose transport isn't ours. A second hit in one pause does nothing.
+            backoff.hit("rate limited", retry_after=error.retry_after)
+            backoff.wait_turn()
+            continue
+        backoff.clear()
+        return saved
+
+
+def split_parts(url: str) -> Literal["auto", 1]:
+    """`http.download`'s `parts` for `url`: "auto" on a host in `SPLIT_HOSTS` or under one, else 1 (D6)."""
+    host = (urlsplit(url).hostname or "").lower()
+    return "auto" if any(host == name or host.endswith(f".{name}") for name in SPLIT_HOSTS) else 1
+
+
+@contextmanager
+def _recording(seen: dict[str, str] | None) -> Iterator[None]:
+    """Have the transport put the headers of this thread's file responses into `seen` for the block."""
+    previous = getattr(_seen, "headers", None)
+    _seen.headers = seen
+    try:
+        yield
+    finally:
+        _seen.headers = previous
+
+
+def _save_fetch(fetch: Fetch, dest: Path, label: str, size: int | None, kind: str | None) -> Path:
+    """Have a source's `fetch(dest, progress)` write the file into a part, check it, and rename it onto `dest`."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     # `atomic` names the part `.<name>.<random>.part`, so two runs never write into each other's
     # files, and whatever a killed run leaves is removed by `flnd sync`'s repair (fixes #13). It
     # deletes the part however the block ends, and renames it onto `dest` only if it's still there.
     with atomic.writing(dest, replace=True) as part:
         with _Row(label) as row:
-            if callable(mirror):
-                row.start(size)
-                mirror(part, row.update)
-                known = size is not None
-            else:
-                known = _fetch_url(http, mirror, part, row, headers, backoff, received)
-            if audio is not None:
-                _merge_audio(http, audio, part, dest, row, headers, backoff)
-                # The merge saved `dest` itself; the video part was only its input.
-                part.unlink()
-                return dest
+            row.start(size)
+            fetch(part, row.stoppable)
+            known = size is not None
             if kind == files.SNIFF:
                 final = _sniffed(part, dest, known)
             else:
@@ -412,75 +540,10 @@ def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
     return final
 
 
-def _merge_audio(http: httpx.Client, audio: str, video: Path, dest: Path, row: _Row,
-                 headers: Mapping[str, str] | None, backoff: Backoff) -> None:
-    """Download a DASH video's `audio` stream and save it merged with the `video` part as `dest`."""
-    from shared import media
-
-    # A second part beside `dest`, only ever an input: it is deleted before the block ends, so it
-    # never becomes `dest`, and on an error the block deletes it.
-    with atomic.writing(dest, replace=True) as sound:
-        _fetch_url(http, audio, sound, row, headers, backoff)
-        row.caption("merging")
-        # The merge writes a temporary `.<name>.<random>.part` beside `video`, in `dest`'s folder,
-        # so it matches PART_GLOB, and `save` renames it onto `dest` once complete. `format` is
-        # `dest`'s real extension, since the part's name doesn't say the container. `save` refuses
-        # to write over a file, so an empty one, which holds nothing and which the session would
-        # download again anyway, is removed first.
-        if dest.is_file() and dest.stat().st_size == 0:
-            dest.unlink()
-        # `with` drops the merged file's temporary copy if `save` fails.
-        with media.open(video) as clip:
-            clip.merge(audio=sound, format=dest.suffix).save(dest)
-        sound.unlink()
-
-
-def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Mapping[str, str] | None,
-               backoff: Backoff, received: MutableMapping[str, str] | None = None) -> bool:
-    """Stream `url` into `part`, and return whether its size was checked against Content-Length.
-
-    `received`, when given, is filled with the response's headers, lowercase.
-    """
-    with http.stream("GET", url, headers=dict(headers or {}), extensions={ONE_ATTEMPT: True}) as response:
-        checked(response, backoff)
-        if response.status_code not in (200, 206):
-            raise FetchError(f"HTTP {response.status_code} for {url}", status=response.status_code)
-        if received is not None:
-            received.update((name.lower(), value) for name, value in response.headers.items())
-        length = response.headers.get("content-length", "")
-        total = int(length) if length.isdigit() else None
-        row.start(total)
-        written = 0
-        with _open_part(part) as file:
-            for chunk in response.iter_bytes(CHUNK_SIZE):
-                file.write(chunk)
-                written += len(chunk)
-                # Content-Length counts bytes on the wire, which differ from the file's when compressed.
-                row.update(response.num_bytes_downloaded or written)
-        got = response.num_bytes_downloaded or written
-        if total is not None and got != total:
-            raise IncompleteError(f"got {got} of {total} bytes from {url}")
-        return total is not None
-
-
-def _open_part(part: Path) -> BinaryIO:
-    """Create the part `atomic.writing` named, which must not exist yet, open for streaming bytes into.
-
-    `atomic.write` takes the whole content at once; a download arrives in chunks, so it is
-    streamed into the part here and `atomic.writing` does the rename.
-    """
-    # O_EXCL: the part's name is new, so a file already there is another writer's. Windows' C runtime
-    # opens a file in text mode unless O_BINARY is given, and `fdopen(…, "wb")` then writes every \n
-    # byte as \r\n, corrupting every download (fixes #1); other systems have no O_BINARY and no text
-    # mode, hence the 0. Mode 0644 before the umask, so the saved file is readable like any download.
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    handle = os.open(part, flags, 0o644)
-    try:
-        return os.fdopen(handle, "wb")
-    # Until fdopen owns the handle, it's ours to close: an open handle keeps Windows from deleting the part.
-    except BaseException:
-        os.close(handle)
-        raise
+def _where(url: str) -> str:
+    """The URL without its query or fragment, which may hold a signed token, for a message."""
+    parts = urlsplit(url)
+    return parts._replace(query="", fragment="").geturl()
 
 
 def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
@@ -545,6 +608,28 @@ class _Row:
         if total:
             self.bar.total = self.base + total
         self.bar.count = self.base + done
+
+    def stoppable(self, done: float, total: float | None = None) -> None:
+        """`update`, for a source's `fetch` function, which a second Ctrl-C stops at its next report (D8)."""
+        if stopping_now.is_set():
+            raise KeyboardInterrupt
+        self.update(done, total)
+
+    def follow(self) -> Callable[[int, int | None], None]:
+        """A `progress(done, total)` for one more stream on this bar, which a second Ctrl-C stops."""
+        started = False
+
+        def progress(done: int, total: int | None) -> None:
+            nonlocal started
+            # Raised in the download's thread, so `http.download` keeps the resumable part (D8).
+            if stopping_now.is_set():
+                raise KeyboardInterrupt
+            if not started:
+                self.start(total)
+                started = True
+            self.update(done, total)
+
+        return progress
 
     def caption(self, text: str) -> None:
         self.bar.caption = text

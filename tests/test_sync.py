@@ -307,6 +307,27 @@ class RepairTest(SyncCase):
         self.assertGreater((folder / "a.jpg").stat().st_size, 0)
         self.assertEqual((line.repaired, line.missing), (3, 0))
 
+    def test_a_recent_resumable_part_is_kept_for_the_fetch_and_every_other_leftover_goes(self):
+        """B6: sync's fetch resumes a download's part, so repair keeps it while it is recent, with its `.part.json`."""
+        import os
+        import time
+
+        from flnd import repair
+        from flnd.common import files
+
+        folder = self.home / "downloads" / "aaa" / "example_user"
+        folder.mkdir(parents=True)
+        made = {name: folder / name for name in (".a.jpg.11111111.part", ".a.jpg.11111111.part.json",
+                                                  ".b.jpg.22222222.part", ".b.jpg.22222222.part.json",
+                                                  ".c.jpg.33333333.part", ".d.jpg.44444444.part.json")}
+        for path in made.values():
+            path.write_bytes(b"x")
+        old = time.time() - (files.RESUMABLE_DAYS + 1) * 24 * 3600
+        os.utime(made[".b.jpg.22222222.part"], (old, old))
+        repair.repair({}, folder, [], repair.Tally("aaa:example_user"))
+        self.assertEqual(sorted(path.name for path in folder.iterdir()),
+                         [".a.jpg.11111111.part", ".a.jpg.11111111.part.json"])
+
     def test_audio_is_only_sniffed_so_a_mostly_playable_file_is_kept(self):
         from shared import media
 
@@ -360,7 +381,8 @@ class RepairTest(SyncCase):
 
         with mock.patch.object(os, "replace", killed_after):
             self.download(source=make_source("aaa", files=files))
-        self.assertEqual(sorted(path.name.split(".")[1] for path in left), ["a", "info"])
+        # The download's resumable part moves into `atomic`'s part, which moves onto a.jpg: two renames.
+        self.assertEqual(sorted(path.name.split(".")[1] for path in left), ["a", "a", "info"])
         self.sync(source=make_source("aaa", files=files))
         self.assertEqual([path for path in left if path.exists()], [])
         self.assertEqual(self.names(), ["a.jpg", "info.md"])

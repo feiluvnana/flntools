@@ -449,6 +449,10 @@ class Engine:
             for number, (report, complete) in zip(numbers, ran):
                 reports[number] = report
                 settings.complete(self.home, report.target, complete)
+            if net.stopping.is_set():
+                # A first Ctrl-C stopped the run gracefully (D8): what finished is recorded above,
+                # and the command ends as Ctrl-C always does, which the CLI exits 130 for.
+                raise KeyboardInterrupt
         return [reports[number] for number in range(len(chosen))]
 
     def _run(self, targets: Sequence[Target], options: Options) -> list[tuple[TargetReport, tuple[str, ...]]]:
@@ -469,6 +473,10 @@ class Engine:
         Each target ends its row at ok or error; one failing never stops the others. A whole
         source that can't start (its `logged_in` or `connect` raises) fails each of its targets. A
         rate limit is waited out, however long it takes, and isn't a failure; Ctrl-C ends the wait.
+
+        The first Ctrl-C stops gracefully (D8): listing stops, the running downloads finish,
+        no target starts, and each target not done ends as stopped (`job.STOPPED`); this then
+        returns, with `net.stopping` still set. The second stops at once with `KeyboardInterrupt`.
         """
         groups: dict[str, list[int]] = {}
         for number, target in enumerate(targets):
@@ -596,15 +604,27 @@ def _is_url(text: str) -> bool:
 
 @contextmanager
 def _stop_waits_on_ctrl_c() -> Iterator[None]:
-    """Let Ctrl-C end every rate-limit wait at once, in every thread, as well as doing what it always does."""
+    """Make the first Ctrl-C a graceful stop and the second an immediate one, in every thread (D8).
+
+    The first sets `net.stopping` and raises nothing: every rate-limit wait ends at once, each job
+    stops listing and lets its running downloads finish (flnd/job.py), and `Engine._fetch` raises
+    `KeyboardInterrupt` once they have. The second sets `net.stopping_now`, which stops the
+    downloads at their next chunk with their resumable parts kept, and does what Ctrl-C always does.
+    """
     net.stopping.clear()
+    net.stopping_now.clear()
     if threading.current_thread() is not threading.main_thread():
         yield
         return
     previous = signal.getsignal(signal.SIGINT)
 
     def interrupted(number: int, frame: Any) -> None:
-        net.stopping.set()
+        # A signal handler runs between two bytecodes of the main thread, which may hold the
+        # screen's lock, so it only sets events; the job threads draw the rows.
+        if not net.stopping.is_set():
+            net.stopping.set()
+            return
+        net.stopping_now.set()
         if callable(previous):
             previous(number, frame)
         else:
@@ -759,8 +779,14 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
 def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done) -> None:
     """Each target of one source through the job, with a person's pause between them."""
     for index, (number, target, row) in enumerate(rows):
-        if index:
+        if index and not net.stopping.is_set():
             # Back-to-back targets are what a script looks like, so a person's pause comes between them.
             _sleep(net.jittered(run.source.pause))
+        if net.stopping.is_set():
+            # After the first Ctrl-C no target starts; the ones left are stopped, not failed by a site.
+            row.caption = "stopped"
+            row.fail()
+            done[number] = (TargetReport(target, (), 0, error=job.STOPPED), ())
+            continue
         result = job.download(run, target, row)
         done[number] = (TargetReport(target, result.written, result.skipped, error=result.error), result.complete)

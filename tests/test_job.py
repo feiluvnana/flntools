@@ -2,12 +2,14 @@
 
 Run through the engine with tests/example_source.py on `httpx.MockTransport`, the clocks of
 net.py and site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
-"download Chromium?" question asked up front. No network, no browser.
+"download Chromium?" question asked up front, an expired link's refresh, and both Ctrl-Cs (with
+a CDN that blocks on events, and the run on a thread of its own). No network, no browser.
 """
 
 import datetime
 import os
 import threading
+import time
 import unittest
 from datetime import date
 from unittest import mock
@@ -22,6 +24,7 @@ from test_engine import EngineCase, compressing
 from flnd import cli as flnd_cli
 from flnd import engine as engine_module
 from flnd import job, site as site_module
+from flnd.common import net
 from flnd.common.compress import Choice
 from flnd.session import Options, single_targets
 from flnd.source import FetchError, File, LoginError, Post, Source, Target, target
@@ -427,6 +430,260 @@ class FailureTest(JobCase):
                      "✓ err:good", "✓ err:last"):
             self.assertIn(line, lines)
         self.assertEqual(self.files("err", "good"), ["good.jpg"])
+
+
+class Cut(httpx.SyncByteStream):
+    """A body that sends `data`, then drops the connection; or, given `gate`, waits on it after the first chunk."""
+
+    def __init__(self, data, *, gate=None, sent=None):
+        self.data, self.gate, self.sent = data, gate, sent
+
+    def __iter__(self):
+        yield self.data[:5]
+        if self.sent is not None:
+            self.sent.set()
+        if self.gate is None:
+            raise httpx.ReadError("connection reset")
+        self.gate.wait(5)
+        yield self.data[5:7]
+        yield self.data[7:]
+
+
+class RefreshTest(JobCase):
+    """B6: a 403 or 410 on a file of a lazy post asks its `files` once more and resumes with the fresh link."""
+
+    BODY = b"0123456789"
+    PHOTO = f"{CDN}/A1/1.jpg"
+
+    def setUp(self):
+        super().setUp()
+        # Each listing of the album signs its photo's link anew, as Instagram's `oe=` links are.
+        self.listings = 0
+
+        def album(request):
+            self.listings += 1
+            return httpx.Response(200, json={"urls": [f"{self.PHOTO}?sig={self.listings}"]})
+
+        self.routes[f"{API}/albums/A1"] = album
+
+    def cdn(self, fresh):
+        """The photo's CDN: the first link sends half the file, then the connection drops and the link expires."""
+        def photo(request):
+            sig = request.url.params["sig"]
+            headers = {"ETag": '"p1"', "Accept-Ranges": "bytes"}
+            if sig == "1":
+                if "range" in request.headers:
+                    return httpx.Response(403)
+                return httpx.Response(200, headers={**headers, "Content-Length": "10"}, stream=Cut(self.BODY))
+            return fresh(request, headers)
+
+        self.routes[self.PHOTO] = photo
+
+    def test_an_expired_link_calls_lazy_files_once_more_and_resumes(self):
+        def fresh(request, headers):
+            start = int(request.headers["range"].removeprefix("bytes=").rstrip("-"))
+            return httpx.Response(206, content=self.BODY[start:],
+                                  headers={**headers, "Content-Range": f"bytes {start}-9/10"})
+
+        self.cdn(fresh)
+        self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("albums",)))
+        self.assertEqual((self.target_dir("exm", "example_user") / "albums/Summer_2026/A1.jpg").read_bytes(),
+                         self.BODY)
+        self.assertEqual(self.listings, 2)
+        last = self.fetched(self.PHOTO)[-1]
+        self.assertEqual(last.url.params["sig"], "2")
+        # The second link resumes where the first stopped, checked against the same file.
+        self.assertEqual((last.headers["range"], last.headers["if-range"]), ("bytes=5-", '"p1"'))
+        self.assertIn("exm:A1_0", self.history())
+        self.assertEqual([path.name for path in (self.target_dir("exm", "example_user") / "albums/Summer_2026").iterdir()],
+                         ["A1.jpg"])
+
+    def test_once_per_file_never_in_a_loop(self):
+        self.cdn(lambda request, headers: httpx.Response(410))
+        self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("albums",)))
+        self.assertEqual(self.listings, 2)
+        self.assertIn("✗ albums/Summer_2026/A1.jpg: HTTP 410 for https://cdn.example/A1/1.jpg", self.lines())
+        self.assertNotIn("exm:A1_0", self.history())
+
+    def test_a_first_ctrl_c_during_a_refresh_is_no_fresh_link_and_the_target_stops(self):
+        """A rate-limit wait inside `files` that the first Ctrl-C cuts short is the graceful stop, not a failure."""
+        self.addCleanup(net.stopping.clear)
+        self.cdn(lambda request, headers: httpx.Response(500))
+
+        def album(request):
+            self.listings += 1
+            if self.listings > 1:
+                net.stopping.set()      # the first Ctrl-C, during the refresh's wait
+                raise KeyboardInterrupt
+            return httpx.Response(200, json={"urls": [f"{self.PHOTO}?sig=1"]})
+
+        self.routes[f"{API}/albums/A1"] = album
+        report = self.report(Example, targets=["exm:example_user"], options=Options(categories=("albums",)))
+        self.assertEqual(report.targets[0].error, job.STOPPED)
+        self.assertEqual(self.listings, 2)
+
+    def test_a_refresh_cut_by_the_first_ctrl_c_answers_no_link_and_one_by_the_second_raises(self):
+        for event in (net.stopping, net.stopping_now):
+            self.addCleanup(event.clear)
+
+        def files():
+            raise KeyboardInterrupt
+
+        net.stopping.set()
+        refresh = job._Refresh(Post("A1", files))
+        refresh.run()
+        self.assertTrue(refresh.done.is_set())
+        self.assertEqual((refresh.files, refresh.error), (None, None))
+        net.stopping_now.set()
+        second = job._Refresh(Post("A1", files))
+        with self.assertRaises(KeyboardInterrupt):
+            second.run()
+        self.assertTrue(second.done.is_set())
+
+    def test_a_post_with_its_files_listed_is_not_refreshed(self):
+        self.routes[f"{CDN}/C1abc_0.jpg"] = httpx.Response(403)
+        self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
+        self.assertEqual(len(self.fetched(f"{CDN}/C1abc_0.jpg")), 1)
+        self.assertEqual(len(self.fetched(f"{API}/users/42/posts")), 2)
+        self.assertIn("✗ posts/2026-01-02_C1abc_0.jpg: HTTP 403 for https://cdn.example/C1abc_0.jpg", self.lines())
+
+
+class CtrlCTest(JobCase):
+    """D8: the first Ctrl-C stops listing and lets running downloads finish; the second stops them now.
+
+    The run goes on a thread of its own, as the engine's groups do, and the test thread plays the
+    person, setting `net.stopping` and `net.stopping_now` as the SIGINT handler does; the CDN blocks
+    on events, so the test decides when each download moves.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for event in (net.stopping, net.stopping_now):
+            self.addCleanup(event.clear)
+        self.rows = []
+        real = job.download
+
+        def spy(run, target, row):
+            self.rows.append(row)
+            return real(run, target, row)
+
+        patcher = mock.patch.object(job, "download", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def start(self, source, text):
+        """Run `text` on a thread; returns the thread and a dict that gets its result or error."""
+        outcome = {}
+
+        def run():
+            try:
+                outcome["report"] = self.report(source, targets=[text])
+            except BaseException as error:  # the test reads it: a second Ctrl-C's KeyboardInterrupt
+                outcome["error"] = error
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 10)
+        return thread, outcome
+
+    def until(self, condition):
+        deadline = time.monotonic() + 5
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, "timed out")
+            time.sleep(0.005)
+
+    def test_the_first_ctrl_c_finishes_running_files_and_closes_the_listing(self):
+        listed, closed, started, release = [], threading.Event(), threading.Event(), threading.Event()
+
+        class Slow(Source):
+            code, name, domains = "slw", "Slow", ("example.com",)
+            folder = ""
+            # One download at a time: post 1's runs, post 2's waits in the queue.
+            concurrency = 1
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                try:
+                    for number in range(1, 100):
+                        listed.append(number)
+                        yield Post(str(number), [File(f"{CDN}/{number}.7z", name=f"{number}.7z")])
+                finally:
+                    closed.set()
+
+        def first(request):
+            started.set()
+            release.wait(5)
+            return httpx.Response(200, content=b"one")
+
+        self.routes[f"{CDN}/1.7z"] = first
+        thread, outcome = self.start(Slow, "slw:example_user")
+        # Post 3 waits for room in the pool: 1 is downloading and 2 is queued.
+        self.until(lambda: started.is_set() and len(listed) == 3)
+        net.stopping.set()
+        self.until(closed.is_set)
+        self.until(lambda: self.rows and self.rows[0].caption == "stopping: 1 file finishing (Ctrl-C again to stop now)")
+        release.set()
+        thread.join(10)
+        report = outcome["report"]
+        self.assertEqual(report.targets[0].error, job.STOPPED)
+        self.assertEqual(self.files("slw"), ["1.7z"])
+        self.assertIn("slw:1_0", self.history())
+        # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
+        self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
+        self.assertEqual(listed, [1, 2, 3])
+        self.assertIn("✗ slw:example_user stopped", self.lines())
+
+    def test_the_second_ctrl_c_stops_now_and_keeps_the_part(self):
+        sent, gate = threading.Event(), threading.Event()
+
+        class Big(Source):
+            code, name, domains = "big", "Big", ("example.com",)
+            folder = ""
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield Post("1", [File(f"{CDN}/big.7z", name="big.7z")])
+
+        body = b"0123456789"
+
+        def big(request):
+            if "range" in request.headers:
+                start = int(request.headers["range"].removeprefix("bytes=").rstrip("-"))
+                return httpx.Response(206, content=body[start:],
+                                      headers={"ETag": '"b1"', "Content-Range": f"bytes {start}-9/10"})
+            return httpx.Response(200, headers={"ETag": '"b1"', "Content-Length": "10"},
+                                  stream=Cut(body, gate=gate, sent=sent))
+
+        self.routes[f"{CDN}/big.7z"] = big
+        thread, outcome = self.start(Big, "big:example_user")
+        self.until(sent.is_set)
+        net.stopping.set()
+        net.stopping_now.set()
+        # The next chunk arrives and is written; the download stops there, before the last one.
+        gate.set()
+        thread.join(10)
+        self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
+        folder = self.target_dir("big", "example_user")
+        names = sorted(path.name for path in folder.iterdir())
+        self.assertEqual(len(names), 2, names)
+        self.assertTrue(names[0].startswith(".big.7z.") and names[0].endswith(".part"), names)
+        self.assertEqual(names[1], names[0] + ".json")
+
+        # The next run resumes the part.
+        net.stopping.clear()
+        net.stopping_now.clear()
+        self.run_engine(Big, targets=["big:example_user"])
+        self.assertEqual((folder / "big.7z").read_bytes(), body)
+        self.assertEqual(self.fetched(f"{CDN}/big.7z")[-1].headers["range"], "bytes=7-")
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["big.7z"])
 
 
 class BrowserUpFrontTest(JobCase):

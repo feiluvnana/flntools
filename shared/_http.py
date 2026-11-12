@@ -1,4 +1,4 @@
-"""One HTTP request at a time: `http.fetch(url)` gives a `Response`, or raises a typed error.
+"""HTTP for scripts: `http.fetch(url)` gives a `Response`, and `http.download(url, dest)` saves a file.
 
 How it works: `fetch` sends one request through httpx, on the caller's `httpx.Client` or on a
 module-level one made on first use, and reads the whole body. Each attempt first takes one of the
@@ -25,11 +25,23 @@ there is nothing to close, and it has no `.raw`, since `browser.Page.fetch` (and
 `site.fetch`) returns the same type from other libraries. This module wraps httpx; the `http` extra brings it,
 and parsel for `Response.html`.
 
+`download` streams one file into a hidden `.<name>.<random>.part` beside `dest`, checks its
+size and then the caller's `check`, and renames it onto `dest` through `atomic`. A server that
+sends an `ETag` or a `Last-Modified` makes the part resumable: its small `.part.json` (the URL,
+that validator, the size and the ranges written) is kept through a dropped connection, a Ctrl-C
+or a crash, and the next attempt, or the next call for the same `dest`, asks only for the rest,
+with `Range` and `If-Range`. A file of 16 MB or more from a server that takes ranges is fetched
+in up to 4 ranges at once, into one preallocated part, using only the host's free slots.
+
+    http.download("https://cdn.example/v.mp4", "videos/")               # videos/v.mp4
+    http.download([mirror_a, mirror_b], "f.7z", client=client, progress=bar.update,
+                  check=lambda path: media.open(path).check())
+
 No message or log line here holds a cookie or an `Authorization` value: messages name the method,
 the URL without its query, and the status, and any text from httpx is scrubbed of the request's
 secret header values first.
 
-Threads: `fetch` may be called from many threads at once, sharing the module's client or one of
+Threads: `fetch` and `download` may be called from many threads at once, sharing the module's client or one of
 the caller's (httpx's `Client` is safe to share between threads). The per-host slots are one
 `threading.BoundedSemaphore` per host, made under a lock, so every thread sees the same 6.
 """
@@ -38,14 +50,22 @@ from __future__ import annotations
 
 import email.utils
 import http.cookiejar
+import io
 import json as jsonlib
+import os
+import secrets
 import threading
 import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal, Mapping, overload
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, Literal, Mapping, Sequence, Union, overload
+from urllib.parse import unquote, urlsplit
 
 import shared
+from shared import _atomic as atomic
+from shared import _fmt as fmt
 from shared._log import log
 
 try:
@@ -58,8 +78,10 @@ if TYPE_CHECKING:  # `selector` loads on the first `html`, so a JSON-only script
 
 __all__ = [
     "ChangedError", "Error", "IncompleteError", "RateLimitedError", "RefusedError", "Response",
-    "ServerError", "fetch",
+    "ServerError", "download", "fetch",
 ]
+
+PathLike = Union[str, "os.PathLike[str]"]
 
 # Chrome's own limit of connections to one host, so a script fetching in parallel looks to a
 # site like one browser, not a crowd. It counts requests in flight through this module, per host
@@ -78,6 +100,23 @@ SECRET_HEADERS = ("authorization", "cookie", "proxy-authorization")
 # that wants a longer pause says so with a 429, and that is the caller's to wait out.
 FIRST_WAIT = 1.0
 MAX_WAIT = 8.0
+
+# A file this big or bigger is split into ranges with `parts="auto"` (redesign B6): below it, the
+# second connection's setup costs about what it saves, and CDNs cap speed per connection mostly
+# for big videos and archives.
+SPLIT_MIN = 16 * 1024 * 1024
+# The most ranges `parts="auto"` splits one file into, and only within the host's free slots.
+MAX_PARTS = 4
+# How many bytes a split download writes between two saves of its ranges into `.part.json`; a
+# crash loses at most this much of each range, which the next call fetches again.
+SAVE_EVERY = 4 * 1024 * 1024
+# The request extension every request of `download` carries, so a caller's transport can tell a
+# download's requests from others; flnd's sends them once, since `download` retries on its own.
+DOWNLOAD_EXTENSION = "shared.http.download"
+# What a resumable part's sidecar adds to the part's name.
+INFO_SUFFIX = ".json"
+# The name of a file `download` saves into a folder when its URL's path names none.
+FALLBACK_NAME = "download"
 
 # Waits sleep through this, so tests can replace it.
 _sleep: Callable[[float], None] = time.sleep
@@ -130,13 +169,17 @@ class ServerError(Error):
 
 
 class IncompleteError(Error, shared.BrokenError):
-    """A body that ended before its `Content-Length`. Raised by `http.download`, built in Phase 6 step 8."""
+    """A download whose body ended before its `Content-Length`, or whose file isn't the size it should be.
+
+    `http.download` tries again, resuming, up to its `attempts`, and raises it only after the last.
+    """
 
 
 class ChangedError(Error, shared.BrokenError):
     """A file that changed on the server during a resume, and whose restart failed too.
 
-    Raised by `http.download`, built in Phase 6 step 8.
+    `http.download` restarts a file the server says changed (a 200 to a `Range`, or a 416); this
+    is raised when that restart then fails on every attempt left, chained from the last error.
     """
 
 
@@ -308,6 +351,103 @@ def fetch(url: str, *, method: str = "GET", client: httpx.Client | None = None,
         attempt += 1
 
 
+def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client | None = None,
+             headers: Mapping[str, str] | None = None, size: int | None = None,
+             parts: Literal["auto"] | int = "auto", resume: bool = True, attempts: int = 3,
+             timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
+             progress: Callable[[int, int | None], Any] | None = None, label: str | None = None) -> Path:
+    """Save one file from the web, resuming and splitting where the server allows, and return its path.
+
+        http.download("https://cdn.example/v.mp4", "videos/")                # videos/v.mp4
+        http.download([mirror_a, mirror_b], "f.7z", client=client, progress=bar.update,
+                      check=lambda path: media.open(path).check())
+
+    Args:
+        url: the file's URL, or mirror URLs tried in order: a mirror that fails for any reason
+            but a 429 is logged at debug level and the next one tried.
+        dest: the file to write, replaced if it exists; or a folder (one that exists, or a path
+            ending in "/"), and the name is then the URL's last path part, made safe by
+            `fmt.filename`. Missing folders are made.
+        client: an `httpx.Client` the caller owns, with its cookies, headers, signing and
+            pacing; None uses this module's client, which follows redirects and sends no cookies.
+            Every request carries the `"shared.http.download"` extension, so the client's
+            transport can tell a download's requests from others.
+        headers: headers for every request, over the client's own, such as a `Referer`.
+        size: the file's size in bytes when the caller knows it: the progress total until the
+            server says, and the size checked when the server sends no length. None when unknown.
+        parts: "auto" splits a file of 16 MB or more into up to 4 ranges; 1 never splits; a
+            number n splits any file into up to n ranges (at most 6). Only a file whose server
+            sends `Accept-Ranges: bytes` and a length is split, and only into the host's free slots.
+        resume: True keeps a resumable part (one whose server sent a strong `ETag` or a
+            `Last-Modified`) and its `.part.json` through any failure, Ctrl-C included, and
+            resumes an earlier call's part for the same `dest`, whatever its URL was then (the
+            validator, sent as `If-Range`, says whether it is still the same file). False starts
+            afresh each time and leaves no part behind.
+        attempts: how many tries in all for a dead connection, a 5xx, a body cut short, or a
+            `check` that raises `shared.BrokenError`, at least 1; each try resumes where the
+            last stopped. Waits between them are 1 s, 2 s, 4 s, … up to 8 s.
+        timeout: seconds each request may wait to connect, and between bytes read.
+        check: called with the complete part's path before it is renamed onto `dest`, such as
+            a media check; raising `shared.BrokenError` (a damaged file) costs an attempt and
+            downloads it again from the start, and any other exception is raised at once. When
+            it returns a `Path`, the part is renamed onto that path instead of `dest`, in the one
+            rename (a file named by its content: `a.jpg` holding a PNG saved as `a.png`); the
+            path must be in `dest`'s folder. None checks only the size.
+        progress: called as `progress(done, total)` in bytes as the file arrives, `total` None
+            while unknown; never from two threads at once. What it raises stops the download
+            and is raised, keeping a resumable part, so a Ctrl-C there can stop it.
+        label: the text of a progress row this function draws itself, such as the file's name;
+            None draws none.
+
+    Returns:
+        The path written: `dest`, the file in the `dest` folder, or the path `check` returned.
+
+    Raises:
+        RateLimitedError: a 429, at once and never slept on, with the `Retry-After` seconds; a
+            resumable part is kept, so calling again resumes.
+        RefusedError: any other 4xx from the last mirror, such as an expired link's 403; a
+            resumable part is kept, so a call with a fresh link resumes.
+        ServerError: a 5xx from the last mirror on every attempt.
+        IncompleteError: the last mirror's body still ended early after every attempt.
+        ChangedError: the file changed on the server during a resume, and its restart failed.
+        Error: the last mirror's connection failed on every attempt, or a request couldn't be
+            sent (an invalid URL, too many redirects).
+        ValueError: no URL, `attempts` below 1, or `parts` neither "auto" nor a number from 1.
+        Whatever `check` or `progress` raised.
+
+    It may be called from many threads at once. Every request waits for one of its host's 6 slots
+    and holds it until its body is read, and the ranges of a split file take free slots only. Two
+    calls for one `dest` in this process never share a part; two processes might, so don't.
+    """
+    mirrors = [url] if isinstance(url, str) else list(url)
+    if not mirrors:
+        raise ValueError("download needs a URL")
+    if attempts < 1:
+        raise ValueError(f"attempts must be at least 1, not {attempts}")
+    if parts != "auto" and (isinstance(parts, bool) or not isinstance(parts, int) or parts < 1):
+        raise ValueError(f'parts must be "auto" or a number from 1, not {parts!r}')
+    path = _destination(dest, mirrors[0])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sender = client if client is not None else _client()
+    with ExitStack() as stack:
+        bar = stack.enter_context(log.progress(label, total=size, show=fmt.size)) if label is not None else None
+        taken = stack.enter_context(_claimed(path))
+        for number, mirror in enumerate(mirrors, start=1):
+            transfer = _Transfer(sender, mirror, path, headers=headers, size=size, parts=parts,
+                                 resume=resume and not taken, attempts=attempts, timeout=timeout,
+                                 check=check, report=_Report(bar, progress))
+            try:
+                return transfer.run()
+            except RateLimitedError:  # the caller's back-off decides; another mirror is likely the same site
+                raise
+            except Exception as error:  # any other failure of a mirror that isn't the last: the next one may work
+                if number == len(mirrors):
+                    raise
+                log.debug("mirror {n} of {name} failed: {error}; trying the next", n=number, name=path.name,
+                          error=error)
+    raise AssertionError("unreachable: the last mirror returns or raises")
+
+
 class _Headers(Mapping[str, str]):
     """A read-only header mapping with lowercase names, looked up in any case."""
 
@@ -434,3 +574,590 @@ def _charset(content_type: str) -> str:
                 return "utf-8"
             return charset
     return "utf-8"
+
+
+# `download`'s internals. A transfer is one mirror of one call. Its state is a part file and a
+# list of segments, each a byte range of the file and how much of it is written: one segment
+# for the whole file unless it is split. A resumable state is saved beside the part as its
+# `.part.json`, so a later attempt, or a later call for the same `dest`, picks it up.
+
+# The destinations a `download` in this process is writing, so two calls for one file never
+# write into the same resumable part; under `_claims_lock`, since any thread may download.
+_claims: set[str] = set()
+_claims_lock = threading.Lock()
+
+
+@dataclass
+class _Segment:
+    """One byte range of a file being downloaded: `start` to `end` (exclusive; None to the end), `done` written."""
+
+    start: int
+    end: int | None
+    done: int = 0
+
+    @property
+    def at(self) -> int:
+        """The offset of the next byte to write."""
+        return self.start + self.done
+
+    @property
+    def finished(self) -> bool:
+        """Whether every byte of the range is written; a range of unknown end never says so."""
+        return self.end is not None and self.at >= self.end
+
+
+@dataclass
+class _State:
+    """A part being written: where it is, where it came from, and its segments."""
+
+    part: Path
+    url: str
+    # The strong `ETag` or the `Last-Modified` the server sent, sent back as `If-Range`; None
+    # when it sent neither, and then the part can't be resumed.
+    validator: str | None
+    # The file's length from the server; None when it didn't say.
+    size: int | None
+    segments: list[_Segment]
+
+    @property
+    def info(self) -> Path:
+        """The sidecar `.part.json` beside the part."""
+        return self.part.with_name(self.part.name + INFO_SUFFIX)
+
+    @property
+    def done(self) -> int:
+        """The bytes written across every segment."""
+        return sum(segment.done for segment in self.segments)
+
+    def save(self) -> None:
+        """Write the sidecar, so a crash or a later call resumes from here."""
+        # The URL without its query: a signed link's token stays off the disk. A resume goes by
+        # `dest` and the validator, so the URL is only there for a person reading the file.
+        data = {"url": _where(self.url), "validator": self.validator, "size": self.size,
+                "segments": [[segment.start, segment.end, segment.done] for segment in self.segments]}
+        atomic.write(self.info, jsonlib.dumps(data).encode("utf-8"))
+
+    def drop(self) -> None:
+        """Delete the part and its sidecar."""
+        self.part.unlink(missing_ok=True)
+        self.info.unlink(missing_ok=True)
+
+
+class _Changed(Exception):
+    """The server's file isn't the one the part holds: a 416, a range that starts elsewhere, or a range sent whole."""
+
+
+class _Stopped(Exception):
+    """A segment stopped because another one failed; that one's error is what's raised."""
+
+
+@dataclass
+class _Stream:
+    """One open response of a download and the host slot it holds, both released by `close`."""
+
+    response: httpx.Response
+    slot: threading.BoundedSemaphore
+
+    def close(self) -> None:
+        try:
+            self.response.close()
+        finally:
+            self.slot.release()
+
+
+class _Report:
+    """Progress for one download, to the caller's callback and to the row `label` draws."""
+
+    def __init__(self, bar: Any, progress: Callable[[int, int | None], Any] | None):
+        self.bar, self.progress = bar, progress
+        # The ranges of a split file report from their own threads; one at a time keeps the
+        # callback from running twice at once and `done` from going back.
+        self.lock = threading.Lock()
+
+    def __call__(self, done: int, total: int | None) -> None:
+        with self.lock:
+            if self.bar is not None:
+                self.bar.total = total
+                self.bar.count = done
+            if self.progress is not None:
+                self.progress(done, total)
+
+
+class _Transfer:
+    """One mirror of one `download`: its attempts, its part, and its ranges; see `download`."""
+
+    def __init__(self, client: httpx.Client, url: str, dest: Path, *, headers: Mapping[str, str] | None,
+                 size: int | None, parts: Literal["auto"] | int, resume: bool, attempts: int, timeout: float,
+                 check: Callable[[Path], Any] | None, report: _Report):
+        self.client, self.url, self.dest = client, url, dest
+        self.headers = dict(headers or {})
+        self.size, self.parts, self.resume, self.attempts, self.timeout = size, parts, resume, attempts, timeout
+        self.check, self.report = check, report
+        self.state: _State | None = None
+        # Where the whole file goes: `dest`, or the path `check` named.
+        self.named = dest
+        # Set once the server's file turned out to differ from the part's, so the part restarted.
+        self.restarted = False
+        # Set after a split went wrong: later attempts fetch the file in one range.
+        self.single = False
+        # Host slots taken for a fresh split's extra ranges, handed to them as they start.
+        self.reserved: list[threading.BoundedSemaphore] = []
+
+    def run(self) -> Path:
+        """Every attempt until the file is whole and checked, then the rename; `download` says what raises."""
+        if self.resume:
+            self.state = _resumable(self.dest)
+        attempt = 1
+        while True:
+            try:
+                self._transfer()
+                self._verify()
+                break
+            except _Changed as error:
+                # The part is useless now; the next attempt starts the file again, in one range.
+                self._restart()
+                failure: Exception = Error(f"GET {_where(self.url)}: {error}")
+            except CONNECTION_ERRORS as error:
+                self._keep()
+                failure = Error(self._scrub(f"GET {_where(self.url)}: {type(error).__name__}: {error}"))
+                failure.__cause__ = error
+            except (ServerError, IncompleteError) as error:
+                self._keep()
+                failure = error
+            except shared.BrokenError as error:
+                # `check` found the file damaged (`_verify` deleted it): fetched again from the start.
+                failure = error
+            except httpx.HTTPError as error:  # an invalid URL, too many redirects: another try fails the same way
+                self._keep()
+                raise Error(self._scrub(f"GET {_where(self.url)}: {type(error).__name__}: {error}")) from error
+            except BaseException:
+                # A 429 or another 4xx, a check that refused the file, the caller's progress, or
+                # Ctrl-C: what was written stays resumable, unless `_verify` already deleted it.
+                self._keep()
+                raise
+            if attempt >= self.attempts:
+                if self.restarted:
+                    raise ChangedError(f"GET {_where(self.url)}: the file changed during a resume, and its "
+                                       f"restart failed: {failure}") from failure
+                raise failure
+            seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
+            log.debug("retry {n} of {url} in {seconds:g} s: {reason}", n=attempt, url=_where(self.url),
+                      seconds=seconds, reason=failure)
+            _sleep(seconds)
+            attempt += 1
+        state = self.state
+        assert state is not None
+        # Through `atomic`, whose part moves onto the file's name in one step: a reader sees the
+        # old file or the whole new one. The resumable part is moved into it first, which is one
+        # rename too and leaves it a part: nothing appears under a final name before it is right.
+        with atomic.writing(self.named, replace=True) as final:
+            os.replace(state.part, final)
+        state.info.unlink(missing_ok=True)
+        return self.named
+
+    # One attempt.
+
+    def _transfer(self) -> None:
+        """Fetch what the part still lacks: the whole file on a fresh start, or each unfinished range."""
+        if self.state is None:
+            stream = self._open(None)
+            self._start(stream, split=not self.single)
+        else:
+            first = next((segment for segment in self.state.segments if not segment.finished), None)
+            if first is None:
+                return
+            stream = self._open(first)
+            if stream.response.status_code == 200:
+                # A 200 to a range: the file changed (`If-Range` didn't match) or the server
+                # ignores ranges. Either way the body is the whole file, so the part restarts on it.
+                log.debug("{name}: not the file the part holds; starting again", name=self.dest.name)
+                self._drop()
+                self.restarted = True
+                self._start(stream, split=False)
+        state = self.state
+        assert state is not None
+        first = next(segment for segment in state.segments if not segment.finished)
+        try:
+            self.report(state.done, self._total())
+        except BaseException:
+            # The caller's progress raised (a Ctrl-C, say) before `_fill_all` owns the stream:
+            # its host slot, and any reserved for ranges, go back here.
+            stream.close()
+            self._release()
+            raise
+        self._fill_all(first, stream)
+
+    def _start(self, stream: _Stream, *, split: bool) -> None:
+        """A new part for a whole-file response, split into ranges when the server and the host's free slots allow."""
+        response = stream.response
+        try:
+            encoded = response.headers.get("content-encoding", "identity").lower() != "identity"
+            length = response.headers.get("content-length", "")
+            # An encoded body's length counts encoded bytes, and the file holds decoded ones; its
+            # ranges are of the encoded bytes too, so such a body is neither checked nor resumed.
+            total = int(length) if length.isdigit() and not encoded else None
+            validator = None if encoded else _validator(response.headers)
+            part = self.dest.with_name(f".{self.dest.name}.{secrets.token_hex(4)}.part")
+            # Only a file with a validator is split: each range is asked for with `If-Range`, so a
+            # file that changes between two ranges is never put together from two versions.
+            count = self._split_count(response, total) if split and validator is not None else 1
+            with _open_part(part, create=True) as file:
+                if count > 1 and total is not None:
+                    # Every range writes at its own offset into one file of the full length.
+                    file.truncate(total)
+            if count > 1 and total is not None:
+                step = -(-total // count)
+                segments = [_Segment(start, min(start + step, total)) for start in range(0, total, step)]
+            else:
+                segments = [_Segment(0, total)]
+            self.state = _State(part, self.url, validator, total, segments)
+            if self._resumable():
+                self.state.save()
+        except BaseException:
+            stream.close()
+            self._release()
+            raise
+
+    def _split_count(self, response: httpx.Response, total: int | None) -> int:
+        """How many ranges a fresh file is fetched in, reserving a free host slot for each past the first."""
+        if self.parts == 1 or total is None or response.headers.get("accept-ranges", "").lower() != "bytes":
+            return 1
+        if isinstance(self.parts, int):
+            wanted = min(self.parts, MAX_PER_HOST, total)
+        else:  # "auto"
+            wanted = MAX_PARTS if total >= SPLIT_MIN else 1
+        # The slot of the URL asked for, as `_open` takes it, even when the answer came from a redirect.
+        slot = _slot(httpx.URL(self.url))
+        # Free slots only: a split never makes another download, or a fetch, wait for its host.
+        while len(self.reserved) < wanted - 1 and slot.acquire(blocking=False):
+            self.reserved.append(slot)
+        return 1 + len(self.reserved)
+
+    def _fill_all(self, first: _Segment, stream: _Stream) -> None:
+        """Write every unfinished segment: `first` from `stream` here, the others on free host slots, or after it."""
+        state = self.state
+        assert state is not None
+        helpers: list[tuple[_Segment, threading.BoundedSemaphore]] = []
+        serial: list[_Segment] = []
+        for segment in state.segments:
+            if segment is first or segment.finished:
+                continue
+            slot = self.reserved.pop() if self.reserved else None
+            if slot is None:
+                free = _slot(httpx.URL(self.url))
+                slot = free if free.acquire(blocking=False) else None
+            if slot is None:
+                serial.append(segment)
+            else:
+                helpers.append((segment, slot))
+        self._release()
+        # When one segment fails, the others stop at their next chunk, and the first failure is raised.
+        abort = threading.Event()
+        failures: list[BaseException] = []
+        # Ranges save the sidecar from their own threads; one at a time.
+        saving = threading.Lock()
+
+        def fill(segment: _Segment, given: _Stream | None, slot: threading.BoundedSemaphore | None) -> None:
+            try:
+                self._fill(segment, given, slot, abort, saving)
+            except _Stopped:
+                pass
+            except BaseException as error:  # handed to the calling thread, which raises the first one
+                failures.append(error)
+                abort.set()
+
+        threads = [threading.Thread(target=fill, args=(segment, None, slot), name="shared-http-range", daemon=True)
+                   for segment, slot in helpers]
+        for thread in threads:
+            thread.start()
+        try:
+            fill(first, stream, None)
+            for segment in serial:
+                if abort.is_set():
+                    break
+                fill(segment, None, None)
+        except BaseException:
+            # Only a Ctrl-C between two ranges lands here; the ranges still running stop too.
+            abort.set()
+            raise
+        finally:
+            for thread in threads:
+                thread.join()
+            if len(state.segments) > 1 and self._resumable():
+                state.save()
+        if failures:
+            raise failures[0]
+
+    def _fill(self, segment: _Segment, stream: _Stream | None, slot: threading.BoundedSemaphore | None,
+              abort: threading.Event, saving: threading.Lock) -> None:
+        """Write one segment from `stream`, or from a range request of its own, up to its end."""
+        state = self.state
+        assert state is not None
+        if stream is None:
+            stream = self._open(segment, slot=slot)
+            if stream.response.status_code != 206:
+                stream.close()
+                raise _Changed("a range came back as the whole file")
+        try:
+            unsaved = 0
+            with _open_part(state.part) as file:
+                file.seek(segment.at)
+                # As the bytes arrive, without a chunk size: httpx would hold back a partial
+                # chunk, and lose it when the connection drops, which is when it matters.
+                for chunk in stream.response.iter_bytes():
+                    if abort.is_set():
+                        raise _Stopped()
+                    if segment.end is not None:
+                        # The first range of a fresh split reads the whole file's body, up to its own end.
+                        chunk = chunk[: segment.end - segment.at]
+                    _write_all(file, chunk)
+                    # Counted only now: the part's handle has no buffer, so these bytes are the
+                    # system's already, and a sidecar that any range saves from here on never
+                    # claims a byte a crash, even kill -9, could lose (a power cut still could).
+                    segment.done += len(chunk)
+                    unsaved += len(chunk)
+                    self.report(state.done, self._total())
+                    if len(state.segments) > 1 and unsaved >= SAVE_EVERY and self._resumable():
+                        with saving:
+                            state.save()
+                        unsaved = 0
+                    if segment.finished:
+                        break
+            if segment.end is None:
+                # No length from the server: the body ending is the file ending.
+                segment.end = segment.at
+            elif not segment.finished:
+                raise IncompleteError(f"GET {_where(self.url)}: got {state.done} of {state.size} bytes")
+        finally:
+            stream.close()
+
+    def _open(self, segment: _Segment | None, *, slot: threading.BoundedSemaphore | None = None) -> _Stream:
+        """Send one GET for the whole file (`segment` None) or for the rest of `segment`, and check its status.
+
+        The stream holds a host slot (`slot`, or one it waits for) until it is closed. A 200 to a
+        range is returned for the caller to decide; a 206 that starts elsewhere, or a 416, raises
+        `_Changed`.
+        """
+        # `identity`: a compressed body's bytes and ranges aren't the file's, so it couldn't resume.
+        headers = {"Accept-Encoding": "identity", **self.headers}
+        state = self.state
+        if segment is not None and state is not None:
+            # Open-ended (`bytes=<n>-`) up to the file's end, as a resume asks; a split's inner
+            # ranges name their last byte.
+            last = "" if segment.end is None or segment.end == state.size else str(segment.end - 1)
+            headers["Range"] = f"bytes={segment.at}-{last}"
+            if state.validator is not None:
+                headers["If-Range"] = state.validator
+        request = self.client.build_request("GET", self.url, headers=headers, timeout=self.timeout,
+                                            extensions={DOWNLOAD_EXTENSION: True})
+        if slot is None:
+            slot = _slot(request.url)
+            slot.acquire()
+        try:
+            response = self.client.send(request, stream=True)
+        except BaseException:
+            slot.release()
+            raise
+        stream = _Stream(response, slot)
+        try:
+            self._checked(response, request, segment)
+        except BaseException:
+            stream.close()
+            raise
+        return stream
+
+    def _checked(self, response: httpx.Response, request: httpx.Request, segment: _Segment | None) -> None:
+        """Raise for a status that isn't the file, or a range that isn't the one asked for; see `_open`."""
+        status = response.status_code
+        where = f"GET {_where(request.url)}"
+        if status == 429:
+            retry_after = _retry_after(response.headers.get("retry-after"))
+            wait = "" if retry_after is None else f", retry after {retry_after:g} s"
+            raise RateLimitedError(retry_after, f"{where}: HTTP 429, rate limited{wait}")
+        if status == 416 and segment is not None:
+            raise _Changed("the server has fewer bytes than the part (HTTP 416)")
+        if status >= 500:
+            raise ServerError(status, f"{where}: HTTP {status}")
+        if status >= 400:
+            raise RefusedError(status, f"{where}: HTTP {status}")
+        if status not in (200, 206):
+            raise Error(f"{where}: HTTP {status}, not a file")
+        if status == 206:
+            start = _range_start(response.headers.get("content-range", ""))
+            wanted = segment.at if segment is not None else 0
+            if start != wanted:
+                raise _Changed(f"asked for byte {wanted}, got {start}")
+
+    def _verify(self) -> None:
+        """The size check, then the caller's `check`, on the complete part."""
+        state = self.state
+        assert state is not None
+        got = state.part.stat().st_size
+        expected = state.size if state.size is not None else self.size
+        if expected is not None and got != expected:
+            # Every range is written, so the bytes that are there are all the body had: only a
+            # fresh download can mend it.
+            self._drop()
+            raise IncompleteError(f"GET {_where(self.url)}: got {got} of {expected} bytes")
+        self.named = self.dest
+        if self.check is not None:
+            try:
+                named = self.check(state.part)
+                if isinstance(named, Path):
+                    self.named = named
+            except BaseException:
+                # The bytes are all there, so a resume would give the same file: only a new one can pass.
+                self._drop()
+                raise
+
+    # The part between attempts.
+
+    def _resumable(self) -> bool:
+        """Whether the part may be kept for a later attempt or call: `resume`, and a validator to check it with."""
+        return self.resume and self.state is not None and self.state.validator is not None
+
+    def _keep(self) -> None:
+        """After a failure: save a resumable part's progress for later, or delete a part that can't resume."""
+        self._release()
+        if self.state is None:
+            return
+        if not self._resumable():
+            self._drop()
+            return
+        segments = self.state.segments
+        if len(segments) == 1 and self.state.part.exists():
+            # One range is written in order, so the bytes on disk are exactly what arrived.
+            segments[0].done = self.state.part.stat().st_size - segments[0].start
+        self.state.save()
+
+    def _drop(self) -> None:
+        """Delete the part and its sidecar, so the next attempt starts afresh."""
+        if self.state is not None:
+            self.state.drop()
+            self.state = None
+
+    def _restart(self) -> None:
+        """Start again after `_Changed`: no part, and one range."""
+        self._release()
+        self._drop()
+        self.restarted = True
+        self.single = True
+
+    def _release(self) -> None:
+        """Give back the slots reserved for ranges that never started."""
+        while self.reserved:
+            self.reserved.pop().release()
+
+    def _total(self) -> int | None:
+        """The progress total: the server's length, else the caller's `size`."""
+        state = self.state
+        return state.size if state is not None and state.size is not None else self.size
+
+    def _scrub(self, text: str) -> str:
+        """`text` with the caller's secret header values replaced by `***`."""
+        return _scrub(text, self.client.build_request("GET", self.url, headers=self.headers))
+
+
+def _destination(dest: PathLike, url: str) -> Path:
+    """`dest`, or the file in the folder `dest` names, named from `url`'s last path part."""
+    path = Path(dest)
+    if not (path.is_dir() or str(dest).endswith(("/", os.sep))):
+        return path
+    name = unquote(urlsplit(url).path.rstrip("/").rpartition("/")[2])
+    return path / fmt.filename(name, fallback=FALLBACK_NAME)
+
+
+@contextmanager
+def _claimed(dest: Path) -> Iterator[bool]:
+    """Claim `dest` for one call, yielding True when another call in this process holds it already."""
+    key = str(dest.resolve())
+    with _claims_lock:
+        taken = key in _claims
+        _claims.add(key)
+    try:
+        yield taken
+    finally:
+        if not taken:
+            with _claims_lock:
+                _claims.discard(key)
+
+
+def _resumable(dest: Path) -> _State | None:
+    """The newest part an earlier call left for `dest`, read from its sidecar, or None; broken leftovers are deleted."""
+    prefix, suffix = f".{dest.name}.", f".part{INFO_SUFFIX}"
+    try:
+        names = [name for name in os.listdir(dest.parent) if name.startswith(prefix) and name.endswith(suffix)]
+    except OSError:  # no folder, or one that can't be read: nothing to resume
+        return None
+    infos = sorted((dest.parent / name for name in names), key=_modified, reverse=True)
+    for info in infos:
+        part = info.with_name(info.name[: -len(INFO_SUFFIX)])
+        state: _State | None
+        try:
+            data = jsonlib.loads(info.read_text(encoding="utf-8"))
+            segments = [_Segment(int(start), None if end is None else int(end), int(done))
+                        for start, end, done in data["segments"]]
+            state = _State(part, str(data["url"]), data["validator"], data["size"], segments)
+        except (OSError, ValueError, KeyError, TypeError):  # a sidecar cut short, or not one of ours: not trusted
+            state = None
+        if state is None or not state.validator or not state.segments or not part.is_file():
+            info.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)
+            continue
+        if len(state.segments) == 1:
+            # One range is written in order, so the bytes on disk are what arrived, even after a crash.
+            state.segments[0].done = part.stat().st_size - state.segments[0].start
+        return state
+    return None
+
+
+def _modified(path: Path) -> float:
+    """When `path` was last written; 0 for one that is gone, which then sorts last."""
+    try:
+        return path.stat().st_mtime
+    except OSError:  # deleted since it was listed, by another call or a repair
+        return 0.0
+
+
+def _validator(headers: httpx.Headers) -> str | None:
+    """What `If-Range` sends back: a strong `ETag`, else `Last-Modified`; None when there is neither."""
+    etag = headers.get("etag", "")
+    # A weak ETag (W/"…") may not be used in If-Range (RFC 9110, 13.1.5).
+    if etag and not etag.startswith("W/"):
+        return etag
+    return headers.get("last-modified") or None
+
+
+def _range_start(content_range: str) -> int | None:
+    """The first byte a `Content-Range: bytes <a>-<b>/<total>` names, or None when it doesn't parse."""
+    unit, _, rest = content_range.partition(" ")
+    first = rest.partition("-")[0]
+    return int(first) if unit.lower() == "bytes" and first.isdigit() else None
+
+
+def _write_all(file: io.FileIO, data: bytes) -> None:
+    """Write every byte of `data`; an unbuffered handle may take fewer at a time."""
+    view = memoryview(data)
+    while view:
+        written = file.write(view)
+        view = view[written or 0:]
+
+
+def _open_part(part: Path, *, create: bool = False) -> io.FileIO:
+    """Open a download's part for writing bytes, unbuffered: create it (it must not exist yet), or write into it in place.
+
+    Unbuffered, so a write that returned is the system's: the ranges of a split file record
+    what they wrote in one shared `.part.json`, and a buffer in one range's handle would let
+    another range's save claim bytes a crash then loses, leaving a hole of zeros.
+    """
+    # O_EXCL: a new part's name is fresh, so a file already there is another writer's. Without
+    # O_TRUNC an existing part keeps its bytes, and each range seeks to its own place. Windows
+    # opens files in text mode without O_BINARY, and would write every \n as \r\n.
+    flags = os.O_WRONLY | (os.O_CREAT | os.O_EXCL if create else 0) | getattr(os, "O_BINARY", 0)
+    handle = os.open(part, flags, 0o644)
+    try:
+        return os.fdopen(handle, "wb", buffering=0)
+    # Until fdopen owns the handle, it's ours to close: an open handle keeps Windows from deleting the part.
+    except BaseException:
+        os.close(handle)
+        raise

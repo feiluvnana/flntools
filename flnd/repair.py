@@ -1,7 +1,7 @@
 """`flnd sync`'s repair and tally: what a target's folder lost before the fetch, and what it holds after.
 
 `Engine.sync` reads the whole history once (`index`, fixes #12), then for each target:
-1. `repair` removes leftover `.part` files, and forgets the files its history names that are
+1. `repair` removes leftover `.part` files (keeping a recent resumable download's), and forgets the files its history names that are
    missing, empty or broken, deleting the broken ones, so the fetch downloads them again;
 2. the engine fetches what is new or was lost;
 3. `count` sees which lost files came back, names each that didn't, and counts the folder;
@@ -89,8 +89,16 @@ def repair(history: MutableMapping[str, Any], folder: Path, rows: Sequence[tuple
 
     # Parts an interrupted run left behind; nothing else is downloading into the folder yet. Every
     # temporary file flnd writes matches PART_GLOB (`shared.atomic`'s parts), so this finds them all.
-    for stale in folder.rglob(files.PART_GLOB) if folder.is_dir() else ():
-        stale.unlink(missing_ok=True)
+    # A resumable download's part (one with its `.part.json`) is kept while it is recent, since
+    # the fetch that follows resumes it; its sidecar goes with it, and a sidecar alone goes too.
+    leftovers = sorted(folder.rglob(files.PART_GLOB)) if folder.is_dir() else []
+    for stale in leftovers:
+        if not files.resumable(stale):
+            stale.unlink(missing_ok=True)
+            files.part_info(stale).unlink(missing_ok=True)
+    for info in folder.rglob(files.PART_INFO_GLOB) if folder.is_dir() else ():
+        if not info.with_name(info.name[: -len(files.PART_INFO_SUFFIX)]).is_file():
+            info.unlink(missing_ok=True)
     with log.progress(f"repair {tally.target}", total=len(rows)) as bar:
         for key, row in rows:
             bar.advance()

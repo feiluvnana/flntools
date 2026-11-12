@@ -15,6 +15,7 @@ file it repairs, so both sniff the same way and treat the same errors as "not ch
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,13 @@ if TYPE_CHECKING:
 
 # What every temporary file flnd writes matches (`shared.atomic`'s part names), and what `flnd sync`'s repair deletes.
 PART_GLOB = ".*.part"
+# What a resumable download's part has beside it (`shared.http.download`'s sidecar: its URL,
+# validator, size and ranges), named after the part; and what finds every such sidecar.
+PART_INFO_SUFFIX = ".json"
+PART_INFO_GLOB = ".*.part.json"
+# How long `flnd sync`'s repair keeps a resumable part, in days since it was last written: long
+# enough to resume after a week away, short enough that a file never asked for again goes.
+RESUMABLE_DAYS = 7
 # What `media.sniff` names a server's web page or JSON answer: a login wall or an error page.
 PAGES = (".html", ".json")
 # The kinds of saved file, in `media.kind`'s words; each gets its extension from its content.
@@ -34,6 +42,20 @@ IMAGE, VIDEO, AUDIO = "image", "video", "audio"
 SNIFF = "sniff"
 # How an error names each kind.
 NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
+
+
+def part_info(part: Path) -> Path:
+    """The `.part.json` sidecar a resumable download's part has beside it, if it has one."""
+    return part.with_name(part.name + PART_INFO_SUFFIX)
+
+
+def resumable(part: Path) -> bool:
+    """Whether a leftover part is a download to resume: it has its sidecar, and was written in the last `RESUMABLE_DAYS`."""
+    try:
+        age = time.time() - part.stat().st_mtime
+    except OSError:  # gone already, or unreadable: nothing to resume
+        return False
+    return part_info(part).is_file() and age < RESUMABLE_DAYS * 24 * 3600
 
 
 class NotMediaError(ValueError):

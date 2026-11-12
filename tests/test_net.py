@@ -5,6 +5,7 @@ import io
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,7 +16,7 @@ from media_samples import needs_ffmpeg, needs_pillow, sample
 
 from flnd.common import files, net
 from flnd.source import FetchError
-from shared import media, theme
+from shared import _http, media, theme
 from shared._theme import Screen
 
 
@@ -42,6 +43,10 @@ class NetCase(unittest.TestCase):
             patcher = mock.patch.object(net, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # `http.download`'s waits between its own attempts.
+        patcher = mock.patch.object(_http, "_sleep", self.sleep)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         # No jitter, so the waits are exact.
         patcher = mock.patch.object(net._random, "uniform", lambda low, high: 1.0)
         patcher.start()
@@ -245,8 +250,9 @@ class DownloadTest(NetCase):
         self.assertEqual([path.name for path in (self.tmp / "posts").iterdir()], ["a.jpg"])
 
     def test_a_dead_connection_costs_three_attempts_and_is_raised(self):
-        with self.client(httpx.ConnectError("refused")) as http, self.assertRaises(httpx.ConnectError):
+        with self.client(httpx.ConnectError("refused")) as http, self.assertRaises(_http.Error) as caught:
             self.download(http, "https://cdn.example/a.jpg")
+        self.assertIsInstance(caught.exception.__cause__, httpx.ConnectError)
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(list((self.tmp / "posts").iterdir()), [])
 
@@ -256,11 +262,14 @@ class DownloadTest(NetCase):
             self.assertTrue(self.download(http, "https://cdn.example/a.jpg"))
         self.assertEqual(len(self.requests), 2)
 
-    def test_a_refusal_is_logged_and_not_retried(self):
-        with self.client(httpx.Response(403)) as http:
-            self.assertFalse(self.download(http, "https://cdn.example/a.jpg"))
+    def test_a_refusal_raises_with_its_status_and_is_not_retried(self):
+        """The job reads the status: a 403 or 410 may be an expired link it can refresh (B6)."""
+        with self.client(httpx.Response(403)) as http, self.assertRaises(FetchError) as caught:
+            self.download(http, "https://cdn.example/a.jpg?oe=signed")
+        self.assertEqual(caught.exception.status, 403)
+        # The signed query stays out of the message.
+        self.assertEqual(str(caught.exception), "HTTP 403 for https://cdn.example/a.jpg")
         self.assertEqual(len(self.requests), 1)
-        self.assertIn("✗ posts/a.jpg: HTTP 403 for https://cdn.example/a.jpg", self.lines())
         self.assertFalse((self.tmp / "posts" / "a.jpg").exists())
 
     def test_mirrors_are_tried_in_order(self):
@@ -274,12 +283,12 @@ class DownloadTest(NetCase):
         with self.client(httpx.ConnectError("refused"), httpx.ConnectError("refused"), httpx.ConnectError("refused"),
                          httpx.Response(200, content=b"7z")) as http:
             self.assertTrue(self.download(http, ["https://a.example/f.7z", "https://b.example/f.7z"], "f.7z"))
-        self.assertIn("! mirror 1 failed: refused; trying next", self.lines())
+        self.assertIn("! mirror 1 failed: GET https://a.example/f.7z: ConnectError: refused; trying next", self.lines())
 
     def test_an_incomplete_body_is_still_retried(self):
         """Fix 9: only a page that isn't media fails at once; a cut-off body costs three attempts as before."""
         short = httpx.Response(200, headers={"content-length": "10"}, content=b"12345")
-        with self.client(short) as http, self.assertRaises(net.IncompleteError):
+        with self.client(short) as http, self.assertRaises(_http.IncompleteError):
             self.download(http, "https://cdn.example/a.jpg")
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(list((self.tmp / "posts").iterdir()), [])
@@ -316,6 +325,38 @@ class DownloadTest(NetCase):
         self.assertEqual(self.requests, [])
         self.assertEqual(self.lines(), ["✓ posts/m.mp4 ━━━━━━━━━━━━━━━━━━━━ 5.0 B/5.0 B"])
 
+    def test_the_second_ctrl_c_stops_a_blocking_fetch_function_at_its_next_report(self):
+        """D8: a source's fetch function (tlg's) gets a progress callback that a second Ctrl-C stops."""
+        for event in (net.stopping, net.stopping_now):
+            self.addCleanup(event.clear)
+        reported, gate, outcome, went_on = threading.Event(), threading.Event(), {}, []
+
+        def fetch(dest, progress):
+            dest.write_bytes(b"half")
+            progress(4, 8)
+            reported.set()
+            gate.wait(5)  # blocked, as on a slow download, until the next piece arrives
+            progress(8, 8)
+            went_on.append(True)
+
+        def run():
+            try:
+                self.download(http, fetch, "m.mp4")
+            except BaseException as error:  # read below: the second Ctrl-C's KeyboardInterrupt
+                outcome["error"] = error
+
+        with self.client(httpx.Response(200)) as http:
+            thread = threading.Thread(target=run)
+            thread.start()
+            self.assertTrue(reported.wait(5))
+            net.stopping.set()          # the first Ctrl-C: a running download goes on
+            net.stopping_now.set()      # the second: it stops at its next report
+            gate.set()
+            thread.join(5)
+        self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
+        self.assertEqual(went_on, [])
+        self.assertEqual(list((self.tmp / "posts").iterdir()), [])
+
     def test_a_fetch_function_that_gets_a_web_page_is_called_once(self):
         """Fix 9: a fetch function retries every Exception, so `final` is what stops a login wall costing three tries."""
         for error in (files.NotMediaError("got a web page instead of a photo"), media.UnsafeError("too many pixels")):
@@ -339,6 +380,17 @@ class DownloadTest(NetCase):
         self.assertFalse(any("mirror 1 failed" in line for line in self.lines()))
 
 
+class SplitHostsTest(unittest.TestCase):
+    def test_split_hosts_start_empty_and_match_a_host_and_its_subdomains(self):
+        """D6: only CDNs that passed a live check split; until then every file is one connection."""
+        self.assertEqual(net.SPLIT_HOSTS, frozenset())
+        self.assertEqual(net.split_parts("https://scontent-a.cdninstagram.com/v.mp4"), 1)
+        with mock.patch.object(net, "SPLIT_HOSTS", frozenset({"cdninstagram.com"})):
+            self.assertEqual(net.split_parts("https://scontent-a.cdninstagram.com/v.mp4"), "auto")
+            self.assertEqual(net.split_parts("https://cdninstagram.com/v.mp4"), "auto")
+            self.assertEqual(net.split_parts("https://notcdninstagram.com/v.mp4"), 1)
+
+
 def photo(format, size=(32, 24)):
     from PIL import Image
 
@@ -360,6 +412,19 @@ class MediaDownloadTest(NetCase):
 
     def names(self):
         return sorted(path.name for path in (self.tmp / "posts").iterdir())
+
+    def test_a_file_named_by_its_content_is_renamed_once_onto_that_name(self):
+        """A crash can never leave `a.jpg` holding a WebP, which the job would take as saved."""
+        real, moved = os.replace, []
+
+        def spy(src, dst):
+            moved.append(Path(dst).name)
+            return real(src, dst)
+
+        with self.client(httpx.Response(200, content=photo("WEBP"))) as http, mock.patch.object(os, "replace", spy):
+            self.assertEqual(self.download(http, "https://cdn.example/a.jpg", kind="image").name, "a.webp")
+        self.assertNotIn("a.jpg", moved)
+        self.assertEqual(self.names(), ["a.webp"])
 
     def test_content_decides_the_extension(self):
         with self.client(httpx.Response(200, content=photo("WEBP"))) as http:
@@ -476,6 +541,23 @@ class DashDownloadTest(NetCase):
             self.merged(http)
         self.assertTrue(moved)
         self.assertEqual([name for name in moved if not fnmatch.fnmatch(name, files.PART_GLOB)], [])
+
+    def test_a_second_ctrl_c_before_the_merge_stops_it(self):
+        """The merge is ffmpeg's and can't see `stopping_now`, so a second Ctrl-C after the streams stops before it."""
+        self.addCleanup(net.stopping_now.clear)
+        real = net._transfer
+
+        def transfer(client, url, dest, **options):
+            saved = real(client, url, dest, **options)
+            if url == self.AUDIO:
+                net.stopping_now.set()
+            return saved
+
+        with self.client() as http, mock.patch.object(net, "_transfer", transfer), \
+                mock.patch("shared.media.open", side_effect=AssertionError("merged")), \
+                self.assertRaises(KeyboardInterrupt):
+            self.merged(http)
+        self.assertEqual(list((self.tmp / "reels").iterdir()), [])
 
     def test_a_container_that_cant_hold_the_streams_fails_at_once(self):
         with self.client() as http, self.assertRaises(RuntimeError):

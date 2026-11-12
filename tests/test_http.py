@@ -1,13 +1,21 @@
-"""Tests for `shared.http`: `fetch`'s statuses, retries, per-host limit and secrets, and `Response`.
+"""Tests for `shared.http`: `fetch`'s statuses, retries, per-host limit and secrets, `Response`, and `download`.
 
 The network is faked with `httpx.MockTransport` on a client each test makes, and the retry wait
-with a fake `_sleep`, so nothing here opens a socket or sleeps, apart from the per-host test,
-whose transport sleeps briefly so that requests overlap.
+with a fake `_sleep`, so nothing here opens a socket or sleeps, apart from the per-host tests,
+whose transports sleep briefly so that requests overlap. `download`'s CDN (`Cdn`) honours
+`Range` and `If-Range` and can cut a body short, for resume, restart and split downloads; its
+files go to a temporary folder.
 """
 
+import fnmatch
+import io
+import json
+import os
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from typing import Callable
 from unittest import mock
 
@@ -16,6 +24,8 @@ import httpx
 import shared
 from shared import _http as http
 from shared import _selector as selector
+from shared import theme
+from shared._theme import Screen
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -399,6 +409,530 @@ class ThreadsTest(HttpTestCase):
             for thread in threads:
                 thread.join()
         self.assertEqual(results, {number: str(number) for number in range(16)})
+
+
+# `download`: a fake CDN on `httpx.MockTransport` that honours `Range` and `If-Range` as a real
+# one does, can cut a body short after some bytes, and counts the connections it has open.
+
+DATA = bytes(range(256)) * 40  # 10,240 bytes, every offset distinguishable
+
+
+class Body(httpx.SyncByteStream):
+    """A response body sent in `chunk`-byte pieces, which can drop the connection after `cut` bytes.
+
+    `opened` and `closed` are called when the body starts and ends, so a test can count open connections.
+    """
+
+    def __init__(self, data: bytes, *, chunk: int = 1024, cut: int | None = None,
+                 on_chunk: Callable[[], None] | None = None, closed: Callable[[], None] | None = None):
+        self.data, self.chunk, self.cut, self.on_chunk, self.closed = data, chunk, cut, on_chunk, closed
+
+    def __iter__(self):
+        sent = 0
+        while sent < len(self.data):
+            if self.cut is not None and sent >= self.cut:
+                raise httpx.ReadError("connection reset")
+            piece = self.data[sent:sent + self.chunk]
+            if self.cut is not None:
+                piece = piece[: self.cut - sent]
+            if self.on_chunk is not None:
+                self.on_chunk()
+            yield piece
+            sent += len(piece)
+
+    def close(self) -> None:
+        if self.closed is not None:
+            self.closed()
+            self.closed = None
+
+
+class Cdn:
+    """A file server: `handler` answers whole files and ranges of `data`, validated by `etag`.
+
+    Each answer can be changed through `script`, a list of callables taking the request and
+    returning a response (or None for the normal answer), used one per request in order.
+    """
+
+    def __init__(self, data: bytes = DATA, *, etag: str | None = '"v1"', ranges: bool = True, chunk: int = 1024):
+        self.data, self.etag, self.ranges, self.chunk = data, etag, ranges, chunk
+        self.requests: list[httpx.Request] = []
+        self.script: list[Callable[[httpx.Request], httpx.Response | None]] = []
+        self.lock = threading.Lock()
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        with self.lock:
+            self.requests.append(request)
+            step = self.script.pop(0) if self.script else None
+        answer = step(request) if step is not None else None
+        return answer if answer is not None else self.answer(request)
+
+    def answer(self, request: httpx.Request, *, cut: int | None = None, data: bytes | None = None,
+               etag: str | None = None) -> httpx.Response:
+        data = self.data if data is None else data
+        etag = self.etag if etag is None else etag
+        headers = {"ETag": etag} if etag else {}
+        if self.ranges:
+            headers["Accept-Ranges"] = "bytes"
+        wanted = request.headers.get("range")
+        matches = request.headers.get("if-range") in (None, etag)
+        if wanted and self.ranges and matches:
+            first, _, last = wanted.removeprefix("bytes=").partition("-")
+            start, end = int(first), int(last) + 1 if last else len(data)
+            headers.update({"Content-Range": f"bytes {start}-{end - 1}/{len(data)}",
+                            "Content-Length": str(end - start)})
+            return httpx.Response(206, headers=headers, stream=Body(data[start:end], chunk=self.chunk, cut=cut))
+        headers["Content-Length"] = str(len(data))
+        return httpx.Response(200, headers=headers, stream=Body(data, chunk=self.chunk, cut=cut))
+
+    def cut_at(self, at: int) -> Callable[[httpx.Request], httpx.Response]:
+        """A script step: the normal answer, dropped after `at` bytes."""
+        return lambda request: self.answer(request, cut=at)
+
+    def ranges_asked(self) -> list[str | None]:
+        return [request.headers.get("range") for request in self.requests]
+
+
+class DownloadCase(HttpTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.tmp = Path(folder.name)
+        self.cdn = Cdn()
+
+    def download(self, url: str | list[str] = "https://cdn.example/v.mp4", dest: str | Path | None = None,
+                 **options):
+        with client(self.cdn.handler) as fake:
+            return http.download(url, dest if dest is not None else self.tmp / "v.mp4", client=fake, **options)
+
+    def leftovers(self) -> list[str]:
+        return sorted(path.name for path in self.tmp.iterdir() if path.name.startswith("."))
+
+
+class DownloadTest(DownloadCase):
+    def test_saves_the_file_atomically_and_reports_progress(self):
+        seen: list[tuple[int, int | None]] = []
+        saved = self.download(progress=lambda done, total: seen.append((done, total)))
+        self.assertEqual(saved, self.tmp / "v.mp4")
+        self.assertEqual(saved.read_bytes(), DATA)
+        self.assertEqual(self.leftovers(), [])
+        self.assertEqual(seen[-1], (len(DATA), len(DATA)))
+        self.assertEqual([done for done, _ in seen], sorted(done for done, _ in seen))
+        request = self.cdn.requests[0]
+        # Asked for as it is: a compressed body's bytes and ranges aren't the file's.
+        self.assertEqual(request.headers["accept-encoding"], "identity")
+        self.assertTrue(request.extensions.get(http.DOWNLOAD_EXTENSION))
+
+    def test_a_folder_dest_is_named_from_the_url_safely(self):
+        for url, name in (("https://cdn.example/a/clip%20one.mp4?sig=1", "clip_one.mp4"),
+                          ("https://cdn.example/a/..%2F..%2Fx:y.mp4", "x_y.mp4"),
+                          ("https://cdn.example/CON", "CON_"),
+                          ("https://cdn.example/", "download")):
+            with self.subTest(url=url):
+                saved = self.download(url, self.tmp)
+                self.assertEqual(saved, self.tmp / name)
+                saved.unlink()
+        self.assertEqual(self.download("https://cdn.example/b.mp4", f"{self.tmp}/new/"), self.tmp / "new" / "b.mp4")
+
+    def test_mirrors_are_tried_in_order(self):
+        self.cdn.script = [lambda request: httpx.Response(404)]
+        saved = self.download(["https://a.example/v.mp4", "https://b.example/v.mp4"])
+        self.assertEqual(saved.read_bytes(), DATA)
+        self.assertEqual([request.url.host for request in self.cdn.requests], ["a.example", "b.example"])
+
+    def test_the_last_mirrors_refusal_is_raised(self):
+        self.cdn.script = [lambda request: httpx.Response(404), lambda request: httpx.Response(403)]
+        with self.assertRaises(http.RefusedError) as raised:
+            self.download(["https://a.example/v.mp4", "https://b.example/v.mp4?sig=secret"])
+        self.assertEqual(raised.exception.status, 403)
+        self.assertNotIn("secret", str(raised.exception))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_429_raises_without_sleeping_or_trying_a_mirror(self):
+        self.cdn.script = [lambda request: httpx.Response(429, headers={"Retry-After": "7"})]
+        with self.assertRaises(http.RateLimitedError) as raised:
+            self.download(["https://a.example/v.mp4", "https://b.example/v.mp4"])
+        self.assertEqual(raised.exception.retry_after, 7.0)
+        self.assertEqual(self.sleep.waits, [])
+        self.assertEqual(len(self.cdn.requests), 1)
+
+    def test_a_5xx_is_retried_and_then_raised(self):
+        self.cdn.script = [lambda request: httpx.Response(503)]
+        self.assertEqual(self.download().read_bytes(), DATA)
+        self.assertEqual(self.sleep.waits, [1.0])
+        self.cdn.script = [lambda request: httpx.Response(503)] * 3
+        with self.assertRaises(http.ServerError):
+            self.download()
+        self.assertEqual(self.sleep.waits, [1.0, 1.0, 2.0])
+
+    def test_the_size_check(self):
+        """Without a length from the server, the caller's `size` is what's checked; a short body costs every attempt."""
+        self.cdn.script = [lambda request: httpx.Response(200, content=iter([DATA[:100]]))] * 3
+        with self.assertRaises(http.IncompleteError):
+            self.download(size=len(DATA))
+        self.assertEqual(len(self.cdn.requests), 3)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_check_sees_the_whole_part_before_the_rename(self):
+        seen: list[bytes] = []
+        self.download(check=lambda path: seen.append(path.read_bytes()))
+        self.assertEqual(seen, [DATA])
+
+    def test_a_check_that_finds_the_file_broken_downloads_it_again(self):
+        results = [shared.BrokenError("cut off"), None]
+
+        def check(path: Path) -> None:
+            result = results.pop(0)
+            if result is not None:
+                raise result
+
+        self.assertEqual(self.download(check=check).read_bytes(), DATA)
+        # From the start: the bytes that were there were all the body had.
+        self.assertEqual(self.cdn.ranges_asked(), [None, None])
+
+    def test_a_check_that_refuses_the_file_is_raised_at_once_and_leaves_nothing(self):
+        def check(path: Path) -> None:
+            raise ValueError("a web page")
+
+        with self.assertRaises(ValueError):
+            self.download(check=check)
+        self.assertEqual(len(self.cdn.requests), 1)
+        self.assertEqual(sorted(path.name for path in self.tmp.iterdir()), [])
+
+    def test_options_are_checked(self):
+        for options in ({"attempts": 0}, {"parts": 0}, {"parts": "two"}, {"parts": True}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                self.download(**options)
+        with self.assertRaises(ValueError):
+            self.download([])
+
+    def test_no_secret_in_messages(self):
+        def refused(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(f"refused with {request.headers['cookie']}")
+
+        self.cdn.script = [refused] * 3
+        with self.assertRaises(http.Error) as raised, client(self.cdn.handler) as fake:
+            http.download("https://cdn.example/v.mp4?token=abcdef", self.tmp / "v.mp4", client=fake,
+                          headers={"Cookie": "sid=supersecret"})
+        self.assertNotIn("supersecret", str(raised.exception))
+        self.assertNotIn("abcdef", str(raised.exception))
+
+    def test_a_label_draws_a_row(self):
+        screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=200, tty=False, interactive=False)
+        with theme.scope(screen=screen, color="none", unicode=True):
+            self.download(label="v.mp4")
+        self.assertEqual(screen.dest.getvalue().splitlines(), ["✓ v.mp4 ━━━━━━━━━━━━━━━━━━━━ 10.0 KB/10.0 KB"])
+
+
+class ResumeTest(DownloadCase):
+    def test_a_resume_after_a_cut_sends_range_and_if_range(self):
+        self.cdn.script = [self.cdn.cut_at(3000)]
+        self.assertEqual(self.download().read_bytes(), DATA)
+        self.assertEqual(self.cdn.ranges_asked(), [None, "bytes=3000-"])
+        self.assertEqual(self.cdn.requests[1].headers["if-range"], '"v1"')
+        self.assertEqual(self.leftovers(), [])
+
+    def test_last_modified_is_the_validator_without_a_strong_etag(self):
+        modified = "Wed, 21 Oct 2026 07:28:00 GMT"
+        for etag in (None, 'W/"weak"'):
+            with self.subTest(etag=etag):
+                self.cdn.requests.clear()
+
+                def first(request: httpx.Request, etag=etag) -> httpx.Response:
+                    response = self.cdn.answer(request, cut=3000, etag=etag or "")
+                    response.headers["Last-Modified"] = modified
+                    if etag:
+                        response.headers["ETag"] = etag
+                    return response
+
+                def rest(request: httpx.Request) -> httpx.Response:
+                    return self.cdn.answer(request, etag=request.headers.get("if-range"))
+
+                self.cdn.script = [first, rest]
+                self.assertEqual(self.download().read_bytes(), DATA)
+                self.assertEqual(self.cdn.requests[1].headers["if-range"], modified)
+
+    def test_a_200_to_a_range_restarts_the_file(self):
+        """The file changed on the server: `If-Range` no longer matches, so the server sends it whole."""
+        changed = DATA[::-1]
+        self.cdn.script = [self.cdn.cut_at(3000), lambda request: self.cdn.answer(request, data=changed, etag='"v2"')]
+        self.assertEqual(self.download().read_bytes(), changed)
+        self.assertEqual(self.cdn.ranges_asked(), [None, "bytes=3000-"])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_changed_file_whose_restart_fails_raises_changed_error(self):
+        changed = DATA[::-1]
+
+        def cut_new(request: httpx.Request) -> httpx.Response:
+            return self.cdn.answer(request, data=changed, etag='"v2"', cut=10)
+
+        self.cdn.script = [self.cdn.cut_at(3000), cut_new, lambda request: httpx.Response(503)]
+        with self.assertRaises(http.ChangedError) as raised:
+            self.download()
+        self.assertIsInstance(raised.exception, shared.BrokenError)
+        self.assertIsInstance(raised.exception.__cause__, http.ServerError)
+
+    def test_a_416_restarts_the_file(self):
+        self.cdn.script = [self.cdn.cut_at(3000), lambda request: httpx.Response(416)]
+        self.assertEqual(self.download().read_bytes(), DATA)
+        self.assertEqual(self.cdn.ranges_asked(), [None, "bytes=3000-", None])
+
+    def test_a_part_json_from_an_earlier_run_resumes(self):
+        """A Ctrl-C, here raised from `progress`, keeps the part and its `.part.json` for the next call."""
+        def interrupt(done: int, total: int | None) -> None:
+            if done >= 4096:
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.download("https://cdn.example/v.mp4?sig=secret", progress=interrupt)
+        parts = self.leftovers()
+        self.assertEqual(len(parts), 2)
+        self.assertTrue(fnmatch.fnmatch(parts[0], ".v.mp4.*.part"), parts)
+        self.assertEqual(parts[1], parts[0] + ".json")
+        # The signed link's token stays off the disk: the sidecar has the URL without its query.
+        self.assertNotIn("secret", (self.tmp / parts[1]).read_text())
+        info = json.loads((self.tmp / parts[1]).read_text())
+        self.assertEqual((info["url"], info["validator"], info["size"]), ("https://cdn.example/v.mp4", '"v1"', len(DATA)))
+        kept = (self.tmp / parts[0]).stat().st_size
+        self.assertGreaterEqual(kept, 4096)
+
+        # The next run, even through a fresh link (an expired one refreshed), asks only for the rest.
+        self.cdn.requests.clear()
+        self.assertEqual(self.download("https://cdn.example/v.mp4?sig=fresh").read_bytes(), DATA)
+        self.assertEqual(self.cdn.ranges_asked(), [f"bytes={kept}-"])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_refusal_keeps_a_resumable_part(self):
+        self.cdn.script = [self.cdn.cut_at(3000), lambda request: httpx.Response(403)]
+        with self.assertRaises(http.RefusedError):
+            self.download()
+        self.assertEqual(len(self.leftovers()), 2)
+
+    def test_a_part_without_a_validator_is_never_kept(self):
+        self.cdn = Cdn(etag=None, ranges=False)
+        self.cdn.script = [self.cdn.cut_at(3000)] * 3
+        with self.assertRaises(http.Error):
+            self.download()
+        # Each attempt starts again: without a validator, a resume could splice two files.
+        self.assertEqual(self.cdn.ranges_asked(), [None, None, None])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_resume_false_keeps_nothing(self):
+        self.cdn.script = [self.cdn.cut_at(3000), lambda request: httpx.Response(403)]
+        with self.assertRaises(http.RefusedError):
+            self.download(resume=False)
+        self.assertEqual(self.cdn.ranges_asked(), [None, None])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_broken_sidecar_is_deleted_and_the_file_downloaded_whole(self):
+        part = self.tmp / ".v.mp4.0badc0de.part"
+        part.write_bytes(b"junk")
+        (self.tmp / ".v.mp4.0badc0de.part.json").write_text("{not json")
+        self.assertEqual(self.download().read_bytes(), DATA)
+        self.assertEqual(self.cdn.ranges_asked(), [None])
+        self.assertEqual(self.leftovers(), [])
+
+
+class FixesTest(DownloadCase):
+    """The step 8 review's findings, each pinned."""
+
+    def test_a_429_during_a_resume_keeps_the_part_and_the_next_call_resumes(self):
+        self.cdn.script = [self.cdn.cut_at(3000), lambda request: httpx.Response(429, headers={"Retry-After": "3"})]
+        with self.assertRaises(http.RateLimitedError):
+            self.download()
+        self.assertEqual(self.sleep.waits, [1.0])  # the wait after the cut, none for the 429
+        self.assertEqual(len(self.leftovers()), 2)
+        self.cdn.requests.clear()
+        self.assertEqual(self.download().read_bytes(), DATA)
+        self.assertEqual(self.cdn.ranges_asked(), ["bytes=3000-"])
+
+    def test_a_429_during_a_split_keeps_every_range_and_the_next_call_resumes(self):
+        def limited(request: httpx.Request) -> httpx.Response | None:
+            if request.headers.get("range") == "bytes=5120-7679":
+                return httpx.Response(429)
+            return None
+
+        self.cdn.script = [limited] * 4
+        with self.assertRaises(http.RateLimitedError):
+            self.download(parts=4)
+        self.assertEqual(self.sleep.waits, [])
+        self.assertEqual(len(self.leftovers()), 2)
+        self.cdn.requests.clear()
+        self.assertEqual(self.download(parts=4).read_bytes(), DATA)
+        self.assertTrue(all(asked is not None for asked in self.cdn.ranges_asked()), self.cdn.ranges_asked())
+
+    def test_a_file_without_a_validator_is_never_split(self):
+        """Without `If-Range`, ranges fetched at different times could come from two versions of the file."""
+        self.cdn = Cdn(etag=None)
+        self.assertEqual(self.download(parts=4).read_bytes(), DATA)
+        self.assertEqual(self.cdn.ranges_asked(), [None])
+
+    def test_progress_raising_before_the_body_gives_its_slot_back(self):
+        url = "https://slots.cdn.example/v.mp4"
+
+        def interrupt(done: int, total: int | None) -> None:
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.download(url, progress=interrupt)
+        slot = http._slot(httpx.URL(url))
+        taken = [slot.acquire(blocking=False) for _ in range(http.MAX_PER_HOST)]
+        for got in taken:
+            if got:
+                slot.release()
+        self.assertTrue(all(taken), taken)
+
+    def test_check_names_the_final_file_and_the_part_is_renamed_once(self):
+        """A file named by its content goes straight to that name: no crash leaves `v.mp4` holding a WebM."""
+        real, moved = os.replace, []
+
+        def spy(src, dst):
+            moved.append(Path(dst).name)
+            return real(src, dst)
+
+        with mock.patch.object(os, "replace", spy):
+            saved = self.download(check=lambda path: self.tmp / "v.webm")
+        self.assertEqual(saved, self.tmp / "v.webm")
+        self.assertEqual(saved.read_bytes(), DATA)
+        self.assertNotIn("v.mp4", moved)
+        self.assertEqual(sorted(path.name for path in self.tmp.iterdir()), ["v.webm"])
+
+    def test_a_sidecar_never_claims_bytes_not_on_disk_and_a_crash_resumes_whole(self):
+        """Every save of a split's `.part.json`, read as a kill -9 would leave it, holds every byte it claims.
+
+        The ranges write from their own threads; with a buffer in each handle, one range's save
+        would count another's bytes still in memory, and a resume after a crash would skip them,
+        leaving zeros that pass the size check.
+        """
+        real_save = http._State.save
+        snapshots: list[tuple[bytes, str, str]] = []
+
+        def save(state) -> None:
+            real_save(state)
+            if len(state.segments) > 1 and state.part.exists():
+                # What the disk holds right now, as a process killed here would leave it.
+                snapshots.append((state.part.read_bytes(), state.info.read_text(), state.part.name))
+
+        def slow(request: httpx.Request) -> httpx.Response:
+            response = self.cdn.answer(request)
+            stream = response.stream
+            assert isinstance(stream, Body)
+            stream.chunk = 256
+            stream.on_chunk = lambda: time.sleep(0.001)
+            return response
+
+        self.cdn.script = [slow] * 4
+        with mock.patch.object(http._State, "save", save), mock.patch.object(http, "SAVE_EVERY", 512):
+            self.assertEqual(self.download(parts=4).read_bytes(), DATA)
+        self.assertGreater(len(snapshots), 1)
+        for data, info, _ in snapshots:
+            for start, end, done in json.loads(info)["segments"]:
+                self.assertEqual(data[start:start + done], DATA[start:start + done], (start, end, done))
+
+        # Resumed from the earliest crash point, the file comes out whole.
+        data, info, name = snapshots[0]
+        crashed = self.tmp / "crashed"
+        crashed.mkdir()
+        (crashed / name).write_bytes(data)
+        (crashed / (name + ".json")).write_text(info)
+        self.assertEqual(self.download(dest=crashed / "v.mp4", parts=4).read_bytes(), DATA)
+
+
+class SplitTest(DownloadCase):
+    def test_a_split_file_reassembles_byte_for_byte(self):
+        saved = self.download(parts=4)
+        self.assertEqual(saved.read_bytes(), DATA)
+        # One whole-file request, read up to its quarter, and a range for each other quarter.
+        self.assertEqual(sorted(self.cdn.ranges_asked(), key=str),
+                         sorted([None, "bytes=2560-5119", "bytes=5120-7679", "bytes=7680-"], key=str))
+        self.assertTrue(all(request.headers.get("if-range") == '"v1"' for request in self.cdn.requests[1:]))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_auto_splits_only_from_16_mb(self):
+        self.download(parts="auto")
+        self.assertEqual(self.cdn.ranges_asked(), [None])
+        self.cdn.requests.clear()
+        with mock.patch.object(http, "SPLIT_MIN", 8192):
+            self.assertEqual(self.download(parts="auto").read_bytes(), DATA)
+        self.assertEqual(len(self.cdn.requests), 4)
+
+    def test_a_server_without_ranges_is_never_split(self):
+        self.cdn = Cdn(ranges=False)
+        self.download(parts=4)
+        self.assertEqual(self.cdn.ranges_asked(), [None])
+
+    def test_a_cut_range_resumes_on_its_own(self):
+        cuts = ["bytes=5120-7679"]
+
+        def maybe_cut(request: httpx.Request) -> httpx.Response | None:
+            # The third quarter's range is dropped after 100 bytes, once.
+            if request.headers.get("range") in cuts:
+                cuts.clear()
+                return self.cdn.answer(request, cut=100)
+            return None
+
+        self.cdn.script = [maybe_cut] * 8
+        self.assertEqual(self.download(parts=4).read_bytes(), DATA)
+        self.assertIn("bytes=5220-7679", self.cdn.ranges_asked())
+
+    def test_a_split_part_json_resumes_each_range(self):
+        def interrupt(done: int, total: int | None) -> None:
+            if done >= 6000:
+                raise KeyboardInterrupt
+
+        with mock.patch.object(http, "SAVE_EVERY", 1), self.assertRaises(KeyboardInterrupt):
+            self.download(parts=4, progress=interrupt)
+        info = json.loads(next(self.tmp.glob(".v.mp4.*.part.json")).read_text())
+        self.assertEqual(len(info["segments"]), 4)
+        self.cdn.requests.clear()
+        self.assertEqual(self.download(parts=4).read_bytes(), DATA)
+        self.assertTrue(all(asked is not None for asked in self.cdn.ranges_asked()))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_never_more_than_6_connections_to_one_host_across_threads(self):
+        """Four split downloads at once, each wanting 4 ranges, from one host: 6 open at most, and every slot given back."""
+        lock = threading.Lock()
+        state = {"open": 0, "peak": 0}
+
+        def opened() -> None:
+            with lock:
+                state["open"] += 1
+                state["peak"] = max(state["peak"], state["open"])
+
+        def closed() -> None:
+            with lock:
+                state["open"] -= 1
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            response = self.cdn.handler(request)
+            opened()
+            stream = response.stream
+            assert isinstance(stream, Body)
+            stream.closed = closed
+            stream.on_chunk = lambda: time.sleep(0.002)
+            return response
+
+        url = "https://limits.cdn.example/v.mp4"
+        results: dict[int, bytes] = {}
+        with client(handler) as fake:
+            def work(number: int) -> None:
+                results[number] = http.download(url, self.tmp / f"{number}.mp4", client=fake, parts=4).read_bytes()
+
+            threads = [threading.Thread(target=work, args=(number,)) for number in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(results, {number: DATA for number in range(4)})
+        self.assertLessEqual(state["peak"], http.MAX_PER_HOST)
+        self.assertGreater(state["peak"], 1)
+        self.assertEqual(state["open"], 0)
+        # Every slot came back: 6 can be taken again at once.
+        slot = http._slot(httpx.URL(url))
+        taken = [slot.acquire(blocking=False) for _ in range(http.MAX_PER_HOST)]
+        for _ in taken:
+            slot.release()
+        self.assertTrue(all(taken))
 
 
 if __name__ == "__main__":

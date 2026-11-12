@@ -26,12 +26,21 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
   time, from the job's thread, so the loop is free while the job waits for room in the download
   pool. There is no handover thread.
 - **Errors.** A failed file is logged and the target goes on. A route or category that raises
-  fails the target, after the files already queued finish.
-
-Phase 6, step 8 adds two things here: refreshing an expired link (a 403 or 410 from a signed CDN
-URL calls a lazy post's `files` once more and takes the file with the same `num`, in `_download`),
-and a graceful first Ctrl-C (stop listing: close every category generator, and let running
-downloads finish, in `download` and `Job.finish`).
+  fails the target: the files queued but not started are dropped, and the running ones finish.
+- **Expired links** (redesign B6). A 403 or 410 for a file of a lazy post (`files` a function),
+  such as a signed CDN URL that expired during a long rate-limit wait, calls `files` once more,
+  takes the file with the same `num`, and downloads it again, resuming the part the first link
+  left. Once per file, never in a loop. The call runs on the job's thread, the one that lists,
+  since a source's code (a browser page, say) may not be safe to run on two threads at once:
+  the download asks for it and waits, and the job's thread answers between posts and while it
+  waits for room in the pool or for the downloads to end.
+- **Ctrl-C** (redesign B3, D8). The first one sets `net.stopping`: the job stops listing and
+  closes the category it was reading, so the source's `finally` blocks run; a download not yet
+  started is dropped, the running ones finish, and the target's row says
+  `stopping: 2 files finishing (Ctrl-C again to stop now)` meanwhile. The target ends as
+  stopped (`STOPPED`), and a category the stop cut short is never recorded as complete. The
+  second sets `net.stopping_now`: the downloads stop at their next chunk, keeping their
+  resumable parts, and `KeyboardInterrupt` is raised.
 
     done = job.download(run, Target("loi", "post", "5930"), row)
     done.written, done.skipped, done.error, done.complete
@@ -43,7 +52,8 @@ import datetime
 import inspect
 import string
 import threading
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Generator, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -53,7 +63,7 @@ from flnd.common import files as disk
 from flnd.common import net
 from flnd.common.compress import KINDS, choice_of
 from flnd.site import SourceRun, TargetSite
-from flnd.source import Category, File, Post, Range, Route, Site, Source, Target, day, fill
+from flnd.source import Category, FetchError, File, Post, Range, Route, Site, Source, Target, day, fill
 from shared import atomic, fmt, log
 
 if TYPE_CHECKING:
@@ -61,7 +71,7 @@ if TYPE_CHECKING:
 
     from flnd.session import Options
 
-__all__ = ["Done", "Job", "Placed", "download", "place", "posts", "wanted"]
+__all__ = ["STOPPED", "Done", "Job", "Placed", "download", "place", "posts", "wanted"]
 
 # Posts in a row older than `--time`'s since that end a `newest_first` category (A9 rule 2): more
 # than any site pins (Instagram and TikTok up to 3, X 1), so 5 can only mean the feed has passed it.
@@ -71,6 +81,16 @@ OLDER_IN_A_ROW = 5
 LISTED_FIELDS = frozenset({"count", "index", "extension", "path"})
 # The extension of a video that comes with a separate audio stream (DASH) when its URL says none.
 DASH_EXTENSION = ".mp4"
+# The statuses a signed CDN URL answers once it has expired (Instagram's and Facebook's `oe=`,
+# TikTok's `x-expires`): 403 mostly, 410 on some edges. Only these refresh a lazy post's link.
+EXPIRED = frozenset({403, 410})
+# A stopped target's error, in its report: the run was stopped by Ctrl-C before it was done.
+STOPPED = "stopped by Ctrl-C"
+# The text of a stopping target's row while its running downloads finish (D8).
+FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
+# Seconds the job's thread waits between looks at its downloads, their refresh requests and
+# Ctrl-C: short enough that a second Ctrl-C or a refresh is answered at once to a person.
+WAKE = 0.1
 
 # Runs a coroutine to its end, as `SourceRun.run_async` does on the source's loop.
 RunAsync = Callable[[Coroutine[Any, Any, Any]], Any]
@@ -238,21 +258,39 @@ class Job:
         # its postprocessing is done.
         self._written: dict[str, Path] = {}
         self._writing = threading.Lock()
+        # Downloads submitted and not ended (`_pending`) and those started (`_running`), and the
+        # refreshes download threads ask the job's thread for: download threads and the job's
+        # thread all change them, under `_changed`, which is notified on every change.
+        self._changed = threading.Condition()
+        self._pending = 0
+        self._running = 0
+        self._refreshes: deque[_Refresh] = deque()
+        # False once the job stops answering refreshes (`finish` after an error); a refresh
+        # asked for then gets no fresh link, so no download waits for an answer that won't come.
+        self._answering = True
+        # The thread that lists, where a lazy post's `files` may run.
+        self._lister = threading.current_thread()
 
-    def queue(self, post: Post) -> None:
+    def queue(self, post: Post) -> bool:
         """Queue every file of one post that isn't saved or queued yet, listing a lazy post's files only if needed.
 
         Args:
             post: a post `posts` kept, its category set.
 
+        Returns:
+            False when Ctrl-C stopped it before every file was queued, so the listing stops too.
+
         Raises:
             Whatever a lazy post's `files` raises, such as `FetchError`.
+
+        It waits while the pool holds twice its `concurrency` in downloads, answering the
+        downloads' refresh requests meanwhile.
         """
         category = self._categories.get(post.category)
         if post.lazy and self._saved_first(post, category):
             self.skipped += 1
             log.info("skip {post}", post=post.id)
-            return
+            return True
         listed = list(post.files()) if callable(post.files) else list(post.files)
         for placed in place(self.source, post, listed, category=category):
             dest = self.folder.joinpath(*placed.path.split("/"))
@@ -268,8 +306,42 @@ class Job:
                 self.skipped += 1
                 log.info("skip {name}", name=placed.path)
                 continue
+            if not self._room():
+                return False
             self._queued.update((dest, key))
-            self._downloads().submit(self._download, _Queued(placed, dest, key))
+            try:
+                self._downloads().submit(self._task, _Queued(placed, dest, key))
+            except BaseException:
+                self._ended()
+                raise
+        return True
+
+    def wait(self, row: Any = None) -> None:
+        """Wait until every download submitted has ended, answering their refresh requests meanwhile.
+
+        Args:
+            row: the target's progress row, which says how many files are finishing after the
+                first Ctrl-C; None says nothing.
+
+        Raises:
+            KeyboardInterrupt: a second Ctrl-C (`net.stopping_now`); the downloads stop too.
+        """
+        shown = None
+        while True:
+            self._answer()
+            with self._changed:
+                if not self._pending:
+                    return
+                if net.stopping_now.is_set():
+                    raise KeyboardInterrupt
+                text = FINISHING.format(files=fmt.count(self._running, "file")) if net.stopping.is_set() else None
+                if text == shown:
+                    self._changed.wait(WAKE)
+                    continue
+            # The row takes the screen's lock, so it's set outside this one.
+            if row is not None and text is not None:
+                row.caption = text
+            shown = text
 
     def finish(self, error: BaseException | None = None) -> tuple[Path, ...]:
         """Wait for the downloads and their encodes (or, after `error`, drop the queued ones), and give the files written.
@@ -281,6 +353,16 @@ class Job:
         Returns:
             Each file written, at its path after postprocessing, after logging each failed one.
         """
+        if error is None:
+            self.wait()
+        else:
+            # The job's thread is about to wait inside the pool, where it can't answer: a
+            # download asking for a fresh link now gets none, and fails as its old link did.
+            with self._changed:
+                self._answering = False
+                waiting, self._refreshes = list(self._refreshes), deque()
+            for refresh in waiting:
+                refresh.done.set()
         # Downloads queue video encodes, so their pool ends first; the target waits for both.
         for name in ("_pool", "_encodes"):
             pool: worker.Pool | None = getattr(self, name)
@@ -329,20 +411,62 @@ class Job:
             self._encodes = worker.pool(concurrency=1)
         return self._encodes
 
+    def _room(self) -> bool:
+        """Wait until the pool can take one more download without blocking, and count it; False after Ctrl-C.
+
+        The pool's own `submit` would wait too, but there the job's thread couldn't answer a
+        refresh, and every running download might be waiting for one.
+        """
+        limit = 2 * max(self.source.concurrency, 1)
+        while True:
+            self._answer()
+            with self._changed:
+                if net.stopping.is_set():
+                    return False
+                if self._pending < limit:
+                    self._pending += 1
+                    return True
+                self._changed.wait(WAKE)
+
+    def _ended(self) -> None:
+        """One submitted download has ended, however."""
+        with self._changed:
+            self._pending -= 1
+            self._changed.notify_all()
+
+    def _task(self, queued: _Queued) -> bool:
+        """One queued download on a pool thread, unless Ctrl-C came first: a file not yet started is dropped."""
+        try:
+            with self._changed:
+                if net.stopping.is_set():
+                    return False
+                self._running += 1
+            try:
+                return self._download(queued)
+            finally:
+                with self._changed:
+                    self._running -= 1
+        finally:
+            self._ended()
+
     def _download(self, queued: _Queued) -> bool:
         """Download one file on a pool thread, then postprocess it and write its history row; False when refused."""
-        placed, file = queued.placed, queued.placed.file
-        headers = file.headers if file.headers is not None else placed.post.headers
-        source = file.url
-        if callable(source):
-            source = self._sync_fetch(source)
-        if source is None:
-            return False
+        placed = queued.placed
         received: dict[str, str] = {}
-        # step 8: a 403 or 410 from a signed CDN URL of a lazy post calls its `files` once more here.
-        saved = net.download(self.run.http, source, queued.dest, label=placed.path, backoff=self.run.backoff,
-                             headers=headers, wait=type(self.source).wait, size=file.size, kind=placed.kind,
-                             audio=file.audio, received=received)
+        try:
+            saved = self._fetch(queued, placed.file, received)
+            if saved is None and queued.refreshed is not None:
+                refreshed = self._expired(queued)
+                saved = self._fetch(queued, refreshed, received) if refreshed is not None else None
+        except FetchError as error:
+            # Refused, or its fresh link refused too: the same answer next time, so logged, not retried.
+            log.error("{name}: {error}", name=placed.path, error=error)
+            return False
+        except KeyboardInterrupt:
+            if net.stopping.is_set() and not net.stopping_now.is_set():
+                # A rate-limit wait the first Ctrl-C cut short: the file is left for the next run.
+                return False
+            raise
         if saved is None:
             return False
         kind = disk.kind_of(saved.name)
@@ -360,6 +484,67 @@ class Job:
         else:
             self._postprocess(queued.key, saved, fields)
         return True
+
+    def _fetch(self, queued: _Queued, file: File, received: dict[str, str]) -> Path | None:
+        """`net.download` of one file onto its place; None when its link expired and a lazy post can refresh it.
+
+        Raises:
+            FetchError: the file was refused, and refreshing can't help (not a 403 or 410, or a
+                post whose files were listed, not a function).
+        """
+        placed = queued.placed
+        headers = file.headers if file.headers is not None else placed.post.headers
+        source = self._sync_fetch(file.url) if callable(file.url) else file.url
+        if source is None:
+            # Only a text file has no URL, and it is written by `queue`, never downloaded.
+            return None
+        try:
+            return net.download(self.run.http, source, queued.dest, label=placed.path, backoff=self.run.backoff,
+                                headers=headers, wait=type(self.source).wait, size=file.size, kind=placed.kind,
+                                audio=file.audio, received=received)
+        except FetchError as error:
+            if error.status not in EXPIRED or not callable(placed.post.files) or queued.refreshed:
+                raise
+            log.info("{name}: HTTP {status}, so the link may have expired; asking for a fresh one",
+                     name=placed.path, status=error.status)
+            queued.refreshed = error
+            return None
+
+    def _expired(self, queued: _Queued) -> File | None:
+        """The file with the same `num` from a lazy post's `files`, called once more; raises the old refusal without one."""
+        refusal = queued.refreshed
+        assert refusal is not None
+        refresh = _Refresh(queued.placed.post)
+        if threading.current_thread() is self._lister:
+            refresh.run()
+        else:
+            with self._changed:
+                if self._answering:
+                    self._refreshes.append(refresh)
+                    self._changed.notify_all()
+                else:
+                    refresh.done.set()
+            while not refresh.done.wait(WAKE):
+                if net.stopping_now.is_set():
+                    raise KeyboardInterrupt
+        if refresh.error is not None:
+            log.warn("{name}: no fresh link: {error}", name=queued.placed.path, error=refresh.error)
+            raise refusal
+        num = queued.placed.num
+        fresh = refresh.files[num] if refresh.files is not None and num < len(refresh.files) else None
+        if fresh is None or fresh.content is not None:
+            # The post no longer has that file (deleted, or out of `--time` now).
+            raise refusal
+        return fresh
+
+    def _answer(self) -> None:
+        """Run the refreshes download threads asked for, on this, the job's thread."""
+        while True:
+            with self._changed:
+                if not self._refreshes:
+                    return
+                refresh = self._refreshes.popleft()
+            refresh.run()
 
     def _postprocess(self, key: str, path: Path, fields: postprocess.Fields) -> None:
         """Run every postprocessor in order, then write the file's history row: last, so a row means a finished file."""
@@ -394,42 +579,90 @@ def download(run: SourceRun, target: Target, row: Any) -> Done:
         and the categories that listed to their end (even when a later one failed).
 
     Raises:
-        KeyboardInterrupt and other `BaseException`s, after the queued downloads are dropped and
-        the running ones finish. An `Exception` is logged and fails the row instead.
+        KeyboardInterrupt: a second Ctrl-C, after the running downloads stopped, keeping their
+            resumable parts; other `BaseException`s, after the queued downloads are dropped and
+            the running ones finish. An `Exception` is logged and fails the row instead.
+
+    After a first Ctrl-C it returns: the row ends at error with "stopped", and `Done.error` is
+    `STOPPED`; see the module for what finishes.
     """
     site = TargetSite(run, target, row=row)
     job = Job(run, site, target)
     complete: list[str] = []
     listing = posts(run.source, site, target, run.settings.options, run_async=run.run_async, ended=complete.append)
+    error: BaseException | None = None
     try:
-        # step 8: a first Ctrl-C closes `listing` here and lets the running downloads finish.
-        for post in listing:
-            job.queue(post)
-    except BaseException as error:
-        listing.close()
-        site.close()
-        written = job.finish(error)
+        try:
+            for post in listing:
+                # The first Ctrl-C stops listing here (D8); `queue` sees it too, between files.
+                if net.stopping.is_set() or not job.queue(post):
+                    break
+        except KeyboardInterrupt:
+            # The first Ctrl-C ends a rate-limit or pacing wait at once, raising this; that is
+            # the graceful stop, not a failure. A second one is.
+            if not net.stopping.is_set() or net.stopping_now.is_set():
+                raise
+        finally:
+            # Closes the category being read, so its `finally` blocks run, and it isn't complete.
+            listing.close()
+            site.close()
+        job.wait(row)
+    except BaseException as caught:  # a route or a category failed, or a second Ctrl-C: handled below
+        error = caught
+    written = job.finish(error)
+    if error is not None:
         if not isinstance(error, Exception):
-            raise
+            raise error
         log.error("{target}: {error}", target=str(target), error=error)
         row.fail()
         return Done(written, job.skipped, str(error), tuple(complete))
-    site.close()
-    written = job.finish()
+    if net.stopping.is_set():
+        row.caption = "stopped"
+        row.fail()
+        return Done(written, job.skipped, STOPPED, tuple(complete))
     row.finish()
     return Done(written, job.skipped, None, tuple(complete))
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Queued:
     """One queued download. It prints as its path, so a failed download names its file."""
 
     placed: Placed
     dest: Path
     key: str
+    # The refusal of its first link, once its lazy post was asked for a fresh one: once per file.
+    refreshed: FetchError | None = None
 
     def __str__(self) -> str:
         return self.placed.path
+
+
+@dataclass(eq=False)
+class _Refresh:
+    """A download's request for a lazy post's files, listed once more on the job's thread."""
+
+    post: Post
+    # Set once answered, with `files` or `error`; or with neither, when the job stopped answering.
+    done: threading.Event = field(default_factory=threading.Event)
+    files: list[File] | None = None
+    error: Exception | None = None
+
+    def run(self) -> None:
+        """Call the post's `files` and keep what it gives or raises, then say it's done."""
+        try:
+            assert callable(self.post.files)
+            self.files = list(self.post.files())
+        except Exception as error:  # the source's own failure, such as a FetchError: the download reports it
+            self.error = error
+        except KeyboardInterrupt:
+            # The first Ctrl-C ends a rate-limit or pacing wait inside `files` at once: that is
+            # the graceful stop, so there is no fresh link and the target ends as stopped. A
+            # second Ctrl-C stops everything.
+            if not net.stopping.is_set() or net.stopping_now.is_set():
+                raise
+        finally:
+            self.done.set()
 
 
 def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range,

@@ -170,6 +170,13 @@ download whose size the server didn't give is checked to be complete. Archives a
 sends them; unpack them with any archive tool. There is no download limit: a run ends when the
 sources have nothing more, or on Ctrl-C.
 
+A dropped connection resumes where it stopped instead of starting the file again, and so does the
+next run after a Ctrl-C or a crash: the unfinished file waits as a hidden `.part` with its
+`.part.json` beside it. A link that expired meanwhile is asked for afresh, once, and the file
+resumes from it. The **first Ctrl-C** stops listing and lets the files downloading now finish (the
+rows say `stopping: 2 files finishing (Ctrl-C again to stop now)`); the **second** stops at once,
+keeping the unfinished files to resume. Either way flnd exits 130.
+
 `flnd download` asks no questions, except the one above, whether to download Chromium when Google
 Chrome is missing. `flnd` alone prints the help.
 
@@ -188,7 +195,8 @@ setting, run `flnd download` with it. Folders downloaded before flnd saved setti
 without any. For each target:
 
 1. **repair**: a missing, empty or broken file (cut off, or a web page) is downloaded again, and
-   leftover `.part` files are removed;
+   leftover `.part` files are removed, except an unfinished download from the last 7 days, which
+   the fetch resumes;
 2. **fetch**: new posts are downloaded, as `flnd download` would;
 3. **summary**: one line per target, `ins:example_user: 120 files, 85.2 MB; 2 repaired, 1 missing`
    (missing: files the site no longer lists), then the totals.

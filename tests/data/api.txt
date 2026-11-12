@@ -268,6 +268,7 @@ shared.http.Response.text: property -> str
 shared.http.Response.url: field -> str
 shared.http.ServerError(shared.http.Error)
 shared.http.ServerError.status: attribute
+shared.http.download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None) -> Path
 shared.http.fetch(url: str, *, method: str = 'GET', client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
 shared.kv: module
 shared.kv.ClosedError(shared.kv.Error, RuntimeError)

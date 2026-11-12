@@ -164,6 +164,8 @@ class EngineCase(unittest.TestCase):
             mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve)),
             mock.patch.object(net, "_sleep", self.sleep),
             mock.patch.object(net, "_clock", lambda: self.now),
+            # `http.download`'s waits between its own attempts.
+            mock.patch.object(http, "_sleep", self.sleep),
             mock.patch.object(engine_module, "_sleep", self.pauses.append),
         ]
         for patcher in patches:
@@ -370,26 +372,39 @@ class HttpTest(EngineCase):
         self.assertIn("✓ aaa:d", self.lines())
 
     def test_ctrl_c_during_a_wait_stops_the_run(self):
+        """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the command as Ctrl-C."""
         def limited(request):
             net.stopping.set()
             return httpx.Response(429)
 
         self.routes["https://api.aaa.example/feed"] = limited
         self.addCleanup(net.stopping.clear)
+        source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json)
+        engine = Engine(home=self.home, sources={"aaa": source})
         with self.assertRaises(KeyboardInterrupt):
-            self.run_engine(make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json),
-                            targets=["aaa:a"])
+            engine.download(["aaa:a"])
+        self.assertIn("✗ aaa:a stopped", self.lines())
 
 
 class CtrlCTest(unittest.TestCase):
-    def test_ctrl_c_sets_stopping_and_still_interrupts(self):
+    def setUp(self):
+        for event in (net.stopping, net.stopping_now):
+            self.addCleanup(event.clear)
+
+    def test_the_first_ctrl_c_stops_gracefully_and_the_second_interrupts(self):
+        """D8: the first only sets `stopping`, so the running downloads finish; the second stops now."""
         before = signal.getsignal(signal.SIGINT)
-        self.addCleanup(net.stopping.clear)
+        net.stopping.set()
+        net.stopping_now.set()
         with engine_module._stop_waits_on_ctrl_c():
-            self.assertFalse(net.stopping.is_set())
+            # A run starts with neither set, whatever an earlier one left.
+            self.assertFalse(net.stopping.is_set() or net.stopping_now.is_set())
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+            self.assertTrue(net.stopping.is_set())
+            self.assertFalse(net.stopping_now.is_set())
             with self.assertRaises(KeyboardInterrupt):
                 signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
-            self.assertTrue(net.stopping.is_set())
+            self.assertTrue(net.stopping_now.is_set())
         self.assertIs(signal.getsignal(signal.SIGINT), before)
 
 
