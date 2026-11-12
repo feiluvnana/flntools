@@ -12,6 +12,8 @@ from typing import Any
 from shared import _atomic, _media, _pillow
 from shared._media import PathLike
 
+__all__ = ["crop", "resize"]
+
 
 def resize(src: PathLike, *, dest: PathLike | None = None, width: int | None = None, height: int | None = None,
            resolution: int | None = None, quality: int = 90, strip: bool = False) -> Path:

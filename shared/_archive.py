@@ -27,8 +27,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Callable, Iterator, Literal, Sequence, Union, cast
 
+import shared
 from shared import _atomic
 from shared import _fmt as fmt
+
+__all__ = ["BombError", "ConflictError", "Error", "Limits", "PasswordError", "UnsafeError", "unzip", "zip"]
 
 if TYPE_CHECKING:
     Extract = Callable[[list["_Entry"], Callable[["_Entry"], "_Output"]], None]
@@ -62,19 +65,24 @@ NO_UNRAR = ("reading RAR needs the unrar program: brew install unrar, apt instal
             "or https://www.rarlab.com/download.htm")
 
 
-class UnsafeError(ValueError):
+class Error(shared.Error):
+    """The base of every error `shared.archive` raises."""
+
+
+# Each error is still a ValueError, as before the error tree: the unsafe ones through shared.UnsafeError.
+class UnsafeError(Error, shared.UnsafeError):
     """An entry would land outside dest, or is a link, device file, pipe or socket."""
 
 
-class BombError(ValueError):
+class BombError(Error, shared.UnsafeError):
     """An archive would expand past its `Limits`."""
 
 
-class ConflictError(ValueError):
+class ConflictError(Error, ValueError):
     """Files from the archive already exist in dest, and `conflict="error"`."""
 
 
-class PasswordError(ValueError):
+class PasswordError(Error, shared.RefusedError, ValueError):
     """The archive needs a password, or the one given is wrong."""
 
 

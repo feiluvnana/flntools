@@ -19,6 +19,8 @@ from typing import Any
 from shared import _atomic, _ffmpeg, _media, _pillow
 from shared._media import Info, PathLike, Progress
 
+__all__ = ["frames", "merge", "trim"]
+
 
 def trim(src: PathLike, *, start: float = 0.0, end: float | None = None, dest: PathLike | None = None,
          exact: bool = True) -> Path:

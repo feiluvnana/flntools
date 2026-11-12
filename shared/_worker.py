@@ -21,10 +21,13 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Generic, Iterable, Iterator, NamedTuple, TypedDict, TypeVar, overload
 
+import shared
 from shared._log import ProgressBar, log
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
+
+__all__ = ["Error", "Pool", "Result", "TaskError", "map", "pool", "race"]
 
 MAX_RETRY_WAIT = 60.0
 # Waits wake at least this often, so Ctrl-C is seen on platforms where a blocked lock ignores it.
@@ -57,7 +60,11 @@ class Result(Generic[R]):
         return self.error is None
 
 
-class TaskError(Exception):
+class Error(shared.Error):
+    """The base of every error `shared.worker` raises."""
+
+
+class TaskError(Error):
     """Raised by `map` when some tasks failed, once every other task has finished.
 
     ```python

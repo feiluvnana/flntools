@@ -3,12 +3,48 @@
 The terminal modules are stdlib only and load at once. The others load on first use,
 so `from shared import log` never imports Playwright, parsel, cryptography, or Pillow.
 A module whose extra is missing raises an ImportError that names the extra to install.
+
+Every error `shared` raises is a `shared.Error`. Each module has its own `Error` under it, with
+the module's specific errors below that, and an error about untrusted, damaged or refused input
+is also a `shared.UnsafeError`, `shared.BrokenError` or `shared.RefusedError`. So a caller picks
+how wide to catch:
+
+    try:
+        archive.unzip("photos.zip", "photos/")
+    except shared.UnsafeError:          # this kind of problem, from any module
+        ...
+    except archive.Error:               # anything from this one module
+        ...
 """
 
 from __future__ import annotations
 
 import importlib
 from typing import TYPE_CHECKING, Any
+
+
+# The four bases come before the module imports below: each module subclasses them as it loads.
+class Error(Exception):
+    """The base of every error `shared` raises; each module's own `Error` subclasses it."""
+
+
+class UnsafeError(Error, ValueError):
+    """Input refused because trusting it could do harm: path traversal, a decompression bomb, a decoder exploit.
+
+    A ValueError, so code written before the error tree still catches it.
+    """
+
+
+class BrokenError(Error, ValueError):
+    """Input that is damaged or isn't what it claims: a cut-off video, a bad archive.
+
+    A ValueError, so code written before the error tree still catches it.
+    """
+
+
+class RefusedError(Error):
+    """A remote end or a person said no: an HTTP 4xx, a wrong password."""
+
 
 from shared import _cli as cli
 from shared import _fmt as fmt
@@ -32,6 +68,7 @@ if TYPE_CHECKING:
 LAZY_MODULES = ("archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler", "media")
 
 __all__ = [
+    "Error", "UnsafeError", "BrokenError", "RefusedError",
     "cli", "fmt", "log", "prompt", "style", "theme",
     "archive", "crypto", "cookies", "kv", "selector", "browser", "worker", "bundler", "media",
 ]

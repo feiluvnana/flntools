@@ -5,11 +5,19 @@ from __future__ import annotations
 import datetime as _datetime
 import re
 
+import shared
+
+__all__ = ["Error", "date", "duration", "filename", "size"]
+
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f]')
 SEPARATOR_RUNS = re.compile(r"[\s_]+")
 # Windows refuses these names with any extension, in any case.
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"{kind}{n}" for kind in ("COM", "LPT") for n in range(1, 10)}
+
+
+class Error(shared.Error):
+    """The base of every error `shared.fmt` raises."""
 
 
 def size(n: int) -> str:

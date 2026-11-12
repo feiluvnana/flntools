@@ -21,7 +21,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Union
 
+import shared
 from shared import _atomic
+
+__all__ = ["CookieError", "Error", "load_from_browser", "load_from_file", "profiles", "to_file", "to_header"]
 
 Cookie = dict[str, Any]
 PathLike = Union[str, Path]
@@ -44,7 +47,12 @@ _HOST_HASH_VERSION = 24
 _HOST_HASH_SIZE = 32
 
 
-class CookieError(ValueError):
+class Error(shared.Error):
+    """The base of every error `shared.cookies` raises."""
+
+
+# Still a ValueError, as before the error tree: flnd's auth catches it as one.
+class CookieError(Error, ValueError):
     """A cookie file is broken, or a browser's cookie value can't be decrypted."""
 
 

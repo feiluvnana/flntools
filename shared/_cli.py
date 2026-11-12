@@ -9,11 +9,11 @@ import typing
 from typing import Any, Callable
 
 from shared import _theme
-from shared._params import UsageError, arg, opt, read_signature
+from shared._params import Error, UsageError, arg, opt, read_signature
 from shared._style import strip
 from shared._theme import HelpModel, detect_color
 
-__all__ = ["App", "UsageError", "arg", "opt", "run"]
+__all__ = ["App", "Error", "UsageError", "arg", "opt", "run"]
 
 
 def run(fn: Callable) -> typing.NoReturn:

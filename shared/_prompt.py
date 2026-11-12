@@ -6,10 +6,14 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Sequence, TypeVar, overload
 
+import shared
 from shared import _theme
 from shared._log import live_area
 from shared._style import strip
 from shared._theme import PromptView, Theme, fit
+
+__all__ = ["Error", "Keymap", "PromptError", "choice", "choices", "confirm", "defaults", "input", "keymap",
+           "keys", "secret"]
 
 Validate = Callable[[Any], "str | None"]
 
@@ -27,7 +31,11 @@ RENAMED = {"accept": "submit"}
 keys = True
 
 
-class PromptError(Exception):
+class Error(shared.Error):
+    """The base of every error `shared.prompt` raises."""
+
+
+class PromptError(Error):
     """A question that cannot be asked: no default to fall back on, or bad options."""
 
 

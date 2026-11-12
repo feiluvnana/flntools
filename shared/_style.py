@@ -7,6 +7,11 @@ import re
 import unicodedata
 from dataclasses import dataclass, replace
 
+import shared
+
+# `shared.style` is the `style` object: its methods, `Error` among them, are the module's names.
+__all__ = ["Error", "strip", "style"]
+
 RESET = "\x1b[0m"
 LINK_CLOSE = "\x1b]8;;\x1b\\"
 ESCAPE_PATTERN = r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
@@ -24,6 +29,10 @@ MODIFIER_CODES = {"bold": "1", "dim": "2", "italic": "3", "underline": "4", "rev
 RAINBOW_STOPS = ("#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff")
 
 
+class Error(shared.Error):
+    """The base of every error `shared.style` raises."""
+
+
 @dataclass(frozen=True)
 class Chain:
     """A reusable style. Calling it paints a string for the process theme's color depth.
@@ -38,6 +47,10 @@ class Chain:
     bg_ramp: tuple = ()
     modifiers: frozenset = frozenset()
     link: str | None = None
+
+    # `shared.style` is a Chain, not a module, so the module's error is reached through it.
+    # Not a field: it has no annotation.
+    Error = Error
 
     def __getattr__(self, name: str) -> Chain:
         if name in NAMED_COLORS:

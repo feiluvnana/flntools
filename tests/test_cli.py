@@ -437,8 +437,10 @@ class TopLevelFlagTest(CliCase):
         self.assertIn("Options:\n  -V, --version       show the version\n  -h, --help\n", text)
 
     def test_cli_does_not_import_prompt(self):
-        # A bare package stands in for shared/__init__.py, which imports every terminal module.
+        # A bare package stands in for shared/__init__.py, which imports every terminal module. It
+        # holds only `shared.Error`, which each module on cli's path subclasses as it loads.
         code = ("import sys, types; package = types.ModuleType('shared'); package.__path__ = ['shared']; "
+                "package.Error = type('Error', (Exception,), {}); "
                 "sys.modules['shared'] = package; import shared._cli; print('shared._prompt' in sys.modules)")
         root = Path(__file__).resolve().parent.parent
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, cwd=root)

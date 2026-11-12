@@ -18,6 +18,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+__all__ = ["write", "writing"]
+
 # Windows opens files in text mode unless told otherwise, which would turn "\n" into "\r\n";
 # other systems have no such flag and no such translation.
 BINARY = getattr(os, "O_BINARY", 0)

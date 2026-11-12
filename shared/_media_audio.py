@@ -10,6 +10,8 @@ from pathlib import Path
 from shared import _atomic, _ffmpeg, _media
 from shared._media import PathLike
 
+__all__ = ["extract"]
+
 
 def extract(src: PathLike, *, dest: PathLike, bitrate: int | None = None) -> Path:
     """Save the first audio stream of `src` as the audio format `dest`'s extension names, and return `dest`.

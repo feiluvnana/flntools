@@ -28,7 +28,7 @@ class TasksTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / "scripts" / "dev.py"), *argv],
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 2, argv)
-            self.assertIn("tasks: setup test lint type check flnd dist", result.stderr)
+            self.assertIn("tasks: setup test lint type check api flnd dist", result.stderr)
 
     def test_python_option_and_passthrough(self):
         with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run:
@@ -52,6 +52,14 @@ class TasksTest(unittest.TestCase):
             self.assertEqual(dev.main(["check"]), 3)
         self.assertEqual([call.args[0][4:] for call in fake.call_args_list],
                          [["python", "-m", "compileall", "-q", "flnd", "shared"], ["pyright"]])
+
+    def test_api_writes_the_snapshot_from_inside_the_environment(self):
+        # The snapshot imports shared and flnd, so it can't run in this --no-project interpreter.
+        with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run, \
+                mock.patch.dict(dev.os.environ, {"PYTHON": ""}):
+            self.assertEqual(dev.main(["api"]), 0)
+        self.assertEqual(run.call_args.args[0], ["uv", "run", "--python", "3.14", "python", "-c", dev.WRITE_API])
+        self.assertIn("dev.write_api()", dev.WRITE_API)
 
     def test_dist_writes_ffmpeg_source_in_utf8(self):
         def run(command, **kwargs):

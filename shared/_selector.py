@@ -12,13 +12,21 @@ import re
 from pathlib import Path
 from typing import Any, Iterator, Union
 
+import shared
+
 try:
     import parsel
 except ImportError:
     raise ImportError("shared.selector needs parsel: pip install 'flntools[selector]'") from None
 
+__all__ = ["Error", "Selection", "select"]
+
 WHITESPACE = re.compile(r"\s+")
 Raw = Union[parsel.Selector, parsel.SelectorList[parsel.Selector]]
+
+
+class Error(shared.Error):
+    """The base of every error `shared.selector` raises."""
 
 
 def select(source: Any, query: str = "") -> Selection:

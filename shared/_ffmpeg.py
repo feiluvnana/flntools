@@ -21,6 +21,10 @@ from typing import IO, Any
 
 from shared import _media
 
+# Private: what `media`'s files call.
+__all__ = ["encode", "encoders", "exe", "failure", "ffmetadata", "found", "frames_out", "need", "parse_version",
+           "passthrough", "probe", "run", "source", "summary", "target"]
+
 # Readers that never open another file or URL. hls, dash, concat, image2 and the *_pipe readers are left out.
 READERS = "mov,matroska,avi,mpegts,mpeg,flv,asf,ogg,mp3,aac,flac,wav,aiff,caf,amr,gif"
 MIN_VERSION = (4, 4)

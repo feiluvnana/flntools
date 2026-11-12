@@ -24,6 +24,8 @@ from flnd.sources.base import Source
 from flnd.target import Target, TargetError, resolve
 from shared import kv, log, worker
 
+__all__ = ["Engine"]
+
 HISTORY_FILE = "history.db"
 HISTORY_TABLE = "downloads"
 # The target a source's login and `connect` see: the account, not anything to download.

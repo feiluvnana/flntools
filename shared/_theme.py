@@ -17,8 +17,14 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Callable, Iterator, Literal, NamedTuple
 
+import shared
 from shared._screen import Screen, isatty
 from shared._style import ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, Chain, style
+
+# `shared.theme` is the `theme` object: its members, `Error` among them, are the module's names, and
+# the rest are the records the drawers take and the types of `theme.screen`, `.palette` and `.glyphs`.
+__all__ = ["Bar", "Error", "HelpModel", "LogRecord", "Namespace", "PromptView", "Screen", "draw_help",
+           "draw_log", "draw_progress", "draw_prompt", "theme"]
 
 ColorDepth = Literal["none", "8", "256", "16m"]
 COLOR_DEPTHS: tuple[ColorDepth, ...] = ("none", "8", "256", "16m")
@@ -45,6 +51,10 @@ PALETTE: dict[str, Any] = {
     "label": "magenta", "cream": "#FFFDF5", "button": 237,
 }
 LOG_GLYPHS = {"info": "bullet", "ok": "tick", "warn": "bang", "error": "cross", "debug": "dot"}
+
+
+class Error(shared.Error):
+    """The base of every error `shared.theme` raises."""
 
 
 class LogRecord(NamedTuple):
@@ -91,6 +101,9 @@ class PromptView(NamedTuple):
 
 class Theme:
     _color: ColorDepth
+
+    # `shared.theme` is this object, not a module, so the module's error is reached through it.
+    Error = Error
 
     def __init__(self, *, color: ColorDepth | None = None, unicode: bool | None = None,
                  screen: Screen | None = None):

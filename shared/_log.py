@@ -9,9 +9,14 @@ import weakref
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Literal
 
+import shared
 from shared import _theme
 from shared._style import strip
 from shared._theme import Bar, LogRecord, Screen, Theme, fit
+
+# `shared.log` is the `log` object: its methods, `Error` among them, are the module's names, and the
+# classes are what `log.progress` and `log.multi` return.
+__all__ = ["Error", "Group", "ProgressBar", "log"]
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -20,7 +25,16 @@ LEVEL_RANKS = {"debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4, "quiet": 4
 REDRAW_INTERVAL = 0.1
 
 
+class Error(shared.Error):
+    """The base of every error `shared.log` raises."""
+
+
 class Log:
+    """The `log` object: five levels, the level shown, and progress bars."""
+
+    # `shared.log` is this object, not a module, so the module's error is reached through it.
+    Error = Error
+
     def __init__(self) -> None:
         self._level: Level = "info"
 

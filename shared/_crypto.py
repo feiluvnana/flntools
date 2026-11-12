@@ -11,9 +11,14 @@ import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Union
 
+import shared
+
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers import Cipher, modes
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+__all__ = ["CryptoError", "Error", "decrypt_aes_cbc", "decrypt_aes_gcm", "derive_scrypt", "encrypt_aes_cbc",
+           "encrypt_aes_gcm", "hash_blake2b", "hash_md5", "hash_sha1", "hash_sha256", "hash_sha512", "random_key"]
 
 Data = Union[str, bytes]
 HashInput = Union[str, bytes, Path, BinaryIO]
@@ -27,7 +32,12 @@ DECRYPT_FAILED = "cannot decrypt: wrong key or damaged data"
 MISSING_CRYPTOGRAPHY = "shared.crypto needs cryptography: pip install 'flntools[browser]'"
 
 
-class CryptoError(ValueError):
+class Error(shared.Error):
+    """The base of every error `shared.crypto` raises."""
+
+
+# Still a ValueError, as before the error tree, so `except ValueError` keeps catching it.
+class CryptoError(Error, ValueError):
     """Data could not be decrypted: a wrong key, changed bytes, bad padding, or an unknown format."""
 
 

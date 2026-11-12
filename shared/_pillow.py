@@ -18,6 +18,10 @@ from shared import _media
 if TYPE_CHECKING:
     from PIL import Image
 
+# Private: what `media`'s files call.
+__all__ = ["animation", "check", "durations", "load", "open", "probe", "resized", "save", "save_animation",
+           "shrink", "upright"]
+
 READABLE = ("JPEG", "PNG", "GIF", "WEBP", "HEIF", "AVIF", "TIFF", "BMP", "ICO", "TGA", "PPM", "JPEG2000", "QOI",
             "PSD", "DDS")
 NO_ALPHA = ("JPEG", "BMP", "PPM")

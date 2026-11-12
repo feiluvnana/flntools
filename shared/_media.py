@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Union
 
+import shared
 from shared import _atomic, _ffmpeg, _pillow
 from shared._log import log
 
@@ -31,15 +32,22 @@ if TYPE_CHECKING:
     from shared import _media_image as image
     from shared import _media_video as video
 
+__all__ = ["BrokenError", "Container", "Error", "Info", "Preset", "UnsafeError", "audio", "check", "compress",
+           "convert", "image", "kind_of", "probe", "sniff", "video"]
+
 PathLike = Union[str, "os.PathLike[str]"]
 Progress = Callable[..., Any]
 
 
-class BrokenError(ValueError):
+class Error(shared.Error):
+    """The base of every error `shared.media` raises."""
+
+
+class BrokenError(Error, shared.BrokenError):
     """The file is truncated, corrupt, not media, or lacks a stream the call needs."""
 
 
-class UnsafeError(ValueError):
+class UnsafeError(Error, shared.UnsafeError):
     """The file is a format media refuses to open, or a decompression bomb."""
 
 

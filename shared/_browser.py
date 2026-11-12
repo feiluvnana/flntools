@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence, Union
 
+import shared
 from shared import _prompt as prompt
 from shared._log import log
 
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
     from shared._selector import Selection
     from playwright.sync_api import BrowserContext, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
+
+__all__ = ["Browser", "Cookies", "Error", "Page", "connect", "installed_profile"]
 
 LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled", "--disable-infobars"]
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -65,6 +68,10 @@ _chromium_failed: RuntimeError | None = None
 # Each source's session connects on its own thread, so two can find Chromium missing at once:
 # the check, the question and the download are one step, or both would ask and both download.
 _chromium_offer = threading.Lock()
+
+
+class Error(shared.Error):
+    """The base of every error `shared.browser` raises."""
 
 
 def connect(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = True,

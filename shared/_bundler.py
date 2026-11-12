@@ -24,6 +24,8 @@ from typing import Any, Union
 
 import shared
 
+__all__ = ["Error", "build"]
+
 PathLike = Union[str, "os.PathLike[str]"]
 
 # What shared's modules import inside functions or by name, added whenever it is installed.
@@ -33,6 +35,10 @@ PACKAGES = ("playwright.sync_api", "cryptography", "pyzipper", "py7zr", "parsel"
             "compression.zstd", "shared._media_image", "shared._media_video", "shared._media_audio", "PIL",
             "pi_heif", "imageio_ffmpeg")
 LAST_LINES = 15
+
+
+class Error(shared.Error):
+    """The base of every error `shared.bundler` raises."""
 
 
 def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Iterable[PathLike] = (),

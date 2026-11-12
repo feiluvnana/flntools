@@ -8,6 +8,9 @@ import threading
 
 from shared._style import PAINT
 
+# Private: `theme.screen` is a Screen, and `log`, `prompt` and `cli` use the other two.
+__all__ = ["Screen", "isatty", "key_name"]
+
 
 class Screen:
     """The terminal that `log` and `prompt` write to and read keys from."""

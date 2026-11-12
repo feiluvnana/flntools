@@ -13,7 +13,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import shared
 from shared._screen import isatty
+
+# What `_cli` builds on; `shared.cli` re-exports `Error`, `UsageError`, `opt` and `arg`.
+__all__ = ["Arg", "Error", "Opt", "Param", "UsageError", "arg", "opt", "read_signature"]
 
 REQUIRED = inspect.Parameter.empty
 MANY_NARGS = ("*", "+")
@@ -23,7 +27,11 @@ PLAIN_TYPES = (str, int, float, bool, Path)
 ISO_FORMATS = {date: "YYYY-MM-DD", datetime: "YYYY-MM-DDTHH:MM"}
 
 
-class UsageError(Exception):
+class Error(shared.Error):
+    """The base of every error `shared.cli` raises. Here, beside `UsageError`, which `_cli` imports."""
+
+
+class UsageError(Error):
     """A command line the command cannot run with. Reported as `✗ message` and the usage, exit 2."""
 
     usage: str = ""

@@ -15,6 +15,10 @@ from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import Any, Union
 
+import shared
+
+__all__ = ["KV", "Error", "open"]
+
 PathLike = Union[str, "os.PathLike[str]"]
 
 SCHEMA = """
@@ -24,6 +28,10 @@ CREATE TABLE IF NOT EXISTS kv (
 ) WITHOUT ROWID
 """
 LIVE = "(expires IS NULL OR expires > ?)"
+
+
+class Error(shared.Error):
+    """The base of every error `shared.kv` raises."""
 
 
 def open(path: PathLike, *, table: str = "default") -> KV:

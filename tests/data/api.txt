@@ -1,0 +1,326 @@
+flnd.engine: module
+flnd.engine.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
+flnd.engine.Engine.failed: attribute -> list[Target]
+flnd.engine.Engine.home: attribute
+flnd.engine.Engine.login(source: Source, method: str) -> None
+flnd.engine.Engine.resolve(texts: Sequence[str]) -> list[Target]
+flnd.engine.Engine.run(targets: Sequence[Target], options: Options) -> int
+flnd.engine.Engine.sources: attribute
+shared: module
+shared.BrokenError(shared.Error, ValueError)
+shared.Error(Exception)
+shared.RefusedError(shared.Error)
+shared.UnsafeError(shared.Error, ValueError)
+shared.archive: module
+shared.archive.BombError(shared.archive.Error, shared.UnsafeError)
+shared.archive.ConflictError(shared.archive.Error, ValueError)
+shared.archive.Error(shared.Error)
+shared.archive.Limits(size: int = 20000000000, ratio: float = 200, files: int = 100000)
+shared.archive.Limits.files: field -> int
+shared.archive.Limits.ratio: field -> float
+shared.archive.Limits.size: field -> int
+shared.archive.PasswordError(shared.archive.Error, shared.RefusedError, ValueError)
+shared.archive.UnsafeError(shared.archive.Error, shared.UnsafeError)
+shared.archive.unzip(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, conflict: Conflict = 'error', limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Path]
+shared.archive.zip(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, split: int | None = None) -> list[Path]
+shared.browser: module
+shared.browser.Browser(context: BrowserContext, *, close_steps: list[Callable[[], Any]], headless: bool, page_viewport: tuple[int, int] | None = None)
+shared.browser.Browser.close() -> None
+shared.browser.Browser.cookies: attribute
+shared.browser.Browser.open_page(url: str | None = None, *, idle: bool = False, timeout: float = 30.0) -> Page
+shared.browser.Browser.pages: property -> list[Page]
+shared.browser.Browser.raw: attribute
+shared.browser.Cookies(context: BrowserContext)
+shared.browser.Cookies.add(jar: list[dict]) -> None
+shared.browser.Cookies.all: property -> list[dict]
+shared.browser.Cookies.clear_all() -> None
+shared.browser.Error(shared.Error)
+shared.browser.Page(raw: RawPage, browser: Browser)
+shared.browser.Page.browser: attribute
+shared.browser.Page.close() -> None
+shared.browser.Page.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> int | None
+shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, poll: float = 1.0, timeout: float | None = None) -> bool
+shared.browser.Page.on_request(match: Match, handler: Callable[[Request], Any]) -> Callable[[], None]
+shared.browser.Page.on_response(match: Match, handler: Callable[[Any, Response], Any], *, lines: bool = False) -> Callable[[], None]
+shared.browser.Page.raw: attribute
+shared.browser.Page.scroll(*, by: str | Callable[[RawPage], Any] | None = None, count: Callable[[], int] | None = None, limit: int | None = None, more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0, pause: float = 0.3, max: int | None = None, progress: Callable[[], int] | None = None, onscroll: Callable[[], Any] | None = None) -> int
+shared.browser.Page.selector: property -> Selection
+shared.browser.Page.title: property -> str
+shared.browser.Page.url: property -> str
+shared.browser.Page.wait_for_load(*, idle: bool = False, timeout: float = 30.0) -> None
+shared.browser.Page.wait_for_selector(css: str, *, timeout: float = 30.0) -> None
+shared.browser.Page.wait_for_url(pattern: str | re.Pattern[str] | Callable[[str], bool], *, timeout: float = 30.0) -> None
+shared.browser.connect(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = True, viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser
+shared.browser.installed_profile(browser: str = 'chrome', profile: str = 'Default') -> Path
+shared.bundler: module
+shared.bundler.Error(shared.Error)
+shared.bundler.build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Iterable[PathLike] = (), out: PathLike = 'dist') -> Path
+shared.cli: module
+shared.cli.App(name: str, *, version: str | None = None, description: str = '', epilog: str = '')
+shared.cli.App.children: attribute -> dict[str, Command | App]
+shared.cli.App.command(target: Callable | str | None = None, /) -> Any
+shared.cli.App.description: attribute
+shared.cli.App.epilog: attribute
+shared.cli.App.group(name: str, description: str = '') -> App
+shared.cli.App.handler: attribute -> Command | None
+shared.cli.App.help(*path: str) -> str
+shared.cli.App.name: attribute
+shared.cli.App.parent: attribute -> App | None
+shared.cli.App.parse(argv: list[str]) -> inspect.BoundArguments | None
+shared.cli.App.row_text() -> str
+shared.cli.App.run(argv: list[str] | None = None) -> int
+shared.cli.App.version: attribute
+shared.cli.Error(shared.Error)
+shared.cli.UsageError(shared.cli.Error)
+shared.cli.UsageError.usage: attribute -> str
+shared.cli.arg(help: str | None = None, metavar: str | None = None, nargs: str | None = None, choices: Any = None, type: Callable[[str], Any] | None = None, stdin: bool = True) -> Arg
+shared.cli.opt(*flags: str, help: str | None = None, metavar: str | None = None, choices: Any = None, type: Callable[[str], Any] | None = None, stdin: bool = False) -> Opt
+shared.cli.run(fn: Callable) -> typing.NoReturn
+shared.cookies: module
+shared.cookies.CookieError(shared.cookies.Error, ValueError)
+shared.cookies.Error(shared.Error)
+shared.cookies.load_from_browser(domain: str, *, browser: str = 'chrome', profile: str | None = None) -> list[Cookie]
+shared.cookies.load_from_file(path: PathLike, *, domain: str | None = None) -> list[Cookie]
+shared.cookies.profiles(browser: str = 'chrome') -> list[str]
+shared.cookies.to_file(jar: list[Cookie], path: PathLike) -> None
+shared.cookies.to_header(jar: list[Cookie]) -> str
+shared.crypto: module
+shared.crypto.CryptoError(shared.crypto.Error, ValueError)
+shared.crypto.Error(shared.Error)
+shared.crypto.decrypt_aes_cbc(blob: bytes, key: bytes, *, iv: bytes) -> bytes
+shared.crypto.decrypt_aes_gcm(blob: bytes, key: bytes, *, context: bytes = b'') -> bytes
+shared.crypto.derive_scrypt(password: Data, salt: bytes, *, size: int = 32) -> bytes
+shared.crypto.encrypt_aes_cbc(data: Data, key: bytes, *, iv: bytes) -> bytes
+shared.crypto.encrypt_aes_gcm(data: Data, key: bytes, *, context: bytes = b'') -> bytes
+shared.crypto.hash_blake2b(data: HashInput) -> str
+shared.crypto.hash_md5(data: HashInput) -> str
+shared.crypto.hash_sha1(data: HashInput) -> str
+shared.crypto.hash_sha256(data: HashInput) -> str
+shared.crypto.hash_sha512(data: HashInput) -> str
+shared.crypto.random_key(size: int = 32) -> bytes
+shared.fmt: module
+shared.fmt.Error(shared.Error)
+shared.fmt.date(value: _datetime.date | float, pattern: str | None = None) -> str
+shared.fmt.duration(seconds: float) -> str
+shared.fmt.filename(text: str, *, fallback: str = 'untitled', maxlen: int = 200) -> str
+shared.fmt.size(n: int) -> str
+shared.kv: module
+shared.kv.Error(shared.Error)
+shared.kv.KV(path: PathLike, table: str)
+shared.kv.KV.close() -> None
+shared.kv.KV.get(key: str, default: Any = None) -> Any
+shared.kv.KV.get_keys(prefix: str = '') -> list[str]
+shared.kv.KV.raw: property -> sqlite3.Connection
+shared.kv.KV.set(key: str, value: Any, *, ttl: float | None = None) -> None
+shared.kv.open(path: PathLike, *, table: str = 'default') -> KV
+shared.log: Log
+shared.log.Error(shared.Error)
+shared.log.Group(theme: Theme, title: str)
+shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> ProgressBar
+shared.log.Group.bars: attribute -> list[ProgressBar]
+shared.log.Group.changed(force: bool = False) -> None
+shared.log.Group.end(outcome: str) -> None
+shared.log.Group.live: attribute
+shared.log.Group.outcome: attribute -> str | None
+shared.log.Group.rows() -> list[tuple[str, str]]
+shared.log.Group.theme: attribute
+shared.log.Group.title: attribute
+shared.log.ProgressBar(label: str, total: float | None, show: Callable[[Any], str], group: Group)
+shared.log.ProgressBar.advance(n: float = 1) -> None
+shared.log.ProgressBar.caption: property, settable -> str
+shared.log.ProgressBar.done: property -> float
+shared.log.ProgressBar.fail() -> None
+shared.log.ProgressBar.finish() -> None
+shared.log.ProgressBar.finished: property -> bool
+shared.log.ProgressBar.label: attribute
+shared.log.ProgressBar.outcome: attribute -> str | None
+shared.log.ProgressBar.show: attribute
+shared.log.ProgressBar.total: property, settable -> float | None
+shared.log.ProgressBar.update(n: float, total: float | None = None) -> None
+shared.log.debug(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.log.error(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.log.info(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.log.level: property, settable -> Level
+shared.log.multi(title: str = '') -> Iterator[Group]
+shared.log.ok(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Iterator[ProgressBar]
+shared.log.warn(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.media: module
+shared.media.BrokenError(shared.media.Error, shared.BrokenError)
+shared.media.Container(muxer: str, video: str | None, audio: str, video_holds: str, audio_holds: str)
+shared.media.Container.audio: field -> str
+shared.media.Container.audio_holds: field -> str
+shared.media.Container.muxer: field -> str
+shared.media.Container.video: field -> str | None
+shared.media.Container.video_holds: field -> str
+shared.media.Error(shared.Error)
+shared.media.Info(path: Path, kind: str, animated: bool, format: str, size: int, width: int | None = None, height: int | None = None, duration: float | None = None, frames: int | None = None, fps: float | None = None, bitrate: int | None = None, video: str | None = None, audio: str | None = None, sample_rate: int | None = None, channels: int | None = None, created: datetime | None = None, location: tuple[float, float] | None = None, tags: dict[str, str] = <factory>)
+shared.media.Info.animated: field -> bool
+shared.media.Info.audio: field -> str | None
+shared.media.Info.bitrate: field -> int | None
+shared.media.Info.channels: field -> int | None
+shared.media.Info.created: field -> datetime | None
+shared.media.Info.duration: field -> float | None
+shared.media.Info.format: field -> str
+shared.media.Info.fps: field -> float | None
+shared.media.Info.frames: field -> int | None
+shared.media.Info.height: field -> int | None
+shared.media.Info.kind: field -> str
+shared.media.Info.location: field -> tuple[float, float] | None
+shared.media.Info.path: field -> Path
+shared.media.Info.sample_rate: field -> int | None
+shared.media.Info.size: field -> int
+shared.media.Info.tags: field -> dict[str, str]
+shared.media.Info.video: field -> str | None
+shared.media.Info.width: field -> int | None
+shared.media.Preset(quality: int, video_resolution: int | None, photo_resolution: int | None, fps: float | None, speed: str, audio_bitrate: int)
+shared.media.Preset.audio_bitrate: field -> int
+shared.media.Preset.fps: field -> float | None
+shared.media.Preset.photo_resolution: field -> int | None
+shared.media.Preset.quality: field -> int
+shared.media.Preset.speed: field -> str
+shared.media.Preset.video_resolution: field -> int | None
+shared.media.UnsafeError(shared.media.Error, shared.UnsafeError)
+shared.media.audio: module
+shared.media.audio.extract(src: PathLike, *, dest: PathLike, bitrate: int | None = None) -> Path
+shared.media.check(path: PathLike) -> None
+shared.media.compress(src: PathLike, *, dest: PathLike | None = None, format: str | None = None, preset: str = 'mid', quality: int | None = None, resolution: int | None = None, fps: float | None = None, codec: str | None = None, audio_bitrate: int | None = None, strip: bool = True, progress: Progress | None = None) -> Path | None
+shared.media.convert(src: PathLike, *, dest: PathLike, quality: int = 90, fps: float | None = None, codec: str | None = None) -> Path
+shared.media.image: module
+shared.media.image.crop(src: PathLike, *, box: tuple[int, int, int, int], dest: PathLike | None = None, quality: int = 90, strip: bool = False) -> Path
+shared.media.image.resize(src: PathLike, *, dest: PathLike | None = None, width: int | None = None, height: int | None = None, resolution: int | None = None, quality: int = 90, strip: bool = False) -> Path
+shared.media.kind_of(extension: str) -> str | None
+shared.media.probe(path: PathLike) -> Info
+shared.media.sniff(path: PathLike) -> str | None
+shared.media.video: module
+shared.media.video.frames(src: PathLike, *, dest_dir: PathLike, every: float | None = None, at: Sequence[float] | None = None, count: int | None = None, format: str = 'jpg', quality: int = 90, limit: int | None = 1000) -> list[Path]
+shared.media.video.merge(sources: Sequence[PathLike], *, dest: PathLike, audio: PathLike | None = None, fps: float | None = None, duration: float | None = None, progress: Progress | None = None) -> Path
+shared.media.video.trim(src: PathLike, *, start: float = 0.0, end: float | None = None, dest: PathLike | None = None, exact: bool = True) -> Path
+shared.prompt: module
+shared.prompt.Error(shared.Error)
+shared.prompt.Keymap()
+shared.prompt.Keymap.ACTIONS: attribute -> tuple
+shared.prompt.Keymap.backspace: attribute
+shared.prompt.Keymap.down: attribute
+shared.prompt.Keymap.interrupt: attribute
+shared.prompt.Keymap.left: attribute
+shared.prompt.Keymap.no: attribute
+shared.prompt.Keymap.right: attribute
+shared.prompt.Keymap.submit: attribute
+shared.prompt.Keymap.toggle: attribute
+shared.prompt.Keymap.up: attribute
+shared.prompt.Keymap.yes: attribute
+shared.prompt.PromptError(shared.prompt.Error)
+shared.prompt.choice(message: str, options: Sequence | Mapping, *, description: str = '', default: Any = None, filter: bool = False, keys: bool | None = None, validate: Validate | None = None) -> Any
+shared.prompt.choices(message: str, options: Sequence | Mapping, *, description: str = '', default: Sequence | None = None, min: int = 0, max: int | None = None, filter: bool = False, keys: bool | None = None, validate: Validate | None = None) -> list
+shared.prompt.confirm(message: str, *, description: str = '', default: bool = False, yes: str = 'Yes', no: str = 'No', keys: bool | None = None, validate: Validate | None = None) -> bool
+shared.prompt.defaults() -> Iterator[None]
+shared.prompt.input(message: str, *, description: str = '', default: str | None = None, placeholder: str = '', keys: bool | None = None, validate: Validate | None = None) -> str
+shared.prompt.keymap: Keymap
+shared.prompt.keys: bool
+shared.prompt.secret(message: str, *, description: str = '', default: str | None = None, mask: str | None = None, keys: bool | None = None, validate: Validate | None = None) -> str
+shared.selector: module
+shared.selector.Error(shared.Error)
+shared.selector.Selection(raw: Raw)
+shared.selector.Selection.all: property -> list[Any]
+shared.selector.Selection.css(query: str) -> Selection
+shared.selector.Selection.first: property -> Any
+shared.selector.Selection.jmespath(query: str) -> Selection
+shared.selector.Selection.jsonpath(query: str) -> Selection
+shared.selector.Selection.raw: property -> Raw
+shared.selector.Selection.script(id: str | None = None, *, pattern: str | None = None) -> Selection
+shared.selector.Selection.text: property -> str
+shared.selector.Selection.xpath(query: str) -> Selection
+shared.selector.select(source: Any, query: str = '') -> Selection
+shared.style: Chain
+shared.style.Error(shared.Error)
+shared.style.bg: field -> tuple | None
+shared.style.bg_ramp: field -> tuple
+shared.style.color(value: str | int, *, background: bool = False) -> Chain
+shared.style.fg: field -> tuple | None
+shared.style.fg_ramp: field -> tuple
+shared.style.gradient(*stops: str | int, background: bool = False) -> Chain
+shared.style.link: field -> str | None
+shared.style.modifiers: field -> frozenset
+shared.style.paint(text: str, depth: str) -> str
+shared.style.rainbow(text: object = None, /, *, background: bool = False) -> Chain | str
+shared.style.strip(text: str) -> str
+shared.style.url(target: str) -> Chain
+shared.theme: Theme
+shared.theme.Bar(label: str, done: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str)
+shared.theme.Bar.caption: field -> str
+shared.theme.Bar.done: field -> float
+shared.theme.Bar.finished: field -> bool
+shared.theme.Bar.label: field -> str
+shared.theme.Bar.show: field -> Callable[[Any], str]
+shared.theme.Bar.total: field -> float | None
+shared.theme.Error(shared.Error)
+shared.theme.HelpModel(prog: str, description: str, usage: str, arguments: tuple = (), options: tuple = (), commands: tuple = (), epilog: str = '', error: str = '')
+shared.theme.HelpModel.arguments: field -> tuple
+shared.theme.HelpModel.commands: field -> tuple
+shared.theme.HelpModel.description: field -> str
+shared.theme.HelpModel.epilog: field -> str
+shared.theme.HelpModel.error: field -> str
+shared.theme.HelpModel.options: field -> tuple
+shared.theme.HelpModel.prog: field -> str
+shared.theme.HelpModel.usage: field -> str
+shared.theme.LogRecord(level: str, message: str, bar: Bar | None = None)
+shared.theme.LogRecord.bar: field -> Bar | None
+shared.theme.LogRecord.level: field -> str
+shared.theme.LogRecord.message: field -> str
+shared.theme.Namespace(kind: str, defaults: dict, pick: Callable[[Any], Any], *, check: Callable[[Any], Any] = Namespace.<lambda>)
+shared.theme.PromptView(kind: str, message: str, description: str = '', value: str = '', placeholder: str = '', options: tuple = (), position: int = 0, checked: frozenset = frozenset(), error: str | None = None, keys: tuple = (), done: bool = False)
+shared.theme.PromptView.checked: field -> frozenset
+shared.theme.PromptView.description: field -> str
+shared.theme.PromptView.done: field -> bool
+shared.theme.PromptView.error: field -> str | None
+shared.theme.PromptView.keys: field -> tuple
+shared.theme.PromptView.kind: field -> str
+shared.theme.PromptView.message: field -> str
+shared.theme.PromptView.options: field -> tuple
+shared.theme.PromptView.placeholder: field -> str
+shared.theme.PromptView.position: field -> int
+shared.theme.PromptView.value: field -> str
+shared.theme.Screen(out=None, inp=None, *, width: int | None = None, height: int | None = None, tty: bool | None = None, interactive: bool | None = None)
+shared.theme.Screen.height: property -> int
+shared.theme.Screen.inp: property
+shared.theme.Screen.interactive: property -> bool
+shared.theme.Screen.lock: attribute
+shared.theme.Screen.out: property
+shared.theme.Screen.readkey() -> str
+shared.theme.Screen.tty: property -> bool
+shared.theme.Screen.width: property -> int
+shared.theme.Screen.write(text: str) -> None
+shared.theme.color: property, settable -> ColorDepth
+shared.theme.draw(kind: str, value: Any) -> str
+shared.theme.draw_help(theme: Theme, model: HelpModel) -> str
+shared.theme.draw_log(theme: Theme, record: LogRecord) -> str
+shared.theme.draw_progress(theme: Theme, record: LogRecord) -> str
+shared.theme.draw_prompt(theme: Theme, view: PromptView) -> str
+shared.theme.drawers: attribute
+shared.theme.glyphs: attribute
+shared.theme.paint(name: str, text: str, *, on: str | None = None) -> str
+shared.theme.palette: attribute
+shared.theme.scope(**changes: Any) -> Iterator[Theme]
+shared.theme.screen: attribute
+shared.theme.unicode: attribute
+shared.worker: module
+shared.worker.Error(shared.Error)
+shared.worker.Pool(run: _Run)
+shared.worker.Pool.close() -> None
+shared.worker.Pool.join(timeout: float | None = None) -> list[Result[Any]]
+shared.worker.Pool.raw: property -> Any
+shared.worker.Pool.results: property -> list[Result[Any]]
+shared.worker.Pool.submit(fn: Callable[..., Any], *args: Any) -> None
+shared.worker.Pool.submitted: property -> int
+shared.worker.Result(item: Any, value: R | None = None, error: BaseException | None = None, attempts: int = 0, _position: int = 0)
+shared.worker.Result.attempts: field -> int
+shared.worker.Result.error: field -> BaseException | None
+shared.worker.Result.item: field -> Any
+shared.worker.Result.ok: property -> bool
+shared.worker.Result.value: field -> R | None
+shared.worker.TaskError(shared.worker.Error)
+shared.worker.TaskError.results: attribute
+shared.worker.map(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> list[Any]
+shared.worker.pool(**options: Unpack[_Options]) -> Pool
+shared.worker.race(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]
