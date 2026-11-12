@@ -1,4 +1,4 @@
-"""Drive a real browser with Playwright's sync API: `browser.open()` gives a `Browser`, and `Browser.open(url)` a `Page`.
+"""Drive a real browser with Playwright's sync API: `browser.open()` gives a `Browser`, `Browser.open(url)` a `Page`.
 
 How it works: `open` starts Playwright's driver and launches Google Chrome through Playwright's
 `chrome` channel, or attaches to a running browser over CDP. The browser runs incognito, in a
@@ -8,9 +8,10 @@ A `Browser` wraps Playwright's `BrowserContext`: it opens tabs, and moves cookie
 element, a URL or a quiet network (`wait`), watches JSON responses and requests (`on_response`,
 `on_request`, each a `Subscription`), scrolls a feed at a person's pace until it ends (`scroll`),
 hands a captcha to a person (`handoff`), sends a request from the page itself (`fetch`, an
-`http.Response`), and reads the live page as a `shared.selector.Selection` (`document`). Everything else is on `.raw`: the `BrowserContext` of a `Browser`, and the
-`playwright.sync_api.Page` of a `Page`. Importing this module doesn't load Playwright; `open`
-does, and raises `ImportError` naming the `browser` extra when it's missing.
+`http.Response`), and reads the live page as a `shared.selector.Selection` (`document`).
+Everything else is on `.raw`: the `BrowserContext` of a `Browser`, and the `playwright.sync_api.Page`
+of a `Page`. Importing this module doesn't load Playwright; `open` does, and raises `ImportError`
+naming the `browser` extra when it's missing.
 
     from shared import browser
 
@@ -58,7 +59,10 @@ if TYPE_CHECKING:
 
 __all__ = ["Browser", "Error", "Page", "Subscription", "WaitError", "check", "open"]
 
+# Switches that hide the automation Chrome would otherwise show: AutomationControlled is the blink
+# feature that sets `navigator.webdriver`, and infobars is the "controlled by automated software" bar.
 LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled", "--disable-infobars"]
+# `navigator.webdriver` is removed rather than set to false, which is how an ordinary browser reports it.
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHeight"
 # Half a screen from the end counts as the bottom, so the odd small scroll up doesn't reset the end rule.
@@ -92,6 +96,7 @@ IN_PAGE_FETCH = """async ({url, method, headers, body, form, ms}) => {
     clearTimeout(timer);
   }
 }"""
+# Where Chrome keeps its profiles, relative to the home folder, on each platform.
 PROFILE_ROOTS = {"darwin": "Library/Application Support/Google/Chrome", "linux": ".config/google-chrome",
                  "win32": "AppData/Local/Google/Chrome/User Data"}
 # A copy of an installed profile opens only in Google Chrome: its cookies are sealed with Chrome's key.
@@ -101,6 +106,7 @@ PROFILE_CHANNEL: str | None = "chrome"
 # %LOCALAPPDATA%, %PROGRAMFILES% and %PROGRAMFILES(X86)%, as Playwright does.
 CHROME_PATHS = {"darwin": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                 "linux": "/opt/google/chrome/chrome", "win32": "Google/Chrome/Application/chrome.exe"}
+# The environment variables whose folders Chrome may be installed under on Windows; each is tried.
 WINDOWS_ROOTS = ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)")
 CHROMIUM_QUESTION = "Google Chrome isn't installed. Download Chromium for flnd (about 200 MB)?"
 NEEDS_CHROME = "flnd needs Google Chrome: install it from https://www.google.com/chrome/"
@@ -281,6 +287,7 @@ def _profile_name(profile: str | Path | None) -> str | None:
 
 def _profile_root() -> Path:
     """The folder that holds Google Chrome's profiles on this platform."""
+    # Any platform other than macOS and Windows gets the Linux path, the one Chrome uses there.
     return Path.home() / PROFILE_ROOTS[sys.platform if sys.platform in ("darwin", "win32") else "linux"]
 
 
@@ -321,6 +328,7 @@ class Browser:
 
     def __init__(self, context: BrowserContext, *, close_steps: list[Callable[[], Any]], headless: bool,
                  page_viewport: tuple[int, int] | None = None):
+        """Wrap `context`; `close_steps` are run in order by `close`, and `headless` is what `handoff` checks."""
         self.raw = context
         self._close_steps = close_steps
         self._headless = headless
@@ -650,6 +658,7 @@ class Page:
 
         if data is not None and json is not None:
             raise ValueError("pass data or json, not both")
+        # The body is prepared here, as bytes or as form fields, then handed to the page's fetch() in one piece.
         sent = dict(headers or {})
         body = form = None
         if json is not None:
@@ -665,6 +674,7 @@ class Page:
         method = method.upper()
         request = {"url": url, "method": method, "headers": sent, "form": form, "ms": timeout * 1000,
                    "body": None if body is None else base64.b64encode(body).decode("ascii")}
+        # The request runs inside the page, so it carries the page's cookies, origin and TLS fingerprint.
         try:
             result = self.raw.evaluate(IN_PAGE_FETCH, request)
         # A tab that navigated, closed or crashed meanwhile: the page is gone, not the request refused.
@@ -758,6 +768,20 @@ class Page:
 
         It shows `message` and a spinner, and polls `until()` every `poll` seconds. False means
         `timeout` passed first. A headless browser raises `RuntimeError`, because nobody can see it.
+
+        Args:
+            until: a check the page's state is good; True ends the hand-off at once.
+            message: what the person is asked to do, shown in the log and on the spinner's row.
+            poll: seconds between two calls of `until`.
+            timeout: seconds to wait for the person in all; None waits as long as it takes.
+
+        Returns:
+            True when `until` came true, False when `timeout` passed first.
+
+        Raises:
+            RuntimeError: the browser is headless, so there is no window for the person to use.
+
+        Handlers from `on_response` keep running while it waits, since it waits on Playwright's clock.
         """
         if until():
             return True
@@ -825,6 +849,7 @@ class Page:
                              error=_first_line(error))
                     return fallback
                 try:
+                    # Up to 10 s for the navigation to finish, in milliseconds.
                     self.raw.wait_for_load_state("load", timeout=10000)
                 except PlaywrightError:
                     # Still moving, or closed; the next read decides.
@@ -843,7 +868,7 @@ class Page:
 
     def _wait_for_progress(self, target: Locator | None, before: tuple[int, ...], count: Callable[[], int] | None,
                            longest: float) -> tuple[int, int, int]:
-        """Poll every `POLL` seconds until a number of `before` rose or `longest` seconds passed; return the marker."""
+        """Poll every `POLL` seconds until one of `before` rose or `longest` seconds pass; return the new marker."""
         deadline = _clock() + longest
         while True:
             marker = self._progress_marker(target, count)
@@ -872,15 +897,19 @@ class Page:
         return left, top, right - left, bottom - top
 
     def _move(self, target: Locator | None) -> None:
-        """One scroll: the mouse over the area, then the wheel down most of its height, now and then a little back up."""
+        """One scroll: the mouse over the area, the wheel down most of its height, and sometimes a little back up."""
         left, top, width, height = self._area(target)
+        # The mouse lands somewhere in the middle of the area, never on one pixel each time.
         self.raw.mouse.move(left + width * _random.uniform(0.25, 0.75), top + height * _random.uniform(0.3, 0.7),
                             steps=_random.randint(2, 6))
         self._wheel(height * _random.uniform(0.6, 0.9))
+        # One scroll in eight goes a little back up; the odds are a design choice, not measured from any site.
         if _random.random() < 1 / 8:
             self._wheel(-height * _random.uniform(0.1, 0.25))
 
     def _wheel(self, distance: float) -> None:
+        """Turn the wheel by `distance` pixels in three to six uneven steps, with a pause between them."""
+        # Uneven steps and pauses, so the wheel doesn't tick at one fixed rate.
         weights = [_random.uniform(0.5, 1.5) for _ in range(_random.randint(3, 6))]
         total = sum(weights)
         for weight in weights:
@@ -927,6 +956,7 @@ def _launch(playwright: Playwright, profile: str | Path | None, *, copied: bool,
     # A copy of Chrome's profile opens only in Chrome, so it never asks to download Chromium.
     channel = PROFILE_CHANNEL if copied else _channel(playwright)
     if copied:
+        # `_copy_profile` always stores the copy as `Default`, whatever the installed profile was called.
         launch_options["args"].append("--profile-directory=Default")
     context, close_steps = _open_context(playwright, profile, channel, launch_options, context_options)
     if stealth:
@@ -977,6 +1007,7 @@ def _channel(playwright: Playwright) -> str:
 def _chrome_installed() -> bool:
     """Whether Google Chrome is where Playwright's `chrome` channel looks for it."""
     platform = sys.platform if sys.platform in CHROME_PATHS else "linux"
+    # macOS and Linux have one fixed path for Chrome; Windows may have it under any of several roots.
     if platform != "win32":
         return Path(CHROME_PATHS[platform]).is_file()
     roots = [os.environ[name] for name in WINDOWS_ROOTS if os.environ.get(name)]
@@ -1014,6 +1045,11 @@ def _install_chromium() -> None:
 
 def _open_context(playwright: Playwright, profile: str | Path | None, channel: str | None,
                   launch_options: dict[str, Any], context_options: dict[str, Any]) -> tuple[BrowserContext, list]:
+    """Launch the browser with or without a profile folder, and return its context and the steps that close it.
+
+    With no `profile` the browser is an incognito context of its own; with one, Chrome's persistent
+    profile in that folder. The returned steps run in order when the `Browser` closes.
+    """
     headless = launch_options["headless"]
     # Playwright's bundled Chromium, launched headless with no channel, runs as the separate headless
     # shell, which flnd never installs (`install --no-shell`). The `chromium` channel runs the full
@@ -1033,6 +1069,7 @@ def _open_context(playwright: Playwright, profile: str | Path | None, channel: s
 
 
 def _headful_user_agent(remote: Any) -> str:
+    """The user agent `remote` reports, with "HeadlessChrome" read as "Chrome" so a headless run looks headed."""
     # Headless Chrome names itself "HeadlessChrome", which any site can read; everything else stays its own.
     probe = remote.new_context()
     try:
@@ -1043,6 +1080,7 @@ def _headful_user_agent(remote: Any) -> str:
 
 
 def _headful_user_agent_of(playwright: Playwright, channel: str | None) -> str:
+    """The headed user agent for `channel`, read from a throwaway headless browser."""
     # A persistent profile can't be relaunched with a new user agent, so a throwaway browser reads it first.
     remote = playwright.chromium.launch(channel=channel or "chromium", headless=True)
     try:
@@ -1075,8 +1113,10 @@ def _matcher(match: Match) -> Callable[[str], bool]:
 
 
 def _json_bodies(response: Response, lines: bool) -> list[Any]:
+    """The JSON values in `response`'s body: the whole body, or each non-blank line of it when `lines` is set."""
     try:
         body = response.text()
+    # A body Playwright can't read is skipped, so one odd response doesn't stop the handler's other calls.
     except PlaywrightError as error:
         log.debug("on_response: no body for {url}: {error}", url=response.url, error=_first_line(error))
         return []
@@ -1085,6 +1125,7 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
     for piece in pieces:
         try:
             parsed.append(jsonlib.loads(piece))
+        # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
         except ValueError:
             log.debug("on_response: skipped a body that is not JSON from {url}", url=response.url)
     return parsed
