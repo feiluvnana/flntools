@@ -28,7 +28,7 @@ class TasksTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / "scripts" / "dev.py"), *argv],
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 2, argv)
-            self.assertIn("tasks: setup test lint type check api flnd dist try", result.stderr)
+            self.assertIn("tasks: setup test lint type check baseline api flnd dist try", result.stderr)
 
     def test_python_option_and_passthrough(self):
         with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run:

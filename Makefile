@@ -1,4 +1,4 @@
-TASKS := setup test lint type check api flnd dist try
+TASKS := setup test lint type check baseline api flnd dist try
 .PHONY: $(TASKS)
 
 $(TASKS):

@@ -23,8 +23,10 @@ the task and exits with that command's own code, so make and CI see the failure.
 
 import ast
 import builtins
+import hashlib
 import importlib
 import inspect
+import json
 import os
 import re
 import subprocess
@@ -72,8 +74,36 @@ def test(python: str, args: list[str]) -> None:
 
 
 def lint(python: str, args: list[str]) -> None:
-    """Byte-compile `flnd` and `shared`, which catches syntax errors in every file."""
+    """Byte-compile `flnd` and `shared`, then check their docstrings (`doc_breaches`); `--strict` ignores `EXPLAINING`.
+
+    The docstring check reports every file's breach count. It fails on a file that breaches and isn't in
+    `EXPLAINING`, and on a file in `EXPLAINING` that already passes, so the list only shrinks; once it is
+    empty, every breach fails. Exits 1 on failure.
+    """
     run(["uv", "run", "--python", python, "python", "-m", "compileall", "-q", "flnd", "shared"])
+    counts = {path: len(doc_breaches(path)) for path in source_files()}
+    strict = "--strict" in args or not EXPLAINING
+    failed = False
+    for path, count in counts.items():
+        listed = path in EXPLAINING and not strict
+        if count and listed:
+            print(f"{path}: {count} docstring breaches (still being explained)")
+        elif count:
+            failed = True
+            print(f"{path}: {count} docstring breaches")
+            for breach in doc_breaches(path):
+                print(f"    {breach}")
+        elif listed:
+            failed = True
+            print(f"{path}: meets the docstring standard, so remove it from EXPLAINING in scripts/dev.py")
+    if failed:
+        raise subprocess.CalledProcessError(1, ["lint"])
+
+
+def baseline(python: str, args: list[str]) -> None:
+    """Write `tests/data/code_baseline.json`: one hash of each file's code without docstrings and comments."""
+    BASELINE.write_text(json.dumps({"python": PYTHON_OF_BASELINE, "files": code_hashes()}, indent=1, sort_keys=True) + "\n",
+                        encoding="utf-8", newline="\n")
 
 
 def type(python: str, args: list[str]) -> None:  # noqa: A001 - the task's name; the snapshot code says `builtins.type`
@@ -467,9 +497,134 @@ def run(command: list[str], *, capture_output: bool = False) -> subprocess.Compl
     return subprocess.run(command, cwd=ROOT, check=True, capture_output=capture_output, text=True)
 
 
+# Files whose docstrings are still being brought up to plan/phase-6/comments.md's standard. A file leaves the
+# list when it meets the standard (lint fails while it stays), and none joins it; empty, lint is always strict.
+EXPLAINING: set[str] = {
+    "flnd/cli.py",
+    "flnd/common/net.py",
+    "flnd/engine.py",
+    "flnd/job.py",
+    "flnd/session.py",
+    "flnd/site.py",
+    "flnd/source.py",
+    "flnd/sources/fbk.py",
+    "flnd/sources/ins.py",
+    "flnd/sources/loi.py",
+    "flnd/sources/tik.py",
+    "flnd/sources/tlg.py",
+    "flnd/sources/twt.py",
+    "shared/_archive.py",
+    "shared/_browser.py",
+    "shared/_classify.py",
+    "shared/_cli.py",
+    "shared/_ffmpeg.py",
+    "shared/_http.py",
+    "shared/_log.py",
+    "shared/_media.py",
+    "shared/_media_image.py",
+    "shared/_media_video.py",
+    "shared/_params.py",
+    "shared/_pillow.py",
+    "shared/_prompt.py",
+    "shared/_screen.py",
+    "shared/_style.py",
+    "shared/_theme.py",
+    "shared/_worker.py",
+}
+
+BASELINE = ROOT / "tests" / "data" / "code_baseline.json"
+# `ast.unparse` prints some code differently from one Python version to the next, so the baseline is only
+# comparable on the version that wrote it.
+PYTHON_OF_BASELINE = "3.14"
+
+
+def source_files() -> list[str]:
+    """The `.py` files of `flnd/` and `shared/` as sorted paths relative to the project root, with `/` separators."""
+    return sorted(p.relative_to(ROOT).as_posix() for folder in ("flnd", "shared") for p in (ROOT / folder).rglob("*.py"))
+
+
+def without_docstrings(tree: ast.Module) -> ast.Module:
+    """`tree` with every module, class and function docstring removed (a body left empty gets `pass`)."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and ast.get_docstring(node, clean=False) is not None:
+            node.body = node.body[1:] or [ast.Pass()]
+    return tree
+
+
+def code_hashes() -> dict[str, str]:
+    """The SHA-256 of each source file's code with docstrings dropped; comments never reach the AST."""
+    return {path: hashlib.sha256(ast.unparse(without_docstrings(ast.parse((ROOT / path).read_text(encoding="utf-8")))).encode()).hexdigest()
+            for path in source_files()}
+
+
+def doc_breaches(path: str) -> list[str]:
+    """The ways a file breaks the docstring standard, one `line N: what` text each."""
+    tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
+    found = [] if ast.get_docstring(tree) else ["line 1: module has no docstring"]
+
+    def visit(node: ast.AST, public: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                judge(child, public and not child.name.startswith("_"))
+                visit(child, public and not child.name.startswith("_"))
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                judge(child, public and not child.name.startswith("_"))
+            elif not isinstance(child, (ast.expr, ast.Lambda)):
+                visit(child, public)
+
+    def judge(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, public: bool) -> None:
+        doc = ast.get_docstring(node)
+        where = f"line {node.lineno}: {node.name}"
+        if isinstance(node, ast.ClassDef):
+            if public and not doc:
+                found.append(f"{where} has no docstring")
+            return
+        if not public:
+            if not doc and (node.end_lineno or node.lineno) - node.lineno + 1 > 15:
+                found.append(f"{where} is private, over 15 lines and has no docstring")
+            return
+        if any(isinstance(d, ast.Name) and d.id == "overload" for d in node.decorator_list):
+            return
+        if not doc:
+            found.append(f"{where} has no docstring")
+            return
+        a = node.args
+        names = [x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg) if x and x.arg not in ("self", "cls")]
+        if len(names) >= 2 and "\n" not in doc.strip():
+            found.append(f"{where} takes {len(names)} arguments but has a one-line docstring")
+        listed = _args_section(doc)
+        if listed is not None and set(listed) != set(names):
+            found.append(f"{where}: Args lacks {sorted(set(names) - set(listed))} and names {sorted(set(listed) - set(names))}")
+
+    visit(tree, True)
+    return found
+
+
+def _args_section(doc: str) -> list[str] | None:
+    """The argument names an `Args:` section lists, or None when the docstring has no such section."""
+    lines = doc.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.strip() == "Args:"), None)
+    if start is None:
+        return None
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    names: list[str] = []
+    item = None
+    for line in lines[start + 1:]:
+        if not line.strip():
+            continue
+        depth = len(line) - len(line.lstrip())
+        if depth <= indent:
+            break
+        item = depth if item is None else item
+        match = re.match(r"\*{0,2}(\w+)(?: \([^)]*\))?:", line.strip())
+        if depth == item and match:
+            names.append(match.group(1))
+    return names
+
+
 TASKS: dict[str, Callable[[str, list[str]], None]] = {
     # `try` is a keyword, so its function is `try_` and the task keeps the plain name.
-    task.__name__.rstrip("_"): task for task in (setup, test, lint, type, check, api, flnd, dist, try_)
+    task.__name__.rstrip("_"): task for task in (setup, test, lint, type, check, baseline, api, flnd, dist, try_)
 }
 
 
