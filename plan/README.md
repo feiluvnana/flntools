@@ -94,7 +94,8 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 **Phase 6: lean and simple.** Based on an audit of the whole repository on 2026-11-12 ([overview](phase-6/README.md)). Built in this order:
 1. [fixes](phase-6/fixes.md): 16 bugs, among them corrupted downloads on Windows, failed targets shown as ok with exit status 0, and Twitter's login sent to its CDNs.
 2. [setup](phase-6/setup.md): `uv sync` with a committed `uv.lock`, the browser downloaded only when there is no Chrome, every task in a stdlib `scripts/dev.py`, and a Makefile that runs the same on every OS.
-3. [cli](phase-6/cli.md): `flnd download`, `sync` (repair and fetch only, no options), `login` and `logout`; `--time <since>,<until>`; `--image`, `--video`, `--audio` `<format>,<level>`; `--unpack`, `--zip`, `--locale`, `--timezone` and `install-browser` gone, and with them `shared.archive`; Google Chrome only, with Chromium offered when it's missing.
+3. [architecture](phase-6/architecture.md): gallery-dl's design. A source yields `Post`, `File` and `Queue` items with metadata, and one job filters, names from format strings, checks the history, downloads and post-processes.
+   [cli](phase-6/cli.md): `flnd download`, `sync` (repair and fetch only, no options), `login` and `logout`; `--time <since>,<until>`; `--image`, `--video`, `--audio` `<format>,<level>`; `--unpack`, `--zip`, `--locale`, `--timezone` and `install-browser` gone, and with them `shared.archive`; Google Chrome only, with Chromium offered when it's missing.
    [source](phase-6/source.md): 8 fields and 5 hooks instead of 18 and 7.
    [pace](phase-6/pace.md): requests as fast as each site allows: its rate headers, Instagram's known budgets, and a learned gap above a floor.
    [session](phase-6/session.md): 26 members instead of 35; scrolling ends after 10 s without progress and has no cap; page loads and API calls are paced and checked for 429s and login walls.

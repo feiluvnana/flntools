@@ -2,6 +2,9 @@
 
 Phase 6, step 3, with [cli](cli.md) and [session](session.md). The user asked on 2026-11-12 for a leaner `Source`: fewer fields, each one meaning one thing, and merged where two say the same. Today a source can set 18 fields and 7 hooks, 25 in all. Several are never overridden, one is never read, and three pairs only make sense together.
 
+> **Changed by [architecture](architecture.md)** (decided 2026-11-12, flnd adopts gallery-dl's architecture): `run(session)` becomes `items(session)`, a generator of `Post`, `File` and `Queue`, and the source gains `folder`, `name` and `key` format strings with defaults. 11 fields and 5 hooks.
+
+
 ## Today, counted 2026-11-12
 
 | Field or hook | Set by | Read by |

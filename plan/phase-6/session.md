@@ -2,6 +2,9 @@
 
 Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in any source, three only forward to `session.page`, and the scroll defaults are wrong in both directions: `max=200` cuts long feeds short, and the `delay=0.2` tried in the WIP commit scrolls like a bot and declares the end after about 2 s. This step cuts the protocol to 26 members, makes the defaults the ones sources actually want, and moves what isn't the session's job out of `session.py` (874 lines, 603 of code).
 
+> **Changed by [architecture](architecture.md)** (decided 2026-11-12, flnd adopts gallery-dl's architecture): `save`, `write`, `folder`, `full`, `on_response` and `scroll` leave the session. A source yields `Post`, `File` and `Queue` items, and `session.responses(match, scroll=True)` replaces `on_response` plus `scroll`. 21 members, not 26. The scroll and pace rules below still hold, inside `responses`.
+
+
 ## Members
 
 | Group | Phase 6 | Was |

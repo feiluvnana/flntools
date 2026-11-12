@@ -2,6 +2,9 @@
 
 Phase 6, step 6, after [ins](ins.md). The user asked on 2026-11-12 for every source script to be shorter and easier to read, and for stronger utilities where weak ones are why a script is long. This step rewrites `flnd/sources/*.py` on the Phase 6 session and source, with three new helpers and one deletion; `shared` needs nothing new for it.
 
+> **Changed by [architecture](architecture.md)** (decided 2026-11-12, flnd adopts gallery-dl's architecture): `save_post` goes, because a source yields a `Post` and its `File`s and the engine names and keys them. `day` and `meta_results` stay. The scripts come to about 1,200 lines.
+
+
 ## Where they stand
 
 Lines of code (no docstrings, comments or blank lines), counted 2026-11-12:
