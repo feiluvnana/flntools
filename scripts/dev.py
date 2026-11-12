@@ -508,7 +508,6 @@ EXPLAINING: set[str] = {
     "flnd/site.py",
     "flnd/source.py",
     "flnd/sources/loi.py",
-    "flnd/sources/tlg.py",
     "shared/_archive.py",
     "shared/_browser.py",
     "shared/_classify.py",
