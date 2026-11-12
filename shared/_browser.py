@@ -7,8 +7,8 @@ A `Browser` wraps Playwright's `BrowserContext`: it opens tabs, and moves cookie
 `shared.cookies.Jar`s. A `Page` wraps one Playwright `Page`: it loads URLs (`goto`), waits for an
 element, a URL or a quiet network (`wait`), watches JSON responses and requests (`on_response`,
 `on_request`, each a `Subscription`), scrolls a feed at a person's pace until it ends (`scroll`),
-hands a captcha to a person (`handoff`), and reads the live page as a `shared.selector.Selection`
-(`document`). Everything else is on `.raw`: the `BrowserContext` of a `Browser`, and the
+hands a captcha to a person (`handoff`), sends a request from the page itself (`fetch`, an
+`http.Response`), and reads the live page as a `shared.selector.Selection` (`document`). Everything else is on `.raw`: the `BrowserContext` of a `Browser`, and the
 `playwright.sync_api.Page` of a `Page`. Importing this module doesn't load Playwright; `open`
 does, and raises `ImportError` naming the `browser` extra when it's missing.
 
@@ -19,18 +19,20 @@ does, and raises `ImportError` naming the `browser` extra when it's missing.
         tab.wait(".grid")
         with tab.on_response("graphql", lambda data, response: found.append(data)):
             tab.scroll(until=lambda: len(found) > 100)
+        tab.fetch("/api/items", headers={"x-csrf": token}).json     # with the tab's cookies and origin
         tab.document.css("h1").text, tab.url, tab.title
 
 Threads: Playwright's sync API is single-threaded. A `Browser`, its `Page`s and their
 `Subscription`s may be used only on the thread that called `open`, and handlers run on that
-thread, inside whichever call is waiting (`goto`, `wait`, `scroll`, `handoff`). Several threads
+thread, inside whichever call is waiting (`goto`, `wait`, `scroll`, `handoff`, `fetch`). Several threads
 may each open their own browser, as flnd's sources do; the only thing they share is the offer to
 download Chromium, which is behind a lock.
 """
 
 from __future__ import annotations
 
-import json
+import base64
+import json as jsonlib  # `json` is also `Page.fetch`'s keyword, as in `http.fetch`
 import os
 import random
 import re
@@ -41,7 +43,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Sequence, Union, overload
 
 import shared
 from shared import _prompt as prompt
@@ -49,6 +51,7 @@ from shared._cookies import Jar
 from shared._log import log
 
 if TYPE_CHECKING:
+    from shared import _http as http
     from shared._selector import Selection
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
@@ -65,6 +68,30 @@ NEAR_BOTTOM = ("(() => { const page = document.scrollingElement || document.docu
 ELEMENT_HEIGHT = "element => element.scrollHeight"
 ELEMENT_NEAR_BOTTOM = "element => element.scrollTop + element.clientHeight * 1.5 >= element.scrollHeight"
 VIEWPORT = "[innerWidth, innerHeight]"
+# `Page.fetch`'s request, run in the page by its own `fetch()`. The body comes back as base64, since
+# `evaluate` carries only JSON and a binary body would not survive as text. An AbortController ends
+# the request, body included, after `ms`; every failure is returned as `error`, never thrown, so
+# Python tells a timeout ("timeout") from a refused or blocked request (fetch's own TypeError).
+IN_PAGE_FETCH = """async ({url, method, headers, body, form, ms}) => {
+  const resolved = new URL(url, location.href).href;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    const init = {method, headers, credentials: "include", signal: controller.signal};
+    if (form !== null) init.body = new URLSearchParams(form);
+    else if (body !== null) init.body = Uint8Array.from(atob(body), c => c.charCodeAt(0));
+    const response = await fetch(resolved, init);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let text = "";
+    // In slices: String.fromCharCode takes its bytes as arguments, and a call has a limit on those.
+    for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return {resolved, status: response.status, url: response.url, headers: [...response.headers], body: btoa(text)};
+  } catch (error) {
+    return {resolved, error: error.name === "AbortError" ? "timeout" : `${error.name}: ${error.message}`};
+  } finally {
+    clearTimeout(timer);
+  }
+}"""
 PROFILE_ROOTS = {"darwin": "Library/Application Support/Google/Chrome", "linux": ".config/google-chrome",
                  "win32": "AppData/Local/Google/Chrome/User Data"}
 # A copy of an installed profile opens only in Google Chrome: its cookies are sealed with Chrome's key.
@@ -537,6 +564,90 @@ class Page:
         self.raw.on("request", listener)
         return Subscription(lambda: self.raw.remove_listener("request", listener))
 
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ..., data: Any = ...,
+              json: Any = ..., soft: Literal[False] = ..., timeout: float = ...) -> http.Response: ...
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ..., data: Any = ...,
+              json: Any = ..., soft: Literal[True], timeout: float = ...) -> http.Response | None: ...
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ..., data: Any = ...,
+              json: Any = ..., soft: bool, timeout: float = ...) -> http.Response | None: ...
+    def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None, data: Any = None,
+              json: Any = None, soft: bool = False, timeout: float = 30.0) -> http.Response | None:
+        """Send one request from the page itself, by its own `fetch()`, and return its `http.Response`.
+
+            items = tab.fetch("/api/items?page=2", headers={"x-csrf": token}).json
+            tab.fetch("https://example.com/api/like", method="POST", json={"id": 1})
+            tab.fetch("/example_user/", soft=True)                  # None for 401, 403, 404
+
+        Args:
+            url: the URL to request; a relative one is resolved against the page's, as the page's
+                own scripts would.
+            method: the HTTP method, such as "GET" or "POST".
+            headers: headers for this request, on top of the ones the browser adds; None adds none.
+                The browser refuses to set some itself (`Cookie`, `Host`, `User-Agent`, …).
+            data: a form body (a dict, sent URL-encoded), text, or raw bytes; None sends none.
+            json: a value to send as a JSON body, with `Content-Type: application/json` unless
+                `headers` names another; None sends none.
+            soft: True returns None for a 401, 403 or 404 instead of raising `http.RefusedError`.
+            timeout: seconds for the whole request, body included; the page aborts it then.
+
+        Returns:
+            The response of a 1xx, 2xx or 3xx with its whole body (redirects are followed), or None
+            for a 401, 403 or 404 when `soft` is True. Its `headers` are what the page's `fetch()`
+            may read: never `Set-Cookie`, and for another origin only those its CORS headers expose.
+
+        Raises:
+            http.RateLimitedError: a 429, with the `Retry-After` seconds when the page may read them.
+            http.RefusedError: any other 4xx, or a 401, 403 or 404 without `soft`.
+            http.ServerError: a 5xx. There is one attempt: the caller decides whether to try again.
+            http.Error: no answer within `timeout`, or the browser refused or couldn't send the
+                request (a dead connection, an origin whose CORS headers don't allow it).
+            browser.Error: the page couldn't run it, such as when it navigated away meanwhile.
+            ValueError: both `data` and `json` were given.
+
+        Because the page sends it, the request carries everything the page's own would: its
+        cookies (for another origin too, when that origin's CORS headers allow it), its `Origin`
+        and `Referer`, and the browser's TLS fingerprint. No message names a header value, a
+        cookie or the URL's query. It needs the `http` extra for `http.Response`. Like every
+        `Page` call, use it only on the browser's thread: Playwright's sync API is single-threaded,
+        and handlers keep running while it waits.
+        """
+        from shared import _http
+
+        if data is not None and json is not None:
+            raise ValueError("pass data or json, not both")
+        sent = dict(headers or {})
+        body = form = None
+        if json is not None:
+            body = jsonlib.dumps(json).encode("utf-8")
+            if not any(name.lower() == "content-type" for name in sent):
+                sent["Content-Type"] = "application/json"
+        elif isinstance(data, Mapping):
+            form = {str(key): str(value) for key, value in data.items()}
+        elif isinstance(data, str):
+            body = data.encode("utf-8")
+        elif data is not None:
+            body = bytes(data)
+        method = method.upper()
+        request = {"url": url, "method": method, "headers": sent, "form": form, "ms": timeout * 1000,
+                   "body": None if body is None else base64.b64encode(body).decode("ascii")}
+        try:
+            result = self.raw.evaluate(IN_PAGE_FETCH, request)
+        # A tab that navigated, closed or crashed meanwhile: the page is gone, not the request refused.
+        except PlaywrightError as error:
+            raise Error(_without_values(f"{method} {_http._where(url)}: the page couldn't send it: "
+                                        f"{_first_line(error)}", sent)) from None
+        where = f"{method} {_http._where(result['resolved'])}"
+        if "error" in result:
+            if result["error"] == "timeout":
+                raise _http.Error(f"{where}: no answer within {timeout:g} s")
+            raise _http.Error(_without_values(f"{where}: {result['error']}", sent))
+        response = _http.Response(status=result["status"], url=result["url"], headers=dict(result["headers"]),
+                                  content=base64.b64decode(result["body"]))
+        return _http._checked(response, method, soft=soft)
+
     def scroll(self, *, within: str | Locator | None = None, until: Callable[[], bool] | None = None,
                count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0, pause: float = 0.3,
                on_step: Callable[[], Any] | None = None) -> int:
@@ -872,6 +983,14 @@ def _headful_user_agent_of(playwright: Playwright, channel: str | None) -> str:
         remote.close()
 
 
+def _without_values(text: str, headers: Mapping[str, str]) -> str:
+    """`text` with every header value of `headers` replaced by `***`, so no token reaches a message."""
+    for value in headers.values():
+        if value:
+            text = text.replace(value, "***")
+    return text
+
+
 def _first_line(error: BaseException) -> str:
     return (str(error).splitlines() or [""])[0]
 
@@ -897,7 +1016,7 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
     parsed = []
     for piece in pieces:
         try:
-            parsed.append(json.loads(piece))
+            parsed.append(jsonlib.loads(piece))
         except ValueError:
             log.debug("on_response: skipped a body that is not JSON from {url}", url=response.url)
     return parsed

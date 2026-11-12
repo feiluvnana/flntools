@@ -2,7 +2,8 @@
 
 The profile and Chromium tests fake Playwright, the home folder and the temp folder, so no real
 profile or browser is touched. The page tests run Playwright's own Chromium, headless, on pages
-served from memory (`fulfill`), and skip without it. The scroll timing tests fake the page and the clock.
+served from memory (`fulfill`), and skip without it. `Page.fetch`'s tests serve their page from a
+real HTTP server on 127.0.0.1 (`LocalServer`), since a request the page sends itself must leave it. The scroll timing tests fake the page and the clock.
 """
 
 import importlib
@@ -18,12 +19,13 @@ import threading
 import time
 import unittest
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from shared import cookies, log, theme
+from shared import cookies, http, log, theme
 from shared import _browser as browser
 from shared._theme import Screen
 
@@ -995,6 +997,180 @@ class HandoffTest(BrowserCase):
     def test_timeout(self):
         self.assertFalse(self.page.handoff(until=lambda: False, message="Log in", poll=0.02, timeout=0.1))
         self.assertEqual(self.lines(), ["! Log in", "✗ Log in"])
+
+
+# Every byte value, so a body that went through text anywhere would come back changed.
+BINARY_BODY = bytes(range(256)) * 300
+# The header a test sends, and checks no error message ever shows.
+SECRET = "Bearer s3cr3t-token-value"
+
+
+class LocalHandler(BaseHTTPRequestHandler):
+    """`LocalServer`'s routes: a page under /app/, bodies of each kind, statuses, an echo and a slow answer."""
+
+    def do_GET(self):
+        self.answer()
+
+    def do_POST(self):
+        self.answer()
+
+    def answer(self):
+        path, _, query = self.path.partition("?")
+        if path == "/app/":
+            return self.send(200, "text/html", b"<!doctype html><title>Local</title>")
+        if path in ("/json", "/app/data/json"):
+            return self.send(200, "application/json", json.dumps({"path": path, "query": query}).encode())
+        if path == "/text":
+            return self.send(200, "text/plain; charset=utf-8", "héllo\r\nwörld".encode())
+        if path == "/binary":
+            return self.send(200, "application/octet-stream", BINARY_BODY)
+        if path == "/echo":
+            length = int(self.headers.get("content-length") or 0)
+            return self.send(200, "application/json", json.dumps({
+                "method": self.command, "body": self.rfile.read(length).decode("latin-1"),
+                "headers": {name.lower(): value for name, value in self.headers.items()}}).encode())
+        if path.startswith("/status/"):
+            status = int(path.removeprefix("/status/"))
+            return self.send(status, "text/plain", b"no", {"Retry-After": "7"} if status == 429 else {})
+        if path == "/slow":
+            # Held until the test ends (or 10 s), so the page's abort is what ends the request.
+            self.server.release.wait(10)
+            return self.send(200, "text/plain", b"late")
+        self.send(404, "text/plain", b"not here")
+
+    def send(self, status, content_type, body, headers=None):
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+        # The page aborted (the timeout test): nobody is reading any more.
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, format, *args):
+        """Quiet: the default writes every request to stderr."""
+
+
+class LocalServer:
+    """An HTTP server on 127.0.0.1 and a free port, serving `LocalHandler` from a thread until `close`."""
+
+    def __init__(self):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), LocalHandler)
+        self.server.daemon_threads = True
+        self.server.release = threading.Event()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.server.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+
+class FetchTest(PageCase):
+    """`Page.fetch`: a request sent by the page itself, to a local server, returned as an `http.Response`."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.server = LocalServer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.close()
+        super().tearDownClass()
+
+    def setUp(self):
+        BrowserCase.setUp(self)
+        self.page = self.browser.open(f"{self.server.url}/app/")
+        self.addCleanup(self.page.close)
+
+    def test_a_json_body(self):
+        response = self.page.fetch(f"{self.server.url}/json?page=2")
+        self.assertIsInstance(response, http.Response)
+        self.assertEqual((response.status, response.ok, response.url), (200, True, f"{self.server.url}/json?page=2"))
+        self.assertEqual(response.headers["Content-Type"], "application/json")
+        self.assertEqual(response.json, {"path": "/json", "query": "page=2"})
+
+    def test_a_text_body_keeps_its_bytes(self):
+        response = self.page.fetch("/text")
+        self.assertEqual(response.content, "héllo\r\nwörld".encode())
+        self.assertEqual(response.text, "héllo\r\nwörld")
+
+    def test_a_binary_body_comes_back_byte_for_byte(self):
+        self.assertEqual(self.page.fetch("/binary").content, BINARY_BODY)
+
+    def test_a_relative_url_is_resolved_against_the_page(self):
+        response = self.page.fetch("data/json")
+        self.assertEqual(response.url, f"{self.server.url}/app/data/json")
+        self.assertEqual(response.json["path"], "/app/data/json")
+
+    def test_post_with_json(self):
+        echo = self.page.fetch("/echo", method="post", json={"id": 1, "name": "example_user"}).json
+        self.assertEqual(echo["method"], "POST")
+        self.assertEqual(json.loads(echo["body"]), {"id": 1, "name": "example_user"})
+        self.assertEqual(echo["headers"]["content-type"], "application/json")
+
+    def test_post_with_a_form_and_with_bytes(self):
+        form = self.page.fetch("/echo", method="POST", data={"q": "a b", "n": 2}).json
+        self.assertEqual(form["body"], "q=a+b&n=2")
+        self.assertTrue(form["headers"]["content-type"].startswith("application/x-www-form-urlencoded"))
+        raw = self.page.fetch("/echo", method="POST", data=b"\x00\xff\n").json
+        self.assertEqual(raw["body"], "\x00\xff\n")
+
+    def test_data_and_json_together_are_refused(self):
+        with self.assertRaises(ValueError):
+            self.page.fetch("/echo", method="POST", data="a", json={"a": 1})
+
+    def test_headers_are_passed_through_with_the_pages_origin(self):
+        echo = self.page.fetch("/echo", headers={"X-Csrf": "token-1", "Accept": "application/json"}).json
+        self.assertEqual(echo["headers"]["x-csrf"], "token-1")
+        self.assertEqual(echo["headers"]["accept"], "application/json")
+        self.assertEqual(echo["headers"]["referer"], f"{self.server.url}/app/")
+
+    def test_the_pages_cookies_are_sent(self):
+        self.page.raw.evaluate("document.cookie = 'sid=example-session; path=/'")
+        self.assertEqual(self.page.fetch("/echo").json["headers"]["cookie"], "sid=example-session")
+
+    def test_a_404_is_refused_and_soft_returns_none(self):
+        with self.assertRaises(http.RefusedError) as caught:
+            self.page.fetch("/status/404?token=abc", headers={"Authorization": SECRET})
+        self.assertEqual(caught.exception.status, 404)
+        self.assertEqual(str(caught.exception), f"GET {self.server.url}/status/404: HTTP 404")
+        self.assertIsNone(self.page.fetch("/status/404", soft=True))
+
+    def test_a_429_is_rate_limited_with_retry_after(self):
+        with self.assertRaises(http.RateLimitedError) as caught:
+            self.page.fetch("/status/429", soft=True)
+        self.assertEqual(caught.exception.retry_after, 7.0)
+        self.assertNotIsInstance(caught.exception, http.RefusedError)
+
+    def test_a_500_is_a_server_error(self):
+        with self.assertRaises(http.ServerError) as caught:
+            self.page.fetch("/status/500")
+        self.assertEqual(caught.exception.status, 500)
+
+    def test_the_timeout_aborts_the_request_in_the_page(self):
+        started = time.monotonic()
+        with self.assertRaises(http.Error) as caught:
+            self.page.fetch("/slow?token=abc", headers={"Authorization": SECRET}, timeout=0.5)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(str(caught.exception), f"GET {self.server.url}/slow: no answer within 0.5 s")
+        # The page is still usable afterwards.
+        self.assertEqual(self.page.fetch("/json").status, 200)
+
+    def test_a_request_the_browser_refuses_names_no_header_value(self):
+        with self.assertRaises(http.Error) as caught:
+            # A NUL byte makes the value invalid: the browser's TypeError must not show it, whatever its wording.
+            self.page.fetch("/json", headers={"X-Token": SECRET + "\x00"})
+        self.assertNotIn("s3cr3t", str(caught.exception))
+        self.assertTrue(str(caught.exception).startswith(f"GET {self.server.url}/json: TypeError"), caught.exception)
 
 
 if __name__ == "__main__":

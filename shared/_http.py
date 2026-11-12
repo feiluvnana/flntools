@@ -21,8 +21,8 @@ None. What a request carries (cookies, signing, pacing, back-off) is left to the
         http.fetch("https://example.com/api", client=client, method="POST", json={"id": 1})
 
 A `Response` is a frozen value made from the body already read: it holds no connection, so
-there is nothing to close, and it has no `.raw`, since `Page.fetch` and flnd's `site.fetch` will
-return the same type from other libraries. This module wraps httpx; the `http` extra brings it,
+there is nothing to close, and it has no `.raw`, since `browser.Page.fetch` (and later flnd's
+`site.fetch`) returns the same type from other libraries. This module wraps httpx; the `http` extra brings it,
 and parsel for `Response.html`.
 
 No message or log line here holds a cookie or an `Authorization` value: messages name the method,
@@ -149,7 +149,7 @@ class Response:
         page.headers["Content-Type"]              # names are looked up in any case
         page.json["items"], page.html.css("h1::text").first
 
-    The same type comes from `http.fetch`, and later from `Page.fetch` and flnd's `site.fetch`.
+    The same type comes from `http.fetch` and `browser.Page.fetch`, and later from flnd's `site.fetch`.
     It never changes once made and holds no connection, so it may be kept and passed between
     threads. `text`, `json` and `html` are worked out on first read and kept, so reading one twice
     costs nothing and a response never fetched as HTML never loads parsel. Two threads reading the

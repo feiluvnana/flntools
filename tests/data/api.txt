@@ -47,6 +47,7 @@ shared.browser.Page(raw: RawPage, browser: Browser)
 shared.browser.Page.browser: attribute
 shared.browser.Page.close() -> None
 shared.browser.Page.document: property -> Selection
+shared.browser.Page.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, data: Any = None, json: Any = None, soft: bool = False, timeout: float = 30.0) -> http.Response | None
 shared.browser.Page.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> int | None
 shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, poll: float = 1.0, timeout: float | None = None) -> bool
 shared.browser.Page.on_request(match: Match, handler: Callable[[Request], Any]) -> Subscription
