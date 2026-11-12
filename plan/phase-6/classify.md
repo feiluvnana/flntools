@@ -76,7 +76,7 @@ The labels a downloader's user most often wants to sort by, each with the prompt
 
 ## flnd
 
-**`--classify`**, a sixth option on `download` and `sync` ([cli](cli.md#download)):
+**`--classify`**, a sixth option on `download`, saved for the target and used by `sync` ([cli](cli.md#download)):
 - After each photo or video is saved (and compressed, when asked), the engine classifies it and renames it to `<labels>_<YYYY-MM-DD>_<name>`, with the labels joined by `+`, such as `pet+nature_`.
 - **The history key doesn't change**, so a renamed file is never downloaded again. The row records the labels.
 - Classifying runs in its own one-at-a-time pool next to the video encodes, so downloads never wait for it.

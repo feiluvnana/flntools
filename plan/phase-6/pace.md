@@ -30,7 +30,7 @@ Two conclusions:
 ```python
 @dataclass(frozen=True)
 class Pace:
-    floor: float = 0.5                                      # the least seconds between two requests, ±40%
+    floor: float = 0.5                                      # the least seconds between two requests; jitter adds 0 to +40%
     budgets: Mapping[str, tuple[int, float]] = {}           # URL part -> (requests, per seconds)
 ```
 
@@ -38,7 +38,7 @@ For each request to the source's own `domains` (API calls, in-page calls and pag
 
 1. **Headers.** A response's `x-rate-limit-remaining` and `x-rate-limit-reset` (and `x-ratelimit-*`, its other spelling) are read for every source. While more than 5 remain, they add nothing. At 5 or fewer, the next request waits for the reset, plus 1 s. `Retry-After` on a 429 is honored as today. No source declares this; any site that sends the headers gets it.
 2. **Budgets.** A sliding window per budget, as Instaloader keeps them. A request whose URL contains the budget's key may go only while fewer than `requests` went in the last `per` seconds, with a 5% margin. Otherwise it waits for the oldest to leave the window. So a run goes at full speed until a window is nearly full, and then exactly as fast as the window allows.
-3. **The learned gap**, at least `floor`, ±40%:
+3. **The learned gap**, at least `floor`, plus 0 to 40% jitter (one learned speed per source, shared with scrolling: [simplify](simplify.md#2-one-way-to-slow-down-after-a-throttle-and-one-learned-speed)):
    - it starts at the gap this source learned on earlier runs (in its `state`), or at `floor`;
    - after a rate limit, a captcha or a "temporarily blocked" page, it **doubles**, up to 60 s;
    - after 50 requests in a row without one, it shrinks by 20%, never below `floor`;
@@ -66,7 +66,7 @@ With Instagram's budgets, a 2,000-post tagged tab (about 170 GraphQL pages, and 
 ## Code
 
 - `flnd/pace.py`, about 70 lines: `Pace`, the sliding windows, the header rule and the learned gap. It has one `wait_turn(url)` and one `record(response)` that the session calls around each request, and `throttled()` calls its `slow_down()`.
-- `Source.pace` replaces the `pace` float in [source](source.md); the field count stays 8.
+- `Source.pace` is a new field of [source](source.md), and `Source.pause` goes ([simplify](simplify.md#2-one-way-to-slow-down-after-a-throttle-and-one-learned-speed)).
 
 ## Tests
 

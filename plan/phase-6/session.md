@@ -42,7 +42,7 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 | --- | --- | --- |
 | pause between scrolls | a fixed `delay=2.0` (0.2 in the WIP commit) | **as short as the page allows**: the next scroll comes as soon as the page shows something new, after at least 0.3 s ([below](#scrolling-on-the-pages-own-time)) |
 | end of the feed | 4 scrolls in a row at the bottom with no progress (8 s at 2.0, 2 s at 0.2) | **10 s** at the bottom with no progress, however many scrolls that is |
-| most scrolls | 200, then it stops silently | none: the feed's end, `--limit` or `more()` stop it |
+| most scrolls | 200, then it stops silently | none: the feed's end or `more()` stop it |
 | `count` | required to see progress | defaults to the number of files saved into this folder so far |
 
 - **The end is a time, not a count**, so a faster or slower `delay` doesn't change when a slow feed is given up on. "No progress" is as now: the page height, `count()` and the `on_response` traffic all stayed the same.
@@ -59,7 +59,7 @@ A fixed pause is always wrong. It is too long when the page has already loaded t
    - `count()` rose;
    - a matching `on_response` arrived;
    - **or** `delay` passed (3 s by default).
-3. Pause the **floor**, 0.3 s ±40%, so two scrolls never come back to back, then scroll again.
+3. Pause the **floor**, 0.3 s times the source's learned speed, plus 0 to 40% jitter, so two scrolls never come back to back, then scroll again.
 
 So on a fast connection a feed scrolls about 2–3 times a second, as fast as its pages arrive, and on a slow one it waits each page out without giving up early. While nothing loads (at the bottom), the 10 s end rule above still decides when the feed has ended.
 

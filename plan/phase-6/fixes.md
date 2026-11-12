@@ -18,7 +18,7 @@ Phase 6, step 1: the bugs the 2026-11-12 audit found (and one from the [gallery-
 
 ## Twitter headers
 
-6. **twt sends its login to the CDNs, and a stale CSRF token to the API.** `Twitter.headers` puts a static `cookie` header, `authorization` and `x-csrf-token` into the client's defaults, so `auth_token` goes to `pbs.twimg.com` and `video.twimg.com` with every image and video. The fixed `cookie` header also overrides the jar, so a `ct0` that x.com refreshes with `Set-Cookie` is never sent, and the API answers 403 once the old one expires. Fix: drop the `cookie` header (the jar already sends x.com's cookies), and have the engine send `Source.headers` only to the source's `domains` ([api](api.md#source-flndsourcesbasepy)). `x-csrf-token` is read from the jar on each request.
+6. **twt sends its login to the CDNs, and a stale CSRF token to the API.** `Twitter.headers` puts a static `cookie` header, `authorization` and `x-csrf-token` into the client's defaults, so `auth_token` goes to `pbs.twimg.com` and `video.twimg.com` with every image and video. The fixed `cookie` header also overrides the jar, so a `ct0` that x.com refreshes with `Set-Cookie` is never sent, and the API answers 403 once the old one expires. Fix, in `prepare` once [source](source.md) replaces `headers`: drop the `cookie` header (the jar already sends x.com's cookies), and send the API headers only to the source's `domains` ([api](api.md#source-flndsourcesbasepy)). `x-csrf-token` is read from the jar on each request.
 
 ## Media errors
 

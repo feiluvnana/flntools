@@ -140,7 +140,7 @@ flnd drives **Google Chrome**, installed the usual way, and no longer installs P
 
 - `flnd/cli.py`: four commands. Its docstring's command list, and the `Preset`/`SyncPreset` types, become one `MediaChoice` parser.
 - `Options(categories, since, until, image, video, audio)`, where `image`, `video` and `audio` are each `Choice(format, level) | None`. `unpack`, `zip` and the four `compress_*` / `format_*` fields go.
-- `Engine(*, home, limit, headless, sources)`: `locale` and `timezone` go, and with them `browser.connect`'s `locale=` and `timezone=`.
+- `Engine(*, home, sources)`: `limit`, `headless`, `locale` and `timezone` go ([simplify](simplify.md)). `browser.connect` keeps its keywords; flnd stops passing `locale=` and `timezone=`.
 - `flnd/compress.py` ([session](session.md#what-moves-out-of-sessionpy)) works on the three kinds through one table: kind → its option, its formats, and whether it waits for the one-at-a-time encode lock (videos only).
 
 ## Tests

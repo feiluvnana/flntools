@@ -17,6 +17,7 @@ Phase 6 makes flntools quicker to set up, the same on every OS, smaller to read,
 | the pace should be as small as the sites allow | [pace](pace.md): each site's own rate headers, Instagram's known budgets (275 GraphQL calls per 10 min, 75 `/api/v1/` per 11 min), and a gap learned per source above a floor (twt 0.5 s, tik 1 s, fbk 1.5 s) |
 | adopt gallery-dl's architecture | [architecture](architecture.md): a source yields `Post`, `File` and `Queue` items with metadata; one job filters, names files from format strings, checks the history, downloads, and runs the postprocessors (compress, classify, mtime) |
 | optimize the flows from what gallery-dl has learned | [flows](flows.md): TikTok's best non-watermarked file, TikTok's list APIs direct first, X's 50-per-page timelines with its full feature flags, Instagram's `product_type` grid rule and headers, browser-like header order for every direct call, and `/accounts/suspended/` as a hard stop |
+| simplify everywhere, and no download limit | [simplify](simplify.md): no limit; one item type; one back-off and one learned speed; no history migrations; one retry layer and one atomic writer; fewer modules. **It wins where another file disagrees**, and holds the final numbers |
 | a classifier for photos and videos | [classify](classify.md): `media.classify(path)`, a small CLIP-style model on ONNX Runtime, downloaded on first use; `--classify` names files `<labels>_<date>_<name>` |
 | the code needs more comments | [comments](comments.md): a docstring standard for every module, class and function, and more *why* comments at every rule a reader has to work out |
 
@@ -28,11 +29,13 @@ Each step ends with `check` green and is pushed on its own.
 1. [fixes](fixes.md): the bugs, each with a test that fails first.
 2. [setup](setup.md): `uv.lock`, dependency groups, `scripts/dev.py`, the thin Makefile, and no browser download.
 3. [architecture](architecture.md), [cli](cli.md), [source](source.md), [pace](pace.md) and [session](session.md): gallery-dl's items-and-job architecture; the lean `Source` and its pace; four commands with `--image`/`--video`/`--audio`; Chrome only; the smaller session protocol and its defaults, with `goto` checked and paced; `compress.py` and `files.py` split out of `session.py`.
-4. [api](api.md): the removals and private names in `shared`, and `python-jsonpath` gone.
+4. [api](api.md): the private names in `shared`, and the few removals judged by usefulness.
 5. [ins](ins.md) and [flows](flows.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with what gallery-dl does, and live runs of the test accounts.
 6. [scripts](scripts.md) and [dates](dates.md): the sources rewritten on the new session and helpers, with every file dated by the engine.
 7. [classify](classify.md): `media.classify` and `--classify`.
 8. [ui](ui.md): the live area (no blinking, and cheap: only changed rows drawn, by one thread, only when something changed), the prompt cursor, and whole-line log colors.
+[simplify](simplify.md) applies to every step, each change in the step that touches its file.
+
 9. [comments](comments.md): every file brought to the docstring and comment standard. Each earlier step already writes its own new code to it.
 
 ## The WIP commit
@@ -43,9 +46,9 @@ The work-in-progress commit on `main` ("sussy") tried items of this phase: a Win
 | --- | --- |
 | the `ifeq ($(OS),Windows_NT)` Makefile | replaced by `scripts/dev.py` ([setup](setup.md)) |
 | `make type` | kept as the `type` task |
-| `session.downloaded(key)` | kept, renamed **`session.saved(key)`** ([session](session.md#members)) |
+| `session.downloaded(key)` | renamed `saved`, then replaced by `Post.files` as a function the job calls only for new posts ([simplify](simplify.md#1-one-item-type-post)) |
 | saving grid images, dated by `pk` | kept, with an allowlist and a full-size check ([ins](ins.md#3-save-from-the-grid-only-what-the-grid-really-has)) |
-| scroll `delay=0.2`, `max=1000` | not kept: 1.5 s, and an end rule of 10 s with no progress ([session](session.md#scroll)) |
+| scroll `delay=0.2`, `max=1000` | not kept: scrolling waits for the page's progress above a learned floor, and ends after 10 s with no progress ([session](session.md#scrolling-on-the-pages-own-time)) |
 | the Protocol's `delay=2.0, max=200` against the code's `0.2, 1000` | gone with the new signature |
 
 ## Decisions
@@ -59,3 +62,4 @@ All decided by the user:
 6. ~~Is `classify` required or an extra?~~ **Decided 2026-11-12: an extra**, which `media.classify` offers to install the first time it's used, as Chrome's Chromium and the model are ([classify](classify.md#flnd)).
 
 Still to check while building, not decisions: MobileCLIP-S0's licence, and the live checks in [ins](ins.md#live-checks) and [source](source.md#tests).
+7. **Keep encrypting secrets?** `vault` encrypts `secrets.db` with a key kept beside it; a 0600 `kv` file would save about 70 lines. **Recommended: keep it** ([simplify](simplify.md#decision)).

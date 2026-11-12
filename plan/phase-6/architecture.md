@@ -28,7 +28,7 @@ The extractor never decides where a file goes, whether it is already there, or w
 | downloaders by scheme | `net.download` for `http(s)`, a `fetch` callable for SDK media (tlg), and the DASH merge when `audio` is set | — |
 | postprocessors at hooks | **one chain after each file**, in this order: `compress` (`--image`/`--video`/`--audio`), `classify` (`--classify`), `mtime` (the file's date). Each is a function `(path, meta) -> path` in `flnd/post.py` | the compress, rename and timestamp code spread through `session.py` |
 | `sleep-request`, `sleep-429` | [pace](pace.md) | — |
-| `ratelimit`, `abort`, `exit` | throttles waited out ([ins](ins.md#4-see-and-wait-out-every-throttle)), hard stops raise `LoginError`, `--limit` stops consuming | — |
+| `ratelimit`, `abort`, `exit` | throttles waited out ([ins](ins.md#4-see-and-wait-out-every-throttle)), and hard stops raise `LoginError`; flnd has no download limit | — |
 
 ### What flnd keeps that gallery-dl doesn't have
 
@@ -70,7 +70,7 @@ def items(self, session):
 
 - **The engine fills what the source leaves out.** `count` from the `File`s of the post, `index` from `num` and `count`, and `date` from the [dates](dates.md) fallbacks (`Last-Modified`, then the download day). The `extension` from the content, as now.
 - **Skipping before work.** `session.saved(key)` stays, for a source that can skip a request when the post is already saved (ins's media info). The engine also skips a whole `Post` whose first file's key is saved, and a `--time` range rules out a `Post` before its files are listed. So a generator that's still listing doesn't cost a download.
-- **`--limit` and Ctrl-C** stop consuming the generator. Python closes it at the next `yield`, so a source never checks `session.full` again.
+- **Ctrl-C** stops consuming the generator. Python closes it at the next `yield`. flnd has no download limit ([simplify](simplify.md#no-download-limit)).
 - **Responses while scrolling become a loop.** Today a source registers `on_response`, scrolls, and counts what its handler found. Now `session.responses(match, scroll=True)` is an iterator of the JSON responses that match, scrolling the page while the caller asks for more, and ending by the [end rule](session.md#scrolling-on-the-pages-own-time). So the scroll fallback reads like an API loop: `for data in session.responses("graphql", scroll=True): yield from self.parse(data)`.
 
 ## What changes in the other steps
@@ -105,7 +105,7 @@ def items(self, session):
   - `index` empty for one file and `_<num>` for several;
   - `--from` and `--time` on `Post` and `File`;
   - a saved post skipped whole;
-  - `--limit` closes the generator, and its `finally` runs;
+  - Ctrl-C closes the generator, and its `finally` runs;
   - a `Queue` runs once as a child;
   - the postprocessors run in order and are given the renamed path;
   - `text=` writes a file atomically.

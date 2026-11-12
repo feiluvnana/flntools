@@ -18,7 +18,7 @@ For a listed post, ins reads `https://www.instagram.com/api/v1/media/<pk>/info/`
 
 - It goes through `session.fetch_json`, so it is paced, its 429 is backed off by the engine, and its cookies are the browser's.
 - `Instagram.prepare(request, cookies)` (new, [source](source.md)) adds `X-IG-WWW-Claim` (kept from each response's `x-ig-set-www-claim`), `X-ASBD-ID`, and for GraphQL `X-FB-LSD` and `X-FB-Friendly-Name`, as gallery-dl sends them, besides `X-IG-App-ID: 936619743392459`, `X-CSRFToken: <csrftoken>`, `X-Requested-With: XMLHttpRequest` and `Referer: https://www.instagram.com/`. They go only to `instagram.com` ([api](api.md#source-flndsourcesbasepy)), never to the CDN.
-- **httpx's TLS fingerprint differs from Chrome's.** If Instagram turns out to refuse these calls from httpx (to be checked on a live run, [below](#live-checks)), the fallback is the same request from inside the logged-in tab, `page.raw.evaluate("fetch(…)")`, under the same pacing and checks. That stays inside `ins.py`, so it adds no session API.
+- **httpx's TLS fingerprint differs from Chrome's.** If Instagram turns out to refuse these calls from httpx (to be checked on a live run, [below](#live-checks)), the fallback is the same request sent from the logged-in tab, `fetch_json(…, in_page=True)` ([below](#three-ways-to-reach-an-api)), under the same pacing and checks.
 - A post without a `pk` is still read from its page, under the same pacing and checks.
 
 ### 2. Skip before any request
@@ -70,7 +70,7 @@ Instagram's fix is one case of a general rule, which every source follows from P
 
 ```python
 first = profile.first_request                      # kept by the on_response handler
-while cursor and not session.full:
+while cursor:
     data = session.fetch_json(first.url, method=first.method, in_page=True,
                               data=with_cursor(first.post_data, cursor), headers=first.headers)
     cursor = profile.on_result(session, data, None)
@@ -111,7 +111,7 @@ These are checked once, by hand, on the user's authorized test account, before t
 `tests/test_ins.py`, with anonymized fixtures only:
 - a tagged post is read through the media info API, not its page; a post without a `pk` through its page;
 - a post already saved, or dated outside `--since`, makes no request;
-- a grid photo without `media_type`, a reels-tab item, and a photo smaller than 1,080 px are read through the API, not saved from the grid;
+- a grid item whose `product_type` isn't `"feed"`, a reels-tab item, and a photo whose `candidates[0]` is more than 10% under its `original_width` are read through the API, not saved from the grid;
 - a "Please wait a few minutes" body calls `throttled` and then retries the same post, which is saved;
 - a page load that ends on `/accounts/login/` is waited out and loaded again;
 - a throttled GraphQL response during the scroll doesn't end the tab;

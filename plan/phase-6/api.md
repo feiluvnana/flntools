@@ -76,7 +76,7 @@ The [session](session.md) step covers it. In short:
 | API | Today | Phase 6 |
 | --- | --- | --- |
 | `Options(categories, since, until, unpack, zip, compress_image, compress_video, format_image, format_video)` | frozen dataclass | **`Options(categories, since, until, image, video, audio)`**, each of the last three a `Choice(format, level)` or None ([cli](cli.md#what-changes-in-the-code)) |
-| `Engine(*, home, limit, headless, locale, timezone, sources)` | | **`locale` and `timezone` go** |
+| `Engine(*, home, limit, headless, locale, timezone, sources)` | | **`Engine(*, home, sources)`**: `limit` goes (flnd has no limit), and `headless`, `locale` and `timezone` with it ([simplify](simplify.md)) |
 | `Engine.resolve(texts) -> list[Target]` | | — |
 | `Engine.run(targets, options) -> int` | the number of files written | returns **`Outcome(files, failed)`**, so the commands can set their exit status; a source whose `connect` or login fails marks its targets' rows failed, not ok ([fixes](fixes.md#failed-groups)) |
 | `Engine.login(source, method)` | | — |

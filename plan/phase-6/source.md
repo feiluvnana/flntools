@@ -73,7 +73,7 @@ class Instagram(Source):
 - **`wait`:** tlg's only use is Telegram's flood wait. Its download function catches `FloodWaitError` and calls `session.throttled(retry_after=error.seconds)`, the same path as every other rate limit ([session](session.md#members)). Retry waits are otherwise the engine's 1.0 s.
 - **`headers` and `sign`** become one `prepare`, which sees each request and the login's cookies. It runs only for the source's own `domains` ([fixes › Twitter headers](fixes.md#twitter-headers)). loi's `sign` then needs no code to keep its API headers off CDN requests.
 
-The session's [`login_walls`](session.md#members) field isn't added either: ins checks the final URL itself in `run` and calls `session.throttled`. So the `Source` gains no fields in Phase 6.
+The session's [`login_walls`](session.md#members) field isn't added either: ins checks the final URL itself and calls `session.throttled`. The `Source` gains `pace`, and then the `folder`, `filename` and `key` formats of [architecture](architecture.md) ([simplify](simplify.md#final-numbers)).
 
 ## Tests
 
