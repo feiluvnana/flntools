@@ -65,10 +65,13 @@ CDN_HEADERS = {"Referer": f"{SITE}/"}
 class Tab(NamedTuple):
     """A profile tab: its category, and the paths it may have, as the profile header names them."""
 
+    # The tab's name, which is its folder and its category, such as "photos".
     category: str
+    # The paths Facebook may give the tab on a profile, in the order to try them.
     paths: tuple[str, ...]
 
 
+# The profile's tabs. The posts tab's path is empty: it is the profile page itself.
 TABS = (
     Tab("posts", ("",)),
     Tab("photos", ("photos_by", "photos")),
@@ -78,18 +81,24 @@ TABS = (
     Tab("videos", ("videos_by", "videos")),
 )
 BY_CATEGORY = {tab.category: tab for tab in TABS}
+# Where the profile header's user sits in the first page's results.
 HEADER = "data.user.profile_header_renderer.user"
+# A story page's cards: each is one story, with its media under `attachments`.
 STORY_CARDS = "data.bucket.unified_stories_with_notes.edges[].node"
 # Where a video's progressive files are: Facebook moved them under its delivery fragment.
 PROGRESSIVE = "videoDeliveryResponseFragment.videoDeliveryResponseResult.progressive_urls || progressive_urls"
 # Where a video's DASH manifest is, beside its progressive files.
 MANIFEST = ("videoDeliveryResponseFragment.videoDeliveryResponseResult.dash_manifests[0].manifest_xml"
             " || dash_manifests[0].manifest_xml || dash_manifest")
+# A video's URL fallbacks, best first, for a node with neither a DASH manifest nor progressive files.
 VIDEO_URLS = ("browser_native_hd_url", "playable_url_quality_hd", "browser_native_sd_url", "playable_url")
+# A photo's image URL: the first of these that the node has, in this order.
 PHOTO_URL = "viewer_image.uri || large_share_image.uri || photo_image.uri || image.uri"
+# A grid tile is a collection item: its photo is a small copy, which `photo_item` leaves out.
 TILES = {"TimelineAppCollectionItem"}
 # The profile header's cover and pictures are the profile category's, not any tab's.
 NOT_MEDIA = {"profile_header_renderer"}
+# The date fields a node may carry, in the order they are preferred; `posted_on` takes the first that holds a stamp.
 TIMESTAMPS = ("creation_time", "publish_time", "post_timestamp", "timestamp", "created_time")
 # The Comet GraphQL endpoint's responses carry the feed; any other response is not read.
 FEED = "graphql"
@@ -114,10 +123,15 @@ PAGE_INFO_DEPTH = 3
 class Header(NamedTuple):
     """What the profile header tells: the profile's id, its two pictures, story buckets, and tabs' paths."""
 
+    # The profile's id, which keeps other accounts' media out of its tabs.
     user_id: str | None
+    # The profile picture's URL and its photo id, when the header has one.
     picture: tuple[str, str] | None
+    # The cover photo's URL and its photo id, when the header has one.
     cover: tuple[str, str] | None
+    # The story bucket ids, each read from its own page.
     story_buckets: list[str]
+    # The tab paths the header lists, from its navigation sections and their collections.
     paths: set[str]
 
 
@@ -140,7 +154,10 @@ class Profile:
 
     @property
     def owner(self) -> str | None:
-        """The profile's own id, which keeps media another account owns out of its tabs."""
+        """The profile's own id, which keeps media another account owns out of its tabs.
+
+        None without a header, and then no media is left out.
+        """
         return self.header.user_id if self.header else None
 
     @property
@@ -183,6 +200,10 @@ class Facebook(Source):
 
         Loads the profile page once, and reads its header; every category receives the result. A
         block or a login wall on the way is waited out (`read_page`).
+
+        Args:
+            site: the target's site.
+            user: the user name, or the numeric id the `profile.php?id=` URL gives.
         """
         url = f"{SITE}/{user}"
         # Subscribed before the page loads, so the responses of its first load are kept as well.
@@ -197,22 +218,50 @@ class Facebook(Source):
     # route left open, and the tabs after it navigate away.
     @user.category
     def posts(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's own posts: the photos and videos its page and its scrolling load."""
+        """The profile's own posts: the photos and videos its page and its scrolling load.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("posts",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         yield from read_tab(site, profile, BY_CATEGORY["posts"])
 
     @user.category
     def photos(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The photos tab."""
+        """The photos tab.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("photos",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         yield from read_tab(site, profile, BY_CATEGORY["photos"])
 
     @user.category
     def tagged(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The photos the profile is tagged in, other people's content, taken without `--from` too."""
+        """The photos the profile is tagged in, other people's content, taken without `--from` too.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("tagged",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         yield from read_tab(site, profile, BY_CATEGORY["tagged"])
 
     @user.category
     def albums(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The albums tab, then each album it lists, scrolled to its end into `albums/<title>/`."""
+        """The albums tab, then each album it lists, scrolled to its end into `albums/<title>/`.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("albums",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         tab = BY_CATEGORY["albums"]
         path = tab_path(tab, profile.paths)
         if path is None:
@@ -243,17 +292,38 @@ class Facebook(Source):
 
     @user.category
     def reels(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The reels tab."""
+        """The reels tab.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("reels",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         yield from read_tab(site, profile, BY_CATEGORY["reels"])
 
     @user.category
     def videos(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The videos tab."""
+        """The videos tab.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("videos",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         yield from read_tab(site, profile, BY_CATEGORY["videos"])
 
     @user.category
     def stories(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The stories of each story bucket the header lists, each read from its own page."""
+        """The stories of each story bucket the header lists, each read from its own page.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("stories",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         if profile.header is None:
             site.warn("the profile header wasn't found; its stories are skipped")
             return
@@ -274,7 +344,14 @@ class Facebook(Source):
 
     @user.category(folder="profile", key="")
     def profile(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile photo and the cover photo, each named by its photo id; keyed by their paths, as ever."""
+        """The profile photo and the cover photo, each named by its photo id; keyed by their paths, as ever.
+
+            collect(Facebook, "fbk:example.page", options=Options(categories=("profile",)))
+
+        Args:
+            site: the target's site.
+            profile: the loaded `Profile` the route made, which every category reads from.
+        """
         if profile.header is None:
             site.warn("the profile header wasn't found; its pictures are skipped")
             return
@@ -302,6 +379,7 @@ def read_page(site: Site, url: str) -> list[Any] | None:
     the countdown going, which says to log in again.
     """
     while True:
+        # The page's own results are in its HTML: a first load fetches nothing it needs, so they are read from there.
         results = meta_results(site, url)
         if results:
             return results
@@ -354,6 +432,7 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
     replay: Replay | None = None
     cursor: str | None = None
     with watch_responses(site, FEED, scroll=True, lines=True) as responses:
+        # 1. The tab's own page is loaded; the posts tab reads what the route already read, with no owner filter.
         if path or profile.results is None:
             results = read_page(site, f"{profile.url}/{path}")
             # A tab that didn't load has nothing to scroll.
@@ -364,6 +443,7 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
             first, owner = [*profile.results, *profile.early], None
         for result in first:
             yield from posts(result, owner)
+        # 2. Scrolling: each response is read, and the first with a next page is the one replayed.
         for result in responses:
             yield from posts(result, profile.owner)
             captured = Replay.of(responses.request, cursor=CURSOR)
@@ -381,6 +461,7 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
             if state[0]:
                 replay, cursor = captured, state[1]
                 break
+    # 3. The rest of the pages, by replaying the tab's own request with each cursor.
     if replay is not None and cursor:
         refused = yield from replayed(site, replay, cursor, lambda line: posts(line, profile.owner))
         if refused:
@@ -409,6 +490,7 @@ def replayed(site: Site, replay: Replay, cursor: str,
         for lines in pages(lambda following: replay_lines(site, replay, following or cursor), next_cursor):
             for line in lines:
                 yield from posts(line)
+    # A refused replay is the caller's to scroll past, so it is returned, not raised; a block never gets here (`replay_lines` waits it out).
     except FetchError:
         return True
     return False
@@ -417,12 +499,18 @@ def replayed(site: Site, replay: Replay, cursor: str,
 def replay_lines(site: Site, replay: Replay, cursor: str) -> list[Any]:
     """One page of a tab by replay, as its JSON lines; a block or a login wall waited out and the page asked again.
 
+    Args:
+        site: the target's site.
+        replay: the tab's own next-page request.
+        cursor: the cursor of the page to ask for.
+
     Raises:
         FetchError: the replay was refused, or its answer holds no `page_info`, so it isn't a page of the tab.
     """
     while True:
         try:
             response = replay.send(site, cursor)
+        # A refused call may still carry Facebook's block page in its body: that is waited out, anything else is raised.
         except FetchError as error:
             if error.response is not None and blocked(error.response):
                 site.back_off(TEMPORARILY_BLOCKED)
@@ -512,7 +600,14 @@ def media_posts(result: Any, tab: str, *, album: str | None = None, owner: str |
 
 
 def post_of(item: Item, part: str, *, album: str | None = None, headers: dict[str, str] | None = None) -> Post:
-    """One item as a post of one file, named `<date>_<id>.<ext>` (`<id>.<ext>` when it has no date)."""
+    """One item as a post of one file, named `<date>_<id>.<ext>` (`<id>.<ext>` when it has no date).
+
+    Args:
+        item: the photo or video.
+        part: the folder it is saved in, such as "photos" or "albums".
+        album: the album's title, which makes it a file of `albums/<title>/`; None for none.
+        headers: the request headers its file is fetched with; None for none.
+    """
     extension = "mp4" if item.kind == "video" else image_extension(item.url)
     date = day(item.date)
     name = f"{date}_{item.id}.{extension}" if date else f"{item.id}.{extension}"
@@ -528,7 +623,17 @@ def album_links(data: Any) -> dict[str, str]:
 
 
 def tab_path(tab: Tab, paths: set[str]) -> str | None:
-    """The path of a tab on this profile: the first the header names, or the first known one without a header."""
+    """The path of a tab on this profile: the first the header names, or the first known one without a header.
+
+        tab_path(BY_CATEGORY["photos"], {"photos_by"})
+
+    Args:
+        tab: the tab to find.
+        paths: the tab paths the header names; empty without a header.
+
+    Returns:
+        The path, which is "" for the posts tab; None when the header names none of the tab's paths.
+    """
     if not tab.paths[0] or not paths:
         return tab.paths[0]
     return next((path for path in tab.paths if path in paths), None)
@@ -557,11 +662,15 @@ def read_header(result: Any) -> Header | None:
 class Item(NamedTuple):
     """One photo or video found in a result."""
 
+    # The photo's or video's id, which names its file and is its key in the history.
     id: str
+    # The file's URL: a video's merged stream, its progressive or HD file, or the image.
     url: str
+    # "image" or "video"; a video is saved as an mp4.
     kind: str
     # When it was posted, as the site gives it (Unix seconds); the engine reads it as a UTC day.
     date: Any
+    # The album's title, when the photo sits in one.
     album: str | None = None
     # A DASH video's audio stream, merged into it.
     audio: str | None = None
@@ -572,6 +681,12 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
     """Every photo and video anywhere in a result, each once, with the date of the nearest dated node.
 
     With `owner`, media another account owns (a shared post, a suggested reel) is left out.
+
+    Args:
+        data: the JSON to search; a list is searched item by item.
+        stamp: the date of the nearest dated node above `data`, used when `data` has none of its own.
+        seen: the ids already yielded, shared with the recursion; None starts a new set.
+        owner: the profile's id, or None to keep every account's media.
     """
     seen = set() if seen is None else seen
     if isinstance(data, list):
@@ -580,6 +695,7 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
         return
     if not isinstance(data, dict):
         return
+    # A node's own date wins; a node without one keeps the nearest dated parent's.
     stamp = posted_on(data) or stamp
     item = video_item(data, stamp) or photo_item(data, stamp)
     owned_by = selector.parse(data).jmespath("owner.id || video_owner.id").first
@@ -595,7 +711,15 @@ def media_items(data: Any, stamp: Any = None, seen: set[str] | None = None, *,
 
 
 def video_item(node: dict, stamp: Any) -> Item | None:
-    """A video node's best file: its DASH video and audio, the HD progressive one, or else the best playable URL."""
+    """A video node's best file: its DASH video and audio, the HD progressive one, or else the best playable URL.
+
+    Args:
+        node: the JSON node, which is a video only when its type or its files say so.
+        stamp: the date to file it under, from `posted_on` or its parent.
+
+    Returns:
+        The item; None when the node isn't a video or has no id or no URL.
+    """
     typename = node.get("__typename", "")
     if not ("Video" in typename or "Reel" in typename or "progressive_urls" in node):
         return None
@@ -603,6 +727,7 @@ def video_item(node: dict, stamp: Any) -> Item | None:
     if video_id and (streams := dash.best(selector.parse(node).jmespath(MANIFEST).first)):
         return Item(video_id, streams.video, "video", stamp, audio=streams.audio)
     progressive = selector.parse(node).jmespath(PROGRESSIVE).all
+    # The HD file is picked by its quality tag; without one, the first progressive file is the fallback.
     hd = [entry for entry in progressive if selector.parse(entry).jmespath("metadata.quality").first == "HD"]
     url = next((entry.get("progressive_url") for entry in hd + progressive if entry.get("progressive_url")), None)
     url = url or next((node[key] for key in VIDEO_URLS if node.get(key)), None)
@@ -610,7 +735,15 @@ def video_item(node: dict, stamp: Any) -> Item | None:
 
 
 def photo_item(node: dict, stamp: Any) -> Item | None:
-    """A photo node's largest image, with its album's name when it has one."""
+    """A photo node's largest image, with its album's name when it has one.
+
+    Args:
+        node: the JSON node, which is a photo only when its type or its image says so.
+        stamp: the date to file it under, from `posted_on` or its parent.
+
+    Returns:
+        The item; None when the node isn't a photo, is a grid tile, or has no id or no URL.
+    """
     # A tab's grid tile holds a small copy of a photo that the tile's inner node, or a post, has in full.
     if node.get("__typename") in TILES:
         return None
@@ -639,6 +772,7 @@ def posted_on(node: dict) -> Any:
 def image_extension(url: str) -> str:
     """An image's extension: the format its `stp=dst-<format>` asks the CDN for, or else its path's."""
     parts = urlsplit(url)
+    # The CDN converts the file to the format its `stp=dst-<format>` names, so that is the extension.
     converted = re.search(r"dst-(jpg|png|webp|gif)", parse_qs(parts.query).get("stp", [""])[0])
     if converted:
         return converted[1]
