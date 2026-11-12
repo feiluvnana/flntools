@@ -113,6 +113,13 @@ REFUSED_DIRECT = frozenset({400, 401, 403})
 
 
 def is_graphql(url: str) -> bool:
+    """Whether a response is a GraphQL call, the kind that carries a profile tab's or a post's data.
+
+        if is_graphql(response.url):
+
+    Args:
+        url: the response's URL.
+    """
     return "graphql" in url
 
 
@@ -150,7 +157,14 @@ class Instagram(Source):
             r"instagram.com/tv/{code:[\w-]+}", r"instagram.com/*/p/{code:[\w-]+}", r"instagram.com/*/reel/{code:[\w-]+}",
             r"instagram.com/*/reels/{code:[\w-]+}", r"instagram.com/*/tv/{code:[\w-]+}")
     def post(self, site: Site, code: str) -> Iterator[Post]:
-        """One post or reel, by its code: from the media API by the `pk` the code spells, else its page."""
+        """One post or reel, by its code: from the media API by the `pk` the code spells, else its page.
+
+            for post in source.post(site, "C1abc"):
+
+        Args:
+            site: the target's site.
+            code: the post's code, as in its URL (`/p/<code>/`).
+        """
         media = self.api.post(site, code)
         if media is not None:
             yield post_of(media)
@@ -160,32 +174,73 @@ class Instagram(Source):
         """A profile, by its user name; a tab's URL (/reels/, /tagged/) is its profile too.
 
         Nothing is loaded yet: a tab, or the first category that needs the profile's page, loads it.
+
+            profile = source.user(site, "example_user")
+
+        Args:
+            site: the target's site.
+            user: the user name, as the URL gives it.
         """
         return Profile(user)
 
     @user.category(newest_first=True)
     def posts(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's posts, newest first, to the end of the grid."""
+        """The profile's posts, newest first, to the end of the grid.
+
+            collect(Instagram, "ins:example_user", options=Options(categories=("posts",)))
+
+        Args:
+            site: the target's site.
+            profile: the user's `Profile`, which its tabs fill in as they are read.
+        """
         yield from profile.read_tab(site, self.api, "posts")
 
     @user.category(newest_first=True)
     def reels(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's reels, newest first; the grid lists only thumbnails, so each reel's files come from the API."""
+        """The profile's reels, newest first; the grid lists only thumbnails, so each reel's files come from the API.
+
+            collect(Instagram, "ins:example_user", options=Options(categories=("reels",)))
+
+        Args:
+            site: the target's site.
+            profile: the user's `Profile`, which its tabs fill in as they are read.
+        """
         yield from profile.read_tab(site, self.api, "reels")
 
     @user.category
     def tagged(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The posts the profile is tagged in, by other people: the grid follows the tags, not the dates."""
+        """The posts the profile is tagged in, by other people: the grid follows the tags, not the dates.
+
+            collect(Instagram, "ins:example_user", options=Options(categories=("tagged",)))
+
+        Args:
+            site: the target's site.
+            profile: the user's `Profile`, which its tabs fill in as they are read.
+        """
         yield from profile.read_tab(site, self.api, "tagged")
 
     @user.category
     def reposts(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The posts the profile reposted, in the order of the reposts."""
+        """The posts the profile reposted, in the order of the reposts.
+
+            collect(Instagram, "ins:example_user", options=Options(categories=("reposts",)))
+
+        Args:
+            site: the target's site.
+            profile: the user's `Profile`, which its tabs fill in as they are read.
+        """
         yield from profile.read_tab(site, self.api, "reposts")
 
     @user.category(key="")
     def stories(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's active stories, from the user's story API, else their page; their key is their path, as before routes."""
+        """The profile's active stories, from the user's story API, else their page; their key is their path, as before routes.
+
+            collect(Instagram, "ins:example_user", options=Options(categories=("stories",)))
+
+        Args:
+            site: the target's site.
+            profile: the user's `Profile`, which its tabs fill in as they are read.
+        """
         profile.describe(site)
         stories = self.api.stories(site, profile.id) if profile.id else None
         if stories is None:
@@ -195,7 +250,14 @@ class Instagram(Source):
 
     @user.category(key="")
     def highlights(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """Each highlight's stories, in the highlight's folder, 5 highlights a call; their key is their path."""
+        """Each highlight's stories, in the highlight's folder, 5 highlights a call; their key is their path.
+
+            collect(Instagram, "ins:example_user", options=Options(categories=("highlights",)))
+
+        Args:
+            site: the target's site.
+            profile: the user's `Profile`, which its tabs fill in as they are read.
+        """
         profile.describe(site)
         found = profile.highlights
         for start in range(0, len(found), REELS_PER_CALL):
@@ -212,7 +274,14 @@ class Instagram(Source):
 
     @user.category(folder="profile", key="")
     def profile(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile picture, named as Instagram names it, so a new picture is a new file; its key is its path."""
+        """The profile picture, named as Instagram names it, so a new picture is a new file; its key is its path.
+
+            collect(Instagram, "ins:example_user", options=Options(categories=("profile",)))
+
+        Args:
+            site: the target's site.
+            profile: the user's `Profile`, which its tabs fill in as they are read.
+        """
         profile.describe(site)
         if profile.picture:
             yield Post(profile.user, [File(profile.picture, name=picture_name(profile.picture))], headers=CDN_HEADERS)
@@ -267,10 +336,13 @@ class Api:
                 answer that isn't JSON. The caller falls back to the page.
             LoginError: Instagram sent the call to `/accounts/suspended/`.
         """
+        # Each pass makes one call; a throttle or a login wall is waited out and the call made again.
         while True:
             try:
                 response = site.fetch(url, params=params, in_page=self.in_page,
                                       headers=self.headers(site.cookies) if self.in_page else None)
+            # A 404 is a post or user that isn't there, which is an answer, not an error. Any other
+            # refusal goes to `_waited`, which may move the calls into the tab.
             except FetchError as error:
                 if error.status == 404:
                     return None
@@ -279,14 +351,22 @@ class Api:
                 raise
             if self._waited(site, response, refused=False):
                 continue
+            # Instagram rotates this claim and expects it echoed back on the next call, as gallery-dl does.
             self.claim = response.headers.get("x-ig-set-www-claim") or self.claim
             try:
                 return response.json
+            # An answer that isn't JSON is an HTML error or login page, not an API result: the caller reads the page.
             except http.Error:
                 raise FetchError(f"{url}: Instagram's answer isn't JSON") from None
 
     def media(self, site: Site, pk: str) -> dict | None:
         """One post by its `pk` from `/api/v1/media/<pk>/info/`, shaped as a post page's; None when it isn't there.
+
+            media = api.media(site, "3141592653589793238")
+
+        Args:
+            site: the target's site.
+            pk: the post's id, as digits.
 
         Raises:
             FetchError, LoginError: as `get`.
@@ -296,10 +376,21 @@ class Api:
         return items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else None
 
     def post(self, site: Site, code: str) -> dict | None:
-        """One post by its code: from `media` by the `pk` the code spells, else from its page; None when neither has it."""
+        """One post by its code: from `media` by the `pk` the code spells, else from its page; None when neither has it.
+
+            media = api.post(site, "C1abc")
+
+        Args:
+            site: the target's site.
+            code: the post's code, as in its URL.
+
+        Returns:
+            The post's JSON as a post page shows it; None when neither the API nor the page has it.
+        """
         pk = pk_of_code(code)
         media = None
         if pk:
+            # A refused media API isn't fatal: the post's page, read below, still holds the post.
             try:
                 media = self.media(site, pk)
             except FetchError as error:
@@ -325,10 +416,12 @@ class Api:
             return None
         try:
             data = self.get(site, f"{API}/feed/reels_media/", params=[("reel_ids", str(reel)) for reel in reel_ids])
+        # Refused once: the reels API isn't asked again this run, and the story pages are read instead.
         except FetchError as error:
             self.refused.add("reels")
             site.warn("{what}: the reels API refused ({error}); reading the story pages", what=what, error=error)
             return None
+        # An answer without the reels' JSON is a refusal too, so the same fallback applies.
         if not isinstance(data, dict):
             self.refused.add("reels")
             site.warn("{what}: the reels API isn't there; reading the story pages", what=what)
@@ -355,6 +448,7 @@ class Api:
             return None
         try:
             data = self.get(site, f"{API}/feed/user/{user_id}/story/")
+        # Refused once: later calls return None unasked, and the story pages are read.
         except FetchError as error:
             self.refused.add("story")
             site.warn("stories: the story API refused ({error}); reading the story pages", error=error)
@@ -377,6 +471,7 @@ class Api:
         Raises:
             LoginError: it landed on `/accounts/suspended/`.
         """
+        # The suspended page is the hard stop: nothing is retried past it.
         where = urlsplit(response.url).path if response is not None else ""
         if where.startswith(SUSPENDED):
             raise suspended()
@@ -387,6 +482,7 @@ class Api:
             self.in_page = True
             site.warn("Instagram refused flnd's own client; sending its API calls from the page")
             return True
+        # A throttle or a login wall is waited out with the site's back-off, then the call is made again.
         if throttled(data) or walled:
             site.back_off("Instagram asked to wait a few minutes" if throttled(data) else "Instagram showed a login wall")
             return True
@@ -401,12 +497,15 @@ class Profile:
         user: the user name.
     """
 
+    # The user name, as the URL gives it.
     user: str
     # The user's id (`pk`), which the reels API takes, once a result describing the user came.
     id: str | None = None
     # The largest profile picture, once a result describing the user came.
     picture: str | None = None
+    # Whether a result describing the user has come, so `describe` doesn't load the profile's page again.
     described: bool = False
+    # The profile's highlights as `(id, title)`, in the order the results list them.
     highlights: list[tuple[str, str]] = field(default_factory=list)
     # The codes each tab listed, so a post a result repeats is yielded once.
     listed: dict[str, set[str]] = field(default_factory=lambda: {tab: set() for tab in TABS})
@@ -427,14 +526,17 @@ class Profile:
         """
         replay = cursor = None
         ended = False
+        # Watching starts before the tab loads, so the first page's own request is not missed.
         with watch_responses(site, is_graphql, scroll=True) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
                 return
+            # 1. The first page is embedded in the HTML, so it is read before any scrolling.
             for result in embedded_results(site.page.document):
                 yield from self._posts(site, api, result, tab)
                 state = page_state(result, tab)
                 if state is not None:
                     ended, cursor = not state[0], state[1]
+            # 2. Scroll until a response carries a next page's cursor. Its request is replayed, not scrolled.
             if not ended:
                 for result in responses:
                     if throttled(result):
@@ -449,8 +551,10 @@ class Profile:
                     replay = None if ended else Replay.of(responses.request, cursor=CURSOR)
                     if ended or replay is not None:
                         break
+        # 3. The rest of the pages, by replaying the page's own request with each cursor.
         if replay is not None and cursor:
             refused = yield from self._replayed(site, api, tab, replay, cursor)
+            # 4. A refused replay: scrolling reads the rest, and the posts already read are skipped by their codes.
             if refused:
                 # The tab is still where the scroll left it: scrolling on reads the rest, repeats skipped.
                 with watch_responses(site, is_graphql, scroll=True) as responses:
@@ -500,6 +604,7 @@ class Profile:
             for result in pages(lambda following: replay_page(site, replay, following or cursor, tab),
                                 lambda result: next_cursor(result, tab)):
                 yield from self._posts(site, api, result, tab)
+        # A refusal ends the replays for this tab; a rate limit is not one, and `replay_page` waits it out.
         except FetchError as error:
             site.warn("{tab}: the page's API refused a replay ({error}); scrolling instead", tab=tab, error=error)
             return True
@@ -531,6 +636,12 @@ class Profile:
 def load(site: Site, url: str) -> bool:
     """Load an Instagram page, waiting out a login wall or a challenge; False when it didn't load.
 
+        if load(site, "https://www.instagram.com/example_user/"):
+
+    Args:
+        site: the target's site.
+        url: the page's URL.
+
     Raises:
         LoginError: the page went to `/accounts/suspended/`.
     """
@@ -554,6 +665,12 @@ def suspended() -> LoginError:
 def replay_page(site: Site, replay: Replay, cursor: str, tab: str) -> Any:
     """One page of a tab by replay, a throttle waited out and the same page asked again.
 
+    Args:
+        site: the target's site.
+        replay: the tab's pagination request, as the page sent it.
+        cursor: the cursor of the page to ask for.
+        tab: one of `TABS`.
+
     Raises:
         FetchError: the replay was refused, its answer isn't JSON, or it doesn't hold the tab.
         LoginError: it landed on `/accounts/suspended/`.
@@ -561,6 +678,7 @@ def replay_page(site: Site, replay: Replay, cursor: str, tab: str) -> Any:
     while True:
         try:
             response = replay.send(site, cursor)
+        # A refused replay still carries its answer, so it is checked for a throttle or the suspended page.
         except FetchError as error:
             if error.response is not None and urlsplit(error.response.url).path.startswith(SUSPENDED):
                 raise suspended() from None
@@ -574,6 +692,7 @@ def replay_page(site: Site, replay: Replay, cursor: str, tab: str) -> Any:
         if throttled(data):
             site.back_off("Instagram asked to wait a few minutes")
             continue
+        # An answer without the tab's connection is a refusal: it holds none of the posts the caller wants.
         if not isinstance(data, dict) or connection_of(data, tab) is None:
             raise FetchError("its answer doesn't hold the tab's posts")
         return data
@@ -592,6 +711,7 @@ def lazy_files(site: Site, api: Api, code: str, pk: str | None) -> list[File]:
     if pk:
         try:
             media = api.media(site, pk)
+        # A refused media API falls back to the post's page, as `Api.post` does.
         except FetchError as error:
             site.warn("post {code}: the media API refused it ({error}); reading its page", code=code, error=error)
     if media is None:
@@ -619,7 +739,14 @@ def _json(response: http.Response | None) -> Any:
 
 
 def post_page(site: Site, code: str) -> dict | None:
-    """Open one post's page and return the post it embeds, or None (with a warning) when it holds none."""
+    """Open one post's page and return the post it embeds, or None (with a warning) when it holds none.
+
+        media = post_page(site, "C1abc")
+
+    Args:
+        site: the target's site.
+        code: the post's code, which its page's URL is made from.
+    """
     if not load(site, f"{SITE}/p/{code}/"):
         return None
     found = [media for result in embedded_results(site.page.document) if (media := post_media(result))]
@@ -670,12 +797,18 @@ def reel_posts(site: Site, stories: list[dict], folder: str) -> Iterator[Post]:
     """One post for each story of a reel, from the reels API or a story page; one line says how many.
 
     A story is dated by its `taken_at` only, never by its `pk`, whose small numbers would give 2011.
+
+    Args:
+        site: the target's site.
+        stories: the reel's story JSON.
+        folder: what the stories are called in the log.
     """
     for story in stories:
         file = best_file(story)
         if file is None:
             continue
         source, extension, audio = file
+        # An `id` carries its owner after an `_`; the story's own id is before it.
         story_id = str(story.get("pk") or story.get("id", "")).split("_")[0]
         # The key is the path, so the extension in the name has to be the one the file is saved with.
         name = file_name(day(story.get("taken_at")), story_id, extension)
@@ -684,7 +817,15 @@ def reel_posts(site: Site, stories: list[dict], folder: str) -> Iterator[Post]:
 
 
 def file_name(taken: Any, stem: str, extension: str) -> str:
-    """A file's name: `2026-01-02_C1abc_0.jpg`, or `C1abc_0.jpg` for a post without a date."""
+    """A file's name: `2026-01-02_C1abc_0.jpg`, or `C1abc_0.jpg` for a post without a date.
+
+        file_name("2026-01-02", "C1abc_0", "jpg")
+
+    Args:
+        taken: the post's day as `YYYY-MM-DD`, or None when it has none.
+        stem: the name before the extension, such as the code and the file's index.
+        extension: the file's extension, without its dot.
+    """
     return f"{taken}_{stem}.{extension}" if taken else f"{stem}.{extension}"
 
 
@@ -728,7 +869,14 @@ def picture_name(url: str) -> str:
 
 
 def connection_of(result: Any, tab: str) -> dict | None:
-    """The connection one profile tab's result lists its posts in, or None when the result isn't the tab's."""
+    """The connection one profile tab's result lists its posts in, or None when the result isn't the tab's.
+
+        connection = connection_of(result, "reels")
+
+    Args:
+        result: one JSON result the tab's page or requests sent.
+        tab: one of `TABS`.
+    """
     found = selector.parse(result)
     for path in TAB_CONNECTIONS[tab]:
         connection = found.jmespath(f"data.{path}").first
@@ -738,7 +886,12 @@ def connection_of(result: Any, tab: str) -> dict | None:
 
 
 def tab_media(result: Any, tab: str) -> list[dict]:
-    """The posts one profile tab's result lists: `tab_media(result, "reels")`."""
+    """The posts one profile tab's result lists: `tab_media(result, "reels")`.
+
+    Args:
+        result: one JSON result the tab's page or requests sent.
+        tab: one of `TABS`.
+    """
     connection = connection_of(result, tab)
     if connection is None:
         return []
@@ -755,6 +908,10 @@ def page_state(result: Any, tab: str) -> tuple[bool, str | None] | None:
 
     A result that isn't the tab's, or whose connection has no `page_info`, says nothing: the
     scroll then goes on, as before replays.
+
+    Args:
+        result: one JSON result the tab's page or requests sent.
+        tab: one of `TABS`.
     """
     connection = connection_of(result, tab) if isinstance(result, dict) else None
     info = connection.get("page_info") if connection is not None else None
@@ -765,7 +922,14 @@ def page_state(result: Any, tab: str) -> tuple[bool, str | None] | None:
 
 
 def next_cursor(result: Any, tab: str) -> str | None:
-    """The cursor of the page after this one; None when it is the last."""
+    """The cursor of the page after this one; None when it is the last.
+
+        cursor = next_cursor(result, "posts")
+
+    Args:
+        result: one JSON result of the tab.
+        tab: one of `TABS`.
+    """
     state = page_state(result, tab)
     return state[1] if state is not None and state[0] else None
 
