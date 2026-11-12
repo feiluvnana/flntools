@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Union
 
+from shared import _atomic
+
 Cookie = dict[str, Any]
 PathLike = Union[str, Path]
 
@@ -73,6 +75,38 @@ def load_from_browser(domain: str, *, browser: str = "chrome", profile: str | No
     return _load_chromium(domain, browser, profile or "Default")
 
 
+def profiles(browser: str = "chrome") -> list[str]:
+    """The installed browser's profiles, as `load_from_browser`'s `profile=` takes them, the default first.
+
+        cookies.profiles("chrome")      # ["Default", "Profile 1"]
+
+    Args:
+        browser: "chrome", "chromium", "edge", "brave" or "firefox".
+
+    Returns:
+        For the Chromium family, each profile folder with a cookie database, `Default` first;
+        for Firefox, each `Path` in `profiles.ini`, the one Firefox opens first. `[]` when the
+        browser isn't installed or has no profile.
+
+    Raises:
+        ValueError: `browser` isn't one of those.
+    """
+    if browser == "firefox":
+        try:
+            return _firefox_paths(_firefox_root())
+        except FileNotFoundError:
+            return []
+    if browser not in _CHROMIUM:
+        raise ValueError(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
+    root = _chromium_root(browser)
+    if not root.is_dir():
+        return []
+    found = [folder.name for folder in root.iterdir()
+             if (folder / "Network" / "Cookies").is_file() or (folder / "Cookies").is_file()]
+    # The default first, as `load_from_browser` reads it without `profile=`.
+    return sorted(found, key=lambda name: (name != "Default", name))
+
+
 def load_from_file(path: PathLike, *, domain: str | None = None) -> list[Cookie]:
     """Read a Netscape `cookies.txt` or a JSON list of cookies, telling them apart by content.
 
@@ -103,15 +137,8 @@ def to_file(jar: list[Cookie], path: PathLike) -> None:
     path = Path(path)
     text = _netscape_text(jar)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # mkstemp creates the file with mode 0600, and the rename means a reader never sees half a file.
-    handle, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as file:
-            file.write(text)
-        os.replace(temp_path, path)
-    except BaseException:
-        Path(temp_path).unlink(missing_ok=True)
-        raise
+    # Mode 0600: the file is a login. The atomic write means a reader never sees half a file.
+    _atomic.write(path, text.encode("utf-8"), mode=0o600)
 
 
 def to_header(jar: list[Cookie]) -> str:
@@ -142,6 +169,18 @@ def _firefox_profile(profile: str | None) -> Path:
     if profile is not None:
         named = root / profile
         return named if named.is_dir() else root / "Profiles" / profile
+    paths = _firefox_paths(root)
+    if not paths:
+        raise FileNotFoundError(f"no Firefox profile in {root / 'profiles.ini'}")
+    # An absolute Path (IsRelative=0) replaces the root when joined.
+    return root / paths[0]
+
+
+def _firefox_paths(root: Path) -> list[str]:
+    """Every profile's `Path` in `root/profiles.ini`, the one Firefox opens first, without repeats.
+
+    Raises `FileNotFoundError` when there is no `profiles.ini`.
+    """
     ini = configparser.ConfigParser(interpolation=None)
     if not ini.read(root / "profiles.ini", encoding="utf-8"):
         raise FileNotFoundError(f"no Firefox profiles.ini in {root}")
@@ -149,11 +188,7 @@ def _firefox_profile(profile: str | None) -> Path:
     installs = [ini[name]["Default"] for name in ini.sections() if name.startswith("Install") and "Default" in ini[name]]
     profiles = [ini[name] for name in ini.sections() if name.startswith("Profile") and "Path" in ini[name]]
     marked = [section["Path"] for section in profiles if section.get("Default") == "1"]
-    paths = installs + marked + [section["Path"] for section in profiles]
-    if not paths:
-        raise FileNotFoundError(f"no Firefox profile in {root / 'profiles.ini'}")
-    # An absolute Path (IsRelative=0) replaces the root when joined.
-    return root / paths[0]
+    return list(dict.fromkeys(installs + marked + [section["Path"] for section in profiles]))
 
 
 def _firefox_root() -> Path:

@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from shared import _ffmpeg, _media, _pillow
+from shared import _atomic, _ffmpeg, _media, _pillow
 from shared._media import Info, PathLike, Progress
 
 
@@ -44,7 +44,7 @@ def trim(src: PathLike, *, start: float = 0.0, end: float | None = None, dest: P
     if info.duration is not None and start >= info.duration:
         raise ValueError(f"start {start} is past the end of {src.name} ({info.duration:.3f} s)")
     _media.same_kind(info, extension, "trim")
-    with _media.writing(out, replace=dest is None) as part:
+    with _atomic.writing(out, replace=dest is None) as part:
         if info.kind == "image":
             frames, delays = _pillow.animation(_photo(info), start=start, end=end)
             _pillow.save_animation(frames, delays, part, _media.ANIMATIONS[extension], quality=90)
@@ -194,7 +194,7 @@ def merge(sources: Sequence[PathLike], *, dest: PathLike, audio: PathLike | None
     track = _media.probe(audio) if audio is not None else None
     if track is not None and not track.audio:
         raise _media.BrokenError(f"{track.path.name} has no audio stream")
-    with _media.writing(dest) as part:
+    with _atomic.writing(dest) as part:
         if kinds == {"image"}:
             _slideshow(infos, part, extension, fps or 1 / (duration or 1.0), track, progress)
         elif animation:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from shared import _media, _pillow
+from shared import _atomic, _media, _pillow
 from shared._media import PathLike
 
 
@@ -63,7 +63,7 @@ def _edit(src: PathLike, dest: PathLike | None, quality: int, strip: bool, chang
                          "or media.video.frames")
     photo = _pillow.open(src)
     assert photo is not None
-    with _media.writing(out, replace=dest is None) as part:
+    with _atomic.writing(out, replace=dest is None) as part:
         _pillow.save(change(_pillow.upright(photo, keep=not strip)), part, _media.STILLS[extension], quality=quality)
     return out
 

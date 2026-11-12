@@ -168,7 +168,7 @@ class RealBuildTest(unittest.TestCase):
             built = bundler.build(ROOT / "flnd" / "__main__.py", name="flnd", out=Path(folder) / "dist",
                                   data=(ROOT / "licenses",))
             program = built / ("flnd.exe" if sys.platform == "win32" else "flnd")
-            result = subprocess.run([str(program), "sync", "--only", "info"], capture_output=True, text=True,
+            result = subprocess.run([str(program), "sync"], capture_output=True, text=True,
                                     timeout=120, cwd=folder)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("total", result.stdout + result.stderr)

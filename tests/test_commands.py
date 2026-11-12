@@ -1,10 +1,9 @@
-"""The flnd command line: download, login and logout. No network, no browser."""
+"""The flnd command line: download (its options and saved settings), sync, login and logout. No network, no browser."""
 
 import io
 import json
 import os
 import stat
-import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -12,8 +11,10 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
+from flnd import auth
 from flnd import cli as flnd_cli
 from flnd import sources
+from flnd.compress import Choice
 from flnd.engine import Engine
 from flnd.session import Options
 from flnd.sources.base import Source
@@ -100,14 +101,13 @@ class RunsCase(FlndCase):
 class DownloadTest(RunsCase):
     def test_targets_and_options_reach_the_engine(self):
         code, _, out = self.run_app("download", "ins:example_user", "https://x.com/example_handle", "--from", "reels,media",
-                                    "--from", "tagged", "--since", "2026-01-01", "--until", "2026-06-30", "--unpack",
-                                    "--zip", "--locale", "fr-FR", "--timezone", "Europe/Paris")
+                                    "--from", "tagged", "--time", "2026-01-01,2026-06-30")
         self.assertEqual(code, 0)
         engine, targets, options = self.runs[0]
         self.assertEqual(targets, [Target("ins", "user", "example_user"), Target("twt", "user", "example_handle")])
         self.assertEqual(options, Options(categories=("reels", "media", "tagged"), since=date(2026, 1, 1),
-                                          until=date(2026, 6, 30), unpack=True, zip=True))
-        self.assertEqual((engine.home, engine.locale, engine.timezone), (Path(".flnd"), "fr-FR", "Europe/Paris"))
+                                          until=date(2026, 6, 30)))
+        self.assertEqual(engine.home, Path(".flnd"))
         storage = (Path(self.tmp.name) / ".flnd/downloads").resolve()
         self.assertEqual(out.splitlines(), [f"• Storage: {storage}", "✓ Complete. 3 files"])
 
@@ -144,13 +144,17 @@ class DownloadTest(RunsCase):
         message = ("✗ no source here has 'reels': use all, or tik: videos, stories, playlists, reposts, liked, "
                    "favorites, profile; twt: posts, media, highlights, reposts, replies, profile")
         self.assertIn(message, self.run_app("download", "tik:a", "twt:b", "--from", "videos,reels")[2])
-        code, _, out = self.run_app("download", "tik:a", "--since", "yesterday")
-        self.assertEqual(code, 2)
-        self.assertIn("✗ argument --since: invalid date: 'yesterday' (use YYYY-MM-DD)", out)
-        self.assertIn("✗ --since is after --until", self.run_app("download", "tik:a", "--since", "2026-02-01",
-                                                                  "--until", "2026-01-01")[2])
         for option in ("--limit", "--output", "--headless"):
             self.assertEqual(self.run_app("download", option, "5", "ins:a")[0], 2)
+        self.assertEqual(self.runs, [])
+
+    def test_removed_options_are_unknown(self):
+        for args in (("--unpack",), ("--zip",), ("--locale", "fr-FR"), ("--timezone", "Europe/Paris"),
+                     ("--since", "2026-01-01"), ("--until", "2026-01-01"), ("--compress-image", "small"),
+                     ("--format-video", "h265")):
+            code, _, out = self.run_app("download", "ins:a", *args)
+            self.assertEqual(code, 2, args)
+            self.assertIn("✗ unrecognized arguments", out)
         self.assertEqual(self.runs, [])
 
     def test_help(self):
@@ -159,17 +163,21 @@ class DownloadTest(RunsCase):
         self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, and Telegram.", stdout)
         self.assertIn("Sources: tik, fbk, ins, twt, loi", stdout)
         self.assertIn("https://www.facebook.com/profile.php?id=100012345678901", stdout)
-        for command in ("download", "sync", "login", "logout", "install-browser"):
+        for command in ("download", "sync", "login", "logout"):
             self.assertIn(command, stdout)
         self.assertNotIn("auth", stdout)
+        self.assertNotIn("install-browser", stdout)
+        self.assertNotIn("--compress", stdout)
         self.assertEqual(self.run_app("auth", "set-cookie")[0], 2)
         download_help = self.run_app("download", "--help")[1]
-        for option in ("--from", "--since", "--until", "--[no-]unpack", "--[no-]zip", "--locale", "--timezone",
-                       "--compress-image", "--compress-video", "--format-image", "--format-video"):
-            self.assertIn(option, download_help)
-        self.assertIn("match where your connection comes from", download_help)
-        self.assertIn("  --from CATEGORIES  ", download_help)
-        self.assertIn("  --since DATE  ", download_help)
+        for option in ("--from CATEGORIES", "--time SINCE,UNTIL", "--image FORMAT,LEVEL", "--video FORMAT,LEVEL",
+                       "--audio FORMAT,LEVEL"):
+            self.assertIn(f"  {option}  ", download_help)
+        for gone in ("--since", "--until", "unpack", "--zip", "--locale", "--timezone", "--compress", "--format-"):
+            self.assertNotIn(gone, download_help)
+        # Help shows both ways to leave a side of --time open.
+        self.assertIn("'*'", download_help)
+        self.assertIn(",2026-06-30", download_help)
         self.assertNotIn("--categories", download_help)
         self.assertEqual(self.run_app("download", "tik:a", "--categories", "posts")[0], 2)
 
@@ -180,25 +188,66 @@ class DownloadTest(RunsCase):
         self.assertIn("Usage:\n  flnd [options] [command]", stdout)
 
 
-class CompressOptionsTest(RunsCase):
-    def test_compress_options_reach_the_engine_and_the_target_is_recorded(self):
-        code, _, out = self.run_app("download", "ins:example_user", "--compress-image", "small", "--compress-video",
-                                    "balanced", "--format-image", "webp", "--format-video", "mkv:h265", "--zip")
+class TimeTest(RunsCase):
+    def test_either_side_may_be_open(self):
+        for value, since, until in (("2026-01-01,", date(2026, 1, 1), None), ("*,2026-06-30", None, date(2026, 6, 30)),
+                                    (",2026-06-30", None, date(2026, 6, 30)), ("2026-01-01,*", date(2026, 1, 1), None),
+                                    ("2026-01-01,2026-06-30", date(2026, 1, 1), date(2026, 6, 30)),
+                                    ("2026-03-01,2026-03-01", date(2026, 3, 1), date(2026, 3, 1))):
+            with self.subTest(value=value):
+                self.runs.clear()
+                self.assertEqual(self.run_app("download", "tik:a", "--time", value)[0], 0)
+                options = self.runs[0][2]
+                self.assertEqual((options.since, options.until), (since, until))
+
+    def test_bad_values_are_usage_errors(self):
+        message = ("✗ --time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
+                   "for no limit")
+        for value in ("2026-01-01", "2026-13-01,", "2026-06-30,2026-01-01", "yesterday,", "2026-01-01,2026-02-01,"):
+            with self.subTest(value=value):
+                code, _, out = self.run_app("download", "tik:a", "--time", value)
+                self.assertEqual(code, 2)
+                self.assertIn(message, out)
+        self.assertEqual(self.runs, [])
+        self.assertFalse(Path(".flnd/targets.db").exists())
+
+
+class MediaOptionsTest(RunsCase):
+    def test_choices_reach_the_engine_and_are_saved_for_the_target(self):
+        code, _, out = self.run_app("download", "ins:example_user", "--image", "best,webp", "--video", "mkv:h265,low",
+                                    "--audio", "opus")
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[0][2], Options(zip=True, compress_image="small", compress_video="balanced",
-                                                  format_image="webp", format_video="mkv:h265"))
+        self.assertEqual(self.runs[0][2], Options(image=Choice("webp", "best"), video=Choice("mkv:h265", "low"),
+                                                  audio=Choice("opus", "high")))
         with kv.open(".flnd/targets.db", table="targets") as targets:
             row = targets["ins:example_user"]
-        self.assertEqual((row["kind"], row["compress_video"], row["format_video"], row["zip"]),
-                         ("user", "balanced", "mkv:h265", True))
+        self.assertEqual((row["kind"], row["image"], row["video"], row["audio"]),
+                         ("user", "webp,best", "mkv:h265,low", "opus,high"))
 
-    def test_a_format_needs_its_compress_option_and_pairs_must_fit(self):
-        for args, message in ((("--format-image", "jpg"), "✗ --format-image needs --compress-image"),
-                              (("--format-video", "mp4"), "✗ --format-video needs --compress-video"),
-                              (("--compress-video", "small", "--format-video", "webm:h265"),
-                               "✗ --format-video webm:h265: webm can't hold h265"),
-                              (("--compress-image", "small", "--format-image", "heic"), "✗ --format-image takes"),
-                              (("--compress-image", "tiny"), "✗ argument --compress-image")):
+    def test_saved_ones_are_used_again_changed_one_at_a_time_and_turned_off(self):
+        self.run_app("download", "ins:example_user", "--image", "webp,mid", "--video", "h265")
+        code, _, out = self.run_app("download", "ins:example_user")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.runs[1][2], Options(image=Choice("webp", "mid"), video=Choice("h265", "high")))
+        self.assertIn("• ins:example_user: --image webp,mid --video h265,high (saved)", out)
+        self.run_app("download", "ins:example_user", "--image", "best")
+        self.assertEqual(self.runs[2][2], Options(image=Choice(None, "best"), video=Choice("h265", "high")))
+        self.run_app("download", "ins:example_user", "--image", "off", "--video", "OFF")
+        self.assertEqual(self.runs[3][2], Options())
+        self.run_app("download", "ins:example_user")
+        self.assertEqual(self.runs[4][2], Options())
+
+    def test_from_and_time_are_not_saved(self):
+        self.run_app("download", "ins:example_user", "--from", "reels", "--time", "2026-01-01,")
+        self.run_app("download", "ins:example_user")
+        self.assertEqual(self.runs[1][2], Options())
+
+    def test_bad_values_are_usage_errors_naming_what_each_part_takes(self):
+        for args, message in ((("--image", "webp,huge"), "✗ --image webp,huge: the level is best, high, mid or low"),
+                              (("--video", "webm:h265"), "✗ --video webm:h265: webm holds vp9, not h265"),
+                              (("--image", "heic"), "✗ --image heic: give a format (jpg, webp, avif, png, gif, tif "
+                                                    "or bmp), a level (best, high, mid or low), or both"),
+                              (("--audio", "opus,mid,low"), "✗ --audio takes <format>,<level>")):
             code, _, out = self.run_app("download", "ins:a", *args)
             self.assertEqual(code, 2, args)
             self.assertIn(message, out)
@@ -210,39 +259,28 @@ class SyncCommandTest(RunsCase):
     def setUp(self):
         super().setUp()
         self.synced = []
-        patcher = mock.patch("flnd.sync.run", lambda engine, chosen, steps: self.synced.append((chosen, steps)) or [])
+        patcher = mock.patch("flnd.sync.run", lambda engine, chosen: self.synced.append(chosen) or [])
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_every_recorded_target_with_its_settings_and_overrides_saved(self):
-        self.run_app("download", "ins:example_user", "--compress-image", "small", "--from", "reels")
+    def test_every_recorded_target_with_its_saved_settings(self):
+        self.run_app("download", "ins:example_user", "--image", "low", "--from", "reels")
         self.run_app("download", "twt:example_handle")
-        code, _, out = self.run_app("sync", "--compress-video", "small", "--format-video", "h265")
+        code, _, out = self.run_app("sync")
         self.assertEqual(code, 0, out)
-        chosen, steps = self.synced[0]
-        self.assertEqual(steps, ("repair", "fetch", "compress", "info"))
-        self.assertEqual(dict(chosen), {
-            Target("ins", "user", "example_user"): Options(categories=("reels",), compress_image="small",
-                                                           compress_video="small", format_video="h265"),
-            Target("twt", "user", "example_handle"): Options(compress_video="small", format_video="h265")})
-        self.run_app("sync", "ins:example_user", "--compress-video", "off", "--compress-image", "off")
-        self.assertEqual(dict(self.synced[1][0]), {Target("ins", "user", "example_user"): Options(categories=("reels",))})
-        self.run_app("sync")
-        self.assertEqual(dict(self.synced[2][0])[Target("ins", "user", "example_user")], Options(categories=("reels",)))
+        self.assertEqual(dict(self.synced[0]), {Target("ins", "user", "example_user"): Options(image=Choice(None, "low")),
+                                                Target("twt", "user", "example_handle"): Options()})
+        self.run_app("sync", "twt:example_handle")
+        self.assertEqual(self.synced[1], [(Target("twt", "user", "example_handle"), Options())])
 
-    def test_only_and_usage_errors(self):
+    def test_sync_takes_no_options(self):
         self.run_app("download", "ins:example_user")
-        self.assertEqual(self.run_app("sync", "--only", "info")[0], 0)
-        self.assertEqual(self.synced[0][1], ("info",))
-        self.assertEqual(self.run_app("sync", "--only", "compress,repair")[0], 0)
-        self.assertEqual(self.synced[1][1], ("repair", "compress"))
-        for args, message in ((("--only", "fetch,sing"), "✗ --only takes repair, fetch, compress, info, not 'sing'"),
-                              (("--format-video", "h265"), "✗ ins:example_user: --format-video needs --compress-video"),
-                              (("--since", "2026-01-01"), "✗ unrecognized arguments")):
+        for args in (("--only", "info"), ("--from", "reels"), ("--time", "2026-01-01,"), ("--image", "mid"),
+                     ("--compress-video", "small"), ("--since", "2026-01-01")):
             code, _, out = self.run_app("sync", *args)
             self.assertEqual(code, 2, args)
-            self.assertIn(message, out)
-        self.assertEqual(len(self.synced), 2)
+            self.assertIn("✗ unrecognized arguments", out)
+        self.assertEqual(self.synced, [])
 
     def test_a_short_link_is_resolved_once(self):
         # Fix 11: cli.sync and sync.plan each resolved the targets, so a short link made two HEAD requests.
@@ -254,15 +292,8 @@ class SyncCommandTest(RunsCase):
 
         with mock.patch("flnd.net.follow", follow):
             self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/")[0], 0)
-            self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/", "--from", "videos")[0], 0)
-        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"] * 2)
-        self.assertEqual([chosen for chosen, _ in self.synced][0][0][0], Target("tik", "video", "7301234567890123456"))
-
-    def test_only_info_saves_nothing(self):
-        self.run_app("download", "ins:example_user")
-        self.run_app("sync", "--only", "info", "--compress-video", "small")
-        self.run_app("sync", "--only", "info")
-        self.assertEqual(dict(self.synced[1][0])[Target("ins", "user", "example_user")], Options())
+        self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
+        self.assertEqual(self.synced[0][0][0], Target("tik", "video", "7301234567890123456"))
 
 
 class ExitStatusTest(FlndCase):
@@ -311,12 +342,32 @@ class ExitStatusTest(FlndCase):
         self.assertEqual(self.run_app("sync", "aaa:good")[0], 0)
 
 
-class LoginFileTest(FlndCase):
+class LoginCase(FlndCase):
+    """`flnd login` in a fake terminal: `login` picks the source by its place in the list, then types `keys`."""
+
+    def setUp(self):
+        super().setUp()
+        # No real browser profile is ever looked at; a test that wants profiles sets them.
+        self.profiles = []
+        patcher = mock.patch("shared._cookies.profiles", lambda browser="chrome": self.profiles)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def login(self, source, *keys):
+        self.keys(*["down"] * list(flnd_cli.SOURCES).index(source), "enter", *keys)
+        code, _, out = self.run_app("login")
+        return code, out
+
+    def from_file(self, source, path):
+        # The method's second choice is "From a cookie file".
+        return self.login(source, "down", "enter", *str(path), "enter")
+
+
+class LoginFileTest(LoginCase):
     def test_a_full_export_keeps_only_the_source(self):
-        path = self.cookie_file(NETSCAPE)
-        code, _, out = self.run_app("login", "ins", "--method", "file", "--path", str(path))
+        code, out = self.from_file("ins", self.cookie_file(NETSCAPE))
         self.assertEqual(code, 0)
-        self.assertEqual(out, "✓ ins: logged in from cookies.txt (2 cookies)\n")
+        self.assertEqual(out.splitlines()[-1], "✓ ins: logged in from cookies.txt (2 cookies)")
         saved = self.saved("ins")
         self.assertEqual({cookie["name"]: cookie["domain"] for cookie in saved},
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
@@ -326,47 +377,53 @@ class LoginFileTest(FlndCase):
         Path(".flnd/cookies").mkdir(parents=True)
         Path(".flnd/cookies/tik.json").write_text("[]")
         path = self.cookie_file(json.dumps([{"domain": ".tiktok.com", "name": "sid_tt", "value": "v"}]), "c.json")
-        self.assertEqual(self.run_app("login", "tik", "--method", "file", "--path", str(path))[0], 0)
+        self.assertEqual(self.from_file("tik", path)[0], 0)
         self.assertEqual(self.saved("tik")[0]["value"], "v")
         self.assertFalse(Path(".flnd/cookies/tik.json").exists())
 
     def test_a_missing_needs_cookie(self):
-        path = self.cookie_file(NETSCAPE)
-        code, _, out = self.run_app("login", "fbk", "--method", "file", "--path", str(path))
+        code, out = self.from_file("fbk", self.cookie_file(NETSCAPE))
         self.assertEqual(code, 1)
-        self.assertEqual(out, "✗ fbk: no c_user or xs for facebook.com in cookies.txt; log in there first\n")
+        self.assertEqual(out.splitlines()[-1], "✗ fbk: no c_user or xs for facebook.com in cookies.txt; log in there first")
         self.assertFalse(Path(".flnd/cookies/fbk.txt").exists())
 
-    def test_a_broken_or_missing_file(self):
-        self.assertEqual(self.run_app("login", "ins", "--method", "file", "--path", "missing.txt")[0], 1)
-        broken = self.cookie_file("not\ta cookie\n")
-        code, _, out = self.run_app("login", "ins", "--method", "file", "--path", str(broken))
+    def test_a_broken_file(self):
+        code, out = self.from_file("ins", self.cookie_file("not\ta cookie\n"))
         self.assertEqual(code, 1)
         self.assertIn("✗ ins: can't read", out)
 
-    def test_the_path_is_asked_only_when_missing(self):
+    def test_a_missing_path_is_asked_again(self):
         path = self.cookie_file(NETSCAPE)
-        self.keys(*"nope", "enter", *["backspace"] * 4, *str(path), "enter")
-        self.assertEqual(self.run_app("login", "twt", "--method", "file")[0], 0)
-        out = self.screen.out.getvalue()
+        code, out = self.login("twt", "down", "enter", *"nope", "enter", *["backspace"] * 4, *str(path), "enter")
+        self.assertEqual(code, 0)
         self.assertIn("┃ * no file at nope", out)
         self.assertIn("✓ twt: logged in from cookies.txt (1 cookies)", out)
 
-    def test_without_a_terminal_a_missing_answer_is_a_usage_error(self):
-        code, _, out = self.run_app("login", "ins")
+    def test_logged_in_sources_are_marked(self):
+        self.from_file("ins", self.cookie_file(NETSCAPE))
+        self.screen.out.truncate(0)
+        self.from_file("twt", self.cookie_file(NETSCAPE))
+        out = self.screen.out.getvalue()
+        self.assertIn("Instagram (ins) · logged in", out)
+        self.assertIn("TikTok (tik)", out)
+        self.assertNotIn("TikTok (tik) · logged in", out)
+        self.assertIn("✓ Log in to: Twitter/X (twt)", out)
+
+
+class LoginQuestionsTest(LoginCase):
+    def test_without_a_terminal_it_exits_2(self):
+        code, _, out = self.run_app("login")
         self.assertEqual(code, 2)
-        self.assertIn("✗ give --method: browser, file", out)
-        self.assertIn("✗ give --path with the cookie file", self.run_app("login", "ins", "--method", "file")[2])
-        self.assertIn("✗ give --browser: chrome, firefox", self.run_app("login", "ins", "--method", "browser")[2])
+        self.assertIn("✗ flnd login asks its questions in a terminal", out)
+        self.assertFalse(Path(".flnd").exists())
 
-    def test_unknown_method_and_source(self):
-        code, _, out = self.run_app("login", "ins", "--method", "qr")
-        self.assertEqual(code, 2)
-        self.assertIn("✗ ins has no login method 'qr': use browser, file", out)
-        self.assertEqual(self.run_app("login", "ytb")[0], 2)
+    def test_it_takes_no_arguments(self):
+        for argv in (["ins"], ["--method", "file"], ["--path", "c.txt"], ["--browser", "chrome"], ["--profile", "x"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_app("login", *argv)[0], 2)
 
 
-class LoginBrowserTest(FlndCase):
+class LoginBrowserTest(LoginCase):
     def setUp(self):
         super().setUp()
         self.reads = []
@@ -385,33 +442,41 @@ class LoginBrowserTest(FlndCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_every_domain_is_read(self):
-        code, _, out = self.run_app("login", "twt", "--method", "browser", "--browser", "firefox", "--profile", "work")
+    def test_source_method_browser_and_profile_are_asked_in_order(self):
+        self.profiles = ["Default", "work"]
+        # Source: Twitter/X; method: the first (browser); browser: the second (Firefox); profile: the second.
+        code, out = self.login("twt", "enter", "down", "enter", "down", "enter")
         self.assertEqual(code, 0)
-        self.assertEqual(out, "✓ twt: logged in from Firefox (2 cookies)\n")
+        answers = ["✓ Log in to: Twitter/X (twt)", "✓ Log in to Twitter/X: From your browser",
+                   "✓ Read cookies from: Firefox", "✓ Profile: work", "✓ twt: logged in from Firefox (2 cookies)"]
+        lines = out.splitlines()
+        self.assertEqual([line for line in lines if line in answers], answers)
         self.assertEqual(self.reads, [("x.com", "firefox", "work"), ("twitter.com", "firefox", "work")])
         self.assertEqual([cookie["domain"] for cookie in self.saved("twt")], [".x.com", ".twitter.com"])
 
+    def test_the_default_profile_is_preselected_and_one_profile_is_not_asked(self):
+        self.profiles = ["Default", "work"]
+        self.assertEqual(self.login("twt", "enter", "enter", "enter")[0], 0)
+        self.assertEqual(self.reads[0], ("x.com", "chrome", "Default"))
+        self.reads.clear()
+        self.profiles = ["Default"]
+        code, out = self.login("twt", "enter", "enter")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.reads[0], ("x.com", "chrome", "Default"))
+        self.assertEqual(out.count("✓ Profile:"), 1)
+
     def test_a_missing_needs_cookie_and_an_unreadable_browser(self):
         self.store = {}
-        code, _, out = self.run_app("login", "twt", "--method", "browser", "--browser", "chrome")
-        self.assertEqual((code, out), (1, "✗ twt: no auth_token for x.com in Chrome; log in there first\n"))
-        code, _, out = self.run_app("login", "twt", "--method", "browser", "--browser", "edge")
+        code, out = self.login("twt", "enter", "enter")
+        self.assertEqual((code, out.splitlines()[-1]), (1, "✗ twt: no auth_token for x.com in Chrome; log in there first"))
+        code, out = self.login("twt", "enter", "down", "down", "enter")
         self.assertEqual(code, 1)
-        self.assertIn("✗ twt: can't read Edge's cookies: can't read edge cookies on Windows; try --method file", out)
-
-    def test_method_and_browser_are_asked_when_missing(self):
-        # Method: the first (browser); browser: the second (Firefox).
-        self.keys("enter", "down", "enter")
-        self.assertEqual(self.run_app("login", "twt")[0], 0)
-        out = self.screen.out.getvalue()
-        self.assertIn("✓ Log in to Twitter/X: From your browser", out)
-        self.assertIn("✓ Read cookies from: Firefox", out)
-        self.assertEqual(self.reads[0][1], "firefox")
+        self.assertIn("✗ twt: can't read Edge's cookies: can't read edge cookies on Windows; try a cookie file instead",
+                      out)
 
 
-class OwnLoginTest(FlndCase):
-    def test_a_source_with_its_own_login_and_one_method_is_not_asked(self):
+class OwnLoginTest(LoginCase):
+    def test_a_source_with_its_own_login_and_one_method_is_not_asked_the_method(self):
         calls = []
 
         class Own(Source):
@@ -428,8 +493,10 @@ class OwnLoginTest(FlndCase):
                 calls.append((method, session.target.kind))
 
         with mock.patch.dict(flnd_cli.SOURCES, {"own": Own}):
-            self.assertEqual(flnd_cli.login_command("own"), 0)
+            code, out = self.login("own")
+        self.assertEqual(code, 0)
         self.assertEqual(calls, [("qr", "account")])
+        self.assertNotIn("Log in to Own:", out)
 
 
 class LogoutTest(FlndCase):
@@ -437,67 +504,40 @@ class LogoutTest(FlndCase):
         for code in codes:
             cookies.to_file([{"name": "a", "value": "1", "domain": ".x.example"}], Path(".flnd/cookies") / f"{code}.txt")
 
-    def test_one_source(self):
+    def test_named_sources(self):
         self.log_in("ins", "twt")
-        from flnd import vault
-        with vault.open(Path(".flnd"), "ins") as secrets:
+        with auth.secrets(Path(".flnd"), "ins") as secrets:
             secrets["token"] = "t"
         code, _, out = self.run_app("logout", "ins")
         self.assertEqual((code, out), (0, "✓ ins: logged out\n"))
         self.assertFalse(Path(".flnd/cookies/ins.txt").exists())
         self.assertTrue(Path(".flnd/cookies/twt.txt").exists())
-        with vault.open(Path(".flnd"), "ins") as secrets:
+        with auth.secrets(Path(".flnd"), "ins") as secrets:
             self.assertEqual(len(secrets), 0)
-        self.assertEqual(self.run_app("logout", "ins")[2].splitlines()[-1], "• ins: was not logged in")
+        self.screen.out.truncate(0)
+        self.screen.out.seek(0)
+        code, _, out = self.run_app("logout", "ins", "twt", "tik")
+        self.assertEqual((code, out), (0, "• ins: not logged in\n✓ twt: logged out\n• tik: not logged in\n"))
 
     def test_all(self):
         self.log_in("ins", "tik")
-        code, _, out = self.run_app("logout", "--all")
-        self.assertEqual((code, out), (0, "✓ tik: logged out\n✓ ins: logged out\n"))
+        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+            secrets["session"] = "s"
+        code, _, out = self.run_app("logout", "all")
+        self.assertEqual((code, out), (0, "✓ tik: logged out\n✓ ins: logged out\n✓ tlg: logged out\n"))
         self.assertEqual(list(Path(".flnd/cookies").iterdir()), [])
+        self.assertFalse(any(auth.logged_in(Path(".flnd"), code) for code in sources.SOURCES))
 
-    def test_a_source_or_all(self):
-        self.assertIn("✗ give a source, or --all", self.run_app("logout")[2])
-        self.assertIn("✗ give a source or --all, not both", self.run_app("logout", "ins", "--all")[2])
+    def test_bare_is_a_usage_error_listing_the_logged_in_sources(self):
+        code, _, out = self.run_app("logout")
+        self.assertEqual(code, 2)
+        self.assertIn("✗ give the sources to log out of, or all; no source is logged in", out)
+        self.log_in("twt", "ins")
+        self.assertIn("✗ give the sources to log out of, or all; logged in: ins, twt", self.run_app("logout")[2])
 
-
-class InstallBrowserTest(FlndCase):
-    """Playwright's installer is mocked: nothing is downloaded."""
-
-    def install(self, returncode=0, error=None):
-        calls = []
-
-        def run(argv, **options):
-            calls.append((argv, options))
-            if error is not None:
-                raise error
-            return subprocess.CompletedProcess(argv, returncode)
-
-        with mock.patch.object(flnd_cli.subprocess, "run", run):
-            code, _, out = self.run_app("install-browser")
-        return code, out, calls
-
-    def test_runs_playwrights_own_installer_for_chromium(self):
-        code, out, calls = self.install()
-        self.assertEqual((code, out), (0, "✓ Chromium is installed\n"))
-        (argv, options), = calls
-        self.assertTrue(Path(argv[0]).name.startswith("node"))
-        self.assertEqual(Path(argv[1]).name, "cli.js")
-        self.assertEqual(argv[2:], ["install", "chromium"])
-        self.assertEqual(options["env"]["PW_LANG_NAME"], "python")
-        # Into the user cache: the installer's output folder is left to Playwright.
-        self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", {key: value for key, value in options["env"].items()
-                                                      if key not in os.environ})
-
-    def test_a_failed_install(self):
-        code, out, _ = self.install(returncode=1)
-        self.assertEqual((code, out), (1, "✗ Chromium was not installed: Playwright's installer exited with 1\n"))
-        code, out, _ = self.install(error=OSError("Permission denied"))
-        self.assertEqual(code, 1)
-        self.assertIn("✗ Chromium was not installed: Permission denied", out)
-
-    def test_help(self):
-        self.assertIn("Chromium", self.run_app("install-browser", "--help")[1])
+    def test_an_unknown_source_and_the_old_flag(self):
+        self.assertEqual(self.run_app("logout", "ytb")[0], 2)
+        self.assertEqual(self.run_app("logout", "--all")[0], 2)
 
 
 if __name__ == "__main__":

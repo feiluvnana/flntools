@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping, MutableMapp
 
 import httpx
 
-from flnd import files, net, vault
+from flnd import auth, files, net
+from flnd.compress import KINDS, Choice, Compressor, choice_of
 from flnd.sources.base import FetchError, Source
 from flnd.target import Target
 from shared import fmt, kv, log, prompt, theme
@@ -34,19 +35,6 @@ T = TypeVar("T")
 ALL = "all"
 # A 401, 403 or 404 is "not there for us", which `soft=True` turns into None.
 SOFT_STATUSES = (401, 403, 404)
-ARCHIVE_SUFFIXES = {".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".tbz2", ".xz", ".txz", ".zst"}
-# What a saved file is, by its name: photos and videos get their extension from their content.
-PHOTO, VIDEO = "photo", "video"
-KINDS = {**dict.fromkeys((".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".heic", ".heif", ".bmp", ".tif",
-                          ".tiff"), PHOTO),
-         **dict.fromkeys((".mp4", ".m4v", ".mov", ".webm", ".mkv"), VIDEO)}
-# --compress-image and --compress-video take media's presets; --format-* what media writes.
-PRESETS = ("small", "balanced", "high")
-IMAGE_FORMATS = ("jpg", "webp", "avif", "png", "gif", "tif", "bmp")
-VIDEO_CONTAINERS = ("mp4", "mov", "mkv", "webm", "avi", "ts", "3gp", "gif")
-VIDEO_CODECS = ("h264", "h265", "vp9")
-# The codecs a container holds, for --format-video; every other container holds H.264 and H.265.
-CODECS_IN = {"webm": ("vp9",), "avi": ("h264",), "mkv": VIDEO_CODECS, "gif": ()}
 
 
 class Session(Protocol):
@@ -82,7 +70,8 @@ class Session(Protocol):
                     lines: bool = False) -> Callable[[], None]: ...
     def on_request(self, match: Match, handler: Callable[[Session, Any], Any]) -> Callable[[], None]: ...
     def scroll(self, *, by: str | Callable[[Any], Any] | None = None, count: Callable[[], int] | None = None,
-               more: Callable[[], bool] | None = None, idle: int = 4, delay: float = 2.0, max: int = 200) -> int: ...
+               more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0,
+               max: int | None = None) -> int: ...
     def wait_for_selector(self, css: str, *, timeout: float = 30.0) -> None: ...
     def wait_for_url(self, pattern: Any, *, timeout: float = 30.0) -> None: ...
     def wait_for_load(self, *, idle: bool = False, timeout: float = 30.0) -> None: ...
@@ -97,11 +86,9 @@ class Session(Protocol):
     def client(self) -> Any: ...
 
     def save(self, source: net.Download, name: str, *, category: str, date: datetime.date | None = None,
-             folder: str | None = None, key: str | None = None, password: str | None = None,
-             size: int | None = None, headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool: ...
+             folder: str | None = None, key: str | None = None, size: int | None = None,
+             headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool: ...
     def write(self, name: str, text: str) -> bool: ...
-    @property
-    def full(self) -> bool: ...
 
     @property
     def state(self) -> MutableMapping[str, Any]: ...
@@ -119,22 +106,21 @@ class Session(Protocol):
 
 @dataclass(frozen=True)
 class Options:
-    """The download options, the same for every source: `Options(categories=("reels",), since=date(2026, 1, 1))`.
+    """What one run downloads and how it compresses it: `Options(categories=("reels",), image=Choice("webp", "mid"))`.
 
-    `categories` is `--from`: None means each source's `default_categories`, and "all" every one.
-    `compress_*` are presets, `format_image` a photo format, and `format_video` a container, a
-    codec, or `container:codec`.
+    The same for every target of one `Engine.run`; `flnd download` and `flnd sync` run targets
+    whose saved settings differ separately. It is hashable, so it can key those groups.
     """
 
+    # `--from`: None means each source's `default_categories`, and "all" every one.
     categories: tuple[str, ...] | None = None
+    # `--time`'s two days, both included; None is no limit on that side.
     since: datetime.date | None = None
     until: datetime.date | None = None
-    unpack: bool = False
-    zip: bool = False
-    compress_image: str | None = None
-    compress_video: str | None = None
-    format_image: str | None = None
-    format_video: str | None = None
+    # `--image`, `--video` and `--audio`: how each new file of the kind is compressed; None keeps it as sent.
+    image: Choice | None = None
+    video: Choice | None = None
+    audio: Choice | None = None
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
@@ -177,26 +163,14 @@ def wanted(categories: tuple[str, ...], options: Options, *, category: str | Non
 
 @dataclass
 class Settings:
-    """What the engine was started with, shared by every source: folders, options and the browser's."""
+    """What one run shares across every source: flnd's folder, the options, the history and the compressing."""
 
     home: Path
     options: Options
     history: MutableMapping[str, Any]
-    limit: int | None = None
-    headless: bool = False
-    locale: str | None = None
-    timezone: str | None = None
     interactive: bool = False
-    # One video encode at a time in the whole run, because x264 already uses every core.
-    encoding: threading.Lock = field(default_factory=threading.Lock)
-    videos_off: bool = False
-    hinted: set[str] = field(default_factory=set)
-    # The kinds of compress error already warned of, so a stalled ffmpeg on every file warns once.
-    compress_warned: set[type[Exception]] = field(default_factory=set)
-
-    @property
-    def downloads(self) -> Path:
-        return self.home / "downloads"
+    # One for the whole run, so videos encode one at a time across sources and each error warns once.
+    compressor: Compressor = field(default_factory=Compressor)
 
 
 @dataclass
@@ -210,7 +184,7 @@ class SourceRun:
     backoff: net.Backoff
     client: Any = None
     _state: kv.KV | None = field(default=None, repr=False)
-    _secrets: vault.Vault | None = field(default=None, repr=False)
+    _secrets: auth.Vault | None = field(default=None, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
     _loop_thread: threading.Thread | None = field(default=None, repr=False)
 
@@ -221,9 +195,9 @@ class SourceRun:
         return self._state
 
     @property
-    def secrets(self) -> vault.Vault:
+    def secrets(self) -> auth.Vault:
         if self._secrets is None:
-            self._secrets = vault.open(self.settings.home, self.source.code)
+            self._secrets = auth.secrets(self.settings.home, self.source.code)
         return self._secrets
 
     def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
@@ -271,8 +245,6 @@ class TargetSession:
         self._categories = selected(run.settings.options, type(run.source))
         # Every path and history key queued so far, so one file is never written twice.
         self._queued: set[Path | str] = set()
-        self._submitted = 0
-        self._unpack_saved: list[_File] = []
         self._handover: queue.SimpleQueue[_File | None] | None = None
         self._handover_thread: threading.Thread | None = None
 
@@ -295,10 +267,10 @@ class TargetSession:
         return self._settings.options.until
 
     def wants(self, category: str | None = None, date: datetime.date | None = None) -> bool:
-        """Whether `--from`, `--since` and `--until` keep an item of this category and date.
+        """Whether `--from` and `--time` keep an item of this category and date.
 
             if not session.wants(category="highlights"): return     # not asked for: skip the work
-            if not session.wants(date=posted): break                # older than --since: stop scrolling
+            if not session.wants(date=posted): break                # before --time's since: stop scrolling
 
         An item without a date is kept whatever the range.
         """
@@ -356,7 +328,7 @@ class TargetSession:
         """Go to `url` in the current tab, opening one when there is none; False when it didn't load."""
         if self._page is None:
             return self._open(url, idle=idle, timeout=timeout)
-        return self._page.goto(url, idle=idle, timeout=timeout)
+        return _loaded(self._page.goto(url, idle=idle, timeout=timeout))
 
     def on_response(self, match: Match, handler: Callable[[Session, Any, Any], Any], *,
                     lines: bool = False) -> Callable[[], None]:
@@ -374,13 +346,15 @@ class TargetSession:
         return self._listen(_Listener("request", match, lambda request: handler(self, request)))
 
     def scroll(self, *, by: str | Callable[[Any], Any] | None = None, count: Callable[[], int] | None = None,
-               more: Callable[[], bool] | None = None, idle: int = 4, delay: float = 2.0, max: int = 200) -> int:
-        """`page.scroll` under a `scroll <folder>` spinner, stopping too once the limit is reached."""
-        def keep_going() -> bool:
-            return not self.full and (more is None or more())
+               more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0,
+               max: int | None = None) -> int:
+        """`page.scroll` under a `scroll <folder>` spinner.
 
+        `idle` is the seconds at the bottom with no progress that end the feed, and `delay` the
+        longest wait for progress after one scroll.
+        """
         with log.progress(f"scroll {self.folder or self.target}", show=_show_steps) as bar:
-            return self.page.scroll(by=by, count=count, more=keep_going, idle=idle, delay=delay, max=max,
+            return self.page.scroll(by=by, count=count, more=more, idle=idle, delay=delay, max=max,
                                     onscroll=bar.advance)
 
     def wait_for_selector(self, css: str, *, timeout: float = 30.0) -> None:
@@ -420,41 +394,36 @@ class TargetSession:
         return self._run.client
 
     def save(self, source: net.Download, name: str, *, category: str, date: datetime.date | None = None,
-             folder: str | None = None, key: str | None = None, password: str | None = None,
-             size: int | None = None, headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool:
+             folder: str | None = None, key: str | None = None, size: int | None = None,
+             headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool:
         """Queue one file, and return False when it is skipped.
 
             session.save(url, f"{day}_{post_id}.jpg", category="posts", date=posted, headers={"Referer": profile})
 
         `source` is a URL, mirror URLs tried in order, or `fetch(dest, progress)`. It lands in
         `<downloads>/<code>/<target>/<folder>/<name>`. It is skipped when filtered out by
-        `--from`/`--since`/`--until`, already saved or queued, past the limit, or when the folder
-        is None. The history row is keyed by `key`, which defaults to `folder/name`. A `category`
-        the source doesn't declare raises `ValueError`. `audio` is a video's separate audio stream
-        (DASH), merged into it; a photo or video is renamed to the extension its content calls for.
+        `--from`/`--time`, already saved or queued, or when the folder is None. The history row is
+        keyed by `key`, which defaults to `folder/name`. A `category` the source doesn't declare
+        raises `ValueError`. `audio` is a video's separate audio stream (DASH), merged into it. A
+        photo, video or audio file is renamed to the extension its content calls for, and
+        compressed when the run's `--image`, `--video` or `--audio` asks; an archive or any other
+        file is saved as the site sends it.
         """
         check_category(self._source, category)
-        kind = media_kind(name)
-        if audio is not None and kind != VIDEO:
+        kind = files.kind_of(name)
+        if audio is not None and kind != files.VIDEO:
             raise RuntimeError(f"{self._source.code}: audio= is for videos, not {name}")
         folder = self.folder if folder is None else folder
-        if folder is None or self.full or not self.wants(category=category, date=date):
+        if folder is None or not self.wants(category=category, date=date):
             return False
         dest = self._path(folder, name)
         label = dest.relative_to(self._target_dir()).as_posix()
         history_key = f"{self._source.code}:{key or label}"
-        saved = self._saved_path(dest, history_key)
-        if dest in self._queued or history_key in self._queued or saved:
+        if dest in self._queued or history_key in self._queued or self._saved_path(dest, history_key):
             log.info("skip {name}", name=label)
-            if saved and self._settings.options.unpack and _is_archive(saved.name):
-                # An archive saved by an earlier run without --unpack is unpacked now, after the downloads.
-                self._unpack_saved.append(_File(source, saved, label, history_key, password, size, headers, kind))
             return False
         self._queued.update((dest, history_key))
-        self._submitted += 1
-        self._submit(_File(source, dest, label, history_key, password, size, headers, kind, audio))
-        if self.full:
-            log.info("Reached limit of {limit} downloads.", limit=self._settings.limit)
+        self._submit(_File(source, dest, label, history_key, size, headers, kind, audio))
         return True
 
     def write(self, name: str, text: str) -> bool:
@@ -474,12 +443,6 @@ class TargetSession:
         # Through a `.<name>.<random>.part`, which `flnd sync`'s repair removes if a run dies mid-write.
         files.write_atomic(self._path(self.folder, name), text)
         return True
-
-    @property
-    def full(self) -> bool:
-        """Whether the limit of queued files is reached."""
-        limit = self._settings.limit
-        return bool(limit) and self._submitted >= limit
 
     @property
     def state(self) -> MutableMapping[str, Any]:
@@ -521,7 +484,7 @@ class TargetSession:
         self._run.backoff.wait_turn()
 
     def finish(self, error: BaseException | None = None) -> int:
-        """Close the browser, wait for the downloads (or drop queued ones after `error`), then unpack and zip.
+        """Close the browser, and wait for the downloads and their encodes (or drop queued ones after `error`).
 
         It returns how many files were written, after logging each failed one.
         """
@@ -530,7 +493,7 @@ class TargetSession:
             self._browser.close()
             self._browser = self._page = None
         self._end_handover(dropping=error is not None)
-        # Downloads queue video encodes, so their pool ends first; the target, and --zip, wait for both.
+        # Downloads queue video encodes, so their pool ends first; the target waits for both.
         for name in ("_pool", "_encodes"):
             pool: worker.Pool | None = getattr(self, name)
             if pool is None:
@@ -542,15 +505,8 @@ class TargetSession:
                     item = result.item[0] if isinstance(result.item, tuple) else result.item
                     log.error("{file}: {kind} {error}", file=item, kind=type(result.error).__name__,
                               error=result.error)
-        if error is None:
-            # One unpacked by an earlier run too is left as it is, so a run that skips everything stays quick.
-            for file in self._unpack_saved:
-                if not _unpack_folder(file.dest).exists():
-                    self._unpack(file)
         if self._pool is None:
             return 0
-        if self._settings.options.zip and error is None:
-            self._zip()
         return sum(1 for result in self._pool.results if result.value is True)
 
     def _send(self, method: str, url: str, headers: Mapping[str, str] | None, request: dict, *,
@@ -572,7 +528,7 @@ class TargetSession:
         self._page = self._browser.open_page()
         for listener in self._listeners:
             listener.attach(self._page)
-        return self._page.goto(url, idle=idle, timeout=timeout)
+        return _loaded(self._page.goto(url, idle=idle, timeout=timeout))
 
     def _listen(self, listener: _Listener) -> Callable[[], None]:
         self._listeners.append(listener)
@@ -590,19 +546,16 @@ class TargetSession:
         from shared import browser
 
         source, settings = self._source, self._settings
-        try:
-            connected = browser.connect(headless=settings.headless, viewport=source.viewport, locale=settings.locale,
-                                        timezone=settings.timezone, args=source.browser_args, stealth=source.stealth)
-        except RuntimeError as error:
-            # shared names Playwright's own command, which a bundled flnd doesn't have.
-            if str(error).startswith("Chromium is not installed"):
-                raise RuntimeError("Chromium is not installed; run flnd install-browser") from None
-            raise
+        # Visible, so a person can solve a captcha in it; no locale or timezone, so the browser keeps
+        # the computer's own, which match where the connection comes from. Without Google Chrome,
+        # connect asks once to download Chromium, or raises naming Chrome.
+        connected = browser.connect(headless=False, viewport=source.viewport, args=source.browser_args,
+                                    stealth=source.stealth)
         connected.cookies.add(self._run.jar)
         return connected
 
     def _target_dir(self) -> Path:
-        return self._settings.downloads / self._source.code / fmt.filename(self.target.value)
+        return files.target_folder(self._settings.home, self.target)
 
     def _path(self, folder: str, name: str) -> Path:
         # Every part goes through fmt.filename, so a name from a site can never leave the target's folder.
@@ -657,32 +610,23 @@ class TargetSession:
         source = file.source
         if callable(source):
             source = self._sync_fetch(source)
-        try:
-            saved = net.download(self._run.http, source, file.dest, label=file.label, backoff=self._run.backoff,
-                                 headers=file.headers, wait=type(self._source).wait, size=file.size, kind=file.kind,
-                                 audio=file.audio)
-        except RuntimeError as error:
-            if file.audio and "needs ffmpeg" in str(error) and self._source.code not in self._settings.hinted:
-                self._settings.hinted.add(self._source.code)
-                log.warn("{code}: ffmpeg not found; install ffmpeg on your PATH to save Facebook and Instagram "
-                         "videos", code=self._source.code)
-            raise
+        # A DASH video without ffmpeg fails here with media's own error, which names what to install.
+        saved = net.download(self._run.http, source, file.dest, label=file.label, backoff=self._run.backoff,
+                             headers=file.headers, wait=type(self._source).wait, size=file.size, kind=file.kind,
+                             audio=file.audio)
         if saved is None:
             return False
-        options = self._settings.options
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
-        if file.kind == PHOTO and options.compress_image:
-            # Imported here: flnd.compress needs this module's options and tables.
-            from flnd.compress import compress_file
-
-            # None (no Pillow or encoder) leaves the row without "compressed", for a later sync to retry.
-            row.update(compress_file(saved, PHOTO, options, self._settings.compress_warned) or {})
         self._settings.history[file.key] = row
-        if file.kind == VIDEO and options.compress_video and not self._settings.videos_off:
-            self._encoder().submit(self._compress_video, file, row)
-        if options.unpack and _is_archive(file.dest.name):
-            self._unpack(file)
+        choice = choice_of(self._settings.options, file.kind)
+        if choice is None or file.kind is None:
+            return True
+        if KINDS[file.kind].one_at_a_time:
+            # A video waits for the run's one encode at a time on a pool of its own, so downloads go on.
+            self._encoder().submit(self._compress, file.key, file.kind, row, choice)
+        else:
+            self._compress(file.key, file.kind, row, choice)
         return True
 
     def _encoder(self) -> worker.Pool:
@@ -692,21 +636,13 @@ class TargetSession:
             self._encodes = worker.pool(concurrency=1)
         return self._encodes
 
-    def _compress_video(self, file: _File, row: dict) -> None:
-        settings = self._settings
-        with settings.encoding:
-            if settings.videos_off:
-                return
-            # Imported here: flnd.compress needs this module's options and tables.
-            from flnd.compress import compress_file
-
-            fields = compress_file(Path(row["path"]), VIDEO, settings.options, settings.compress_warned)
-            if fields is None:
-                # No ffmpeg or encoder here: every other video would fail the same way.
-                settings.videos_off = True
-                log.warn("video compression stops for this run")
-                return
-            settings.history[file.key] = {**row, **fields}
+    def _compress(self, key: str, kind: str, row: dict, choice: Choice) -> None:
+        """Compress one saved file with the run's choice, and record its fields on its history row."""
+        fields = self._settings.compressor.compress(Path(row["path"]), kind, choice)
+        # None (no ffmpeg, encoder or extra here) leaves the row without "compressed", so a later
+        # download that applies the setting, once that is installed, compresses it.
+        if fields is not None:
+            self._settings.history[key] = {**row, **fields}
 
     def _sync_fetch(self, fetch: net.Fetch) -> net.Fetch:
         def call(dest: Path, progress: Callable[..., None]) -> Any:
@@ -715,29 +651,10 @@ class TargetSession:
 
         return call
 
-    def _unpack(self, file: _File) -> None:
-        from shared import archive
-
-        folder = _unpack_folder(file.dest)
-        try:
-            archive.unzip(file.dest, folder, password=file.password, conflict="skip")
-        except (OSError, ValueError, RuntimeError) as error:
-            log.error("{file}: can't unpack: {error}", file=file.label, error=error)
-            return
-        log.info("unpacked {file}", file=file.label)
-
-    def _zip(self) -> None:
-        from shared import archive
-
-        folder = self._target_dir()
-        if folder.is_dir():
-            written = archive.zip(folder, folder.with_name(folder.name + ".zip"))
-            log.ok("{target}: zipped to {path}", target=str(self.target), path=written[0])
-
     def _check_interactive(self) -> None:
         if not self._settings.interactive:
             code = self._source.code
-            raise RuntimeError(f"{code}: flnd download never asks questions; run flnd login {code} first")
+            raise RuntimeError(f"{code}: flnd download never asks questions; run flnd login first")
 
 
 @dataclass
@@ -748,7 +665,6 @@ class _File:
     dest: Path
     label: str
     key: str
-    password: str | None
     size: int | None
     headers: Mapping[str, str] | None
     kind: str | None = None
@@ -787,58 +703,11 @@ def check_category(source: Source, category: str) -> None:
                          f"({', '.join(source.categories)})")
 
 
-def media_kind(name: str) -> str | None:
-    """"photo" or "video" for a file name such as `a.jpg`; None for anything else, such as an archive."""
-    return KINDS.get(Path(name).suffix.lower())
-
-
-def video_format(value: str | None) -> tuple[str | None, str | None]:
-    """`--format-video` as (container, codec): `mkv:h265` is ("mkv", "h265"), `h265` (None, "h265").
-
-    A value that isn't one, or a pair that can't go together (`webm:h265`), raises `ValueError`.
-    """
-    if not value:
-        return None, None
-    container, _, codec = value.lower().partition(":")
-    if not codec and container in VIDEO_CODECS:
-        container, codec = "", container
-    if (container and container not in VIDEO_CONTAINERS) or (codec and codec not in VIDEO_CODECS):
-        raise ValueError(f"--format-video takes a container ({', '.join(VIDEO_CONTAINERS)}), a codec "
-                         f"({', '.join(VIDEO_CODECS)}), or container:codec, not {value!r}")
-    if container and codec and codec not in CODECS_IN.get(container, ("h264", "h265")):
-        raise ValueError(f"--format-video {value}: {container} can't hold {codec}")
-    return container or None, codec or None
-
-
-def compress_problem(options: Options) -> str | None:
-    """Why these compress options can't be used, or None when they can."""
-    for kind in ("image", "video"):
-        if getattr(options, f"format_{kind}") and not getattr(options, f"compress_{kind}"):
-            return f"--format-{kind} needs --compress-{kind}"
-    if options.format_image and options.format_image.lower().lstrip(".") not in IMAGE_FORMATS:
-        return f"--format-image takes {', '.join(IMAGE_FORMATS)}, not {options.format_image!r}"
-    try:
-        video_format(options.format_video)
-    except ValueError as error:
-        return str(error)
-    return None
-
-
 def _show_steps(steps: float) -> str:
     return f"{steps:g} steps"
 
 
-def _unpack_folder(archive: Path) -> Path:
-    return archive.parent / _without_archive_suffixes(archive.name)
-
-
-def _is_archive(name: str) -> bool:
-    return _without_archive_suffixes(name) != Path(name).name
-
-
-def _without_archive_suffixes(name: str) -> str:
-    # "photos.7z.001" and "photos.tar.gz" both unpack into "photos".
-    stem = Path(name)
-    while stem.suffix.lower() in ARCHIVE_SUFFIXES or stem.suffix[1:].isdigit():
-        stem = stem.with_suffix("")
-    return stem.name or name
+def _loaded(status: int | None) -> bool:
+    # Page.goto gives the main response's status, None when nothing loaded; an error page
+    # (400 and up) is not the page asked for. A later step waits out a 429 here instead.
+    return status is not None and status < 400

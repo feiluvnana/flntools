@@ -39,14 +39,13 @@ class FakeSession:
 
     def __init__(self, target: Target, *, source: type[Source] | None = None, cookies: Mapping[str, str] | None = None,
                  json: Mapping[str, Answer] | None = None, html: Mapping[str, str] | None = None,
-                 options: Options = Options(), limit: int | None = None, page_html: str = "",
+                 options: Options = Options(), page_html: str = "",
                  pages: Mapping[str, str] | None = None, on_scroll: Callable[[FakeSession], Any] | None = None):
         self.target = target
         self.folder: str | None = ""
         self.options = options
         # The target's source, for its categories; a test source can be given.
         self.source = source or SOURCES[target.source]
-        self.limit = limit
         # The page's HTML: by the URL last visited, or else `page_html`.
         self.page_html = page_html
         self.pages = dict(pages or {})
@@ -134,7 +133,8 @@ class FakeSession:
                 handler(self, data, response)
 
     def scroll(self, *, by: str | Callable[[Any], Any] | None = None, count: Callable[[], int] | None = None,
-               more: Callable[[], bool] | None = None, idle: int = 4, delay: float = 2.0, max: int = 200) -> int:
+               more: Callable[[], bool] | None = None, idle: float = 10.0, delay: float = 3.0,
+               max: int | None = None) -> int:
         if self.on_scroll is not None:
             self.on_scroll(self)
         return 1
@@ -164,17 +164,17 @@ class FakeSession:
         raise RuntimeError("FakeSession has no browser")
 
     def save(self, source: Download, name: str, *, category: str, date: datetime.date | None = None,
-             folder: str | None = None, key: str | None = None, password: str | None = None,
-             size: int | None = None, headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool:
+             folder: str | None = None, key: str | None = None, size: int | None = None,
+             headers: Mapping[str, str] | None = None, audio: str | None = None) -> bool:
         check_category(self.source(), category)
         folder = self.folder if folder is None else folder
-        if folder is None or self.full or not self.wants(category=category, date=date):
+        if folder is None or not self.wants(category=category, date=date):
             return False
         path = f"{folder}/{name}" if folder else name
         if any(item["path"] == path or (key and item["key"] == key) for item in self.saved):
             return False
         self.saved.append({"source": source, "path": path, "category": category, "date": date, "key": key,
-                           "password": password, "size": size, "headers": dict(headers or {}), "audio": audio})
+                           "size": size, "headers": dict(headers or {}), "audio": audio})
         return True
 
     def write(self, name: str, text: str) -> bool:
@@ -182,10 +182,6 @@ class FakeSession:
             return False
         self.written[f"{self.folder}/{name}" if self.folder else name] = text
         return True
-
-    @property
-    def full(self) -> bool:
-        return self.limit is not None and len(self.saved) >= self.limit
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
         raise AssertionError(f"a source asked during a download: {message}")

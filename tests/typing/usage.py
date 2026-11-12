@@ -35,10 +35,10 @@ theme.color = "265"  # pyright: ignore[reportAttributeAccessIssue]
 worker.map(len, [1, 2])  # pyright: ignore[reportArgumentType]
 
 assert_type(media.probe("a.jpg"), media.Info)
-assert_type(media.compress("a.jpg", preset="small"), Optional[Path])
+assert_type(media.compress("a.jpg", preset="low"), Optional[Path])
 assert_type(media.video.frames("a.mp4", dest_dir="frames"), list[Path])
 assert_type(media.image.resize("a.jpg", width=100), Path)
-media.compress("a.jpg", "small")  # pyright: ignore[reportCallIssue]
+media.compress("a.jpg", "low")  # pyright: ignore[reportCallIssue]
 
 
 class StringDomains(Source):

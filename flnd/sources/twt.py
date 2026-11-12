@@ -124,8 +124,6 @@ class Twitter(Source):
         if session.wants(category="profile"):
             save_profile(session, user)
         for number, timeline in enumerate(TIMELINES):
-            if session.full:
-                return
             if session.wants(category=timeline.category) and not self._read_timeline(session, user_id, timeline):
                 self._read_in_browser(session, handle, user_id, TIMELINES[number:])
                 return
@@ -147,7 +145,7 @@ class Twitter(Source):
     def _read_timeline(self, session: Session, user_id: str, timeline: Timeline) -> bool:
         """Read one timeline to its end; False when the API refused it and the browser should take over."""
         cursor, pages, seen = None, 0, set()
-        while not session.full:
+        while True:
             variables = {"userId": user_id, "count": 20, "includePromotedContent": False, "withVoice": True}
             if cursor:
                 variables["cursor"] = cursor
@@ -208,8 +206,6 @@ class Twitter(Source):
         session.on_response(lambda response: any(f"/{timeline.query}" in response.url for timeline in timelines),
                             on_timeline)
         for timeline in timelines:
-            if session.full:
-                break
             if session.wants(category=timeline.category):
                 session.folder = timeline.category
                 if session.goto(profile + timeline.tab):

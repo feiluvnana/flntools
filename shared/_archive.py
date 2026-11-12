@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Callable, Iterator, Literal, Sequence, Union, cast
 
+from shared import _atomic
 from shared import _fmt as fmt
 
 if TYPE_CHECKING:
@@ -105,25 +106,28 @@ def zip(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str
         raise ValueError(f"split must be a positive number of bytes, not {split}")
     files = _collect(sources)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    whole = dest.with_name(f".{dest.name}.part")
     pieces: list[Path] = []
     try:
-        if kind == "zip":
-            _write_zip(whole, files, password)
-        elif kind == "7z":
-            _write_7z(whole, files, password)
-        else:
-            _write_tar(whole, files, kind)
+        # The archive is written whole to a part file first; unsplit, it becomes dest when done.
+        with _atomic.writing(dest, replace=True) as whole:
+            if kind == "zip":
+                _write_zip(whole, files, password)
+            elif kind == "7z":
+                _write_7z(whole, files, password)
+            else:
+                _write_tar(whole, files, kind)
+            if split is not None:
+                # Split, only the pieces are kept: deleting the whole leaves dest untouched.
+                pieces = _split(whole, split)
+                whole.unlink()
         if split is None:
-            whole.replace(dest)
             return [dest]
-        pieces = _split(whole, split)
         finals = [dest.with_name(f"{dest.name}.{number:03}") for number in range(1, len(pieces) + 1)]
         for index, piece in enumerate(pieces):
             piece.replace(finals[index])
         return finals
     finally:
-        for leftover in [whole, *pieces]:
+        for leftover in pieces:
             leftover.unlink(missing_ok=True)
 
 

@@ -164,7 +164,7 @@ class TikTok(Source):
             self._save_avatar(session, selector.select(user).jmespath("user.avatarLarger").first)
         if any(session.wants(category=category) for category in ("videos", "stories", "playlists")):
             # A captcha can cover the grid after the page loaded; the list then never comes.
-            while not session.full:
+            while True:
                 session.scroll(count=lambda: counts["videos"], more=lambda: has_more[0], delay=2.5)
                 if counts["videos"] or not has_captcha(session):
                     break
@@ -174,7 +174,7 @@ class TikTok(Source):
             if not counts["videos"] and session.wants(category="videos"):
                 self._download_linked_posts(session)
         for category, tab in TABS:
-            if not session.full and session.wants(category=category):
+            if session.wants(category=category):
                 self._read_tab(session, category, tab, lambda: counts[category])
         session.folder = None
 
@@ -218,8 +218,6 @@ class TikTok(Source):
         linked_ids = [match.group(2) for href in session.page.selector.css(POST_LINKS).all
                       if (match := re.search(r"/(video|photo)/(\d+)", href))]
         for video_id in dict.fromkeys(linked_ids):
-            if session.full:
-                break
             self._download_single_embed(session, video_id)
 
     def _save_avatar(self, session: Session, url: str | None) -> None:

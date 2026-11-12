@@ -292,8 +292,8 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
         wait: the source's wait between attempts, in seconds or as a function (see `retry_wait`).
         size: the file's size in bytes when the source knows it, shown on the bar for a `fetch`
             function; None when unknown, and then a `fetch`'s file with a `kind` is decoded to check it.
-        kind: "photo" or "video" to check the file is media and name it by its content; None saves
-            any file (an archive, a document) as it comes, under `dest`'s name.
+        kind: "image", "video" or "audio" (`files.kind_of`) to check the file is media and name it
+            by its content; None saves any file (an archive, a document) as it comes, under `dest`'s name.
         audio: the URL of a separate audio stream (DASH), downloaded after the video and merged
             into `dest` with it; None when the video has its own sound.
 

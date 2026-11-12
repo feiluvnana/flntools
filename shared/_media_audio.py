@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shared import _ffmpeg, _media
+from shared import _atomic, _ffmpeg, _media
 from shared._media import PathLike
 
 
@@ -32,7 +32,7 @@ def extract(src: PathLike, *, dest: PathLike, bitrate: int | None = None) -> Pat
         raise _media.BrokenError(f"{src.name} has no audio stream")
     out, copied = _media.output(extension, video=None, audio=info.audio, quality=90, audio_bitrate=bitrate,
                                 created=info.tags.get("creation_time"))
-    with _media.writing(dest) as part:
+    with _atomic.writing(dest) as part:
         command = ["-n", *_ffmpeg.source(src), *out, _ffmpeg.target(part)]
         if copied:
             _ffmpeg.run(command, name=src.name, timeout=_ffmpeg.COPY_TIMEOUT)

@@ -18,7 +18,7 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
-from flnd import vault
+from flnd import auth
 from flnd.engine import Engine
 from flnd.session import Options
 from flnd.sources import SOURCES
@@ -162,12 +162,12 @@ class FakeQR:
 
 
 def store(home, **values):
-    with vault.open(home, "tlg") as secrets:
+    with auth.secrets(home, "tlg") as secrets:
         secrets.update(values)
 
 
 def stored(home):
-    with vault.open(home, "tlg") as secrets:
+    with auth.secrets(home, "tlg") as secrets:
         return dict(secrets)
 
 
@@ -300,7 +300,7 @@ class LoginTest(LoginCase):
     def test_qr_never_scanned(self):
         self.telegram.qr_outcomes = ["timeout"] * QR_CODES
         self.answer(*CREDENTIALS.values())
-        with self.assertRaisesRegex(LoginError, "no QR code was scanned; run flnd login tlg --method qr again"):
+        with self.assertRaisesRegex(LoginError, "no QR code was scanned; run flnd login again"):
             self.log_in("qr")
         self.assertEqual(stored(self.home), {})
 
@@ -338,12 +338,12 @@ class LoginTest(LoginCase):
         store(self.home, **CREDENTIALS)
         for method in ("qr", "phone"):
             with self.subTest(method=method), self.assertRaisesRegex(
-                    LoginError, f"run flnd login tlg --method {method} in a terminal"):
+                    LoginError, f"the {method} login asks questions; run flnd login in a terminal"):
                 self.log_in(method)
         self.assertEqual(self.telegram.clients, [])
-        with vault.open(self.home, "tlg") as secrets:
+        with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
-        with self.assertRaisesRegex(LoginError, "no api_id and api_hash yet; run flnd login tlg in a terminal"):
+        with self.assertRaisesRegex(LoginError, "no api_id and api_hash yet; run flnd login in a terminal"):
             self.log_in("browser")
 
     def test_logged_in_is_a_stored_session(self):
@@ -355,28 +355,37 @@ class LoginTest(LoginCase):
 
 
 class LoginCommandTest(FlndCase):
-    def test_a_method_the_source_lacks_is_a_usage_error(self):
-        code, _, out = self.run_app("login", "ins", "--method", "qr")
-        self.assertEqual(code, 2)
-        self.assertIn("✗ ins has no login method 'qr': use browser, file", out)
+    def choose_telegram(self, *keys):
+        """Pick Telegram, the last source, in `flnd login`'s list, then type `keys`."""
+        self.keys(*["down"] * list(SOURCES).index("tlg"), "enter", *keys)
 
-    def test_the_method_is_asked_and_usage_error_without_a_terminal(self):
-        code, _, out = self.run_app("login", "tlg")
-        self.assertEqual(code, 2)
-        self.assertIn("✗ give --method: browser, qr, phone", out)
+    def test_the_source_then_the_method_is_asked(self):
         methods = []
-        self.keys("down", "enter")
+        self.choose_telegram("down", "enter")
         with mock.patch.object(Telegram, "login", lambda self, session, method: methods.append(method)):
-            self.assertEqual(self.run_app("login", "tlg")[0], 0)
+            self.assertEqual(self.run_app("login")[0], 0)
         self.assertEqual(methods, ["qr"])
-        self.assertIn("✓ Log in to Telegram: With a QR code", self.screen.out.getvalue())
+        out = self.screen.out.getvalue()
+        self.assertIn("✓ Log in to: Telegram (tlg)", out)
+        self.assertIn("✓ Log in to Telegram: With a QR code", out)
 
-    def test_qr_without_a_terminal_fails_naming_the_command(self):
-        with vault.open(Path(".flnd"), "tlg") as secrets:
-            secrets.update(CREDENTIALS)
-        code, _, out = self.run_app("login", "tlg", "--method", "qr")
+    def test_a_failed_login_is_reported(self):
+        def refuse(self, session, method):
+            raise LoginError("tlg: no QR code was scanned; run flnd login again")
+
+        self.choose_telegram("down", "enter")
+        with mock.patch.object(Telegram, "login", refuse):
+            code, _, out = self.run_app("login")
         self.assertEqual(code, 1)
-        self.assertIn("✗ tlg: --method qr asks questions; run flnd login tlg --method qr in a terminal", out)
+        self.assertIn("✗ tlg: no QR code was scanned; run flnd login again", out)
+
+    def test_a_stored_session_is_marked_logged_in(self):
+        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+            secrets.update(session=SESSION, **CREDENTIALS)
+        self.choose_telegram("enter")
+        with mock.patch.object(Telegram, "login", lambda self, session, method: None):
+            self.run_app("login")
+        self.assertIn("Telegram (tlg) · logged in", self.screen.out.getvalue())
 
 
 class DownloadCase(LoginCase):
@@ -432,10 +441,10 @@ class DownloadTest(DownloadCase):
         self.assertTrue((self.folder / "photo" / "2026-01-05_11.jpg").is_file())
 
     def test_not_logged_in_fails_the_target(self):
-        with vault.open(self.home, "tlg") as secrets:
+        with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         self.assertEqual(self.download(), 0)
-        self.assertIn("✗ tlg:examplechannel: not logged in; run flnd login tlg", self.lines())
+        self.assertIn("✗ tlg:examplechannel: not logged in; run flnd login", self.lines())
         self.assertEqual(self.telegram.clients, [])
 
     def test_many_files_on_the_async_loop(self):
@@ -477,12 +486,14 @@ def zipped(name, text):
 
 
 class ArchiveTest(DownloadCase):
-    def test_an_archive_sent_as_a_file_is_unpacked_and_the_chat_zipped(self):
-        self.telegram.messages[1001] = [message(20, "file", name="set.zip", content=zipped("inside.txt", "hello"))]
-        self.assertEqual(self.download(categories=("file",), unpack=True, zip=True), 1)
-        unpacked = self.folder / "file" / "2026-01-05_20_set"
-        self.assertEqual((unpacked / "inside.txt").read_text(), "hello")
-        self.assertTrue(self.target_dir("tlg", "examplechannel.zip").is_file())
+    def test_an_archive_sent_as_a_file_is_saved_as_sent(self):
+        # flnd no longer unpacks or zips (--unpack and --zip are gone): the archive stays as Telegram sent it.
+        packed = zipped("inside.txt", "hello")
+        self.telegram.messages[1001] = [message(20, "file", name="set.zip", content=packed)]
+        self.assertEqual(self.download(categories=("file",)), 1)
+        self.assertEqual([path.name for path in (self.folder / "file").iterdir()], ["2026-01-05_20_set.zip"])
+        self.assertEqual((self.folder / "file" / "2026-01-05_20_set.zip").read_bytes(), packed)
+        self.assertFalse(self.target_dir("tlg", "examplechannel.zip").exists())
 
 
 class WithOtherSourcesTest(DownloadCase):

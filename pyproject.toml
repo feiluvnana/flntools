@@ -16,15 +16,13 @@ dependencies = [
     "cryptography>=42",
     "telethon>=1.36",
     "qrcode>=7.4",
-    # flnd's --unpack and --zip still use these; Phase 6 step 3 removes both and moves them to the archive extra only.
-    "pyzipper",
-    "py7zr",
     "pillow>=11.3",
     "pi-heif>=1.0",
     "imageio-ffmpeg>=0.6",
 ]
 
-# For shared alone, without flnd; flnd's dependencies already hold what these add.
+# For shared alone, without flnd. flnd's dependencies already hold what these add, except
+# `archive`'s: flnd saves archives as sent and never opens one.
 [project.optional-dependencies]
 archive = ["pyzipper", "py7zr"]
 selector = ["parsel>=1.9.0", "python-jsonpath"]

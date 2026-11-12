@@ -1,11 +1,13 @@
 import importlib
 import json
+import os
 import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.request
@@ -18,13 +20,18 @@ from shared import log, theme
 from shared import _browser as browser
 from shared._theme import Screen
 
+# The real lookup, before BrowserCase patches it out.
+CHROME_INSTALLED = browser._chrome_installed
+
 
 def chromium_installed() -> bool:
+    """Whether Playwright's own Chromium is downloaded; checked without connect, which could ask to download it."""
     try:
-        with browser.connect():
-            return True
-    except (ImportError, RuntimeError):
+        from playwright.sync_api import sync_playwright
+    except ImportError:
         return False
+    with sync_playwright() as playwright:
+        return Path(playwright.chromium.executable_path).is_file()
 
 
 HAS_CHROMIUM = chromium_installed()
@@ -80,6 +87,9 @@ def fulfill(route):
     if path == "/feed":
         route.fulfill(status=200, content_type="text/html", body=FEED_PAGE)
         return
+    if path == "/missing":
+        route.fulfill(status=404, content_type="text/html", body="<p>not here</p>")
+        return
     content_type, body = API_BODIES.get(path, ("text/html", "<html><head><title>Home</title></head><body>home</body></html>"))
     route.fulfill(status=200, content_type=content_type, body=body)
 
@@ -90,10 +100,13 @@ class BrowserCase(unittest.TestCase):
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
         self.previous_level = log.level
-        # The bundled build, so results don't depend on whether this machine has Chrome installed.
-        channels = mock.patch.object(browser, "LAUNCH_CHANNELS", ("chromium",))
-        channels.start()
-        self.addCleanup(channels.stop)
+        # The bundled build, so results don't depend on whether this machine has Chrome installed,
+        # and no earlier test's "no" to the Chromium download, or failed download, is remembered.
+        for patcher in (mock.patch.object(browser, "_chrome_installed", return_value=False),
+                        mock.patch.object(browser, "_chromium_declined", False),
+                        mock.patch.object(browser, "_chromium_failed", None)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         log.level = self.previous_level
@@ -157,11 +170,11 @@ class ProfileCopyTest(BrowserCase):
         self.assertFalse(self.copy.exists())
 
     def test_profile_copy_deleted_when_the_launch_fails(self):
-        for error in (KeyboardInterrupt(), RuntimeError("Chromium is not installed")):
+        for error in (KeyboardInterrupt(), RuntimeError(browser.NEEDS_CHROME)):
             with self.subTest(error=error):
                 copy, playwright = self.new_copy(), mock.Mock()
                 with mock.patch.object(browser, "_start_playwright", return_value=playwright), \
-                        mock.patch.object(browser, "_start_context", side_effect=error):
+                        mock.patch.object(browser, "_open_context", side_effect=error):
                     with self.assertRaises(type(error)):
                         browser.connect(profile=copy)
                 self.assertFalse(copy.exists())
@@ -186,6 +199,163 @@ class ProfileCopyTest(BrowserCase):
         with self.assertRaises(ValueError):
             browser.connect(profile=self.copy, cdp="http://127.0.0.1:9")
         self.assertFalse(self.copy.exists())
+
+
+class FakeInstaller:
+    """A finished `subprocess.Popen` of Playwright's installer, with its output and exit code."""
+
+    def __init__(self, output: str, returncode: int):
+        self.stdout, self.returncode = StringIO(output), returncode
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return None
+
+
+class ChromeOnlyTest(BrowserCase):
+    """Which browser connect launches, and the Chromium download offered without Chrome. No browser starts."""
+
+    def setUp(self):
+        super().setUp()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        # Where Playwright would keep its Chromium: nothing there until the fake installer runs.
+        self.chromium = Path(folder.name) / "chromium-1" / "chrome"
+        self.playwright = mock.Mock()
+        self.playwright.chromium.executable_path = str(self.chromium)
+        self.installs = []
+        self.launched = []
+        self.context = mock.Mock()
+        for patcher in (mock.patch.object(browser, "_start_playwright", return_value=self.playwright),
+                        mock.patch.object(browser, "_open_context", self.open_context),
+                        mock.patch.object(browser.subprocess, "Popen", self.popen),
+                        mock.patch("playwright._impl._driver.compute_driver_executable",
+                                   return_value=("/driver/node", "/driver/cli.js"))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def open_context(self, playwright, profile, channel, launch_options, context_options):
+        self.launched.append(channel)
+        return self.context, [playwright.stop]
+
+    def popen(self, argv, **options):
+        """Playwright's installer: it prints progress lines, then the browser is there."""
+        self.installs.append((argv, options))
+        self.chromium.parent.mkdir(parents=True)
+        self.chromium.write_text("")
+        output = "|■■■■      |  40% of 167.3 MiB\n|■■■■■■■■■■| 100% of 167.3 MiB\nChromium downloaded\n"
+        return FakeInstaller(output, 0)
+
+    def terminal(self, *keys):
+        self.screen._interactive = True
+        self.screen.readkey = iter(keys).__next__
+
+    def test_chrome_is_launched_when_installed(self):
+        with mock.patch.object(browser, "_chrome_installed", return_value=True):
+            browser.connect().close()
+        self.assertEqual((self.launched, self.installs), (["chrome"], []))
+
+    def test_a_downloaded_chromium_is_used_without_asking(self):
+        self.chromium.parent.mkdir(parents=True)
+        self.chromium.write_text("")
+        self.terminal()   # Any question would read a key, and there is none.
+        browser.connect().close()
+        self.assertEqual((self.launched, self.installs), (["chromium"], []))
+
+    def test_yes_downloads_chromium_then_launches_it(self):
+        self.terminal("y")
+        browser.connect().close()
+        self.assertEqual(self.launched, ["chromium"])
+        (argv, options), = self.installs
+        self.assertEqual(argv, ["/driver/node", "/driver/cli.js", "install", "--no-shell", "chromium"])
+        self.assertEqual(options["env"]["PW_LANG_NAME"], "python")
+        # Into Playwright's user cache: the installer's folder is left to Playwright.
+        self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", {key: value for key, value in options["env"].items()
+                                                      if key not in os.environ})
+        out = self.screen.out.getvalue()
+        self.assertIn(f"✓ {browser.CHROMIUM_QUESTION} Yes", out)
+        self.assertIn("✓ Downloading Chromium", out)
+        # A later run finds it and doesn't ask: the screen has no key left to answer with.
+        browser.connect().close()
+        self.assertEqual((self.launched, len(self.installs)), (["chromium", "chromium"], 1))
+
+    def test_no_raises_naming_chrome_and_is_asked_once(self):
+        self.terminal("n")
+        for _ in range(2):
+            with self.assertRaises(RuntimeError) as caught:
+                browser.connect()
+            self.assertEqual(str(caught.exception), "flnd needs Google Chrome: install it from https://www.google.com/chrome/")
+        self.assertEqual(self.screen.out.getvalue().count(f"✓ {browser.CHROMIUM_QUESTION} No"), 1)
+        self.assertEqual((self.launched, self.installs), ([], []))
+        self.assertEqual(self.playwright.stop.call_count, 2)
+
+    def test_without_a_terminal_it_raises_naming_chrome(self):
+        with self.assertRaisesRegex(RuntimeError, "^flnd needs Google Chrome: install it from"):
+            browser.connect()
+        self.assertEqual((self.launched, self.installs), ([], []))
+        self.assertNotIn(browser.CHROMIUM_QUESTION, self.screen.out.getvalue())
+
+    def test_a_failed_download(self):
+        self.terminal("y")
+        with mock.patch.object(browser.subprocess, "Popen", return_value=FakeInstaller("Error: ENOSPC\n", 1)), \
+                self.assertRaisesRegex(RuntimeError, "installer exited with 1: Error: ENOSPC"):
+            browser.connect()
+        self.assertEqual(self.launched, [])
+        self.assertIn("✗ Downloading Chromium", self.screen.out.getvalue())
+
+    def test_a_failed_download_is_raised_again_without_asking(self):
+        asked = []
+        failure = RuntimeError("Chromium was not downloaded: Playwright's installer exited with 1: Error: ENOSPC")
+        with mock.patch.object(browser.prompt, "confirm", lambda *args, **options: asked.append(args) or True), \
+                mock.patch.object(browser, "_install_chromium", side_effect=failure) as install:
+            for _ in range(2):
+                with self.assertRaises(RuntimeError) as caught:
+                    browser.connect()
+                self.assertIs(caught.exception, failure)
+        self.assertEqual((len(asked), install.call_count, self.launched), (1, 1, []))
+
+    def test_two_threads_at_once_ask_once_and_download_once(self):
+        # Each source's session connects on its own thread; both find Chromium missing together.
+        asked, installs, channels = [], [], []
+        start = threading.Barrier(2)
+
+        def confirm(*args, **options):
+            asked.append(args)
+            # Long enough for the other thread to reach the question too, were nothing holding it back.
+            time.sleep(0.1)
+            return True
+
+        def install():
+            installs.append(1)
+            self.chromium.parent.mkdir(parents=True)
+            self.chromium.write_text("")
+
+        def connect():
+            start.wait()
+            channels.append(browser._channel(self.playwright))
+
+        with mock.patch.object(browser.prompt, "confirm", confirm), \
+                mock.patch.object(browser, "_install_chromium", install):
+            threads = [threading.Thread(target=connect) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual((len(asked), len(installs), channels), (1, 1, ["chromium", "chromium"]))
+
+    def test_chrome_is_looked_for_where_playwright_looks(self):
+        found = []
+        with mock.patch.object(Path, "is_file", lambda path: found.append(str(path)) or False):
+            for platform, env in (("darwin", {}), ("linux", {}),
+                                  ("win32", {"LOCALAPPDATA": "C:/Users/a/AppData/Local", "PROGRAMFILES": "C:/PF"})):
+                with mock.patch.object(browser.sys, "platform", platform), mock.patch.dict(os.environ, env):
+                    self.assertFalse(CHROME_INSTALLED())
+        self.assertEqual([Path(path) for path in found], [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), Path("/opt/google/chrome/chrome"),
+            Path("C:/Users/a/AppData/Local/Google/Chrome/Application/chrome.exe"),
+            Path("C:/PF/Google/Chrome/Application/chrome.exe")])
 
 
 @needs_chromium
@@ -216,11 +386,6 @@ class ConnectTest(BrowserCase):
             self.assertEqual(b.open_page().raw.evaluate(read), ["fr-FR", "Europe/Paris"])
         with browser.connect(profile=Path(self.folder.name) / "profile", locale="de-DE", timezone="Asia/Tokyo") as b:
             self.assertEqual(b.open_page().raw.evaluate(read), ["de-DE", "Asia/Tokyo"])
-
-    def test_falls_back_when_a_channel_is_missing(self):
-        with mock.patch.object(browser, "LAUNCH_CHANNELS", ("no-such-browser", "chromium")):
-            with browser.connect() as b:
-                self.assertEqual(b.open_page().raw.evaluate("1 + 1"), 2)
 
     def test_profile_keeps_a_cookie(self):
         profile = Path(self.folder.name) / "profile"
@@ -273,12 +438,6 @@ class ConnectTest(BrowserCase):
             with self.assertRaises(browser.PlaywrightError):
                 browser.connect(args=["--no-sandbox"])
         self.assertEqual(launch.call_args.kwargs["args"], [*browser.LAUNCH_ARGS, "--no-sandbox"])
-
-    def test_missing_chromium_message(self):
-        error = browser.PlaywrightError("BrowserType.launch: Executable doesn't exist at /x/chrome")
-        with mock.patch("playwright.sync_api._generated.BrowserType.launch", side_effect=error):
-            with self.assertRaisesRegex(RuntimeError, "^Chromium is not installed: run 'playwright install chromium'$"):
-                browser.connect()
 
     def test_closed_after_an_exception(self):
         with self.assertRaises(ValueError):
@@ -373,9 +532,10 @@ class PageTest(PageCase):
         with self.page.raw.expect_response(lambda response: response.url.endswith(path)):
             self.page.raw.evaluate("path => fetch(path).then(response => response.text())", path)
 
-    def test_goto(self):
-        self.assertTrue(self.page.goto("https://site.test/other", idle=True))
-        self.assertFalse(self.page.goto("https://bad.test/"))
+    def test_goto_returns_the_status(self):
+        self.assertEqual(self.page.goto("https://site.test/other", idle=True), 200)
+        self.assertEqual(self.page.goto("https://site.test/missing"), 404)
+        self.assertIsNone(self.page.goto("https://bad.test/"))
         self.assertEqual(len(self.lines()), 1)
 
     def test_on_response_each_match_form(self):
@@ -465,37 +625,37 @@ class ScrollTest(PageCase):
 
     def test_reaches_the_end_of_the_feed(self):
         self.load(cap=20)
-        scrolls = self.page.scroll(idle=2, delay=0.02)
+        scrolls = self.page.scroll(idle=1.5, delay=0.3, pause=0.01)
         self.assertEqual(self.count(), 20)
         self.assertLess(scrolls, 20)
 
     def test_feed_that_only_loads_after_the_jiggle(self):
         self.load(cap=20, jiggle=True)
-        self.page.scroll(count=self.count, idle=3, delay=0.02)
+        self.page.scroll(count=self.count, idle=2.0, delay=0.3, pause=0.01)
         self.assertEqual(self.count(), 20)
 
     def test_stops_at_limit(self):
         self.load()
-        self.page.scroll(count=self.count, limit=15, delay=0.02)
+        self.page.scroll(count=self.count, limit=15, delay=0.3, pause=0.01)
         self.assertGreaterEqual(self.count(), 15)
         self.assertLess(self.count(), 25)
 
     def test_stops_when_more_is_false(self):
         self.load()
         calls = []
-        self.assertEqual(self.page.scroll(more=lambda: calls.append(1) or len(calls) <= 3, delay=0.02), 3)
+        self.assertEqual(self.page.scroll(more=lambda: calls.append(1) or len(calls) <= 3, delay=0.02, pause=0.01), 3)
 
     def test_stops_at_max(self):
         self.load()
-        self.assertEqual(self.page.scroll(max=2, delay=0.02), 2)
+        self.assertEqual(self.page.scroll(max=2, delay=0.02, pause=0.01), 2)
 
     def test_new_responses_count_as_progress(self):
         self.load(cap=5)
         self.page.on_response("/api/", lambda parsed, response: None)
         fetch = "fetch('/api/other'); scrollBy(0, 100000)"
         # Every scroll brings a response, so the feed never looks finished until max.
-        self.assertEqual(self.page.scroll(by=fetch, idle=1, delay=0.05, max=4), 4)
-        self.assertEqual(self.page.scroll(by="scrollBy(0, 100000)", idle=1, delay=0.02, max=4), 1)
+        self.assertEqual(self.page.scroll(by=fetch, idle=0.01, delay=2.0, pause=0.01, max=4), 4)
+        self.assertEqual(self.page.scroll(by="scrollBy(0, 100000)", idle=0.01, delay=0.02, pause=0.01, max=4), 1)
 
     def test_custom_by_and_onscroll(self):
         self.load(cap=20)
@@ -505,15 +665,15 @@ class ScrollTest(PageCase):
             moves.append(1)
             raw_page.evaluate("scrollBy(0, 100000)")
 
-        scrolls = self.page.scroll(by=by, idle=1, delay=0.02, onscroll=lambda: ticks.append(1))
+        scrolls = self.page.scroll(by=by, idle=1.5, delay=0.3, pause=0.01, onscroll=lambda: ticks.append(1))
         self.assertEqual(self.count(), 20)
         self.assertEqual((len(moves), len(ticks)), (scrolls, scrolls))
-        scrolls = self.page.scroll(by="scrollBy(0, 100000)", idle=1, delay=0.02)
+        scrolls = self.page.scroll(by="scrollBy(0, 100000)", idle=0.01, delay=0.02, pause=0.01)
         self.assertEqual(scrolls, 1)
 
     def test_uses_the_wheel_in_uneven_steps(self):
         self.load()
-        self.page.scroll(max=8, delay=0.02)
+        self.page.scroll(max=8, delay=0.02, pause=0.01)
         down = [delta for delta in self.wheels() if delta > 0]
         self.assertGreaterEqual(len(down), 8 * 3)
         self.assertGreater(len(set(down)), 5)
@@ -524,7 +684,7 @@ class ScrollTest(PageCase):
         for _ in range(2):
             browser._random.seed(42)
             self.load(cap=5)
-            self.page.scroll(idle=100, max=4, delay=0.02)
+            self.page.scroll(idle=100, max=4, delay=0.02, pause=0.01)
             runs.append(self.wheels())
         self.assertEqual(runs[0], runs[1])
         self.assertTrue(any(delta < 0 for delta in runs[0]))
@@ -533,6 +693,115 @@ class ScrollTest(PageCase):
 class FakeRawPage:
     def wait_for_timeout(self, ms):
         time.sleep(ms / 1000)
+
+
+class FakeFeed:
+    """A raw page on a fake clock: each scroll makes it grow `after` seconds later, for `grows` scrolls.
+
+    It is always at the bottom, as a feed waiting for its next page is. Waits advance the clock.
+    """
+
+    def __init__(self, *, after=0.1, grows=10**9, bottom=True):
+        self.now = 0.0
+        self.after, self.grows, self.bottom = after, grows, bottom
+        self.height = 1000
+        self.due = []                                    # when the next pages arrive
+        self.scrolled_at = []
+        self.mouse = SimpleNamespace(move=lambda *args, **kw: None, wheel=lambda *args: None)
+
+    def scroll(self, raw_page):
+        self.scrolled_at.append(self.now)
+        if self.grows:
+            self.grows -= 1
+            self.due.append(self.now + self.after)
+
+    def evaluate(self, expression):
+        if expression == browser.PAGE_HEIGHT:
+            arrived = [when for when in self.due if when <= self.now]
+            self.due = [when for when in self.due if when > self.now]
+            self.height += 900 * len(arrived)
+            return self.height
+        if expression == browser.NEAR_BOTTOM:
+            return self.bottom
+        if expression == browser.VIEWPORT:
+            return [800, 900]
+        raise AssertionError(f"unexpected script {expression!r}")
+
+    def wait_for_timeout(self, ms):
+        self.now += ms / 1000
+
+
+class ScrollTimingTest(BrowserCase):
+    """Page.scroll's waits on a fake page and clock, so the timing rules are exact and take no time."""
+
+    def feed(self, **options):
+        feed = FakeFeed(**options)
+        clock = mock.patch.object(browser, "_clock", lambda: feed.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+        browser._random.seed(5)
+        page = browser.Page(feed, SimpleNamespace(_headless=True))  # type: ignore[arg-type]
+        return feed, page
+
+    def gaps(self, feed):
+        return [later - earlier for earlier, later in zip(feed.scrolled_at, feed.scrolled_at[1:])]
+
+    def test_a_page_that_grows_quickly_is_scrolled_again_after_the_floor_not_the_delay(self):
+        feed, page = self.feed(after=0.1, grows=20)
+        page.scroll(by=feed.scroll, delay=3.0, max=20)
+        # 0.1 s for the page, then the 0.3 s floor plus at most 40%, give or take one 50 ms check.
+        gaps = self.gaps(feed)
+        self.assertGreaterEqual(min(gaps), 0.1 + 0.3)
+        self.assertLessEqual(max(gaps), 0.1 + 0.05 + 0.3 * 1.4 + 1e-9)
+
+    def test_a_slow_page_is_waited_for(self):
+        feed, page = self.feed(after=2.0, grows=5)
+        page.scroll(by=feed.scroll, delay=3.0, max=5)
+        self.assertTrue(all(2.0 + 0.3 <= gap < 3.0 for gap in self.gaps(feed)))
+        self.assertEqual(feed.height, 1000 + 900 * 5)
+
+    def test_a_page_that_stops_growing_ends_after_10_s_whatever_the_delay(self):
+        for delay in (0.05, 0.5, 3.0):
+            with self.subTest(delay=delay):
+                feed, page = self.feed(after=0.1, grows=5)
+                page.scroll(by=feed.scroll, delay=delay)
+                # The quiet spell starts with the sixth scroll, the first that brought nothing.
+                quiet = feed.scrolled_at[5]
+                self.assertGreaterEqual(feed.now - quiet, 10.0)
+                self.assertLess(feed.now - quiet, 11.5)
+
+    def test_300_growing_scrolls_are_not_cut_off(self):
+        feed, page = self.feed(after=0.1, grows=300)
+        scrolls = page.scroll(by=feed.scroll)
+        self.assertGreater(scrolls, 300)
+        self.assertEqual(feed.height, 1000 + 900 * 300)
+
+    def test_count_and_progress_rising_are_progress(self):
+        for watched in ("count", "progress"):
+            with self.subTest(watched=watched):
+                feed, page = self.feed(grows=0)
+                seen = []
+
+                def by(raw_page):
+                    feed.scroll(raw_page)
+                    seen.append(feed.now)
+
+                def counter():
+                    # A number that rises 0.2 s after each scroll, while the page's height stays the same.
+                    return sum(1 for when in seen if when + 0.2 <= feed.now)
+
+                page.scroll(by=by, delay=3.0, max=6, **{watched: counter})
+                self.assertTrue(all(0.2 + 0.3 <= gap < 1.0 for gap in self.gaps(feed)))
+
+    def test_away_from_the_bottom_there_is_nothing_to_wait_for(self):
+        feed, page = self.feed(grows=0, bottom=False)
+        self.assertEqual(page.scroll(by=feed.scroll, delay=3.0, max=10), 10)
+        self.assertTrue(all(0.3 <= gap <= 0.3 * 1.4 + 1e-9 for gap in self.gaps(feed)))
+
+    def test_the_floor_is_the_pause(self):
+        feed, page = self.feed(after=0.0, grows=10)
+        page.scroll(by=feed.scroll, pause=2.4, max=10)
+        self.assertTrue(all(2.4 <= gap <= 2.4 * 1.4 + 1e-9 for gap in self.gaps(feed)))
 
 
 class HandoffTest(BrowserCase):

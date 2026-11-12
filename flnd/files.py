@@ -1,4 +1,4 @@
-"""flnd's files on disk: one way to write a file atomically, and one way to check a photo or video.
+"""flnd's files on disk: where a target's go, what kind each is, one atomic writer, and one media check.
 
 Every temporary file flnd writes is named `.<name>.<random>.part` (`part_for`) in the folder of
 the file it becomes, and is renamed onto that file only once complete. So a reader never sees half
@@ -9,7 +9,7 @@ removes. `net` streams downloads into such parts; `write_atomic` writes small fi
 file it repairs, so both sniff the same way and treat the same errors as "not checkable here".
 
     files.write_atomic(folder / "info.md", "# Title\\n")
-    extension = files.checked(folder / "a.jpg", "photo")    # ".webp" when it holds a WebP
+    extension = files.checked(folder / "a.jpg", "image")    # ".webp" when it holds a WebP
 """
 
 from __future__ import annotations
@@ -17,18 +17,50 @@ from __future__ import annotations
 import os
 import secrets
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
-from shared import log
+from shared import fmt, log
+
+if TYPE_CHECKING:
+    from flnd.target import Target
 
 # What every temporary file flnd writes matches, and what `flnd sync`'s repair deletes.
 PART_GLOB = ".*.part"
 # What `media.sniff` names a server's web page or JSON answer: a login wall or an error page.
 PAGES = (".html", ".json")
+# The kinds of saved file, in `media.kind_of`'s words; each gets its extension from its content.
+IMAGE, VIDEO, AUDIO = "image", "video", "audio"
+# How an error names each kind.
+NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
 
 
 class NotMediaError(ValueError):
-    """A web page or JSON where a photo or video was expected: a login wall or an error page."""
+    """A web page or JSON where a photo, video or audio file was expected: a login wall or an error page."""
+
+
+def kind_of(name: str) -> str | None:
+    """What a saved file is by its name: `IMAGE`, `VIDEO` or `AUDIO`; None for anything else, such as an archive.
+
+        files.kind_of("posts/a.heic")     # "image"
+
+    Args:
+        name: a file name or path; only its extension is read, through `media.kind_of`, the one table.
+    """
+    from shared import media
+
+    return media.kind_of(Path(name).suffix)
+
+
+def target_folder(home: Path, target: Target) -> Path:
+    """A target's folder: `<home>/downloads/<code>/<value>`, its value made a safe file name.
+
+        files.target_folder(Path(".flnd"), Target("ins", "user", "example_user"))   # .flnd/downloads/ins/example_user
+
+    Args:
+        home: flnd's folder, `.flnd`.
+        target: the target, as `Engine.resolve` gives it.
+    """
+    return home / "downloads" / target.source / fmt.filename(target.value)
 
 
 def part_for(dest: Path) -> Path:
@@ -96,13 +128,13 @@ def write_atomic(dest: Path, data: bytes | str) -> Path:
 
 
 def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
-    """The extension a photo or video's content calls for, once it is known not to be a web page or broken.
+    """The extension a photo, video or audio file's content calls for, once it is known not to be a web page or broken.
 
-        extension = files.checked(Path("posts/a.jpg"), "photo")    # ".webp" when it holds a WebP
+        extension = files.checked(Path("posts/a.jpg"), "image")    # ".webp" when it holds a WebP
 
     Args:
         path: the file to check; it is never changed.
-        kind: what the file should be, "photo" or "video", named in the error for a web page.
+        kind: what the file should be, `IMAGE`, `VIDEO` or `AUDIO`, named in the error for a web page.
         decode: whether to check the whole file with `media.check` (a photo decoded, a video's packets
             read); False only sniffs its first bytes, for a download whose size was already verified.
 
@@ -122,7 +154,7 @@ def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
 
     extension = media.sniff(path)
     if extension in PAGES:
-        raise NotMediaError(f"got a web page instead of a {kind}")
+        raise NotMediaError(f"got a web page instead of {NOUNS.get(kind, kind)}")
     if decode:
         try:
             media.check(path)

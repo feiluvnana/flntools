@@ -93,7 +93,7 @@ class Instagram(Source):
         profile = Profile()
         session.on_response(is_graphql, profile.on_result)
         for tab, path in TABS:
-            if not session.full and session.wants(category=tab):
+            if session.wants(category=tab):
                 self._read_tab(session, profile, tab, f"{SITE}/{user}/{path}")
         # The picture and the highlights come with any profile tab; load one if none was wanted.
         if not profile.described and (session.wants(category="profile") or session.wants(category="highlights")):
@@ -102,7 +102,7 @@ class Instagram(Source):
         session.folder = None
         for tab, code in profile.incomplete:
             # A reel already saved from the grid isn't opened again.
-            if not session.full and code not in profile.saved:
+            if code not in profile.saved:
                 save_post_page(session, code, category=tab, folder=tab)
         if profile.picture and session.wants(category="profile"):
             session.save(profile.picture, picture_name(profile.picture), category="profile", folder="profile",
@@ -111,9 +111,8 @@ class Instagram(Source):
             save_story_page(session, f"{SITE}/stories/{user}/", category="stories", folder="stories")
         if session.wants(category="highlights"):
             for highlight_id, title in profile.highlights:
-                if not session.full:
-                    save_story_page(session, f"{SITE}/stories/highlights/{highlight_id}/", category="highlights",
-                                    folder=f"highlights/{fmt.filename(title)}")
+                save_story_page(session, f"{SITE}/stories/highlights/{highlight_id}/", category="highlights",
+                                folder=f"highlights/{fmt.filename(title)}")
 
     def _read_tab(self, session: Session, profile: Profile, tab: str, url: str) -> None:
         session.folder = tab

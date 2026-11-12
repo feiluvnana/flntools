@@ -245,6 +245,31 @@ class FirefoxTest(BrowserTestCase):
             cookies.load_from_browser("a.example", browser="firefox")
 
 
+class ProfilesTest(BrowserTestCase):
+    def test_chromium_profiles_with_a_cookie_database_default_first(self):
+        root = self.home / "Library/Application Support/Google/Chrome"
+        for name, database in (("Profile 2", "Network/Cookies"), ("Default", "Network/Cookies"),
+                               ("Profile 1", "Cookies"), ("System Profile", None)):
+            (root / name).mkdir(parents=True)
+            if database:
+                (root / name / database).parent.mkdir(parents=True, exist_ok=True)
+                (root / name / database).write_bytes(b"")
+        self.assertEqual(cookies.profiles("chrome"), ["Default", "Profile 1", "Profile 2"])
+        self.assertEqual(cookies.profiles("brave"), [])
+
+    def test_firefox_profiles_the_opened_one_first(self):
+        root = self.home / "Library/Application Support/Firefox"
+        self.assertEqual(cookies.profiles("firefox"), [])
+        root.mkdir(parents=True)
+        (root / "profiles.ini").write_text("[Profile0]\nPath=Profiles/old\nDefault=1\n\n[Profile1]\nPath=Profiles/new\n\n"
+                                           "[Install4F96D1932A9F858E]\nDefault=Profiles/new\n", encoding="utf-8")
+        self.assertEqual(cookies.profiles("firefox"), ["Profiles/new", "Profiles/old"])
+
+    def test_unknown_browser(self):
+        with self.assertRaises(ValueError):
+            cookies.profiles("safari")
+
+
 class ProgramsTest(unittest.TestCase):
     def test_keychain_failure_raises_cookie_error(self):
         failed = subprocess.CompletedProcess([], 44, stdout="", stderr="not found")

@@ -118,7 +118,7 @@ class Facebook(Source):
         header = next((header for result in results or [] if (header := read_header(result)) is not None), None)
         feed.owner = header.user_id if header else None
         for tab in TABS:
-            if session.full or not session.wants(category=tab.category):
+            if not session.wants(category=tab.category):
                 continue
             path = tab_path(tab, header.paths if header else set())
             if path is None:
@@ -144,8 +144,6 @@ class Facebook(Source):
         """Open each album the albums tab listed, and scroll it to its end into albums/<title>/."""
         session.folder = "albums"
         for url, title in list(feed.albums.items()):
-            if session.full:
-                break
             feed.album = title
             if read_page(session, url, feed) is not None:
                 session.scroll(count=lambda: feed.found["albums"])

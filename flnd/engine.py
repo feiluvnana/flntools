@@ -17,7 +17,7 @@ from typing import Any, Iterator, Mapping, MutableMapping, Sequence
 
 import httpx
 
-from flnd import login, net
+from flnd import auth, net
 from flnd.session import Options, Settings, SourceRun, TargetSession
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
@@ -38,20 +38,25 @@ Row = Any
 class Engine:
     """Runs targets, one worker per source, with one HTTP client, back-off and history for each.
 
-        engine = Engine(home=Path(".flnd"), headless=True)
+        engine = Engine(home=Path(".flnd"))
         total = engine.run(engine.resolve(["tik:example_creator"]), Options(categories=("videos",)))
 
     Targets of one source run one after another, with a pause between them; different sources
     run at the same time. It never asks questions.
     """
 
-    def __init__(self, *, home: Path = Path(".flnd"), limit: int | None = None, headless: bool = False,
-                 locale: str | None = None, timezone: str | None = None,
-                 sources: Mapping[str, type[Source]] = SOURCES):
-        self.home, self.limit, self.headless = home, limit, headless
-        self.locale, self.timezone, self.sources = locale, timezone, sources
-        # Every target that ended at error, over all of this engine's runs: `flnd sync` runs one per
-        # settings group, and the command's exit status covers them all.
+    def __init__(self, *, home: Path = Path(".flnd"), sources: Mapping[str, type[Source]] = SOURCES):
+        """Make an engine; nothing is read or started until `resolve` or `run`.
+
+        Args:
+            home: flnd's folder, which holds the downloads, the history, the logins and the saved settings.
+            sources: the sources by code; tests give their own.
+
+        A run has no download limit: it ends when the sources have nothing more, or on Ctrl-C.
+        """
+        self.home, self.sources = home, sources
+        # Every target that ended at error, over all of this engine's runs: `flnd download` and
+        # `flnd sync` run one per settings group, and the command's exit status covers them all.
         self.failed: list[Target] = []
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
@@ -67,7 +72,7 @@ class Engine:
     def run(self, targets: Sequence[Target], options: Options) -> int:
         """Download every target, and return how many files were written.
 
-            engine.run(engine.resolve(["ins:example_user"]), Options(categories=("reels",), unpack=True))
+            engine.run(engine.resolve(["ins:example_user"]), Options(categories=("reels",)))
             exit_status = 1 if engine.failed else 0
 
         Args:
@@ -113,8 +118,7 @@ class Engine:
 
     def _settings(self, options: Options, history: MutableMapping[str, Any], *,
                   interactive: bool = False) -> Settings:
-        return Settings(home=self.home, options=options, history=history, limit=self.limit, headless=self.headless,
-                        locale=self.locale, timezone=self.timezone, interactive=interactive)
+        return Settings(home=self.home, options=options, history=history, interactive=interactive)
 
 
 @contextmanager
@@ -154,17 +158,17 @@ def _run_group(settings: Settings, work: tuple[Source, list[tuple[Target, Row]]]
         if not source.logged_in(account):
             if source.requires_login:
                 for target, row in rows:
-                    log.error("{target}: not logged in; run flnd login {code}", target=str(target), code=source.code)
+                    log.error("{target}: not logged in; run flnd login", target=str(target))
                     row.fail()
                 return 0
-            log.warn("{code}: not logged in, using public access; run flnd login {code}", code=source.code)
+            log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
         with _connected(run, account):
             return _run_targets(run, rows)
 
 
 @contextmanager
 def _source_run(settings: Settings, source: Source) -> Iterator[SourceRun]:
-    jar = login.load(settings.home, source.code)
+    jar = auth.load(settings.home, source.code)
     backoff = net.Backoff(source.code)
     names = {cookie["name"]: cookie["value"] for cookie in jar}
     http = net.client(user_agent=source.user_agent, headers=source.headers(names), jar=jar, sign=source.sign,

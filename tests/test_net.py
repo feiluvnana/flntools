@@ -363,10 +363,10 @@ class MediaDownloadTest(NetCase):
 
     def test_content_decides_the_extension(self):
         with self.client(httpx.Response(200, content=photo("WEBP"))) as http:
-            self.assertEqual(self.download(http, "https://cdn.example/a.jpg", kind="photo"), self.tmp / "posts" / "a.webp")
+            self.assertEqual(self.download(http, "https://cdn.example/a.jpg", kind="image"), self.tmp / "posts" / "a.webp")
         self.assertEqual(self.names(), ["a.webp"])
         with self.client(httpx.Response(200, content=photo("JPEG"))) as http:
-            self.assertEqual(self.download(http, "https://cdn.example/b.jpeg", "b.jpeg", kind="photo").name, "b.jpeg")
+            self.assertEqual(self.download(http, "https://cdn.example/b.jpeg", "b.jpeg", kind="image").name, "b.jpeg")
 
     @needs_ffmpeg()
     def test_an_mp4_keeps_its_name(self):
@@ -377,7 +377,7 @@ class MediaDownloadTest(NetCase):
         """Fix 9: a login wall is the same page on every attempt, so it fails at once instead of three times."""
         page = httpx.Response(200, content=b"<!doctype html><title>Log in</title>")
         with self.client(page) as http, self.assertRaises(net.NotMediaError) as caught:
-            self.download(http, "https://cdn.example/a.jpg", kind="photo")
+            self.download(http, "https://cdn.example/a.jpg", kind="image")
         self.assertEqual(str(caught.exception), "got a web page instead of a photo")
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.names(), [])
@@ -387,14 +387,14 @@ class MediaDownloadTest(NetCase):
         body = photo("JPEG")
         with self.client(*(chunked(body) for _ in range(3))) as http, self.assertRaises(media.UnsafeError), \
                 mock.patch("shared.media.check", side_effect=media.UnsafeError("too many pixels")):
-            self.download(http, "https://cdn.example/a.jpg", kind="photo")
+            self.download(http, "https://cdn.example/a.jpg", kind="image")
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.names(), [])
 
     def test_a_web_page_on_a_mirror_is_logged_with_why(self):
         page = httpx.Response(200, content=b"<!doctype html><title>Log in</title>")
         with self.client(page, httpx.Response(200, content=photo("JPEG"))) as http:
-            self.assertTrue(self.download(http, ["https://a.example/a.jpg", "https://b.example/a.jpg"], kind="photo"))
+            self.assertTrue(self.download(http, ["https://a.example/a.jpg", "https://b.example/a.jpg"], kind="image"))
         self.assertEqual(len(self.requests), 2)
         self.assertIn("! mirror 1 failed: got a web page instead of a photo; trying next", self.lines())
 
@@ -405,7 +405,7 @@ class MediaDownloadTest(NetCase):
     def test_a_truncated_photo_without_a_size_is_retried(self):
         whole = photo("JPEG", (400, 300))
         with self.client(chunked(whole[: len(whole) // 2]), chunked(whole)) as http:
-            self.assertEqual(self.download(http, "https://cdn.example/a.jpg", kind="photo").read_bytes(), whole)
+            self.assertEqual(self.download(http, "https://cdn.example/a.jpg", kind="image").read_bytes(), whole)
         self.assertEqual(len(self.requests), 2)
 
     def test_a_fetch_without_a_size_is_checked(self):
@@ -416,13 +416,13 @@ class MediaDownloadTest(NetCase):
             dest.write_bytes(bodies.pop(0))
 
         with self.client(httpx.Response(200)) as http:
-            self.assertEqual(self.download(http, fetch, kind="photo").read_bytes(), whole)
+            self.assertEqual(self.download(http, fetch, kind="image").read_bytes(), whole)
         self.assertEqual(bodies, [])
 
     def test_a_download_with_a_known_size_is_not_decoded(self):
         with self.client(httpx.Response(200, content=photo("JPEG"))) as http, \
                 mock.patch("shared.media.check", side_effect=AssertionError("decoded")):
-            self.assertTrue(self.download(http, "https://cdn.example/a.jpg", kind="photo"))
+            self.assertTrue(self.download(http, "https://cdn.example/a.jpg", kind="image"))
 
     def test_without_ffmpeg_video_checks_are_skipped(self):
         with self.client(chunked(b"\0\0\0\x18ftypisom" + bytes(100))) as http, \

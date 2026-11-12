@@ -68,6 +68,24 @@ class SniffTest(unittest.TestCase):
         self.assertEqual(run_python(code).stdout.strip(), ".html")
 
 
+class KindOfTest(unittest.TestCase):
+    """`media.kind_of`, the one table of file kinds that flnd reads too."""
+
+    def test_kinds_by_extension(self):
+        rows = {".jpg": "image", "JPEG": "image", ".heic": "image", ".heif": "image", ".gif": "image",
+                ".webp": "image", ".avif": "image", ".tiff": "image", "mp4": "video", ".m4v": "video",
+                ".mov": "video", ".webm": "video", ".mkv": "video", ".flv": "video", ".mp3": "audio",
+                ".m4a": "audio", ".aac": "audio", ".opus": "audio", ".ogg": "audio", ".oga": "audio",
+                ".flac": "audio", ".wav": "audio", ".zip": None, ".7z": None, ".md": None, "": None}
+        for extension, kind in rows.items():
+            with self.subTest(extension=extension):
+                self.assertEqual(media.kind_of(extension), kind)
+
+    def test_every_level_is_a_preset(self):
+        # flnd's --image, --video and --audio levels are media's preset names, and the old names are gone.
+        self.assertEqual(tuple(_media.PRESETS), ("best", "high", "mid", "low"))
+
+
 class LazyImportTest(unittest.TestCase):
     def test_log_imports_no_media(self):
         code = "import sys\nfrom shared import log\nprint('PIL' in sys.modules, 'shared._media' in sys.modules)"
@@ -374,7 +392,7 @@ class FakeScreenCase(unittest.TestCase):
 class CompressPhotoTest(FakeScreenCase):
     def test_presets_shrink_in_order(self):
         sizes = []
-        for preset in ("small", "balanced", "high"):
+        for preset in ("low", "mid", "high"):
             out = media.compress(sample("big.jpg"), dest=self.folder / f"{preset}.jpg", preset=preset)
             assert out is not None
             media.check(out)
@@ -382,15 +400,25 @@ class CompressPhotoTest(FakeScreenCase):
         self.assertLess(sizes[0], sizes[1])
         self.assertLess(sizes[1], sizes[2])
         self.assertLess(sizes[2], sample("big.jpg").stat().st_size)
-        self.assertEqual((media.probe(self.folder / "small.jpg").width, media.probe(self.folder / "small.jpg").height),
+        self.assertEqual((media.probe(self.folder / "low.jpg").width, media.probe(self.folder / "low.jpg").height),
                          (2048, 1536))
+
+    def test_best_keeps_the_full_resolution_and_strips_metadata(self):
+        best = media.compress(sample("exif.jpg"), dest=self.folder / "best.jpg", preset="best")
+        high = media.compress(sample("exif.jpg"), dest=self.folder / "high.jpg", preset="high")
+        if best is None or high is None:
+            self.skipTest("the sample is already smaller than quality 95")
+        before, after = media.probe(sample("exif.jpg")), media.probe(best)
+        self.assertEqual((after.width, after.height), (before.width, before.height))
+        self.assertIsNone(after.location)
+        self.assertGreater(best.stat().st_size, high.stat().st_size)
 
     def test_in_place_keeps_format(self):
         for name in ("big.jpg", "noise.gif"):
             with self.subTest(name=name):
                 path = fresh(name)
                 before = media.probe(path)
-                out = media.compress(path, preset="small", quality=40, resolution=100)
+                out = media.compress(path, preset="low", quality=40, resolution=100)
                 self.assertEqual(out, path)
                 self.assertEqual(media.probe(path).format, before.format)
                 self.assertEqual(len(list(path.parent.iterdir())), 1)
@@ -456,7 +484,7 @@ class CompressVideoTest(FakeScreenCase):
 
     def test_presets(self):
         sizes = []
-        for preset in ("small", "balanced", "high"):
+        for preset in ("low", "mid", "high"):
             info = self.compressed("big.mp4", preset=preset)
             media.check(info.path)
             self.assertEqual((info.video, info.audio), ("h264", "aac"))
@@ -469,7 +497,7 @@ class CompressVideoTest(FakeScreenCase):
 
     def test_resolution(self):
         self.assertEqual((self.compressed("big.mp4", resolution=240).width,), (240,))
-        self.assertEqual(self.compressed("big.mp4", resolution=240, preset="small").height, 426)
+        self.assertEqual(self.compressed("big.mp4", resolution=240, preset="low").height, 426)
         self.assertEqual(self.compressed("big.mp4", resolution=2000).width, 360)
 
     def test_stripped(self):
@@ -514,13 +542,13 @@ class CompressVideoTest(FakeScreenCase):
     def test_settings_replace_the_preset(self):
         built = []
         with record(built):
-            for preset in ("small", "balanced"):  # the x264 speed is the one thing only a preset sets
+            for preset in ("low", "mid"):  # the x264 speed is the one thing only a preset sets
                 media.compress(sample("big.mp4"), dest=self.folder / f"{preset}.mp4", preset=preset, quality=60,
                                resolution=1080, fps=30, audio_bitrate=96_000)
         self.assertEqual(built[0][:-1], built[1][:-1])
 
     def test_h265(self):
-        self.assertEqual(self.compressed("big.mp4", codec="h265", preset="small").video, "hevc")
+        self.assertEqual(self.compressed("big.mp4", codec="h265", preset="low").video, "hevc")
 
     def test_lossless_audio_left_alone(self):
         self.assertIsNone(media.compress(sample("tone.flac")))
@@ -530,14 +558,14 @@ class CompressVideoTest(FakeScreenCase):
 
     def test_progress_grows(self):
         seen = []
-        media.compress(sample("big.mp4"), dest=self.folder / "p.mp4", preset="small",
+        media.compress(sample("big.mp4"), dest=self.folder / "p.mp4", preset="low",
                        progress=lambda done, total: seen.append((done, total)))
         self.assertTrue(seen)
         self.assertEqual([done for done, _ in seen], sorted(done for done, _ in seen))
         self.assertAlmostEqual(seen[-1][0], 3.0, delta=0.2)
 
     def test_default_progress_bar(self):
-        media.compress(sample("big.mp4"), dest=self.folder / "bar.mp4", preset="small")
+        media.compress(sample("big.mp4"), dest=self.folder / "bar.mp4", preset="low")
         self.assertIn("big.mp4", self.screen.out.getvalue())
 
 

@@ -2,18 +2,16 @@
 
 import base64
 import datetime
-import io
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
 import httpx
-import py7zr
 from fakes import FakeSession
 from test_engine import EngineCase
 
-from flnd import login
+from flnd import auth
 from flnd.session import Options
 from flnd.sources.base import FetchError
 from flnd.sources.loi import API, SITE_IV, SITE_KEY, Loibus, decode_token, decrypt_field, sign_request
@@ -125,21 +123,22 @@ class RunTest(unittest.TestCase):
         self.assertEqual([item["source"] for item in session.saved], POST["images"])
         self.assertEqual(session.saved[0]["date"], datetime.date(2026, 11, 9))
         self.assertEqual(self.requested(session), ["lois/5930"])
-        self.assertIn("! archives need a login; run flnd login loi", session.messages)
+        self.assertIn("! archives need a login; run flnd login", session.messages)
         info = session.written[f"{FOLDER}/info.md"]
         self.assertIn("# Night city: set", info)
         self.assertIn("`pass-word`", info)
         self.assertIn("> line one\n>\n> line two", info)
         self.assertNotIn("Download Sources", info)
 
-    def test_archives_are_grouped_by_file_with_the_password(self):
+    def test_archives_are_grouped_by_file_and_the_password_is_in_info_md(self):
         session = self.session(categories=("archive",))
         Loibus().run(session)
         self.assertEqual(session.paths(), [f"{FOLDER}/loi-abc.7z", f"{FOLDER}/extra.zip"])
         self.assertEqual(session.saved[0]["source"], ["https://one.example/loi-abc.7z", "https://two.example/loi-abc.7z"])
-        self.assertEqual({item["password"] for item in session.saved}, {"pass-word"})
         self.assertEqual(self.requested(session), ["lois/5930", "user/info", "user/loi/download_v6/5930"])
         info = session.written[f"{FOLDER}/info.md"]
+        # flnd no longer unpacks (--unpack is gone), so the password lives only in info.md.
+        self.assertIn("`pass-word`", info)
         self.assertIn("- **Server [VIP line 2]**: [Download](https://two.example/loi-abc.7z)", info)
         self.assertIn("| Media Count | pictures 2 · videos 0 |", info)
         self.assertIn("[Link](https://pan.example/s/1) (Password: `abcd`)", info)
@@ -192,11 +191,8 @@ class RunTest(unittest.TestCase):
             Loibus().run(session)
 
 
-def seven_zip(password):
-    packed = io.BytesIO()
-    with py7zr.SevenZipFile(packed, "w", password=password) as archive:
-        archive.writestr(b"hello", "inside.txt")
-    return packed.getvalue()
+# A 7z archive's first bytes, which the server sends under a .zip name; flnd saves it as it comes.
+SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c" + b"\0" * 26
 
 
 class EngineTest(EngineCase):
@@ -205,11 +201,11 @@ class EngineTest(EngineCase):
     def setUp(self):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc", "path": "/"}]
-        cookies.to_file(jar, login.cookie_file(self.home, "loi"))
+        cookies.to_file(jar, auth.cookie_file(self.home, "loi"))
         self.routes.update({f"{API}lois/5930": httpx.Response(200, json={"data": {**POST, "images": []}}),
                             f"{API}user/info": httpx.Response(200, json=USER)})
 
-    def test_a_retried_request_is_signed_again_and_a_7z_named_zip_unpacks(self):
+    def test_a_retried_request_is_signed_again_and_the_archive_is_saved_as_sent(self):
         attempts = []
 
         def flaky(request):
@@ -220,16 +216,17 @@ class EngineTest(EngineCase):
                 {"sv_name": "A", "sv_url": encrypt("https://one.example/set.zip")}]}})
 
         self.routes[f"{API}user/loi/download_v6/5930"] = flaky
-        self.routes["https://one.example/set.zip"] = httpx.Response(200, content=seven_zip("pass-word"))
+        self.routes["https://one.example/set.zip"] = httpx.Response(200, content=SEVEN_ZIP)
         clock = iter(range(1_700_000_000_000, 1_700_000_100_000, 1000))
         with mock.patch("flnd.sources.loi._clock_ms", lambda: next(clock)):
-            self.run_engine(Loibus, targets=["loi:5930"], options=Options(categories=("archive",), unpack=True))
+            self.run_engine(Loibus, targets=["loi:5930"], options=Options(categories=("archive",)))
         self.assertEqual(len(attempts), 2)
         self.assertNotEqual(attempts[0]["x-signature-timestamp"], attempts[1]["x-signature-timestamp"])
         self.assertNotEqual(attempts[0]["x-request-id"], attempts[1]["x-request-id"])
         self.assertEqual(attempts[1]["authorization"], "Bearer tok")
         folder = self.target_dir("loi", "5930") / "example_author" / "5930_Night_city_set"
-        self.assertEqual((folder / "set" / "inside.txt").read_text(), "hello")
+        self.assertEqual((folder / "set.zip").read_bytes(), SEVEN_ZIP)
+        self.assertFalse((folder / "set").exists())
         self.assertTrue((folder / "info.md").is_file())
         archive_request = next(request for request in self.requests if request.url.host == "one.example")
         self.assertNotIn("authorization", archive_request.headers)
@@ -258,26 +255,26 @@ class LoginTest(unittest.TestCase):
         return path
 
     def test_a_cookie_file(self):
-        jar = login.from_file(Loibus(), self.export("access-token", "user-level"))
-        self.assertEqual(login.store(Loibus(), jar, home=self.home, origin="cookies.txt"),
+        jar = auth.from_file(Loibus(), self.export("access-token", "user-level"))
+        self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="cookies.txt"),
                          "loi: logged in from cookies.txt (2 cookies)")
-        self.assertEqual({cookie["domain"] for cookie in login.load(self.home, "loi")}, {".loix.cc"})
+        self.assertEqual({cookie["domain"] for cookie in auth.load(self.home, "loi")}, {".loix.cc"})
 
     def test_a_cookie_file_without_the_token(self):
-        jar = login.from_file(Loibus(), self.export("user-level"))
-        with self.assertRaisesRegex(login.LoginError, "no access-token for loix.cc in cookies.txt"):
-            login.store(Loibus(), jar, home=self.home, origin="cookies.txt")
+        jar = auth.from_file(Loibus(), self.export("user-level"))
+        with self.assertRaisesRegex(auth.LoginError, "no access-token for loix.cc in cookies.txt"):
+            auth.store(Loibus(), jar, home=self.home, origin="cookies.txt")
 
     def test_the_browser(self):
         store = {"loix.cc": [{"name": "access-token", "value": "v", "domain": ".loix.cc", "path": "/"}]}
         with mock.patch("shared._cookies.load_from_browser",
                         lambda domain, *, browser, profile=None: store.get(domain, [])):
-            jar = login.from_browser(Loibus(), browser="chrome")
-            self.assertEqual(login.store(Loibus(), jar, home=self.home, origin="Chrome"),
+            jar = auth.from_browser(Loibus(), browser="chrome")
+            self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="Chrome"),
                              "loi: logged in from Chrome (1 cookies)")
             store.clear()
-            with self.assertRaisesRegex(login.LoginError, "no access-token"):
-                login.store(Loibus(), login.from_browser(Loibus(), browser="chrome"), home=self.home, origin="Chrome")
+            with self.assertRaisesRegex(auth.LoginError, "no access-token"):
+                auth.store(Loibus(), auth.from_browser(Loibus(), browser="chrome"), home=self.home, origin="Chrome")
 
 
 if __name__ == "__main__":

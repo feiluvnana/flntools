@@ -1,4 +1,4 @@
-"""flnd.compress: one file compressed for a run, and media's errors kept from ending it.
+"""flnd.compress: the table of kinds, the `--image`, `--video` and `--audio` values, and media's errors kept from ending a run.
 
 `shared.media.compress` is replaced, so no photo is decoded and no ffmpeg runs; the screen is
 the fake one of `EngineCase`. Fix 7: a stalled ffmpeg (`TimeoutError`) or a missing extra
@@ -12,10 +12,13 @@ from unittest import mock
 import httpx
 from media_samples import needs_pillow
 from test_engine import CDN, EngineCase, history, make_source, noise
-from test_sync import SyncCase
 
-from flnd.compress import compress_file
+from flnd import files
+from flnd.compress import (KINDS, LEVELS, Choice, Compressor, compress_file, compressed_with, parse_choice, recorded,
+                           video_format)
 from flnd.session import Options
+
+LOW = Choice(None, "low")
 
 VIDEO_BYTES = b"\0\0\0\x18ftypisom" + bytes(64)
 
@@ -38,8 +41,8 @@ class CompressFileTest(EngineCase):
         warned = set()
         stalled = TimeoutError("ffmpeg made no progress for 60 s")
         with mock.patch("shared.media.compress", side_effect=stalled):
-            first = compress_file(self.file("a.mp4"), "video", Options(compress_video="small"), warned)
-            second = compress_file(self.file("b.mp4", b"other"), "video", Options(compress_video="small"), warned)
+            first = compress_file(self.file("a.mp4"), "video", LOW, warned)
+            second = compress_file(self.file("b.mp4", b"other"), "video", LOW, warned)
         self.assertEqual(first, {"path": str(self.folder / "a.mp4"), "size": 5, "compressed": "none",
                                  "original_size": 5})
         self.assertEqual(second["compressed"], "none")
@@ -50,7 +53,7 @@ class CompressFileTest(EngineCase):
         warned = set()
         missing = ImportError("shared.media needs Pillow for photos: pip install 'flntools[media]'")
         with mock.patch("shared.media.compress", side_effect=missing):
-            results = [compress_file(self.file(f"{n}.jpg"), "photo", Options(compress_image="small"), warned)
+            results = [compress_file(self.file(f"{n}.jpg"), "image", LOW, warned)
                        for n in range(3)]
         # Not recorded as "none": once the extra is installed, the next flnd sync compresses them.
         self.assertEqual(results, [None, None, None])
@@ -62,7 +65,7 @@ class CompressFileTest(EngineCase):
         errors = [TimeoutError("stalled"), ValueError("corrupt"), TimeoutError("stalled again"), RuntimeError("no x264")]
         with mock.patch("shared.media.compress", side_effect=errors):
             for number in range(len(errors)):
-                compress_file(self.file(f"{number}.mp4"), "video", Options(compress_video="small"), warned)
+                compress_file(self.file(f"{number}.mp4"), "video", LOW, warned)
         self.assertEqual(self.warnings(), ["! 0.mp4: not compressed: stalled", "! 1.mp4: not compressed: corrupt",
                                            "! 3.mp4: not compressed: no x264"])
         self.assertEqual(warned, {TimeoutError, ValueError, RuntimeError})
@@ -72,8 +75,8 @@ class CompressFileTest(EngineCase):
         warned = set()
         errors = [PermissionError(13, "Permission denied"), None]
         with mock.patch("shared.media.compress", side_effect=errors):
-            first = compress_file(self.file("a.jpg"), "photo", Options(compress_image="small"), warned)
-            second = compress_file(self.file("b.jpg"), "photo", Options(compress_image="small"), warned)
+            first = compress_file(self.file("a.jpg"), "image", LOW, warned)
+            second = compress_file(self.file("b.jpg"), "image", LOW, warned)
         self.assertEqual(first, {"path": str(self.folder / "a.jpg"), "size": 5, "compressed": "none",
                                  "original_size": 5})
         self.assertEqual(second["compressed"], "none")
@@ -84,8 +87,8 @@ class CompressFileTest(EngineCase):
         """Review: `path.stat()` ran outside the caught errors, so a vanished file ended a whole sync."""
         warned = set()
         with mock.patch("shared.media.compress", return_value=None) as compress:
-            gone = compress_file(self.folder / "gone.jpg", "photo", Options(compress_image="small"), warned)
-            after = compress_file(self.file("b.jpg"), "photo", Options(compress_image="small"), warned)
+            gone = compress_file(self.folder / "gone.jpg", "image", LOW, warned)
+            after = compress_file(self.file("b.jpg"), "image", LOW, warned)
         # Only the field it knows: the caller's history row keeps its own path and size.
         self.assertEqual(gone, {"compressed": "none"})
         self.assertEqual(after["compressed"], "none")
@@ -97,7 +100,7 @@ class CompressFileTest(EngineCase):
         # Ctrl-C, and a mistake in flnd itself, still end the run.
         for error in (KeyboardInterrupt(), TypeError("bad argument")):
             with mock.patch("shared.media.compress", side_effect=error), self.assertRaises(type(error)):
-                compress_file(self.file("a.mp4"), "video", Options(compress_video="small"), set())
+                compress_file(self.file("a.mp4"), "video", LOW, set())
 
 
 @needs_pillow
@@ -115,7 +118,7 @@ class EngineCompressTest(EngineCase):
         self.routes[f"{CDN}/a.jpg"] = httpx.Response(200, content=noise("JPEG"))
         with mock.patch("shared.media.compress", side_effect=TimeoutError("ffmpeg made no progress for 60 s")):
             total = self.run_engine(self.saver("1.mp4", "2.mp4", "a.jpg"), targets=["aaa:a"],
-                                    options=Options(compress_image="small", compress_video="small"))
+                                    options=Options(image=LOW, video=LOW))
         self.assertEqual(total, 3)
         rows = history(self.home)
         self.assertEqual([rows[f"aaa:{name}"]["compressed"] for name in ("1.mp4", "2.mp4", "a.jpg")], ["none"] * 3)
@@ -126,29 +129,130 @@ class EngineCompressTest(EngineCase):
     def test_a_missing_extra_while_compressing_a_photo_keeps_the_download(self):
         self.routes[f"{CDN}/a.jpg"] = httpx.Response(200, content=noise("JPEG"))
         with mock.patch("shared.media.compress", side_effect=ImportError("no Pillow")):
-            total = self.run_engine(self.saver("a.jpg"), targets=["aaa:a"], options=Options(compress_image="small"))
+            total = self.run_engine(self.saver("a.jpg"), targets=["aaa:a"], options=Options(image=LOW))
         self.assertEqual(total, 1)
         self.assertNotIn("compressed", history(self.home)["aaa:a.jpg"])
         self.assertIn("! a.jpg: not compressed: no Pillow", self.lines())
 
 
-class SyncCompressTest(SyncCase):
-    def test_a_stalled_ffmpeg_doesnt_end_a_sync(self):
-        self.download()
-        with mock.patch("shared.media.compress", side_effect=TimeoutError("ffmpeg took longer than 30 s to open it")):
-            [line] = self.sync(steps=("compress", "info"), compress_image="small")
-        self.assertEqual(line.files, 3)
-        self.assertEqual(sum("not compressed: ffmpeg took longer" in line for line in self.lines()), 1)
-        rows = history(self.home)
-        self.assertEqual([rows[f"aaa:{name}"]["compressed"] for name in ("a.jpg", "b.jpg", "c.jpg")], ["none"] * 3)
 
-    def test_a_missing_extra_doesnt_end_a_sync_and_leaves_the_photos_for_the_next(self):
-        self.download()
-        with mock.patch("shared.media.compress", side_effect=ImportError("no Pillow")):
-            [line] = self.sync(steps=("compress", "info"), compress_image="small")
-        self.assertEqual(line.files, 3)
-        self.assertFalse(any("compressed" in row for row in history(self.home).values()))
-        self.assertEqual(sum("not compressed: no Pillow" in line for line in self.lines()), 1)
+
+class TableTest(unittest.TestCase):
+    def test_one_table_of_three_kinds(self):
+        self.assertEqual({kind: spec.option for kind, spec in KINDS.items()},
+                         {"image": "image", "video": "video", "audio": "audio"})
+        # Only videos take turns: one x264 encode already uses every core.
+        self.assertEqual([kind for kind, spec in KINDS.items() if spec.one_at_a_time], ["video"])
+        self.assertEqual(KINDS["image"].formats, ("jpg", "webp", "avif", "png", "gif", "tif", "bmp"))
+        self.assertEqual(KINDS["audio"].formats, ("mp3", "m4a", "aac", "opus", "ogg", "flac"))
+
+    def test_every_level_is_a_media_preset(self):
+        from shared import _media
+
+        self.assertEqual(LEVELS, tuple(_media.PRESETS))
+        # cli.md's table: best is new; high, mid and low are Phase 5's high, balanced and small.
+        self.assertEqual(_media.PRESETS["best"][:4], (95, None, None, None))
+        self.assertEqual(_media.PRESETS["mid"][:3], (80, 1080, 2304))
+        self.assertEqual(_media.PRESETS["low"][:4], (70, 720, 1536, 30))
+
+    def test_each_level_reaches_media_as_its_preset(self):
+        calls = []
+        with mock.patch("shared.media.compress", lambda path, **settings: calls.append(settings["preset"])), \
+                mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
+            for level in LEVELS:
+                compress_file(Path("a.jpg"), "image", Choice(None, level), set())
+        self.assertEqual(calls, list(LEVELS))
+
+    def test_old_preset_names_read_as_new(self):
+        self.assertEqual([recorded(name) for name in ("small", "balanced", "high", "webp,mid", "none", None)],
+                         ["low", "mid", "high", "webp,mid", "none", None])
+
+    def test_a_level_only_choice_matches_that_level_in_any_format(self):
+        mid = Choice(None, "mid")
+        self.assertEqual([compressed_with(row, mid) for row in ("webp,mid", "mid", "balanced", "avif,mid",
+                                                                "webp,low", "low", "none", None)],
+                         [True, True, True, True, False, False, False, False])
+        self.assertEqual([compressed_with(row, Choice("webp", "mid")) for row in ("webp,mid", "mid", "avif,mid")],
+                         [True, False, False])
+        self.assertTrue(compressed_with("mkv:h265,high", Choice(None, "high")))
+
+
+class ParseChoiceTest(unittest.TestCase):
+    def test_a_format_a_level_or_both_in_either_order(self):
+        rows = [("image", "webp,best", Choice("webp", "best")), ("image", "best,webp", Choice("webp", "best")),
+                ("image", "mid", Choice(None, "mid")), ("image", "AVIF", Choice("avif", "high")),
+                ("video", "mkv:h265,low", Choice("mkv:h265", "low")), ("video", "h265", Choice("h265", "high")),
+                ("audio", "opus,mid", Choice("opus", "mid")), ("audio", "off", None)]
+        for kind, text, expected in rows:
+            with self.subTest(text=text):
+                self.assertEqual(parse_choice(kind, text), expected)
+
+    def test_it_prints_as_the_command_line_writes_it(self):
+        self.assertEqual([str(Choice("webp", "mid")), str(Choice(None, "low"))], ["webp,mid", "low"])
+        self.assertEqual(parse_choice("video", str(Choice("mkv:h265", "low"))), Choice("mkv:h265", "low"))
+
+    def test_bad_values_name_what_each_part_takes(self):
+        rows = [("image", "webp,huge", "--image webp,huge: the level is best, high, mid or low"),
+                ("image", "heic,mid", "--image heic,mid: the format is jpg, webp, avif, png, gif, tif or bmp"),
+                ("image", "huge", "--image huge: give a format (jpg, webp, avif, png, gif, tif or bmp), a level "
+                                  "(best, high, mid or low), or both"),
+                ("video", "webm:h265", "--video webm:h265: webm holds vp9, not h265"),
+                ("video", "mp4:av1", "--video mp4:av1: the format is a container"),
+                ("image", "mid,low", "--image mid,low: give one level"),
+                ("audio", "wav", "--audio wav: give a format (mp3, m4a, aac, opus, ogg or flac)"),
+                ("image", "webp,mid,low", "--image takes <format>,<level>"), ("image", ",mid", "--image takes")]
+        for kind, text, message in rows:
+            with self.subTest(text=text), self.assertRaises(ValueError) as caught:
+                parse_choice(kind, text)
+            self.assertIn(message, str(caught.exception))
+
+
+class VideoFormatTest(unittest.TestCase):
+    def test_the_three_forms(self):
+        self.assertEqual(video_format("mp4"), ("mp4", None))
+        self.assertEqual(video_format("h265"), (None, "h265"))
+        self.assertEqual(video_format("mkv:h265"), ("mkv", "h265"))
+        self.assertEqual(video_format(None), (None, None))
+        for bad in ("webm:h265", "avi:vp9", "flv", "mp4:av1"):
+            with self.assertRaises(ValueError, msg=bad):
+                video_format(bad)
+
+    def test_a_codec_alone_keeps_the_container_that_can_hold_it(self):
+        calls = []
+
+        def fake(path, **settings):
+            calls.append((Path(path).name, settings["format"], settings["codec"]))
+
+        with mock.patch("shared.media.compress", fake), mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
+            for name, value in (("a.mp4", "h265"), ("b.webm", "h265"), ("c.mp4", "vp9"), ("d.webm", "mkv:h265")):
+                compress_file(Path(name), "video", Choice(value, "low"), set())
+        self.assertEqual(calls, [("a.mp4", None, "h265"), ("b.webm", "mp4", "h265"), ("c.mp4", "webm", "vp9"),
+                                 ("d.webm", "mkv", "h265")])
+
+
+class CompressorTest(EngineCase):
+    def test_a_photo_this_machine_cant_compress_never_stops_videos(self):
+        """Fix 8: one photo's RuntimeError turned off video compression; now each kind is on its own."""
+        folder = self.home / "files"
+        folder.mkdir(parents=True)
+        for name in ("a.jpg", "b.jpg", "c.mp4"):
+            (folder / name).write_bytes(b"data")
+        calls = []
+
+        def compress(path, **settings):
+            calls.append(Path(path).name)
+            if Path(path).suffix == ".jpg":
+                raise RuntimeError("this Pillow has no AVIF encoder")
+            return None
+
+        compressor = Compressor()
+        with mock.patch("shared.media.compress", compress):
+            results = [compressor.compress(folder / name, files.kind_of(name) or "", LOW)
+                       for name in ("a.jpg", "b.jpg", "c.mp4")]
+        self.assertEqual(calls, ["a.jpg", "c.mp4"])
+        self.assertEqual((results[0], results[1], results[2]["compressed"]), (None, None, "none"))
+        self.assertEqual(compressor.off, {"image"})
+        self.assertIn("! image compression stops for this run", self.lines())
 
 
 if __name__ == "__main__":

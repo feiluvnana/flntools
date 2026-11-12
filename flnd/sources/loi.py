@@ -8,8 +8,8 @@
 Folder layout, under `.flnd/downloads/loi/<id>/<author>/<id> <title>/`:
   info.md         the post's fields, its download links and the unzip password
   images/         the preview images, 01.jpg, 02.jpg, …
-  loi-<hash>.7z   the archives (--from archive), named as the server names them; --unpack
-                  unpacks each into a folder of its name
+  loi-<hash>.7z   the archives (--from archive), saved as the server sends them and named as it
+                  names them; info.md's unzip password opens them with any archive tool
 """
 
 from __future__ import annotations
@@ -98,15 +98,14 @@ class Loibus(Source):
             session.save(url, image_name(number, url), category="photo", date=day, folder=f"{session.folder}/images")
         if links is None:
             return
-        queued = [session.save(mirrors, name, category="archive", date=day, password=post.get("open_key") or None)
-                  for name, mirrors in group_mirrors(links)]
+        queued = [session.save(mirrors, name, category="archive", date=day) for name, mirrors in group_mirrors(links)]
         if any(queued):
             count_download(session, post["id"])
 
     def _links(self, session: Session, post: dict) -> dict | None:
         """The post's decrypted download links, or None (with a warning) when there are none for this login."""
         if not decode_token(session.cookies.get("access-token", "")):
-            session.warn("archives need a login; run flnd login loi")
+            session.warn("archives need a login; run flnd login")
             return None
         used, limit = quota(session, post["id"])
         if limit and used >= limit:

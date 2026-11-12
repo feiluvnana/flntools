@@ -3,7 +3,7 @@
     from shared import media
     info = media.probe("IMG_0042.heic")               # kind, format, size, date taken, location, tags
     media.convert("clip.webm", dest="clip.mp4")       # keeps the kind: still, moving picture or audio
-    media.compress("clip.mp4", preset="small")        # in place: smaller, stripped, same format
+    media.compress("clip.mp4", preset="low")          # in place: smaller, stripped, same format
     media.video.trim("clip.mp4", start=12.5, end=30, dest="part.mp4")
 
 Photos go through Pillow (with pi-heif for HEIC), in process. Videos and audio go through the
@@ -16,15 +16,14 @@ from __future__ import annotations
 import importlib
 import os
 import re
-import secrets
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Union
 
-from shared import _ffmpeg, _pillow
+from shared import _atomic, _ffmpeg, _pillow
 from shared._log import log
 
 if TYPE_CHECKING:
@@ -85,9 +84,13 @@ class Container(NamedTuple):
     audio_holds: str
 
 
-PRESETS = {"small": Preset(70, 720, 1536, 30, "medium", 64_000),
-           "balanced": Preset(80, 1080, 2304, 60, "medium", 128_000),
-           "high": Preset(90, None, None, None, "slow", 160_000)}
+# The four levels, from no visible loss to smallest: quality, the video and photo caps on the
+# shorter or longer side (None keeps the full resolution), the fps cap, x264's speed and the audio
+# bitrate. flnd's --image, --video and --audio levels are these names. Every one strips metadata.
+PRESETS = {"best": Preset(95, None, None, None, "slow", 192_000),
+           "high": Preset(90, None, None, None, "slow", 160_000),
+           "mid": Preset(80, 1080, 2304, 60, "medium", 128_000),
+           "low": Preset(70, 720, 1536, 30, "medium", 64_000)}
 STILLS = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP", ".avif": "AVIF", ".gif": "GIF",
           ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP", ".ico": "ICO", ".tga": "TGA", ".ppm": "PPM",
           ".jp2": "JPEG2000", ".qoi": "QOI"}
@@ -111,6 +114,10 @@ CODECS_IN = {".webm": ("vp9",), ".avi": ("h264",), ".mkv": ("h264", "h265", "vp9
 AUDIO_BITRATES = {"libmp3lame": 192_000, "aac": 160_000, "libopus": 128_000}
 LOSSLESS_AUDIO = ("flac", "wav", "aiff")
 PHOTO_EXTENSIONS = (".jpg", ".png", ".gif", ".webp", ".tif", ".bmp", ".ico", ".avif", ".heic")
+# Extensions media reads but never writes, so `kind_of` knows them though STILLS and CONTAINERS
+# don't: HEIC and HEIF through pi-heif, `.oga` (Ogg audio), and video formats `compress` turns into MP4.
+READ_ONLY = {".heic": "image", ".heif": "image", ".oga": "audio", ".flv": "video", ".ogv": "video",
+             ".wmv": "video"}
 REFUSED = (b"%!PS", b"\xc5\xd0\xd3\xc6", b"%PDF", b"\xd7\xcd\xc6\x9a")  # EPS (Ghostscript), PDF, WMF
 GIF_FPS = 15
 
@@ -181,21 +188,21 @@ def convert(src: PathLike, *, dest: PathLike, quality: int = 90, fps: float | No
     same_kind(info, extension, "convert")
     if fps is not None and not (info.animated or info.kind == "video"):
         raise ValueError(f"fps= is for moving pictures, and {src.name} is a {_noun(info)}")
-    with writing(dest) as part:
+    with _atomic.writing(dest) as part:
         transcode(info, part, extension, quality=quality, fps=fps, codec=codec)
     return dest
 
 
-def compress(src: PathLike, *, dest: PathLike | None = None, format: str | None = None, preset: str = "balanced",
+def compress(src: PathLike, *, dest: PathLike | None = None, format: str | None = None, preset: str = "mid",
              quality: int | None = None, resolution: int | None = None, fps: float | None = None,
              codec: str | None = None, audio_bitrate: int | None = None, strip: bool = True,
              progress: Progress | None = None) -> Path | None:
     """Make `src` smaller, in the same format, and return the path written, or None when nothing changed.
 
-        media.compress("clip.mp4", preset="small")            # replaces clip.mp4 when smaller
+        media.compress("clip.mp4", preset="low")              # replaces clip.mp4 when smaller
         media.compress("a.heic", format="jpg")               # writes a.jpg and deletes a.heic
 
-    `preset` is "small", "balanced" or "high"; `quality`, `resolution` (the shorter side's cap),
+    `preset` is "best", "high", "mid" or "low" (`PRESETS`); `quality`, `resolution` (the shorter side's cap),
     `fps`, `audio_bitrate` and `codec` given directly replace the preset's value. The result is kept
     only when smaller. With `strip` (the default) EXIF, GPS, XMP, tags, chapters and extra streams
     are dropped; the picture stays upright. HEIC and lossless audio are left alone without
@@ -215,7 +222,7 @@ def compress(src: PathLike, *, dest: PathLike | None = None, format: str | None 
         raise FileExistsError(f"{out} already exists")
     # Without a `progress` callback, a video or audio encode shows its own bar; photos report nothing.
     shown = log.progress(src.name, total=info.duration) if progress is None and info.kind != "image" else nullcontext()
-    with writing(out, replace=out == src) as part, shown as bar:
+    with _atomic.writing(out, replace=out == src) as part, shown as bar:
         transcode(info, part, extension, quality=settings.quality, codec=codec, fps=settings.fps,
                   resolution=settings.photo_resolution if info.kind == "image" else settings.video_resolution,
                   speed=settings.speed, audio_bitrate=settings.audio_bitrate, strip=strip, copy=False,
@@ -426,20 +433,6 @@ def decoded(info: Info, graph: str, width: int, height: int) -> Iterator[Any]:
         yield Image.frombytes("RGB", (width, height), frame)
 
 
-@contextmanager
-def writing(dest: Path, *, replace: bool = False) -> Iterator[Path]:
-    """A fresh `.<name>.<random>.part` next to `dest`, moved onto it when the block ends cleanly."""
-    if dest.exists() and not replace:
-        raise FileExistsError(f"{dest} already exists")
-    part = dest.with_name(f".{dest.name}.{secrets.token_hex(4)}.part")
-    try:
-        yield part
-        if part.exists():
-            os.replace(part, dest)
-    finally:
-        part.unlink(missing_ok=True)
-
-
 def writable(dest: Path) -> str:
     extension = dest.suffix.lower()
     if extension not in STILLS and extension not in CONTAINERS:
@@ -447,14 +440,32 @@ def writable(dest: Path) -> str:
     return extension
 
 
-def kind_of(extension: str) -> str:
+def kind_of(extension: str) -> str | None:
+    """The kind of file an extension names: "image", "video" or "audio", or None when media doesn't know it.
+
+        media.kind_of(".heic")     # "image"
+        media.kind_of("M4A")       # "audio"
+        media.kind_of(".zip")      # None
+
+    Args:
+        extension: a file extension, with or without its dot, in any case, such as ".jpg" or "MP4".
+
+    Returns:
+        "image" for a photo or an animation (GIF, animated WebP), "video" for a container that holds
+        video, "audio" for one that holds sound only, or None for anything else. It reads only the
+        name; the content may say otherwise, which `sniff` reads.
+    """
+    extension = "." + extension.lower().lstrip(".")
     if extension in STILLS:
         return "image"
-    return "video" if CONTAINERS[extension].video else "audio"
+    if extension in CONTAINERS:
+        return "video" if CONTAINERS[extension].video else "audio"
+    return READ_ONLY.get(extension)
 
 
 def same_kind(info: Info, extension: str, verb: str) -> None:
-    target = kind_of(extension)
+    # `extension` passed `writable`, so media knows its kind; "" only keeps the checker sure of it.
+    target = kind_of(extension) or ""
     name = info.path.name
     if info.kind == "image" and info.animated and target != "audio":
         if target == "image" and extension not in ANIMATIONS:

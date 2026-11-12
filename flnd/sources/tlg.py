@@ -2,7 +2,7 @@
 
   - Telethon, with a user account over MTProto. Not the Bot API, which can't read a group's
     history from before the bot joined and stops at 20 MB, and not Pyrogram, whose upkeep is uncertain.
-  - `flnd login tlg` asks for `api_id` and `api_hash` once (from my.telegram.org), then logs in
+  - `flnd login`, for Telegram, asks for `api_id` and `api_hash` once (from my.telegram.org), then logs in
     from Telegram Web in Chrome, a QR code, or a phone number and code. The Telethon session is
     kept in flnd's encrypted secrets, never in a `.session` file.
   - The categories are Telegram's own server-side filters, so only what `--from` names is asked for.
@@ -93,8 +93,7 @@ class Telegram(Source):
         `api_hash` are stored. `qr` and `phone` add a device named flnd, and need a terminal.
         """
         if method != "browser" and not session.interactive:
-            raise LoginError(f"tlg: --method {method} asks questions; run flnd login tlg --method {method} "
-                             "in a terminal")
+            raise LoginError(f"tlg: the {method} login asks questions; run flnd login in a terminal")
         api_id, api_hash = credentials(session)
         start = from_web_storage(read_telegram_web()) if method == "browser" else ""
         string, name = asyncio.run(log_in(session, method, start, api_id, api_hash))
@@ -113,7 +112,7 @@ class Telegram(Source):
         await client.connect()
         try:
             if not await client.is_user_authorized():
-                raise LoginError("the saved login no longer works; run flnd login tlg")
+                raise LoginError("the saved login no longer works; run flnd login")
             yield client
         finally:
             await client.disconnect()
@@ -198,7 +197,7 @@ def credentials(session: Session) -> tuple[int, str]:
     if "api_id" in secrets and "api_hash" in secrets:
         return int(secrets["api_id"]), secrets["api_hash"]
     if not session.interactive:
-        raise LoginError("tlg: no api_id and api_hash yet; run flnd login tlg in a terminal")
+        raise LoginError("tlg: no api_id and api_hash yet; run flnd login in a terminal")
     where = "From my.telegram.org, under API development tools"
     api_id = session.ask("Telegram api_id", description=where).strip()
     if not api_id.isdigit():
@@ -241,7 +240,7 @@ async def by_qr(session: Session, client: Any) -> None:
             await qr.recreate()
         except SessionPasswordNeededError:
             return await two_step(session, client)
-    raise LoginError("tlg: no QR code was scanned; run flnd login tlg --method qr again")
+    raise LoginError("tlg: no QR code was scanned; run flnd login again")
 
 
 async def by_phone(session: Session, client: Any) -> None:
@@ -269,9 +268,7 @@ def read_telegram_web() -> dict[str, str]:
             page = connected.open_page(TELEGRAM_WEB, idle=True)
             return page.raw.evaluate("Object.assign({}, localStorage)")
     except (OSError, RuntimeError, ValueError) as error:
-        if str(error).startswith("Chromium is not installed"):
-            error = "Chromium is not installed; run flnd install-browser"
-        raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try --method qr") from None
+        raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None
 
 
 def from_web_storage(storage: Mapping[str, str]) -> str:
@@ -293,7 +290,7 @@ def from_web_storage(storage: Mapping[str, str]) -> str:
         auth_key = b""
     if len(auth_key) != 256 or str(dc) not in map(str, DATA_CENTERS):
         raise LoginError("tlg: not logged in to Telegram Web in Chrome; log in at web.telegram.org first, "
-                         "or use --method qr")
+                         "or log in with a QR code")
     string_session = StringSession()
     string_session.set_dc(int(str(dc)), DATA_CENTERS[int(str(dc))], PORT)
     string_session.auth_key = AuthKey(auth_key)

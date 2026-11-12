@@ -1,33 +1,32 @@
-"""The flnd command line: `flnd download`, `flnd sync`, `flnd login`, `flnd logout` and `flnd install-browser`.
+"""The flnd command line: `flnd download`, `flnd sync`, `flnd login` and `flnd logout`.
 
 Usage:
-  flnd download ins:example_user https://x.com/example_handle --from reels,media --since 2026-01-01
+  flnd download ins:example_user https://x.com/example_handle --from reels,media --time 2026-01-01,
   cat list.txt | flnd download
-  flnd download ins:example_user --compress-video small --format-video h265
+  flnd download ins:example_user --video h265,low --image webp,mid
   flnd sync
-  flnd login ins --method browser --browser firefox
-  flnd logout --all
-  flnd install-browser
+  flnd login
+  flnd logout ins tik
+  flnd logout all
 
-Only `login` asks questions; `download` and `sync` never do.
+`login` asks every answer. `download` and `sync` ask nothing, except `shared.browser`'s one
+question, to download Chromium, when a source needs a browser and Google Chrome is missing.
 """
 
 from __future__ import annotations
 
-import subprocess
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Optional
 
-from dataclasses import replace
-
-from flnd import __version__, login as logins, sync as syncing
+from flnd import __version__, auth, sync as syncing
+from flnd.compress import Choice, parse_choice
 from flnd.engine import Engine
-from flnd.session import PRESETS, Options, compress_problem, unknown_categories
+from flnd.session import Options, unknown_categories
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
 from flnd.target import TargetError
-from shared import cli, log, prompt, theme
+from shared import cli, cookies, log, prompt, theme
 
 HOME = Path(".flnd")
 METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
@@ -56,11 +55,12 @@ Examples:
   flnd download tik:example_creator twt:example_handle --from all
   flnd download fbk:example.page --from profile,stories
   flnd download https://x.com/example_handle/status/1790000000000000000
-  flnd download ins:example_user --compress-image balanced --compress-video small
+  flnd download ins:example_user --image webp,mid --video h265,low
+  flnd download twt:example_handle --time 2026-01-01,2026-06-30
   cat list.txt | flnd download
   flnd sync
-  flnd sync --only info
-  flnd login ins
+  flnd login
+  flnd logout all
 """
 
 
@@ -69,9 +69,12 @@ def _marked(source: type[Source]) -> list[str]:
 
 
 app = cli.App("flnd", version=__version__, description=describe(), epilog=epilog())
-Preset = Annotated[Optional[str], cli.opt(choices=PRESETS)]
-# sync takes "off" too, to stop compressing a target.
-SyncPreset = Annotated[Optional[str], cli.opt(choices=(*PRESETS, "off"))]
+# --image, --video and --audio: a format, a level, or both as <format>,<level> in either order, or
+# off. Read as text and parsed by `compress.parse_choice` in the command, so "off" can be told from
+# "not given" and an error can name what each part takes.
+MediaChoice = Annotated[Optional[str], cli.opt(metavar="FORMAT,LEVEL")]
+TIME_USAGE = ("--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
+              "for no limit")
 
 
 @app.command
@@ -79,109 +82,54 @@ def download(
     targets: Annotated[list[str], cli.arg(nargs="+")],
     *,
     categories: Annotated[Optional[list[str]], cli.opt("--from", metavar="CATEGORIES")] = None,
-    since: Optional[date] = None,
-    until: Optional[date] = None,
-    unpack: bool = False,
-    zip: bool = False,
-    compress_image: Preset = None,
-    compress_video: Preset = None,
-    format_image: Optional[str] = None,
-    format_video: Optional[str] = None,
-    locale: Optional[str] = None,
-    timezone: Optional[str] = None,
+    time: Annotated[Optional[str], cli.opt(metavar="SINCE,UNTIL")] = None,
+    image: MediaChoice = None,
+    video: MediaChoice = None,
+    audio: MediaChoice = None,
 ) -> int:
     """Download each target.
+
+    --image, --video and --audio are saved for each target and used by every later download and
+    sync of it; giving one again changes it, for the files already saved too, and off turns it off.
 
     Args:
         targets: source:value pairs or URLs; read one per line from stdin when none are given.
         categories: what to take from each source, such as posts,reels or all; a comma list or repeated.
             Without it, each source's own content; other people's (tagged, reposts) only when named.
-        since: only items dated on or after this day (YYYY-MM-DD).
-        until: only items dated on or before this day (YYYY-MM-DD).
-        unpack: unpack each saved archive into a folder named after it.
-        zip: zip each target's folder when it ends.
-        compress_image: make each new photo smaller, replacing it; metadata (GPS too) is stripped.
-        compress_video: make each new video smaller, replacing it; metadata (GPS too) is stripped.
-        format_image: write compressed photos as jpg, webp, avif, png, gif, tif or bmp.
-        format_video: write compressed videos in a container (mp4, mkv, webm, …), a codec (h264, h265,
-            vp9), or both as container:codec. h265 is smaller, but many browsers can't play it.
-        locale: the browser's language, such as fr-FR; match where your connection comes from.
-        timezone: the browser's timezone, such as Europe/Paris; match where your connection comes from.
+        time: only items dated from one day to another, both included, as 2026-01-01,2026-06-30;
+            leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
+        image: compress each photo, replacing it when smaller, metadata (GPS too) stripped: a format
+            (jpg, webp, avif, png, gif, tif, bmp), a level (best, high, mid, low), or both; off stops it.
+        video: compress each video the same way: a container (mp4, mkv, webm, …), a codec (h264,
+            h265, vp9) or container:codec, and a level. h265 is smaller, but many browsers can't play it.
+        audio: compress each audio file the same way: mp3, m4a, aac, opus, ogg or flac, and a level.
     """
-    if since and until and since > until:
-        raise cli.UsageError("--since is after --until")
-    options = Options(since=since, until=until, unpack=unpack, zip=zip, compress_image=compress_image,
-                      compress_video=compress_video, format_image=format_image, format_video=format_video)
-    if problem := compress_problem(options):
-        raise cli.UsageError(problem)
-    engine = Engine(home=HOME, locale=locale, timezone=timezone)
+    since, until = _time(time)
+    given = _given(image=image, video=video, audio=audio)
+    engine = Engine(home=HOME)
     resolved = _resolve(engine, targets)
-    if categories is not None:
-        options = replace(options, categories=_categories(categories, resolved))
-    syncing.record(HOME, resolved, options)
+    options = Options(categories=_categories(categories, resolved) if categories is not None else None,
+                      since=since, until=until)
     log.info("Storage: {path}", path=(HOME / "downloads").resolve())
-    total = engine.run(resolved, options)
+    total = syncing.download(engine, resolved, options, given)
     log.ok("Complete. {n} files", n=total)
     return _status(engine)
 
 
 @app.command
-def sync(
-    targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)],
-    *,
-    only: Annotated[Optional[list[str]], cli.opt(metavar="STEPS")] = None,
-    categories: Annotated[Optional[list[str]], cli.opt("--from", metavar="CATEGORIES")] = None,
-    unpack: Optional[bool] = None,
-    zip: Optional[bool] = None,
-    compress_image: SyncPreset = None,
-    compress_video: SyncPreset = None,
-    format_image: Optional[str] = None,
-    format_video: Optional[str] = None,
-    locale: Optional[str] = None,
-    timezone: Optional[str] = None,
-) -> int:
-    """Bring every downloaded target up to date: repair, fetch new posts, compress, and sum up.
+def sync(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)]) -> int:
+    """Bring downloaded targets up to date: repair broken or missing files, fetch new posts, and sum up.
 
-    Each target runs with the settings it was last downloaded or synced with; options given here
-    replace them from now on. Folders downloaded before flnd recorded settings use the defaults.
+    Each target runs with its saved --image, --video and --audio and each source's default
+    categories; sync changes no setting. To change one, run flnd download with it.
 
     Args:
         targets: only these targets, as in flnd download; every one downloaded so far without them.
-        only: the steps to run, of repair, fetch, compress and info; info alone changes nothing.
-        categories: what to take from each source, as in flnd download.
-        unpack: unpack each saved archive into a folder named after it.
-        zip: zip each target's folder when it ends.
-        compress_image: compress photos not compressed yet, and new ones, replacing them; off stops it.
-        compress_video: compress videos not compressed yet, and new ones, replacing them; off stops it.
-        format_image: write compressed photos in this format, as in flnd download.
-        format_video: write compressed videos in this container, codec or container:codec.
-        locale: the browser's language, such as fr-FR.
-        timezone: the browser's timezone, such as Europe/Paris.
     """
-    steps = tuple(step for step in syncing.STEPS if step in (only or syncing.STEPS))
-    if unknown := [step for step in only or () if step not in syncing.STEPS]:
-        raise cli.UsageError(f"--only takes {', '.join(syncing.STEPS)}, not {unknown[0]!r}")
-    given = {"unpack": unpack, "zip": zip, "compress_image": compress_image, "compress_video": compress_video,
-             "format_image": format_image, "format_video": format_video}
-    overrides = {name: value for name, value in given.items() if value is not None}
-    for kind in ("image", "video"):
-        if overrides.get(f"compress_{kind}") == "off":
-            overrides.update({f"compress_{kind}": None, f"format_{kind}": None})
-    engine = Engine(home=HOME, locale=locale, timezone=timezone)
-    # Resolved here once, for --from and the plan alike: a short link costs a HEAD request each time.
+    engine = Engine(home=HOME)
+    # Resolved here once, for the plan: a short link costs a HEAD request each time (fixes #11).
     resolved = _resolve(engine, targets) if targets else []
-    if categories is not None:
-        overrides["categories"] = _categories(categories, resolved)
-    chosen = syncing.plan(engine, resolved, overrides)
-    for target, options in chosen:
-        if problem := compress_problem(options):
-            raise cli.UsageError(f"{target}: {problem}")
-    if steps != ("info",):
-        for target, options in chosen:
-            syncing.record(HOME, [target], options)
-    if "fetch" in steps:
-        log.info("Storage: {path}", path=(HOME / "downloads").resolve())
-    syncing.run(engine, chosen, steps)
+    syncing.run(engine, syncing.plan(engine, resolved))
     return _status(engine)
 
 
@@ -194,6 +142,49 @@ def _status(engine: Engine) -> int:
     on, isn't a failed target.
     """
     return 1 if engine.failed else 0
+
+
+def _time(text: str | None) -> tuple[date | None, date | None]:
+    """`--time`'s two days, each None for no limit; a value that isn't `<since>,<until>` is a usage error.
+
+        _time("2026-01-01,")      # (date(2026, 1, 1), None)
+    """
+    if text is None:
+        return None, None
+    since, comma, until = text.partition(",")
+    if not comma or "," in until:
+        raise cli.UsageError(TIME_USAGE)
+    try:
+        days = [_day(side) for side in (since, until)]
+    except ValueError:
+        raise cli.UsageError(TIME_USAGE) from None
+    if days[0] and days[1] and days[0] > days[1]:
+        raise cli.UsageError(TIME_USAGE)
+    return days[0], days[1]
+
+
+def _day(text: str) -> date | None:
+    """One side of `--time`: a YYYY-MM-DD day, or None for `*` or nothing; `ValueError` otherwise."""
+    text = text.strip()
+    if text in ("", "*"):
+        return None
+    return datetime.strptime(text, "%Y-%m-%d").date()
+
+
+def _given(**values: str | None) -> dict[str, Choice | None]:
+    """The `--image`, `--video` and `--audio` given, parsed, by name: a `Choice`, or None for off.
+
+    A name not given is left out, so the target keeps its saved setting.
+    """
+    given: dict[str, Choice | None] = {}
+    for kind, text in values.items():
+        if text is None:
+            continue
+        try:
+            given[kind] = parse_choice(kind, text)
+        except ValueError as error:
+            raise cli.UsageError(str(error)) from None
+    return given
 
 
 def _resolve(engine: Engine, targets: list[str]) -> list:
@@ -212,42 +203,32 @@ def _categories(categories: list[str], resolved: list) -> tuple[str, ...]:
 
 
 @app.command("login")
-def login_command(
-    source: Annotated[str, cli.arg(choices=SOURCES)],
-    *,
-    method: Optional[str] = None,
-    path: Optional[Path] = None,
-    browser: Annotated[Optional[str], cli.opt(choices=logins.BROWSERS)] = None,
-    profile: Optional[str] = None,
-) -> int:
-    """Log in to a source, from your browser or a cookie file, or Telegram's own ways.
+def login_command() -> int:
+    """Log in to a source: from your browser, a cookie file, or Telegram's own ways.
 
-    Each method asks only for what it needs and wasn't given. Without a terminal, give them all.
-
-    Args:
-        source: the source to log in to.
-        method: how to log in: browser or file for cookie sources, browser, qr or phone for tlg;
-            asked when there are several.
-        path: the cookie file (Netscape cookies.txt or JSON) for --method file; a whole browser export works.
-        browser: the installed browser to read cookies from, for --method browser.
-        profile: the browser profile's folder name, such as "Profile 1"; the default profile otherwise.
+    Every answer is asked, in a terminal: the source, then the method when there are several,
+    then what the method needs.
     """
-    site = SOURCES[source]()
-    method = method or _choose_method(site)
-    if method not in site.login_methods:
-        raise cli.UsageError(f"{source} has no login method {method!r}: use {', '.join(site.login_methods)}")
+    # Logging in is a one-time step done by a person, so there is no flag form for scripts.
+    if not theme.screen.interactive:
+        raise cli.UsageError("flnd login asks its questions in a terminal")
+    site = SOURCES[_ask_source()]()
+    methods = site.login_methods
+    method = methods[0] if len(methods) == 1 else prompt.choice(
+        f"Log in to {site.name}", {METHOD_LABELS.get(name, name): name for name in methods})
     try:
+        # A source with its own login (tlg) asks its own questions, through the engine's session.
         if type(site).login is not Source.login:
             Engine(home=HOME).login(site, method)
             return 0
         if method == "file":
-            path = (path or _ask_path()).expanduser()
-            message = logins.store(site, logins.from_file(site, path), home=HOME, origin=path.name)
+            path = Path(prompt.input("Path to cookies.txt or .json", validate=_readable).strip()).expanduser()
+            message = auth.store(site, auth.from_file(site, path), home=HOME, origin=path.name)
         else:
-            browser = browser or _ask_browser()
-            jar = logins.from_browser(site, browser=browser, profile=profile)
-            message = logins.store(site, jar, home=HOME, origin=logins.BROWSERS[browser])
-    except logins.LoginError as error:
+            browser = prompt.choice("Read cookies from", {label: name for name, label in auth.BROWSERS.items()})
+            jar = auth.from_browser(site, browser=browser, profile=_ask_profile(browser))
+            message = auth.store(site, jar, home=HOME, origin=auth.BROWSERS[browser])
+    except auth.LoginError as error:
         log.error("{error}", error=error)
         return 1
     log.ok(message)
@@ -255,71 +236,46 @@ def login_command(
 
 
 @app.command
-def logout(source: Annotated[Optional[str], cli.arg(choices=SOURCES)] = None, *, all: bool = False) -> int:
-    """Remove a source's saved login: its cookie file and secrets.
+def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "all"), stdin=False)]) -> int:
+    """Remove saved logins: each source's cookie file and secrets.
 
     Args:
-        source: the source to log out of.
-        all: log out of every source.
+        sources: the sources to log out of, such as ins tik, or all for every one.
     """
-    if (source is None) == (not all):
-        raise cli.UsageError("give a source or --all, not both" if all else "give a source, or --all")
-    for code in SOURCES if all else [source or ""]:
-        if logins.logout(HOME, code):
+    if not sources:
+        logged_in = [code for code in SOURCES if auth.logged_in(HOME, code)]
+        raise cli.UsageError("give the sources to log out of, or all; "
+                             + (f"logged in: {', '.join(logged_in)}" if logged_in else "no source is logged in"))
+    everything = "all" in sources
+    for code in SOURCES if everything else dict.fromkeys(sources):
+        if auth.logout(HOME, code):
             log.ok("{code}: logged out", code=code)
-        elif not all:
-            log.info("{code}: was not logged in", code=code)
+        # `all` names every source, so only the ones asked for by name say they had no login.
+        elif not everything:
+            log.info("{code}: not logged in", code=code)
     return 0
 
 
-@app.command("install-browser")
-def install_browser() -> int:
-    """Install Chromium, for the sources that open a browser, into Playwright's folder in your user cache.
+def _ask_source() -> str:
+    """Ask which source to log in to, marking the ones already logged in, and return its code."""
+    options = {}
+    for code, source in SOURCES.items():
+        mark = " · logged in" if auth.logged_in(HOME, code) else ""
+        options[f"{source.name} ({code}){mark}"] = code
+    return prompt.choice("Log in to", options)
 
-    It downloads about 150 MB once, with Playwright's own progress bar. Your installed Chrome is used
-    instead when there is one.
+
+def _ask_profile(browser: str) -> Optional[str]:
+    """Ask which of the browser's profiles to read, with the default one preselected.
+
+    Only asked when there are several. With none found, None lets `auth.from_browser` say why.
     """
-    try:
-        code = _run_playwright("install", "chromium")
-    except Exception as error:
-        log.error("Chromium was not installed: {error}", error=error)
-        return 1
-    if code:
-        log.error("Chromium was not installed: Playwright's installer exited with {code}", code=code)
-        return 1
-    log.ok("Chromium is installed")
-    return 0
-
-
-def _run_playwright(*args: str) -> int:
-    # A bundled flnd has no `python -m playwright`, so this runs the driver Playwright ships, as that command does.
-    from playwright._impl._driver import compute_driver_executable, get_driver_env
-
-    node, cli_js = compute_driver_executable()
-    return subprocess.run([node, cli_js, *args], env=get_driver_env()).returncode
-
-
-def _choose_method(source: Source) -> str:
-    methods = source.login_methods
-    if len(methods) == 1:
-        return methods[0]
-    if not theme.screen.interactive:
-        raise cli.UsageError(f"give --method: {', '.join(methods)}")
-    return prompt.choice(f"Log in to {source.name}", {METHOD_LABELS.get(name, name): name for name in methods})
-
-
-def _ask_path() -> Path:
-    if not theme.screen.interactive:
-        raise cli.UsageError("give --path with the cookie file")
-    return Path(prompt.input("Path to cookies.txt or .json", validate=_readable)).expanduser()
+    profiles = cookies.profiles(browser)
+    if len(profiles) <= 1:
+        return profiles[0] if profiles else None
+    return prompt.choice("Profile", profiles, default=profiles[0])
 
 
 def _readable(raw: str) -> Optional[str]:
     path = Path(raw.strip()).expanduser()
     return None if path.is_file() else f"no file at {raw.strip() or '(empty)'}"
-
-
-def _ask_browser() -> str:
-    if not theme.screen.interactive:
-        raise cli.UsageError(f"give --browser: {', '.join(logins.BROWSERS)}")
-    return prompt.choice("Read cookies from", {label: name for name, label in logins.BROWSERS.items()})

@@ -18,7 +18,8 @@ import httpx
 from media_samples import encoders, needs_ffmpeg, needs_pillow, sample
 
 from flnd import engine as engine_module
-from flnd import login, net
+from flnd import auth, net
+from flnd.compress import Choice
 from flnd.engine import Engine
 from flnd.session import Options, TargetSession
 from flnd.sources.base import FetchError, Source
@@ -89,7 +90,7 @@ class EngineCase(unittest.TestCase):
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
-        cookies.to_file(jar, login.cookie_file(self.home, code))
+        cookies.to_file(jar, auth.cookie_file(self.home, code))
 
     def lines(self):
         return self.screen.out.getvalue().splitlines()
@@ -177,7 +178,7 @@ class LoginStateTest(EngineCase):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",)), targets=["aaa:a"])
         self.assertEqual(len(ran), 1)
-        self.assertIn("! aaa: not logged in, using public access; run flnd login aaa", self.lines())
+        self.assertIn("! aaa: not logged in, using public access; run flnd login", self.lines())
 
     def test_logged_in_has_no_hint_and_cookies_reach_the_client(self):
         self.log_in("aaa", sid="1", other="2")
@@ -195,7 +196,7 @@ class LoginStateTest(EngineCase):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
-        self.assertIn("✗ aaa:a: not logged in; run flnd login aaa", self.lines())
+        self.assertIn("✗ aaa:a: not logged in; run flnd login", self.lines())
         self.assertIn("✗ aaa:b", self.lines())
 
     def test_download_never_asks(self):
@@ -208,7 +209,7 @@ class LoginStateTest(EngineCase):
                 errors.append(str(error))
 
         self.run_engine(make_source("aaa", run), targets=["aaa:a"])
-        self.assertEqual(errors, ["aaa: flnd download never asks questions; run flnd login aaa first"])
+        self.assertEqual(errors, ["aaa: flnd download never asks questions; run flnd login first"])
 
 
 class HttpTest(EngineCase):
@@ -355,7 +356,8 @@ class SaveTest(EngineCase):
         # A name the source doesn't have is ignored, and with none of its own it takes its defaults.
         self.assertEqual(seen, [("posts", "reels"), ("posts", "reels", "files"), ("files",), ("posts", "reels")])
 
-    def test_limit_and_folder_none(self):
+    def test_no_limit_and_folder_none(self):
+        # flnd has no download limit: every file a source saves is downloaded (simplify.md).
         added = []
 
         def run(session):
@@ -364,11 +366,11 @@ class SaveTest(EngineCase):
             session.folder = None
             added.append(session.save(f"{CDN}/late.jpg", "late.jpg", category="posts"))
             added.append(session.write("note.md", "x"))
-            added.append(session.full)
 
-        self.assertEqual(self.run_engine(make_source("aaa", run), targets=["aaa:a"], limit=2), 2)
-        self.assertEqual(added, [True, True, False, False, False, False, True])
-        self.assertIn("• Reached limit of 2 downloads.", self.lines())
+        self.assertEqual(self.run_engine(make_source("aaa", run), targets=["aaa:a"]), 4)
+        self.assertEqual(added, [True, True, True, True, False, False])
+        self.assertFalse(hasattr(TargetSession, "full"))
+        self.assertFalse(any("limit" in line for line in self.lines()))
 
     def test_write_mirrors_and_fetch(self):
         def fetch(dest, progress):
@@ -441,38 +443,22 @@ class SaveTest(EngineCase):
         self.assertIn("! dropped 2 queued tasks after RuntimeError", self.lines())
 
 
-class OptionsTest(EngineCase):
-    def test_unpack_and_zip(self):
+class ArchiveTest(EngineCase):
+    def test_an_archive_is_saved_as_sent_and_skipped_next_time(self):
+        # --unpack and --zip are gone: flnd never opens an archive, and makes none of the folder.
         packed = io.BytesIO()
         with zipfile.ZipFile(packed, "w") as archive:
             archive.writestr("inside.txt", "hello")
         self.routes[f"{CDN}/set.zip"] = httpx.Response(200, content=packed.getvalue())
-
-        def run(session):
-            session.save(f"{CDN}/set.zip", "set.zip", category="files", folder="post")
-            session.save(f"{CDN}/photo.jpg", "photo.jpg", category="files", folder="post")
-
-        options = Options(categories=("files",), unpack=True, zip=True)
-        self.run_engine(make_source("aaa", run), targets=["aaa:a"], options=options)
-        folder = self.target_dir("aaa", "a")
-        self.assertEqual((folder / "post" / "set" / "inside.txt").read_text(), "hello")
-        with zipfile.ZipFile(folder.with_name("a.zip")) as archive:
-            self.assertIn("a/post/set/inside.txt", archive.namelist())
-
-    def test_unpack_takes_an_archive_saved_before(self):
-        packed = io.BytesIO()
-        with zipfile.ZipFile(packed, "w") as archive:
-            archive.writestr("inside.txt", "hello")
-        self.routes[f"{CDN}/set.zip"] = httpx.Response(200, content=packed.getvalue())
-        source = make_source("aaa", lambda session: session.save(f"{CDN}/set.zip", "set.zip", category="files"))
-        self.run_engine(source, targets=["aaa:a"], options=Options(categories=("files",)))
-        unpacked = self.target_dir("aaa", "a") / "set"
-        self.assertFalse(unpacked.exists())
+        source = make_source("aaa", lambda session: session.save(f"{CDN}/set.zip", "set.zip", category="files",
+                                                                 folder="post"))
         for _ in range(2):
-            self.run_engine(source, targets=["aaa:a"], options=Options(categories=("files",), unpack=True))
-            self.assertEqual((unpacked / "inside.txt").read_text(), "hello")
+            self.run_engine(source, targets=["aaa:a"], options=Options(categories=("files",)))
+        folder = self.target_dir("aaa", "a")
+        self.assertEqual([path.name for path in (folder / "post").iterdir()], ["set.zip"])
+        self.assertEqual((folder / "post" / "set.zip").read_bytes(), packed.getvalue())
+        self.assertFalse(folder.with_name("a.zip").exists())
         self.assertEqual(sum(request.url.host == "cdn.example" for request in self.requests), 1)
-        self.assertEqual(sum("unpacked" in line for line in self.lines()), 1)
 
 
 def history(home):
@@ -517,22 +503,21 @@ class MediaSaveTest(EngineCase):
         self.run_engine(make_source("aaa", run), targets=["aaa:a"])
         self.assertEqual(errors, ["aaa: audio= is for videos, not a.jpg"])
 
-    def test_without_ffmpeg_dash_videos_fail_with_one_hint(self):
+    def test_without_ffmpeg_dash_videos_fail_with_medias_own_error(self):
+        # No hint of flnd's own: ffmpeg comes with a required dependency, and media's error names it.
         missing = RuntimeError("shared.media needs ffmpeg for videos and audio: install ffmpeg on your PATH")
         with mock.patch("shared._media_video.merge", side_effect=missing):
             self.run_engine(self.saver("1.mp4", "2.mp4", audio=f"{CDN}/a.m4a"), targets=["aaa:a"])
-        hints = [line for line in self.lines() if "ffmpeg not found" in line]
-        self.assertEqual(hints, ["! aaa: ffmpeg not found; install ffmpeg on your PATH to save Facebook and "
-                                 "Instagram videos"])
-        self.assertEqual(sum("✗ 1.mp4: RuntimeError" in line or "✗ 2.mp4: RuntimeError" in line
-                             for line in self.lines()), 2)
+        self.assertFalse(any("ffmpeg not found" in line for line in self.lines()))
+        self.assertEqual(sum("✗ 1.mp4: RuntimeError shared.media needs ffmpeg" in line
+                             or "✗ 2.mp4: RuntimeError shared.media needs ffmpeg" in line for line in self.lines()), 2)
         self.assertEqual(self.files(), [])
 
-    def test_compress_image_replaces_the_photo_and_records_it(self):
+    def test_image_replaces_the_photo_and_records_it(self):
         served = sample("big.jpg").read_bytes()
         self.serve_file("big.jpg", served)
         self.serve_file("v.mp4", b"\0\0\0\x18ftypisom" + bytes(64))
-        options = Options(compress_image="small")
+        options = Options(image=Choice(None, "low"))
         self.run_engine(self.saver("big.jpg", "v.mp4"), targets=["aaa:a"], options=options)
         self.assertEqual(self.files(), ["big.jpg", "v.mp4"])
         saved = self.target_dir("aaa", "a") / "big.jpg"
@@ -541,34 +526,54 @@ class MediaSaveTest(EngineCase):
         self.assertEqual(media.probe(saved).width, 2048)
         row = history(self.home)["aaa:big.jpg"]
         self.assertEqual((row["compressed"], row["size"], row["original_size"]),
-                         ("small", saved.stat().st_size, len(served)))
-        # --compress-image leaves videos alone, and their rows say nothing of compressing.
+                         ("low", saved.stat().st_size, len(served)))
+        # --image leaves videos alone, and their rows say nothing of compressing.
         self.assertNotIn("compressed", history(self.home)["aaa:v.mp4"])
         self.requests.clear()
-        self.run_engine(self.saver("big.jpg"), targets=["aaa:a"], options=Options(compress_image="high"))
+        self.run_engine(self.saver("big.jpg"), targets=["aaa:a"], options=Options(image=Choice(None, "high")))
         self.assertEqual(self.requests, [])
 
-    def test_format_image_and_a_photo_that_doesnt_shrink(self):
+    def test_an_image_format_and_a_photo_that_doesnt_shrink(self):
         self.serve_file("a.jpg", noise("WEBP", (600, 400)))
         self.serve_file("tiny.png", sample("small.png").read_bytes())
         self.run_engine(self.saver("a.jpg", "tiny.png"), targets=["aaa:a"],
-                        options=Options(compress_image="balanced", format_image="jpg"))
+                        options=Options(image=Choice("jpg", "mid")))
         rows = history(self.home)
         self.assertEqual(self.files(), ["a.jpg", "tiny.jpg"] if rows["aaa:tiny.png"]["compressed"] != "none"
                          else ["a.jpg", "tiny.png"])
         self.assertEqual(media.probe(self.target_dir("aaa", "a") / "a.jpg").format, "jpeg")
         self.assertTrue(rows["aaa:a.jpg"]["path"].endswith("a.jpg"))
 
+    def test_audio_is_a_third_kind_named_by_its_content_and_compressed_with_audio(self):
+        calls = []
+
+        def compress(path, **settings):
+            calls.append((Path(path).name, settings["preset"], settings["format"]))
+            return None
+
+        self.serve_file("song.mp3", b"ID3" + bytes(64))
+        self.serve_file("voice.mp3", b"\0\0\0\x18ftypM4A " + bytes(64))
+        self.serve_file("a.jpg", noise("JPEG"))
+        # media.check would need these to be real audio; the kind and the naming are what's tested here.
+        with mock.patch("shared.media.check"), mock.patch("shared.media.compress", compress):
+            self.run_engine(self.saver("song.mp3", "voice.mp3", "a.jpg"), targets=["aaa:a"],
+                            options=Options(audio=Choice("opus", "mid")))
+        self.assertEqual(sorted(calls), [("song.mp3", "mid", "opus"), ("voice.m4a", "mid", "opus")])
+        self.assertEqual(self.files(), ["a.jpg", "song.mp3", "voice.m4a"])
+        rows = history(self.home)
+        self.assertEqual(rows["aaa:song.mp3"]["compressed"], "none")
+        self.assertNotIn("compressed", rows["aaa:a.jpg"])
+
     def test_a_photo_that_cant_shrink_is_recorded_as_none(self):
         self.serve_file("small.png", sample("small.png").read_bytes())
-        self.run_engine(self.saver("small.png"), targets=["aaa:a"], options=Options(compress_image="high"))
+        self.run_engine(self.saver("small.png"), targets=["aaa:a"], options=Options(image=Choice(None, "high")))
         row = history(self.home)["aaa:small.png"]
         self.assertEqual((row["compressed"], row["size"]), ("none", row["original_size"]))
 
     def test_a_broken_photo_is_kept_and_recorded_as_none(self):
         self.serve_file("a.jpg", noise("JPEG"))
         with mock.patch("shared.media.compress", side_effect=media.BrokenError("a.jpg: corrupt")):
-            self.run_engine(self.saver("a.jpg"), targets=["aaa:a"], options=Options(compress_image="small"))
+            self.run_engine(self.saver("a.jpg"), targets=["aaa:a"], options=Options(image=Choice(None, "low")))
         self.assertEqual(history(self.home)["aaa:a.jpg"]["compressed"], "none")
         self.assertIn("! a.jpg: not compressed: a.jpg: corrupt", self.lines())
 
@@ -590,15 +595,13 @@ class MediaSaveTest(EngineCase):
             self.serve_file(f"{number}.webm", b"\x1a\x45\xdf\xa3webm" + bytes(64))
         with mock.patch("shared.media.compress", compress):
             self.run_engine(self.saver("0.webm", "1.webm", "2.webm"), targets=["aaa:a"],
-                            options=Options(compress_video="small", format_video="mp4", zip=True))
+                            options=Options(video=Choice("mp4", "low")))
         self.assertEqual(max(overlaps), 1)
+        # The target's run returned only once every encode was done.
         self.assertEqual(sorted(done), ["0.mp4", "1.mp4", "2.mp4"])
         self.assertEqual(self.files(), ["0.mp4", "1.mp4", "2.mp4"])
-        with zipfile.ZipFile(self.target_dir("aaa", "a").with_name("a.zip")) as archive:
-            self.assertEqual(sorted(name for name in archive.namelist() if not name.endswith("/")),
-                             ["a/0.mp4", "a/1.mp4", "a/2.mp4"])
         row = history(self.home)["aaa:0.webm"]
-        self.assertEqual((row["compressed"], row["size"], Path(row["path"]).name), ("small", 5, "0.mp4"))
+        self.assertEqual((row["compressed"], row["size"], Path(row["path"]).name), ("mp4,low", 5, "0.mp4"))
 
     def test_a_missing_encoder_stops_video_compression_and_photos_go_on(self):
         calls = []
@@ -614,7 +617,7 @@ class MediaSaveTest(EngineCase):
         self.serve_file("a.jpg", noise("JPEG"))
         with mock.patch("shared.media.compress", compress):
             self.run_engine(self.saver("1.mp4", "2.mp4", "a.jpg", declared={"concurrency": 1}), targets=["aaa:a"],
-                            options=Options(compress_image="small", compress_video="small"))
+                            options=Options(image=Choice(None, "low"), video=Choice(None, "low")))
         self.assertEqual(sorted(calls), ["1.mp4", "a.jpg"])
         self.assertEqual(sum("video compression stops" in line for line in self.lines()), 1)
         rows = history(self.home)
@@ -624,22 +627,22 @@ class MediaSaveTest(EngineCase):
     def test_ctrl_c_during_an_encode_keeps_the_original_and_no_compressed_row(self):
         self.serve_file("v.mp4", b"\0\0\0\x18ftypisom" + bytes(64))
         with mock.patch("shared.media.compress", side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
-            self.run_engine(self.saver("v.mp4"), targets=["aaa:a"], options=Options(compress_video="small"))
+            self.run_engine(self.saver("v.mp4"), targets=["aaa:a"], options=Options(video=Choice(None, "low")))
         self.assertEqual(self.files(), ["v.mp4"])
         self.assertNotIn("compressed", history(self.home)["aaa:v.mp4"])
 
     @needs_ffmpeg("libx264")
-    def test_compress_video_shrinks_a_real_video(self):
+    def test_video_shrinks_a_real_video(self):
         served = sample("big.mp4").read_bytes()
         self.serve_file("big.mp4", served)
-        self.run_engine(self.saver("big.mp4"), targets=["aaa:a"], options=Options(compress_video="small",
-                                                                                  format_video="h265")
-                        if "libx265" in encoders() else Options(compress_video="small"))
+        self.run_engine(self.saver("big.mp4"), targets=["aaa:a"], options=Options(video=Choice("h265", "low"))
+                        if "libx265" in encoders() else Options(video=Choice(None, "low")))
         saved = self.target_dir("aaa", "a") / "big.mp4"
         self.assertLess(saved.stat().st_size, len(served))
         media.check(saved)
         self.assertEqual(media.probe(saved).video, "hevc" if "libx265" in encoders() else "h264")
-        self.assertEqual(history(self.home)["aaa:big.mp4"]["compressed"], "small")
+        self.assertEqual(history(self.home)["aaa:big.mp4"]["compressed"], "h265,low" if "libx265" in encoders()
+                         else "low")
 
 
 class FakeBrowser:
@@ -665,7 +668,7 @@ class FakeBrowser:
 
             def goto(self, url, idle=False, timeout=30.0):
                 browser.urls.append(url)
-                return True
+                return 200
 
             def on_response(self, match, callback, lines=False):
                 browser.listeners.append(callback)
@@ -707,10 +710,11 @@ class BrowserTest(EngineCase):
 
         self.routes["https://api.aaa.example/x"] = httpx.Response(200, json={})
         source = make_source("aaa", run, viewport=(800, 600), browser_args=("--no-sandbox",), stealth=False)
-        self.run_engine(source, targets=["aaa:a"], headless=True, locale="fr-FR", timezone="Europe/Paris")
+        self.run_engine(source, targets=["aaa:a"])
         connected = self.browsers[0]
-        self.assertEqual(connected.options, {"headless": True, "viewport": (800, 600), "locale": "fr-FR",
-                                             "timezone": "Europe/Paris", "args": ("--no-sandbox",), "stealth": False})
+        # Visible, and with the computer's own language and timezone: flnd passes no locale= or timezone=.
+        self.assertEqual(connected.options, {"headless": False, "viewport": (800, 600), "args": ("--no-sandbox",),
+                                             "stealth": False})
         self.assertEqual([cookie["name"] for cookie in connected.added], ["sid"])
         self.assertEqual(connected.added[0]["domain"], ".aaa.example")
         self.assertEqual(connected.urls, ["https://aaa.example/a", "https://aaa.example/a/tab"])
@@ -731,15 +735,14 @@ class BrowserTest(EngineCase):
         self.run_engine(make_source("aaa", run), targets=["aaa:a"])
         self.assertEqual(errors, ["aaa: no page is open; call session.open_page(url) first"])
 
-
-    def test_a_missing_chromium_names_flnd_install_browser(self):
+    def test_a_missing_chrome_fails_the_target_naming_chrome(self):
         def connect(**options):
-            raise RuntimeError("Chromium is not installed: run 'playwright install chromium'")
+            raise RuntimeError("flnd needs Google Chrome: install it from https://www.google.com/chrome/")
 
         with mock.patch("shared._browser.connect", connect):
             self.run_engine(make_source("aaa", lambda session: session.open_page("https://aaa.example/a")),
                             targets=["aaa:a"])
-        self.assertIn("✗ aaa:a: Chromium is not installed; run flnd install-browser", self.lines())
+        self.assertIn("✗ aaa:a: flnd needs Google Chrome: install it from https://www.google.com/chrome/", self.lines())
 
 
 class ClientTest(EngineCase):
@@ -815,8 +818,8 @@ class EngineLoginTest(EngineCase):
         Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
         self.assertEqual(seen, [("qr", Target("aaa", "account", ""), True)])
         self.assertEqual(str(seen[0][1]), "aaa")
-        from flnd import vault
-        with vault.open(self.home, "aaa") as secrets:
+        from flnd import auth
+        with auth.secrets(self.home, "aaa") as secrets:
             self.assertEqual(secrets["session"], "s")
 
     def test_interactive_only_during_login_in_a_terminal(self):
