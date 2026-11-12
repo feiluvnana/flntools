@@ -85,19 +85,14 @@ shared.cookies.profiles(browser: str = 'chrome') -> list[str]
 shared.cookies.to_file(jar: list[Cookie], path: PathLike) -> None
 shared.cookies.to_header(jar: list[Cookie]) -> str
 shared.crypto: module
-shared.crypto.CryptoError(shared.crypto.Error, ValueError)
-shared.crypto.Error(shared.Error)
-shared.crypto.decrypt_aes_cbc(blob: bytes, key: bytes, *, iv: bytes) -> bytes
-shared.crypto.decrypt_aes_gcm(blob: bytes, key: bytes, *, context: bytes = b'') -> bytes
-shared.crypto.derive_scrypt(password: Data, salt: bytes, *, size: int = 32) -> bytes
-shared.crypto.encrypt_aes_cbc(data: Data, key: bytes, *, iv: bytes) -> bytes
-shared.crypto.encrypt_aes_gcm(data: Data, key: bytes, *, context: bytes = b'') -> bytes
-shared.crypto.hash_blake2b(data: HashInput) -> str
-shared.crypto.hash_md5(data: HashInput) -> str
-shared.crypto.hash_sha1(data: HashInput) -> str
-shared.crypto.hash_sha256(data: HashInput) -> str
-shared.crypto.hash_sha512(data: HashInput) -> str
-shared.crypto.random_key(size: int = 32) -> bytes
+shared.crypto.Error(shared.Error, ValueError)
+shared.crypto.blake2b(data: HashInput) -> str
+shared.crypto.decrypt(blob: bytes, key: bytes, *, context: bytes = b'') -> bytes
+shared.crypto.encrypt(data: Data, key: bytes, *, context: bytes = b'') -> bytes
+shared.crypto.md5(data: HashInput) -> str
+shared.crypto.sha1(data: HashInput) -> str
+shared.crypto.sha256(data: HashInput) -> str
+shared.crypto.sha512(data: HashInput) -> str
 shared.fmt: module
 shared.fmt.Error(shared.Error)
 shared.fmt.date(value: _datetime.date | float, pattern: str | None = None) -> str

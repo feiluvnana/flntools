@@ -21,6 +21,8 @@ from __future__ import annotations
 import base64
 import os
 import time
+# Only `token_bytes`: `secrets` is this module's own function, the vault's entry point.
+from secrets import token_bytes
 from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -202,10 +204,10 @@ class Vault(MutableMapping[str, str]):
 
     def __getitem__(self, name: str) -> str:
         sealed = base64.b64decode(self._db[self._slot(name)])
-        return crypto.decrypt_aes_gcm(sealed, self._secret_key(), context=self._context(name)).decode("utf-8")
+        return crypto.decrypt(sealed, self._secret_key(), context=self._context(name)).decode("utf-8")
 
     def __setitem__(self, name: str, value: str) -> None:
-        sealed = crypto.encrypt_aes_gcm(value, self._secret_key(), context=self._context(name))
+        sealed = crypto.encrypt(value, self._secret_key(), context=self._context(name))
         self._db[self._slot(name)] = base64.b64encode(sealed).decode("ascii")
 
     def __delitem__(self, name: str) -> None:
@@ -306,7 +308,8 @@ def _create_key(path: Path) -> bytes | None:
     # file, and every reader (key() above) treats a short file as "not written yet" and reads
     # again until KEY_WAIT has passed, never using a short key. A key that fails to be written
     # is removed, so no run is left with a damaged file.
-    secret = crypto.random_key(KEY_SIZE)
+    # The stdlib's CSPRNG makes the key; `shared.crypto` leaves keys to it (redesign C2).
+    secret = token_bytes(KEY_SIZE)
     try:
         with os.fdopen(handle, "wb") as file:
             file.write(secret)

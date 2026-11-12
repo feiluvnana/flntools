@@ -228,7 +228,7 @@ def sign_request(request: httpx.Request, *, now_ms: int, pick: Callable[[Sequenc
         "x-security-challenge": "turnstile-v1",
         "x-request-id": request_id(method, where, now_ms=now_ms, pick=pick, noise=noise),
         "x-signature-timestamp": at,
-        "x-request-signature": crypto.hash_sha256(f"{method}|{where}||{at}|{SALT}"),
+        "x-request-signature": crypto.sha256(f"{method}|{where}||{at}|{SALT}"),
     })
     return request
 
@@ -237,7 +237,7 @@ def request_id(method: str, where: str, *, now_ms: int, pick: Callable[[Sequence
                noise: Callable[[int], str]) -> str:
     """A UUID-shaped id: the five-minute slot and random hex, with a digest of the request hidden inside."""
     seed = format(now_ms // 300_000, "x").zfill(8)[-8:] + noise(9)[:17]
-    digest = crypto.hash_sha256(f"{REQUEST_ID_PREFIX}|{seed}|{method}|{where}|{crypto.hash_sha256('{}')}")[:5]
+    digest = crypto.sha256(f"{REQUEST_ID_PREFIX}|{seed}|{method}|{where}|{crypto.sha256('{}')}")[:5]
     seeds, digests, characters = iter(seed), iter(digest), []
     for position in range(32):
         if position == 12:
@@ -259,9 +259,25 @@ def decrypt_field(text: str | None) -> str:
     if not text:
         return ""
     try:
-        return crypto.decrypt_aes_cbc(base64.b64decode(text), SITE_KEY, iv=SITE_IV).decode("utf-8", "replace")
+        return _decrypt_aes_cbc(base64.b64decode(text)).decode("utf-8", "replace")
     except (binascii.Error, ValueError):
         raise ValueError(f"loi: can't decrypt {text[:16]!r}…; the site changed its key") from None
+
+
+def _decrypt_aes_cbc(blob: bytes) -> bytes:
+    """`blob` decrypted with the site's AES-128-CBC key and IV, its PKCS7 padding removed.
+
+    CBC is the site's choice, not ours: `shared.crypto` offers only authenticated AES-GCM, so the
+    site's format is read here with `cryptography` directly. A blob that isn't whole blocks, or
+    whose padding is wrong, raises ValueError, as `cryptography` does.
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.padding import PKCS7
+
+    decryptor = Cipher(algorithms.AES(SITE_KEY), modes.CBC(SITE_IV)).decryptor()
+    unpadder = PKCS7(128).unpadder()
+    padded = decryptor.update(blob) + decryptor.finalize()
+    return unpadder.update(padded) + unpadder.finalize()
 
 
 def decode_token(raw: str) -> str:

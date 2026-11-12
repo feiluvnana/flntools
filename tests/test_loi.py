@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 import httpx
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.padding import PKCS7
 from fakes import FakeSession
 from test_engine import EngineCase
 
@@ -33,7 +35,7 @@ class SignTest(unittest.TestCase):
                          "0e7c819a540aaa6c47043c50ae7c278378a26790ec8e09edf05f799fa06c6556")
         self.assertEqual(signed.headers["x-security-challenge"], "turnstile-v1")
         self.assertEqual(signed.headers["x-request-signature"],
-                         crypto.hash_sha256("get|lois/5930||1700000000000|loibus-sec-decoy-salt-v1"))
+                         crypto.sha256("get|lois/5930||1700000000000|loibus-sec-decoy-salt-v1"))
 
     def test_every_signature_is_new(self):
         first = sign_request(httpx.Request("GET", "https://api.moegoat.com/api/user/info"), now_ms=1)
@@ -83,7 +85,11 @@ class ResolveTest(unittest.TestCase):
 
 
 def encrypt(text):
-    return base64.b64encode(crypto.encrypt_aes_cbc(text, SITE_KEY, iv=SITE_IV)).decode()
+    """`text` as the site sends a field: AES-128-CBC under its key and IV, PKCS7-padded, in base64."""
+    padder = PKCS7(128).padder()
+    padded = padder.update(text.encode("utf-8")) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(SITE_KEY), modes.CBC(SITE_IV)).encryptor()
+    return base64.b64encode(encryptor.update(padded) + encryptor.finalize()).decode()
 
 
 POST = {"id": 5930, "loi_title": "Night city: set", "loi_description": "line one\n\nline two",

@@ -85,7 +85,7 @@ class VaultTest(AuthCase):
             db["loi:session"] = db["tlg:session"]
             db["tlg:other"] = db["tlg:session"]
         for code, name in (("loi", "session"), ("tlg", "other")):
-            with auth.secrets(self.home, code) as secrets, self.assertRaises(crypto.CryptoError):
+            with auth.secrets(self.home, code) as secrets, self.assertRaises(crypto.Error):
                 secrets[name]
 
     def test_no_key_file_until_a_secret_is_used(self):

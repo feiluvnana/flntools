@@ -23,7 +23,7 @@ ERRORS = [
     (media.BrokenError, "media", ValueError, shared.BrokenError),
     (media.UnsafeError, "media", ValueError, shared.UnsafeError),
     (cookies.CookieError, "cookies", ValueError, None),
-    (crypto.CryptoError, "crypto", ValueError, None),
+    (crypto.Error, "crypto", ValueError, None),       # crypto's one error, renamed to its base in step 4
     (cli.UsageError, "cli", Exception, None),
     (prompt.PromptError, "prompt", Exception, None),
     (worker.TaskError, "worker", Exception, None),
