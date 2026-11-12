@@ -1,11 +1,19 @@
-"""Telegram: targets, logins, and downloads through the engine, on a fake Telethon client. No network."""
+"""Telegram: targets, logins, and downloads through the engine, on a fake Telethon client. No network.
+
+It fakes Telegram's side only (`FakeTelegram`, `FakeClient`: chats, messages, a login's answers) and
+the clock the engine waits on; the route and categories run for real, on the source's own loop.
+`NamesTest` pins every file name and history key against tests/data/tlg_names.json, which the
+`run(session)` version produced for the same fixtures, so the port can never rename a saved file.
+"""
 
 import asyncio
 import base64
 import datetime
+import inspect
 import io
 import json
 import struct
+import tempfile
 import threading
 import unittest
 import zipfile
@@ -13,7 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from fakes import FakeSession
+from fakes import FakeSite, collect
 from playwright.sync_api import Error as PlaywrightError
 from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswordNeededError
 from test_commands import FlndCase
@@ -24,7 +32,7 @@ from flnd.engine import Engine
 from flnd.session import Options
 from flnd.source import LoginError, Target, TargetError
 from flnd.sources import SOURCES
-from flnd.sources.tlg import QR_CODES, Telegram, flood_wait, from_web_storage, half_blocks, read_telegram_web
+from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
 from shared import fmt
 
 DAY = datetime.date(2026, 1, 5)
@@ -229,13 +237,43 @@ class ResolveTest(unittest.TestCase):
     def test_declarations(self):
         self.assertEqual((Telegram.categories, Telegram.single_kinds), (("photo", "video", "file"), ()))
         self.assertEqual((Telegram.login_methods, Telegram.requires_login), (("browser", "qr", "phone"), True))
-        self.assertIs(Telegram.wait, flood_wait)
+        self.assertEqual((Telegram.folder, Telegram.key), ("{chat}/{category}", "{chat_id}:{id}"))
+        self.assertTrue(Telegram.ported())
+
+    def test_one_route_whose_categories_are_newest_first_async_methods(self):
+        (route,) = Telegram.routes
+        self.assertEqual([(c.name, c.newest_first) for c in route.categories],
+                         [("photo", True), ("video", True), ("file", True)])
+        self.assertTrue(inspect.iscoroutinefunction(route.function))
 
 
 class FloodWaitTest(unittest.TestCase):
-    def test_flood_waits_are_honored_and_other_errors_wait_as_usual(self):
-        self.assertEqual(flood_wait(FloodWaitError(None, capture=3), 1), 3)
-        self.assertIsNone(flood_wait(OSError("reset"), 1))
+    def download(self, errors):
+        """Run `fetcher`'s download against a client that raises `errors` first, with a site that records back-offs."""
+        waits = []
+        item = message(11, "photo")
+
+        async def download_media(message, file=None, progress_callback=None):
+            if errors:
+                raise errors.pop(0)
+            file.write(b"media")
+
+        client = SimpleNamespace(download_media=download_media)
+        site = SimpleNamespace(client=client, back_off=lambda reason, *, retry_after=None: waits.append(
+            (reason, retry_after)))
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "file"
+            asyncio.run(fetcher(site, item)(dest, lambda done, total: None))
+            return waits, dest.read_bytes()
+
+    def test_a_flood_wait_is_backed_off_for_the_seconds_it_names_and_the_download_tried_again(self):
+        waits, content = self.download([FloodWaitError(None, capture=3), FloodWaitError(None, capture=7)])
+        self.assertEqual(waits, [("Telegram flood wait", 3), ("Telegram flood wait", 7)])
+        self.assertEqual(content, b"media")
+
+    def test_another_error_is_not_waited_out(self):
+        with self.assertRaises(OSError):
+            self.download([OSError("reset")])
 
 
 def web_storage(dc=2, key=bytes(range(256)), *, quoted=True):
@@ -427,10 +465,10 @@ class LoginTest(LoginCase):
 
     def test_logged_in_is_a_stored_session(self):
         telegram = Telegram()
-        session = FakeSession(Target("tlg", "account", ""))
-        self.assertFalse(telegram.logged_in(session))
-        session.secrets["session"] = SESSION
-        self.assertTrue(telegram.logged_in(session))
+        site = FakeSite(Target("tlg", "account", ""))
+        self.assertFalse(telegram.logged_in(site))
+        site.secrets["session"] = SESSION
+        self.assertTrue(telegram.logged_in(site))
 
 
 class LoginCommandTest(FlndCase):
@@ -486,14 +524,22 @@ class DownloadTest(DownloadCase):
             message(14, "file", name="notes.pdf"), message(5, "photo", day=datetime.date(2025, 12, 1)),
         ]
 
-    def test_only_the_wanted_kinds_are_asked_for_and_since_stops_early(self):
+    def test_only_the_wanted_kinds_are_asked_for_and_since_filters(self):
         total = self.download(categories=("photo", "file"), since=datetime.date(2026, 1, 1))
         self.assertEqual(total, 3)
         self.assertEqual(self.telegram.asked, [("photo", None), ("file", None)])
-        # The December photo is the last one asked for: older than --since, it ends the photos.
+        # The December photo is read and dropped by the engine, which stops only after 5 old ones in a row.
         self.assertEqual(self.telegram.yielded, 4)
         self.assertEqual(sorted(path.relative_to(self.folder).as_posix() for path in self.folder.rglob("*.*")),
                          ["file/2026-01-05_14_notes.pdf", "photo/2026-01-05_11.jpg", "photo/2026-01-05_12.jpg"])
+
+    def test_since_stops_reading_a_kind_after_five_older_messages_in_a_row(self):
+        old = datetime.date(2025, 1, 1)
+        self.telegram.messages[1001] = [message(1, "photo"), message(2, "photo"),
+                                        *[message(number, "photo", day=old) for number in range(3, 13)]]
+        self.assertEqual(self.download(categories=("photo",), since=datetime.date(2026, 1, 1)), 2)
+        # The two new photos and 5 old ones, not the 10 old ones the chat holds.
+        self.assertEqual(self.telegram.yielded, 7)
 
     def test_until_asks_from_the_next_day(self):
         self.download(until=datetime.date(2026, 1, 4))
@@ -534,6 +580,62 @@ class DownloadTest(DownloadCase):
         runner.start()
         runner.join(timeout=10)
         self.assertEqual(finished, [30])
+
+
+def day(year, month, number):
+    return datetime.date(year, month, number)
+
+
+def names_messages():
+    """Messages whose names stress the file name: separators, dots, reserved names, a 300-letter name, no name at all."""
+    return [
+        message(11, "photo"), message(12, "photo"), message(13, "photo", day=day(2026, 1, 4)),
+        message(14, "video", content=b"v"), message(15, "video", day=day(2025, 12, 31)),
+        message(16, "file", name="notes.pdf"), message(17, "file", name="a/b.pdf"),
+        message(18, "file", name="../evil.txt"), message(19, "file", name="ünï cödé?.pdf"),
+        message(20, "file", name="README"), message(21, "file", name="x" * 300 + ".zip"),
+        message(22, "file", name="CON.txt"), message(23, "file", name="   "),
+        message(24, "photo", day=day(2025, 12, 1)), message(10 ** 10, "video", day=day(2026, 1, 6)),
+        message(25, "file", name="a:b*c.7z", day=day(2026, 1, 1)),
+    ]
+
+
+# Chats whose title, name or id stress the folder and the key: separators, dots, a reserved name, no title.
+NAMES_CHATS = {
+    "plain": chat(1001, "Example Channel", "examplechannel"),
+    "slash": chat(1002, "Lens/Club: 2026?", None),
+    "person": SimpleNamespace(id=1003, first_name="Ex", last_name="User", username=None),
+    "user": SimpleNamespace(id=1004, username="only_user"),
+    "bare": SimpleNamespace(id=1005),
+    "dots": chat(1006, "..", None),
+    "big": chat(1234567890123, "Big Chat", None),
+    "double": chat(1007, "a//b  c", None),
+    "reserved": chat(1008, "NUL", None),
+    "neg": chat(-1001234567890, "Negative", None),
+}
+NAMES_OPTIONS = {
+    "all": {},
+    "photo": {"categories": ("photo",)},
+    "video-file": {"categories": ("video", "file")},
+    "since": {"since": day(2026, 1, 1)},
+    "until": {"until": day(2026, 1, 4)},
+    "range": {"since": day(2026, 1, 1), "until": day(2026, 1, 5)},
+}
+
+
+class NamesTest(unittest.TestCase):
+    def test_every_path_and_key_is_what_run_session_wrote(self):
+        golden = json.loads((Path(__file__).parent / "data" / "tlg_names.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(golden), len(NAMES_CHATS) * len(NAMES_OPTIONS))
+        for chat_name, entity in NAMES_CHATS.items():
+            for options_name, options in NAMES_OPTIONS.items():
+                telegram = FakeTelegram()
+                telegram.chats = {"chatone": entity}
+                telegram.messages = {entity.id: names_messages()}
+                with self.subTest(chat=chat_name, options=options_name):
+                    saved = collect(Telegram, "tlg:@chatone", options=Options(**options),
+                                    client=telegram.client("", 1, "hash"))
+                    self.assertEqual([[item.path, item.key] for item in saved], golden[f"{chat_name}/{options_name}"])
 
 
 class ChatTest(DownloadCase):
