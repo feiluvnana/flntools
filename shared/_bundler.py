@@ -3,8 +3,12 @@
     from shared import bundler
     bundler.build("flnd/__main__.py", name="flnd")    # dist/flnd/flnd, or flnd.exe on Windows
 
-Needs the `bundler` extra (`pyinstaller`) on first use.
+Needs PyInstaller on first use, from flntools' `dist` group (`uv sync --group dist`).
 """
+
+# PyInstaller is only in the `dist` group, so in the dev environment pyright finds its bundled stubs
+# but not its source; that is expected here, not a missing dependency.
+# pyright: reportMissingModuleSource=false
 
 from __future__ import annotations
 
@@ -46,7 +50,7 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Itera
     try:
         import PyInstaller.__main__ as pyinstaller
     except ImportError:
-        raise ImportError("shared.bundler needs pyinstaller: pip install 'flntools[bundler]'") from None
+        raise ImportError("shared.bundler needs pyinstaller: uv sync --group dist") from None
     folders = [Path(folder) for folder in data]
     for folder in folders:
         if not folder.is_dir():

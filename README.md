@@ -8,23 +8,24 @@ The plan for the shared helpers flnd is built on is in [plan/README.md](plan/REA
 
 ## Installation
 
-Requires Python 3.11 or newer. This checkout uses a local virtualenv on Python 3.14.
+Requires Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/). From this folder:
 
 ```bash
-uv venv .venv --python 3.14
-source .venv/bin/activate
-uv pip install -e .
-flnd install-browser
+uv sync                          # creates .venv from uv.lock; run it again after a pull
+uv run flnd install-browser
+uv run flnd download ins:example_user
 ```
 
-`.venv` stays in this folder. Activate it again with `source .venv/bin/activate` before running `flnd`.
-With `uv`, `uv tool install --editable .` puts `flnd` on your PATH instead.
+Or `make setup`, then `make flnd ARGS="download ins:example_user"`. Every task (`setup`, `test`,
+`lint`, `type`, `check`, `flnd`, `dist`) is in `scripts/dev.py`, so on Windows, which has no make,
+run `uv run --no-project scripts/dev.py <task>`, or install make with `winget install ezwinports.make`.
+`uv tool install --editable .` puts `flnd` on your PATH instead.
 
-ffmpeg comes with `pip install`, as the `imageio-ffmpeg` dependency; flnd uses it to join Facebook and
+ffmpeg comes with `uv sync`, as the `imageio-ffmpeg` dependency; flnd uses it to join Facebook and
 Instagram videos with their sound, and to compress videos. Where that package has no wheel (musl Linux,
 32-bit ARM), install ffmpeg on your PATH instead.
 
-`flnd install-browser` downloads Chromium (about 150 MB) once, into Playwright's folder in your user cache,
+`flnd install-browser` downloads Chromium (about 200 MB) once, into Playwright's folder in your user cache,
 for the sources that open a browser. Your installed Chrome is used instead when there is one.
 
 ### A folder that runs without Python

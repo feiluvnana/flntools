@@ -139,15 +139,21 @@ flnd's own helpers keep normal `snake_case`. The chalk-style color names (`style
 ## pyproject
 
 ```toml
-[project.optional-dependencies]
+[project.optional-dependencies]                                  # for shared alone, without flnd
 archive = ["pyzipper", "py7zr"]                                  # password zips and 7z; plain zip and tar need nothing
 selector = ["parsel>=1.9.0", "python-jsonpath"]
-browser = ["playwright>=1.40.0", "cryptography>=42"]
-bundler = ["pyinstaller>=6"]
+browser = ["playwright==1.65.*", "cryptography>=42"]             # a minor pin: each release downloads a new browser
 media = ["pillow>=11.3", "pi-heif>=1.0", "imageio-ffmpeg>=0.6"]   # Pillow and HEIC for photos; the ffmpeg binary
+
+[dependency-groups]
+dev = ["pyright[nodejs]==1.1.414", "typing_extensions>=4.12", "packaging"]
+dist = ["pyinstaller>=6"]                                        # only the `dist` task syncs it
+
+[tool.uv]
+default-groups = ["dev"]
 ```
 
-flnd's own dependencies are `httpx`, `playwright`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pyzipper`, `py7zr`, `pillow`, `pi-heif` and `imageio-ffmpeg`, because flnd always needs them (`qrcode` draws tlg's QR login, and `imageio-ffmpeg` brings ffmpeg). The dev group adds `pyright` and `typing_extensions`.
+flnd's own dependencies are `httpx`, `playwright==1.65.*`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pyzipper`, `py7zr`, `pillow`, `pi-heif` and `imageio-ffmpeg`, because flnd always needs them (`qrcode` draws tlg's QR login, and `imageio-ffmpeg` brings ffmpeg). `pyzipper` and `py7zr` leave them in [step 3](phase-6/cli.md), with `--unpack` and `--zip`; [step 7](phase-6/classify.md) adds the `classify` extra. The dev group adds `pyright[nodejs]` (with its own Node.js), `typing_extensions` and `packaging` (for the licence test). `uv.lock` pins every version.
 
 ## Makefile
 
@@ -163,7 +169,7 @@ $(TASKS):
 
 | Task | Runs |
 | --- | --- |
-| `setup` | `uv sync` from `uv.lock`, then `playwright install --no-shell chromium` only when there is no Chrome |
+| `setup` | `uv sync --extra archive` from `uv.lock`; no browser download |
 | `test`, `lint`, `type`, `check` | unittest, compileall, pyright, and the three in that order |
 | `flnd` | `uv run flnd $(ARGS)` |
 | `dist` | `uv sync --group dist`, `bundler.build`, and `licenses/ffmpeg-source.txt` ([flnd › Packaging](phase-5/flnd.md#packaging)) |

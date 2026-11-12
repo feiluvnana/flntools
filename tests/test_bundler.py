@@ -138,7 +138,7 @@ class MissingExtraTest(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"PyInstaller": None, "PyInstaller.__main__": None}):
             with self.assertRaises(ImportError) as caught:
                 bundler.build("tool.py", name="tool")
-        self.assertEqual(str(caught.exception), "shared.bundler needs pyinstaller: pip install 'flntools[bundler]'")
+        self.assertEqual(str(caught.exception), "shared.bundler needs pyinstaller: uv sync --group dist")
 
 
 @unittest.skipUnless(HAS_PYINSTALLER and os.environ.get("FLNTOOLS_BUILD_TESTS") == "1",

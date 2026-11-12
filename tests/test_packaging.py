@@ -1,8 +1,10 @@
+import importlib.util
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import zipfile
 from importlib import metadata
@@ -71,6 +73,15 @@ class LazyImportTest(unittest.TestCase):
         self.assertEqual(run_python(code).stdout.strip(), "False True")
 
 
+def load_dev() -> types.ModuleType:
+    """scripts/dev.py as a module; scripts/ is not a package, so it is loaded from its path."""
+    spec = importlib.util.spec_from_file_location("dev", ROOT / "scripts" / "dev.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def runtime_distributions(name: str) -> dict[str, metadata.Distribution]:
     """Every installed distribution `name` needs at run time on this machine, by normalized name."""
     from packaging.requirements import Requirement
@@ -102,30 +113,31 @@ class LicensesTest(unittest.TestCase):
             self.assertTrue(second.startswith("License: "), path.name)
 
     def test_ffmpeg_ships_its_gpl_and_a_source_offer(self):
-        # imageio-ffmpeg's wheel carries a GPL ffmpeg; `make dist` adds ffmpeg-source.txt with its version.
+        # imageio-ffmpeg's wheel carries a GPL ffmpeg; the `dist` task adds ffmpeg-source.txt with its version.
         text = (ROOT / "licenses" / "ffmpeg.txt").read_text(encoding="utf-8")
         self.assertIn("License: GPL-2.0-or-later", text)
         self.assertIn("GNU GENERAL PUBLIC LICENSE", text)
         self.assertIn("Written offer: for three years", text)
-        self.assertIn("ffmpeg-source.txt", (ROOT / "Makefile").read_text(encoding="utf-8"))
+        self.assertIn("ffmpeg-source.txt", (ROOT / "scripts" / "dev.py").read_text(encoding="utf-8"))
 
+    @unittest.skipIf(shutil.which("uv") is None, "uv is not installed")
     def test_ffmpeg_source_names_the_bundled_binary(self):
-        # `make dist` writes ffmpeg-source.txt next to the licences, from the ffmpeg imageio-ffmpeg bundles.
+        # dev.ffmpeg_source() finds imageio-ffmpeg's binary through `uv run`, as the `dist` task does.
         try:
             import imageio_ffmpeg
         except ImportError:
             self.skipTest("imageio-ffmpeg is not installed")
-        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        block = makefile.split("export FFMPEG_SOURCE = ", 1)[1]
-        # make joins a line ending in a backslash with the next, dropping the next one's indent.
-        program = re.sub(r"\\\n\s*", " ", block).split("\n", 1)[0]
-        result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        python = f"{sys.version_info.major}.{sys.version_info.minor}"
+        text = load_dev().ffmpeg_source(python)
         version = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-version"], capture_output=True,
                                  text=True).stdout.splitlines()[0]
-        self.assertEqual(result.stdout.splitlines()[0], "ffmpeg-source")
-        self.assertIn(version, result.stdout)
-        self.assertIn("configuration:", result.stdout)
+        self.assertEqual(text.splitlines()[:3], [
+            "ffmpeg-source",
+            "The ffmpeg program in this bundle, as it reports itself. The source offer is in ffmpeg.txt.",
+            "",
+        ])
+        self.assertIn(version, text)
+        self.assertIn("configuration:", text)
 
     def test_every_bundled_package_has_its_licence(self):
         try:
