@@ -509,7 +509,6 @@ EXPLAINING: set[str] = {
     "shared/_media_image.py",
     "shared/_media_video.py",
     "shared/_pillow.py",
-    "shared/_worker.py",
 }
 
 BASELINE = ROOT / "tests" / "data" / "code_baseline.json"
