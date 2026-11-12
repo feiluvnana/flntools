@@ -1,6 +1,6 @@
 # ui
 
-Phase 6, step 8. The user named three terminal problems on 2026-11-12: the download rows blink, a prompt shows a stray white block, and a log line colors only its glyph. Each is fixed in `shared` (`log`, `theme`, `prompt`), so every command gets it.
+Phase 6, step 8. The user named three terminal problems on 2026-11-12: the download rows blink, a prompt shows a stray white block, and a log line colors only its glyph. They also asked for the live area to be smart about [performance](#performance). Each is fixed in `shared` (`log`, `theme`, `prompt`), so every command gets it.
 
 ## The download rows blink
 
@@ -42,6 +42,29 @@ Today `draw_log` paints only the glyph: `! ins: waiting 30 s` has a yellow `!` a
 - **Palette names stay the same** (`theme.palette.warn` and so on), so a theme that changes a level's color changes its whole line.
 - Without color (`theme.color == "none"`, `NO_COLOR`, or a pipe) nothing changes: lines are plain text.
 - Progress rows keep their colored glyph only, because the bar has its own colors.
+
+## Performance
+
+The live area should cost almost nothing, however many files run. Today every `advance` from a download takes the screen lock, and at most every 0.1 s it re-renders every row: each row is painted, cut to width with `fit` (a regex over the whole row) and written, even the ones that didn't change. A target downloading 4 files sends about 40 `advance` calls a second per file, so the drawing does more work than the downloads' own bookkeeping. The live area becomes cheap in five ways:
+
+1. **Updates only mark, never draw.** `ProgressBar.advance` and `.update` add to a counter and set a dirty flag. No lock, no rendering: one integer write that a download thread can afford on every chunk. Drawing happens in one place, the area's tick.
+2. **One drawing thread, and only while something changes.** One daemon thread per screen wakes on a dirty flag (a `threading.Event`), at most every 0.1 s, and sleeps without waking when nothing is dirty. A spinner keeps it at 10 frames a second only while a spinner row is on screen. The thread starts with the first area and ends with the last, so an idle `log.info` script never starts it.
+3. **Only changed rows are rendered and written.**
+   - Each row keeps the last string it drew. It is rendered again only when what it shows changed: its bar's filled cells (20 per bar), its number as displayed (`3.1 MB`, not every byte), its caption or its label.
+   - A frame writes only the rows that differ from the screen, each with a cursor move (`\x1b[<n>B`) and `\x1b[K`, and leaves the others alone. A frame where nothing visible changed writes nothing at all. For a 2 GB file, that is about 200 redraws of its row (one per 0.5% at 20 cells and 0.1 s), not 20,000.
+4. **Each frame is one write and one flush**, built in a list and joined, inside the synchronized-output pair ([above](#the-download-rows-blink)). Lines written above the area wait for the next tick and go out in the same write.
+5. **A slow terminal skips frames instead of queueing them.** When a write takes longer than the tick (an SSH session, a slow Windows console), the next frame is dropped, and the one after shows the latest state. Output never falls behind the downloads, and the download threads never wait for the terminal.
+
+And outside a terminal (a pipe, a log file, CI) there is no live area at all, as today. The thread never starts, and only the final lines are written.
+
+### Measured, not guessed
+
+`tests/test_log.py` gets a small benchmark-style test on the fake screen and the fake clock:
+- 4 bars advanced 10,000 times each over 10 fake seconds produce at most 100 frames;
+- a frame where no bar crossed a cell boundary or changed its shown number writes 0 bytes;
+- `advance` never takes the screen lock (checked with a lock that fails the test if acquired).
+
+By hand, once, on macOS Terminal, iTerm2, Windows Terminal and an SSH session: flnd's CPU while downloading a 2 GB video and 200 small photos is under 2% for drawing, measured with the drawing thread's own timer.
 
 ## Tests
 

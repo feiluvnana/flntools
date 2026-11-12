@@ -50,7 +50,7 @@ def save_post(session, id: str, files: Sequence[File], *, category: str, date: d
 ```
 
 - **Names:** `<id>[_<index>]`, with `_<index>` only when the post has more than one file, as every source does now. The engine adds the date in front ([dates](dates.md)). `.jpg` or `.mp4` only says photo or video: the content decides the real extension.
-- **Keys:** always `<id>_<index>`, a single file included, so `session.downloaded(f"{id}_0")` means "this post is saved" for every source.
+- **Keys:** always `<id>_<index>`, a single file included, so `session.saved(f"{id}_0")` means "this post is saved" for every source.
 - **The old keys** differ: fbk keys a single file `<id>`, and tik keys a video `<id>` and its images from `_1`. So the history rows of fbk and tik are rewritten to the new keys once, when the engine first opens a Phase 5 `history.db` (about 15 lines, in a `version` row), and nothing is downloaded again.
 
 ```python

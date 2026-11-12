@@ -7,7 +7,7 @@ Phase 6 makes flntools quicker to set up, the same on every OS, smaller to read,
 | `make setup` takes a long time | [setup](setup.md): `uv sync` with a lockfile; the 305 MB browser download only when there is no Chrome, and never the unused headless shell |
 | make isn't well supported on Windows | [setup](setup.md): every task in a stdlib `scripts/dev.py`; the Makefile is a one-rule shortcut with no shell syntax |
 | the session API is bloated and its defaults aren't sensible | [session](session.md): 35 members become 26; scrolling ends on time, not a count, with no 200-scroll cap; page loads are paced and checked |
-| Instagram's tagged tab is blocked when each post's page is opened | [ins](ins.md): posts read through the media info API, skipped before any request when already saved or out of range, paced, and every throttle waited out |
+| Instagram's tagged tab is blocked when each post's page is opened | [ins](ins.md): posts read through the media info API, skipped before any request when already saved or out of range, paced, and every throttle waited out; then **API first for every source**: ins, fbk and tik replay the site's own pagination request from the page instead of scrolling, and twt refreshes stale query IDs |
 | the download rows blink, a prompt shows a white block, and log lines color only their glyph | [ui](ui.md): frames overwrite in place inside synchronized output with the cursor hidden; short-lived rows are never drawn; prompts draw their own cursor; a line takes its level's color unless its text has its own style |
 | simplify everything | [api](api.md): every public API, with its change or none; flnd's own APIs lose what flnd doesn't use, and `shared`'s are judged by usefulness |
 | the `Source` API has too many fields | [source](source.md): 18 fields and 7 hooks become 8 and 5; `categories` holds its defaults, `prepare` replaces `headers` and `sign`, and fields no source sets become engine constants |
@@ -26,10 +26,10 @@ Each step ends with `check` green and is pushed on its own.
 2. [setup](setup.md): `uv.lock`, dependency groups, `scripts/dev.py`, the thin Makefile, and no browser download.
 3. [cli](cli.md), [source](source.md) and [session](session.md): the lean `Source`; four commands with `--image`/`--video`/`--audio`; Chrome only; the smaller session protocol and its defaults, with `goto` checked and paced; `compress.py` and `files.py` split out of `session.py`.
 4. [api](api.md): the removals and private names in `shared`, and `python-jsonpath` gone.
-5. [ins](ins.md): tagged and reposts through the API, with a full live run of the test account.
+5. [ins](ins.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with live runs of the test accounts.
 6. [scripts](scripts.md) and [dates](dates.md): the sources rewritten on the new session and helpers, with every file dated by the engine.
 7. [classify](classify.md): `media.classify` and `--classify`.
-8. [ui](ui.md): the live area, the prompt cursor, and whole-line log colors.
+8. [ui](ui.md): the live area (no blinking, and cheap: only changed rows drawn, by one thread, only when something changed), the prompt cursor, and whole-line log colors.
 9. [comments](comments.md): every file brought to the docstring and comment standard. Each earlier step already writes its own new code to it.
 
 ## The WIP commit
@@ -40,7 +40,7 @@ The work-in-progress commit on `main` ("sussy") tried items of this phase: a Win
 | --- | --- |
 | the `ifeq ($(OS),Windows_NT)` Makefile | replaced by `scripts/dev.py` ([setup](setup.md)) |
 | `make type` | kept as the `type` task |
-| `session.downloaded(key)` | kept ([session](session.md#members)) |
+| `session.downloaded(key)` | kept, renamed **`session.saved(key)`** ([session](session.md#members)) |
 | saving grid images, dated by `pk` | kept, with an allowlist and a full-size check ([ins](ins.md#3-save-from-the-grid-only-what-the-grid-really-has)) |
 | scroll `delay=0.2`, `max=1000` | not kept: 1.5 s, and an end rule of 10 s with no progress ([session](session.md#scroll)) |
 | the Protocol's `delay=2.0, max=200` against the code's `0.2, 1000` | gone with the new signature |

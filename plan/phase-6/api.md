@@ -53,7 +53,7 @@ The [session](session.md) step covers it. In short:
 | Member | Phase 6 |
 | --- | --- |
 | `target`, `folder`, `cookies`, `categories`, `since`, `until`, `wants(category=, date=)` | — |
-| `fetch_json(url, *, method, headers, soft, **kw)`, `fetch_html(url, **kw)` | paced by `Source.pace` |
+| `fetch_json(url, *, method, headers, soft, **kw)`, `fetch_html(url, **kw)` | paced by `Source.pace`; `fetch_json` gains **`in_page=False`**, which sends the request from the logged-in tab ([ins](ins.md#three-ways-to-reach-an-api)) |
 | `http`, `select(value)` | **removed**: no caller |
 | `open_page(url)` | **removed**: `goto` opens the browser on first use |
 | `goto(url, *, idle=False, timeout=30.0)` | waits out a 429 and loads again; a status of 400 or more, or a login wall, returns False with a warning; paced |
@@ -64,7 +64,7 @@ The [session](session.md) step covers it. In short:
 | `page` | — |
 | `client` | — |
 | `save(source, name, *, category, date, folder, key, password, size, headers, audio)` | **`password=` goes** with `--unpack`; the other keywords have callers |
-| `downloaded(key)` | **new** (from the WIP commit) |
+| `saved(key)` | **new**: the WIP commit's `downloaded(key)`, renamed so it reads as the pair of `save`: `if session.saved(f"{code}_0"): continue` |
 | `write(name, text)`, `full` | — |
 | `state`, `secrets` | — |
 | `interactive`, `ask(message, *, secret, description)`, `info`, `warn` | — |
@@ -223,6 +223,7 @@ flnd no longer calls it: `--unpack` and `--zip` go ([cli](cli.md#--unpack-and---
 | `Page.wait_for_selector`, `wait_for_url`, `wait_for_load` | no caller once the session's go | — : the waits a script needs most |
 | `Page.scroll(*, by, count, limit, more, idle=4, delay=2.0, max=200, onscroll)` | yes | `idle` becomes **seconds** with no progress (10.0), and `max` defaults to None, no cap ([session](session.md#scroll)); `by` and `limit` stay |
 | `Page.handoff(*, until, message, poll, timeout)` | yes | — |
+| `Page.fetch(url, *, method="GET", headers=None, body=None)` | — | **new**: a request sent by the page's own `fetch()`, returning `(status, headers, text)`; about 20 lines ([ins](ins.md#three-ways-to-reach-an-api)) |
 | `Page.selector`, `Page.raw`, `Page.close` | yes | — |
 | `Page.url`, `Page.title` | no caller | — |
 

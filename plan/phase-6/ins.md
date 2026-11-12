@@ -1,6 +1,6 @@
-# ins
+# ins, and API first for every source
 
-Phase 6, step 5, after [session](session.md). Instagram blocks a run that downloads a large tagged or reposts tab. The grids list most of those posts without their files, so flnd opens each post's page, one after another, as fast as they load. Instagram answers with "Please wait a few minutes", a login wall or a 429. flnd can't see any of these, so it warns "its page holds no post; skipped" and opens the next post at once, which makes the block worse.
+Phase 6, step 5, after [session](session.md). It starts with Instagram, then applies the same rule to [every source](#every-source-api-first-the-page-as-fallback). Instagram blocks a run that downloads a large tagged or reposts tab. The grids list most of those posts without their files, so flnd opens each post's page, one after another, as fast as they load. Instagram answers with "Please wait a few minutes", a login wall or a 429. flnd can't see any of these, so it warns "its page holds no post; skipped" and opens the next post at once, which makes the block worse.
 
 ## What's wrong today
 
@@ -24,7 +24,7 @@ For a listed post with a `pk`, ins fetches `https://www.instagram.com/api/v1/med
 ### 2. Skip before any request
 
 Before fetching a listed post, ins skips it when:
-- **it's already saved:** `session.downloaded(f"{code}_0")`, from the WIP commit. `save_post` keys every file `<code>_<index>`, a single file included, so `_0` is right. A carousel whose later files failed isn't retried this way; the download pool's own retries cover that, and a later `flnd sync` repairs it.
+- **it's already saved:** `session.saved(f"{code}_0")`, from the WIP commit. `save_post` keys every file `<code>_<index>`, a single file included, so `_0` is right. A carousel whose later files failed isn't retried this way; the download pool's own retries cover that, and a later `flnd sync` repairs it.
 - **its date is outside `--since` / `--until`:** the date comes from the `pk`, before any request. A tagged tab of 2,000 posts with `--since` last month makes only last month's requests.
 
 ### 3. Save from the grid only what the grid really has
@@ -49,12 +49,62 @@ The WIP commit saves a listed image post straight from the grid, with its date f
 
 `Instagram.pace = 3.0`: at least 3 s, ±40%, between two API calls or page loads, so a 2,000-post tagged tab takes about 2 hours of requests, not a burst of 2,000. The same `pace` is the pause between scrolls ([source](source.md)); the WIP commit's 0.2 s goes.
 
+## Every source: API first, the page as fallback
+
+Instagram's fix is one case of a general rule, which every source follows from Phase 6: **read a site's own API whenever it can be reached, and load or scroll a page only when it can't.** An API call is one small JSON response. A page load or a scroll fetches HTML, scripts, images and video previews, and makes every request a page makes, so it is slower, heavier, and what rate limits count.
+
+### Three ways to reach an API
+
+| Way | How | Used when |
+| --- | --- | --- |
+| **direct** | `session.fetch_json(url)` through httpx, with the login's cookies and the source's `prepare` headers | the API answers a plain client: loi today, twt today, ins's media info if the [live check](#live-checks) passes |
+| **in page** | `session.fetch_json(url, in_page=True)`: the same request sent by the logged-in tab's own `fetch()` | the API wants the browser's TLS fingerprint, cookies set by scripts, or headers only the page knows |
+| **replay** | the source watches the first API request the page makes (`on_response` gives the `response`, and `response.request` its URL, body and headers), then sends that same request **in page**, changing only its cursor | the request needs tokens the page computes (Facebook's `fb_dtsg` and `doc_id`, TikTok's signed parameters) |
+
+**`fetch_json(…, in_page=True)`** is one new keyword, not a new member ([session](session.md#members)):
+- It goes through `shared` `Page.fetch(url, *, method="GET", headers=None, body=None) -> (status, headers, text)`, a small new `browser` method (about 20 lines over `page.raw.evaluate`) that `shared` judges useful on its own ([api](api.md#browser-529-lines)).
+- It has the same pacing, 429 back-off, `soft=` and `FetchError` as a direct call. So a source picks the way by one keyword, and everything else stays the same.
+- It needs an open page, so the first `goto` of the run opens one. A source that only replays still loads its first page normally.
+
+**Replay** stays inside each source, since each site's cursor is in a different place. It is a short loop:
+
+```python
+first = profile.first_request                      # kept by the on_response handler
+while cursor and not session.full:
+    data = session.fetch_json(first.url, method=first.method, in_page=True,
+                              data=with_cursor(first.post_data, cursor), headers=first.headers)
+    cursor = profile.on_result(session, data, None)
+```
+
+**Fallback.** When an API way fails in a way that isn't a rate limit (a 400 or 404 from a stale query ID, a signature the site refuses, a shape the source doesn't know), the source warns once (`fbk: timeline API refused; scrolling instead`) and scrolls the page as it does today. A rate limit is waited out, never a reason to fall back.
+
+### Per source
+
+Checked in code on 2026-11-12. "Live" means the way is confirmed by hand on a test account before the step is done.
+
+| Source | Today | Phase 6 |
+| --- | --- | --- |
+| **ins** | grids scrolled; each incomplete post's page opened | grids by **replay** of the profile's GraphQL pagination (the `xdt_api__v1__feed__user_timeline_graphql_connection` query and the tagged, reels and reposts ones), with `after` as the cursor; posts by **direct** or **in-page** media info ([above](#1-read-posts-through-the-api-not-their-pages)); stories and highlights by `/api/v1/feed/reels_media/?reel_ids=…`, **in page**, one call for all of them. The profile page is loaded once, for its first request and its embedded first results. Live |
+| **fbk** | the timeline, photos and albums scrolled while `graphql` responses are read | **replay** of the timeline's and photos tab's `/api/graphql/` POST: the first request's `doc_id`, `fb_dtsg`, `lsd` and `variables`, with `cursor` in the variables changed. Stories stay on their page: there is one per profile, and its page holds them all. Live |
+| **twt** | **direct** GraphQL (`UserTweets`, `UserMedia`, …) with built-in query IDs; the browser only when the API refuses | — the same, plus: when a query ID is stale (404 or 400), the source reads the current IDs once from the page's main script, which the browser fallback has open, and tries the API again before scrolling |
+| **tik** | the profile scrolled while `/api/post/item_list` and the other lists are read | **replay** of each list's first request, **in page**, with `cursor` changed. TikTok signs its list URLs (`X-Bogus`, `msToken`) with the page's own script. Whether a replayed URL with a new cursor is still accepted is the open question, so scrolling stays as the fallback. Live |
+| **loi** | **direct** API | — |
+| **tlg** | Telethon, Telegram's own API | — |
+
+### What it costs and gives
+
+- **Lines:** about 25 per browser source for the replay loop and the first-request capture, about 75 in all. That is offset by the scroll counters and end rules they no longer need on the main path. The scroll code stays as the fallback, so the [scripts](scripts.md) estimates rise by about 10 a source.
+- **Requests:** a tagged tab of 2,000 posts takes about 170 GraphQL pages of 12. Today that's about 2,000 post-page loads on top of the scroll; after, 170 small JSON calls plus the media info calls for the posts that need them.
+- **Pace:** API calls keep each source's `pace` ([source](source.md)), so "faster" means fewer and smaller requests, not more of them per second.
+
 ## Live checks
 
 These are checked once, by hand, on the user's authorized test account, before the step is called done. Nothing live goes into the tests.
 - whether `/api/v1/media/<pk>/info/` answers httpx with the browser's cookies, or needs the in-page fetch;
 - whether the tagged and reposts grid items carry `pk`, `media_type` and full-size `image_versions2`;
 - a full tagged and reposts run of the test account finishes with no "holds no post" warnings and with every throttle waited out.
+- for each of ins, fbk and tik: the replayed pagination returns the same posts as scrolling, for the test account, and a stale or refused replay falls back to scrolling with one warning;
+- twt: a stale query ID is refreshed from the page's script.
 
 ## Tests
 
@@ -66,3 +116,5 @@ These are checked once, by hand, on the user's authorized test account, before t
 - a page load that ends on `/accounts/login/` is waited out and loaded again;
 - a throttled GraphQL response during the scroll doesn't end the tab;
 - `taken_on` with a huge `pk` gives None, and a story without `taken_at` isn't dated from its `pk`.
+- `fetch_json(in_page=True)` sends through `Page.fetch`, with the same pacing, back-off and `FetchError` as a direct call (with a fake page);
+- a replay that gets a 400 warns once and falls back to `scroll`; one that gets a 429 waits and replays again.

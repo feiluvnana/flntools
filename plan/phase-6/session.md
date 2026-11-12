@@ -7,9 +7,9 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 | Group | Phase 6 | Was |
 | --- | --- | --- |
 | target | `target`, `folder`, `cookies`, `categories`, `since`, `until`, `wants(category=, date=)` | the same |
-| requests | `fetch_json(url, *, method="GET", headers=None, soft=False, **kw)`, `fetch_html(url, **kw)` | also `http`, `select` |
+| requests | `fetch_json(url, *, method="GET", headers=None, soft=False, in_page=False, **kw)`, `fetch_html(url, **kw)` | also `http`, `select`; `in_page=` is new ([ins](ins.md#three-ways-to-reach-an-api)) |
 | browser | `goto(url, *, idle=False, timeout=30.0)`, `on_response(match, handler, *, lines=False)`, `scroll(*, count=None, more=None, delay=None)`, `handoff(*, until, message)`, `page` | also `open_page`, `on_request`, `wait_for_selector`, `wait_for_url`, `wait_for_load`, `browser`; `scroll` had `by`, `idle`, `max` |
-| results | `save(…)`, `downloaded(key)`, `write(name, text)`, `full` | `downloaded` is new |
+| results | `save(…)`, `saved(key)`, `write(name, text)`, `full` | `saved` is new |
 | SDK | `client` | the same |
 | state | `state`, `secrets` | the same |
 | people | `interactive`, `ask(message, *, secret=False, description="")`, `info`, `warn`, `throttled(reason, *, retry_after=None)` | also `choose`; `challenged()` becomes `throttled` |
@@ -23,7 +23,7 @@ Phase 6, step 3. The `Session` protocol has 35 members. Nine have no caller in a
 
 **Changed:**
 - **`throttled(reason, *, retry_after=None)`** replaces `challenged()`. It counts one rate limit, waits it out on the source's [backoff](../phase-4/engine.md#downloads) with the countdown, and returns, so the source retries what it was doing. tik calls it for a captcha nobody solved, ins for Instagram's "Please wait a few minutes" ([ins](ins.md)). That is one name for "the site is slowing us down", whether the site said so with a 429, a captcha or a JSON body.
-- **`downloaded(key) -> bool`** (from the WIP commit) says whether a file with this `save` `key` was saved by this run or an earlier one, so a source can skip the request that would find it: `if session.downloaded(f"{code}_0"): continue`.
+- **`saved(key) -> bool`** (the WIP commit's `downloaded`, renamed to pair with `save`) says whether a file with this `save` `key` was saved by this run or an earlier one, so a source can skip the request that would find it: `if session.saved(f"{code}_0"): continue`.
 - **`goto` checks the response.** Today `Page.goto` drops Playwright's response, so a 429 page or a login wall counts as loaded. `shared` `Page.goto` now returns the main response's status (`int | None`) instead of a bool; `session.goto`:
   - on 429, calls `throttled("HTTP 429")` with the `Retry-After` and loads the page again, as long as it takes;
   - on another status of 400 or more, warns and returns False;
