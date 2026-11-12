@@ -512,7 +512,6 @@ EXPLAINING: set[str] = {
     "shared/_params.py",
     "shared/_pillow.py",
     "shared/_prompt.py",
-    "shared/_style.py",
     "shared/_worker.py",
 }
 
