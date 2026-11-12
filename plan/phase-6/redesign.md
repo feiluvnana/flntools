@@ -952,8 +952,10 @@ The order is in [README › Order](README.md#order); each step ends with `check`
 
 ## Decisions
 
-Open ones have a recommendation. Ask the user before building the step that needs one: D2 and D4 for steps 5–6, D6 and D8 for step 8, D7 and D13 whenever. Also decided by the user on 2026-11-12, and written into the sections above:
+Every decision is now settled (user, 2026-11-12). Also decided by the user on 2026-11-12, and written into the sections above:
 - D3, D5, D10, D11 and D12, the step 4 decisions, each as recommended;
+- D2, D4, D6, D7, D8 and D13, each as recommended;
+- the "download Chromium?" question is asked up front, before any work starts, when a chosen target's source needs a browser, as [cli](cli.md#chrome-only) says. The engine knows that from the routes, so no `Source` field is added; built in step 6;
 - every category without `--from`, and `--from` refused for a single post (A4);
 - the line ceiling removed;
 - `watch_responses` as a source helper, not core (A8);
@@ -962,18 +964,18 @@ Open ones have a recommendation. Ask the user before building the step that need
 - `worker.as_ordered` and `archive.ls`.
 
 1. ~~When to build Part A?~~ **Decided 2026-11-12: inside Phase 6.** The user merged the Phase 7 proposal into Phase 6, so Part A takes the place of the old step 3's architecture part, and nothing is built twice.
-2. **Rename `session` to `site`** (`Session` → `Site`) in every source and test? **Recommended: yes.** "Session" already means httpx's client and Telethon's session string in this code, and the rename is mechanical, done while every source is rewritten anyway.
+2. ~~Rename `session` to `site`?~~ **Decided 2026-11-12: yes.** Asked: rename `session` to `site` (`Session` → `Site`) in every source and test? **Recommended: yes.** "Session" already means httpx's client and Telethon's session string in this code, and the rename is mechanical, done while every source is rewritten anyway.
 3. ~~Bring back `shared.http`?~~ **Decided 2026-11-12: yes, bring it back.** Asked: as `fetch`, `download` and `Response` (Phase 4 removed it), or keep resume and split downloads private inside `flnd/net.py`? **Recommended: bring it back.** Fetching and downloading are what a script most often writes badly, and one `Response` type for `http.fetch`, `Page.fetch` and `site.fetch` makes every fetch read the same.
-4. **Drop `Source.examples`** for forms generated from the routes? **Recommended: yes**, with `shown=` for the rare pattern that reads badly. `flnd --help` then lists `ins:<user>` rather than `ins:example_user`. The README keeps real-looking examples.
+4. ~~Drop `Source.examples`?~~ **Decided 2026-11-12: yes, generated forms.** Asked: drop `Source.examples` for forms generated from the routes? **Recommended: yes**, with `shown=` for the rare pattern that reads badly. `flnd --help` then lists `ins:<user>` rather than `ins:example_user`. The README keeps real-looking examples.
 5. ~~Remove CBC from the public API?~~ **Decided 2026-11-12: yes.** Asked: remove `crypto.encrypt_aes_cbc` / `decrypt_aes_cbc` from the public API (CBC moves privately into `cookies`)? **Recommended: yes**: safe by default means the only public cipher is the authenticated one. This goes against Phase 6's api table, which kept CBC as "the pair of `decrypt_aes_cbc`". Changing it is why this is a decision.
-6. **Split downloads, live:** up to 4 ranges for files of 16 MB or more, from CDNs only, under the 6-per-host limit. Turn on for every source, or only where live checks pass? **Recommended: only where they pass**, as a per-source list in `net.py` that starts empty and grows with each check.
-7. **A persistent download queue** (IDM-style `pending.db`)? **Recommended: defer.** Resume, the history and `sync`'s saved-run stop cover the need. Reconsider if a live run shows re-listing costing real budget.
-8. **Graceful first Ctrl-C** (finish running files, then stop; a second Ctrl-C stops now)? **Recommended: yes.** It changes what Ctrl-C does today, which is to stop at once and drop the queue.
+6. ~~Split downloads where?~~ **Decided 2026-11-12: only where live checks pass.** Asked: split downloads, live: up to 4 ranges for files of 16 MB or more, from CDNs only, under the 6-per-host limit. Turn on for every source, or only where live checks pass? **Recommended: only where they pass**, as a per-source list in `net.py` that starts empty and grows with each check.
+7. ~~A persistent download queue?~~ **Decided 2026-11-12: defer.** Asked: a persistent download queue (IDM-style `pending.db`)? **Recommended: defer.** Resume, the history and `sync`'s saved-run stop cover the need. Reconsider if a live run shows re-listing costing real budget.
+8. ~~Graceful first Ctrl-C?~~ **Decided 2026-11-12: yes.** Asked: graceful first Ctrl-C (finish running files, then stop; a second Ctrl-C stops now)? **Recommended: yes.** It changes what Ctrl-C does today, which is to stop at once and drop the queue.
 9. ~~Adopt the conventions?~~ **Decided 2026-11-12: yes.** They're the user's request, written as rules `test_names.py` checks.
 10. ~~One `Media` object?~~ **Decided 2026-11-12: yes.** Asked: `media` becomes one `Media` object (`media.open(path)` with chained transforms and `save`), replacing its 12 functions and the `image`, `video` and `audio` namespaces? **Recommended: yes.** It's the biggest rename in Part C, about 25 call sites in flnd.
 11. ~~`ask`, `confirm` and `choose`?~~ **Decided 2026-11-12: yes.** Asked: `prompt`'s five functions become `ask`, `confirm` and `choose` (`secret=True` and `many=True` as options)? **Recommended: yes**, and flnd's `Login` handle uses the same three.
 12. ~~A visible `browser.open`?~~ **Decided 2026-11-12: yes.** Asked: `browser.open` defaults to a visible window (`headless=False`), as flnd already runs it, and `installed_profile` folds into `open(profile="Default")`? **Recommended: yes.**
-13. **Keep the vault key in the OS keychain** (macOS Keychain, Windows DPAPI, the Secret Service on Linux) instead of `.flnd/secret.key`? Then a copy of the whole `.flnd/` folder holds no usable login. **Recommended: not now.** It needs the `keyring` package or code for each platform, and a Linux desktop without a keyring service would need a fallback anyway. Revisit if `.flnd/` is ever synced or backed up somewhere shared.
+13. ~~The vault key in the OS keychain?~~ **Decided 2026-11-12: not now.** Asked: keep the vault key in the OS keychain (macOS Keychain, Windows DPAPI, the Secret Service on Linux) instead of `.flnd/secret.key`? Then a copy of the whole `.flnd/` folder holds no usable login. **Recommended: not now.** It needs the `keyring` package or code for each platform, and a Linux desktop without a keyring service would need a fallback anyway. Revisit if `.flnd/` is ever synced or backed up somewhere shared.
 
 ---
 

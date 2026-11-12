@@ -63,3 +63,9 @@ All commits must strictly follow this message format:
 - The plan is in `plan/`. In Phase 6, `plan/phase-6/redesign.md` wins over every other Phase 6 file, and `simplify.md` wins over the rest.
 - Build in the order given in `plan/phase-6/README.md`.
 - Ask the user before building a step whose decision is still open. Record each decision in the plan, with its date.
+
+## Models
+- **Mechanical changes use a low-cost model** (user, 2026-11-12): Claude Haiku in Claude Code, or the low-cost tier of whichever tool is in use.
+  - Mechanical means renames, moves, import updates, applying a given pattern to many call sites, regenerating snapshots, merge conflicts with an obvious answer, and doc edits that follow a decision.
+  - An orchestrator sets the model when it delegates such a task, for example `model: "haiku"` on a Claude Code subagent.
+- Design, new behaviour, debugging, security-sensitive code and reviews keep the stronger default model.
