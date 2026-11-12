@@ -1,21 +1,25 @@
 """Instagram: tabs, posts read again from their page, stories, highlights, the picture, and one post. No network."""
 
 import json
+import os
+import time
 import unittest
-from datetime import date, datetime
+from datetime import date
+from unittest import mock
 
-from fakes import FakeSession
+from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
 from flnd.session import Options
 from flnd.source import Target, TargetError
 from flnd.sources.common.relay import embedded_results
-from flnd.sources.ins import Instagram, best_file, is_complete, post_files, tab_media, taken_on
+from flnd.sources.ins import Instagram, best_file, files_of, is_complete, post_files, tab_media
 from shared import selector
 
 SITE = "https://www.instagram.com"
-STAMP = 1700000000
-DAY = datetime.fromtimestamp(STAMP).date()
+# 2023-11-15 12:00 UTC: the same day in every time zone, so a name doesn't depend on where the tests run.
+STAMP = 1700049600
+DAY = "2023-11-15"
 
 
 def embedded(*results):
@@ -102,8 +106,6 @@ class MediaTest(unittest.TestCase):
                                                                    video("https://cdn.example/2.mp4")]}
         self.assertEqual(post_files(post), [("https://cdn.example/1.jpg", "jpg", None),
                                             ("https://cdn.example/2.mp4", "mp4", None)])
-        self.assertEqual(taken_on(post), DAY)
-        self.assertIsNone(taken_on({}))
 
     def test_a_dash_manifest_gives_its_best_video_and_audio(self):
         reel = {**video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}
@@ -127,87 +129,209 @@ class MediaTest(unittest.TestCase):
         page = selector.parse(embedded(PROFILE, HIGHLIGHTS))
         self.assertEqual(embedded_results(page), [PROFILE, HIGHLIGHTS])
 
+    def test_a_file_is_named_here_only_when_the_formats_would_name_it_otherwise(self):
+        post = {"code": "C", "taken_at": STAMP, "carousel_media": [image("https://cdn.example/a.jpg"),
+                                                                 image("https://cdn.example/media/bare")]}
+        self.assertEqual([file.name for file in files_of(post)], [None, f"{DAY}_C_1.jpg"])
+        self.assertEqual([file.name for file in files_of(post, pinned=True)], [f"{DAY}_C_0.jpg", f"{DAY}_C_1.jpg"])
+        # A post without a date is named by its code alone.
+        self.assertEqual(files_of({"code": "C", **image("https://cdn.example/a.jpg")}, pinned=True)[0].name, "C.jpg")
+
+
+def page_of(code, **media):
+    return embedded({"data": {"xig_fetch_media": {"code": code, **media}}})
+
+
+def shortcode_page(*posts):
+    return embedded({"data": {"xdt_api__v1__media__shortcode__web_info": {"items": list(posts)}}})
+
+
+def story_page(*stories):
+    return embedded({"data": {"xdt_api__v1__feed__reels_media": {"reels_media": [{"items": list(stories)}]}}})
+
+
+# What scrolling each tab of `someone` fetches.
+GRIDS = {
+    "posts": grid(
+        {"code": "P1", "taken_at": STAMP, **image("https://cdn.example/p1.jpg")},
+        {"code": "CAR", "taken_at": STAMP, "carousel_media": [image("https://cdn.example/c0.jpg"),
+                                                             {**video("https://cdn.example/c1.mp4"),
+                                                              "video_dash_manifest": INSTAGRAM}]},
+        {"code": "R1", "taken_at": STAMP, **video("https://cdn.example/r1.mp4")},
+        {"code": "WEB", "taken_at": STAMP, **image("https://cdn.example/w.webp")},
+        {"code": "BARE", "taken_at": STAMP, **image("https://cdn.example/media/bare")},
+        {"code": "NOFILE", "taken_at": STAMP}),
+    "reels": reels_grid("R1", "R2", "GONE"),
+    "tagged": {"data": {"xdt_api__v1__usertags__user_id__feed_connection": {"edges": [
+        {"node": {"code": "T1"}}, {"node": {"code": "P1", "taken_at": STAMP, **image("https://cdn.example/p1.jpg")}}]}}},
+    "reposts": {"data": {"fetch__XDTUserDict": {"user_reposts_timeline": {"repost_grid_items": [
+        {"media": {"code": "RP1", "taken_at": STAMP, **image("https://cdn.example/rp1.jpg")}},
+        {"media": {"code": "RP2"}}]}}}},
+}
+TABS = {"posts": "", "reels": "reels/", "tagged": "tagged/", "reposts": "reposts/"}
+PAGES = {
+    f"{SITE}/someone/": embedded(PROFILE, HIGHLIGHTS),
+    f"{SITE}/p/R2/": page_of("R2", taken_at=STAMP, **video("https://cdn.example/r2.mp4")),
+    f"{SITE}/p/GONE/": "<html></html>",
+    f"{SITE}/p/T1/": shortcode_page({"code": "T1", "taken_at": STAMP, "carousel_media": [
+        image("https://cdn.example/t0.jpg"), image("https://cdn.example/t1.jpg")]}),
+    f"{SITE}/p/RP2/": page_of("RP2", taken_at=STAMP, **image("https://cdn.example/rp2.jpg")),
+    f"{SITE}/stories/someone/": story_page({"pk": "5001", "taken_at": STAMP, **image("https://cdn.example/s.jpg")},
+                                           {"pk": "5003_42", **video("https://cdn.example/s3.mp4")}),
+    f"{SITE}/stories/highlights/9001/": embedded({"data": {"xdt_api__v1__feed__reels_media__connection": {"edges": [
+        {"node": {"items": [{"id": "5002_42", "taken_at": STAMP, **video("https://cdn.example/h.mp4")},
+                            {"id": "5004", "taken_at": STAMP, **image("https://cdn.example/h2.jpg")}]}}]}}}),
+    f"{SITE}/p/SINGLE/": shortcode_page({"code": "SINGLE", "taken_at": STAMP, "carousel_media": [
+        image("https://cdn.example/a.jpg"), {**video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}]}),
+}
+
+
+class FakeWatch:
+    """`watch_responses` over a fake tab: scrolling gives the responses held for the URL last loaded."""
+
+    def __init__(self, batches):
+        self.batches = batches
+
+    def __call__(self, site, match, *, scroll=False, lines=False):
+        batches = self.batches
+
+        class Responses:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                pass
+
+            def __iter__(self):
+                # Read once the page is loaded, as the first scroll would.
+                return iter(batches.get(site.page.url, []))
+
+        return Responses()
+
+
+def scrolled(*tabs):
+    """The responses scrolling each of `tabs` of `someone` fetches."""
+    return FakeWatch({f"{SITE}/someone/{TABS[tab]}": [GRIDS[tab]] for tab in tabs})
+
+
+def read(text="ins:someone", *, options=Options(), watch=None, pages=PAGES, seen=None):
+    """What the job would download for `text`, with `watch` as the tabs' scrolling (every tab's by default)."""
+    with mock.patch("flnd.sources.ins.watch_responses", watch or scrolled(*TABS)):
+        return collect(Instagram, text, pages=pages, options=options, seen=seen)
+
+
+# What ins named and keyed before routes, recorded with the old `FakeSession` and `run(session)` in
+# a UTC time zone over these fixtures. They are sorted: the old run opened every lazy post after
+# the last tab, and the new one opens each tab's when the tab is done.
+OLD_PROFILE = [
+    ("highlights/Trip_2026/2023-11-15_5002.mp4", "highlights/Trip_2026/2023-11-15_5002.mp4"),
+    ("highlights/Trip_2026/2023-11-15_5004.jpg", "highlights/Trip_2026/2023-11-15_5004.jpg"),
+    ("posts/2023-11-15_BARE.jpg", "BARE_0"),
+    ("posts/2023-11-15_CAR_0.jpg", "CAR_0"),
+    ("posts/2023-11-15_CAR_1.mp4", "CAR_1"),
+    ("posts/2023-11-15_P1.jpg", "P1_0"),
+    ("posts/2023-11-15_R1.mp4", "R1_0"),
+    ("posts/2023-11-15_WEB.webp", "WEB_0"),
+    ("profile/123_456_n.jpg", "profile/123_456_n.jpg"),
+    ("reels/2023-11-15_R2.mp4", "R2_0"),
+    ("reposts/2023-11-15_RP1.jpg", "RP1_0"),
+    ("reposts/2023-11-15_RP2.jpg", "RP2_0"),
+    ("stories/2023-11-15_5001.jpg", "stories/2023-11-15_5001.jpg"),
+    ("stories/5003.mp4", "stories/5003.mp4"),
+    ("tagged/2023-11-15_T1_0.jpg", "T1_0"),
+    ("tagged/2023-11-15_T1_1.jpg", "T1_1"),
+]
+OLD_SINGLE = [("2023-11-15_SINGLE_0.jpg", "SINGLE_0"), ("2023-11-15_SINGLE_1.mp4", "SINGLE_1")]
+
+
+class NamesAndKeysTest(unittest.TestCase):
+    def test_a_profile_is_named_and_keyed_as_before_routes(self):
+        saved = read(options=Options(categories=("all",)))
+        self.assertEqual(sorted((item.path, item.key) for item in saved), OLD_PROFILE)
+
+    def test_a_post_is_named_and_keyed_as_before_routes(self):
+        saved = read("https://www.instagram.com/p/SINGLE/")
+        self.assertEqual([(item.path, item.key) for item in saved], OLD_SINGLE)
+        self.assertEqual((saved[1].file.url, saved[1].file.audio),
+                         ("https://cdn.example/1080.mp4", "https://cdn.example/a95.mp4"))
+
+    def test_the_date_in_a_name_is_the_utc_day(self):
+        # 23:00 UTC on 14 November is already the 15th in Auckland, where the old names took their day from.
+        late = 1700002800
+        pages = {f"{SITE}/p/LATE/": shortcode_page({"code": "LATE", "taken_at": late,
+                                                    **image("https://cdn.example/l.jpg")})}
+        with mock.patch.dict(os.environ, {"TZ": "Pacific/Auckland"}):
+            time.tzset()
+            saved = read("https://www.instagram.com/p/LATE/", pages=pages)
+        time.tzset()
+        self.assertEqual([(item.path, item.key) for item in saved], [("2023-11-14_LATE.jpg", "LATE_0")])
+
 
 class ProfileTest(unittest.TestCase):
-    def run_profile(self, *, options=Options(categories=("all",)), on_scroll=None, pages=None):
-        session = FakeSession(Target("ins", "user", "someone"), options=options, on_scroll=on_scroll,
-                              pages={f"{SITE}/someone/": embedded(PROFILE, HIGHLIGHTS), **(pages or {})})
-        Instagram().run(session)
-        return session
+    def test_every_category_has_its_own_folder_and_headers(self):
+        saved = read(options=Options(categories=("all",)))
+        self.assertEqual({item.post.category for item in saved},
+                         {"posts", "reels", "tagged", "reposts", "stories", "highlights", "profile"})
+        by_path = {item.path: item for item in saved}
+        self.assertEqual(by_path[f"posts/{DAY}_R1.mp4"].file.url, "https://cdn.example/r1.mp4")
+        self.assertIsNone(by_path[f"posts/{DAY}_R1.mp4"].file.audio)
+        self.assertEqual(by_path[f"posts/{DAY}_CAR_1.mp4"].file.audio, "https://cdn.example/a95.mp4")
+        self.assertEqual(by_path[f"posts/{DAY}_P1.jpg"].post.headers, {"Referer": f"{SITE}/"})
+        self.assertEqual(by_path["profile/123_456_n.jpg"].post.headers, {"Referer": f"{SITE}/"})
 
-    def test_every_category(self):
-        def scrolled(session):
-            if session.folder == "posts":
-                session.respond(f"{SITE}/graphql/query", grid(
-                    {"code": "P1", "taken_at": STAMP, **image("https://cdn.example/p1.jpg")},
-                    {"code": "R1", "taken_at": STAMP, **video("https://cdn.example/r1.mp4")}))
-            if session.folder == "reels":
-                session.respond(f"{SITE}/graphql/query", reels_grid("R1", "R2"))
+    def test_a_grid_post_without_details_is_lazy_and_a_listed_one_is_not_opened(self):
+        site = FakeSite(Target("ins", "user", "someone"), pages=PAGES)
+        instance = Instagram()
+        with mock.patch("flnd.sources.ins.watch_responses", scrolled(*TABS)):
+            listed = list(instance.reels(site, instance.user(site, "someone")))
+        self.assertEqual([(post.id, post.lazy, post.date) for post in listed],
+                         [("R1", True, None), ("R2", True, None), ("GONE", True, None)])
 
-        reel_page = embedded({"data": {"xig_fetch_media": {"code": "R2", "taken_at": STAMP,
-                                                           **video("https://cdn.example/r2.mp4")}}})
-        stories = embedded({"data": {"xdt_api__v1__feed__reels_media": {"reels_media": [{"items": [
-            {"pk": "5001", "taken_at": STAMP, **image("https://cdn.example/s.jpg")}]}]}}})
-        highlight = embedded({"data": {"xdt_api__v1__feed__reels_media__connection": {"edges": [{"node": {"items": [
-            {"id": "5002_42", "taken_at": STAMP, **video("https://cdn.example/h.mp4")}]}}]}}})
-        session = self.run_profile(on_scroll=scrolled, pages={f"{SITE}/p/R2/": reel_page,
-                                                               f"{SITE}/stories/someone/": stories,
-                                                               f"{SITE}/stories/highlights/9001/": highlight})
-        self.assertEqual(session.paths(), [
-            f"posts/{DAY}_P1.jpg", f"posts/{DAY}_R1.mp4", f"reels/{DAY}_R2.mp4", "profile/123_456_n.jpg",
-            f"stories/{DAY}_5001.jpg", f"highlights/Trip_2026/{DAY}_5002.mp4"])
-        self.assertEqual([item["category"] for item in session.saved],
-                         ["posts", "posts", "reels", "profile", "stories", "highlights"])
-        self.assertEqual(session.saved[1]["source"], "https://cdn.example/r1.mp4")
-        self.assertIsNone(session.saved[1]["audio"])
-        self.assertEqual(session.saved[0]["headers"], {"Referer": f"{SITE}/"})
-        # R1 was on the grid already, so only R2 is opened.
-        self.assertNotIn(f"{SITE}/p/R1/", session.visited)
-        self.assertIsNone(session.folder)
+    def test_a_reel_the_posts_grid_lists_is_not_opened(self):
+        seen = Seen()
+        read(options=Options(categories=("posts", "reels")), seen=seen)
+        # R1 is on the posts grid already, so only R2 and the gone post are opened.
+        self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/someone/reels/", f"{SITE}/p/R2/", f"{SITE}/p/GONE/"])
+        self.assertIn("! post GONE: its page holds no post; skipped", seen.messages)
+        self.assertIn("reels: 3 posts listed", seen.messages)
 
-    def test_without_from_every_tab_is_read(self):
-        session = self.run_profile(options=Options())
-        self.assertEqual(session.visited, self.run_profile().visited)
-        self.assertIn(f"{SITE}/someone/tagged/", session.visited)
-        self.assertIn(f"{SITE}/someone/reposts/", session.visited)
+    def test_a_lazy_post_outside_time_downloads_nothing(self):
+        options = Options(categories=("reels",), since=date(2023, 11, 16))
+        self.assertEqual(read(options=options), [])
 
     def test_the_profile_alone_loads_the_profile_page_once(self):
-        session = self.run_profile(options=Options(categories=("profile",)))
-        self.assertEqual(session.visited, [f"{SITE}/someone/"])
-        self.assertEqual(session.paths(), ["profile/123_456_n.jpg"])
+        seen = Seen()
+        saved = read(options=Options(categories=("profile",)), seen=seen)
+        self.assertEqual(seen.visited, [f"{SITE}/someone/"])
+        self.assertEqual([(item.path, item.key) for item in saved], [("profile/123_456_n.jpg", "profile/123_456_n.jpg")])
 
-    def test_a_post_page_without_a_post_is_a_warning(self):
-        def scrolled(session):
-            session.respond(f"{SITE}/graphql/query", reels_grid("GONE"))
+    def test_highlights_and_the_picture_share_one_load_of_the_profile(self):
+        seen = Seen()
+        read(options=Options(categories=("highlights", "profile")), seen=seen)
+        self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/highlights/9001/"])
 
-        session = self.run_profile(options=Options(categories=("reels",)), on_scroll=scrolled)
-        self.assertIn(f"{SITE}/p/GONE/", session.visited)
-        self.assertIn("! post GONE: its page holds no post; skipped", session.messages)
-
-    def test_late_results_are_ignored(self):
-        session = self.run_profile(options=Options(categories=("posts",)))
-        session.respond(f"{SITE}/graphql/query", grid({"code": "LATE", "taken_at": STAMP, **image("https://c/x.jpg")}))
-        self.assertEqual(session.saved, [])
+    def test_a_throttled_response_backs_off_and_the_scroll_goes_on(self):
+        seen = Seen()
+        throttled = {"message": "Please wait a few minutes before you try again.", "status": "fail"}
+        watch = FakeWatch({f"{SITE}/someone/": [throttled, GRIDS["posts"]]})
+        saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen)
+        self.assertEqual(seen.back_offs, ["Instagram asked to wait a few minutes"])
+        self.assertIn(f"posts/{DAY}_P1.jpg", [item.path for item in saved])
 
 
 class SinglePostTest(unittest.TestCase):
-    def test_a_carousel_post_from_its_page(self):
-        post = {"code": "C1abc", "taken_at": STAMP, "carousel_media": [image("https://cdn.example/a.jpg"),
-                                                                     image("https://cdn.example/b.jpg")]}
-        page = embedded({"data": {"xdt_api__v1__media__shortcode__web_info": {"items": [post]}}})
-        session = FakeSession(Target("ins", "post", "C1abc"), pages={f"{SITE}/p/C1abc/": page})
-        Instagram().run(session)
-        self.assertEqual(session.paths(), [f"{DAY}_C1abc_0.jpg", f"{DAY}_C1abc_1.jpg"])
+    def test_a_carousel_post_from_its_page_has_no_category(self):
+        saved = read("https://www.instagram.com/p/SINGLE/")
+        self.assertEqual([item.path for item in saved], [f"{DAY}_SINGLE_0.jpg", f"{DAY}_SINGLE_1.mp4"])
+        self.assertEqual([item.post.category for item in saved], ["", ""])
 
-    def test_a_reel_with_a_manifest_is_saved_from_dash(self):
-        reel = {"code": "R9", "taken_at": STAMP, **video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}
-        page = embedded({"data": {"xig_fetch_media": reel}})
-        session = FakeSession(Target("ins", "post", "R9"), pages={f"{SITE}/p/R9/": page})
-        Instagram().run(session)
-        self.assertEqual(session.paths(), [f"{DAY}_R9.mp4"])
-        self.assertEqual((session.saved[0]["source"], session.saved[0]["audio"]),
-                         ("https://cdn.example/1080.mp4", "https://cdn.example/a95.mp4"))
-        self.assertEqual(session.saved[0]["date"], date.fromisoformat(str(DAY)))
+    def test_a_page_without_a_post_is_a_warning(self):
+        seen = Seen()
+        self.assertEqual(read("https://www.instagram.com/p/GONE/", seen=seen), [])
+        self.assertIn("! post GONE: its page holds no post; skipped", seen.messages)
+
+    def test_a_post_outside_time_is_dropped(self):
+        self.assertEqual(read("https://www.instagram.com/p/SINGLE/", options=Options(until=date(2023, 11, 14))), [])
 
 
 if __name__ == "__main__":
