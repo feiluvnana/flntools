@@ -314,7 +314,7 @@ def _repair(history: MutableMapping[str, Any], folder: Path, rows: Sequence[tupl
     from shared import media
 
     # Parts an interrupted run left behind; nothing else is downloading into the folder yet. Every
-    # temporary file flnd writes matches PART_GLOB (`files.part_for`), so this finds them all.
+    # temporary file flnd writes matches PART_GLOB (`shared.atomic`'s parts), so this finds them all.
     for stale in folder.rglob(files.PART_GLOB) if folder.is_dir() else ():
         stale.unlink(missing_ok=True)
     with log.progress(f"repair {line.target}", total=len(rows)) as bar:

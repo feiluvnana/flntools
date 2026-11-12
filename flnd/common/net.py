@@ -15,14 +15,14 @@ import time
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar, Union
+from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence, TypeVar, Union
 
 import httpx
 
 from flnd.common import files
 from flnd.common.files import NotMediaError
 from flnd.sources.base import FetchError, Wait
-from shared import fmt, log
+from shared import atomic, fmt, log
 
 ATTEMPTS = 3
 MAX_RETRY_AFTER = 60.0
@@ -370,10 +370,10 @@ def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
                audio: str | None) -> Path:
     """Download `mirror` (and `audio`) once into `.part` files, check it, and rename it onto `dest`."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Named `.<name>.<random>.part`, so two runs never write into each other's files, and whatever
-    # a killed run leaves is removed by `flnd sync`'s repair (fixes #13).
-    part, sound = files.part_for(dest), files.part_for(dest)
-    try:
+    # `atomic` names the part `.<name>.<random>.part`, so two runs never write into each other's
+    # files, and whatever a killed run leaves is removed by `flnd sync`'s repair (fixes #13). It
+    # deletes the part however the block ends, and renames it onto `dest` only if it's still there.
+    with atomic.writing(dest, replace=True) as part:
         with _Row(label) as row:
             if callable(mirror):
                 row.start(size)
@@ -382,28 +382,38 @@ def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
             else:
                 known = _fetch_url(http, mirror, part, row, headers, backoff)
             if audio is not None:
-                _fetch_url(http, audio, sound, row, headers, backoff)
-                row.caption("merging")
-                from shared import media
-
-                # The merge writes a temporary `.<name>.<random>.part` beside `part`, in `dest`'s
-                # folder, so it matches PART_GLOB, and `save` renames it onto `dest` once complete.
-                # `format` is `dest`'s real extension, since `part`'s name doesn't say the container.
-                # `save` refuses to write over a file, so an empty one, which holds nothing and which
-                # the session would download again anyway, is removed first.
-                if dest.is_file() and dest.stat().st_size == 0:
-                    dest.unlink()
-                # `with` drops the merged file's temporary copy if `save` fails.
-                with media.open(part) as video:
-                    video.merge(audio=sound, format=dest.suffix).save(dest)
+                _merge_audio(http, audio, part, dest, row, headers, backoff)
+                # The merge saved `dest` itself; the video part was only its input.
+                part.unlink()
                 return dest
-            if kind is not None:
-                dest = _as_media(part, dest, kind, known)
-        os.replace(part, dest)
-        return dest
-    finally:
-        for path in (part, sound):
-            path.unlink(missing_ok=True)
+            final = dest if kind is None else _as_media(part, dest, kind, known)
+        if final != dest:
+            # Named by its content: moved there in one step, so the block's rename onto `dest` has nothing to move.
+            os.replace(part, final)
+    return final
+
+
+def _merge_audio(http: httpx.Client, audio: str, video: Path, dest: Path, row: _Row,
+                 headers: Mapping[str, str] | None, backoff: Backoff) -> None:
+    """Download a DASH video's `audio` stream and save it merged with the `video` part as `dest`."""
+    from shared import media
+
+    # A second part beside `dest`, only ever an input: it is deleted before the block ends, so it
+    # never becomes `dest`, and on an error the block deletes it.
+    with atomic.writing(dest, replace=True) as sound:
+        _fetch_url(http, audio, sound, row, headers, backoff)
+        row.caption("merging")
+        # The merge writes a temporary `.<name>.<random>.part` beside `video`, in `dest`'s folder,
+        # so it matches PART_GLOB, and `save` renames it onto `dest` once complete. `format` is
+        # `dest`'s real extension, since the part's name doesn't say the container. `save` refuses
+        # to write over a file, so an empty one, which holds nothing and which the session would
+        # download again anyway, is removed first.
+        if dest.is_file() and dest.stat().st_size == 0:
+            dest.unlink()
+        # `with` drops the merged file's temporary copy if `save` fails.
+        with media.open(video) as clip:
+            clip.merge(audio=sound, format=dest.suffix).save(dest)
+        sound.unlink()
 
 
 def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Mapping[str, str] | None,
@@ -417,7 +427,7 @@ def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Map
         total = int(length) if length.isdigit() else None
         row.start(total)
         written = 0
-        with files.open_new(part) as file:
+        with _open_part(part) as file:
             for chunk in response.iter_bytes(CHUNK_SIZE):
                 file.write(chunk)
                 written += len(chunk)
@@ -427,6 +437,26 @@ def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Map
         if total is not None and received != total:
             raise IncompleteError(f"got {received} of {total} bytes from {url}")
         return total is not None
+
+
+def _open_part(part: Path) -> BinaryIO:
+    """Create the part `atomic.writing` named, which must not exist yet, open for streaming bytes into.
+
+    `atomic.write` takes the whole content at once; a download arrives in chunks, so it is
+    streamed into the part here and `atomic.writing` does the rename.
+    """
+    # O_EXCL: the part's name is new, so a file already there is another writer's. Windows' C runtime
+    # opens a file in text mode unless O_BINARY is given, and `fdopen(…, "wb")` then writes every \n
+    # byte as \r\n, corrupting every download (fixes #1); other systems have no O_BINARY and no text
+    # mode, hence the 0. Mode 0644 before the umask, so the saved file is readable like any download.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    handle = os.open(part, flags, 0o644)
+    try:
+        return os.fdopen(handle, "wb")
+    # Until fdopen owns the handle, it's ours to close: an open handle keeps Windows from deleting the part.
+    except BaseException:
+        os.close(handle)
+        raise
 
 
 def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:

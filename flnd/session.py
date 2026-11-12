@@ -23,7 +23,7 @@ from flnd.common import auth, files, net
 from flnd.common.compress import KINDS, Choice, Compressor, choice_of
 from flnd.common.target import Target
 from flnd.sources.base import FetchError, Source
-from shared import fmt, kv, log, prompt, theme
+from shared import atomic, fmt, kv, log, prompt, theme
 
 if TYPE_CHECKING:
     from shared import worker
@@ -465,8 +465,11 @@ class TargetSession:
         """
         if self.folder is None:
             return False
+        dest = self._path(self.folder, name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
         # Through a `.<name>.<random>.part`, which `flnd sync`'s repair removes if a run dies mid-write.
-        files.write_atomic(self._path(self.folder, name), text)
+        # Written as bytes, so every "\n" stays "\n" on Windows too.
+        atomic.write(dest, text.encode("utf-8"))
         return True
 
     @property

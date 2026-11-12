@@ -29,6 +29,10 @@ shared.archive.UnsafeError(shared.archive.Error, shared.UnsafeError)
 shared.archive.ls(path: PathLike, *, password: str | None = None, limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Entry]
 shared.archive.unzip(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, conflict: Conflict = 'error', limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Path]
 shared.archive.zip(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, split: int | None = None) -> list[Path]
+shared.atomic: module
+shared.atomic.Error(shared.Error)
+shared.atomic.write(dest: PathLike, data: bytes, *, mode: int = 438) -> None
+shared.atomic.writing(dest: PathLike, *, replace: bool = False) -> Iterator[Path]
 shared.browser: module
 shared.browser.Browser(context: BrowserContext, *, close_steps: list[Callable[[], Any]], headless: bool, page_viewport: tuple[int, int] | None = None)
 shared.browser.Browser.add_cookies(jar: Jar | Iterable[dict]) -> None

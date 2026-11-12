@@ -56,6 +56,7 @@ from shared._theme import theme
 if TYPE_CHECKING:
     # Checkers see the real modules; at runtime they still load on first use.
     from shared import _archive as archive
+    from shared import _atomic as atomic
     from shared import _browser as browser
     from shared import _bundler as bundler
     from shared import _cookies as cookies
@@ -67,13 +68,13 @@ if TYPE_CHECKING:
     from shared import _worker as worker
 
 LAZY_MODULES = (
-    "archive", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
+    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
 )
 
 __all__ = [
     "Error", "UnsafeError", "BrokenError", "RefusedError",
     "cli", "fmt", "log", "prompt", "style", "theme",
-    "archive", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
+    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
 ]
 
 

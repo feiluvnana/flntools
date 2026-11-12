@@ -1,4 +1,4 @@
-"""flnd/common/files.py: atomic writes and media validation, on a temp folder; ffmpeg and Pillow are mocked where named."""
+"""flnd/common/files.py: part names and media validation, on a temp folder; ffmpeg and Pillow are mocked where named."""
 
 import fnmatch
 import io
@@ -10,7 +10,7 @@ from unittest import mock
 from media_samples import needs_pillow
 
 from flnd.common import files
-from shared import media, theme
+from shared import atomic, media, theme
 from shared._theme import Screen
 
 
@@ -33,30 +33,14 @@ class FilesCase(unittest.TestCase):
         self.tmp = Path(folder.name)
 
 
-class WriteAtomicTest(FilesCase):
-    def test_write_atomic_writes_text_and_bytes_byte_for_byte(self):
-        self.assertEqual(files.write_atomic(self.tmp / "info.md", "# Title\n"), self.tmp / "info.md")
-        self.assertEqual((self.tmp / "info.md").read_bytes(), b"# Title\n")
-        files.write_atomic(self.tmp / "info.md", b"a\r\nb\n")
-        self.assertEqual((self.tmp / "info.md").read_bytes(), b"a\r\nb\n")
-        self.assertEqual([path.name for path in self.tmp.iterdir()], ["info.md"])
-
-    def test_write_atomic_leaves_no_part_behind_on_error(self):
-        """Fix 13: a write that fails, or is interrupted, removes its part and leaves the old file as it was."""
-        dest = self.tmp / "info.md"
-        dest.write_text("old")
-        for error in (OSError("disk full"), KeyboardInterrupt()):
-            with mock.patch.object(files.os, "replace", side_effect=error), self.assertRaises(type(error)):
-                files.write_atomic(dest, "new")
-            self.assertEqual([path.name for path in self.tmp.iterdir()], ["info.md"])
-            self.assertEqual(dest.read_text(), "old")
-
-    def test_part_names_match_what_repair_removes(self):
-        part = files.part_for(self.tmp / "a.jpg")
-        self.assertEqual(part.parent, self.tmp)
-        self.assertTrue(fnmatch.fnmatch(part.name, files.PART_GLOB), part.name)
-        self.assertTrue(part.name.startswith(".a.jpg."))
-        self.assertNotEqual(part, files.part_for(self.tmp / "a.jpg"))
+class PartNameTest(FilesCase):
+    def test_atomic_part_names_match_what_repair_removes(self):
+        """Fix 13: every temporary file flnd writes comes from `atomic`, so sync's repair glob must match its parts."""
+        with atomic.writing(self.tmp / "a.jpg") as part, atomic.writing(self.tmp / "a.jpg") as other:
+            self.assertEqual(part.parent, self.tmp)
+            self.assertTrue(fnmatch.fnmatch(part.name, files.PART_GLOB), part.name)
+            self.assertTrue(part.name.startswith(".a.jpg."))
+            self.assertNotEqual(part, other)
 
 
 @needs_pillow

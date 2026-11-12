@@ -53,13 +53,20 @@ class CommandTest(unittest.TestCase):
         self.assertIn("mypkg.plugins", hidden)
         self.assertIn("mypkg.more", hidden)
 
-    def test_media_namespaces_and_engines_are_hidden_imports(self):
-        # media loads its namespaces by name, and Pillow, pi-heif and imageio-ffmpeg inside functions.
+    def test_media_engines_are_hidden_imports(self):
+        # media imports Pillow, pi-heif and imageio-ffmpeg inside functions, and only when installed.
         with mock.patch.object(bundler, "_installed", lambda module: True):
             hidden = values(self.argv(), "--hidden-import")
-        for module in ("shared._media_image", "shared._media_video", "shared._media_audio", "PIL", "pi_heif",
-                       "imageio_ffmpeg"):
+        for module in ("PIL", "pi_heif", "imageio_ffmpeg"):
             self.assertIn(module, hidden)
+
+    def test_media_private_modules_are_plain_imports_pyinstaller_follows(self):
+        """`_media_image`, `_media_video` and `_media_audio` aren't hidden imports, so `media` must name them in
+        `import` statements, which PyInstaller's import scan sees, rather than load them by a computed name."""
+        source = (Path(shared.__file__).parent / "_media.py").read_text(encoding="utf-8")
+        for module in ("_media_image", "_media_video", "_media_audio"):
+            self.assertIn(f"from shared import {module}\n", source)
+            self.assertNotIn(f"shared.{module}", values(self.argv(), "--hidden-import"))
 
     def test_the_bundler_and_pyinstaller_stay_out_of_the_bundle(self):
         argv = self.argv()

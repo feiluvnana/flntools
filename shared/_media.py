@@ -216,7 +216,7 @@ class _Chain:
 
     def temporary(self) -> Path:
         """A new temporary path beside the origin: same folder, same disk, so `save` there is a rename."""
-        # Named like `_atomic`'s parts, so flnd's repair (`.*.part`) removes what a killed run leaves.
+        # Named like `atomic`'s parts, so flnd's repair (`.*.part`) removes what a killed run leaves.
         return self.origin.with_name(f".{self.origin.name}.{secrets.token_hex(4)}.part")
 
 

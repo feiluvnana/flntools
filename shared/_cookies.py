@@ -10,7 +10,7 @@ browser, a live `shared.browser` and an HTTP header without conversion.
   `cookies.txt` (seven tab-separated fields a line; curl and browser exports mark an HttpOnly
   cookie by prefixing its domain with `#HttpOnly_`), or a JSON list of cookie objects, as
   Playwright and the browser extensions write them. `Jar.save` writes a Netscape file, through
-  `shared._atomic` with mode 0600, since a cookie file is a login.
+  `shared.atomic` with mode 0600, since a cookie file is a login.
 - **Installed browsers.** `from_browser` copies the profile's cookie database (a running
   browser locks it) and reads it with `sqlite3`. The Chromium family (Chrome, Chromium, Edge,
   Brave) encrypts each value with AES-128-CBC under a key derived from a password the OS keeps:
