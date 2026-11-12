@@ -1,14 +1,21 @@
-"""Each source's login: its cookie file in `.flnd/cookies/`, and its secrets sealed in `.flnd/secrets.db`.
+"""Each source's login, every credential sealed in one vault, `.flnd/secrets.db` (plan/phase-6/redesign.md, B7).
 
 A cookie source logs in by `from_browser` or `from_file`, then `store` checks that the jar
-proves a login and writes `.flnd/cookies/<code>.txt`; `load` reads it back for the engine. A
-source with its own login (tlg) keeps what it needs in `secrets`, a mapping sealed per value.
-`logged_in` and `logout` see both. Asking the questions is `flnd login`'s job, not this module's.
+proves a login and seals it in the vault as the source's `cookies` value; `load` reads it back
+for the engine. A source with its own login (tlg) keeps what it needs in `secrets` beside it:
+`session`, `api_id`, `api_hash`. `logged_in` and `logout` see the vault only. A cookie file given
+to `flnd login` is read once and never copied into `.flnd/`. Asking the questions is `flnd
+login`'s job, not this module's.
 
-Secrets are encrypted with AES-GCM, each bound to its source and name, so a value copied into
-another slot no longer decrypts; the key is `.flnd/secret.key`. This protects against someone
-who copies only `secrets.db`. It doesn't protect against someone who can read the whole `.flnd/`
-folder, which is the same exposure as the cookie files beside it.
+Secrets are encrypted with AES-GCM, each bound to its source and name (`<code>:<name>`), so a
+value copied into another slot no longer decrypts; the key is `.flnd/secret.key`. This protects
+against someone who copies `secrets.db`, or a backup of it, without the key. It doesn't protect
+against someone who can read the whole `.flnd/` folder, since the key is in it (keeping the key in
+the OS keychain is decision D13: not now).
+
+Logins from before the vault held cookies sit as plain `.flnd/cookies/<code>.txt` (or the older
+`.json`). The first `load`, `logged_in` or `logout` of a source moves its file into the vault,
+deleting the plain file only once the vault holds it, and removes the folder once empty.
 
     jar = auth.from_browser(Instagram(), browser="chrome")
     message = auth.store(Instagram(), jar, home=Path(".flnd"), origin="Chrome")
@@ -19,7 +26,9 @@ folder, which is the same exposure as the cookie files beside it.
 from __future__ import annotations
 
 import base64
+import json
 import os
+import sqlite3
 import time
 # Only `token_bytes`: `secrets` is this module's own function, the vault's entry point.
 from secrets import token_bytes
@@ -29,20 +38,26 @@ from typing import TYPE_CHECKING
 
 # A source's own login (tlg) raises it too, so it lives in base; `auth.LoginError` is the same class.
 from flnd.source import LoginError
-from shared import cookies, crypto, fmt, kv
+from shared import cookies, crypto, fmt, kv, log
 
 if TYPE_CHECKING:
     from flnd.source import Source
 
 # The browsers `from_browser` reads cookies from, by `shared.cookies` name, with the name a person knows.
 BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave", "chromium": "Chromium"}
-# A cookie file is `<code>.txt`; `<code>.json` is the older form, still read and removed.
+# The folder of the plain cookie files of earlier versions, moved into the vault on first use.
+COOKIE_FOLDER = "cookies"
+# A plain cookie file was `<code>.txt`, or `<code>.json`, the older form; the first one found wins.
 COOKIE_SUFFIXES = (".txt", ".json")
 DB_FILE = "secrets.db"
 KEY_FILE = "secret.key"
+# The vault value that holds a cookie source's jar, as JSON: a list of cookie dicts.
+COOKIES = "cookies"
 # The secret that proves a login for a source with its own (tlg): the session its `login` stores.
-# Any other secret, such as tlg's `api_id` and `api_hash`, is only the source's API key.
+# A cookie source's jar (`COOKIES`) proves one too. Any other secret, such as tlg's `api_id` and
+# `api_hash`, is only the source's API key.
 LOGIN_SECRET = "session"
+LOGIN_SECRETS = frozenset({COOKIES, LOGIN_SECRET})
 TABLE = "secrets"
 KEY_SIZE = 32
 # How long a key file shorter than KEY_SIZE may be another run's key still being written, in
@@ -91,7 +106,7 @@ def from_file(source: Source, path: Path) -> cookies.Jar:
 
 
 def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
-    """Check that the jar proves a login, save it as the source's cookie file, and say so.
+    """Check that the jar proves a login, seal it in the source's vault, and say so.
 
         auth.store(Instagram(), jar, home=Path(".flnd"), origin="Chrome")   # "ins: logged in from Chrome (14 cookies)"
 
@@ -103,15 +118,38 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
 
     Raises:
         LoginError: none of the source's `needs` cookies is in the jar.
+        ValueError: the key file is damaged (`key`).
+        OSError: the vault can't be written.
+
+    Nothing is written under `.flnd/` but the vault. A plain cookie file an earlier version left
+    for the source is deleted once the new login is sealed, so it can never come back.
     """
     if source.needs and not any(name in jar for name in source.needs):
         raise LoginError(f"{source.code}: no {' or '.join(source.needs)} for {source.domains[0]} in {origin}; "
                          "log in there first")
-    path = cookie_file(home, source.code)
-    fix_domains(jar).save(path)
-    # One cookie file per source, so an old JSON file can't shadow the new one.
-    path.with_suffix(".json").unlink(missing_ok=True)
+    save(home, source.code, jar)
+    for path in _cookie_files(home, source.code):
+        path.unlink(missing_ok=True)
+    _remove_if_empty(home / COOKIE_FOLDER)
     return f"{source.code}: logged in from {origin} ({fmt.count(len(jar), 'cookie')})"
+
+
+def save(home: Path, code: str, jar: cookies.Jar) -> None:
+    """Seal a source's cookie jar in its vault as `cookies`, `fix_domains` applied, replacing the one there.
+
+        auth.save(Path(".flnd"), "ins", jar)
+
+    Args:
+        home: flnd's folder, `.flnd`; `secrets.db` and the key file are created when missing.
+        code: the source's code; the value is bound to its slot, `<code>:cookies`.
+        jar: the cookies; nothing checks that they prove a login (`store` does).
+
+    Raises:
+        ValueError: the key file is damaged (`key`).
+        OSError: the vault can't be written.
+    """
+    with secrets(home, code) as vault:
+        vault[COOKIES] = json.dumps(fix_domains(jar).raw)
 
 
 def load(home: Path, code: str) -> cookies.Jar:
@@ -124,25 +162,32 @@ def load(home: Path, code: str) -> cookies.Jar:
         code: the source's code, such as "ins".
 
     Returns:
-        The cookies of `.flnd/cookies/<code>.txt`, or else of `<code>.json`, with `fix_domains` applied.
+        The jar sealed in the vault, with `fix_domains` applied. A plain cookie file of an earlier
+        version is moved into the vault first.
+
+    Raises:
+        ValueError: the key file is damaged, or the sealed jar doesn't decrypt (`crypto.Error`):
+            it was copied from another slot, or sealed with another key.
     """
-    for path in _cookie_files(home, code):
-        if path.is_file():
-            return fix_domains(cookies.load(path))
-    return cookies.Jar()
+    _move(home, code)
+    if not (home / DB_FILE).is_file():
+        return cookies.Jar()
+    with secrets(home, code) as vault:
+        text = vault.get(COOKIES)
+    return fix_domains(cookies.Jar(json.loads(text))) if text else cookies.Jar()
 
 
 def logged_in(home: Path, code: str) -> bool:
-    """Whether the source has a saved login: a cookie file, or the `LOGIN_SECRET` secret.
+    """Whether the source has a saved login in the vault: its cookie jar, or the `LOGIN_SECRET` secret.
 
         auth.logged_in(Path(".flnd"), "tlg")    # True after `flnd login` for Telegram
 
     Other secrets don't count: tlg's `api_id` and `api_hash` alone are an API key, not a login
-    (see `api_key_saved`). It creates neither `secrets.db` nor the key file.
+    (see `api_key_saved`). It creates neither `secrets.db` nor the key file, unless it moves a
+    plain cookie file of an earlier version into the vault.
     """
-    if any(path.is_file() for path in _cookie_files(home, code)):
-        return True
-    return LOGIN_SECRET in _secret_names(home, code)
+    _move(home, code)
+    return bool(LOGIN_SECRETS & _secret_names(home, code))
 
 
 def api_key_saved(home: Path, code: str) -> bool:
@@ -154,20 +199,24 @@ def api_key_saved(home: Path, code: str) -> bool:
 
 
 def logout(home: Path, code: str) -> bool:
-    """Remove the source's cookie file and every secret, API key included, and return whether there was anything to remove.
+    """Remove every secret of the source, its cookie jar and API key included, and return whether there was anything to remove.
 
         auth.logout(Path(".flnd"), "ins")       # False when ins never logged in
 
     A source left with only its API key counts as something to remove: it is deleted, and the
-    result is True, so the next `flnd login` asks for the key again.
+    result is True, so the next `flnd login` asks for the key again. A plain cookie file that
+    couldn't be moved into the vault is deleted too, or that login would outlive the logout.
     """
     removed = logged_in(home, code) or api_key_saved(home, code)
-    for path in _cookie_files(home, code):
-        path.unlink(missing_ok=True)
     # Opening the database would create it, so a home that has none is left without one.
     if (home / DB_FILE).is_file():
         with secrets(home, code) as saved:
             saved.clear()
+    for path in _cookie_files(home, code):
+        if path.is_file():
+            path.unlink()
+            removed = True
+    _remove_if_empty(home / COOKIE_FOLDER)
     return removed
 
 
@@ -179,13 +228,50 @@ def _secret_names(home: Path, code: str) -> set[str]:
         return set(saved)
 
 
-def cookie_file(home: Path, code: str) -> Path:
-    """Where a source's cookies are saved: `.flnd/cookies/<code>.txt`."""
-    return home / "cookies" / f"{code}{COOKIE_SUFFIXES[0]}"
-
-
 def _cookie_files(home: Path, code: str) -> list[Path]:
-    return [home / "cookies" / f"{code}{suffix}" for suffix in COOKIE_SUFFIXES]
+    """The plain cookie files an earlier version may have left for a source, in the order they are read."""
+    return [home / COOKIE_FOLDER / f"{code}{suffix}" for suffix in COOKIE_SUFFIXES]
+
+
+def _move(home: Path, code: str) -> None:
+    """Move a source's plain cookie file of an earlier version into its vault, once (B7's one-time move).
+
+    The first file found (`.txt`, then `.json`) is sealed as `cookies`, unless the vault holds a
+    jar already, which is the newer login. Each file is deleted only after that, so a vault write
+    that fails (a damaged key, a full disk) keeps the file, warned of, for the next run to try
+    again. The folder is removed once empty. Sources run on threads of their own, each calling
+    this for its own code, so two threads never touch one file.
+    """
+    folder = home / COOKIE_FOLDER
+    if not folder.is_dir():
+        return
+    for path in _cookie_files(home, code):
+        if not path.is_file():
+            continue
+        try:
+            jar = cookies.load(path)
+            with secrets(home, code) as vault:
+                if COOKIES not in vault:
+                    vault[COOKIES] = json.dumps(fix_domains(jar).raw)
+        # A file that can't be read or isn't a cookie file (cookies.Error is a ValueError), a
+        # damaged key (ValueError), or a vault that can't be opened or written (OSError, kv.Error,
+        # sqlite3.Error): the plain file is the only copy of the login, so it stays. Each of these
+        # names the file or the key, never a cookie's value.
+        except (OSError, ValueError, kv.Error, sqlite3.Error) as error:
+            log.warn("{code}: can't move {name} into the vault: {error}; kept it", code=code, name=path.name,
+                     error=error)
+            continue
+        path.unlink(missing_ok=True)
+    _remove_if_empty(folder)
+
+
+def _remove_if_empty(folder: Path) -> None:
+    """Remove the old cookie folder once nothing is left in it."""
+    try:
+        folder.rmdir()
+    # Missing, or still holding another source's file (or anything else): left as it is.
+    except OSError:
+        pass
 
 
 def fix_domains(jar: cookies.Jar) -> cookies.Jar:

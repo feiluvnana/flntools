@@ -10,11 +10,12 @@ The rules:
    `flnd.sources.common` package and `flnd` itself (its version);
 2. `flnd.source` imports nothing from the engine side: from flnd, only `flnd.common.pace`, whose
    `Pace` it re-exports;
-3. `flnd/cli.py` imports from flnd only `flnd`, `flnd.engine` and `flnd.sources`;
+3. `flnd/cli.py` imports from flnd only `flnd` (the engine API) and `flnd.sources` (for help and
+   login's list): every decision is the engine's, so the CLI only parses, asks and prints;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it.
 
-One list exempts today's code, and may only shrink, as test_names.py's `ALLOWED` does:
-`CLI_UNTIL_STEP_7`, what cli.py imports until step 7 moves those decisions into the engine.
+Nothing is exempt: step 7 moved the CLI's decisions into the engine, which emptied the list of
+what cli.py imported beyond rule 3.
 """
 
 import ast
@@ -24,22 +25,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
 
-# What cli.py imports today that rule 3 doesn't allow; step 7 (the engine API) empties it.
-CLI_UNTIL_STEP_7 = {"flnd.common", "flnd.common.auth", "flnd.common.compress", "flnd.session", "flnd.source",
-                    "flnd.sync"}
+# Rule 3: everything cli.py may import from flnd.
+CLI_ALLOWED = {"flnd", "flnd.sources"}
 
 
 def flnd_imports(path: Path) -> set[str]:
-    """Every flnd module a file imports, anywhere in it: `from flnd import sync` counts as `flnd.sync`."""
+    """Every flnd module a file imports, anywhere in it: `from flnd import job` counts as `flnd.job`."""
     found: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             found |= {alias.name for alias in node.names if alias.name.split(".")[0] == "flnd"}
         elif isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "flnd":
             found.add(node.module)
-            # `from flnd import sync` and `from flnd.common import net` import modules by name.
-            found |= {f"{node.module}.{alias.name}" for alias in node.names
-                      if (FLND.parent / node.module.replace(".", "/") / f"{alias.name}.py").is_file()}
+            # `from flnd import job` and `from flnd.common import net` import modules by name. Names
+            # are compared to the folder's listing, not looked up as paths: on macOS's and Windows'
+            # case-insensitive disks, `from flnd import Engine` would find flnd/engine.py.
+            package = FLND.parent / node.module.replace(".", "/")
+            modules = {entry.name for entry in package.iterdir()} if package.is_dir() else set()
+            found |= {f"{node.module}.{alias.name}" for alias in node.names if f"{alias.name}.py" in modules}
     return found
 
 
@@ -70,8 +73,7 @@ class LayersTest(unittest.TestCase):
         self.assertEqual(sorted(flnd_imports(FLND / "source.py") - {"flnd.common.pace", "flnd.common"}), [])
 
     def test_the_cli_imports_the_engine_api_shared_and_the_sources(self):
-        found = flnd_imports(FLND / "cli.py") - {"flnd", "flnd.engine", "flnd.sources"}
-        self.assertEqual(sorted(found - CLI_UNTIL_STEP_7), [])
+        self.assertEqual(sorted(flnd_imports(FLND / "cli.py") - CLI_ALLOWED), [])
 
     def test_nothing_imports_the_cli_but_the_entry_point(self):
         for path in sorted(FLND.rglob("*.py")):
@@ -80,9 +82,11 @@ class LayersTest(unittest.TestCase):
             with self.subTest(module=module_name(path)):
                 self.assertNotIn("flnd.cli", flnd_imports(path))
 
-    def test_the_exemptions_only_shrink(self):
-        found = flnd_imports(FLND / "cli.py")
-        self.assertEqual(sorted(CLI_UNTIL_STEP_7 - found), [])
+    def test_the_rules_see_imports_of_names_and_of_modules(self):
+        # Guards the guard: `from flnd import Engine` is the package, `from flnd import job` a module.
+        found = flnd_imports(FLND / "engine.py")
+        self.assertIn("flnd.job", found)
+        self.assertIn("flnd", flnd_imports(FLND / "cli.py"))
 
 
 if __name__ == "__main__":

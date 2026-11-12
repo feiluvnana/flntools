@@ -2,7 +2,7 @@
 
 `Options` is what a run downloads and how it compresses it; `Settings` is what the run shares across
 its sources (flnd's folder, the options, the history and the compressor). The engine reads both, the
-job and the sources' sites through them, and the CLI and `sync` check `--from` with the helpers here.
+job and the sources' sites through them, and `Engine.download` checks `--from` with the helpers here.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ ALL = "all"
 class Options:
     """What one run downloads and how it compresses it: `Options(categories=("reels",), image=Choice("webp", "mid"))`.
 
-    The same for every target of one `Engine.run`; `flnd download` and `flnd sync` run targets
+    The same for every target of one `Engine._run`; `Engine.download` and `Engine.sync` run targets
     whose saved settings differ separately. It is hashable, so it can key those groups.
     """
 

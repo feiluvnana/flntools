@@ -13,13 +13,12 @@ from unittest import mock
 
 from test_engine import make_source
 
+from flnd import Choice, Engine, Target, TargetReport
 from flnd import cli as flnd_cli
 from flnd import sources
 from flnd.common import auth
-from flnd.common.compress import Choice
-from flnd.engine import Engine
 from flnd.session import Options
-from flnd.source import Source, Target
+from flnd.source import Source
 from shared import cookies, kv, theme
 from shared._theme import Screen
 
@@ -80,11 +79,13 @@ class FlndCase(unittest.TestCase):
         return path
 
     def saved(self, code):
-        return cookies.load(Path(".flnd/cookies") / f"{code}.txt").raw
+        """The cookies the vault holds for a source; no plain cookie file is ever written."""
+        self.assertFalse(Path(".flnd/cookies").exists())
+        return auth.load(Path(".flnd"), code).raw
 
 
 class RunsCase(FlndCase):
-    """Engine.run is replaced: each call is recorded in `runs`, and says 3 files were written."""
+    """`Engine._run`, each settings group's run, is replaced: each call is recorded in `runs`, and writes 3 files."""
 
     def setUp(self):
         super().setUp()
@@ -92,9 +93,10 @@ class RunsCase(FlndCase):
 
         def run(engine, targets, options):
             self.runs.append((engine, targets, options))
-            return 3
+            written = tuple(Path(f"{name}.jpg") for name in "abc")
+            return [(TargetReport(target, written if not number else (), 0), ()) for number, target in enumerate(targets)]
 
-        patcher = mock.patch.object(Engine, "run", run)
+        patcher = mock.patch.object(Engine, "_run", run)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -278,7 +280,14 @@ class SyncCommandTest(RunsCase):
     def setUp(self):
         super().setUp()
         self.synced = []
-        patcher = mock.patch("flnd.sync.run", lambda engine, chosen: self.synced.append(chosen) or [])
+        real_plan = Engine._plan
+
+        def plan(engine, targets):
+            chosen = real_plan(engine, targets)
+            self.synced.append(chosen)
+            return chosen
+
+        patcher = mock.patch.object(Engine, "_plan", plan)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -384,7 +393,9 @@ class LoginFileTest(LoginCase):
         saved = self.saved("ins")
         self.assertEqual({cookie["name"]: cookie["domain"] for cookie in saved},
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
-        self.assertEqual(stat.S_IMODE(Path(".flnd/cookies/ins.txt").stat().st_mode), 0o600)
+        # Sealed in the vault, whose key is as private as the plain cookie files were; nothing else is written.
+        self.assertEqual(sorted(path.name for path in Path(".flnd").iterdir()), ["secret.key", "secrets.db"])
+        self.assertEqual(stat.S_IMODE(Path(".flnd/secret.key").stat().st_mode), 0o600)
 
     def test_json_export_and_old_json_removed(self):
         Path(".flnd/cookies").mkdir(parents=True)
@@ -398,7 +409,7 @@ class LoginFileTest(LoginCase):
         code, out = self.from_file("fbk", self.cookie_file(NETSCAPE))
         self.assertEqual(code, 1)
         self.assertEqual(out.splitlines()[-1], "✗ fbk: no c_user or xs for facebook.com in cookies.txt; log in there first")
-        self.assertFalse(Path(".flnd/cookies/fbk.txt").exists())
+        self.assertNotIn("fbk", Engine(home=Path(".flnd")).logins)
 
     def test_a_broken_file(self):
         code, out = self.from_file("ins", self.cookie_file("not\ta cookie\n"))
@@ -527,7 +538,7 @@ class OwnLoginTest(LoginCase):
 class LogoutTest(FlndCase):
     def log_in(self, *codes):
         for code in codes:
-            cookies.Jar([{"name": "a", "value": "1", "domain": ".x.example"}]).save(Path(".flnd/cookies") / f"{code}.txt")
+            auth.save(Path(".flnd"), code, cookies.Jar([{"name": "a", "value": "1", "domain": ".x.example"}]))
 
     def test_named_sources(self):
         self.log_in("ins", "twt")
@@ -535,8 +546,8 @@ class LogoutTest(FlndCase):
             secrets["token"] = "t"
         code, _, out = self.run_app("logout", "ins")
         self.assertEqual((code, out), (0, "✓ ins: logged out\n"))
-        self.assertFalse(Path(".flnd/cookies/ins.txt").exists())
-        self.assertTrue(Path(".flnd/cookies/twt.txt").exists())
+        self.assertEqual(auth.load(Path(".flnd"), "ins"), cookies.Jar())
+        self.assertTrue(auth.logged_in(Path(".flnd"), "twt"))
         with auth.secrets(Path(".flnd"), "ins") as secrets:
             self.assertEqual(len(secrets), 0)
         self.screen.dest.truncate(0)
@@ -550,7 +561,7 @@ class LogoutTest(FlndCase):
             secrets["session"] = "s"
         code, _, out = self.run_app("logout", "all")
         self.assertEqual((code, out), (0, "✓ tik: logged out\n✓ ins: logged out\n✓ tlg: logged out\n"))
-        self.assertEqual(list(Path(".flnd/cookies").iterdir()), [])
+        self.assertFalse(Path(".flnd/cookies").exists())
         self.assertFalse(any(auth.logged_in(Path(".flnd"), code) for code in sources.SOURCES))
 
     def test_an_api_key_alone_is_removed_but_is_not_a_login(self):
@@ -573,6 +584,15 @@ class LogoutTest(FlndCase):
     def test_an_unknown_source_and_the_old_flag(self):
         self.assertEqual(self.run_app("logout", "ytb")[0], 2)
         self.assertEqual(self.run_app("logout", "--all")[0], 2)
+
+
+class ThinCliTest(unittest.TestCase):
+    def test_the_browser_list_is_the_engines(self):
+        # The CLI asks from its own copy, since it imports nothing of the engine side; they must agree.
+        self.assertEqual(flnd_cli.BROWSERS, auth.BROWSERS)
+
+    def test_the_cookie_logins_are_the_sources_without_their_own(self):
+        self.assertEqual(Engine().cookie_logins, ("tik", "fbk", "ins", "twt", "loi"))
 
 
 if __name__ == "__main__":

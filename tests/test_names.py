@@ -146,14 +146,25 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
 
     Args:
         names: the snapshot's names; a test passes made-up ones.
+
+    An error re-exported under another module's name (`flnd.TargetError` is `flnd.source.TargetError`,
+    which `flnd`'s API lists) belongs to the module that defines it: it is a breach only when no
+    module listing it has an `Error` it is under.
     """
     found: set[str] = set()
     by_name = {entry.name: entry for entry in names}
     shared_error = by_name["shared.Error"].obj
     errors: dict[str, list[Any]] = {}
+    homes: dict[int, set[str]] = {}
     for entry in names:
         if entry.kind == "error":
             errors.setdefault(module_of(entry.name, names), []).append(entry)
+            homes.setdefault(id(entry.obj), set()).add(module_of(entry.name, names))
+
+    def under_error(error: Any, module: str) -> bool:
+        base = by_name.get(f"{module}.Error")
+        return base is not None and base.kind == "error" and issubclass(error, base.obj)
+
     for module in {entry.name for entry in names if entry.kind == "module"}:
         base = by_name.get(f"{module}.Error")
         # C4 asks every module directly under `shared` for its own Error, even one that raises nothing yet.
@@ -161,7 +172,7 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
                 (base is None or base.kind != "error" or not issubclass(base.obj, shared_error)):
             found.add(f"{module}: no {module}.Error under shared.Error")
         stray = sorted(entry.name for entry in errors.get(module, [])
-                       if base is None or base.kind != "error" or not issubclass(entry.obj, base.obj))
+                       if not any(under_error(entry.obj, home) for home in homes[id(entry.obj)]))
         if stray:
             found.add(f"{module}: errors outside {module}.Error: {', '.join(stray)}")
     return found
@@ -256,6 +267,24 @@ class ChecksTest(unittest.TestCase):
                  self.name("module", None, name="shared.y")]
         self.assertEqual(error_breaches(names), {"shared.x: errors outside shared.x.Error: shared.x.Inner.StrayError",
                                                  "shared.y: no shared.y.Error under shared.Error"})
+
+    def test_a_reexported_error_belongs_to_the_module_that_defines_it(self):
+        # `flnd.TargetError` is `flnd.source.TargetError`: `flnd` has no Error of its own, and needs none.
+        class Shared(Exception): ...
+
+        class SourceError(Exception): ...
+
+        class Kept(SourceError): ...
+
+        class Stray(ValueError): ...
+
+        names = [self.name("error", Shared, name="shared.Error"), self.name("module", None, name="shared"),
+                 self.name("module", None, name="flnd"),
+                 self.name("module", None, name="flnd.source"),
+                 self.name("error", SourceError, name="flnd.source.Error"),
+                 self.name("error", Kept, name="flnd.source.TargetError"),
+                 self.name("error", Kept, name="flnd.TargetError"), self.name("error", Stray, name="flnd.StrayError")]
+        self.assertEqual(error_breaches(names), {"flnd: errors outside flnd.Error: flnd.StrayError"})
 
 
 if __name__ == "__main__":

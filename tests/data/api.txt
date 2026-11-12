@@ -1,11 +1,42 @@
-flnd.engine: module
-flnd.engine.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
-flnd.engine.Engine.failed: attribute -> list[Target]
-flnd.engine.Engine.home: attribute
-flnd.engine.Engine.login(source: Source, method: str) -> None
-flnd.engine.Engine.resolve(texts: Sequence[str]) -> list[Target]
-flnd.engine.Engine.run(targets: Sequence[Target], options: Options) -> int
-flnd.engine.Engine.sources: attribute
+flnd: module
+flnd.Choice(format: str | None, level: str)
+flnd.Choice.format: field -> str | None
+flnd.Choice.level: field -> str
+flnd.Choice.parse(text: str, *, kind: str) -> Choice | None
+flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
+flnd.Engine.LoginError(flnd.source.Error)
+flnd.Engine.cookie_logins: property -> tuple[str, ...]
+flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), image: Choice | str | None = None, video: Choice | str | None = None, audio: Choice | str | None = None, classify: bool | str | None = None) -> Report
+flnd.Engine.home: attribute
+flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
+flnd.Engine.logins: property -> dict[str, str]
+flnd.Engine.logout(codes: Iterable[str]) -> list[str]
+flnd.Engine.resolve(texts: Sequence[str]) -> list[Target]
+flnd.Engine.sources: attribute
+flnd.Engine.sync(targets: Sequence[Target | str] = ()) -> Report
+flnd.Range(since: datetime.date | None = None, until: datetime.date | None = None)
+flnd.Range.parse(text: str) -> Range
+flnd.Range.since: field -> datetime.date | None
+flnd.Range.until: field -> datetime.date | None
+flnd.Report(targets: tuple[TargetReport, ...])
+flnd.Report.failed: property -> tuple[Target, ...]
+flnd.Report.files: property -> int
+flnd.Report.ok: property -> bool
+flnd.Report.targets: field -> tuple[TargetReport, ...]
+flnd.Target(source: str, kind: str, value: str)
+flnd.Target.kind: field -> str
+flnd.Target.source: field -> str
+flnd.Target.value: field -> str
+flnd.TargetError(flnd.source.Error, ValueError)
+flnd.TargetError.url: attribute
+flnd.TargetReport(target: Target, written: tuple[Path, ...], skipped: int, repaired: int = 0, missing: int = 0, settings: str = '', error: str | None = None)
+flnd.TargetReport.error: field -> str | None
+flnd.TargetReport.missing: field -> int
+flnd.TargetReport.repaired: field -> int
+flnd.TargetReport.settings: field -> str
+flnd.TargetReport.skipped: field -> int
+flnd.TargetReport.target: field -> Target
+flnd.TargetReport.written: field -> tuple[Path, ...]
 flnd.source: module
 flnd.source.Category(function: Callable[..., Any], *, newest_first: bool = False, name: str | None = None, folder: str | None = None, filename: str | None = None, key: str | None = None)
 flnd.source.Category.attribute: attribute
@@ -48,6 +79,7 @@ flnd.source.Post.id: field -> str
 flnd.source.Post.lazy: property -> bool
 flnd.source.Post.replace(**fields: Any) -> Post
 flnd.source.Range(since: datetime.date | None = None, until: datetime.date | None = None)
+flnd.source.Range.parse(text: str) -> Range
 flnd.source.Range.since: field -> datetime.date | None
 flnd.source.Range.until: field -> datetime.date | None
 flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None)

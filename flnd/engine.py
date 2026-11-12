@@ -1,7 +1,23 @@
-"""The engine: resolves targets, groups them by source, and owns everything sources share.
+"""The engine: flnd's five commands as methods, each giving the CLI or a script what it printed before.
+
+`Engine` is the whole engine API (plan/phase-6/redesign.md, B1): `resolve` reads targets,
+`download` and `sync` run them and return a `Report`, `login` and `logout` keep the logins. Every
+decision a command makes is here, where a test reaches it without a terminal: reading the options'
+text (`Range.parse`, `Choice.parse`), refusing `--from` for a single post, each target's saved
+settings (flnd/settings.py) and applying a changed one to the files already saved, `sync`'s repair
+and tally (flnd/repair.py), and grouping targets by their settings. flnd/cli.py only parses,
+asks `login`'s questions and prints.
+
+How a run goes: targets are grouped by source; each source gets one worker, one HTTP client,
+back-off and pacer, and runs its targets one after another through the job (flnd/job.py), with a
+person's pause between them, while different sources run at the same time. It never asks a
+question, except `shared.browser`'s one, to download Chromium, before any work starts.
 
     engine = Engine(home=Path(".flnd"))
-    total = engine.run(engine.resolve(["ins:example_user", "https://x.com/example_handle"]), Options())
+    report = engine.download(["ins:example_user", "https://x.com/example_handle"], categories="reels,tagged",
+                             time="2026-01-01,", image="webp,mid")
+    report = engine.sync()
+    exit_status = 0 if report.ok else 1
 """
 
 from __future__ import annotations
@@ -11,28 +27,36 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from types import CodeType
-from typing import Any, Callable, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
 
-from flnd import job
-from flnd.common import net
-from flnd.session import Options, Settings
+from flnd import job, repair, settings
+from flnd.common import auth, compress, files, net
+from flnd.common.compress import KINDS, Choice, Compressor
+from flnd.session import Options, Settings, single_targets, unknown_categories
 from flnd.site import LoginSite, SourceRun, TargetSite, source_run
-from flnd.source import Source, Target, TargetError
+from flnd.source import LoginError, Range, Source, Target, TargetError
 from flnd.sources import SOURCES
 from shared import browser, kv, log, worker
 
-__all__ = ["Engine"]
+__all__ = ["Engine", "Report", "TargetReport"]
 
 HISTORY_FILE = "history.db"
 HISTORY_TABLE = "downloads"
 # The target a source's login and `connect` see: the account, not anything to download.
 ACCOUNT = "account"
+# What `logout` takes for every source.
+ALL = "all"
+# What `download` says to a `classify` it can't honour yet: Phase 6 step 11 builds it.
+CLASSIFY_LATER = "--classify comes in a later step"
+# The cookie logins every source without its own login has, by `login`'s method name.
+COOKIE_METHODS = ("browser", "file")
 
 # What in a source's code means it can drive a browser: the `Site` members and helpers that open
 # or use a page (`Site.page`, `goto`, `handoff`, `fetch(in_page=True)`, `watch_responses`,
@@ -46,18 +70,74 @@ _sleep = time.sleep
 Row = Any
 
 
-class Engine:
-    """Runs targets, one worker per source, with one HTTP client, back-off and history for each.
+@dataclass(frozen=True)
+class TargetReport:
+    """What one command did for one target: `report.targets[0].written`.
 
-        engine = Engine(home=Path(".flnd"))
-        total = engine.run(engine.resolve(["tik:example_creator"]), Options(categories=("videos",)))
-
-    Targets of one source run one after another, with a pause between them; different sources
-    run at the same time. It never asks questions.
+        TargetReport(Target("ins", "user", "example_user"), written=(Path("…/a.jpg"),), skipped=3)
     """
 
+    # The target, as `resolve` gave it.
+    target: Target
+    # Each file written, at its path after compressing.
+    written: tuple[Path, ...]
+    # Files already saved, or filtered out, that weren't downloaded again.
+    skipped: int
+    # `sync` only: files that were missing, empty or broken and were downloaded again.
+    repaired: int = 0
+    # `sync` only: files the history names that the site no longer lists.
+    missing: int = 0
+    # The saved settings this run used, as shown at its start: "--image webp,mid (saved)"; "" for none.
+    settings: str = ""
+    # Why the target failed, as logged; None when it didn't.
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class Report:
+    """What `download` or `sync` did, one `TargetReport` per target in the order given: `0 if report.ok else 1`.
+
+        report = engine.download(["ins:example_user"])
+        print(report.files, [str(target) for target in report.failed])
+    """
+
+    # One per target, in the order they were given (or recorded, for a `sync` of every target).
+    targets: tuple[TargetReport, ...]
+
+    @property
+    def files(self) -> int:
+        """How many files were written, over every target."""
+        return sum(len(target.written) for target in self.targets)
+
+    @property
+    def failed(self) -> tuple[Target, ...]:
+        """The targets that failed, in order: their route or a category raised, or their source couldn't start."""
+        return tuple(target.target for target in self.targets if target.error is not None)
+
+    @property
+    def ok(self) -> bool:
+        """Whether no target failed: the command's exit status is 0 when it is, and 1 otherwise."""
+        return not self.failed
+
+
+class Engine:
+    """flnd's commands as methods: `resolve`, `download`, `sync`, `login` and `logout`.
+
+        engine = Engine(home=Path(".flnd"))
+        report = engine.download(["tik:example_creator"], categories="videos")
+        engine.login("ins", "browser", browser="chrome")
+
+    Targets of one source run one after another, with a pause between them; different sources
+    run at the same time. `download` and `sync` never ask questions; a source's own `login` asks
+    through its `Login`.
+    """
+
+    # What `login` raises for a login that didn't work, so a caller can catch it from the engine:
+    # `except Engine.LoginError`. It is `flnd.source.LoginError`, which sources raise too.
+    LoginError = LoginError
+
     def __init__(self, *, home: Path = Path(".flnd"), sources: Mapping[str, type[Source]] = SOURCES):
-        """Make an engine; nothing is read or started until `resolve` or `run`.
+        """Make an engine; nothing is read or started until a method is called.
 
         Args:
             home: flnd's folder, which holds the downloads, the history, the logins and the saved settings.
@@ -66,77 +146,386 @@ class Engine:
         A run has no download limit: it ends when the sources have nothing more, or on Ctrl-C.
         """
         self.home, self.sources = home, sources
-        # Every target that ended at error, over all of this engine's runs: `flnd download` and
-        # `flnd sync` run one per settings group, and the command's exit status covers them all.
-        self.failed: list[Target] = []
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
         """Every target as its source reads it, stopping at the first bad one with `TargetError`.
 
             targets = engine.resolve(["ins:@example_user", "https://vm.tiktok.com/ZMabc/"])
 
-        Resolve them all before `run`, so a bad one stops everything before anything starts.
+        Args:
+            texts: the targets as people write them: `code:value`, or a link.
+
+        Raises:
+            TargetError: a text is empty, names no source, or its source can't read it; it is a
+                `ValueError`, with what to write instead.
+
         Only short links make a request, one HEAD each.
         """
         return [resolve(text, self.sources, follow=_follow) for text in texts]
 
-    def run(self, targets: Sequence[Target], options: Options) -> int:
-        """Download every target, and return how many files were written.
+    def download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None,
+                 time: Range | str = Range(), image: Choice | str | None = None, video: Choice | str | None = None,
+                 audio: Choice | str | None = None, classify: bool | str | None = None) -> Report:
+        """Download each target, with its saved settings and the ones given on top, and say what was done.
 
-            engine.run(engine.resolve(["ins:example_user"]), Options(categories=("reels",)))
-            exit_status = 1 if engine.failed else 0
+            report = engine.download(["ins:example_user"], categories="reels,tagged", time="2026-01-01,",
+                                     image="webp,mid")
+
+        Args:
+            targets: `Target`s, or texts that `resolve` reads; a text that can't be read raises
+                before anything starts.
+            categories: `--from`: names as a comma list, or a sequence of them; "all", or None,
+                takes every category. Refused for a single post's link, which is downloaded whole.
+            time: `--time`: a `Range`, or its text ("2026-01-01,2026-06-30"); `Range()` is no limit.
+            image: `--image`: a `Choice`, its text ("webp,mid"), "off" to turn the saved one off,
+                or None to keep the target's saved setting.
+            video: `--video`, as `image`.
+            audio: `--audio`, as `image`.
+            classify: `--classify`, built in a later step; only None is taken for now.
+
+        Returns:
+            One `TargetReport` per target, in the order given, each with the saved settings it used.
+
+        Raises:
+            ValueError: an option's text can't be read, `--from` names no category of these
+                targets' sources or is given for a single post, `classify` isn't None, or a target
+                can't be read (`TargetError`); each message is what the CLI shows as a usage error.
+                Raised before any file is read or written, and before any request but a short link's.
+            OSError: `targets.db` or the history can't be read or written.
+
+        A setting given here is saved for each target, and used by every later `download` and
+        `sync` of it; `--from` and `--time` are never saved. A setting that changes is applied to
+        the target's files already saved before anything is downloaded, so a folder is never
+        half one setting and half another; that is slow, and replaces originals with their
+        smaller copies. It is saved only once that is done, so an apply cut short (Ctrl-C, a
+        crash, a full disk) is finished by the next download with the same option. Targets
+        whose settings then differ run apart, one group after another.
+        """
+        # Read every option before anything starts, in the CLI's order, so the first bad one is the error.
+        span = Range.parse(time) if isinstance(time, str) else time
+        given = _given(image=image, video=video, audio=audio)
+        if classify is not None:
+            raise ValueError(CLASSIFY_LATER)
+        resolved = [target if isinstance(target, Target) else self.resolve([target])[0] for target in targets]
+        names = self._categories(categories, resolved)
+        options = Options(categories=names, since=span.since, until=span.until)
+        log.info("Storage: {path}", path=(self.home / "downloads").resolve())
+        rows = settings.rows(self.home)
+        chosen: list[tuple[Target, Options]] = []
+        shown: list[str] = []
+        changes: list[tuple[Target, str, Choice]] = []
+        for target in resolved:
+            saved = settings.choices(rows.get(settings.key(target), {}))
+            shown.append(settings.announce(target, {name: choice for name, choice in saved.items()
+                                                    if name not in given}))
+            chosen.append((target, _with(options, {**saved, **given})))
+            changes += [(target, name, choice) for name, choice in given.items()
+                        if choice is not None and choice != saved.get(name)]
+        changed = {target for target, _, _ in changes}
+        settings.record(self.home, [(target, options) for target, options in chosen if target not in changed],
+                        given=given)
+        if changes:
+            self._apply(changes, dict(chosen), given)
+        reports = self._fetch(chosen)
+        return Report(tuple(replace(report, settings=text) for report, text in zip(reports, shown)))
+
+    def sync(self, targets: Sequence[Target | str] = ()) -> Report:
+        """Bring downloaded targets up to date: repair what was lost, fetch what's new, and sum it up.
+
+            report = engine.sync()                              # every target downloaded so far
+            report = engine.sync(["ins:example_user"])
+
+        Args:
+            targets: only these, as `Target`s or texts; when empty, every target in `targets.db`
+                and every folder under `downloads/<code>/` that a row doesn't name.
+
+        Returns:
+            One `TargetReport` per target, with its repaired and missing counts.
+
+        Raises:
+            ValueError: a target can't be read (`TargetError`), before anything starts.
+            OSError: the history or `targets.db` can't be opened or written.
+
+        It changes no setting and takes each source's default categories. For each target, in
+        order: leftover `.part` files are removed and files that are missing, empty or broken are
+        forgotten (broken ones deleted, which can't be undone); then what is new or was lost is
+        downloaded with the target's saved settings; then one line per target and the totals are
+        logged. The history is read once per sync (fixes #12). The fetch makes network requests
+        and can take hours.
+        """
+        resolved = [target if isinstance(target, Target) else self.resolve([target])[0] for target in targets]
+        chosen = self._plan(resolved)
+        # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
+        settings.record(self.home, chosen)
+        shown = [settings.announce(target, {name: getattr(options, name) for name in settings.SAVED})
+                 for target, options in chosen]
+        tallies = [repair.Tally(str(target)) for target, _ in chosen]
+        folders = [files.target_folder(self.home, target) for target, _ in chosen]
+        with self._history() as history:
+            index = repair.index(history, folders)
+            for tally, folder in zip(tallies, folders):
+                repair.repair(history, folder, index[folder], tally)
+        log.info("Storage: {path}", path=(self.home / "downloads").resolve())
+        reports = self._fetch(chosen)
+        with self._history() as history:
+            for tally, folder in zip(tallies, folders):
+                repair.count(history, folder, tally)
+        repair.summary(tallies)
+        return Report(tuple(replace(report, repaired=tally.repaired, missing=tally.missing, settings=text)
+                            for report, tally, text in zip(reports, tallies, shown)))
+
+    def login(self, code: str, method: str, *, browser: str | None = None, profile: str | None = None,
+              path: Path | str | None = None) -> str:
+        """Log in to a source by one of its `login_methods`, and return the "logged in" message.
+
+            engine.login("ins", "browser", browser="chrome")      # "ins: logged in from Chrome (14 cookies)"
+            engine.login("ins", "file", path="~/Downloads/cookies.txt")
+            engine.login("tlg", "qr")                              # asks through the source's `Login`
+
+        Args:
+            code: the source's code.
+            method: one of the source's `login_methods`: `browser` or `file` for a cookie source,
+                or the source's own (tlg's `browser`, `qr`, `phone`).
+            browser: for a cookie source's `browser`: a browser to read cookies from, such as
+                "chrome" (see `auth.BROWSERS`).
+            profile: that browser's profile folder; None reads its default one.
+            path: for `file`: a Netscape or JSON cookie file, read once and never copied.
+
+        Returns:
+            The message to show; "" for a source with its own login, which says so itself.
+
+        Raises:
+            Engine.LoginError: the login didn't work, with what to do instead.
+            ValueError: the source or method is unknown, or the method's answer is missing.
+
+        Every credential is sealed in the vault, `.flnd/secrets.db`; nothing else is written.
+        """
+        if code not in self.sources:
+            raise ValueError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
+        source = self.sources[code]()
+        if method not in source.login_methods:
+            raise ValueError(f"{code} logs in by {', '.join(source.login_methods)}, not {method!r}")
+        if code not in self.cookie_logins:
+            # A source with its own login (tlg) asks its own questions, through an asking `Login`.
+            with source_run(self._settings(Options(), {}, interactive=True), source) as run:
+                source.login(LoginSite(run), method)
+            return ""
+        if method == "file":
+            if path is None:
+                raise ValueError("a file login needs the cookie file's path")
+            file = Path(path).expanduser()
+            return auth.store(source, auth.from_file(source, file), home=self.home, origin=file.name)
+        if browser is None:
+            raise ValueError("a browser login needs the browser to read cookies from")
+        jar = auth.from_browser(source, browser=browser, profile=profile)
+        return auth.store(source, jar, home=self.home, origin=auth.BROWSERS.get(browser, browser))
+
+    def logout(self, codes: Iterable[str]) -> list[str]:
+        """Remove the logins of these sources, or of every one for `["all"]`, and return the codes that had one.
+
+            engine.logout(["ins", "tik"])        # ["ins"] when only ins was logged in
+            engine.logout(["all"])
+
+        Args:
+            codes: source codes, or "all" among them for every source.
+
+        Returns:
+            The codes whose login (cookies, a session or only an API key) was removed, in the
+            sources' order for "all" and in the order given otherwise, each once.
+
+        Raises:
+            ValueError: a code isn't one of the sources.
+        """
+        asked = list(dict.fromkeys(codes))
+        unknown = [code for code in asked if code != ALL and code not in self.sources]
+        if unknown:
+            raise ValueError(f"unknown source '{unknown[0]}'. Sources: {', '.join(self.sources)}")
+        chosen = list(self.sources) if ALL in asked else asked
+        return [code for code in chosen if auth.logout(self.home, code)]
+
+    @property
+    def logins(self) -> dict[str, str]:
+        """Each source with something saved, by code: "logged in", or "api key saved" for an API key alone.
+
+            engine.logins          # {"ins": "logged in", "tlg": "api key saved"}
+
+        It creates no file, except to move a plain cookie file of an earlier version into the vault.
+        """
+        found = {}
+        for code in self.sources:
+            if auth.logged_in(self.home, code):
+                found[code] = "logged in"
+            elif auth.api_key_saved(self.home, code):
+                found[code] = "api key saved"
+        return found
+
+    @property
+    def cookie_logins(self) -> tuple[str, ...]:
+        """The codes of the sources that log in with cookies (`browser` or `file`), not with their own login.
+
+            engine.cookie_logins   # ("tik", "fbk", "ins", "twt", "loi")
+
+        `login` asks such a source for a browser and profile, or a file; any other runs its own.
+        """
+        return tuple(code for code, source in self.sources.items() if source.login is Source.login)
+
+    def _categories(self, categories: str | Sequence[str] | None, targets: Sequence[Target]) -> tuple[str, ...] | None:
+        """`--from`'s names, each once, checked against these targets; None without `--from`.
+
+        Raises:
+            ValueError: no source here has a name, or a target is a single post.
+        """
+        if categories is None:
+            return None
+        items = [categories] if isinstance(categories, str) else list(categories)
+        names = tuple(dict.fromkeys(name.strip() for item in items for name in item.split(",") if name.strip()))
+        sources = list(dict.fromkeys(self.sources[target.source] for target in targets)) or list(self.sources.values())
+        if problem := unknown_categories(names, sources) or single_targets(targets, self.sources):
+            raise ValueError(problem)
+        return names
+
+    def _plan(self, targets: Sequence[Target]) -> list[tuple[Target, Options]]:
+        """Each target to sync, with its saved settings and each source's default categories; nothing is written.
+
+        Args:
+            targets: only these; when empty, every recorded target and every unrecorded folder
+                under `downloads/<code>/`, in that order.
+        """
+        rows = settings.rows(self.home)
+        if not targets:
+            targets = [Target(code, row["kind"], value) for key, row in rows.items()
+                       for code, value in [key.split(":", 1)] if code in self.sources]
+            targets += list(self._unrecorded(targets))
+        return [(target, _with(Options(), settings.choices(rows.get(settings.key(target), {})))) for target in targets]
+
+    def _unrecorded(self, known: Sequence[Target]) -> Iterator[Target]:
+        """Folders under `downloads/<code>/` no row names: downloaded before Phase 5 recorded settings."""
+        seen = {files.target_folder(self.home, target) for target in known}
+        downloads = self.home / "downloads"
+        for code in self.sources:
+            for folder in sorted((downloads / code).iterdir()) if (downloads / code).is_dir() else ():
+                if folder.is_dir() and folder not in seen:
+                    try:
+                        yield self.resolve([f"{code}:{folder.name}"])[0]
+                    except TargetError as error:
+                        log.warn("{folder}: not synced: {error}", folder=f"{code}/{folder.name}", error=error)
+
+    def _apply(self, changes: Sequence[tuple[Target, str, Choice]], chosen: Mapping[Target, Options],
+               given: Iterable[str]) -> None:
+        """Compress each changed target's files already saved with its new setting, then save its settings.
+
+        Args:
+            changes: (target, `settings.SAVED` name, new choice) for each setting `download` changes.
+            chosen: each target's options, saved settings and given ones together, as `record` takes them.
+            given: the `SAVED` names given, for `record`.
+
+        Raises:
+            OSError: the history or `targets.db` can't be written.
+        """
+        folders = {target: files.target_folder(self.home, target) for target, _, _ in changes}
+        compressor = Compressor()
+        with self._history() as history:
+            index = repair.index(history, list(folders.values()))
+            for target in folders:
+                for changed, name, choice in changes:
+                    if changed == target:
+                        kind = next(kind for kind, spec in KINDS.items() if spec.option == name)
+                        compress.apply(history, index[folders[target]], kind, choice, compressor, label=str(target))
+                # Saved only now that every file has it: saved before, an apply cut short would never be
+                # finished, since the next download with the same option would see no change.
+                settings.record(self.home, [(target, chosen[target])], given=given)
+
+    def _fetch(self, chosen: Sequence[tuple[Target, Options]]) -> list[TargetReport]:
+        """Run the targets, those with the same options together, and give their reports in the order of `chosen`.
+
+        Each category that listed to its end is recorded as complete in `targets.db` (A9 rule 3).
+        """
+        groups: dict[Options, list[int]] = {}
+        for number, (_, options) in enumerate(chosen):
+            groups.setdefault(options, []).append(number)
+        reports: dict[int, TargetReport] = {}
+        for options, numbers in groups.items():
+            ran = self._run([chosen[number][0] for number in numbers], options)
+            for number, (report, complete) in zip(numbers, ran):
+                reports[number] = report
+                settings.complete(self.home, report.target, complete)
+        return [reports[number] for number in range(len(chosen))]
+
+    def _run(self, targets: Sequence[Target], options: Options) -> list[tuple[TargetReport, tuple[str, ...]]]:
+        """Download every target with one set of options, and give each one's report and complete categories.
+
+            [(report, complete)] = engine._run(engine.resolve(["ins:example_user"]), Options(categories=("reels",)))
 
         Args:
             targets: the targets to download, as `resolve` gives them.
             options: what to take from each target and what to do with the files.
 
         Returns:
-            How many files were written; one skipped as already saved or filtered out isn't counted.
+            One (report, the categories that listed to their end) per target, in the order given.
 
         When a target's source can open a browser (`needs_browser`) and Google Chrome is missing,
-        the "download Chromium?" question is asked once, before anything starts. A source with
-        categories runs through flnd/job.py.
+        the "download Chromium?" question is asked once, before anything starts.
 
-        Each target ends its row at ok or error; one failing never stops the others, and is added to
-        `failed`. A whole source that can't start (its `logged_in` or `connect` raises) fails each of
-        its targets. A rate limit is waited out, however long it takes, and isn't a failure; Ctrl-C
-        ends the wait.
+        Each target ends its row at ok or error; one failing never stops the others. A whole
+        source that can't start (its `logged_in` or `connect` raises) fails each of its targets. A
+        rate limit is waited out, however long it takes, and isn't a failure; Ctrl-C ends the wait.
         """
-        groups: dict[str, list[Target]] = {}
-        for target in targets:
-            groups.setdefault(target.source, []).append(target)
+        groups: dict[str, list[int]] = {}
+        for number, target in enumerate(targets):
+            groups.setdefault(target.source, []).append(number)
         # The one question `flnd download` can ask, before any work starts (cli.md, "Chrome only").
         if any(needs_browser(self.sources[target.source], target, options) for target in targets):
             _offer_browser()
-        with kv.open(self.home / HISTORY_FILE, table=HISTORY_TABLE) as history, _stop_waits_on_ctrl_c(), \
-                log.group("download") as rows:
-            settings = self._settings(options, history)
-            work = [(self.sources[code](), [(target, rows.add(str(target))) for target in group])
-                    for code, group in groups.items()]
-            total = 0
-            for result in worker.as_completed(partial(_run_group, settings), work, concurrency=max(len(work), 1)):
+        # Filled by every source's worker thread at once, each under its own targets' numbers, and read
+        # only once they have all ended: one assignment per key needs no lock.
+        done: dict[int, tuple[TargetReport, tuple[str, ...]]] = {}
+        with self._history() as history, _stop_waits_on_ctrl_c(), log.group("download") as rows:
+            run_settings = self._settings(options, history)
+            work = [(self.sources[code](), [(number, targets[number], rows.add(str(targets[number])))
+                                            for number in numbers])
+                    for code, numbers in groups.items()]
+            for result in worker.as_completed(partial(_run_group, run_settings, done), work,
+                                              concurrency=max(len(work), 1)):
                 if result.ok:
-                    total += result.value or 0
                     continue
                 # The whole group stopped before or between its targets: the targets it never reached
                 # failed too, or `log.group` would end their rows at ok.
                 source, group_rows = result.item
                 log.error("{source}: {error}", source=source.code, error=result.error)
-                for _, row in group_rows:
+                for number, target, row in group_rows:
                     if not row.finished:
                         row.caption = str(result.error)
                         row.fail()
-        self.failed += [target for _, group_rows in work for target, row in group_rows if row.outcome == "error"]
-        return total
+                    if number not in done:
+                        done[number] = (TargetReport(target, (), 0, error=str(result.error)), ())
+        return [done[number] for number in range(len(targets))]
 
-    def login(self, source: Source, method: str) -> None:
-        """Run a source's own login (tlg's), through a `Login` that may ask questions."""
-        with source_run(self._settings(Options(), {}, interactive=True), source) as run:
-            source.login(LoginSite(run), method)
+    def _history(self) -> kv.Store:
+        """The download history, opened for a `with` block."""
+        return kv.open(self.home / HISTORY_FILE, table=HISTORY_TABLE)
 
     def _settings(self, options: Options, history: MutableMapping[str, Any], *,
                   interactive: bool = False) -> Settings:
         return Settings(home=self.home, options=options, history=history, interactive=interactive)
+
+
+def _given(**values: Choice | str | None) -> dict[str, Choice | None]:
+    """The `--image`, `--video` and `--audio` given, by name: a `Choice`, or None for off.
+
+    A name given None is left out, so the target keeps its saved setting; text is read by
+    `Choice.parse`, whose `ValueError` names the option and what each part takes.
+    """
+    given: dict[str, Choice | None] = {}
+    for kind, value in values.items():
+        if value is None:
+            continue
+        given[kind] = Choice.parse(value, kind=kind) if isinstance(value, str) else value
+    return given
+
+
+def _with(options: Options, choices: Mapping[str, Choice | None]) -> Options:
+    """`options` with the saved settings in `choices`; one `choices` leaves out is None."""
+    return replace(options, image=choices.get("image"), video=choices.get("video"), audio=choices.get("audio"))
 
 
 def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[[str], str] | None = None) -> Target:
@@ -323,19 +712,29 @@ def _follow(url: str) -> str:
         raise TargetError(f"can't follow {url}: {error}") from None
 
 
-def _run_group(settings: Settings, work: tuple[Source, list[tuple[Target, Row]]]) -> int:
+# What `_run_group` fills for each target, by its place in the run: its report and its complete categories.
+Done = MutableMapping[int, "tuple[TargetReport, tuple[str, ...]]"]
+
+
+def _run_group(run_settings: Settings, done: Done, work: tuple[Source, list[tuple[int, Target, Row]]]) -> None:
+    """Run one source's targets, one after another, on one worker, filling `done` as each ends.
+
+    A target that ends is in `done` even when a later one stops the whole group, so its report
+    survives; `Engine._run` fails the ones the group never reached.
+    """
     source, rows = work
-    with source_run(settings, source) as run:
+    with source_run(run_settings, source) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not source.logged_in(account):
             if source.requires_login:
-                for target, row in rows:
+                for number, target, row in rows:
                     log.error("{target}: not logged in; run flnd login", target=str(target))
                     row.fail()
-                return 0
+                    done[number] = (TargetReport(target, (), 0, error="not logged in; run flnd login"), ())
+                return
             log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
         with _connected(run, account):
-            return _run_targets(run, rows)
+            _run_targets(run, rows, done)
 
 
 @contextmanager
@@ -357,15 +756,11 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
         run.run_async(manager.__aexit__(None, None, None))
 
 
-def _run_targets(run: SourceRun, rows: list[tuple[Target, Row]]) -> int:
-    total = 0
-    for index, (target, row) in enumerate(rows):
+def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done) -> None:
+    """Each target of one source through the job, with a person's pause between them."""
+    for index, (number, target, row) in enumerate(rows):
         if index:
             # Back-to-back targets are what a script looks like, so a person's pause comes between them.
             _sleep(net.jittered(run.source.pause))
-        total += _run_target(run, target, row)
-    return total
-
-
-def _run_target(run: SourceRun, target: Target, row: Row) -> int:
-    return job.download(run, target, row)
+        result = job.download(run, target, row)
+        done[number] = (TargetReport(target, result.written, result.skipped, error=result.error), result.complete)

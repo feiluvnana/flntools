@@ -318,7 +318,7 @@ class EngineTest(EngineCase):
     def setUp(self):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc", "path": "/"}]
-        cookies.Jar(jar).save(auth.cookie_file(self.home, "loi"))
+        auth.save(self.home, "loi", cookies.Jar(jar))
         self.routes.update({f"{API}lois/5930": httpx.Response(200, json={"data": {**POST, "images": []}}),
                             f"{API}user/info": httpx.Response(200, json=USER)})
 

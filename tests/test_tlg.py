@@ -365,7 +365,7 @@ class LoginCase(EngineCase):
         self.screen.readkey = iter([key for answer in answers for key in [*answer, "enter"]]).__next__
 
     def log_in(self, method):
-        Engine(home=self.home).login(Telegram(), method)
+        Engine(home=self.home, sources={"tlg": Telegram}).login("tlg", method)
 
     def assert_logged_in(self):
         self.assertEqual(stored(self.home), {"session": SESSION, **CREDENTIALS})
@@ -689,8 +689,7 @@ class WithOtherSourcesTest(DownloadCase):
 
         other = make_source("aaa", lambda site: both.wait())
         with mock.patch.object(FakeClient, "iter_messages", iter_messages):
-            engine = Engine(home=self.home, sources={"tlg": Telegram, "aaa": other})
-            total = engine.run(engine.resolve(["tlg:@examplechannel", "aaa:a"]), Options())
+            total = self.run_engine(Telegram, other, targets=["tlg:@examplechannel", "aaa:a"])
         self.assertEqual(total, 1)
         self.assertFalse(both.broken)
 

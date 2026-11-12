@@ -33,7 +33,8 @@ URL calls a lazy post's `files` once more and takes the file with the same `num`
 and a graceful first Ctrl-C (stop listing: close every category generator, and let running
 downloads finish, in `download` and `Job.finish`).
 
-    saved = job.download(run, Target("loi", "post", "5930"), row)
+    done = job.download(run, Target("loi", "post", "5930"), row)
+    done.written, done.skipped, done.error, done.complete
 """
 
 from __future__ import annotations
@@ -41,9 +42,10 @@ from __future__ import annotations
 import datetime
 import inspect
 import string
+import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Generator, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Generator, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from flnd import post as postprocess
@@ -59,7 +61,7 @@ if TYPE_CHECKING:
 
     from flnd.session import Options
 
-__all__ = ["Job", "Placed", "download", "place", "posts", "wanted"]
+__all__ = ["Done", "Job", "Placed", "download", "place", "posts", "wanted"]
 
 # Posts in a row older than `--time`'s since that end a `newest_first` category (A9 rule 2): more
 # than any site pins (Instagram and TikTok up to 3, X 1), so 5 can only mean the feed has passed it.
@@ -100,6 +102,20 @@ class Placed:
     values: Mapping[str, Any]
 
 
+@dataclass(frozen=True)
+class Done:
+    """What one target's job did, for the engine's `TargetReport` and `targets.db`'s `complete` record."""
+
+    # Every file written, where it ended up after its postprocessors, in the order they finished.
+    written: tuple[Path, ...]
+    # Files and lazy posts skipped as already saved or queued.
+    skipped: int
+    # Why the target failed (its route or a category raised), or None.
+    error: str | None
+    # The categories whose listing ended by itself, not by an early stop, an error or Ctrl-C.
+    complete: tuple[str, ...]
+
+
 def wanted(source: type[Source], route: Route, options: Options) -> tuple[Category, ...]:
     """The categories of `route` that `--from` takes, in declaration order; every one without `--from`.
 
@@ -116,8 +132,8 @@ def wanted(source: type[Source], route: Route, options: Options) -> tuple[Catego
     return tuple(category for category in route.categories if category.name in names)
 
 
-def posts(source: Source, site: Site, target: Target, options: Options, *,
-          run_async: RunAsync) -> Generator[Post, None, None]:
+def posts(source: Source, site: Site, target: Target, options: Options, *, run_async: RunAsync,
+          ended: Callable[[str], None] | None = None) -> Generator[Post, None, None]:
     """Every post the target's route and wanted categories yield that `--time` keeps, its `category` set.
 
         for post in posts(source, site, target, options, run_async=run.run_async): ...
@@ -128,6 +144,8 @@ def posts(source: Source, site: Site, target: Target, options: Options, *,
         target: the target, whose `kind` names its route.
         options: the run's options: `--from` and `--time`.
         run_async: runs a coroutine to its end, for an `async def` route or category.
+        ended: called with a category's name when its generator ends by itself, having yielded
+            every post; not after a `newest_first` early stop, an error, or this iterator closing.
 
     Raises:
         Whatever the route or a category raises, such as `FetchError` or `LoginError`.
@@ -148,7 +166,10 @@ def posts(source: Source, site: Site, target: Target, options: Options, *,
         context = run_async(context)
     for category in categories:
         yielded = getattr(source, category.attribute)(site, context)
-        yield from _kept(yielded, category.name, newest_first=category.newest_first, time=time, run_async=run_async)
+        finished = yield from _kept(yielded, category.name, newest_first=category.newest_first, time=time,
+                                    run_async=run_async)
+        if finished and ended is not None:
+            ended(category.name)
 
 
 def place(source: Source, post: Post, files: Sequence[File], *, category: Category | None = None) -> list[Placed]:
@@ -211,6 +232,12 @@ class Job:
         self._encodes: worker.Pool | None = None
         # Every path and history key queued so far, so one file is never written twice.
         self._queued: set[Path | str] = set()
+        # Each written file by its history key, at its path after postprocessing (a compressed copy
+        # may have a new name). Download threads and the encode pool's thread both write it, so
+        # under the lock. A video counts from its download, as it always did; another file once
+        # its postprocessing is done.
+        self._written: dict[str, Path] = {}
+        self._writing = threading.Lock()
 
     def queue(self, post: Post) -> None:
         """Queue every file of one post that isn't saved or queued yet, listing a lazy post's files only if needed.
@@ -244,15 +271,15 @@ class Job:
             self._queued.update((dest, key))
             self._downloads().submit(self._download, _Queued(placed, dest, key))
 
-    def finish(self, error: BaseException | None = None) -> int:
-        """Wait for the downloads and their encodes (or, after `error`, drop the queued ones), and count the files written.
+    def finish(self, error: BaseException | None = None) -> tuple[Path, ...]:
+        """Wait for the downloads and their encodes (or, after `error`, drop the queued ones), and give the files written.
 
         Args:
             error: what ended the listing, if anything; queued downloads are then dropped, and
                 running ones finish.
 
         Returns:
-            How many files were written, after logging each failed one.
+            Each file written, at its path after postprocessing, after logging each failed one.
         """
         # Downloads queue video encodes, so their pool ends first; the target waits for both.
         for name in ("_pool", "_encodes"):
@@ -266,9 +293,8 @@ class Job:
                     item = result.item[0] if isinstance(result.item, tuple) else result.item
                     log.error("{file}: {kind} {error}", file=item, kind=type(result.error).__name__,
                               error=result.error)
-        if self._pool is None:
-            return 0
-        return sum(1 for result in self._pool.results if result.value is True)
+        with self._writing:
+            return tuple(self._written.values())
 
     def _saved_first(self, post: Post, category: Category | None) -> bool:
         """Whether a lazy post's first file is saved, by its key alone; False when the key needs the listed files."""
@@ -327,6 +353,9 @@ class Job:
                                     row=row, values=placed.values)
         if fields.choice is not None and kind is not None and KINDS[kind].one_at_a_time:
             # A video waits for the run's one encode at a time on a pool of its own, so downloads go on.
+            # It counts as written now, as its download is done; its encode only moves it.
+            with self._writing:
+                self._written[queued.key] = saved
             self._encoder().submit(self._postprocess, queued.key, saved, fields)
         else:
             self._postprocess(queued.key, saved, fields)
@@ -336,6 +365,8 @@ class Job:
         """Run every postprocessor in order, then write the file's history row: last, so a row means a finished file."""
         for step in postprocess.ORDER:
             path = step(path, fields)
+        with self._writing:
+            self._written[key] = path
         self.settings.history[key] = fields.row
 
     def _sync_fetch(self, fetch: Callable[..., Any]) -> Callable[..., Any]:
@@ -347,15 +378,20 @@ class Job:
         return call
 
 
-def download(run: SourceRun, target: Target, row: Any) -> int:
-    """Download one target of a ported source, ending its row at ok or error, and return how many files were written.
+def download(run: SourceRun, target: Target, row: Any) -> Done:
+    """Download one target of a ported source, ending its row at ok or error, and say what it did.
 
-        written = download(run, Target("loi", "post", "5930"), row)
+        done = download(run, Target("loi", "post", "5930"), row)
+        len(done.written)                   # how many files were written
 
     Args:
         run: the source's resources for the run.
         target: the target, as `Engine.resolve` gives it.
         row: its progress row, which ends at ok, or at error when the route or a category raised.
+
+    Returns:
+        The files written, how many were skipped, the error that failed the target if one did,
+        and the categories that listed to their end (even when a later one failed).
 
     Raises:
         KeyboardInterrupt and other `BaseException`s, after the queued downloads are dropped and
@@ -363,7 +399,8 @@ def download(run: SourceRun, target: Target, row: Any) -> int:
     """
     site = TargetSite(run, target, row=row)
     job = Job(run, site, target)
-    listing = posts(run.source, site, target, run.settings.options, run_async=run.run_async)
+    complete: list[str] = []
+    listing = posts(run.source, site, target, run.settings.options, run_async=run.run_async, ended=complete.append)
     try:
         # step 8: a first Ctrl-C closes `listing` here and lets the running downloads finish.
         for post in listing:
@@ -376,11 +413,11 @@ def download(run: SourceRun, target: Target, row: Any) -> int:
             raise
         log.error("{target}: {error}", target=str(target), error=error)
         row.fail()
-        return written
+        return Done(written, job.skipped, str(error), tuple(complete))
     site.close()
     written = job.finish()
     row.finish()
-    return written
+    return Done(written, job.skipped, None, tuple(complete))
 
 
 @dataclass(frozen=True)
@@ -395,8 +432,12 @@ class _Queued:
         return self.placed.path
 
 
-def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range, run_async: RunAsync) -> Iterator[Post]:
+def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range,
+          run_async: RunAsync) -> Generator[Post, None, bool]:
     """The posts a route or category yielded, its `category` set, that `--time` keeps; see the module.
+
+    Its return value, read with `yield from`, is True when the method's posts ran out by
+    themselves, and False after a `newest_first` early stop.
 
     Args:
         yielded: what the method returned: a generator, an async generator, a coroutine giving
@@ -425,7 +466,8 @@ def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range, run_a
             if newest_first and time.since is not None and posted is not None and posted < time.since:
                 older += 1
                 if older >= OLDER_IN_A_ROW:
-                    return
+                    return False
+        return True
     finally:
         # Closed however this ends (an early stop, an error, the job stopping): its `finally` blocks run.
         stream.close()

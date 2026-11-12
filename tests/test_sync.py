@@ -1,8 +1,10 @@
-"""flnd sync and the saved target settings: plan, record, download's use of them, repair, fetch and the summary.
+"""`Engine.sync` and the saved target settings (flnd/settings.py, flnd/repair.py): the plan, the
+records, `Engine.download`'s use of them, repair, the fetch and the summary.
 
 Each test runs on a temporary `.flnd` with test sources on `httpx.MockTransport` (see `EngineCase`),
 and the fake screen. `shared.media.open` is replaced by `test_engine.FakeMedia` wherever a test only
-needs to know what was compressed with what.
+needs to know what was compressed with what. A setting given as None here is `off`, as `download`
+was given it on the command line; one left out keeps the saved setting.
 """
 
 import datetime
@@ -14,9 +16,7 @@ import httpx
 from media_samples import needs_pillow
 from test_engine import CDN, EngineCase, FakeMedia, compressing, history, make_source, noise
 
-from flnd import sync
-from flnd.common.compress import Choice
-from flnd.engine import Engine
+from flnd import Choice, Engine, Range, TargetReport
 from flnd.session import Options
 from flnd.source import File, Target
 from shared import kv
@@ -38,6 +38,15 @@ class Site:
             self.case.routes[f"{CDN}/{name}"] = httpx.Response(200, content=body)
 
 
+def recorded(record):
+    """An `Engine._run` that only calls `record(targets, options)`, and reports each target done with nothing written."""
+    def run(engine, targets, options):
+        record(targets, options)
+        return [(TargetReport(target, (), 0), ()) for target in targets]
+
+    return run
+
+
 @needs_pillow
 class SyncCase(EngineCase):
     def setUp(self):
@@ -50,12 +59,19 @@ class SyncCase(EngineCase):
         return Engine(home=self.home, sources={source.code: source})
 
     def download(self, options=Options(), source=None, texts=("aaa:a",), **given):
-        engine = self.engine(source)
-        return sync.download(engine, engine.resolve(list(texts)), options, given)
+        """`Engine.download` with `options`' --from and --time, and each setting given, None for `off`."""
+        report = self.engine(source).download(list(texts), categories=options.categories,
+                                              time=Range(options.since, options.until),
+                                              **{name: "off" if choice is None else choice
+                                                 for name, choice in given.items()})
+        return report.files
 
     def sync(self, texts=(), source=None):
-        engine = self.engine(source)
-        return sync.run(engine, sync.plan(engine, engine.resolve(list(texts))))
+        """`Engine.sync`, giving one `TargetReport` per target."""
+        return list(self.engine(source).sync(list(texts)).targets)
+
+    def plan(self, targets=()):
+        return self.engine()._plan(list(targets))
 
     def saved(self):
         with kv.open(self.home / "targets.db", table="targets") as targets:
@@ -75,16 +91,18 @@ class SettingsTest(SyncCase):
         self.download(video=Choice("h265", "low"))
         row = self.saved()["aaa:a"]
         self.assertEqual((row["kind"], row["image"], row["video"], row["audio"]), ("user", "webp,mid", "h265,low", None))
-        [(target, options)] = sync.plan(self.engine(), [])
+        [(target, options)] = self.plan()
         self.assertEqual(options, Options(image=WEBP_MID, video=Choice("h265", "low")))
         self.download(image=None)
-        self.assertEqual(sync.plan(self.engine(), [target])[0][1], Options(video=Choice("h265", "low")))
+        self.assertEqual(self.plan([target])[0][1], Options(video=Choice("h265", "low")))
 
     def test_from_and_time_are_never_saved(self):
         self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1), until=datetime.date(2026, 6, 30)))
         row = self.saved()["aaa:a"]
-        self.assertEqual(sorted(row), ["at", "audio", "image", "kind", "video"])
-        self.assertEqual(sync.plan(self.engine(), [])[0][1], Options())
+        # `complete` is what was listed to its end, not a setting: here the one category, `posts`.
+        self.assertEqual(sorted(row), ["at", "audio", "complete", "image", "kind", "video"])
+        self.assertEqual(sorted(row["complete"]), ["posts"])
+        self.assertEqual(self.plan()[0][1], Options())
 
     def test_a_run_says_which_saved_settings_it_uses(self):
         self.download(image=WEBP_MID, audio=Choice("opus", "mid"))
@@ -98,7 +116,7 @@ class SettingsTest(SyncCase):
 
     def test_the_saved_settings_reach_the_run_and_targets_with_others_run_apart(self):
         runs = []
-        with mock.patch.object(Engine, "run", lambda engine, targets, options: runs.append((targets, options)) or 0):
+        with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append((targets, options)))):
             self.download(texts=("aaa:a",), image=WEBP_MID)
             self.download(Options(categories=("posts",)), texts=("aaa:a", "aaa:b"))
         self.assertEqual(runs[0], ([Target("aaa", "user", "a")], Options(image=WEBP_MID)))
@@ -114,7 +132,7 @@ class SettingsTest(SyncCase):
             targets["aaa:b"] = {"kind": "user", "categories": None, "unpack": False, "zip": False,
                                 "compress_image": "balanced", "compress_video": "high", "format_image": "webp",
                                 "format_video": "mkv:h265", "at": "2026-11-01T00:00:00+00:00"}
-        chosen = dict(sync.plan(self.engine(), []))
+        chosen = dict(self.plan())
         self.assertEqual(chosen[Target("aaa", "user", "a")], Options(image=Choice(None, "low")))
         self.assertEqual(chosen[Target("aaa", "user", "b")], Options(image=WEBP_MID, video=Choice("mkv:h265", "high")))
         # A sync records them again in today's form, changing no setting.
@@ -129,12 +147,12 @@ class SettingsTest(SyncCase):
         self.download(image=WEBP_MID)
         (self.home / "downloads" / "aaa" / "older").mkdir(parents=True)
         (self.home / "downloads" / "aaa" / "older" / "x.jpg").write_bytes(b"x")
-        chosen = dict(sync.plan(self.engine(), []))
+        chosen = dict(self.plan())
         self.assertEqual(chosen[Target("aaa", "user", "older")], Options())
         # A folder of a source flnd doesn't have, or a file beside the folders, isn't a target.
         (self.home / "downloads" / "zzz" / "b").mkdir(parents=True)
         (self.home / "downloads" / "aaa" / "a.zip").write_bytes(b"")
-        self.assertEqual(len(sync.plan(self.engine(), [])), 2)
+        self.assertEqual(len(self.plan()), 2)
         self.sync()
         self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
 
@@ -142,7 +160,7 @@ class SettingsTest(SyncCase):
         self.download()
         with kv.open(self.home / "targets.db", table="targets") as targets:
             targets["aaa:a"] = {**targets["aaa:a"], "image": "webp,huge", "video": "h265,low"}
-        self.assertEqual(sync.plan(self.engine(), [])[0][1], Options(video=Choice("h265", "low")))
+        self.assertEqual(self.plan()[0][1], Options(video=Choice("h265", "low")))
         self.sync()
         self.download(video=None)
         row = self.saved()["aaa:a"]
@@ -152,7 +170,7 @@ class SettingsTest(SyncCase):
         self.assertIsNone(self.saved()["aaa:a"]["image"])
 
     def test_planning_creates_no_file(self):
-        self.assertEqual(sync.plan(self.engine(), []), [])
+        self.assertEqual(self.plan(), [])
         self.assertFalse((self.home / "targets.db").exists())
 
 
@@ -378,8 +396,8 @@ class FetchTest(SyncCase):
 
     def test_sync_takes_every_category(self):
         runs = []
-        self.download(Options(categories=("files",)), image=WEBP_MID)
-        with mock.patch.object(Engine, "run", lambda engine, targets, options: runs.append(options) or 0):
+        self.download(Options(categories=("posts",)), image=WEBP_MID)
+        with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append(options))):
             self.sync()
         self.assertEqual(runs, [Options(image=WEBP_MID)])
 
@@ -409,9 +427,8 @@ class SummaryTest(SyncCase):
         gone = Site(self, **{"a.jpg": b"", "b.jpg": b""})
         self.requests.clear()
         lines = self.sync(source=gone.source())
-        size = sum(path.stat().st_size for path in self.folder().iterdir())
-        self.assertEqual([(line.target, line.files, line.size, line.missing) for line in lines],
-                         [("aaa:a", 2, size, 1), ("aaa:b", 0, 0, 0)])
+        self.assertEqual([(str(line.target), line.repaired, line.missing) for line in lines],
+                         [("aaa:a", 0, 1), ("aaa:b", 0, 0)])
         summary = [line for line in self.lines() if line.startswith("• aaa:a: 2 files") or line.startswith("• total")]
         self.assertEqual(len(summary), 2, self.lines())
         self.assertIn("; 0 repaired, 1 missing", summary[0])

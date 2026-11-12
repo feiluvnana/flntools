@@ -11,7 +11,6 @@ from test_engine import EngineCase
 
 from flnd import site as site_module
 from flnd.common import auth
-from flnd.engine import Engine
 from flnd.session import Options
 from flnd.source import FetchError, Target, TargetError
 from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page
@@ -393,7 +392,7 @@ class LoginStaysAtHomeTest(EngineCase):
             self.addCleanup(patcher.stop)
         jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
                for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
-        cookies.Jar(jar).save(auth.cookie_file(self.home, "twt"))
+        auth.save(self.home, "twt", cookies.Jar(jar))
         self.routes[url("UserByScreenName")] = httpx.Response(
             200, json=USER, headers={"set-cookie": "ct0=new; Domain=x.com; Path=/"})
         timeline = page(item(tweet("100", [
@@ -403,8 +402,7 @@ class LoginStaysAtHomeTest(EngineCase):
         self.routes[url("UserOriginalsTimeline")] = lambda request: httpx.Response(200, json=timeline)
 
     def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
-        engine = Engine(home=self.home, sources={"twt": Twitter})
-        engine.run(engine.resolve(["twt:someone"]), Options(categories=("posts",)))
+        self.run_engine(Twitter, targets=["twt:someone"], options=Options(categories=("posts",)))
         api = [request for request in self.requests if request.url.host == "x.com"]
         media = [request for request in self.requests if request.url.host.endswith("twimg.com")]
         self.assertEqual(sorted(request.url.host for request in media), ["pbs.twimg.com", "video.twimg.com"])

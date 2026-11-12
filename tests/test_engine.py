@@ -1,6 +1,13 @@
-"""The engine end to end on httpx.MockTransport, with test sources. No network, no browser."""
+"""The engine end to end on httpx.MockTransport, with test sources. No network, no browser.
+
+Its runs, groups, HTTP, clients and logins through `Engine._run` (what `download` and `sync` call
+per settings group), then the API itself (redesign B1): `download`, `sync`, `login`, `logout` and
+`Report`, the options read from text, and `--from` refused for a post. The screen is a fake one,
+and `shared.media.open` a `FakeMedia` where only what was compressed matters.
+"""
 
 import asyncio
+import datetime
 import inspect
 import io
 import signal
@@ -18,7 +25,7 @@ from media_samples import needs_pillow
 
 from flnd import engine as engine_module
 from flnd.common import auth, net
-from flnd.engine import Engine
+from flnd import Choice, Engine, Range, Report, Target, TargetReport
 from flnd.session import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
@@ -176,12 +183,17 @@ class EngineCase(unittest.TestCase):
         return answer
 
     def run_engine(self, *sources, targets, options=Options(), **settings):
+        """Run the targets with one set of options, as `download` does per group, and return how many files were written."""
+        return self.report(*sources, targets=targets, options=options, **settings).files
+
+    def report(self, *sources, targets, options=Options(), **settings):
+        """Run the targets with one set of options, as `download` does per group, and return the `Report`."""
         engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
-        return engine.run(engine.resolve(targets), options)
+        return Report(tuple(report for report, _ in engine._run(engine.resolve(targets), options)))
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
-        cookies.Jar(jar).save(auth.cookie_file(self.home, code))
+        auth.save(self.home, code, cookies.Jar(jar))
 
     def lines(self):
         return self.screen.dest.getvalue().splitlines()
@@ -234,35 +246,35 @@ class GroupsTest(EngineCase):
         def connect(self, site):
             raise RuntimeError("tlg: the saved login no longer works")
 
-        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", connect=connect), "bbb": make_source("bbb")})
-        engine.run(engine.resolve(["aaa:a", "aaa:b", "bbb:c"]), Options())
+        report = self.report(make_source("aaa", connect=connect), make_source("bbb"), targets=["aaa:a", "aaa:b", "bbb:c"])
         lines = self.lines()
         self.assertIn("✗ aaa: tlg: the saved login no longer works", lines)
         self.assertFalse(any(line.startswith("✓ aaa:") for line in lines), lines)
         self.assertEqual(sum(line.startswith("✗ aaa:a") or line.startswith("✗ aaa:b") for line in lines), 2)
         self.assertIn("✓ bbb:c", lines)
-        self.assertEqual([str(target) for target in engine.failed], ["aaa:a", "aaa:b"])
+        self.assertEqual([str(target) for target in report.failed], ["aaa:a", "aaa:b"])
+        self.assertEqual(report.targets[0].error, "tlg: the saved login no longer works")
 
     def test_a_group_whose_logged_in_raises_ends_its_rows_failed(self):
         def logged_in(self, site):
             raise RuntimeError("can't read the login")
 
-        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", logged_in=logged_in)})
-        engine.run(engine.resolve(["aaa:a"]), Options())
+        report = self.report(make_source("aaa", logged_in=logged_in), targets=["aaa:a"])
         self.assertFalse(any(line.startswith("✓ aaa:a") for line in self.lines()), self.lines())
-        self.assertEqual([str(target) for target in engine.failed], ["aaa:a"])
+        self.assertEqual([str(target) for target in report.failed], ["aaa:a"])
 
     def test_failed_lists_only_the_targets_that_failed(self):
         def run(site):
             if site.target.value == "bad":
                 raise RuntimeError("blocked")
 
-        engine = Engine(home=self.home, sources={"aaa": make_source("aaa", run)})
-        engine.run(engine.resolve(["aaa:good"]), Options())
-        self.assertEqual(engine.failed, [])
-        engine.run(engine.resolve(["aaa:bad", "aaa:good"]), Options())
-        # It adds up over every run of one engine, as flnd sync runs one per settings group.
-        self.assertEqual([str(target) for target in engine.failed], ["aaa:bad"])
+        source = make_source("aaa", run)
+        self.assertEqual(self.report(source, targets=["aaa:good"]).failed, ())
+        report = self.report(source, targets=["aaa:bad", "aaa:good"])
+        # Each report is its own run's: nothing piles up across runs, as `Engine.failed` once did.
+        self.assertEqual([str(target) for target in report.failed], ["aaa:bad"])
+        self.assertEqual(report.targets[0].error, "blocked")
+        self.assertFalse(report.ok)
 
 
 class LoginStateTest(EngineCase):
@@ -455,7 +467,7 @@ class EngineLoginTest(EngineCase):
             login.secrets["session"] = "s"
 
         source = make_source("aaa", login=own_login, login_methods=("qr",))
-        Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
+        self.assertEqual(Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr"), "")
         self.assertEqual(seen, [("qr", LoginSite)])
         from flnd.common import auth
         with auth.secrets(self.home, "aaa") as secrets:
@@ -470,9 +482,9 @@ class EngineLoginTest(EngineCase):
         source = make_source("aaa", lambda site: seen.append(hasattr(site, "interactive")), login=own_login,
                              login_methods=("qr",))
         engine = Engine(home=self.home, sources={"aaa": source})
-        engine.login(source(), "qr")
+        engine.login("aaa", "qr")
         self.screen._interactive = True
-        engine.login(source(), "qr")
+        engine.login("aaa", "qr")
         self.run_engine(source, targets=["aaa:a"])
         self.assertEqual(seen, [False, True, False])
 
@@ -485,10 +497,226 @@ class EngineLoginTest(EngineCase):
         self.screen._interactive = True
         self.screen.readkey = iter(["1", "enter"]).__next__
         source = make_source("aaa", login=own_login, login_methods=("qr",))
-        Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
+        Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
         self.assertEqual(answers, ["1"])
         self.assertEqual(self.screen.dest.getvalue().splitlines()[:3],
                          ["┃ Phone number", "┃ With the country code, such as +44", "┃ > _"])
+
+
+class ApiTest(EngineCase):
+    """The engine API of redesign B1: what `flnd/__init__.py` exports, `Report`, and `download`'s options."""
+
+    def engine(self, *sources):
+        return Engine(home=self.home, sources={source.code: source for source in sources})
+
+    def saved(self):
+        with kv.open(self.home / "targets.db", table="targets") as targets:
+            return dict(targets.items())
+
+    def test_flnd_exports_exactly_the_engine_api(self):
+        import flnd
+
+        self.assertEqual(sorted(flnd.__all__), ["Choice", "Engine", "Range", "Report", "Target", "TargetError",
+                                                "TargetReport"])
+        self.assertFalse(hasattr(Engine, "run"))
+        self.assertFalse(hasattr(Engine(home=self.home), "failed"))
+
+    def test_report_files_failed_and_ok(self):
+        good, bad = Target("aaa", "user", "good"), Target("aaa", "user", "bad")
+        report = Report((TargetReport(good, (Path("a.jpg"), Path("b.jpg")), 1),
+                         TargetReport(bad, (Path("c.jpg"),), 0, error="blocked")))
+        self.assertEqual((report.files, report.failed, report.ok), (3, (bad,), False))
+        self.assertTrue(Report((TargetReport(good, (), 2),)).ok)
+        self.assertTrue(Report(()).ok)
+        with self.assertRaises(AttributeError):
+            report.targets = ()  # type: ignore[misc]
+
+    def test_download_reports_each_target_in_order(self):
+        def files(site, context):
+            if site.target.value == "bad":
+                raise RuntimeError("blocked")
+            return [File(f"{CDN}/{site.target.value}/a.jpg", name="a.jpg"), File(f"{CDN}/{site.target.value}/b.jpg",
+                                                                                  name="b.jpg")]
+
+        engine = self.engine(make_source("aaa", files=files))
+        report = engine.download(["aaa:one", "aaa:bad"])
+        one, bad = report.targets
+        self.assertEqual((one.target, bad.target), (Target("aaa", "user", "one"), Target("aaa", "user", "bad")))
+        self.assertEqual(sorted(path.name for path in one.written), ["a.jpg", "b.jpg"])
+        self.assertTrue(all(path.is_file() for path in one.written))
+        self.assertEqual((one.skipped, one.error, bad.error), (0, None, "blocked"))
+        self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa", "user", "bad"),), False))
+        again = engine.download([Target("aaa", "user", "one")])
+        self.assertEqual((again.files, again.targets[0].skipped, again.ok), (0, 2, True))
+
+    def test_a_category_that_lists_to_its_end_is_recorded_complete(self):
+        def files(site, context):
+            if site.target.value == "cut":
+                raise RuntimeError("cut short")
+            return []
+
+        self.engine(make_source("aaa", files=files)).download(["aaa:whole", "aaa:cut"])
+        rows = self.saved()
+        self.assertEqual(rows["aaa:whole"]["complete"], {"posts": datetime.date.today().isoformat()})
+        self.assertNotIn("complete", rows["aaa:cut"])
+        # A setting saved later keeps the record.
+        self.engine(make_source("aaa")).download(["aaa:whole"], image="mid")
+        self.assertIn("complete", self.saved()["aaa:whole"])
+
+    def test_text_and_values_are_read_alike(self):
+        runs = []
+
+        def run(engine, targets, options):
+            runs.append(options)
+            return [(TargetReport(target, (), 0), ()) for target in targets]
+
+        engine = self.engine(make_source("aaa"))
+        with mock.patch.object(Engine, "_run", run):
+            engine.download(["aaa:a"], categories="posts", time="2026-01-01,2026-06-30", video="h265,low")
+            engine.download(["aaa:b"], categories=["posts"], time=Range(datetime.date(2026, 1, 1),
+                                                                        datetime.date(2026, 6, 30)),
+                            video=Choice("h265", "low"))
+        self.assertEqual(runs[0], runs[1])
+        self.assertEqual(runs[0], Options(categories=("posts",), since=datetime.date(2026, 1, 1),
+                                          until=datetime.date(2026, 6, 30), video=Choice("h265", "low")))
+
+    def test_off_turns_a_saved_setting_off_and_none_keeps_it(self):
+        engine = self.engine(make_source("aaa"))
+        report = engine.download(["aaa:a"], image="webp,mid", audio=Choice("opus", "mid"))
+        self.assertEqual(report.targets[0].settings, "")
+        self.assertEqual((self.saved()["aaa:a"]["image"], self.saved()["aaa:a"]["audio"]), ("webp,mid", "opus,mid"))
+        # None keeps each saved setting, and says it uses them.
+        report = engine.download(["aaa:a"])
+        self.assertEqual(report.targets[0].settings, "--image webp,mid --audio opus,mid (saved)")
+        self.assertEqual(self.saved()["aaa:a"]["image"], "webp,mid")
+        # "off" turns one off and keeps the other.
+        report = engine.download(["aaa:a"], image="off")
+        self.assertEqual(report.targets[0].settings, "--audio opus,mid (saved)")
+        self.assertEqual((self.saved()["aaa:a"]["image"], self.saved()["aaa:a"]["audio"]), (None, "opus,mid"))
+        engine.download(["aaa:a"])
+        self.assertIsNone(self.saved()["aaa:a"]["image"])
+
+    def test_bad_values_are_value_errors_before_anything_starts(self):
+        from flnd.source import TIME_USAGE
+
+        for text in ("2026-01-01", "2026-13-01,", "2026-06-30,2026-01-01", "yesterday,", "2026-01-01,2026-02-01,"):
+            with self.subTest(time=text), self.assertRaisesRegex(ValueError, "^--time takes <since>,<until>"):
+                Range.parse(text)
+        self.assertEqual(Range.parse("*,2026-06-30"), Range(None, datetime.date(2026, 6, 30)))
+        self.assertEqual(Range.parse("2026-01-01,"), Range(datetime.date(2026, 1, 1), None))
+        with self.assertRaisesRegex(ValueError, "^--image webp,huge: the level is best, high, mid or low$"):
+            Choice.parse("webp,huge", kind="image")
+        self.assertIsNone(Choice.parse("OFF", kind="video"))
+        engine = self.engine(make_source("aaa"))
+        for options, message in (({"time": "2026-01-01"}, TIME_USAGE), ({"image": "heic"}, "--image heic: give a format"),
+                                 ({"video": "webm:h265"}, "--video webm:h265: webm holds vp9, not h265"),
+                                 ({"classify": True}, "--classify comes in a later step"),
+                                 ({"categories": "reels"}, "no source here has 'reels'")):
+            with self.subTest(options=options), self.assertRaises(ValueError) as caught:
+                engine.download(["aaa:a"], **options)
+            self.assertTrue(str(caught.exception).startswith(message), caught.exception)
+        with self.assertRaisesRegex(ValueError, "unknown source 'zzz'"):
+            engine.download(["zzz:a"])
+        self.assertFalse(self.home.exists())
+
+    def test_from_with_a_post_link_is_refused_before_any_request(self):
+        from flnd.sources import SOURCES
+
+        message = ("--from applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
+                   "give it without --from")
+        engine = Engine(home=self.home, sources=SOURCES)
+        for targets in (["https://www.instagram.com/p/C1abcDEFghi/"],
+                        ["ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/"],
+                        ["tik:example_creator", "https://www.instagram.com/p/C1abcDEFghi/"]):
+            with self.subTest(targets=targets), self.assertRaisesRegex(ValueError, f"^{message}$"):
+                engine.download(targets, categories="all")
+        self.assertEqual(self.requests, [])
+        self.assertFalse(self.home.exists())
+        # Without --from the same link downloads whole.
+        runs = []
+        with mock.patch.object(Engine, "_run", lambda engine, targets, options: runs.append(options) or
+                               [(TargetReport(target, (), 0), ()) for target in targets]):
+            self.assertTrue(engine.download(["https://www.instagram.com/p/C1abcDEFghi/"]).ok)
+        self.assertEqual(runs, [Options()])
+
+    def test_sync_reports_repaired_and_missing(self):
+        listed = {"a.jpg", "b.jpg", "c.jpg"}
+
+        def files(site, context):
+            return [File(f"{CDN}/{name}", name=name) for name in sorted(listed)]
+
+        engine = self.engine(make_source("aaa", files=files))
+        engine.download(["aaa:a"], image="mid")
+        folder = self.target_dir("aaa", "a")
+        (folder / "a.jpg").unlink()
+        (folder / "c.jpg").unlink()
+        listed.discard("c.jpg")
+        with compressing(return_value=None, check=False):
+            report = engine.sync()
+        [target] = report.targets
+        self.assertEqual((target.target, target.repaired, target.missing), (Target("aaa", "user", "a"), 1, 1))
+        self.assertEqual([path.name for path in target.written], ["a.jpg"])
+        self.assertEqual((target.settings, report.ok), ("--image mid (saved)", True))
+        self.assertIn("• aaa:a: 2 files, ", "\n".join(self.lines()))
+        self.assertEqual(engine.sync([Target("aaa", "user", "a")]).targets[0].repaired, 0)
+
+
+class ApiLoginTest(EngineCase):
+    """`login` and `logout`: every credential in the vault, and nothing else written (redesign B7)."""
+
+    def setUp(self):
+        super().setUp()
+        self.source = make_source("aaa", needs=("sid",))
+        self.engine = Engine(home=self.home, sources={"aaa": self.source, "bbb": make_source("bbb")})
+        jar = cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
+                           {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
+        patcher = mock.patch("shared._cookies.from_browser", lambda browser="chrome", *, profile=None: jar)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_browser_login_lives_only_in_the_vault(self):
+        self.assertEqual(self.engine.cookie_logins, ("aaa", "bbb"))
+        self.assertEqual(self.engine.login("aaa", "browser", browser="chrome"), "aaa: logged in from Chrome (1 cookie)")
+        self.assertEqual(sorted(path.name for path in self.home.iterdir()), ["secret.key", "secrets.db"])
+        self.assertEqual(self.engine.logins, {"aaa": "logged in"})
+        self.assertEqual({cookie["name"] for cookie in auth.load(self.home, "aaa")}, {"sid"})
+
+    def test_a_file_login_reads_the_file_once_and_never_copies_it(self):
+        path = self.home.parent / "cookies.txt"
+        path.write_text("# Netscape HTTP Cookie File\n.aaa.example\tTRUE\t/\tTRUE\t1825861327\tsid\tv\n")
+        self.assertEqual(self.engine.login("aaa", "file", path=path), "aaa: logged in from cookies.txt (1 cookie)")
+        self.assertTrue(path.is_file())
+        self.assertEqual(sorted(path.name for path in self.home.iterdir()), ["secret.key", "secrets.db"])
+
+    def test_a_failed_login_and_bad_answers(self):
+        with mock.patch("shared._cookies.from_browser", lambda browser="chrome", *, profile=None: cookies.Jar()):
+            with self.assertRaisesRegex(Engine.LoginError, "no sid for aaa.example in Chrome"):
+                self.engine.login("aaa", "browser", browser="chrome")
+        for args, options in ((("aaa", "qr"), {}), (("zzz", "browser"), {}), (("aaa", "browser"), {}),
+                              (("aaa", "file"), {})):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.engine.login(*args, **options)
+        self.assertEqual(self.engine.logins, {})
+
+    def test_logout_clears_the_jar_and_returns_the_codes_that_had_one(self):
+        self.engine.login("aaa", "browser", browser="chrome")
+        self.assertEqual(self.engine.logout(["bbb", "aaa", "aaa"]), ["aaa"])
+        self.assertEqual(self.engine.logins, {})
+        self.assertEqual(auth.load(self.home, "aaa"), cookies.Jar())
+        self.engine.login("aaa", "browser", browser="chrome")
+        self.assertEqual(self.engine.logout(["all"]), ["aaa"])
+        self.assertEqual(self.engine.logout(["all"]), [])
+        with self.assertRaisesRegex(ValueError, "unknown source 'zzz'"):
+            self.engine.logout(["zzz"])
+
+    def test_a_download_uses_the_vaulted_login(self):
+        self.engine.login("aaa", "browser", browser="chrome")
+        seen = []
+        self.engine = Engine(home=self.home, sources={"aaa": make_source("aaa", lambda site: seen.append(dict(site.cookies)),
+                                                                         needs=("sid",))})
+        self.assertTrue(self.engine.download(["aaa:a"]).ok)
+        self.assertEqual(seen, [{"sid": "s"}])
+        self.assertFalse(any("not logged in" in line for line in self.lines()))
 
 
 if __name__ == "__main__":

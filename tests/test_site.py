@@ -239,7 +239,7 @@ class FetchTest(SiteCase):
 
     def test_prepare_runs_for_the_sources_own_domains_only(self):
         jar = [{"name": "token", "value": "t0k", "domain": ".example.com", "path": "/"}]
-        cookies.Jar(jar).save(auth.cookie_file(self.home, "exm"))
+        auth.save(self.home, "exm", cookies.Jar(jar))
         _, site = self.open()
         site.fetch(f"{API}/users/example_user")
         site.fetch(f"{CDN}/a.jpg")
@@ -277,8 +277,8 @@ class FetchTest(SiteCase):
             return opened[-1]
 
         with mock.patch("shared._browser.open", connect):
-            cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com", "path": "/"}]).save(
-                auth.cookie_file(self.home, "exm"))
+            auth.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
+                                                      "path": "/"}]))
             _, site = self.open(Wide)
             # Nothing opens until a source asks for the page.
             self.assertEqual(opened, [])

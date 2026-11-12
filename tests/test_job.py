@@ -125,7 +125,7 @@ class CategoriesTest(JobCase):
 class FromCommandTest(FlndCase):
     def test_from_with_a_post_link_exits_2_through_the_command(self):
         with mock.patch.dict(flnd_cli.SOURCES, {"exm": Example}), \
-                mock.patch.object(engine_module.Engine, "run") as run:
+                mock.patch.object(engine_module.Engine, "_run") as run:
             code, _, out = self.run_app("download", "--from", "posts", "https://www.example.com/p/C1abc/")
         self.assertEqual(code, 2)
         self.assertIn("--from applies to profiles and chats; exm:C1abc is one post", out)
@@ -391,9 +391,9 @@ class FailureTest(JobCase):
 
         self.run_engine(Broken, targets=["brk:example_user"])
         self.assertIn("✗ brk:example_user: the feed broke", self.lines())
-        engine = engine_module.Engine(home=self.home, sources={"brk": Broken})
-        engine.run(engine.resolve(["brk:example_user"]), Options())
-        self.assertEqual(engine.failed, [Target("brk", "user", "example_user")])
+        report = self.report(Broken, targets=["brk:example_user"])
+        self.assertEqual(report.failed, (Target("brk", "user", "example_user"),))
+        self.assertEqual(report.targets[0].error, "the feed broke")
 
 
     def test_a_route_or_category_that_raises_a_source_error_fails_only_its_target(self):
@@ -417,11 +417,10 @@ class FailureTest(JobCase):
                     raise LoginError("err: the saved login expired")
                 yield Post(user, [File(f"{CDN}/{user}.jpg")])
 
-        engine = engine_module.Engine(home=self.home, sources={"err": Errors})
         names = ["gone", "locked", "cut", "expired", "good", "last"]
-        total = engine.run(engine.resolve([f"err:{name}" for name in names]), Options())
-        self.assertEqual(total, 2)
-        self.assertEqual([target.value for target in engine.failed], ["gone", "locked", "cut", "expired"])
+        report = self.report(Errors, targets=[f"err:{name}" for name in names])
+        self.assertEqual(report.files, 2)
+        self.assertEqual([target.value for target in report.failed], ["gone", "locked", "cut", "expired"])
         lines = self.lines()
         for line in ("✗ err:gone: HTTP 404 for https://example.com/gone", "✗ err:locked: err: run flnd login err",
                      "✗ err:cut: HTTP 500 for https://example.com/cut", "✗ err:expired: err: the saved login expired",

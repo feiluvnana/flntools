@@ -11,26 +11,28 @@ Usage:
 
 `login` asks every answer. `download` and `sync` ask nothing, except `shared.browser`'s one
 question, to download Chromium, when a source needs a browser and Google Chrome is missing.
+
+It only parses the arguments, asks `login`'s questions and prints: each command is one call of
+`flnd.Engine`, given the arguments as typed, whose `ValueError` is shown as a usage error (exit 2)
+and whose `Report` gives the exit status, 1 when a target failed. It imports only `flnd` (the
+API), `flnd.sources` (for help and login's list) and `shared` (plan/phase-6/redesign.md, B4).
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Optional
 
-from flnd import __version__, sync as syncing
-from flnd.common import auth
-from flnd.common.compress import Choice, parse_choice
-from flnd.engine import Engine
-from flnd.session import Options, single_targets, unknown_categories
-from flnd.source import Source, TargetError
+from flnd import Engine, Range, __version__
 from flnd.sources import SOURCES
 from shared import cli, cookies, fmt, log, prompt, theme
 
 HOME = Path(".flnd")
 METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
                  "phone": "With your phone number and a code"}
+# The browsers a cookie login reads, by `shared.cookies` name, with the name a person knows; the
+# same table as the engine's `auth.BROWSERS`, which names them in "logged in from Chrome".
+BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave", "chromium": "Chromium"}
 
 
 def describe() -> str:
@@ -67,11 +69,9 @@ Examples:
 
 app = cli.App("flnd", version=__version__, description=describe(), epilog=epilog())
 # --image, --video and --audio: a format, a level, or both as <format>,<level> in either order, or
-# off. Read as text and parsed by `compress.parse_choice` in the command, so "off" can be told from
-# "not given" and an error can name what each part takes.
+# off. Passed to the engine as text, which `Choice.parse` reads, so "off" can be told from "not
+# given" and an error can name what each part takes.
 MediaChoice = Annotated[Optional[str], cli.opt(metavar="FORMAT,LEVEL")]
-TIME_USAGE = ("--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
-              "for no limit")
 
 
 @app.command
@@ -101,16 +101,16 @@ def download(
             h265, vp9) or container:codec, and a level. h265 is smaller, but many browsers can't play it.
         audio: compress each audio file the same way: mp3, m4a, aac, opus, ogg or flac, and a level.
     """
-    since, until = _time(time)
-    given = _given(image=image, video=video, audio=audio)
-    engine = Engine(home=HOME)
-    resolved = _resolve(engine, targets)
-    options = Options(categories=_categories(categories, resolved) if categories is not None else None,
-                      since=since, until=until)
-    log.info("Storage: {path}", path=(HOME / "downloads").resolve())
-    total = syncing.download(engine, resolved, options, given)
-    log.ok("Complete. {files}", files=fmt.count(total, "file"))
-    return _status(engine)
+    try:
+        # Every value is checked before anything starts, so a usage error never follows any work.
+        report = Engine(home=HOME).download(targets, categories=categories, time=Range() if time is None else time,
+                                            image=image, video=video, audio=audio)
+    except ValueError as error:
+        raise cli.UsageError(str(error)) from None
+    log.ok("Complete. {files}", files=fmt.count(report.files, "file"))
+    # 1 when a target failed, so a script can tell. A rate-limit wait, a skipped file, or one file
+    # of a target that failed while the target went on, isn't a failed target.
+    return 0 if report.ok else 1
 
 
 @app.command
@@ -123,80 +123,12 @@ def sync(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)]) -> int:
     Args:
         targets: only these targets, as in flnd download; every one downloaded so far without them.
     """
-    engine = Engine(home=HOME)
-    # Resolved here once, for the plan: a short link costs a HEAD request each time (fixes #11).
-    resolved = _resolve(engine, targets) if targets else []
-    syncing.run(engine, syncing.plan(engine, resolved))
-    return _status(engine)
-
-
-def _status(engine: Engine) -> int:
-    """The exit status of `download` and `sync`: 1 when a target failed, so a script can tell; 0 otherwise.
-
-        return _status(engine)
-
-    A rate-limit wait, a skipped file, or one file of a target that failed while the target went
-    on, isn't a failed target.
-    """
-    return 1 if engine.failed else 0
-
-
-def _time(text: str | None) -> tuple[date | None, date | None]:
-    """`--time`'s two days, each None for no limit; a value that isn't `<since>,<until>` is a usage error.
-
-        _time("2026-01-01,")      # (date(2026, 1, 1), None)
-    """
-    if text is None:
-        return None, None
-    since, comma, until = text.partition(",")
-    if not comma or "," in until:
-        raise cli.UsageError(TIME_USAGE)
     try:
-        days = [_day(side) for side in (since, until)]
-    except ValueError:
-        raise cli.UsageError(TIME_USAGE) from None
-    if days[0] and days[1] and days[0] > days[1]:
-        raise cli.UsageError(TIME_USAGE)
-    return days[0], days[1]
-
-
-def _day(text: str) -> date | None:
-    """One side of `--time`: a YYYY-MM-DD day, or None for `*` or nothing; `ValueError` otherwise."""
-    text = text.strip()
-    if text in ("", "*"):
-        return None
-    return datetime.strptime(text, "%Y-%m-%d").date()
-
-
-def _given(**values: str | None) -> dict[str, Choice | None]:
-    """The `--image`, `--video` and `--audio` given, parsed, by name: a `Choice`, or None for off.
-
-    A name not given is left out, so the target keeps its saved setting.
-    """
-    given: dict[str, Choice | None] = {}
-    for kind, text in values.items():
-        if text is None:
-            continue
-        try:
-            given[kind] = parse_choice(kind, text)
-        except ValueError as error:
-            raise cli.UsageError(str(error)) from None
-    return given
-
-
-def _resolve(engine: Engine, targets: list[str]) -> list:
-    try:
-        return engine.resolve(targets)
-    except TargetError as error:
+        # The engine logs each target's line and the totals, which only it can count (the folder's files and size).
+        report = Engine(home=HOME).sync(targets)
+    except ValueError as error:
         raise cli.UsageError(str(error)) from None
-
-
-def _categories(categories: list[str], resolved: list) -> tuple[str, ...]:
-    names = tuple(dict.fromkeys(categories))
-    sources = list(dict.fromkeys(SOURCES[target.source] for target in resolved)) or list(SOURCES.values())
-    if problem := unknown_categories(names, sources) or single_targets(resolved, SOURCES):
-        raise cli.UsageError(problem)
-    return names
+    return 0 if report.ok else 1
 
 
 @app.command("login")
@@ -209,43 +141,46 @@ def login_command() -> int:
     # Logging in is a one-time step done by a person, so there is no flag form for scripts.
     if not theme.screen.interactive:
         raise cli.UsageError("flnd login asks its questions in a terminal")
-    site = SOURCES[_ask_source()]()
-    methods = site.login_methods
+    engine = Engine(home=HOME)
+    code = _ask_source(engine)
+    source = SOURCES[code]
+    methods = source.login_methods
     method = methods[0] if len(methods) == 1 else prompt.choose(
-        f"Log in to {site.name}", {METHOD_LABELS.get(name, name): name for name in methods})
-    try:
-        # A source with its own login (tlg) asks its own questions, through the engine's session.
-        if type(site).login is not Source.login:
-            Engine(home=HOME).login(site, method)
-            return 0
+        f"Log in to {source.name}", {METHOD_LABELS.get(name, name): name for name in methods})
+    answers: dict[str, Optional[str]] = {}
+    # A source with its own login (tlg) asks its own questions, through the engine.
+    if code in engine.cookie_logins:
         if method == "file":
-            path = Path(prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()).expanduser()
-            message = auth.store(site, auth.from_file(site, path), home=HOME, origin=path.name)
+            answers["path"] = prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()
         else:
-            browser = prompt.choose("Read cookies from", {label: name for name, label in auth.BROWSERS.items()})
-            jar = auth.from_browser(site, browser=browser, profile=_ask_profile(browser))
-            message = auth.store(site, jar, home=HOME, origin=auth.BROWSERS[browser])
-    except auth.LoginError as error:
+            browser = prompt.choose("Read cookies from", {label: name for name, label in BROWSERS.items()})
+            answers.update(browser=browser, profile=_ask_profile(browser))
+    try:
+        message = engine.login(code, method, **answers)
+    except Engine.LoginError as error:
         log.error("{error}", error=error)
         return 1
-    log.ok(message)
+    if message:
+        log.ok(message)
     return 0
 
 
 @app.command
 def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "all"), stdin=False)]) -> int:
-    """Remove saved logins: each source's cookie file and secrets, an API key included.
+    """Remove saved logins: each source's cookies and secrets, an API key included.
 
     Args:
         sources: the sources to log out of, such as ins tik, or all for every one.
     """
+    engine = Engine(home=HOME)
     if not sources:
-        logged_in = [code for code in SOURCES if auth.logged_in(HOME, code)]
+        logged_in = [code for code, state in engine.logins.items() if state == "logged in"]
         raise cli.UsageError("give the sources to log out of, or all; "
                              + (f"logged in: {', '.join(logged_in)}" if logged_in else "no source is logged in"))
     everything = "all" in sources
+    removed = engine.logout(sources)
     for code in SOURCES if everything else dict.fromkeys(sources):
-        if auth.logout(HOME, code):
+        if code in removed:
             log.ok("{code}: logged out", code=code)
         # `all` names every source, so only the ones asked for by name say they had no login.
         elif not everything:
@@ -253,20 +188,19 @@ def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "
     return 0
 
 
-def _ask_source() -> str:
+def _ask_source(engine: Engine) -> str:
     """Ask which source to log in to, marking the ones logged in or holding only an API key, and return its code."""
-    options = {}
-    for code, source in SOURCES.items():
-        # tlg keeps its API key before its login; the list tells the two apart.
-        mark = " · logged in" if auth.logged_in(HOME, code) else " · api key saved" if auth.api_key_saved(HOME, code) else ""
-        options[f"{source.name} ({code}){mark}"] = code
+    # tlg keeps its API key before its login; the list tells the two apart.
+    logins = engine.logins
+    options = {f"{source.name} ({code})" + (f" · {logins[code]}" if code in logins else ""): code
+               for code, source in SOURCES.items()}
     return prompt.choose("Log in to", options)
 
 
 def _ask_profile(browser: str) -> Optional[str]:
     """Ask which of the browser's profiles to read, with the default one preselected.
 
-    Only asked when there are several. With none found, None lets `auth.from_browser` say why.
+    Only asked when there are several. With none found, None lets the engine's login say why.
     """
     profiles = cookies.profiles(browser)
     if len(profiles) <= 1:

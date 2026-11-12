@@ -3,7 +3,7 @@
 The three kinds of saved file go through one table, `KINDS`: each kind's option, the formats it
 takes, and whether its encodes wait for the run's one-at-a-time lock (videos only, since one x264
 encode already uses every core). A setting is a `Choice(format, level)`, read from the command
-line or `targets.db` by `parse_choice`; its level is one of `Media.compress`'s levels.
+line or `targets.db` by `Choice.parse`; its level is one of `Media.compress`'s levels.
 
 `compress_file` compresses one file with one choice through `shared.media` (`media.open(path).compress(level)`,
 saved over the original only when smaller), and turns the result into the file's history fields. It catches exactly what `media` raises for a file it can't
@@ -11,9 +11,9 @@ compress (`ValueError`, `FileExistsError`, `RuntimeError`, `TimeoutError`, `Impo
 once per kind of error per run, and leaves the original in place. `Compressor` is one run's
 compressing on top of it: the encode lock, and the kinds this machine turned out unable to
 compress. `apply` compresses a target's files already saved, when `flnd download` changes a
-setting. `session` compresses each new download; `sync.download` calls `apply`.
+setting. The job compresses each new download (flnd/post.py); `Engine.download` calls `apply`.
 
-    choice = parse_choice("image", "webp,mid")              # Choice("webp", "mid")
+    choice = Choice.parse("webp,mid", kind="image")         # Choice("webp", "mid")
     fields = Compressor().compress(Path("a.jpg"), "image", choice)
     if fields is not None:
         history[key] = {**row, **fields}
@@ -67,6 +67,49 @@ class Choice:
     def __str__(self) -> str:
         return f"{self.format},{self.level}" if self.format else self.level
 
+    @classmethod
+    def parse(cls, text: str, *, kind: str) -> Choice | None:
+        """Read `--image`, `--video` or `--audio`'s value: a format, a level, both in either order, or "off".
+
+            Choice.parse("best,webp", kind="image")     # Choice("webp", "best")
+            Choice.parse("h265", kind="video")          # Choice("h265", "high"): a format alone is high
+            Choice.parse("off", kind="audio")           # None
+
+        Args:
+            text: the value as given, in any case.
+            kind: "image", "video" or "audio", a key of `KINDS`.
+
+        Returns:
+            The choice, or None for "off".
+
+        Raises:
+            ValueError: the value isn't one, with a message that names the option and what each part takes,
+                such as "--image webp,huge: the level is best, high, mid or low".
+        """
+        option = f"--{KINDS[kind].option}"
+        parts = [part.strip().lower() for part in text.split(",")]
+        if parts == ["off"]:
+            return None
+        if len(parts) > 2 or "" in parts:
+            raise ValueError(f"{option} takes <format>,<level>, a format, a level, or off, not {text!r}")
+        levels = [part for part in parts if part in LEVELS]
+        formats = [part for part in parts if part not in LEVELS]
+        if len(levels) > 1:
+            raise ValueError(f"{option} {text}: give one level, of {_listed(LEVELS)}")
+        problems = [_format_problem(kind, part) for part in formats]
+        if len(parts) == 2 and not levels:
+            # Two parts and neither is a level: a valid format names the bad part as the level.
+            if problems[0] and problems[1]:
+                raise ValueError(f"{option} {text}: the format is {_listed(KINDS[kind].formats)}, and the level is "
+                                 f"{_listed(LEVELS)}")
+            raise ValueError(f"{option} {text}: the level is {_listed(LEVELS)}")
+        if problems and problems[0]:
+            if len(parts) == 1 and _known_format(kind, parts[0]) is None:
+                raise ValueError(f"{option} {text}: give a format ({_listed(KINDS[kind].formats)}), a level "
+                                 f"({_listed(LEVELS)}), or both")
+            raise ValueError(f"{option} {text}: {problems[0]}")
+        return cls(formats[0] if formats else None, levels[0] if levels else FORMAT_LEVEL)
+
 
 @dataclass(frozen=True)
 class Kind:
@@ -85,49 +128,6 @@ KINDS = {files.IMAGE: Kind("image", IMAGE_FORMATS, False),
          files.AUDIO: Kind("audio", AUDIO_FORMATS, False)}
 
 
-def parse_choice(kind: str, text: str) -> Choice | None:
-    """Read `--image`, `--video` or `--audio`'s value: a format, a level, both in either order, or "off".
-
-        parse_choice("image", "best,webp")       # Choice("webp", "best")
-        parse_choice("video", "h265")            # Choice("h265", "high"): a format alone is high
-        parse_choice("audio", "off")             # None
-
-    Args:
-        kind: "image", "video" or "audio", a key of `KINDS`.
-        text: the value as given, in any case.
-
-    Returns:
-        The choice, or None for "off".
-
-    Raises:
-        ValueError: the value isn't one, with a message that names the option and what each part takes,
-            such as "--image webp,huge: the level is best, high, mid or low".
-    """
-    option = f"--{KINDS[kind].option}"
-    parts = [part.strip().lower() for part in text.split(",")]
-    if parts == ["off"]:
-        return None
-    if len(parts) > 2 or "" in parts:
-        raise ValueError(f"{option} takes <format>,<level>, a format, a level, or off, not {text!r}")
-    levels = [part for part in parts if part in LEVELS]
-    formats = [part for part in parts if part not in LEVELS]
-    if len(levels) > 1:
-        raise ValueError(f"{option} {text}: give one level, of {_listed(LEVELS)}")
-    problems = [_format_problem(kind, part) for part in formats]
-    if len(parts) == 2 and not levels:
-        # Two parts and neither is a level: a valid format names the bad part as the level.
-        if problems[0] and problems[1]:
-            raise ValueError(f"{option} {text}: the format is {_listed(KINDS[kind].formats)}, and the level is "
-                             f"{_listed(LEVELS)}")
-        raise ValueError(f"{option} {text}: the level is {_listed(LEVELS)}")
-    if problems and problems[0]:
-        if len(parts) == 1 and _known_format(kind, parts[0]) is None:
-            raise ValueError(f"{option} {text}: give a format ({_listed(KINDS[kind].formats)}), a level "
-                             f"({_listed(LEVELS)}), or both")
-        raise ValueError(f"{option} {text}: {problems[0]}")
-    return Choice(formats[0] if formats else None, levels[0] if levels else FORMAT_LEVEL)
-
-
 def read_saved(kind: str, value: Any) -> Choice | None:
     """A choice as `targets.db` saved it ("webp,mid"), or None when it saved none or one this flnd can't read.
 
@@ -138,12 +138,12 @@ def read_saved(kind: str, value: Any) -> Choice | None:
         value: the row's field: the choice as text, or null when the setting is off.
 
     A value this flnd can't read is warned of and read as off, so one bad row never stops a run;
-    `sync.record` keeps it in the row unless the option is given again.
+    `settings.record` keeps it in the row unless the option is given again.
     """
     if not isinstance(value, str) or not value:
         return None
     try:
-        return parse_choice(kind, value)
+        return Choice.parse(value, kind=kind)
     except ValueError as error:
         # A row written by another version, or by hand: the target is still synced, without it.
         log.warn("targets.db: {error}; ignored", error=error)
@@ -312,7 +312,7 @@ def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], k
 
     Args:
         history: the download history, written with each file's new fields.
-        rows: the target's (key, row) history rows, as `sync`'s index gives them.
+        rows: the target's (key, row) history rows, as `repair.index` gives them.
         kind: a key of `KINDS`; rows of other kinds are left alone.
         choice: the new setting.
         compressor: the compressing for this command, shared by every target it changes.

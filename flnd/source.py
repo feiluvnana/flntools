@@ -98,6 +98,9 @@ SEPARATORS = "_- .:,"
 FIRST_YEAR = 2004
 # Seconds since 1970 pass this in 5138; a larger number is milliseconds (13 digits today, 10 for seconds).
 MILLISECONDS = 1e11
+# What `Range.parse` says about any value it can't read: the usage error of `--time`.
+TIME_USAGE = ("--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
+              "for no limit")
 
 # Seconds before a retry, or a function of (error, attempt) giving them; None means the usual wait.
 Wait = Union[float, Callable[[BaseException, int], Union[float, None]]]
@@ -621,6 +624,31 @@ class Range:
     # The last day kept, or None.
     until: datetime.date | None = None
 
+    @classmethod
+    def parse(cls, text: str) -> Range:
+        """Read `--time`'s value, `<since>,<until>`, each side a YYYY-MM-DD day, or `*` or nothing for no limit.
+
+            Range.parse("2026-01-01,")               # Range(since=date(2026, 1, 1), until=None)
+            Range.parse("*,2026-06-30")              # Range(since=None, until=date(2026, 6, 30))
+
+        Args:
+            text: the value as given on the command line.
+
+        Raises:
+            ValueError: there is no comma or more than one, a side isn't a day, or the since is after
+                the until; the message is `TIME_USAGE`, the same for each, since it says the whole form.
+        """
+        since, comma, until = text.partition(",")
+        if not comma or "," in until:
+            raise ValueError(TIME_USAGE)
+        try:
+            days = [_side(side) for side in (since, until)]
+        except ValueError:
+            raise ValueError(TIME_USAGE) from None
+        if days[0] and days[1] and days[0] > days[1]:
+            raise ValueError(TIME_USAGE)
+        return cls(days[0], days[1])
+
     def __contains__(self, value: object) -> bool:
         """Whether a day is in the range; None (an undated post) always is, and a datetime counts by its day."""
         if value is None:
@@ -630,6 +658,14 @@ class Range:
         if not isinstance(value, datetime.date):
             return False
         return not ((self.since and value < self.since) or (self.until and value > self.until))
+
+
+def _side(text: str) -> datetime.date | None:
+    """One side of `--time`: a YYYY-MM-DD day, or None for `*` or nothing; `ValueError` otherwise."""
+    text = text.strip()
+    if text in ("", "*"):
+        return None
+    return datetime.datetime.strptime(text, "%Y-%m-%d").date()
 
 
 class Site(Protocol):

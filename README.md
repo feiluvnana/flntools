@@ -211,7 +211,10 @@ flnd logout ins tik         # removes those logins
 flnd logout all             # removes every login
 ```
 
-A full browser export works: only the source's own cookies are kept, in `.flnd/cookies/<source>.txt`.
+A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/secrets.db`
+with every other login; the file you give is read once and never copied. A login saved by an earlier
+version as `.flnd/cookies/<source>.txt` moves into it on the next run, so there's no need to log in again.
+The key is `.flnd/secret.key`, so keep `.flnd/` as private as the logins in it.
 A source that isn't logged in still downloads with public access, and says so. LOIBUS without a
 login gives a post's info and preview images only; its archives need a VIP login,
 and count against the account's daily quota (`--from photo` leaves them out).

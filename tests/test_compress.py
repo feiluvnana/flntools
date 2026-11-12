@@ -13,7 +13,7 @@ from media_samples import needs_pillow
 from test_engine import EngineCase, compressing
 
 from flnd.common import files
-from flnd.common.compress import (KINDS, LEVELS, Choice, Compressor, compress_file, compressed_with, parse_choice, recorded,
+from flnd.common.compress import (KINDS, LEVELS, Choice, Compressor, compress_file, compressed_with, recorded,
                            video_format)
 
 LOW = Choice(None, "low")
@@ -170,11 +170,11 @@ class ParseChoiceTest(unittest.TestCase):
                 ("audio", "opus,mid", Choice("opus", "mid")), ("audio", "off", None)]
         for kind, text, expected in rows:
             with self.subTest(text=text):
-                self.assertEqual(parse_choice(kind, text), expected)
+                self.assertEqual(Choice.parse(text, kind=kind), expected)
 
     def test_it_prints_as_the_command_line_writes_it(self):
         self.assertEqual([str(Choice("webp", "mid")), str(Choice(None, "low"))], ["webp,mid", "low"])
-        self.assertEqual(parse_choice("video", str(Choice("mkv:h265", "low"))), Choice("mkv:h265", "low"))
+        self.assertEqual(Choice.parse(str(Choice("mkv:h265", "low")), kind="video"), Choice("mkv:h265", "low"))
 
     def test_bad_values_name_what_each_part_takes(self):
         rows = [("image", "webp,huge", "--image webp,huge: the level is best, high, mid or low"),
@@ -188,7 +188,7 @@ class ParseChoiceTest(unittest.TestCase):
                 ("image", "webp,mid,low", "--image takes <format>,<level>"), ("image", ",mid", "--image takes")]
         for kind, text, message in rows:
             with self.subTest(text=text), self.assertRaises(ValueError) as caught:
-                parse_choice(kind, text)
+                Choice.parse(text, kind=kind)
             self.assertIn(message, str(caught.exception))
 
 
