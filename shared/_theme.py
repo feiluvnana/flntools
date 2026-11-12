@@ -109,6 +109,7 @@ class PromptView(NamedTuple):
     error: str | None = None
     keys: tuple = ()  # (action, key names) pairs for the help line
     done: bool = False
+    caret: int | None = None  # where the typed text's cursor is; None is its end
 
 
 class Theme:
@@ -277,10 +278,22 @@ def draw_prompt(theme: Theme, view: PromptView) -> str:
 
 
 def _input_line(theme: Theme, view: PromptView) -> str:
+    """The pointer, then the text with the cursor drawn where the next character goes."""
     pointer = theme.paint("cursor", theme.glyphs.pointer)
-    if view.value:
-        return f"{pointer} {theme.paint('text', view.value)}"
-    return f"{pointer} {theme.paint('faint', view.placeholder)}" if view.placeholder else pointer
+    if not view.value:
+        # The cursor sits before the placeholder, which is never the answer.
+        return f"{pointer} {_cursor_cell(theme)}{theme.paint('faint', view.placeholder)}"
+    caret = len(view.value) if view.caret is None else min(max(view.caret, 0), len(view.value))
+    before, after = view.value[:caret], view.value[caret:]
+    if theme.color == "none":
+        return f"{pointer} {before}{_cursor_cell(theme)}{after}"
+    # In color the cell is reverse video over the character under it, so nothing shifts.
+    return f"{pointer} {theme.paint('text', before)}{_cursor_cell(theme, after[:1] or ' ')}{theme.paint('text', after[1:])}"
+
+
+def _cursor_cell(theme: Theme, char: str = " ") -> str:
+    """A reverse-video cell as huh draws it, or `_` without color."""
+    return "_" if theme.color == "none" else theme.paint("cream", char, on="cursor")
 
 
 def _option_rows(theme: Theme, view: PromptView, room: int) -> list[str]:
@@ -362,8 +375,24 @@ def detect_color(stream) -> ColorDepth:
 
 
 def detect_unicode(stream) -> bool:
+    """Whether to draw Unicode glyphs: the stream is UTF-8, and no width is ambiguous.
+
+    `•`, `●`, `○`, `✓`, `✗` and `┃` are two cells wide in a CJK locale and in some Windows fonts,
+    which `display_width` counts as one, so those terminals get the ASCII glyphs.
+    """
     encoding = getattr(stream, "encoding", None) or ""
-    return encoding.lower().replace("-", "").replace("_", "") == "utf8"
+    return encoding.lower().replace("-", "").replace("_", "") == "utf8" and not ambiguous_width()
+
+
+def ambiguous_width() -> bool:
+    """Whether ambiguous-width characters probably show two cells wide: a CJK locale, or Windows' legacy console."""
+    locale = os.environ.get("LC_ALL") or os.environ.get("LANG") or ""
+    if locale.lower().startswith(("ja", "ko", "zh")):
+        return True
+    # Windows Terminal, ConEmu, ANSICON and terminals that set TERM (mintty, VS Code) aren't the legacy console.
+    modern = ("WT_SESSION", "TERM", "ANSICON", "TERM_PROGRAM")
+    return os.name == "nt" and not any(os.environ.get(name) for name in modern) \
+        and os.environ.get("ConEmuANSI") != "ON"
 
 
 def display_width(text: str) -> int:

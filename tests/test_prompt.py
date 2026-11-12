@@ -10,6 +10,7 @@ import unittest
 from io import StringIO
 
 from shared import log, prompt, theme
+from shared._screen import Paste, paste_text
 from shared._theme import Screen
 
 INDIGO_BOLD = "\x1b[1;38;2;117;113;249m"
@@ -17,6 +18,7 @@ FUCHSIA = "\x1b[38;2;247;128;226m"
 GREEN = "\x1b[38;2;2;191;135m"
 TEXT = "\x1b[38;5;252m"
 FAINT = "\x1b[38;5;238m"
+CELL = "\x1b[38;2;255;253;245;48;2;247;128;226m \x1b[0m"
 END = "\x1b[0m"
 
 
@@ -50,8 +52,8 @@ class AskTest(PromptCase):
     def test_frame_with_description_and_placeholder(self):
         self.keys("s", "a", "m", "enter")
         self.assertEqual(prompt.ask("Name", description="Your account name", placeholder="ada"), "sam")
-        self.assertEqual(self.frames()[:4], ["┃ Name", "┃ Your account name", "┃ > ada", "enter submit"])
-        self.assertEqual(self.frames()[-5:-1], ["┃ Name", "┃ Your account name", "┃ > sam", "enter submit"])
+        self.assertEqual(self.frames()[:4], ["┃ Name", "┃ Your account name", "┃ > _ada", "enter submit"])
+        self.assertEqual(self.frames()[-5:-1], ["┃ Name", "┃ Your account name", "┃ > sam_", "enter submit"])
         self.assertEqual(self.last_line(), "✓ Name: sam")
 
     def test_colors(self):
@@ -60,14 +62,14 @@ class AskTest(PromptCase):
             prompt.ask("Name", placeholder="ada")
         output = self.screen.dest.getvalue()
         self.assertIn(f"{FAINT}┃{END} {INDIGO_BOLD}Name{END}\n", output)
-        self.assertIn(f"{FAINT}┃{END} {FUCHSIA}>{END} {FAINT}ada{END}\n", output)
-        self.assertIn(f"{FUCHSIA}>{END} {TEXT}x{END}\n", output)
+        self.assertIn(f"{FAINT}┃{END} {FUCHSIA}>{END} {CELL}{FAINT}ada{END}\n", output)
+        self.assertIn(f"{FUCHSIA}>{END} {TEXT}x{END}{CELL}\n", output)
         self.assertIn("\x1b[38;5;241menter\x1b[0m \x1b[38;5;239msubmit\x1b[0m\n", output)
 
     def test_default_is_the_buffer(self):
         self.keys("backspace", "y", "enter")
         self.assertEqual(prompt.ask("Name", default="ada"), "ady")
-        self.assertEqual(self.frames()[1], "┃ > ada")
+        self.assertEqual(self.frames()[1], "┃ > ada_")
 
     def test_letters_and_space_are_typed_not_actions(self):
         self.keys("k", "j", "space", "y", "enter")
@@ -79,7 +81,7 @@ class AskTest(PromptCase):
 
         self.keys("enter", "a", "enter")
         self.assertEqual(prompt.ask("Name", validate=nonempty), "a")
-        self.assertEqual(self.frames()[3:7], ["┃ Name *", "┃ >", "┃ * Enter a name.", "enter submit"])
+        self.assertEqual(self.frames()[3:7], ["┃ Name *", "┃ > _", "┃ * Enter a name.", "enter submit"])
         with theme.scope(color="16m"):
             self.keys("enter", "a", "enter")
             prompt.ask("Name", validate=nonempty)
@@ -90,32 +92,32 @@ class AskTest(PromptCase):
     def test_secret(self):
         self.keys("a", "b", "c", "enter")
         self.assertEqual(prompt.ask("Token", secret=True), "abc")
-        self.assertIn("┃ > •••", self.frames())
+        self.assertIn("┃ > •••_", self.frames())
         self.assertEqual(self.last_line(), "✓ Token")
         self.keys("a", "enter")
         prompt.ask("Token", secret=True, mask="*")
-        self.assertIn("┃ > *", self.frames())
+        self.assertIn("┃ > *_", self.frames())
 
     def test_secret_never_draws_the_answer(self):
         self.keys("p", "w", "enter")
         theme.unicode = False
         self.assertEqual(prompt.ask("Password", secret=True, description="Hidden"), "pw")
         output = self.screen.dest.getvalue()
-        self.assertIn("| > **", self.frames())
+        self.assertIn("| > **_", self.frames())
         self.assertNotIn("pw", output)
         self.assertEqual(self.last_line(), "+ Password")
 
     def test_mask_is_ignored_without_secret(self):
         self.keys("a", "enter")
         self.assertEqual(prompt.ask("Name", mask="*"), "a")
-        self.assertIn("┃ > a", self.frames())
+        self.assertIn("┃ > a_", self.frames())
 
     def test_description_wraps_and_every_line_gets_the_bar(self):
         self.screen._width = 20
         self.keys("enter")
         prompt.ask("Name", default="x", description="one two three four five six\nsecond")
         self.assertEqual(self.frames()[:6], [
-            "┃ Name", "┃ one two three four", "┃ five six", "┃ second", "┃ > x", "enter submit",
+            "┃ Name", "┃ one two three four", "┃ five six", "┃ second", "┃ > x_", "enter submit",
         ])
 
 
@@ -123,7 +125,7 @@ class KeysLineTest(PromptCase):
     def test_on_by_default_and_off_per_question(self):
         self.keys("enter")
         prompt.ask("Name", default="x", keys=False)
-        self.assertEqual(self.frames(), ["┃ Name", "┃ > x", "✓ Name: x"])
+        self.assertEqual(self.frames(), ["┃ Name", "┃ > x_", "✓ Name: x"])
 
     def test_off_everywhere(self):
         prompt.keys_shown = False
@@ -278,7 +280,7 @@ class ScrollTest(PromptCase):
             drawn = previous.split("\x1b[J")[-1].count("\n") + 1
             self.assertTrue(current.startswith(f"\x1b[{drawn - 1}A\x1b[J"), (previous, current))
             self.assertLessEqual(drawn, self.height - 1)
-        self.assertTrue(output.endswith("\x1b[J✓ Pick: o9\n"))
+        self.assertTrue(output.endswith("\x1b[J✓ Pick: o9\n\x1b[?25h\x1b[?2004l"))
         self.assertIn("┃   ↑ 7 more\n", output)
 
 
@@ -393,6 +395,124 @@ class KeymapTest(PromptCase):
             prompt.choose("Pick", ["a"])
 
 
+class CursorTest(PromptCase):
+    HIDE, SHOW = "\x1b[?25l", "\x1b[?25h"
+    PASTE_ON, PASTE_OFF = "\x1b[?2004h", "\x1b[?2004l"
+
+    def test_hidden_while_a_frame_is_drawn_and_shown_at_its_end(self):
+        self.screen._tty = True
+        self.keys("a", "enter")
+        prompt.ask("Name")
+        output = self.screen.dest.getvalue()
+        self.assertTrue(output.startswith(self.PASTE_ON + self.HIDE))
+        self.assertTrue(output.endswith("✓ Name: a\n" + self.SHOW + self.PASTE_OFF))
+        self.assertEqual((output.count(self.HIDE), output.count(self.SHOW)), (1, 1))
+
+    def test_shown_after_ctrl_c(self):
+        self.screen._tty = True
+        self.keys("a", "ctrl+c")
+        with self.assertRaises(KeyboardInterrupt):
+            prompt.ask("Name")
+        output = self.screen.dest.getvalue()
+        self.assertIn(self.HIDE, output)
+        self.assertTrue(output.endswith(self.SHOW + self.PASTE_OFF))
+
+    def test_shown_after_an_error(self):
+        self.screen._tty = True
+
+        def broken():
+            raise OSError("terminal gone")
+
+        self.screen.readkey = broken
+        with self.assertRaises(OSError):
+            prompt.ask("Name")
+        self.assertTrue(self.screen.dest.getvalue().endswith(self.SHOW + self.PASTE_OFF))
+
+    def test_the_exit_hook_shows_a_cursor_left_hidden(self):
+        from shared import _screen
+
+        self.screen._tty = True
+        _screen.hide_cursor(self.screen)
+        _screen._show_all_cursors()
+        self.assertEqual(self.screen.dest.getvalue(), self.HIDE + self.SHOW)
+        _screen._show_all_cursors()
+        self.assertEqual(self.screen.dest.getvalue(), self.HIDE + self.SHOW)
+
+    def test_a_pipe_gets_no_escape_codes(self):
+        self.keys("a", "enter")
+        prompt.ask("Name")
+        self.assertNotIn("\x1b", self.screen.dest.getvalue())
+
+    def test_the_cursor_sits_after_the_typed_text(self):
+        self.keys("a", "b", "enter")
+        prompt.ask("Name")
+        self.assertIn("┃ > ab_", self.frames())
+
+    def test_the_cursor_sits_after_the_mask(self):
+        self.keys("a", "b", "enter")
+        prompt.ask("Token", secret=True)
+        self.assertIn("┃ > ••_", self.frames())
+
+    def test_the_cursor_is_a_reverse_video_cell_in_color(self):
+        self.keys("a", "enter")
+        with theme.scope(color="16m"):
+            prompt.ask("Name")
+        cell = "\x1b[38;2;255;253;245;48;2;247;128;226m \x1b[0m"
+        self.assertIn(f"{TEXT}a{END}{cell}\n", self.screen.dest.getvalue())
+
+    def test_arrows_move_the_cursor_and_typing_inserts_there(self):
+        self.keys("a", "c", "left", "b", "enter")
+        self.assertEqual(prompt.ask("Name"), "abc")
+        self.assertIn("┃ > a_c", self.frames())
+        self.assertIn("┃ > ab_c", self.frames())
+
+    def test_backspace_deletes_before_the_cursor_and_arrows_stop_at_the_ends(self):
+        self.keys("a", "b", "left", "left", "left", "backspace", "right", "right", "right", "x", "enter")
+        self.assertEqual(prompt.ask("Name"), "abx")
+        self.keys("a", "b", "left", "backspace", "enter")
+        self.assertEqual(prompt.ask("Name"), "b")
+
+    def test_h_and_l_are_text_in_an_input(self):
+        self.keys("h", "l", "enter")
+        self.assertEqual(prompt.ask("Name"), "hl")
+
+
+class PasteTest(PromptCase):
+    HASH = "0123456789abcdef0123456789abcdef"
+
+    def test_a_paste_is_inserted_whole_at_the_cursor(self):
+        self.keys("a", "d", "left", Paste("bc"), "enter")
+        self.assertEqual(prompt.ask("Name"), "abcd")
+        self.assertIn("┃ > abc_d", self.frames())
+
+    def test_a_secret_paste_is_inserted_whole_and_masked(self):
+        self.keys(Paste(self.HASH), "enter")
+        self.assertEqual(prompt.ask("api_hash", secret=True), self.HASH)
+        self.assertIn("┃ > " + "•" * 32 + "_", self.frames())
+        self.assertNotIn(self.HASH, self.screen.dest.getvalue())
+
+    def test_newlines_in_a_paste_do_not_submit_or_stay(self):
+        self.keys(paste_text("one\r\ntwo\nthree\x1b"), "enter")
+        self.assertEqual(prompt.ask("Name"), "onetwothree")
+
+    def test_a_burst_of_plain_characters(self):
+        self.keys(*self.HASH, "enter")
+        self.assertEqual(prompt.ask("api_hash"), self.HASH)
+
+    def test_bracketed_paste_is_on_while_reading_and_off_after_each_exit(self):
+        self.screen._tty = True
+        self.keys(Paste("a"), "enter")
+        prompt.ask("Name")
+        output = self.screen.dest.getvalue()
+        self.assertEqual((output.count("\x1b[?2004h"), output.count("\x1b[?2004l")), (1, 1))
+        self.assertLess(output.index("\x1b[?2004h"), output.index("┃ Name"))
+        self.screen.dest.truncate(0)
+        self.keys("ctrl+c")
+        with self.assertRaises(KeyboardInterrupt):
+            prompt.ask("Name")
+        self.assertIn("\x1b[?2004l", self.screen.dest.getvalue())
+
+
 class WithoutKeysTest(PromptCase):
     def test_defaults_block(self):
         self.screen.readkey = lambda: self.fail("read a key")
@@ -424,7 +544,7 @@ class LiveAreaTest(PromptCase):
         self.screen._tty = True
         self.keys("enter")
         prompt.ask("Name", default="a")
-        self.assertEqual(self.screen.dest.getvalue(), "┃ Name\n┃ > a\nenter submit\r\x1b[2A\x1b[J✓ Name: a\n")
+        self.assertEqual(self.screen.dest.getvalue(), "\x1b[?2004h\x1b[?25l┃ Name\n┃ > a_\nenter submit\r\x1b[2A\x1b[J✓ Name: a\n\x1b[?25h\x1b[?2004l")
 
     def test_prompt_while_bar_is_open_on_tty(self):
         self.screen._tty = True
@@ -436,7 +556,7 @@ class LiveAreaTest(PromptCase):
         cleared = output.index("\x1b[1A\x1b[J")
         self.assertLess(output.index("• run"), cleared)
         self.assertLess(cleared, output.index("Go?"))
-        self.assertIn("✓ Go? Yes\n• run", output)
+        self.assertIn("✓ Go? Yes\n\x1b[?25h\x1b[?2004l• run", output)
         self.assertTrue(output.endswith("✓ run ━━━━━━━━━━────────── 1/2\n"))
 
     def test_two_threads_ask_one_at_a_time(self):
@@ -463,7 +583,7 @@ class LiveAreaTest(PromptCase):
         for thread in threads:
             thread.join()
         self.assertEqual(answers, {"first": "first", "second": "second"})
-        self.assertEqual(self.frames(), ["┃ First", "┃ > first", "✓ First: first", "┃ Second", "┃ > second",
+        self.assertEqual(self.frames(), ["┃ First", "┃ > first_", "✓ First: first", "┃ Second", "┃ > second_",
                                          "✓ Second: second"])
 
 

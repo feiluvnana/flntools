@@ -422,7 +422,7 @@ class ThreadTest(LogCase):
         self.assertEqual(prompt.ask("Name", default="ada"), "ada")
         thread.join()
         self.assertEqual(self.lines(), [
-            "┃ Name", "┃ > ada", "enter submit", "✓ Name: ada", "• background", "✓ bar ━━━━━━━━━━━━━━━━━━━━ 1/1",
+            "┃ Name", "┃ > ada_", "enter submit", "✓ Name: ada", "• background", "✓ bar ━━━━━━━━━━━━━━━━━━━━ 1/1",
         ])
 
 

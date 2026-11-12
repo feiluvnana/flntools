@@ -913,7 +913,7 @@ class EngineLoginTest(EngineCase):
         Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
         self.assertEqual(answers, ["1"])
         self.assertEqual(self.screen.dest.getvalue().splitlines()[:3],
-                         ["┃ Phone number", "┃ With the country code, such as +44", "┃ >"])
+                         ["┃ Phone number", "┃ With the country code, such as +44", "┃ > _"])
 
 
 if __name__ == "__main__":

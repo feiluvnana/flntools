@@ -199,6 +199,36 @@ class ColorTest(unittest.TestCase):
             self.assertEqual(detect_color(TtyStream()), "none")
 
 
+class AmbiguousWidthTest(unittest.TestCase):
+    class Utf8(StringIO):
+        encoding = "utf-8"
+
+    def test_cjk_locales_get_ascii_glyphs(self):
+        for variable, value in (("LANG", "ja_JP.UTF-8"), ("LANG", "ko_KR.UTF-8"), ("LC_ALL", "zh_CN.UTF-8")):
+            with self.subTest(value), mock.patch.dict(os.environ, {variable: value}, clear=True):
+                self.assertFalse(_theme.detect_unicode(self.Utf8()))
+                picked = Theme(color="none")
+                self.assertEqual(
+                    [picked.glyphs.bullet, picked.glyphs.select.yes, picked.glyphs.select.no, picked.glyphs.tick,
+                     picked.glyphs.cross, picked.glyphs.border],
+                    ["*", "(*)", "( )", "+", "x", "|"])
+
+    def test_lc_all_wins_over_lang(self):
+        with mock.patch.dict(os.environ, {"LANG": "ja_JP.UTF-8", "LC_ALL": "en_US.UTF-8"}, clear=True):
+            self.assertTrue(_theme.detect_unicode(self.Utf8()))
+
+    def test_other_locales_keep_unicode(self):
+        with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+            self.assertTrue(_theme.detect_unicode(self.Utf8()))
+
+    def test_windows_legacy_console_gets_ascii(self):
+        with mock.patch("os.name", "nt"):
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertFalse(_theme.detect_unicode(self.Utf8()))
+            with mock.patch.dict(os.environ, {"WT_SESSION": "1"}, clear=True):
+                self.assertTrue(_theme.detect_unicode(self.Utf8()))
+
+
 class ScopeTest(unittest.TestCase):
     def test_scope_restores(self):
         screen = Screen(dest=StringIO(), width=40, tty=False, interactive=False)

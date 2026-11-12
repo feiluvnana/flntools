@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterator, Literal, Sequence, TypeVar, overload
 import shared
 from shared import _theme
 from shared._log import live_area
+from shared._screen import Paste, hide_cursor, show_cursor
 from shared._style import strip
 from shared._theme import PromptView, Theme, fit
 
@@ -122,6 +123,7 @@ def ask(message: str, *, secret: bool = False, default: str | None = None, place
     question = _Question("secret" if secret else "input", message, description, default=default,
                          validate=validate, keys=keys)
     question.buffer = default or ""
+    question.caret = len(question.buffer)
     question.placeholder = placeholder
     if secret:
         question.mask = mask
@@ -261,6 +263,7 @@ class _Question:
         self.kind, self.message, self.description, self.default = kind, message, description, default
         self.validate, self.show_keys = validate, keys
         self.buffer = ""
+        self.caret = 0  # where typed characters go in `buffer`, for input and secret
         self.placeholder = ""
         self.mask: str | None = None
         self.labels: list[str] = []
@@ -299,16 +302,34 @@ class _Question:
     def press(self, key: str) -> bool:
         """Apply one key. Returns True when the key asks to submit."""
         self.error = None
+        if isinstance(key, Paste):
+            self._paste(key)
+            return False
         if key in keymap.submit:
             return True
+        editing = self.kind in ("input", "secret")
         if self.typing and key in keymap.backspace:
-            self.buffer, self.index = self.buffer[:-1], 0
+            if editing:
+                self.buffer = self.buffer[:max(self.caret - 1, 0)] + self.buffer[self.caret:]
+                self.caret = max(self.caret - 1, 0)
+            else:
+                self.buffer = self.buffer[:-1]
+            self.index = 0
             return False
         # In a typed question every printable key is text, so "k" types k instead of moving up.
         text = " " if key == "space" else key if len(key) == 1 and key.isprintable() else None
         toggles = self.kind == "choices" and key in keymap.toggle
         if self.typing and text is not None and not toggles:
-            self.buffer, self.index = self.buffer + text, 0
+            if editing:
+                self.buffer = self.buffer[:self.caret] + text + self.buffer[self.caret:]
+                self.caret += 1
+            else:
+                self.buffer += text
+            self.index = 0
+            return False
+        # The arrow keys, not h and l (those are text above), move the typed text's cursor.
+        if editing and key in keymap.left + keymap.right:
+            self.caret = min(max(self.caret + (-1 if key in keymap.left else 1), 0), len(self.buffer))
             return False
         visible = self.visible()
         if key in keymap.up:
@@ -323,6 +344,15 @@ class _Question:
         elif toggles and visible:
             self.checked ^= {visible[self.index]}
         return False
+
+    def _paste(self, text: str) -> None:
+        """Insert a pasted text whole: at the cursor in an input, at the end in a filter."""
+        if self.kind in ("input", "secret"):
+            self.buffer = self.buffer[:self.caret] + text + self.buffer[self.caret:]
+            self.caret += len(text)
+        elif self.filter:
+            self.buffer += text
+        self.index = 0
 
     def problem(self) -> str | None:
         """Why the current answer cannot be submitted, or None."""
@@ -353,6 +383,7 @@ class _Question:
             position=self.index,
             checked=frozenset(row for row, position in enumerate(visible) if position in self.checked),
             error=self.error or no_match, keys=self._help_keys(),
+            caret=self.caret if self.kind in ("input", "secret") else None,
         )
 
     def _help_keys(self) -> tuple:
@@ -385,7 +416,7 @@ def _ask(question: _Question) -> Any:
     if question.kind == "secret" and question.mask is None:
         question.mask = "•" if theme.unicode else "*"
     frame = _Frame(theme)
-    with live_area(screen).question():
+    with live_area(screen).question(), screen.reading():
         try:
             while True:
                 frame.draw(theme.draw("prompt", question.view()))
@@ -396,11 +427,10 @@ def _ask(question: _Question) -> Any:
                     question.error = question.problem()
                     if question.error is None:
                         break
-        except KeyboardInterrupt:
+            frame.draw(theme.draw("prompt", question.view(done=True)))
+        finally:
+            # Ctrl-C and any error end the frame too, so the cursor is never left hidden.
             frame.end()
-            raise
-        frame.draw(theme.draw("prompt", question.view(done=True)))
-        frame.end()
     return question.answer()
 
 
@@ -419,6 +449,7 @@ class _Frame:
         if not screen.tty:
             screen.write("\n".join(lines) + "\n")
             return
+        hide_cursor(screen)  # the input line draws its own cursor; the terminal's would sit at the keys line
         erase = ""
         if self.drawn_lines:
             erase = "\r" + (f"\x1b[{self.drawn_lines - 1}A" if self.drawn_lines > 1 else "") + "\x1b[J"
@@ -426,9 +457,11 @@ class _Frame:
         self.drawn_lines = len(lines)
 
     def end(self) -> None:
-        if self.theme.screen.tty and self.drawn_lines:
-            self.theme.screen.write("\n")
+        screen = self.theme.screen
+        if screen.tty and self.drawn_lines:
+            screen.write("\n")
             self.drawn_lines = 0
+        show_cursor(screen)
 
 
 def _unknown_action(name: str) -> AttributeError:

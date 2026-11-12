@@ -398,7 +398,8 @@ shared.theme.LogRecord.bar: field -> Bar | None
 shared.theme.LogRecord.level: field -> str
 shared.theme.LogRecord.message: field -> str
 shared.theme.Namespace(kind: str, defaults: dict, pick: Callable[[Any], Any], *, check: Callable[[Any], Any] = Namespace.<lambda>)
-shared.theme.PromptView(kind: str, message: str, description: str = '', value: str = '', placeholder: str = '', options: tuple = (), position: int = 0, checked: frozenset = frozenset(), error: str | None = None, keys: tuple = (), done: bool = False)
+shared.theme.PromptView(kind: str, message: str, description: str = '', value: str = '', placeholder: str = '', options: tuple = (), position: int = 0, checked: frozenset = frozenset(), error: str | None = None, keys: tuple = (), done: bool = False, caret: int | None = None)
+shared.theme.PromptView.caret: field -> int | None
 shared.theme.PromptView.checked: field -> frozenset
 shared.theme.PromptView.description: field -> str
 shared.theme.PromptView.done: field -> bool
@@ -416,6 +417,7 @@ shared.theme.Screen.height: property -> int
 shared.theme.Screen.inp: property
 shared.theme.Screen.interactive: property -> bool
 shared.theme.Screen.lock: attribute
+shared.theme.Screen.reading() -> Iterator[None]
 shared.theme.Screen.readkey() -> str
 shared.theme.Screen.tty: property -> bool
 shared.theme.Screen.width: property -> int
