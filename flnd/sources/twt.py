@@ -98,14 +98,18 @@ STATE_KEY = "graphql.queries"
 PAGE_SIZE = 50
 # A tweet's `created_at`, as Twitter writes it: `Mon Nov 09 10:00:00 +0000 2026`, always UTC.
 CREATED_AT = "%a %b %d %H:%M:%S %z %Y"
+# The largest banner size the CDN serves, as the `/<size>` suffix of a banner's URL.
 BANNER_SIZE = "1500x500"
 
 
 class Timeline(NamedTuple):
     """One timeline: its category, its GraphQL query, and its tab's path under the profile, for the browser."""
 
+    # The category the posts are filed under: "posts", "media", "highlights", "reposts" or "replies".
     category: str
+    # The GraphQL operation whose responses carry the timeline, as a key of `QUERIES`.
     query: str
+    # The tab's path under the profile's URL, which the browser opens; "" is the profile itself.
     tab: str
 
 
@@ -195,7 +199,12 @@ class Twitter(Source):
             r"x.com/status/{tweet_id:\d+}", r"twitter.com/status/{tweet_id:\d+}",
             r"x.com/i/web/status/{tweet_id:\d+}", r"twitter.com/i/web/status/{tweet_id:\d+}")
     def post(self, site: Site, tweet_id: str) -> Iterator[Post]:
-        """One tweet, by its id: `Target("twt", "post", "1790000000000000000")`; its media, in the target's own folder."""
+        """One tweet, by its id: `Target("twt", "post", "1790000000000000000")`; its media, in the target's own folder.
+
+        Args:
+            site: the target's site, which the tweet is read through.
+            tweet_id: the tweet's numeric id, from the target or the URL.
+        """
         variables = {"tweetId": tweet_id, "withCommunity": False, "includePromotedContent": False, "withVoice": False}
         try:
             data = self.graph.get(site, "TweetResultByRestId", variables)
@@ -210,7 +219,13 @@ class Twitter(Source):
 
     @target("{user}", "x.com/{user}", "twitter.com/{user}")
     def user(self, site: Site, user: str) -> Account:
-        """A profile, by its screen name, or a number, which is a user id and never a tweet: read once, for every category."""
+        """A profile, by its screen name, or a number, which is a user id and never a tweet: read once, for every category.
+
+        Args:
+            site: the target's site, which the user is read through.
+            user: the screen name without `@`, or the user's numeric id.
+        """
+        # A number is a user id, so it is asked by `UserByRestId`; anything else is a screen name.
         if user.isdigit():
             query, variables = "UserByRestId", {"userId": user}
         else:
@@ -230,38 +245,69 @@ class Twitter(Source):
     # order they were added, which is not the tweets' dates.
     @user.category(newest_first=True)
     def posts(self, site: Site, account: Account) -> Iterator[Post]:
-        """The user's own tweets (retweets left out)."""
+        """The user's own tweets (retweets left out).
+
+        Args:
+            site: the target's site.
+            account: the `Account` the route built, read once for every category.
+        """
         yield from self.timeline(site, account, TIMELINES["posts"])
 
     @user.category(newest_first=True)
     def media(self, site: Site, account: Account) -> Iterator[Post]:
-        """The Media tab: every photo and video, filed in `images/` or `videos/`."""
+        """The Media tab: every photo and video, filed in `images/` or `videos/`.
+
+        Args:
+            site: the target's site.
+            account: the `Account` the route built, read once for every category.
+        """
         yield from self.timeline(site, account, TIMELINES["media"])
 
     @user.category
     def highlights(self, site: Site, account: Account) -> Iterator[Post]:
-        """The tweets the user highlighted."""
+        """The tweets the user highlighted.
+
+        Args:
+            site: the target's site.
+            account: the `Account` the route built, read once for every category.
+        """
         yield from self.timeline(site, account, TIMELINES["highlights"])
 
     @user.category
     def reposts(self, site: Site, account: Account) -> Iterator[Post]:
-        """The media of the tweets the user retweeted, dated by the original tweet."""
+        """The media of the tweets the user retweeted, dated by the original tweet.
+
+        Args:
+            site: the target's site.
+            account: the `Account` the route built, read once for every category.
+        """
         yield from self.timeline(site, account, TIMELINES["reposts"])
 
     @user.category(newest_first=True)
     def replies(self, site: Site, account: Account) -> Iterator[Post]:
-        """The user's own replies; the tweets they answered are left out."""
+        """The user's own replies; the tweets they answered are left out.
+
+        Args:
+            site: the target's site.
+            account: the `Account` the route built, read once for every category.
+        """
         yield from self.timeline(site, account, TIMELINES["replies"])
 
     # The pictures are named after the picture's own id and keyed by their path, as always.
     @user.category(folder="profile", key="")
     def profile(self, site: Site, account: Account) -> Iterator[Post]:
-        """The avatar at its original size, and the banner at its largest."""
+        """The avatar at its original size, and the banner at its largest.
+
+        Args:
+            site: the target's site.
+            account: the `Account` the route built; with no user (the API couldn't find them) nothing is saved.
+        """
         if account.user is None:
             return
         user = account.user
         avatar = selector.parse(user).jmespath("avatar.image_url || legacy.profile_image_url_https").first
         banner = selector.parse(user).jmespath("banner.image_url || legacy.profile_banner_url").first
+        # The avatar comes from either place the API has put it; the banner the same way.
         if avatar:
             # "_normal" is the 48px version; without it the URL gives the picture as uploaded.
             original = avatar.replace("_normal.", ".")
@@ -326,6 +372,7 @@ class Twitter(Source):
                 return False
             site.warn("{category}: {error}; reading it in the browser", category=timeline.category, error=error)
             return True
+        # A page that isn't JSON: the browser would get the same answer, so this is a warning, not a refusal.
         except http.Error as error:
             site.warn("{category}: {error}", category=timeline.category, error=error)
             return False
@@ -341,6 +388,7 @@ class Twitter(Source):
                 from other people's, so none are kept, as before.
             timeline: which timeline's tab to scroll.
         """
+        # A number is opened by its id under `/i/user/`; a screen name is opened under its own path.
         profile = f"https://x.com/i/user/{account.handle}" if account.handle.isdigit() else f"https://x.com/{account.handle}"
         found = 0
         # Watching starts before `goto`, so nothing of the first load is missed.
@@ -383,6 +431,7 @@ class Graph:
         """
         try:
             return self._get(site, query, variables)
+        # Only a stale id (400 or 404) is worth a refresh; any other refusal is raised as it is.
         except FetchError as error:
             if error.status not in STALE or self.refreshed or not self.refresh(site):
                 raise
@@ -395,7 +444,9 @@ class Graph:
         gives each one; a switch the page doesn't name is sent as false, which X accepts (it refuses
         only a missing one). The table is kept in `state` for the next run.
         """
+        # Once a run: the page and script cost two requests, so a second stale answer doesn't repeat them.
         self.refreshed = True
+        # Not fatal: without a refresh the stale query fails with its own error, and the browser takes over.
         try:
             home = site.fetch(HOME).text
             found = MAIN_SCRIPT.search(home)
@@ -423,6 +474,7 @@ class Graph:
     def _get(self, site: Site, query: str, variables: dict) -> Any:
         """One GraphQL query's JSON with the table's id and flags for it."""
         entry = self._table(site).get(query) or {}
+        # The refreshed flags when the table has them, else the built-in ones.
         features = entry.get("features") or FEATURES
         return site.fetch(f"{API}{entry.get('id') or QUERIES[query]}/{query}", follow_redirects=False,
                           params={"variables": json.dumps(variables), "features": json.dumps(features)}).json
@@ -437,12 +489,21 @@ class Graph:
 
 
 def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
-    """One timeline page's tweets, and the cursor of the next page (None at the end)."""
+    """One timeline page's tweets, and the cursor of the next page (None at the end).
+
+    Args:
+        data: one timeline query's JSON response.
+
+    Returns:
+        The page's tweets, wrapped or not, and the `Bottom` cursor that asks for the next page.
+    """
+    # The timeline sits under `user` in one response shape and under `timeline_v2` in the other.
     instructions = selector.parse(data).jmespath(
         "data.user.result.timeline.timeline.instructions || data.user.result.timeline_v2.timeline.instructions").all
     tweets, cursor = [], None
     for entry in timeline_entries(instructions):
         content = entry.get("content") or entry.get("item") or {}
+        # The page's `Bottom` cursor is the request for the next page; the `Top` one is not used.
         if content.get("cursorType") == "Bottom":
             cursor = content.get("value")
         items = [item.get("item", item) for item in content.get("items", [])] or [content]
@@ -454,23 +515,42 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
 
 
 def timeline_entries(instructions: list[Any]) -> Iterator[dict]:
-    """Every entry of a page: added ones, the pinned one, and items added to a grid (the Media tab's later pages)."""
+    """Every entry of a page: added ones, the pinned one, and items added to a grid (the Media tab's later pages).
+
+    Args:
+        instructions: the page's `instructions` list.
+    """
     for instruction in instructions:
         if isinstance(instruction, dict):
             yield from instruction.get("entries", [])
+            # The Media tab's later pages come as `moduleItems`, not `entries`.
             yield from instruction.get("moduleItems", [])
             if "entry" in instruction:
                 yield instruction["entry"]
 
 
 def unwrap(tweet: dict) -> dict:
-    """The tweet itself, out of the wrapper a tweet with limited visibility comes in."""
+    """The tweet itself, out of the wrapper a tweet with limited visibility comes in.
+
+    Args:
+        tweet: a tweet object, wrapped or not.
+
+    Returns:
+        The inner `tweet` object when there is one, else `tweet` itself.
+    """
     inner = tweet.get("tweet")
     return inner if isinstance(inner, dict) else tweet
 
 
 def tweet_id_of(tweet: dict) -> str:
-    """A tweet's id, inside its visibility wrapper or not."""
+    """A tweet's id, inside its visibility wrapper or not.
+
+    Args:
+        tweet: a tweet object, wrapped or not.
+
+    Returns:
+        The id as text, from `rest_id` or else `legacy.id_str`; "" when neither is there.
+    """
     tweet = unwrap(tweet)
     return str(tweet.get("rest_id") or selector.parse(tweet).jmespath("legacy.id_str").first or "")
 
@@ -495,13 +575,16 @@ def tweet_posts(tweet: dict, category: str, user_id: str | None, *, part: str | 
     tweet = unwrap(tweet)
     legacy = tweet.get("legacy") or {}
     retweeted = selector.parse(legacy).jmespath("retweeted_status_result.result").first
+    # A repost's files are the retweeted tweet's, so the reposts category reads that tweet instead.
     if category == "reposts":
         if not isinstance(retweeted, dict):
             return
         tweet = unwrap(retweeted)
         legacy = tweet.get("legacy") or {}
+    # Retweets are left out of every other category: their media is filed under reposts.
     elif retweeted is not None:
         return
+    # A reply is kept only when it is the user's own and answers another tweet.
     if category == "replies" and (legacy.get("user_id_str") != user_id or not legacy.get("in_reply_to_status_id_str")):
         return
     tweet_id, created_at = tweet_id_of(tweet), legacy.get("created_at")
@@ -523,6 +606,13 @@ def media_file(url: str, extension: str, tweet_id: str, index: int, posted: date
 
     A URL path with no extension, or one in capitals, would be named from the content (or in
     lowercase) by the engine; the file was always named with `extension`, so then it keeps that.
+
+    Args:
+        url: the file's URL, which may carry a `?name=` query.
+        extension: the extension to save it with when the URL gives none: "mp4", or "jpg" for a photo.
+        tweet_id: the tweet's id, which the file name starts with.
+        index: the media's place in the tweet, counted from 0.
+        posted: the tweet's time, or None; the date is left out of the name when it is None.
     """
     suffix = PurePosixPath(urlsplit(url).path).suffix
     if suffix and suffix == suffix.lower():
@@ -532,11 +622,20 @@ def media_file(url: str, extension: str, tweet_id: str, index: int, posted: date
 
 
 def best_file(media: dict) -> tuple[str, str] | None:
-    """A photo at full size, or a video's highest-bitrate MP4, as `(url, extension)`."""
+    """A photo at full size, or a video's highest-bitrate MP4, as `(url, extension)`.
+
+    Args:
+        media: one entry of a tweet's `extended_entities.media`.
+
+    Returns:
+        `(url, extension)`, or None for a video with no MP4 variant (only streaming playlists).
+    """
     if media.get("type") == "photo" and media.get("media_url_https"):
         url = media["media_url_https"]
+        # `name=orig` asks the media server for the full-size picture, not its thumbnail size.
         return f"{url}?name=orig", PurePosixPath(urlsplit(url).path).suffix.lstrip(".") or "jpg"
     variants = selector.parse(media).jmespath("video_info.variants").all
+    # Only MP4 variants are kept: the streaming playlists aren't files the engine can save as an MP4.
     mp4s = [variant for variant in variants if variant.get("content_type") == "video/mp4"]
     if not mp4s:
         return None
