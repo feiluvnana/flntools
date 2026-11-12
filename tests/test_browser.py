@@ -376,6 +376,28 @@ class ChromeOnlyTest(BrowserCase):
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertNotIn(browser.CHROMIUM_QUESTION, self.screen.dest.getvalue())
 
+    def test_check_asks_up_front_and_open_then_launches_without_asking(self):
+        self.terminal("y")
+        browser.check()
+        self.assertEqual((self.launched, len(self.installs)), ([], 1))
+        self.playwright.stop.assert_called_once()
+        # The screen has no key left: open finds the Chromium check downloaded, and asks nothing.
+        browser.open().close()
+        self.assertEqual(self.launched, ["chromium"])
+
+    def test_check_with_chrome_starts_nothing(self):
+        with mock.patch.object(browser, "_chrome_installed", return_value=True):
+            browser.check()
+        self.assertEqual((self.playwright.stop.call_count, self.installs), (0, []))
+
+    def test_a_no_to_check_is_kept_by_open(self):
+        self.terminal("n")
+        with self.assertRaisesRegex(RuntimeError, "^flnd needs Google Chrome"):
+            browser.check()
+        with self.assertRaisesRegex(RuntimeError, "^flnd needs Google Chrome"):
+            browser.open()
+        self.assertEqual(self.screen.dest.getvalue().count(f"✓ {browser.CHROMIUM_QUESTION} No"), 1)
+
     def test_a_failed_download(self):
         self.terminal("y")
         with mock.patch.object(browser.subprocess, "Popen", return_value=FakeInstaller("Error: ENOSPC\n", 1)), \
@@ -438,6 +460,28 @@ class ChromeOnlyTest(BrowserCase):
 
 
 @needs_chromium
+class ChannelTest(unittest.TestCase):
+    """The channel a headless launch passes, pinned without a real browser."""
+
+    def launched(self, channel, *, profile):
+        playwright = mock.Mock()
+        options = {"headless": True, "args": []}
+        with mock.patch.object(browser, "_headful_user_agent", return_value="Chrome/1"):
+            browser._open_context(playwright, profile, channel, options, {})
+        chromium = playwright.chromium
+        return [call.kwargs["channel"] for call in chromium.launch.call_args_list + chromium.launch_persistent_context.call_args_list]
+
+    def test_bundled_chromium_is_launched_through_the_chromium_channel(self):
+        # With no channel, Playwright would run the headless shell, which flnd doesn't install.
+        for profile in (None, "profile"):
+            self.assertEqual(self.launched(None, profile=profile)[-1], "chromium")
+            self.assertEqual(set(self.launched("chromium", profile=profile)), {"chromium"})
+
+    def test_installed_chrome_keeps_its_channel(self):
+        for profile in (None, "profile"):
+            self.assertEqual(set(self.launched("chrome", profile=profile)), {"chrome"})
+
+
 class OpenTest(BrowserCase):
     def setUp(self):
         super().setUp()

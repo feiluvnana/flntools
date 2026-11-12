@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
-__all__ = ["Browser", "Error", "Page", "Subscription", "WaitError", "open"]
+__all__ = ["Browser", "Error", "Page", "Subscription", "WaitError", "check", "open"]
 
 LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled", "--disable-infobars"]
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -230,6 +230,33 @@ def open(*, profile: str | Path | None = None, cdp: str | None = None, headless:
         # Once launched, the Browser's close deletes the copy, after Chrome has stopped writing into it.
         if copy is not None and not launched:
             shutil.rmtree(copy, ignore_errors=True)
+
+
+def check() -> None:
+    """Make sure a browser can be opened, asking now whether to download Chromium when Google Chrome is missing.
+
+        browser.check()          # before a long run, so its one question comes first
+
+    It returns at once when Google Chrome is installed, or a Chromium downloaded on an earlier
+    run is there. Otherwise it asks, as `open` would: once per process, in a terminal, with the
+    live rows held, and downloads Chromium on yes. Asking up front means a run that will need a
+    browser never stops midway to ask.
+
+    Raises:
+        RuntimeError: Chrome isn't installed and the Chromium download was declined, wasn't
+            possible without a terminal, or failed. `open` then raises the same, without asking.
+        ImportError: Playwright isn't installed (the `browser` extra), when Chrome is missing.
+
+    It starts Playwright's driver for a moment to find Chromium's folder, so it takes about a
+    second without Chrome, and nothing with it.
+    """
+    if _chrome_installed():
+        return
+    playwright = _start_playwright()
+    try:
+        _channel(playwright)
+    finally:
+        playwright.stop()
 
 
 def _profile_name(profile: str | Path | None) -> str | None:
@@ -958,6 +985,10 @@ def _install_chromium() -> None:
 def _open_context(playwright: Playwright, profile: str | Path | None, channel: str | None,
                   launch_options: dict[str, Any], context_options: dict[str, Any]) -> tuple[BrowserContext, list]:
     headless = launch_options["headless"]
+    # Playwright's bundled Chromium, launched headless with no channel, runs as the separate headless
+    # shell, which flnd never installs (`install --no-shell`). The `chromium` channel runs the full
+    # Chromium in Chrome's new headless mode instead. `chrome` (installed Chrome) is left as it is.
+    channel = channel or "chromium"
     if profile is None:
         remote = playwright.chromium.launch(channel=channel, **launch_options)
         options = {**context_options, "user_agent": _headful_user_agent(remote)} if headless else context_options
@@ -983,7 +1014,7 @@ def _headful_user_agent(remote: Any) -> str:
 
 def _headful_user_agent_of(playwright: Playwright, channel: str | None) -> str:
     # A persistent profile can't be relaunched with a new user agent, so a throwaway browser reads it first.
-    remote = playwright.chromium.launch(channel=channel, headless=True)
+    remote = playwright.chromium.launch(channel=channel or "chromium", headless=True)
     try:
         return _headful_user_agent(remote)
     finally:

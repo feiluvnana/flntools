@@ -7,36 +7,93 @@ flnd.engine.Engine.resolve(texts: Sequence[str]) -> list[Target]
 flnd.engine.Engine.run(targets: Sequence[Target], options: Options) -> int
 flnd.engine.Engine.sources: attribute
 flnd.source: module
+flnd.source.Category(function: Callable[..., Any], *, newest_first: bool = False, name: str | None = None, folder: str | None = None, filename: str | None = None, key: str | None = None)
+flnd.source.Category.attribute: attribute
+flnd.source.Category.filename: attribute
+flnd.source.Category.folder: attribute
+flnd.source.Category.function: attribute
+flnd.source.Category.key: attribute
+flnd.source.Category.name: attribute
+flnd.source.Category.newest_first: attribute
+flnd.source.DateLike: Union
 flnd.source.Error(Exception)
+flnd.source.Fetch: _CallableGenericAlias
 flnd.source.FetchError(flnd.source.Error)
 flnd.source.FetchError.status: attribute
+flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, headers: Mapping[str, str] | None = None, name: str | None = None, size: int | None = None)
+flnd.source.File.audio: field -> str | None
+flnd.source.File.content: field -> str | None
+flnd.source.File.headers: field -> Mapping[str, str] | None
+flnd.source.File.name: field -> str | None
+flnd.source.File.size: field -> int | None
+flnd.source.File.text(name: str, text: str) -> File
+flnd.source.File.url: field -> str | tuple[str, ...] | Fetch | None
+flnd.source.Login(*args, **kwargs)
+flnd.source.Login.ask(message: str, *, secret: bool = False, description: str = '') -> str
+flnd.source.Login.info(message: str, **fields: Any) -> None
+flnd.source.Login.interactive: property -> bool
+flnd.source.Login.secrets: property -> MutableMapping[str, str]
 flnd.source.LoginError(flnd.source.Error)
 flnd.source.Pace(floor: float = 0.5, budgets: Mapping[str, tuple[int, float]] = <factory>)
 flnd.source.Pace.budgets: field -> Mapping[str, tuple[int, float]]
 flnd.source.Pace.floor: field -> float
 flnd.source.Pace.of(value: Pace | float) -> Pace
+flnd.source.Post(id: str | int, files: Sequence[File] | Callable[[], Iterable[File]] = (), *, date: DateLike = None, headers: Mapping[str, str] | None = None, **fields: Any)
+flnd.source.Post.category: field -> str
+flnd.source.Post.date: field -> DateLike
+flnd.source.Post.fields: field -> Mapping[str, Any]
+flnd.source.Post.files: field -> tuple[File, ...] | Callable[[], Iterable[File]]
+flnd.source.Post.headers: field -> Mapping[str, str] | None
+flnd.source.Post.id: field -> str
+flnd.source.Post.lazy: property -> bool
+flnd.source.Post.replace(**fields: Any) -> Post
+flnd.source.Range(since: datetime.date | None = None, until: datetime.date | None = None)
+flnd.source.Range.since: field -> datetime.date | None
+flnd.source.Range.until: field -> datetime.date | None
 flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None)
+flnd.source.Route.categories: property -> tuple[Category, ...]
+flnd.source.Route.category(function: Callable[..., Any] | None = None, /, *, newest_first: bool = False, name: str | None = None, folder: str | None = None, filename: str | None = None, key: str | None = None) -> Any
 flnd.source.Route.forms(code: str) -> list[str]
 flnd.source.Route.function: attribute
 flnd.source.Route.kind: attribute
 flnd.source.Route.patterns: attribute
 flnd.source.Route.shown: attribute
+flnd.source.Site(*args, **kwargs)
+flnd.source.Site.back_off(reason: str, *, retry_after: float | None = None) -> None
+flnd.source.Site.client: property -> Any
+flnd.source.Site.cookies: property -> Mapping[str, str]
+flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, soft: bool = False, in_page: bool = False, **request: Any) -> http.Response | None
+flnd.source.Site.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
+flnd.source.Site.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
+flnd.source.Site.info(message: str, **fields: Any) -> None
+flnd.source.Site.page: property -> Page
+flnd.source.Site.secrets: property -> MutableMapping[str, str]
+flnd.source.Site.state: property -> MutableMapping[str, Any]
+flnd.source.Site.target: property -> Target
+flnd.source.Site.time: property -> Range
+flnd.source.Site.warn(message: str, **fields: Any) -> None
 flnd.source.Source()
 flnd.source.Source.browser_args: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.concurrency: attribute -> ClassVar[int]
-flnd.source.Source.connect(session: Session) -> Any
+flnd.source.Source.connect(site: Any, /) -> Any
+flnd.source.Source.filename: attribute -> ClassVar[str]
+flnd.source.Source.folder: attribute -> ClassVar[str]
 flnd.source.Source.forms: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.headers(cookies: Mapping[str, str]) -> Mapping[str, str]
-flnd.source.Source.logged_in(session: Session) -> bool
-flnd.source.Source.login(session: Session, method: str) -> None
+flnd.source.Source.key: attribute -> ClassVar[str]
+flnd.source.Source.logged_in(site: Any, /) -> bool
+flnd.source.Source.login(login: Any, method: str, /) -> None
 flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.needs: attribute -> ClassVar[tuple[str, ...]]
+flnd.source.Source.pace: attribute -> ClassVar[Pace | float]
 flnd.source.Source.pause: attribute -> ClassVar[float]
+flnd.source.Source.ported() -> bool
+flnd.source.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
 flnd.source.Source.requires_login: attribute -> ClassVar[bool]
 flnd.source.Source.resolve(text: str) -> Target
 flnd.source.Source.routes: attribute -> ClassVar[tuple[Route, ...]]
-flnd.source.Source.run(session: Session) -> Any
+flnd.source.Source.run(session: Any) -> Any
 flnd.source.Source.sign(request: httpx.Request) -> httpx.Request
 flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.stealth: attribute -> ClassVar[bool]
@@ -50,6 +107,9 @@ flnd.source.Target.source: field -> str
 flnd.source.Target.value: field -> str
 flnd.source.TargetError(flnd.source.Error, ValueError)
 flnd.source.TargetError.url: attribute
+flnd.source.day(value: Any) -> datetime.date | None
+flnd.source.fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str
+flnd.source.pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None]) -> Iterator[Any]
 flnd.source.target(*patterns: str, shown: str | None = None) -> Callable[[Callable[..., Any]], Route]
 shared: module
 shared.BrokenError(shared.Error, ValueError)
@@ -105,6 +165,7 @@ shared.browser.Page.wait(css: str | None = None, *, url: str | re.Pattern[str] |
 shared.browser.Subscription(stop: Callable[[], None])
 shared.browser.Subscription.stop() -> None
 shared.browser.WaitError(shared.browser.Error)
+shared.browser.check() -> None
 shared.browser.open(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = False, viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser
 shared.bundler: module
 shared.bundler.Error(shared.Error)

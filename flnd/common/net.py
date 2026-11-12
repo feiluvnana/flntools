@@ -15,13 +15,13 @@ import time
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence, TypeVar, Union
+from typing import Any, BinaryIO, Callable, Iterable, Mapping, MutableMapping, Sequence, TypeVar, Union
 
 import httpx
 
 from flnd.common import files
 from flnd.common.files import NotMediaError
-from flnd.source import FetchError, Wait
+from flnd.source import FetchError, Fetch, Wait
 from shared import atomic, fmt, log
 
 ATTEMPTS = 3
@@ -39,8 +39,8 @@ CONNECTION_ERRORS = (httpx.NetworkError, httpx.TimeoutException, httpx.RemotePro
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
 
 T = TypeVar("T")
-# A file to save: a URL, mirror URLs tried in order, or `fetch(dest, progress)` for media without a URL.
-Fetch = Callable[[Path, Callable[..., None]], Any]
+# A file to save: a URL, mirror URLs tried in order, or `fetch(dest, progress)` (`flnd.source.Fetch`)
+# for media without a URL.
 Download = Union[str, Sequence[str], Fetch]
 
 # Waits read time through these, so tests can replace them.
@@ -62,12 +62,20 @@ class Backoff:
     up to 15 min, give or take 20%. A request that goes through starts again at 30 s.
     """
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, on_hit: Callable[[], Any] | None = None):
+        """Make a source's back-off, with no pause yet.
+
+        Args:
+            code: the source's code, which the countdown and the warning name.
+            on_hit: called once for each rate limit counted, not for the ones seen during a wait,
+                such as the source's pacer slowing down; None calls nothing.
+        """
         self.code = code
         self.strikes = 0
         self._resume_at = 0.0
         self._lock = threading.Lock()
         self._showing = False
+        self._on_hit = on_hit
 
     def hit(self, reason: str, *, retry_after: float | None = None) -> None:
         """Count one rate limit or challenge, and pause the source; see the class."""
@@ -80,6 +88,9 @@ class Backoff:
             steps = min(FIRST_BACKOFF * 2 ** (self.strikes - 1), MAX_BACKOFF)
             seconds = retry_after if retry_after is not None else steps * _random.uniform(0.8, 1.2)
             self._resume_at = now + seconds
+        # Outside the lock: the callback is the caller's, and may take its own.
+        if self._on_hit is not None:
+            self._on_hit()
         log.warn("{code}: {reason}; waiting {time} (attempt {n})", code=self.code, reason=reason,
                  time=fmt.duration(round(seconds)), n=self.strikes)
 
@@ -278,7 +289,8 @@ def retry_after_seconds(value: str | None) -> float | None:
 
 def download(http: httpx.Client, source: Download, dest: Path, *, label: str, backoff: Backoff,
              headers: Mapping[str, str] | None = None, wait: Wait = 1.0, size: int | None = None,
-             kind: str | None = None, audio: str | None = None) -> Path | None:
+             kind: str | None = None, audio: str | None = None,
+             received: MutableMapping[str, str] | None = None) -> Path | None:
     """Save one file atomically under a progress bar, and return the path written, or None.
 
         net.download(http, ["https://a.example/f.7z", "https://b.example/f.7z"], Path("f.7z"), label="f.7z",
@@ -296,9 +308,13 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
         size: the file's size in bytes when the source knows it, shown on the bar for a `fetch`
             function; None when unknown, and then a `fetch`'s file with a `kind` is decoded to check it.
         kind: "image", "video" or "audio" (`files.kind_of`) to check the file is media and name it
-            by its content; None saves any file (an archive, a document) as it comes, under `dest`'s name.
+            by its content; None saves any file (an archive, a document) as it comes, under `dest`'s
+            name. `files.SNIFF` lets the content decide: `dest` has no extension yet, and media gets
+            the one its content calls for and is checked as media, while anything else keeps `dest`.
         audio: the URL of a separate audio stream (DASH), downloaded after the video and merged
             into `dest` with it; None when the video has its own sound.
+        received: filled with the headers of the response the file came from (lowercase names),
+            such as its `last-modified`, for a URL mirror; None keeps none.
 
     Returns:
         The path written, which differs from `dest` when `kind` renamed it; None when the last
@@ -329,7 +345,7 @@ def download(http: httpx.Client, source: Download, dest: Path, *, label: str, ba
         retryable = (Exception,) if callable(mirror) else (*CONNECTION_ERRORS, RetryableStatus, IncompleteError,
                                                            media.BrokenError)
         try:
-            save = partial(_save_once, http, mirror, dest, label, headers, size, backoff, kind, audio)
+            save = partial(_save_once, http, mirror, dest, label, headers, size, backoff, kind, audio, received)
             return retrying(partial(patiently, save, backoff), wait=wait, retryable=retryable, final=final)
         except FetchError as error:
             if number == len(mirrors):
@@ -367,7 +383,7 @@ def _base_transport() -> httpx.BaseTransport:
 
 def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
                headers: Mapping[str, str] | None, size: int | None, backoff: Backoff, kind: str | None,
-               audio: str | None) -> Path:
+               audio: str | None, received: MutableMapping[str, str] | None = None) -> Path:
     """Download `mirror` (and `audio`) once into `.part` files, check it, and rename it onto `dest`."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     # `atomic` names the part `.<name>.<random>.part`, so two runs never write into each other's
@@ -380,13 +396,16 @@ def _save_once(http: httpx.Client, mirror: str | Fetch, dest: Path, label: str,
                 mirror(part, row.update)
                 known = size is not None
             else:
-                known = _fetch_url(http, mirror, part, row, headers, backoff)
+                known = _fetch_url(http, mirror, part, row, headers, backoff, received)
             if audio is not None:
                 _merge_audio(http, audio, part, dest, row, headers, backoff)
                 # The merge saved `dest` itself; the video part was only its input.
                 part.unlink()
                 return dest
-            final = dest if kind is None else _as_media(part, dest, kind, known)
+            if kind == files.SNIFF:
+                final = _sniffed(part, dest, known)
+            else:
+                final = dest if kind is None else _as_media(part, dest, kind, known)
         if final != dest:
             # Named by its content: moved there in one step, so the block's rename onto `dest` has nothing to move.
             os.replace(part, final)
@@ -417,12 +436,17 @@ def _merge_audio(http: httpx.Client, audio: str, video: Path, dest: Path, row: _
 
 
 def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Mapping[str, str] | None,
-               backoff: Backoff) -> bool:
-    """Stream `url` into `part`, and return whether its size was checked against Content-Length."""
+               backoff: Backoff, received: MutableMapping[str, str] | None = None) -> bool:
+    """Stream `url` into `part`, and return whether its size was checked against Content-Length.
+
+    `received`, when given, is filled with the response's headers, lowercase.
+    """
     with http.stream("GET", url, headers=dict(headers or {}), extensions={ONE_ATTEMPT: True}) as response:
         checked(response, backoff)
         if response.status_code not in (200, 206):
             raise FetchError(f"HTTP {response.status_code} for {url}", status=response.status_code)
+        if received is not None:
+            received.update((name.lower(), value) for name, value in response.headers.items())
         length = response.headers.get("content-length", "")
         total = int(length) if length.isdigit() else None
         row.start(total)
@@ -433,9 +457,9 @@ def _fetch_url(http: httpx.Client, url: str, part: Path, row: _Row, headers: Map
                 written += len(chunk)
                 # Content-Length counts bytes on the wire, which differ from the file's when compressed.
                 row.update(response.num_bytes_downloaded or written)
-        received = response.num_bytes_downloaded or written
-        if total is not None and received != total:
-            raise IncompleteError(f"got {received} of {total} bytes from {url}")
+        got = response.num_bytes_downloaded or written
+        if total is not None and got != total:
+            raise IncompleteError(f"got {got} of {total} bytes from {url}")
         return total is not None
 
 
@@ -469,6 +493,27 @@ def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
     if extension is None or same_extension(extension, dest.suffix):
         return dest
     return dest.with_suffix(extension)
+
+
+def _sniffed(part: Path, dest: Path, known: bool) -> Path:
+    """Where a downloaded file whose content decides its kind goes: media by its content, anything else as `dest`.
+
+    `dest` has no extension yet, so the content's is added to its name, never put in place of a
+    part of it (`5930 a.b` stays `5930 a.b.jpg`). A web page raises `NotMediaError`, as it would
+    for a photo: a post's file is never a login wall. Media is checked as `_as_media` checks it.
+    """
+    from shared import media
+
+    extension = media.sniff(part)
+    if extension in files.PAGES:
+        raise NotMediaError("got a web page instead of a file")
+    # `kind_of` reads a name's extension, and ".mp4" alone is a name without one.
+    kind = files.kind_of(f"file{extension}") if extension else None
+    if extension is None or kind is None:
+        # An archive, a document, or nothing `media` knows: kept as it came.
+        return dest
+    files.checked(part, kind, decode=not known)
+    return dest.with_name(dest.name + extension)
 
 
 def same_extension(one: str, other: str) -> bool:

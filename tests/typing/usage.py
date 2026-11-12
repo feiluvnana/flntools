@@ -9,9 +9,10 @@ from typing import ClassVar, Iterator, Optional
 from typing_extensions import assert_type
 
 from flnd.session import Session, TargetSession
-from flnd.source import Source
-from shared import cookies, log, media, prompt, theme, worker
-from tests.fakes import FakeSession
+from flnd.site import LoginSite, TargetSite
+from flnd.source import File, Login, Post, Site, Source
+from shared import cookies, http, log, media, prompt, theme, worker
+from tests.fakes import FakeSession, FakeSite
 
 
 def double(number: int) -> int:
@@ -100,3 +101,19 @@ def sessions(engine: TargetSession, fake: FakeSession) -> None:
     checked = fake
     assert_type(checked.save("https://a.example/a.jpg", "a.jpg", category="posts"), bool)
 
+
+
+def sites(engine: TargetSite, fake: FakeSite, login: LoginSite) -> None:
+    # The engine's site and the tests' fake both match the 13-member protocol sources are written against.
+    checked: Site = engine
+    checked = fake
+    assert_type(checked.fetch("https://a.example/"), http.Response)
+    assert_type(checked.fetch("https://a.example/", soft=True), Optional[http.Response])
+    assert_type(checked.goto("https://a.example/"), bool)
+    asking: Login = login
+    assert_type(asking.ask("Code", secret=True), str)
+    # A download's site never asks: misuse is a type error, not a run-time one.
+    checked.ask("Code")  # pyright: ignore[reportAttributeAccessIssue]
+    checked.fetch_json("https://a.example/")  # pyright: ignore[reportAttributeAccessIssue]
+    assert_type(Post("1", [File("https://a.example/a.jpg")], date=1767312000).replace(album="a"), Post)
+    File(1)  # pyright: ignore[reportArgumentType]

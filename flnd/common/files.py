@@ -29,6 +29,9 @@ PART_GLOB = ".*.part"
 PAGES = (".html", ".json")
 # The kinds of saved file, in `media.kind`'s words; each gets its extension from its content.
 IMAGE, VIDEO, AUDIO = "image", "video", "audio"
+# The kind `net.download` takes for a file whose content decides what it is: a post's file named
+# without an extension, because neither its name nor its URL said.
+SNIFF = "sniff"
 # How an error names each kind.
 NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
 

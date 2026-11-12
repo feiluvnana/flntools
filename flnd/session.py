@@ -1,13 +1,17 @@
-"""The session: the only way a source acts. `Session` is the interface; `TargetSession` is the engine's.
+"""The session: how a bridged source acts. `Session` is the interface; `TargetSession` is the engine's.
 
     def run(self, session: Session) -> None:
         data = session.fetch_json("https://api.example/feed")
         session.save(data["url"], "a.jpg", category="posts", date=posted)
+
+step-6 bridge: removed once every source is ported. A source that still has `run(session)` runs
+through `TargetSession`, unchanged; a ported one runs through flnd/job.py and `flnd.site.TargetSite`.
+`Options`, `Settings`, `selected`, `unknown_categories` and `single_targets` stay here until step 7
+moves them into the engine API, since the CLI, `sync` and the job read them too.
 """
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import inspect
 import queue
@@ -15,14 +19,15 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping, MutableMapping, Protocol, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Protocol, Sequence
 
 import httpx
 
-from flnd.common import auth, files, net
+from flnd.common import files, net
 from flnd.common.compress import KINDS, Choice, Compressor, choice_of
+from flnd.site import SourceRun
 from flnd.source import FetchError, Source, Target
-from shared import atomic, fmt, kv, log, prompt, theme
+from shared import atomic, fmt, log, prompt, theme
 
 if TYPE_CHECKING:
     from shared import worker
@@ -30,13 +35,13 @@ if TYPE_CHECKING:
     from shared._cookies import Jar
     from shared._selector import Selection
 
-T = TypeVar("T")
 # `--from all` takes every category of every source.
 ALL = "all"
 # A 401, 403 or 404 is "not there for us", which `soft=True` turns into None.
 SOFT_STATUSES = (401, 403, 404)
 
 
+# step-6 bridge: removed once every source is ported (`Session`, `TargetSession` and their helpers).
 class Session(Protocol):
     """What a source can read and do for one target; see engine.md for each member.
 
@@ -184,61 +189,6 @@ class Settings:
     interactive: bool = False
     # One for the whole run, so videos encode one at a time across sources and each error warns once.
     compressor: Compressor = field(default_factory=Compressor)
-
-
-@dataclass
-class SourceRun:
-    """One source's resources for a whole run: its cookies, HTTP client, back-off, client and stores."""
-
-    source: Source
-    settings: Settings
-    jar: Jar
-    http: httpx.Client
-    backoff: net.Backoff
-    client: Any = None
-    _state: kv.Store | None = field(default=None, repr=False)
-    _secrets: auth.Vault | None = field(default=None, repr=False)
-    _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
-    _loop_thread: threading.Thread | None = field(default=None, repr=False)
-
-    @property
-    def state(self) -> kv.Store:
-        if self._state is None:
-            self._state = kv.open(self.settings.home / "sources.db", table=self.source.code)
-        return self._state
-
-    @property
-    def secrets(self) -> auth.Vault:
-        if self._secrets is None:
-            self._secrets = auth.secrets(self.settings.home, self.source.code)
-        return self._secrets
-
-    def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
-        """Run a coroutine on this source's own event loop, started on first use, and wait for it.
-
-        One loop for the whole source, so an SDK client made by an async `connect` is used on
-        the loop it belongs to, by `run` and by every `fetch` download alike.
-        """
-        if self._loop is None:
-            self._loop = asyncio.new_event_loop()
-            self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True,
-                                                 name=f"flnd-{self.source.code}")
-            self._loop_thread.start()
-        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
-
-    def on_loop(self) -> bool:
-        """Whether the caller is running on this source's own event loop."""
-        return self._loop_thread is threading.current_thread()
-
-    def close(self) -> None:
-        self.http.close()
-        for store in (self._state, self._secrets):
-            if store is not None:
-                store.close()
-        if self._loop is not None and self._loop_thread is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._loop_thread.join()
-            self._loop.close()
 
 
 class TargetSession:
