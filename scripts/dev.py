@@ -500,7 +500,6 @@ def run(command: list[str], *, capture_output: bool = False) -> subprocess.Compl
 # Files whose docstrings are still being brought up to plan/phase-6/comments.md's standard. A file leaves the
 # list when it meets the standard (lint fails while it stays), and none joins it; empty, lint is always strict.
 EXPLAINING: set[str] = {
-    "flnd/common/net.py",
     "shared/_archive.py",
     "shared/_browser.py",
     "shared/_classify.py",

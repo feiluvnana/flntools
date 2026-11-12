@@ -29,7 +29,9 @@ from flnd.common.files import NotMediaError
 from flnd.source import FetchError, Fetch, Wait
 from shared import atomic, fmt, http, log
 
+# Tries for one request, or for one `fetch` function of a file, before its error is raised.
 ATTEMPTS = 3
+# The longest a server's Retry-After is honoured on a 5xx retry; a longer one is cut to this.
 MAX_RETRY_AFTER = 60.0
 # A source that keeps answering 429, or showing challenges, waits twice as long each time, up to 15 min.
 FIRST_BACKOFF = 30.0
@@ -56,6 +58,7 @@ SPLIT_HOSTS: frozenset[str] = frozenset({
     # cdninstagram.com: not checked, ins served every file from fbcdn.net hosts, never from this one.
     # tiktokcdn.com: not checked, tik showed a captcha on the profile listing, so no file URL was reached.
 })
+# The errors worth another attempt: the connection failed or timed out, not the server's answer.
 CONNECTION_ERRORS = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)
 # Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
@@ -106,7 +109,12 @@ class Backoff:
         self._on_hit = on_hit
 
     def hit(self, reason: str, *, retry_after: float | None = None) -> None:
-        """Count one rate limit or challenge, and pause the source; see the class."""
+        """Count one rate limit or challenge, and pause the source; see the class.
+
+        Args:
+            reason: what the site did, shown in the warning, such as "rate limited".
+            retry_after: the seconds the site asked for; None takes the next step of the doubling waits.
+        """
         with self._lock:
             now = _clock()
             # Downloads running together see the same 429; that is one wait, not one per file.
@@ -193,6 +201,8 @@ class Transport(httpx.BaseTransport):
         self.inner, self.sign, self.wait, self.backoff = inner, sign, wait, backoff
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        """Send one request, signed and after the source's pause; a file's own download gets one attempt only."""
+        # `http.download` marks its requests: it retries and resumes by itself, so the transport sends them once.
         if request.extensions.get(ONE_ATTEMPT):
             self.backoff.wait_turn()
             response = self.inner.handle_request(self.sign(request))
@@ -211,6 +221,7 @@ class Transport(httpx.BaseTransport):
             return failed.response
 
     def close(self) -> None:
+        """Close the wrapped transport, which owns the connections."""
         self.inner.close()
 
     def _attempt(self, request: httpx.Request) -> httpx.Response:
@@ -231,7 +242,16 @@ class RateLimited(Exception):
 
 
 def checked(response: httpx.Response, backoff: Backoff) -> httpx.Response:
-    """The response when it is worth keeping; a 429 backs off and raises `RateLimited`, a 5xx `RetryableStatus`."""
+    """The response when it is worth keeping; a 429 backs off and raises `RateLimited`, a 5xx `RetryableStatus`.
+
+    Args:
+        response: the response of one attempt.
+        backoff: the source's `Backoff`, which a 429 pauses and a good answer clears.
+
+    Raises:
+        RateLimited: a 429, after the pause started; the caller sends the request again.
+        RetryableStatus: a 5xx, worth another attempt.
+    """
     if response.status_code == 429:
         backoff.hit("rate limited", retry_after=rate_limit_wait(response.headers))
         response.close()
@@ -244,7 +264,14 @@ def checked(response: httpx.Response, backoff: Backoff) -> httpx.Response:
 
 
 def patiently(send: Callable[[], T], backoff: Backoff) -> T:
-    """Call `send` after any pause, as often as it takes while it raises `RateLimited`."""
+    """Call `send` after any pause, as often as it takes while it raises `RateLimited`.
+
+    Args:
+        send: one attempt, which raises `RateLimited` on a 429.
+        backoff: the source's `Backoff`, whose pause is waited out before each attempt.
+
+    A 429 costs no attempt: the wait is as long as the site asks, so it never gives up.
+    """
     while True:
         backoff.wait_turn()
         try:
@@ -286,7 +313,17 @@ def retrying(attempt: Callable[[], T], *, wait: Wait, retryable: tuple[type[Base
 
 
 def retry_wait(wait: Wait, error: BaseException, attempt: int) -> float:
-    """Seconds before the next attempt: the source's `wait`, the server's Retry-After, or doubling waits."""
+    """Seconds before the next attempt: the source's `wait`, the server's Retry-After, or doubling waits.
+
+    Args:
+        wait: the source's `wait`: seconds, or a function of `(error, attempt)` returning seconds or None.
+        error: the error that failed the attempt, which may carry a Retry-After.
+        attempt: the attempt that failed, from 1.
+
+    Returns:
+        The seconds to wait: the function's answer when it gives one; else the server's Retry-After,
+        capped at `MAX_RETRY_AFTER`; else `wait` (1 s when it is a function) doubled for each attempt.
+    """
     if callable(wait):
         seconds = wait(error, attempt)
         if seconds is not None:
@@ -379,6 +416,7 @@ def download(client: httpx.Client, source: Download, dest: Path, *, label: str, 
     # own attempts are `http.download`'s, which retries neither of these.
     final = (NotMediaError, media.UnsafeError)
     mirrors: list[str | Fetch] = [source] if isinstance(source, str) or callable(source) else list(source)
+    # Each mirror in order: a failure is logged and the next one tried, and only the last one's error reaches the caller.
     for number, mirror in enumerate(mirrors, start=1):
         try:
             if callable(mirror):
@@ -404,6 +442,8 @@ def download(client: httpx.Client, source: Download, dest: Path, *, label: str, 
 
 def follow(url: str) -> str:
     """Where a short link leads, from one HEAD request: `follow("https://vm.tiktok.com/ZM…")`."""
+    # HEAD, since only the final URL is needed, not the body. It uses a plain transport, not the source's
+    # client, so the request is not signed, paced or retried.
     with httpx.Client(follow_redirects=True, timeout=30.0, transport=_base_transport()) as http:
         return str(http.head(url).url)
 
@@ -591,7 +631,12 @@ def _sniffed(part: Path, dest: Path, known: bool) -> Path:
 
 
 def same_extension(one: str, other: str) -> bool:
-    """Whether two extensions name one format: `.jpg` and `.jpeg` do."""
+    """Whether two extensions name one format: `.jpg` and `.jpeg` do.
+
+    Args:
+        one: an extension, with its dot.
+        other: the other extension, with its dot; compared case-insensitively.
+    """
     return SAME_EXTENSIONS.get(one.lower(), one.lower()) == SAME_EXTENSIONS.get(other.lower(), other.lower())
 
 
