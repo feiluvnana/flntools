@@ -40,6 +40,9 @@ BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "
 COOKIE_SUFFIXES = (".txt", ".json")
 DB_FILE = "secrets.db"
 KEY_FILE = "secret.key"
+# The secret that proves a login for a source with its own (tlg): the session its `login` stores.
+# Any other secret, such as tlg's `api_id` and `api_hash`, is only the source's API key.
+LOGIN_SECRET = "session"
 TABLE = "secrets"
 KEY_SIZE = 32
 # How long a key file shorter than KEY_SIZE may be another run's key still being written, in
@@ -130,26 +133,35 @@ def load(home: Path, code: str) -> cookies.Jar:
 
 
 def logged_in(home: Path, code: str) -> bool:
-    """Whether the source has a saved login: a cookie file, or any secret.
+    """Whether the source has a saved login: a cookie file, or the `LOGIN_SECRET` secret.
 
         auth.logged_in(Path(".flnd"), "tlg")    # True after `flnd login` for Telegram
 
-    It creates neither `secrets.db` nor the key file.
+    Other secrets don't count: tlg's `api_id` and `api_hash` alone are an API key, not a login
+    (see `api_key_saved`). It creates neither `secrets.db` nor the key file.
     """
     if any(path.is_file() for path in _cookie_files(home, code)):
         return True
-    if not (home / DB_FILE).is_file():
-        return False
-    with secrets(home, code) as saved:
-        return len(saved) > 0
+    return LOGIN_SECRET in _secret_names(home, code)
+
+
+def api_key_saved(home: Path, code: str) -> bool:
+    """Whether the source has secrets but no login: its API key is stored, `flnd login` isn't done.
+
+        auth.api_key_saved(Path(".flnd"), "tlg")    # True with only `api_id` and `api_hash`
+    """
+    return not logged_in(home, code) and bool(_secret_names(home, code))
 
 
 def logout(home: Path, code: str) -> bool:
-    """Remove the source's cookie file and secrets, and return whether there was anything to remove.
+    """Remove the source's cookie file and every secret, API key included, and return whether there was anything to remove.
 
         auth.logout(Path(".flnd"), "ins")       # False when ins never logged in
+
+    A source left with only its API key counts as something to remove: it is deleted, and the
+    result is True, so the next `flnd login` asks for the key again.
     """
-    removed = logged_in(home, code)
+    removed = logged_in(home, code) or api_key_saved(home, code)
     for path in _cookie_files(home, code):
         path.unlink(missing_ok=True)
     # Opening the database would create it, so a home that has none is left without one.
@@ -157,6 +169,14 @@ def logout(home: Path, code: str) -> bool:
         with secrets(home, code) as saved:
             saved.clear()
     return removed
+
+
+def _secret_names(home: Path, code: str) -> set[str]:
+    """The names of the source's stored secrets, without creating `secrets.db` or the key file."""
+    if not (home / DB_FILE).is_file():
+        return set()
+    with secrets(home, code) as saved:
+        return set(saved)
 
 
 def cookie_file(home: Path, code: str) -> Path:

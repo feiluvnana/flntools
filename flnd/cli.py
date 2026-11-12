@@ -234,7 +234,7 @@ def login_command() -> int:
 
 @app.command
 def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "all"), stdin=False)]) -> int:
-    """Remove saved logins: each source's cookie file and secrets.
+    """Remove saved logins: each source's cookie file and secrets, an API key included.
 
     Args:
         sources: the sources to log out of, such as ins tik, or all for every one.
@@ -254,10 +254,11 @@ def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "
 
 
 def _ask_source() -> str:
-    """Ask which source to log in to, marking the ones already logged in, and return its code."""
+    """Ask which source to log in to, marking the ones logged in or holding only an API key, and return its code."""
     options = {}
     for code, source in SOURCES.items():
-        mark = " · logged in" if auth.logged_in(HOME, code) else ""
+        # tlg keeps its API key before its login; the list tells the two apart.
+        mark = " · logged in" if auth.logged_in(HOME, code) else " · api key saved" if auth.api_key_saved(HOME, code) else ""
         options[f"{source.name} ({code}){mark}"] = code
     return prompt.choose("Log in to", options)
 

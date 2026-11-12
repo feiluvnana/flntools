@@ -52,8 +52,26 @@ class CookieFileTest(AuthCase):
         self.assertEqual(list((self.home / "cookies").iterdir()), [])
         self.assertFalse(any(auth.logged_in(self.home, code) for code in ("ins", "twt", "tlg")))
 
+    def test_an_api_key_alone_is_not_a_login_and_a_session_is(self):
+        with auth.secrets(self.home, "tlg") as secrets:
+            secrets.update(api_id="1", api_hash="h")
+        self.assertFalse(auth.logged_in(self.home, "tlg"))
+        self.assertTrue(auth.api_key_saved(self.home, "tlg"))
+        with auth.secrets(self.home, "tlg") as secrets:
+            secrets["session"] = "s"
+        self.assertTrue(auth.logged_in(self.home, "tlg"))
+        self.assertFalse(auth.api_key_saved(self.home, "tlg"))
+
+    def test_logout_removes_an_api_key_too(self):
+        with auth.secrets(self.home, "tlg") as secrets:
+            secrets.update(api_id="1", api_hash="h")
+        self.assertTrue(auth.logout(self.home, "tlg"))
+        self.assertFalse(auth.api_key_saved(self.home, "tlg"))
+        self.assertFalse(auth.logout(self.home, "tlg"))
+
     def test_logged_in_creates_no_database(self):
         self.assertFalse(auth.logged_in(self.home, "tlg"))
+        self.assertFalse(auth.api_key_saved(self.home, "tlg"))
         self.assertFalse(auth.logout(self.home, "tlg"))
         self.assertFalse(self.home.exists())
 

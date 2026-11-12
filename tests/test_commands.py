@@ -426,6 +426,21 @@ class LoginFileTest(LoginCase):
         self.assertNotIn("TikTok (tik) · logged in", out)
         self.assertIn("✓ Log in to: Twitter/X (twt)", out)
 
+    def test_an_api_key_alone_is_marked_apart_from_a_login(self):
+        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+            secrets.update(api_id="1", api_hash="h")
+        self.from_file("twt", self.cookie_file(NETSCAPE))
+        out = self.screen.dest.getvalue()
+        self.assertIn("(tlg) · api key saved", out)
+        self.assertNotIn("(tlg) · logged in", out)
+        self.screen.dest.truncate(0)
+        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+            secrets["session"] = "s"
+        self.from_file("twt", self.cookie_file(NETSCAPE))
+        out = self.screen.dest.getvalue()
+        self.assertIn("(tlg) · logged in", out)
+        self.assertNotIn("api key saved", out)
+
 
 class LoginQuestionsTest(LoginCase):
     def test_without_a_terminal_it_exits_2(self):
@@ -547,6 +562,16 @@ class LogoutTest(FlndCase):
         self.assertEqual((code, out), (0, "✓ tik: logged out\n✓ ins: logged out\n✓ tlg: logged out\n"))
         self.assertEqual(list(Path(".flnd/cookies").iterdir()), [])
         self.assertFalse(any(auth.logged_in(Path(".flnd"), code) for code in sources.SOURCES))
+
+    def test_an_api_key_alone_is_removed_but_is_not_a_login(self):
+        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+            secrets.update(api_id="1", api_hash="h")
+        self.assertIn("no source is logged in", self.run_app("logout")[2])
+        self.screen.dest.truncate(0)
+        self.screen.dest.seek(0)
+        code, _, out = self.run_app("logout", "tlg")
+        self.assertEqual((code, out), (0, "✓ tlg: logged out\n"))
+        self.assertFalse(auth.api_key_saved(Path(".flnd"), "tlg"))
 
     def test_bare_is_a_usage_error_listing_the_logged_in_sources(self):
         code, _, out = self.run_app("logout")
