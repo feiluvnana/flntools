@@ -1,6 +1,6 @@
 # fixes
 
-Phase 6, step 1: the bugs the 2026-11-12 audit found, fixed before anything is reshaped, each with a test that fails before its fix. On the audit day all 803 tests passed (5 skipped) and pyright reported 0 errors, so none of these was caught.
+Phase 6, step 1: the bugs the 2026-11-12 audit found (and one from the [gallery-dl comparison](flows.md)), fixed before anything is reshaped, each with a test that fails before its fix. On the audit day all 803 tests passed (5 skipped) and pyright reported 0 errors, so none of these was caught.
 
 ## Windows
 
@@ -40,6 +40,10 @@ Phase 6, step 1: the bugs the 2026-11-12 audit found, fixed before anything is r
 ## Dates
 
 15. **TikTok dates depend on the machine's timezone.** `tik.py` uses `datetime.fromtimestamp` (local time), so the same video gets a different file name, and falls on a different side of `--since`, on two machines. twt and tlg use UTC. Fix: UTC, as they do. ins's `taken_on` gets the same fix in [ins](ins.md).
+
+## TikTok quality
+
+16. **TikTok videos aren't saved at their best, and some carry a watermark.** `tik.best_video` takes `playAddr` first, then `downloadAddr` (TikTok's watermarked copy), and the highest-bitrate file of `bitrateInfo` only last. Fix: `bitrateInfo` sorted by width × height, then `Bitrate`, skipping DASH entries; then `playAddr`; never `downloadAddr`, which is how gallery-dl picks ([flows](flows.md#what-phase-6-takes)).
 
 ## Tests
 

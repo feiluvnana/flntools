@@ -14,10 +14,10 @@ Checked in code on 2026-11-12:
 
 ### 1. Read posts through the API, not their pages
 
-For a listed post, ins reads it with **the GraphQL post query its own page sends** (captured once from a post page and [replayed](#three-ways-to-reach-an-api) with each shortcode), because GraphQL's budget is about four times `/api/v1/`'s ([pace](pace.md)). The fallback, when that query can't be captured, is `https://www.instagram.com/api/v1/media/<pk>/info/`. Both return the post in the shape of a post page's `xdt_api__v1__media__shortcode__web_info.items[0]`, so `save_post` and `post_files` are unchanged. One small JSON request replaces a whole page load: no HTML, scripts or images.
+For a listed post, ins reads `https://www.instagram.com/api/v1/media/<pk>/info/`, as gallery-dl does. As an experiment, it first tries **the GraphQL post query its own page sends**, captured once from a post page and [replayed](#three-ways-to-reach-an-api) with each shortcode, because GraphQL's budget is about four times `/api/v1/`'s ([pace](pace.md)). It is kept only if a live check shows Instagram accepts it; gallery-dl never uses one ([flows](flows.md)). Both return the post in the shape of a post page's `xdt_api__v1__media__shortcode__web_info.items[0]`, so `save_post` and `post_files` are unchanged. One small JSON request replaces a whole page load: no HTML, scripts or images.
 
 - It goes through `session.fetch_json`, so it is paced, its 429 is backed off by the engine, and its cookies are the browser's.
-- `Instagram.prepare(request, cookies)` (new, [source](source.md)) adds `X-IG-App-ID: 936619743392459`, `X-CSRFToken: <csrftoken>`, `X-Requested-With: XMLHttpRequest` and `Referer: https://www.instagram.com/`. They go only to `instagram.com` ([api](api.md#source-flndsourcesbasepy)), never to the CDN.
+- `Instagram.prepare(request, cookies)` (new, [source](source.md)) adds `X-IG-WWW-Claim` (kept from each response's `x-ig-set-www-claim`), `X-ASBD-ID`, and for GraphQL `X-FB-LSD` and `X-FB-Friendly-Name`, as gallery-dl sends them, besides `X-IG-App-ID: 936619743392459`, `X-CSRFToken: <csrftoken>`, `X-Requested-With: XMLHttpRequest` and `Referer: https://www.instagram.com/`. They go only to `instagram.com` ([api](api.md#source-flndsourcesbasepy)), never to the CDN.
 - **httpx's TLS fingerprint differs from Chrome's.** If Instagram turns out to refuse these calls from httpx (to be checked on a live run, [below](#live-checks)), the fallback is the same request from inside the logged-in tab, `page.raw.evaluate("fetch(…)")`, under the same pacing and checks. That stays inside `ins.py`, so it adds no session API.
 - A post without a `pk` is still read from its page, under the same pacing and checks.
 
@@ -30,8 +30,7 @@ Before fetching a listed post, ins skips it when:
 ### 3. Save from the grid only what the grid really has
 
 The WIP commit saves a listed image post straight from the grid, with its date from its `pk`. Kept, with these changes:
-- **An allowlist, not a blocklist.** A grid item is saved from the grid only when its `media_type` is 1 (photo) or 8 (carousel) with every child a 1, it has `image_versions2.candidates`, and the tab isn't reels. Today an item without `media_type` is saved as a photo, which on the reels tab saves a video's thumbnail.
-- **Only when its largest candidate is full size**: at least 1,080 px on its long side, or its own `original_width`. Otherwise it is read through the API, so nothing is silently saved at thumbnail size. Whether the tagged grid lists full-size images at all is not confirmed yet ([below](#live-checks)).
+- **A grid item is complete when its `product_type` is `"feed"`**, the rule gallery-dl uses ([flows](flows.md#what-phase-6-takes)), and its `candidates[0]` is within 10% of its `original_width`, so nothing is saved at thumbnail size. Anything else (reels, clips, a video, a carousel with one) is read through the API. Today an item without `media_type` is saved as a photo, which on the reels tab saves a video's thumbnail.
 - `taken_on` catches `OverflowError` and `OSError` as well as `ValueError`, and works in UTC ([fixes](fixes.md#dates)). The `pk` date is used only for grid items, never for stories, where a small `pk` would give 2011.
 
 ### 4. See and wait out every throttle
@@ -39,6 +38,7 @@ The WIP commit saves a listed image post straight from the grid, with its date f
 | Sign | Where | ins does |
 | --- | --- | --- |
 | HTTP 429 | page load, API, CDN | the engine backs off and retries ([session](session.md#members)) |
+| a final URL with `/accounts/suspended/` | any | **a hard stop** for the source: the account itself is in trouble, so waiting would only make it worse ([flows](flows.md#what-phase-6-takes)) |
 | a final URL with `/accounts/login/` or `/challenge/` | page load | ins checks `session.page.raw.url` after `goto`, calls `session.throttled("login wall")`, and loads the page again |
 | `"status": "fail"` with "wait a few minutes", or `"require_login": true` | API and GraphQL bodies, often with a 400 or 401 | `session.throttled("Instagram asked to wait")`, then the same request again |
 
@@ -84,7 +84,7 @@ Checked in code on 2026-11-12. "Live" means the way is confirmed by hand on a te
 
 | Source | Today | Phase 6 |
 | --- | --- | --- |
-| **ins** | grids scrolled; each incomplete post's page opened | grids by **replay** of the profile's GraphQL pagination (the `xdt_api__v1__feed__user_timeline_graphql_connection` query and the tagged, reels and reposts ones), with `after` as the cursor; posts by **direct** or **in-page** media info ([above](#1-read-posts-through-the-api-not-their-pages)); stories and highlights by `/api/v1/feed/reels_media/?reel_ids=…`, **in page**, one call for all of them. The profile page is loaded once, for its first request and its embedded first results. Live |
+| **ins** | grids scrolled; each incomplete post's page opened | grids by **replay** of the profile's GraphQL pagination (the `xdt_api__v1__feed__user_timeline_graphql_connection` query and the tagged, reels and reposts ones), with `after` as the cursor; posts by **direct** or **in-page** media info ([above](#1-read-posts-through-the-api-not-their-pages)); stories and highlights by their GraphQL query, **replayed**, at most 5 reels per call, with the story page as the fallback ([flows](flows.md#what-phase-6-takes)). The profile page is loaded once, for its first request and its embedded first results. Live |
 | **fbk** | the timeline, photos and albums scrolled while `graphql` responses are read | **replay** of the timeline's and photos tab's `/api/graphql/` POST: the first request's `doc_id`, `fb_dtsg`, `lsd` and `variables`, with `cursor` in the variables changed. Stories stay on their page: there is one per profile, and its page holds them all. Live |
 | **twt** | **direct** GraphQL (`UserTweets`, `UserMedia`, …) with built-in query IDs; the browser only when the API refuses | — the same, plus: when a query ID is stale (404 or 400), the source reads the current IDs once from the page's main script, which the browser fallback has open, and tries the API again before scrolling |
 | **tik** | the profile scrolled while `/api/post/item_list` and the other lists are read | **replay** of each list's first request, **in page**, with `cursor` changed. TikTok signs its list URLs (`X-Bogus`, `msToken`) with the page's own script. Whether a replayed URL with a new cursor is still accepted is the open question, so scrolling stays as the fallback. Live |

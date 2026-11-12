@@ -15,10 +15,11 @@ Phase 6 makes flntools quicker to set up, the same on every OS, smaller to read,
 | the source scripts are long and hard to read | [scripts](scripts.md): extension guessing deleted (the content already decides it); `save_post`, `day` and `meta_results` in `flnd/sources/common.py`; 1,378 lines become about 1,280, each script reading top to bottom |
 | some files are saved without their date | [dates](dates.md): the engine puts the date in the name from `save(date=)`, sets every file's modified time to it, and falls back to the CDN's `Last-Modified`, then the download day |
 | the pace should be as small as the sites allow | [pace](pace.md): each site's own rate headers, Instagram's known budgets (275 GraphQL calls per 10 min, 75 `/api/v1/` per 11 min), and a gap learned per source above a floor (twt 0.5 s, tik 1 s, fbk 1.5 s) |
+| optimize the flows from what gallery-dl has learned | [flows](flows.md): TikTok's best non-watermarked file, TikTok's list APIs direct first, X's 50-per-page timelines with its full feature flags, Instagram's `product_type` grid rule and headers, browser-like header order for every direct call, and `/accounts/suspended/` as a hard stop |
 | a classifier for photos and videos | [classify](classify.md): `media.classify(path)`, a small CLIP-style model on ONNX Runtime, downloaded on first use; `--classify` names files `<labels>_<date>_<name>` |
 | the code needs more comments | [comments](comments.md): a docstring standard for every module, class and function, and more *why* comments at every rule a reader has to work out |
 
-The audit also found 15 bugs, among them corrupted downloads on Windows, failed targets shown as ok with exit status 0, and Twitter's login sent to its CDNs. They are in [fixes](fixes.md).
+The audit also found 15 bugs, and the gallery-dl comparison a 16th, among them corrupted downloads on Windows, failed targets shown as ok with exit status 0, and Twitter's login sent to its CDNs. They are in [fixes](fixes.md).
 
 ## Order
 
@@ -27,7 +28,7 @@ Each step ends with `check` green and is pushed on its own.
 2. [setup](setup.md): `uv.lock`, dependency groups, `scripts/dev.py`, the thin Makefile, and no browser download.
 3. [cli](cli.md), [source](source.md), [pace](pace.md) and [session](session.md): the lean `Source` and its pace; four commands with `--image`/`--video`/`--audio`; Chrome only; the smaller session protocol and its defaults, with `goto` checked and paced; `compress.py` and `files.py` split out of `session.py`.
 4. [api](api.md): the removals and private names in `shared`, and `python-jsonpath` gone.
-5. [ins](ins.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with live runs of the test accounts.
+5. [ins](ins.md) and [flows](flows.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with what gallery-dl does, and live runs of the test accounts.
 6. [scripts](scripts.md) and [dates](dates.md): the sources rewritten on the new session and helpers, with every file dated by the engine.
 7. [classify](classify.md): `media.classify` and `--classify`.
 8. [ui](ui.md): the live area (no blinking, and cheap: only changed rows drawn, by one thread, only when something changed), the prompt cursor, and whole-line log colors.
