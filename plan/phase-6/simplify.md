@@ -104,7 +104,7 @@ Kept on purpose:
 
 ## Decision
 
-7. **Keep encrypting secrets?** `vault` (about 105 lines) encrypts `secrets.db` with a key kept beside it. That protects only against someone who copies `secrets.db` and not the key file. Storing secrets in a `kv` file with mode 0600, as the cookie files already are, would remove about 70 lines and [fixes](fixes.md#windows) #2. **Recommended: keep it**: it costs little, Telegram's session string is a full login, and a copied database alone stays useless. This is the user's call ([README](README.md#decisions)).
+7. **Keep encrypting secrets?** `vault` (about 105 lines) encrypts `secrets.db` with a key kept beside it. That protects only against someone who copies `secrets.db` and not the key file. Storing secrets in a `kv` file with mode 0600, as the cookie files already are, would remove about 70 lines and [fixes](fixes.md#windows) #2. **Recommended: keep it**: it costs little, Telegram's session string is a full login, and a copied database alone stays useless. **Decided 2026-11-12: kept** ([README](README.md#decisions)).
 
 ## Final numbers
 

@@ -62,4 +62,4 @@ All decided by the user:
 6. ~~Is `classify` required or an extra?~~ **Decided 2026-11-12: an extra**, which `media.classify` offers to install the first time it's used, as Chrome's Chromium and the model are ([classify](classify.md#flnd)).
 
 Still to check while building, not decisions: MobileCLIP-S0's licence, and the live checks in [ins](ins.md#live-checks) and [source](source.md#tests).
-7. **Keep encrypting secrets?** `vault` encrypts `secrets.db` with a key kept beside it; a 0600 `kv` file would save about 70 lines. **Recommended: keep it** ([simplify](simplify.md#decision)).
+7. ~~Keep encrypting secrets?~~ **Decided 2026-11-12: keep it.** `vault` stays, merged with `login` into `flnd/auth.py` ([simplify](simplify.md#decision)).
