@@ -236,6 +236,9 @@ class FetchTest(SiteCase):
         with self.assertRaises(FetchError) as caught:
             site.fetch(f"{API}/private")
         self.assertEqual(caught.exception.status, 403)
+        # The refusal keeps its response, so a source can read the site's reason from its body.
+        self.assertEqual(caught.exception.response.status, 403)
+        self.assertEqual(caught.exception.response.url, f"{API}/private")
 
     def test_prepare_runs_for_the_sources_own_domains_only(self):
         jar = [{"name": "token", "value": "t0k", "domain": ".example.com", "path": "/"}]
@@ -255,10 +258,12 @@ class FetchTest(SiteCase):
 
     def test_in_page_refusals_are_fetch_errors(self):
         _, site = self.open()
-        with mock.patch.object(Page, "fetch", side_effect=http.RefusedError(403)), \
+        refusal = http.Response(400, f"{API}/feed", {"content-type": "application/json"}, b'{"status": "fail"}')
+        with mock.patch.object(Page, "fetch", side_effect=http.RefusedError(400, response=refusal)), \
                 self.assertRaises(FetchError) as caught:
             site.fetch(f"{API}/feed", in_page=True)
-        self.assertEqual(caught.exception.status, 403)
+        self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(caught.exception.response.json, {"status": "fail"})
         with self.assertRaisesRegex(TypeError, "takes params, data, json and timeout"):
             site.fetch(f"{API}/feed", in_page=True, follow_redirects=False)
 

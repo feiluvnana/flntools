@@ -252,8 +252,8 @@ class TargetSite:
             The response; None only with `soft`.
 
         Raises:
-            FetchError: no response after the retries, a 4xx other than 429 (with its `status`), or
-                with `in_page`, a request the page couldn't send.
+            FetchError: no response after the retries, a 4xx other than 429 (with its `status` and
+                `response`), or with `in_page`, a request the page couldn't send.
             TypeError: with `in_page`, an option `Page.fetch` doesn't take.
         """
         if in_page:
@@ -267,12 +267,13 @@ class TargetSite:
         except httpx.HTTPError as error:
             raise FetchError(f"{type(error).__name__} {error} for {url}".strip()) from None
         self._after(url, response)
+        answer = http.Response(status=response.status_code, url=str(response.url), headers=response.headers,
+                               content=response.content)
         if response.status_code >= 400:
             if soft and response.status_code in SOFT_STATUSES:
                 return None
-            raise FetchError(f"HTTP {response.status_code} for {url}", status=response.status_code)
-        return http.Response(status=response.status_code, url=str(response.url), headers=response.headers,
-                             content=response.content)
+            raise FetchError(f"HTTP {response.status_code} for {url}", status=response.status_code, response=answer)
+        return answer
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         """Load `url` in the target's tab, paced; see `Site.goto`.
@@ -406,7 +407,7 @@ class TargetSite:
             return net.retrying(attempt, wait=type(self._source).wait, retryable=(http.Error,),
                                 final=(http.RefusedError,))
         except http.RefusedError as error:
-            raise FetchError(str(error), status=error.status) from None
+            raise FetchError(str(error), status=error.status, response=error.response) from None
         except (http.Error, browser.Error) as error:
             raise FetchError(str(error), status=getattr(error, "status", None)) from None
 

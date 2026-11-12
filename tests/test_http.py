@@ -102,10 +102,12 @@ class FetchTest(HttpTestCase):
                 self.assertEqual(raised.exception.status, status)
 
     def test_other_4xx_raise_even_when_soft(self):
-        with client(lambda request: httpx.Response(410)) as fake:
+        with client(lambda request: httpx.Response(410, json={"reason": "gone"})) as fake:
             with self.assertRaises(http.RefusedError) as raised:
                 http.fetch("https://example.com/gone", client=fake, soft=True)
         self.assertEqual(raised.exception.status, 410)
+        # The refusing response stays on the error, so a caller can read the site's reason.
+        self.assertEqual(raised.exception.response.json, {"reason": "gone"})
         self.assertIsInstance(raised.exception, shared.RefusedError)
         self.assertIsInstance(raised.exception, http.Error)
         self.assertIn("GET https://example.com/gone: HTTP 410", str(raised.exception))

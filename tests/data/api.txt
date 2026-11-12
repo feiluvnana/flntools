@@ -50,6 +50,7 @@ flnd.source.DateLike: Union
 flnd.source.Error(Exception)
 flnd.source.Fetch: _CallableGenericAlias
 flnd.source.FetchError(flnd.source.Error)
+flnd.source.FetchError.response: attribute
 flnd.source.FetchError.status: attribute
 flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, headers: Mapping[str, str] | None = None, name: str | None = None, size: int | None = None)
 flnd.source.File.audio: field -> str | None
@@ -256,6 +257,7 @@ shared.http.RateLimitedError(shared.http.Error)
 shared.http.RateLimitedError.retry_after: attribute
 shared.http.RateLimitedError.status: attribute
 shared.http.RefusedError(shared.http.Error, shared.RefusedError)
+shared.http.RefusedError.response: attribute
 shared.http.RefusedError.status: attribute
 shared.http.Response(status: int, url: str, headers: Mapping[str, str], content: bytes = b'')
 shared.http.Response.content: field -> bytes

@@ -12,6 +12,10 @@ what came, and ends. Closing it, or the end of a `with` block, stops the subscri
             for data in responses:
                 yield from posts_of(data)
 
+`request` is the request of the response last yielded (Playwright's `Request`: its `url`, `method`,
+`post_data` and `headers`), so a source can replay the page's own pagination request with another
+cursor (`flnd/sources/common/replay.py`) instead of scrolling on.
+
 It is a source helper, not a `Site` member (user, 2026-11-12): only the scroll fallbacks need it.
 """
 
@@ -46,9 +50,13 @@ class Responses:
     def __init__(self, site: Site, match: Match, *, scroll: bool = False, lines: bool = False):
         self._site = site
         self._scroll = scroll
-        self._waiting: deque[Any] = deque()
-        self._subscription = site.page.on_response(match, lambda data, response: self._waiting.append(data),
-                                                   lines=lines)
+        # (data, Playwright response) pairs, oldest first; the handler runs inside Playwright's waits,
+        # on this same thread, so no lock is needed.
+        self._waiting: deque[tuple[Any, Any]] = deque()
+        # The request of the response last yielded; None before the first.
+        self.request: Any = None
+        self._subscription = site.page.on_response(
+            match, lambda data, response: self._waiting.append((data, response)), lines=lines)
         self._items = self._iterate()
 
     def __iter__(self) -> Iterator[Any]:
@@ -72,15 +80,14 @@ class Responses:
         page = self._site.page
         try:
             while True:
-                while self._waiting:
-                    yield self._waiting.popleft()
+                yield from self.arrived()
                 if not self._scroll:
                     try:
                         page.wait(idle=True, timeout=QUIET)
                     # A page that never goes quiet (polling, a live feed) has sent its responses by now.
                     except browser.WaitError:
                         pass
-                    yield from self._drained()
+                    yield from self.arrived()
                     return
                 # Stops as soon as a response is waiting; returns with none when the feed ended.
                 page.scroll(until=lambda: bool(self._waiting))
@@ -89,10 +96,19 @@ class Responses:
         finally:
             self.close()
 
-    def _drained(self) -> Iterator[Any]:
-        """Everything waiting, oldest first."""
+    def arrived(self) -> Iterator[Any]:
+        """What has arrived and is waiting, oldest first, without scrolling or waiting for more.
+
+            for data in responses.arrived(): ...    # the rest of a response's lines, say
+
+        Each response's request is kept in `request` as its data is yielded. The lines of one
+        response arrive together, so after one of them, the rest are here already.
+        """
         while self._waiting:
-            yield self._waiting.popleft()
+            data, response = self._waiting.popleft()
+            # A fake tab in the tests hands no response; a real one always does.
+            self.request = getattr(response, "request", None)
+            yield data
 
 
 def watch_responses(site: Site, match: Match, *, scroll: bool = False, lines: bool = False) -> Responses:

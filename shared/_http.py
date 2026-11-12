@@ -132,11 +132,15 @@ class RefusedError(Error, shared.RefusedError):
     Args:
         status: the HTTP status, such as 403.
         message: the text shown; names the method, the URL without its query and the status.
+        response: the refusing response with its body, when there was one to keep, so a caller
+            can read why the site said no (Instagram's "please wait" comes as a 400 with a JSON
+            body); None otherwise. It is never shown in the message.
     """
 
-    def __init__(self, status: int, message: str = ""):
+    def __init__(self, status: int, message: str = "", *, response: Response | None = None):
         super().__init__(message or f"HTTP {status}")
         self.status = status
+        self.response = response
 
 
 class RateLimitedError(Error):
@@ -523,7 +527,7 @@ def _checked(response: Response, method: str, *, soft: bool) -> Response | None:
     if soft and status in SOFT_STATUSES:
         return None
     if status < 500:
-        raise RefusedError(status, f"{where}: HTTP {status}")
+        raise RefusedError(status, f"{where}: HTTP {status}", response=response)
     raise ServerError(status, f"{where}: HTTP {status}")
 
 

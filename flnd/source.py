@@ -126,11 +126,15 @@ class FetchError(Error):
     Args:
         message: what failed, shown to the person.
         status: the HTTP status that refused the request; None when there was no response.
+        response: the refusing response, body and all, so a source can read the site's reason
+            from it (Instagram's "please wait a few minutes" comes as a 400 or 401 with JSON);
+            None when there was none.
     """
 
-    def __init__(self, message: str, *, status: int | None = None):
+    def __init__(self, message: str, *, status: int | None = None, response: http.Response | None = None):
         super().__init__(message)
         self.status = status
+        self.response = response
 
 
 class LoginError(Error):
@@ -725,7 +729,8 @@ class Site(Protocol):
             The response; None only with `soft`.
 
         Raises:
-            FetchError: no response after the retries, or a 4xx other than 429 (with `status`).
+            FetchError: no response after the retries, or a 4xx other than 429 (with `status`, and
+                `response` to read the site's reason from).
         """
         ...
 
