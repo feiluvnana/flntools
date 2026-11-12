@@ -54,9 +54,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
     "shared.fmt": (
         "shared.fmt.date: positional option pattern",
     ),
-    "shared.kv": (
-        "shared.kv.KV.get_keys: prefix get_",
-    ),
     "shared.log": (
         "shared.log.ProgressBar.update: positional option total",
     ),
@@ -116,7 +113,7 @@ def option_breaches(name: Any) -> set[str]:
 
 
 def follows_protocol(name: Any) -> bool:
-    """Whether a method overrides one of a stdlib base's, as `KV.get` does `Mapping.get`.
+    """Whether a method overrides one of a stdlib base's, as `Store.get` does `Mapping.get`.
 
     Such a method keeps the stdlib's signature (W4), positional default and all, since code written
     for the base calls it that way.

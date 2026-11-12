@@ -128,7 +128,7 @@ def ffmpeg_source(python: str = DEFAULT_PYTHON) -> str:
 class ApiName(NamedTuple):
     """One public name: one line of the API snapshot, and the object the line was made from."""
 
-    # The dotted name a caller types, such as "shared.kv.KV.get_keys".
+    # The dotted name a caller types, such as "shared.kv.Store.keys".
     name: str
     # "module" (also an object standing in for one, such as `shared.log`), "function", "method",
     # "class", "error", "property", "field", "attribute" or "value".
@@ -156,7 +156,7 @@ def write_api() -> None:
 def api_text() -> str:
     """The API snapshot: one line per public name, sorted, as `tests/data/api.txt` holds it.
 
-        shared.kv.KV.get_keys(prefix: str = '') -> list[str]
+        shared.kv.Store.keys(prefix: str = '') -> KeysView[str]
         shared.archive.BombError(shared.archive.Error, shared.UnsafeError)
         shared.log.level: property, settable -> Level
 
@@ -170,7 +170,7 @@ def api_names() -> list[ApiName]:
     """Every public name of `API_MODULES`, sorted by name.
 
         names = {name.name: name for name in api_names()}
-        names["shared.kv.KV.get_keys"].kind     # "method"
+        names["shared.kv.Store.keys"].kind     # "method"
 
     A module's names are its `__all__`. A class's are its public methods, properties, fields and
     class attributes, its own and its project bases', and the public attributes its `__init__`
@@ -342,7 +342,7 @@ def _instance_attributes(cls: builtins.type) -> dict[str, str]:
 
 
 def _signature(obj: Any, *, bound: bool = False) -> str:
-    """A function's or class's signature as the snapshot shows it: `(path, *, table: str = 'default') -> KV`.
+    """A function's or class's signature as the snapshot shows it: `(path, *, table: str = 'default', timeout: float = 5.0) -> Store`.
 
     Args:
         obj: the function or class.

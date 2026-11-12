@@ -24,6 +24,8 @@ ERRORS = [
     (media.UnsafeError, "media", ValueError, shared.UnsafeError),
     (cookies.CookieError, "cookies", ValueError, None),
     (crypto.Error, "crypto", ValueError, None),       # crypto's one error, renamed to its base in step 4
+    (kv.ClosedError, "kv", RuntimeError, None),      # kv raised these builtins until step 4
+    (kv.UnstorableError, "kv", TypeError, None),
     (cli.UsageError, "cli", Exception, None),
     (prompt.PromptError, "prompt", Exception, None),
     (worker.TaskError, "worker", Exception, None),
@@ -60,8 +62,8 @@ class TreeTest(unittest.TestCase):
         # A new builtin base would make an old `except ValueError` or `except RuntimeError` catch more.
         for error, module, old_base, _ in ERRORS:
             with self.subTest(error.__qualname__, module=module):
-                self.assertFalse(issubclass(error, RuntimeError))
-                self.assertEqual(issubclass(error, ValueError), old_base is ValueError)
+                for builtin in (ValueError, RuntimeError, TypeError):
+                    self.assertEqual(issubclass(error, builtin), old_base is builtin, builtin.__name__)
 
     def test_siblings_stay_apart(self):
         # The tree adds bases, never links two module errors: a bomb isn't an archive.UnsafeError, as before.

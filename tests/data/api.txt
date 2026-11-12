@@ -100,14 +100,17 @@ shared.fmt.duration(seconds: float) -> str
 shared.fmt.filename(text: str, *, fallback: str = 'untitled', maxlen: int = 200) -> str
 shared.fmt.size(n: int) -> str
 shared.kv: module
+shared.kv.ClosedError(shared.kv.Error, RuntimeError)
 shared.kv.Error(shared.Error)
-shared.kv.KV(path: PathLike, table: str)
-shared.kv.KV.close() -> None
-shared.kv.KV.get(key: str, default: Any = None) -> Any
-shared.kv.KV.get_keys(prefix: str = '') -> list[str]
-shared.kv.KV.raw: property -> sqlite3.Connection
-shared.kv.KV.set(key: str, value: Any, *, ttl: float | None = None) -> None
-shared.kv.open(path: PathLike, *, table: str = 'default') -> KV
+shared.kv.Store(link: _Link, table: str)
+shared.kv.Store.close() -> None
+shared.kv.Store.get(key: str, default: Any = None) -> Any
+shared.kv.Store.keys(prefix: str = '') -> KeysView[str]
+shared.kv.Store.raw: property -> sqlite3.Connection
+shared.kv.Store.set(key: str, value: Any, *, ttl: float | None = None) -> None
+shared.kv.Store.table(name: str) -> Store
+shared.kv.UnstorableError(shared.kv.Error, TypeError)
+shared.kv.open(path: PathLike, *, table: str = 'default', timeout: float = 5.0) -> Store
 shared.log: Log
 shared.log.Error(shared.Error)
 shared.log.Group(theme: Theme, title: str)

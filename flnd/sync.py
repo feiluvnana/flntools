@@ -286,7 +286,7 @@ def _unrecorded(engine: Engine, known: Sequence[Target]) -> Iterator[Target]:
                     log.warn("{folder}: not synced: {error}", folder=f"{code}/{folder.name}", error=error)
 
 
-def _history(home: Path) -> kv.KV:
+def _history(home: Path) -> kv.Store:
     return kv.open(home / HISTORY_FILE, table=HISTORY_TABLE)
 
 

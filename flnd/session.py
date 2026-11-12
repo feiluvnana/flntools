@@ -196,13 +196,13 @@ class SourceRun:
     http: httpx.Client
     backoff: net.Backoff
     client: Any = None
-    _state: kv.KV | None = field(default=None, repr=False)
+    _state: kv.Store | None = field(default=None, repr=False)
     _secrets: auth.Vault | None = field(default=None, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
     _loop_thread: threading.Thread | None = field(default=None, repr=False)
 
     @property
-    def state(self) -> kv.KV:
+    def state(self) -> kv.Store:
         if self._state is None:
             self._state = kv.open(self.settings.home / "sources.db", table=self.source.code)
         return self._state

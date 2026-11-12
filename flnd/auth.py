@@ -215,10 +215,10 @@ class Vault(MutableMapping[str, str]):
 
     def __iter__(self) -> Iterator[str]:
         prefix = self._slot("")
-        return iter([key[len(prefix):] for key in self._db.get_keys(prefix=prefix)])
+        return iter([key[len(prefix):] for key in self._db.keys(prefix=prefix)])
 
     def __len__(self) -> int:
-        return len(self._db.get_keys(prefix=self._slot("")))
+        return len(self._db.keys(prefix=self._slot("")))
 
     def __enter__(self) -> Vault:
         return self
