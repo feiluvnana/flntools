@@ -295,6 +295,7 @@ class Job:
     """
 
     def __init__(self, run: SourceRun, site: TargetSite, target: Target):
+        """Make the job for one target, with nothing queued and no pool started; the pool starts on the first file."""
         self.run, self.site, self.target = run, site, target
         self.source = run.source
         self.settings = run.settings
@@ -349,6 +350,7 @@ class Job:
         It waits while the pool holds twice its `concurrency` in downloads, answering the
         downloads' refresh requests meanwhile.
         """
+        # Step 1: a lazy post whose first key is saved is skipped before its files are listed, so its request is saved.
         category = self._categories.get(post.category)
         self.caught_up = False
         if post.lazy and self._saved_first(post, category):
@@ -356,6 +358,7 @@ class Job:
             self.caught_up = True
             log.info("skip {post}", post=post.id)
             return True
+        # Step 2: list the files (a lazy post's `files` is called here), then queue each one not saved or queued.
         listed = list(post.files()) if callable(post.files) else list(post.files)
         found = fresh = 0
         for placed in place(self.source, post, listed, category=category):
@@ -373,6 +376,7 @@ class Job:
                 found += 1
                 log.info("skip {name}", name=placed.path)
                 continue
+            # Waiting for room first keeps the pool from growing without bound while the listing runs ahead.
             if not self._room():
                 return False
             fresh += 1
@@ -382,6 +386,8 @@ class Job:
             except BaseException:
                 self._ended()
                 raise
+        # Something skipped and nothing queued means the post was already saved, which `sync` counts toward
+        # its stop; nothing at all means no file to save, which neither counts nor breaks the run.
         self.caught_up = (not fresh) if found else (False if fresh else None)
         return True
 
@@ -561,6 +567,7 @@ class Job:
             raise
         if saved is None:
             return False
+        # The kind comes from the name the file got, which the content may have changed (`_as_media`).
         kind = disk.kind_of(saved.name)
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
@@ -682,6 +689,7 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     After a first Ctrl-C it returns: the row ends at error with "stopped", and `Done.error` is
     `STOPPED`; see the module for what finishes.
     """
+    # One site and one job for the target: the site holds its browser and pacing, the job its downloads.
     site = TargetSite(run, target, row=row)
     job = Job(run, site, target)
     job.row = row
