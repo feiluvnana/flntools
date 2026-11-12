@@ -36,12 +36,16 @@ from shared._style import ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, Chain, styl
 __all__ = ["Bar", "Error", "HelpModel", "LogRecord", "Namespace", "PromptView", "Screen", "draw_help",
            "draw_log", "draw_progress", "draw_prompt", "theme"]
 
+# The depths `Theme.color` accepts: "none" (plain text), "8" (the 16 ANSI colors), "256", and "16m"
+# (24-bit RGB).
 ColorDepth = Literal["none", "8", "256", "16m"]
 COLOR_DEPTHS: tuple[ColorDepth, ...] = ("none", "8", "256", "16m")
+# Cells in a progress bar, and the column width of a help screen's option labels.
 BAR_CELLS = 20
 HELP_LABEL_WIDTH = 20
 
-# Each glyph is (unicode, ascii). A nested dict is a group of glyphs.
+# Each glyph is (unicode, ascii). A nested dict is a group of glyphs. The ASCII half is what a
+# terminal that can't show the Unicode set gets (see `detect_unicode`).
 GLYPHS: dict[str, Any] = {
     "bullet": ("•", "*"), "tick": ("✓", "+"), "bang": ("!", "!"),
     "cross": ("✗", "x"), "dot": ("·", "."), "pointer": (">", ">"),
@@ -50,16 +54,20 @@ GLYPHS: dict[str, Any] = {
     "check": {"yes": ("✓", "[x]"), "no": ("•", "[ ]")},
     "keys": {"up": ("↑", "up"), "down": ("↓", "down"), "left": ("←", "left"), "right": ("→", "right")},
     "bar": {"full": ("━", "="), "empty": ("─", "-")},
+    # The spinner's Braille frames, and the ASCII frames used when Unicode is off.
     "spin": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), ("|", "/", "-", "\\")),
 }
 # Each value is anything `style.color` takes, or style names and colors such as "bold red".
 # The prompt colors are huh's ThemeCharm; ok and error match them, so log lines and prompts agree.
+# The numbers are 256-color indices. From 16 up they are fixed values rather than the terminal's own
+# palette, so the greys (237 to 252) look the same on every terminal.
 PALETTE: dict[str, Any] = {
     "info": "cyan", "ok": "#02BF87", "warn": "yellow", "error": "#ED567A", "debug": "dim",
     "title": "bold #7571F9", "cursor": "#F780E2", "chosen": "#02BF87",
     "text": 252, "muted": 243, "faint": 238, "key": 241, "hint": 239,
     "label": "magenta", "cream": "#FFFDF5", "button": 237,
 }
+# The glyph each log level draws before its message.
 LOG_GLYPHS = {"info": "bullet", "ok": "tick", "warn": "bang", "error": "cross", "debug": "dot"}
 
 
@@ -68,53 +76,95 @@ class Error(shared.Error):
 
 
 class LogRecord(NamedTuple):
+    """One log line, as `draw_log` or `draw_progress` takes it."""
+
+    # The level name, one of the keys of `LOG_GLYPHS`; "error" is drawn with the failure glyph.
     level: str
+    # The text after the glyph; empty draws the glyph alone.
     message: str
+    # The bar `draw_progress` draws; None for a plain line. `draw_log` ignores it.
     bar: Bar | None = None
 
 
 # A dataclass, not a NamedTuple: a tuple's own `count` method would clash with the `count` field.
 @dataclass(frozen=True)
 class Bar:
+    """The state of one progress bar, as `draw_progress` draws it."""
+
+    # The text before the bar, such as the item's name.
     label: str
+    # How far along the bar is, in the same units as `total`.
     count: float
+    # The amount that means done; None makes the bar a spinner with no end.
     total: float | None
+    # The text after the count.
     caption: str
+    # True once the work is done; the line's glyph turns to ok, and a spinner stops drawing.
     finished: bool
+    # How a count is written, such as a byte formatter; the default is `str`.
     show: Callable[[Any], str] = str
     # The spinner's frame number, which the live area fixes for a whole frame; None reads the clock.
     tick: int | None = None
 
 
 class HelpModel(NamedTuple):
+    """Everything a `--help` screen shows, as `draw_help` takes it."""
+
+    # The program's name. `draw_help` does not print it; the caller puts it into `usage`.
     prog: str
+    # A paragraph shown under the usage line; empty shows none.
     description: str
+    # The usage line, drawn after "Usage:".
     usage: str
+    # (label, text) rows under "Arguments:".
     arguments: tuple = ()
+    # (label, text) rows under "Options:".
     options: tuple = ()
+    # (label, text) rows under "Commands:".
     commands: tuple = ()
+    # Text shown at the bottom; empty shows none.
     epilog: str = ""
+    # A message shown before the help, in the error style, for a usage mistake; empty shows none.
     error: str = ""
 
 
 class PromptView(NamedTuple):
     """What a question shows. `options` are the visible labels; a confirm's are its buttons."""
 
+    # What is asked: "input" or "secret" (typed), "confirm" (buttons), "choices" (checkboxes); any
+    # other kind draws a list of options with one highlighted.
     kind: str
+    # The question itself, drawn in the title style.
     message: str
+    # Lines of help under the question; empty shows none.
     description: str = ""
+    # The typed text, or the answer once a choice is made.
     value: str = ""
+    # Greyed text shown while the typed text is empty; never the answer.
     placeholder: str = ""
+    # The visible labels: a list's options, or a confirm's two buttons.
     options: tuple = ()
+    # The highlighted option's index into `options`.
     position: int = 0
+    # The indices of the checked options of a "choices" question.
     checked: frozenset = frozenset()
+    # A validation message, shown in the error style under the question; None shows none.
     error: str | None = None
-    keys: tuple = ()  # (action, key names) pairs for the help line
+    # (action, key names) pairs for the help line
+    keys: tuple = ()
+    # True once answered; the frame then collapses to one done line.
     done: bool = False
-    caret: int | None = None  # where the typed text's cursor is; None is its end
+    # Where the typed text's cursor is, as a character index; None is its end.
+    caret: int | None = None
 
 
 class Theme:
+    """The process's look: its glyphs, palette, drawers, color depth and screen.
+
+    Changing `color`, `unicode` or `screen` affects every later draw. `scope` changes them for one
+    block only.
+    """
+
     _color: ColorDepth
 
     # `shared.theme` is this object, not a module, so the module's error is reached through it.
@@ -123,6 +173,7 @@ class Theme:
     def __init__(self, *, color: ColorDepth | None = None, unicode: bool | None = None,
                  screen: Screen | None = None):
         self.screen = screen or Screen()
+        # Detected from stderr, since that is where `log` and `prompt` write by default.
         self.color = detect_color(sys.stderr) if color is None else color
         self.unicode = detect_unicode(sys.stderr) if unicode is None else unicode
         self.glyphs = Namespace("glyph", GLYPHS, self._pick_glyph)
@@ -131,17 +182,30 @@ class Theme:
 
     @property
     def color(self) -> ColorDepth:
+        """The color depth every paint uses: "none", "8", "256" or "16m"."""
         return self._color
 
     @color.setter
     def color(self, value: ColorDepth) -> None:
+        """Set the color depth; any other value raises ValueError.
+
+        The check runs here, at the assignment, so a typo fails where it is made and not at the
+        first paint.
+        """
         if value not in COLOR_DEPTHS:
             raise ValueError(f"theme.color must be one of {', '.join(COLOR_DEPTHS)}, not {value!r}")
         self._color = value
 
     @contextmanager
     def scope(self, **changes: Any) -> Iterator[Theme]:
-        """Apply changes for the length of the block, then restore the old values."""
+        """Apply changes for the length of the block, then restore the old values.
+
+        Args:
+            **changes: any of `color`, `unicode` or `screen`, with the value to use inside the block.
+
+        Raises:
+            TypeError: a name in `changes` is none of those three.
+        """
         unknown = set(changes) - {"color", "unicode", "screen"}
         if unknown:
             raise TypeError(f"unknown theme settings: {', '.join(sorted(unknown))}")
@@ -151,11 +215,22 @@ class Theme:
                 setattr(self, name, value)
             yield self
         finally:
+            # Restored in `finally`, so an exception inside the block still puts the old values back.
             for name, value in previous.items():
                 setattr(self, name, value)
 
     def paint(self, name: str, text: str, *, on: str | None = None) -> str:
-        """Paint text with a palette color, on another palette color's background when given."""
+        """Paint text with a palette color, on another palette color's background when given.
+
+        Args:
+            name: a key of `palette`, such as "ok" or "muted".
+            text: the text to paint; empty text returns "" with no codes around it.
+            on: another key of `palette` whose text color becomes this text's background; None
+                paints the text on the terminal's own background.
+
+        Returns:
+            The painted text, for `self.color`.
+        """
         if not text:
             return ""
         chain = chain_of(getattr(self.palette, name))
@@ -164,7 +239,16 @@ class Theme:
         return chain.paint(text, self.color)
 
     def draw(self, kind: str, value: Any) -> str:
-        """Draw a value with this theme's drawer for its kind: log, progress, prompt, or help."""
+        """Draw a value with this theme's drawer for its kind: log, progress, prompt, or help.
+
+        Args:
+            kind: a key of `drawers`; an unknown kind raises AttributeError.
+            value: the record for that kind, such as a `LogRecord` or a `PromptView`.
+
+        Returns:
+            The drawn text. A log line and a prompt frame have no trailing newline; a help screen
+            ends with one.
+        """
         return getattr(self.drawers, kind)(self, value)
 
     def _pick_glyph(self, pair: tuple) -> Any:
@@ -184,6 +268,7 @@ class Namespace:
     def __init__(self, kind: str, defaults: dict, pick: Callable[[Any], Any], *,
                  check: Callable[[Any], Any] = lambda value: value):
         groups = {name: Namespace(kind, value, pick) for name, value in defaults.items() if isinstance(value, dict)}
+        # `object.__setattr__` because `__setattr__` below refuses names that are not defaults.
         object.__setattr__(self, "_kind", kind)
         object.__setattr__(self, "_defaults", defaults)
         object.__setattr__(self, "_groups", groups)
@@ -192,6 +277,7 @@ class Namespace:
         object.__setattr__(self, "_assigned", {})
 
     def __getattr__(self, name: str) -> Any:
+        # Looked up in order: a group, then a value the caller assigned, then the default.
         if name in self._groups:
             return self._groups[name]
         if name in self._assigned:
@@ -208,13 +294,27 @@ class Namespace:
 
 
 def chain_of(value: str | int) -> Chain:
-    """The style for a palette value: a color, or style names and colors such as "bold #7571F9"."""
+    """The style for a palette value: a color, or style names and colors such as "bold #7571F9".
+
+    Args:
+        value: a color `style.color` takes, or words separated by spaces. A word that starts with
+            "#" or a digit is a color; any other word is a style name such as "bold".
+
+    Returns:
+        A `Chain` with every word applied.
+
+    Raises:
+        ValueError: a word is neither a color nor a style name.
+    """
     try:
         return style.color(value)
     except ValueError:
+        # A color as a whole (a hex, an rgb() or an index) is tried first; anything else is read as words.
         pass
     chain = style
     for word in str(value).split():
+        # A word starting with "#" or a digit is a color (a digit is a 256-color index); any other
+        # word is a style name, which `getattr` resolves on the chain.
         try:
             chain = chain.color(int(word) if word.isdigit() else word) if word[0] in "#0123456789" \
                 else getattr(chain, word)
@@ -224,7 +324,15 @@ def chain_of(value: str | int) -> Chain:
 
 
 def draw_log(theme: Theme, record: LogRecord) -> str:
-    """A log line, wholly in its level's color; a part of the message with its own style keeps it."""
+    """A log line, wholly in its level's color; a part of the message with its own style keeps it.
+
+    Args:
+        theme: the theme whose glyphs, palette and color depth draw the line.
+        record: the level and message to draw; with a bar, the bar is not used here.
+
+    Returns:
+        One line of text, with no trailing newline.
+    """
     glyph = getattr(theme.glyphs, LOG_GLYPHS[record.level])
     line = f"{glyph} {record.message}" if record.message else glyph
     # Paint a marker to learn the level's opening and closing sequences, whatever the color depth.
@@ -240,6 +348,11 @@ def draw_log(theme: Theme, record: LogRecord) -> str:
 
 
 def draw_progress(theme: Theme, record: LogRecord) -> str:
+    """One progress line: the glyph, label, bar, count and caption, drawn from `record.bar`.
+
+    An error level draws as a failed line; a finished bar draws as ok. A bar with no total is a
+    spinner, and a bar that is finished draws no spinner.
+    """
     bar = record.bar
     assert bar is not None
     level = "error" if record.level == "error" else "ok" if bar.finished else "info"
@@ -249,6 +362,15 @@ def draw_progress(theme: Theme, record: LogRecord) -> str:
 
 
 def draw_help(theme: Theme, model: HelpModel) -> str:
+    """A `--help` screen: the error if any, the description, the usage, then the argument, option and command rows.
+
+    Args:
+        theme: the theme that draws the screen.
+        model: the program's help text, as a `HelpModel`.
+
+    Returns:
+        The whole screen, ending with a newline.
+    """
     lines = []
     if model.error:
         lines += [f"{theme.paint('error', theme.glyphs.cross)} {model.error}", ""]
@@ -259,6 +381,7 @@ def draw_help(theme: Theme, model: HelpModel) -> str:
         if rows:
             lines += ["", theme.paint("title", title)]
             for label, text in rows:
+                # Labels are padded to HELP_LABEL_WIDTH, so every description starts in one column.
                 padded = ("  " + label).ljust(HELP_LABEL_WIDTH)
                 lines.append(theme.paint("label", padded) + "  " + theme.paint("muted", text) if text
                              else theme.paint("label", "  " + label))
@@ -268,12 +391,21 @@ def draw_help(theme: Theme, model: HelpModel) -> str:
 
 
 def draw_prompt(theme: Theme, view: PromptView) -> str:
-    """A question's frame: a bar down every line, then the help line; once answered, one done line."""
+    """A question's frame: a bar down every line, then the help line; once answered, one done line.
+
+    Args:
+        theme: the theme that draws the frame; its screen's size limits the frame's height.
+        view: the question's state, as a `PromptView`.
+
+    Returns:
+        The frame, with newlines between its lines and no trailing newline.
+    """
     if view.done:
         return f"{theme.paint('ok', theme.glyphs.tick)} {_done_text(view)}"
     head = [theme.paint("title", view.message) + (theme.paint("error", " *") if view.error else "")]
     width = max(theme.screen.width - 2, 1)
     for line in view.description.splitlines():
+        # Wrapped to the screen width less the border and the space after it.
         head += [theme.paint("muted", part) for part in textwrap.wrap(line, width)] or [""]
     tail = [theme.paint("error", f"* {view.error}")] if view.error else []
     keys = [_keys_line(theme, view.keys)] if view.keys else []
@@ -314,7 +446,9 @@ def _option_rows(theme: Theme, view: PromptView, room: int) -> list[str]:
     count = len(view.options)
     start, end = 0, count
     if count > room:
+        # Two rows of the room are kept for the "more" lines above and below the window.
         shown = max(room - 2, 1)
+        # The window is centred on the cursor, then clamped so it never runs past either end.
         start = min(max(view.position - shown // 2, 0), count - shown)
         end = start + shown
     # Rows without the cursor are indented by the pointer's width, so the labels line up.
@@ -337,6 +471,10 @@ def _option_rows(theme: Theme, view: PromptView, room: int) -> list[str]:
 
 
 def _button(theme: Theme, label: str, active: bool) -> str:
+    """One confirm button: bracketed without color, and a cursor-colored block when it is active.
+
+    The bracketed and the plain forms are the same width, so the buttons never shift when moved.
+    """
     # Without color, brackets show which button is active; both shapes are the same width.
     if theme.color == "none":
         return f"[ {label} ]" if active else f"  {label}  "
@@ -345,6 +483,10 @@ def _button(theme: Theme, label: str, active: bool) -> str:
 
 
 def _keys_line(theme: Theme, keys: tuple) -> str:
+    """The help line: each action with its keys, the keys joined by "/" and the actions by a separator.
+
+    Arrow key names are drawn as their glyphs; any other key name is drawn as its word.
+    """
     separator = f" {theme.paint('hint', theme.glyphs.keysep)} "
     return separator.join(
         theme.paint("key", "/".join(getattr(theme.glyphs.keys, key) if key in GLYPHS["keys"] else key for key in bound))
@@ -354,7 +496,9 @@ def _keys_line(theme: Theme, keys: tuple) -> str:
 
 
 def _done_text(view: PromptView) -> str:
+    """The one line a finished question leaves: the answer, shown after the question, except for a secret."""
     if view.kind == "secret":
+        # A secret's answer is never printed, so only the question stays on the line.
         return view.message
     if view.kind == "confirm":
         return f"{view.message} {view.value}"
@@ -362,26 +506,44 @@ def _done_text(view: PromptView) -> str:
 
 
 def _bar_cells(theme: Theme, bar: Bar) -> str:
+    """The bar's cells: a spinner frame when there is no total, else filled and empty cells.
+
+    A spinner advances ten frames a second unless the bar gives a `tick`, which the live area
+    sets so that a whole frame shows one frame.
+    """
     if bar.total is None:
         if bar.finished:
             return ""
         frames = theme.glyphs.spin
         return frames[(int(time.monotonic() * 10) if bar.tick is None else bar.tick) % len(frames)]
     done = max(bar.count, 0)
+    # A total of zero or less would divide by zero, so it draws as full.
     filled = BAR_CELLS if bar.total <= 0 else round(BAR_CELLS * min(done, bar.total) / bar.total)
     return theme.glyphs.bar.full * filled + theme.glyphs.bar.empty * (BAR_CELLS - filled)
 
 
 def _count(bar: Bar) -> str:
+    """The count as `count/total`, or the count alone for a spinner; empty before any progress."""
     if bar.total is not None:
         return f"{bar.show(bar.count)}/{bar.show(bar.total)}"
     return bar.show(bar.count) if bar.count > 0 else ""
 
 
 def detect_color(stream) -> ColorDepth:
-    """The color depth a stream supports, from NO_COLOR, TERM, COLORTERM, and isatty."""
+    """The color depth a stream supports, from NO_COLOR, TERM, COLORTERM, and isatty.
+
+    Args:
+        stream: the stream to test; a stream that is not a terminal gets "none".
+
+    Returns:
+        "none", "16m" for 24-bit, or "256". It never returns "8": detection chooses only among
+        those three, so the 16-color depth has to be set by hand.
+    """
+    # A non-empty NO_COLOR is the convention that turns colour off; TERM=dumb is a terminal that
+    # can't take escapes; a pipe or file is never a terminal.
     if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb" or not isatty(stream):
         return "none"
+    # COLORTERM is how terminals advertise 24-bit colour; without it the 256 palette is assumed.
     if os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit"):
         return "16m"
     return "256"
@@ -403,31 +565,56 @@ def ambiguous_width() -> bool:
     if locale.lower().startswith(("ja", "ko", "zh")):
         return True
     # Windows Terminal, ConEmu, ANSICON and terminals that set TERM (mintty, VS Code) aren't the legacy console.
+    # The legacy console is the one assumed to draw these glyphs two cells wide; the variables below
+    # are set by the terminals that do not.
     modern = ("WT_SESSION", "TERM", "ANSICON", "TERM_PROGRAM")
     return os.name == "nt" and not any(os.environ.get(name) for name in modern) \
         and os.environ.get("ConEmuANSI") != "ON"
 
 
 def display_width(text: str) -> int:
+    """How many terminal cells `text` takes: escapes take none, wide characters take two.
+
+    Args:
+        text: the text to measure, which may contain escape sequences.
+
+    Returns:
+        The number of cells, counting ambiguous-width characters as one (see `_char_width`).
+    """
     return sum(_char_width(char) for char in ESCAPE.sub("", text))
 
 
 def fit(text: str, width: int) -> str:
-    """Cut text to a display width, keeping escape sequences intact."""
+    """Cut text to a display width, keeping escape sequences intact.
+
+    Args:
+        text: the text to cut, which may contain escape sequences.
+        width: the most cells to keep, as `display_width` counts them.
+
+    Returns:
+        The text unchanged when it fits. When it is cut and had any escapes, a reset and a link
+        close are appended, so a color or link opened before the cut does not run on.
+    """
     kept, used = [], 0
     for unit in _UNIT.findall(text):
         if not unit.startswith("\x1b"):
             used += _char_width(unit)
+            # The first character past the width ends the cut; escapes already kept stay in place.
             if used > width:
                 return "".join(kept) + (RESET + LINK_CLOSE if "\x1b" in text else "")
         kept.append(unit)
     return text
 
 
+# One unit is an escape sequence or any single character, so `fit` never cuts an escape in half.
 _UNIT = re.compile(ESCAPE_PATTERN + "|.", re.S)
 
 
 def _char_width(char: str) -> int:
+    """The cells one character takes: 0 for a combining mark, 2 for a wide one, else 1.
+
+    Ambiguous-width characters count as 1 here, which is why `ambiguous_width` exists.
+    """
     if unicodedata.combining(char):
         return 0
     return 2 if unicodedata.east_asian_width(char) in "WF" else 1
@@ -437,6 +624,8 @@ def _same(value: Any) -> Any:
     return value
 
 
+# The four kinds `Theme.draw` knows. A script can replace one (see the module docstring).
 DRAWERS: dict[str, Any] = {"log": draw_log, "progress": draw_progress, "prompt": draw_prompt, "help": draw_help}
 
+# The process theme, built once at import, so the color and Unicode detection runs once.
 theme = Theme()
