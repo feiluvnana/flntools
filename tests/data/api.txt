@@ -327,6 +327,6 @@ shared.worker.Result.ok: property -> bool
 shared.worker.Result.value: field -> R | None
 shared.worker.TaskError(shared.worker.Error)
 shared.worker.TaskError.results: attribute
-shared.worker.map(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> list[Any]
+shared.worker.as_completed(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]
+shared.worker.as_ordered(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> list[Any]
 shared.worker.pool(**options: Unpack[_Options]) -> Pool
-shared.worker.race(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]

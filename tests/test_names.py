@@ -58,11 +58,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
     "shared.theme": (
         "shared.theme.Screen: option out, not dest",
     ),
-    "shared.worker": (
-        "shared.worker.map: option progress, not a progress(done, total) callback",
-        "shared.worker.pool: option progress, not a progress(done, total) callback",
-        "shared.worker.race: option progress, not a progress(done, total) callback",
-    ),
 }
 
 

@@ -98,7 +98,7 @@ class Engine:
             work = [(self.sources[code](), [(target, rows.add(str(target))) for target in group])
                     for code, group in groups.items()]
             total = 0
-            for result in worker.race(partial(_run_group, settings), work, concurrency=max(len(work), 1)):
+            for result in worker.as_completed(partial(_run_group, settings), work, concurrency=max(len(work), 1)):
                 if result.ok:
                     total += result.value or 0
                     continue

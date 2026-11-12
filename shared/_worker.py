@@ -1,8 +1,33 @@
-"""Run a function on many inputs at once: `map`, `race` and `pool`.
+"""Run a function on many inputs at once: `as_ordered`, `as_completed` and `pool`.
 
-Tasks run in threads by default, which suits work that waits: network, files, browsers.
-`processes=True` runs them in processes, for work that computes. `async def` functions run
-on an event loop in a background thread, so the calling code stays synchronous.
+How it works: each entry point starts a run, a bounded queue of tasks served by runner threads
+that `worker` starts as tasks arrive, up to `concurrency`, and that exit when the queue is empty.
+A runner tries a task, waits 1, 2, 4… s (with jitter, at most 60 s) between `retries`, and gives
+up on one try after `timeout` seconds. Inputs are read only as fast as runners take them, so an
+endless generator never fills memory. Tasks run in threads by default, which suits work that
+waits: network, files, browsers. `processes=True` hands each try to a stdlib
+`concurrent.futures.ProcessPoolExecutor`, for work that computes. An `async def` function runs on
+an `asyncio` event loop in a background thread, so the calling code stays synchronous. Every
+task's outcome is a `Result`: `as_ordered` returns the values in input order and raises `TaskError`
+if any failed, `as_completed` yields each `Result` as it finishes, and `pool` takes tasks one
+at a time, for work that is found while other work runs. `label=` draws a progress row with
+`shared.log`; `progress=` reports to a callback instead.
+
+    from shared import worker
+
+    sizes = worker.as_ordered(file_size, urls, concurrency=8, retries=2, label="files")
+    for result in worker.as_completed(download, urls, timeout=30):
+        print(result.item, result.value if result.ok else result.error)
+    with worker.pool(concurrency=6) as pool:
+        pool.submit(download, url)
+
+`Pool.raw` is the `ProcessPoolExecutor` or the event loop, once one is started.
+
+Threads: `as_ordered`, `as_completed` and `pool` may be called from several threads at once, each
+call with a run of its own. A `Pool` may be fed from several threads: `submit`, `close`, `join` and
+its properties take the run's lock. `fn` itself runs on worker's threads, several at once, so
+whatever it shares needs its own lock; so does `progress`, which runner threads call one at a time.
+Ctrl-C once cancels queued tasks and lets running ones finish; twice stops at once.
 """
 
 from __future__ import annotations
@@ -27,7 +52,7 @@ from shared._log import ProgressBar, log
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-__all__ = ["Error", "Pool", "Result", "TaskError", "map", "pool", "race"]
+__all__ = ["Error", "Pool", "Result", "TaskError", "as_completed", "as_ordered", "pool"]
 
 MAX_RETRY_WAIT = 60.0
 # Waits wake at least this often, so Ctrl-C is seen on platforms where a blocked lock ignores it.
@@ -43,20 +68,27 @@ A3 = TypeVar("A3")
 class Result(Generic[R]):
     """How one task went: its input, and what it returned or raised.
 
-    ```python
-    for result in worker.race(download, urls):
-        print(result.item, result.value if result.ok else result.error, result.attempts)
-    ```
+        for result in worker.as_completed(download, urls):
+            print(result.item, result.value if result.ok else result.error, result.attempts)
+
+    A `Result` is made by a runner thread and never changed after it is handed out, so any
+    thread may read it.
     """
 
+    # The task's input: the item, or a tuple of one item from each iterable when there are several.
     item: Any
+    # What `fn` returned; None when it failed.
     value: R | None = None
+    # What the last try raised; None when it succeeded.
     error: BaseException | None = None
+    # How many tries it took, 1 when the first one did.
     attempts: int = 0
+    # Where the item was in the input, which `as_ordered` sorts by.
     _position: int = field(default=0, repr=False, compare=False)
 
     @property
     def ok(self) -> bool:
+        """Whether the task succeeded: `error` is None."""
         return self.error is None
 
 
@@ -65,14 +97,12 @@ class Error(shared.Error):
 
 
 class TaskError(Error):
-    """Raised by `map` when some tasks failed, once every other task has finished.
+    """Raised by `as_ordered` when some tasks failed, once every other task has finished.
 
-    ```python
-    try:
-        sizes = worker.map(file_size, urls)
-    except worker.TaskError as error:
-        failed = [result for result in error.results if not result.ok]
-    ```
+        try:
+            sizes = worker.as_ordered(file_size, urls)
+        except worker.TaskError as error:
+            failed = [result for result in error.results if not result.ok]
 
     `results` holds every `Result` in input order, so the work that succeeded is not lost.
     """
@@ -85,44 +115,62 @@ class TaskError(Error):
 
 
 class _Options(TypedDict, total=False):
+    """The options every entry point takes; see `as_ordered`'s docstring."""
+
     concurrency: int | None
     retries: int
     timeout: float | None
-    progress: str | None
+    label: str | None
+    progress: Callable[[int, int], Any] | None
     processes: bool
 
 
 @overload
-def map(fn: Callable[[A1], R], items: Iterable[A1], /, **options: Unpack[_Options]) -> list[R]: ...
+def as_ordered(fn: Callable[[A1], R], items: Iterable[A1], /, **options: Unpack[_Options]) -> list[R]: ...
 @overload
-def map(fn: Callable[[A1, A2], R], items: Iterable[A1], second: Iterable[A2], /,
-        **options: Unpack[_Options]) -> list[R]: ...
+def as_ordered(fn: Callable[[A1, A2], R], items: Iterable[A1], second: Iterable[A2], /,
+               **options: Unpack[_Options]) -> list[R]: ...
 @overload
-def map(fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2], third: Iterable[A3], /,
-        **options: Unpack[_Options]) -> list[R]: ...
+def as_ordered(fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2], third: Iterable[A3], /,
+               **options: Unpack[_Options]) -> list[R]: ...
 @overload
-def map(fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
-        fourth: Iterable[Any], /, *more: Iterable[Any], **options: Unpack[_Options]) -> list[Any]: ...
-def map(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> list[Any]:
-    """Run `fn` on every item, several at once, and return the results in input order.
+def as_ordered(fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
+               fourth: Iterable[Any], /, *more: Iterable[Any], **options: Unpack[_Options]) -> list[Any]: ...
+def as_ordered(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> list[Any]:
+    """Run `fn` on every item, several at once, and return every result in input order, as a list.
 
-    ```python
-    sizes = worker.map(file_size, urls, concurrency=8, retries=2, timeout=30, progress="files")
-    ```
+        sizes = worker.as_ordered(file_size, urls, concurrency=8, retries=2, timeout=30, label="files")
 
-    With several iterables, `fn` gets one item from each, paired up like the builtin `map`.
-    If a task failed, it raises `TaskError` once the others have finished.
+    Args:
+        fn: the task, a function or an `async def` function; with `processes=True`, one defined
+            at the top level of a module, so it can be sent to another process.
+        *iterables: the inputs. With several, `fn` gets one item from each, paired up like the
+            builtin `map`, and the shortest one ends the run.
+        concurrency: how many tasks run at once. None: `min(32, CPUs + 4)` threads, or one process
+            per CPU with `processes=True`.
+        retries: how many more tries a failed task gets, after waits of 1, 2, 4… s (at most 60 s).
+        timeout: seconds before one try fails with `TimeoutError`; None waits forever. A coroutine
+            or a process really stops; a thread can't be stopped, so it runs on in the background
+            and its result is thrown away.
+        label: the text of a progress row of finished tasks, drawn with `shared.log`; None draws none.
+        progress: a callback `progress(done, total)`, called after each task finishes with how many
+            have and how many there are: the input's length, or the number read so far when the
+            input has no length. None calls nothing.
+        processes: run tasks in processes, for work that computes, instead of threads.
 
-    Options, the same for `race` and `pool`:
-    - `concurrency`: how many tasks run at once; about 8 to 32 threads, or one process per CPU;
-    - `retries`: how many more tries a failed task gets, after waits of 1, 2, 4… s (at most 60 s);
-    - `timeout`: seconds before one try fails with `TimeoutError`. A coroutine or a process really
-      stops; a thread can't be stopped, so it runs on in the background and its result is thrown away;
-    - `progress`: a label for a progress bar of finished tasks;
-    - `processes`: run tasks in processes; `fn` must then be defined at the top level of a module.
+    Returns:
+        What `fn` returned for each item, in the input's order.
 
-    Ctrl-C once cancels queued tasks and lets running ones finish; twice stops at once.
-    It is typed for one to three iterables; with more, the results are `Any`.
+    Raises:
+        TaskError: some task failed after its retries, raised once the others have finished.
+        ValueError: `concurrency` is below 1, `retries` below 0 or `timeout` not above 0.
+        TypeError: `progress` isn't callable, or, with `processes=True`, `fn` can't be sent to
+            another process.
+
+    The same options go to `as_completed` and `pool`. `progress` is called from worker's runner
+    threads, one call at a time, before `as_ordered` returns; if it raises, the run stops and the
+    error is raised here. It is typed for one to three iterables; with more, the results are `Any`.
+    It may be called from several threads at once.
     """
     with _Run(total=_length(iterables), **options) as run:
         for args in zip(*iterables):
@@ -134,28 +182,42 @@ def map(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> li
 
 
 @overload
-def race(fn: Callable[[A1], R], items: Iterable[A1], /, **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
+def as_completed(fn: Callable[[A1], R], items: Iterable[A1], /,
+                 **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
 @overload
-def race(fn: Callable[[A1, A2], R], items: Iterable[A1], second: Iterable[A2], /,
-         **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
+def as_completed(fn: Callable[[A1, A2], R], items: Iterable[A1], second: Iterable[A2], /,
+                 **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
 @overload
-def race(fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2], third: Iterable[A3], /,
-         **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
+def as_completed(fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2], third: Iterable[A3], /,
+                 **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
 @overload
-def race(fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
-         fourth: Iterable[Any], /, *more: Iterable[Any], **options: Unpack[_Options]) -> Iterator[Result[Any]]: ...
-def race(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]:
+def as_completed(fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
+                 fourth: Iterable[Any], /, *more: Iterable[Any],
+                 **options: Unpack[_Options]) -> Iterator[Result[Any]]: ...
+def as_completed(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]:
     """Run `fn` on every item, several at once, and yield each `Result` as soon as it is ready.
 
-    ```python
-    for result in worker.race(download, urls, concurrency=8):
-        if not result.ok:
-            log.error("{url}: {error}", url=result.item, error=result.error)
-    ```
+        for result in worker.as_completed(download, urls, concurrency=8):
+            if not result.ok:
+                log.error("{url}: {error}", url=result.item, error=result.error)
 
-    Results come in the order they finish. Unlike JavaScript's `Promise.race`, which keeps only
-    the first, it yields every result, and it never raises because a task failed.
-    It takes the same options as `map`.
+    Args:
+        fn: the task, as for `as_ordered`.
+        *iterables: the inputs, as for `as_ordered`.
+        **options: `concurrency`, `retries`, `timeout`, `label`, `progress` and `processes`,
+            as for `as_ordered`.
+
+    Returns:
+        An iterator of every task's `Result`, in the order they finish, as the stdlib's
+        `concurrent.futures.as_completed` gives futures. Stopping early (a `break`) cancels the
+        queued tasks and waits for the running ones.
+
+    Raises:
+        ValueError: a bad option, as for `as_ordered`.
+        TypeError: with `processes=True`, `fn` can't be sent to another process.
+
+    It never raises because a task failed: each failure is a `Result` whose `ok` is False. The
+    iterator belongs to the thread that reads it; several threads may each run their own.
     """
     with _Run(total=_length(iterables), **options) as run:
         seen = 0
@@ -177,16 +239,25 @@ def race(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> I
 def pool(**options: Unpack[_Options]) -> Pool:
     """Start a pool that takes tasks one at a time, while other work is still going on.
 
-    ```python
-    with worker.pool(concurrency=6) as pool:
-        for post in scroll_through_feed():
-            pool.submit(download, post.url)
-    print(len(pool.results), "done")
-    ```
+        with worker.pool(concurrency=6, label="downloads") as pool:
+            for post in scroll_through_feed():
+                pool.submit(download, post.url)
+        print(len(pool.results), "done")
 
-    Leaving the block calls `close()` then `join()`; if the block raised, queued tasks are
-    dropped instead, with a warning line. Without `with`, call `close()` and `join()` yourself.
-    It takes the same options as `map`, and never raises because a task failed.
+    Args:
+        **options: `concurrency`, `retries`, `timeout`, `label`, `progress` and `processes`, as
+            for `as_ordered`. The total a progress row or `progress` sees is the number submitted
+            so far, since a pool can't know how many will come.
+
+    Returns:
+        A `Pool`. Leaving its `with` block calls `close()` then `join()`; if the block raised,
+        queued tasks are dropped instead, with a warning line. Without `with`, call `close()` and
+        `join()` yourself.
+
+    Raises:
+        ValueError: a bad option, as for `as_ordered`.
+
+    It never raises because a task failed. It may be called from several threads at once.
     """
     return Pool(_Run(**options))
 
@@ -194,19 +265,30 @@ def pool(**options: Unpack[_Options]) -> Pool:
 class Pool:
     """Tasks submitted one at a time; made by `worker.pool`.
 
-    ```python
-    pool = worker.pool(concurrency=6)
-    pool.submit(download, url)
-    pool.close()
-    results = pool.join()
-    ```
+        pool = worker.pool(concurrency=6)
+        pool.submit(download, url)
+        pool.close()
+        results = pool.join()
+
+    Several threads may submit to one `Pool`: every member takes the run's lock.
     """
 
     def __init__(self, run: _Run):
         self._run = run
 
     def submit(self, fn: Callable[..., Any], *args: Any) -> None:
-        """Queue `fn(*args)`. Waits while twice `concurrency` tasks are queued; raises `RuntimeError` after `close()`."""
+        """Queue `fn(*args)`, waiting while twice `concurrency` tasks are already queued.
+
+            pool.submit(download, url, dest)
+
+        Args:
+            fn: the task, as for `as_ordered`.
+            *args: its arguments. The `Result`'s `item` is `args[0]` when there is one, else `args`.
+
+        Raises:
+            RuntimeError: the pool was closed.
+            TypeError: with `processes=True`, `fn` can't be sent to another process.
+        """
         self._run.submit(fn, args)
 
     def close(self) -> None:
@@ -214,7 +296,18 @@ class Pool:
         self._run.close()
 
     def join(self, timeout: float | None = None) -> list[Result[Any]]:
-        """Wait for every task submitted so far, or `timeout` seconds, and return `results`."""
+        """Wait for every task submitted so far, or `timeout` seconds, and return `results`.
+
+            results = pool.join(timeout=60)
+
+        Args:
+            timeout: the most seconds to wait; None waits until every task is done.
+
+        Returns:
+            The finished results, as `results` gives them; fewer than `submitted` after a timeout.
+            Once the pool is closed and every task is done, the processes, the event loop and the
+            progress row are ended too.
+        """
         run = self._run
         if run.wait(run.is_idle, timeout) and run.closed:
             run.end(None)
@@ -222,17 +315,19 @@ class Pool:
 
     @property
     def results(self) -> list[Result[Any]]:
-        """The finished results, in the order they finished."""
-        return list(self._run.finished)
+        """The finished results, in the order they finished, as a new list."""
+        with self._run.changed:
+            return list(self._run.finished)
 
     @property
     def submitted(self) -> int:
+        """How many tasks were submitted, finished or not."""
         return self._run.submitted
 
     @property
     def raw(self) -> Any:
-        """The `ProcessPoolExecutor` with `processes=True`, the asyncio loop once an `async def`
-        function was submitted, else `None`: plain tasks run on worker's own threads."""
+        """The `ProcessPoolExecutor` with `processes=True`, or the asyncio loop once an `async def`
+        function was submitted; else None, since plain tasks run on worker's own threads."""
         return self._run.executor or self._run.loop
 
     def __enter__(self) -> Pool:
@@ -256,19 +351,25 @@ class _Job(NamedTuple):
 
 
 class _Run:
-    """The engine under `map`, `race` and `pool`: a bounded queue, runner threads, retries and stopping.
+    """The engine under `as_ordered`, `as_completed` and `pool`: a bounded queue, runner threads, retries and stopping.
 
-    Every count below is read and changed under `changed`, which is notified on every change.
+    Every count below is read and changed under `changed`, which is notified on every change: the
+    caller's thread submits and waits, and every runner thread takes jobs and adds results.
     """
 
     def __init__(self, *, concurrency: int | None = None, retries: int = 0, timeout: float | None = None,
-                 progress: str | None = None, processes: bool = False, total: int | None = None):
+                 label: str | None = None, progress: Callable[[int, int], Any] | None = None,
+                 processes: bool = False, total: int | None = None):
         if concurrency is not None and concurrency < 1:
             raise ValueError(f"concurrency must be at least 1, not {concurrency}")
         if retries < 0:
             raise ValueError(f"retries must be 0 or more, not {retries}")
         if timeout is not None and timeout <= 0:
             raise ValueError(f"timeout must be above 0, not {timeout}")
+        if progress is not None and not callable(progress):
+            # Before Phase 6 `progress=` took a row's text; say where that went rather than fail later.
+            raise TypeError(f"progress must be a progress(done, total) callback, not {progress!r}; "
+                            "a progress row's text goes in label=")
         cpus = os.cpu_count() or 1
         self.concurrency = concurrency or (cpus if processes else min(32, cpus + 4))
         self.retries, self.timeout, self.processes = retries, timeout, processes
@@ -286,9 +387,14 @@ class _Run:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.exits = ExitStack()
         self.bar: ProgressBar | None = None
-        if progress is not None:
-            self.bar = self.exits.enter_context(log.progress(progress, total=total))
-        self.growing_total = total is None
+        if label is not None:
+            self.bar = self.exits.enter_context(log.progress(label, total=total))
+        self.total = total
+        self.progress = progress
+        # Runner threads report one at a time, so `progress` never runs twice at once and its
+        # `done` never goes down; `reported` is the last `done` it was given.
+        self.reporting = threading.Lock()
+        self.reported = 0
 
     def __enter__(self) -> _Run:
         return self
@@ -304,7 +410,7 @@ class _Run:
                 self.stop(late)
                 self.end(late)
                 raise
-        # A consumer that stops reading `race` early ends it on purpose, not by failing.
+        # A consumer that stops reading `as_completed` early ends it on purpose, not by failing.
         self.end(None if isinstance(error, GeneratorExit) else error)
 
     def has_room(self) -> bool:
@@ -324,7 +430,7 @@ class _Run:
             self._start_backend(fn)
             self.queued.append(_Job(fn, args, args[0] if len(args) == 1 else args, self.submitted))
             self.submitted += 1
-            if self.bar is not None and self.growing_total:
+            if self.bar is not None and self.total is None:
                 self.bar.total = self.submitted
             if self.runners < self.concurrency:
                 self.runners += 1
@@ -409,16 +515,39 @@ class _Run:
             try:
                 result = self._run_task(job)
             except BaseException as interrupt:  # KeyboardInterrupt or SystemExit, e.g. Ctrl-C at a question
-                with self.changed:
-                    self.task_interrupt = interrupt
-                    self.stop_requested.set()
+                self._interrupt(interrupt)
             with self.changed:
-                self.busy -= 1
                 if result is not None and not self.ended:
                     self.finished.append(result)
                     if self.bar is not None:
                         self.bar.advance()
                 self.changed.notify_all()
+            # Reported while this task still counts as busy, so the run can't end before its last report.
+            if result is not None and self.progress is not None:
+                try:
+                    self._report(self.progress)
+                except BaseException as error:  # the caller's bug: it stops the run and reaches the caller
+                    self._interrupt(error)
+            with self.changed:
+                self.busy -= 1
+                self.changed.notify_all()
+
+    def _interrupt(self, error: BaseException) -> None:
+        """Stop the run from a runner thread; the caller's next wait raises `error`."""
+        with self.changed:
+            self.task_interrupt = error
+            self.stop_requested.set()
+            self.changed.notify_all()
+
+    def _report(self, progress: Callable[[int, int], Any]) -> None:
+        """Call `progress(done, total)` with the current count, unless another runner already did."""
+        with self.reporting:
+            with self.changed:
+                done = len(self.finished)
+                total = self.submitted if self.total is None else self.total
+            if done > self.reported:
+                self.reported = done
+                progress(done, total)
 
     def _take(self) -> _Job | None:
         with self.changed:

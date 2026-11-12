@@ -1,3 +1,11 @@
+"""`shared.worker`: `as_ordered`, `as_completed` and `pool`, over threads, processes and coroutines.
+
+Tasks run for real, on real threads and processes; waits end on events, never on sleeps that
+"let things happen". The screen is a fake one, so progress rows and warning lines are read back
+as text, and Ctrl-C is sent with `_thread.interrupt_main`. Retry waits are replaced, so a test
+never waits a minute.
+"""
+
 import _thread
 import asyncio
 import gc
@@ -57,7 +65,7 @@ class WorkerCase(unittest.TestCase):
         threading.Thread(target=watch, daemon=True).start()
 
 
-class MapTest(WorkerCase):
+class AsOrderedTest(WorkerCase):
     def test_input_order(self):
         gates = [threading.Event() for _ in range(4)]
 
@@ -67,7 +75,7 @@ class MapTest(WorkerCase):
             gates[n].set()
             return n * 10
 
-        self.assertEqual(worker.map(last_finishes_first, range(4), concurrency=4), [0, 10, 20, 30])
+        self.assertEqual(worker.as_ordered(last_finishes_first, range(4), concurrency=4), [0, 10, 20, 30])
 
     def test_failure_raises_after_the_others_finish(self):
         def maybe(n):
@@ -76,17 +84,17 @@ class MapTest(WorkerCase):
             return n
 
         with self.assertRaises(worker.TaskError) as caught:
-            worker.map(maybe, range(6), concurrency=1)
+            worker.as_ordered(maybe, range(6), concurrency=1)
         error = caught.exception
         self.assertEqual([result.item for result in error.results], list(range(6)))
         self.assertEqual([result.value for result in error.results if result.ok], [1, 2, 4, 5])
         self.assertEqual(str(error), "2 of 6 tasks failed; first: 0: ValueError bad 0")
 
     def test_several_iterables_are_paired(self):
-        self.assertEqual(worker.map(lambda a, b: a + b, [1, 2, 3], [10, 20]), [11, 22])
+        self.assertEqual(worker.as_ordered(lambda a, b: a + b, [1, 2, 3], [10, 20]), [11, 22])
 
     def test_empty_input(self):
-        self.assertEqual(worker.map(square, []), [])
+        self.assertEqual(worker.as_ordered(square, []), [])
 
     def test_lazy_input_is_read_a_few_at_a_time(self):
         read = []
@@ -102,7 +110,7 @@ class MapTest(WorkerCase):
             return n
 
         done = []
-        runner = threading.Thread(target=lambda: done.append(worker.map(hold, numbers(), concurrency=2)))
+        runner = threading.Thread(target=lambda: done.append(worker.as_ordered(hold, numbers(), concurrency=2)))
         runner.start()
         wait_until(lambda: len(read) >= 7)
         # 2 running, 4 queued, and the producer blocked holding the 7th.
@@ -112,7 +120,7 @@ class MapTest(WorkerCase):
         self.assertEqual(done[0], list(range(1000)))
 
 
-class RaceTest(WorkerCase):
+class AsCompletedTest(WorkerCase):
     def test_every_result_in_finish_order_and_never_raises(self):
         gates = {n: threading.Event() for n in range(3)}
 
@@ -122,7 +130,7 @@ class RaceTest(WorkerCase):
                 raise ValueError("bad")
             return n
 
-        results = worker.race(run, [0, 1, 2], concurrency=3)
+        results = worker.as_completed(run, [0, 1, 2], concurrency=3)
         order = []
         for n in (2, 0, 1):
             gates[n].set()
@@ -132,18 +140,18 @@ class RaceTest(WorkerCase):
         self.assertEqual(list(results), [])
 
     def test_result_fields(self):
-        (result,) = list(worker.race(square, [3]))
+        (result,) = list(worker.as_completed(square, [3]))
         self.assertEqual((result.item, result.value, result.error, result.ok, result.attempts), (3, 9, None, True, 1))
-        (pair,) = list(worker.race(lambda a, b: a * b, [2], [5]))
+        (pair,) = list(worker.as_completed(lambda a, b: a * b, [2], [5]))
         self.assertEqual((pair.item, pair.value), ((2, 5), 10))
 
     def test_more_items_than_the_queue_holds(self):
-        results = list(worker.race(square, range(50), concurrency=2))
+        results = list(worker.as_completed(square, range(50), concurrency=2))
         self.assertEqual(sorted(result.value for result in results), [n * n for n in range(50)])
 
     def test_early_break_stops_quietly(self):
         ran = []
-        for _ in worker.race(ran.append, range(100), concurrency=1):
+        for _ in worker.as_completed(ran.append, range(100), concurrency=1):
             break
         self.assertLess(len(ran), 100)
         self.assertEqual(self.lines(), [])
@@ -265,24 +273,24 @@ class ProcessesTest(WorkerCase):
         # The barrier opens only when both tasks wait on it, so passing it proves they ran at once.
         with multiprocessing.Manager() as manager:
             barrier = manager.Barrier(2)
-            pids = worker.map(meet, [barrier, barrier], processes=True, concurrency=2)
+            pids = worker.as_ordered(meet, [barrier, barrier], processes=True, concurrency=2)
         self.assertEqual(len(set(pids)), 2)
         self.assertNotIn(os.getpid(), pids)
 
     def test_lambda_gives_a_clear_type_error(self):
         message = "worker can't send <lambda> to another process: use a function defined at the top level"
         with self.assertRaisesRegex(TypeError, message):
-            worker.map(lambda n: n, [1], processes=True)
+            worker.as_ordered(lambda n: n, [1], processes=True)
 
     def test_results_and_errors(self):
-        self.assertEqual(worker.map(square, [1, 2, 3], processes=True, concurrency=2), [1, 4, 9])
+        self.assertEqual(worker.as_ordered(square, [1, 2, 3], processes=True, concurrency=2), [1, 4, 9])
         with self.assertRaises(worker.TaskError):
-            worker.map(square, ["x"], processes=True, concurrency=1)
+            worker.as_ordered(square, ["x"], processes=True, concurrency=1)
 
     @unittest.skipUnless(hasattr(_worker.signal, "setitimer"), "the try stops itself only where alarms exist")
     def test_timeout_stops_the_try_in_its_process(self):
         started = time.monotonic()
-        results = list(worker.race(sleep_or_pid, [LONG, 0], processes=True, concurrency=1, timeout=1.0))
+        results = list(worker.as_completed(sleep_or_pid, [LONG, 0], processes=True, concurrency=1, timeout=1.0))
         # One process: the second task could only run once the first try had really stopped.
         self.assertLess(time.monotonic() - started, LONG / 2)
         errors = {result.item: type(result.error) for result in results}
@@ -300,7 +308,7 @@ class AsyncTest(WorkerCase):
             active[0] -= 1
             return n * 2
 
-        self.assertEqual(worker.map(fetch, range(10), concurrency=3), [n * 2 for n in range(10)])
+        self.assertEqual(worker.as_ordered(fetch, range(10), concurrency=3), [n * 2 for n in range(10)])
         self.assertLessEqual(most[0], 3)
 
     def test_timeout_cancels_the_coroutine(self):
@@ -314,7 +322,7 @@ class AsyncTest(WorkerCase):
                 raise
 
         with self.assertRaises(worker.TaskError) as caught:
-            worker.map(stuck, [1], timeout=0.05)
+            worker.as_ordered(stuck, [1], timeout=0.05)
         self.assertIsInstance(caught.exception.results[0].error, TimeoutError)
         self.assertTrue(cancelled.wait(LONG))
 
@@ -330,7 +338,7 @@ class TimeoutTest(WorkerCase):
             return n
 
         with self.assertRaises(worker.TaskError) as caught:
-            worker.map(run, [0, 1, 2], concurrency=1, timeout=0.05)
+            worker.as_ordered(run, [0, 1, 2], concurrency=1, timeout=0.05)
         results = caught.exception.results
         self.assertIsInstance(results[0].error, TimeoutError)
         self.assertEqual((results[1].value, results[2].value), (1, 2))
@@ -346,7 +354,7 @@ class RetryTest(WorkerCase):
         self.addCleanup(patcher.stop)
 
     def test_waits_double_with_jitter_up_to_a_minute(self):
-        (result,) = list(worker.race(lambda _: 1 / 0, [0], retries=9))
+        (result,) = list(worker.as_completed(lambda _: 1 / 0, [0], retries=9))
         self.assertEqual(result.attempts, 10)
         self.assertIsInstance(result.error, ZeroDivisionError)
         self.assertEqual(len(self.waits), 9)
@@ -365,7 +373,7 @@ class RetryTest(WorkerCase):
                 raise OSError("again")
             return n
 
-        (result,) = list(worker.race(second_time, [1], retries=3))
+        (result,) = list(worker.as_completed(second_time, [1], retries=3))
         self.assertEqual((result.ok, result.attempts), (True, 2))
 
     def test_a_timed_out_try_is_retried(self):
@@ -377,7 +385,7 @@ class RetryTest(WorkerCase):
                 time.sleep(0.5)
             return n
 
-        (result,) = list(worker.race(slow_once, [7], retries=1, timeout=0.05))
+        (result,) = list(worker.as_completed(slow_once, [7], retries=1, timeout=0.05))
         self.assertEqual((result.value, result.attempts), (7, 2))
 
 
@@ -435,7 +443,7 @@ class CtrlCTest(WorkerCase):
         self.addCleanup(release.set)
         started = time.monotonic()
         with self.assertRaises(KeyboardInterrupt):
-            with worker.pool(concurrency=1, progress="files") as pool:
+            with worker.pool(concurrency=1, label="files") as pool:
                 pool.submit(release.wait, LONG)
                 wait_until(lambda: pool._run.running == 1)
                 self.after_line("stopping", _thread.interrupt_main)
@@ -455,7 +463,7 @@ class CtrlCTest(WorkerCase):
             return n
 
         with self.assertRaises(KeyboardInterrupt):
-            worker.map(answer, range(6), concurrency=1)
+            worker.as_ordered(answer, range(6), concurrency=1)
         self.assertEqual(ran, [0])
 
 
@@ -468,28 +476,74 @@ class ShutdownTest(WorkerCase):
             raise OSError("pipe closed")
 
         with mock.patch.object(_worker, "_stop_processes", stop_then_fail):
-            self.assertEqual(worker.map(square, [2], processes=True, concurrency=1), [4])
+            self.assertEqual(worker.as_ordered(square, [2], processes=True, concurrency=1), [4])
         self.assertEqual(self.lines(), ["! worker couldn't shut down cleanly: OSError pipe closed"])
 
 
-class ProgressTest(WorkerCase):
+class LabelTest(WorkerCase):
     def test_known_total(self):
-        worker.map(square, [1, 2, 3], progress="squares")
+        worker.as_ordered(square, [1, 2, 3], label="squares")
         self.assertTrue(self.lines()[-1].startswith("✓ squares"))
         self.assertEqual(self.lines()[-1].split()[-1], "3/3")
 
     def test_growing_total(self):
-        with worker.pool(progress="files") as pool:
+        with worker.pool(label="files") as pool:
             for n in range(4):
                 pool.submit(square, n)
         self.assertEqual(self.lines()[-1].split()[-1], "4/4")
-        worker.map(square, (n for n in range(2)), progress="gen")
+        worker.as_ordered(square, (n for n in range(2)), label="gen")
         self.assertEqual(self.lines()[-1].split()[-1], "2/2")
 
     def test_failures_end_the_bar_at_error(self):
-        with worker.pool(progress="bad") as pool:
+        with worker.pool(label="bad") as pool:
             pool.submit(square, "x")
         self.assertTrue(self.lines()[-1].startswith("✗ bad"))
+
+
+class ProgressTest(WorkerCase):
+    def test_every_count_once_in_order_before_the_result(self):
+        calls = []
+        self.assertEqual(worker.as_ordered(square, range(20), concurrency=4,
+                                           progress=lambda done, total: calls.append((done, total))),
+                         [n * n for n in range(20)])
+        # Several runners finish at once, so a count may be skipped, but never repeated or reversed.
+        counts = [done for done, _ in calls]
+        self.assertEqual(counts, sorted(set(counts)))
+        self.assertEqual(calls[-1], (20, 20))
+        self.assertEqual({total for _, total in calls}, {20})
+        self.assertEqual(self.lines(), [])
+
+    def test_total_is_what_was_read_so_far_without_a_length(self):
+        calls = []
+        with worker.pool(concurrency=1, progress=lambda done, total: calls.append((done, total))) as pool:
+            pool.submit(square, 1)
+            pool.join()
+            pool.submit(square, 2)
+        self.assertEqual(calls, [(1, 1), (2, 2)])
+
+    def test_failed_tasks_count_too(self):
+        calls = []
+        results = list(worker.as_completed(lambda n: 1 / n, [0, 1], concurrency=1,
+                                           progress=lambda done, total: calls.append((done, total))))
+        self.assertEqual([result.ok for result in results], [False, True])
+        self.assertEqual(calls, [(1, 2), (2, 2)])
+
+    def test_a_raising_callback_stops_the_run_and_reaches_the_caller(self):
+        """A bug in the callback must not be lost on a runner thread, nor hang the run."""
+        ran = []
+
+        def broken(done, total):
+            raise RuntimeError("bad callback")
+
+        with self.assertRaisesRegex(RuntimeError, "bad callback"):
+            worker.as_ordered(ran.append, range(6), concurrency=1, progress=broken)
+        self.assertLess(len(ran), 6)
+
+    def test_with_a_label_both_report(self):
+        calls = []
+        worker.as_ordered(square, [1, 2], label="both", progress=lambda done, total: calls.append(done))
+        self.assertEqual(calls[-1], 2)
+        self.assertTrue(self.lines()[-1].startswith("✓ both"))
 
 
 class OptionTest(unittest.TestCase):
@@ -497,13 +551,17 @@ class OptionTest(unittest.TestCase):
         for options in ({"concurrency": 0}, {"retries": -1}, {"timeout": 0}):
             ran = []
             with self.subTest(options), self.assertRaises(ValueError):
-                worker.map(ran.append, [1], **options)
+                worker.as_ordered(ran.append, [1], **options)
             self.assertEqual(ran, [])
+
+    def test_a_progress_label_points_to_label(self):
+        with self.assertRaisesRegex(TypeError, "label="):
+            worker.as_ordered(square, [1], progress="files")  # pyright: ignore[reportArgumentType]
 
     def test_removed_options(self):
         for name in ("workers", "rate", "setup", "errors"):
             with self.subTest(name), self.assertRaises(TypeError):
-                worker.map(square, [1], **{name: 1})
+                worker.as_ordered(square, [1], **{name: 1})
 
 
 if __name__ == "__main__":

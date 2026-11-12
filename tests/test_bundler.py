@@ -185,7 +185,7 @@ class RealBuildTest(unittest.TestCase):
                 "with kv.open('state.db') as store:\n"
                 "    store['n'] = 2\n"
                 "    factor = store['n']\n"
-                "print(worker.map(lambda n: n * factor, [1, 2, 3]))\n"
+                "print(worker.as_ordered(lambda n: n * factor, [1, 2, 3]))\n"
                 "Path('note.txt').write_text('hello')\n"
                 "archive.zip('note.txt', 'note.7z', password='pw')\n"
                 "print(Path(archive.unzip('note.7z', 'out', password='pw')[0]).read_text())\n")

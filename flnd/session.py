@@ -587,7 +587,7 @@ class TargetSession:
         if self._pool is None:
             from shared import worker
 
-            self._pool = worker.pool(concurrency=self._source.concurrency, progress=str(self.target))
+            self._pool = worker.pool(concurrency=self._source.concurrency, label=str(self.target))
         return self._pool
 
     def _submit(self, file: _File) -> None:
