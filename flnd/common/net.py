@@ -19,8 +19,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar, Union
 
 import httpx
 
-from flnd import files
-from flnd.files import NotMediaError
+from flnd.common import files
+from flnd.common.files import NotMediaError
 from flnd.sources.base import FetchError, Wait
 from shared import fmt, log
 

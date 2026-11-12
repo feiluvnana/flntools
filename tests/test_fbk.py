@@ -7,9 +7,9 @@ from datetime import datetime
 from fakes import FakeSession
 from test_dash import INSTAGRAM
 
+from flnd.common.target import Target
 from flnd.session import Options
 from flnd.sources.fbk import Facebook, image_extension, media_items
-from flnd.target import Target
 
 SITE = "https://www.facebook.com"
 STAMP = 1700000000

@@ -19,13 +19,14 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Optional
 
-from flnd import __version__, auth, sync as syncing
-from flnd.compress import Choice, parse_choice
+from flnd import __version__, sync as syncing
+from flnd.common import auth
+from flnd.common.compress import Choice, parse_choice
+from flnd.common.target import TargetError
 from flnd.engine import Engine
 from flnd.session import Options, single_targets, unknown_categories
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
-from flnd.target import TargetError
 from shared import cli, cookies, log, prompt, theme
 
 HOME = Path(".flnd")

@@ -1,9 +1,9 @@
-"""flnd/pace.py: budgets, rate-limit headers and the learned speed, on a fake clock whose sleep advances it."""
+"""flnd/common/pace.py: budgets, rate-limit headers and the learned speed, on a fake clock whose sleep advances it."""
 
 import unittest
 from types import SimpleNamespace
 
-from flnd.pace import Pace, Pacer
+from flnd.common.pace import Pace, Pacer
 
 SITE = "https://www.example.com"
 CDN = "https://cdn.example.net/a.jpg"

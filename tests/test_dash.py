@@ -2,7 +2,7 @@
 
 import unittest
 
-from flnd import dash
+from flnd.sources.common import dash
 
 HEAD = '<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"><Period>'
 TAIL = "</Period></MPD>"

@@ -22,11 +22,11 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
-from flnd import dash
+from flnd.common.target import Target, TargetError, link, name, unreadable
 from flnd.session import Session
 from flnd.sources.base import Source
-from flnd.sources.relay import embedded_results
-from flnd.target import Target, TargetError, link, name, unreadable
+from flnd.sources.common import dash
+from flnd.sources.common.relay import embedded_results
 from shared import fmt, selector
 
 SITE = "https://www.facebook.com"

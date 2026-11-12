@@ -2,8 +2,8 @@
 
 import unittest
 
+from flnd.common.target import Target, TargetError, link, resolve
 from flnd.sources import SOURCES
-from flnd.target import Target, TargetError, link, resolve
 
 
 def read(text, follow=None):

@@ -1,4 +1,4 @@
-"""flnd.compress: the table of kinds, the `--image`, `--video` and `--audio` values, and media's errors kept from ending a run.
+"""flnd.common.compress: the table of kinds, the `--image`, `--video` and `--audio` values, and media's errors kept from ending a run.
 
 `shared.media.compress` is replaced, so no photo is decoded and no ffmpeg runs; the screen is
 the fake one of `EngineCase`. Fix 7: a stalled ffmpeg (`TimeoutError`) or a missing extra
@@ -13,8 +13,8 @@ import httpx
 from media_samples import needs_pillow
 from test_engine import CDN, EngineCase, history, make_source, noise
 
-from flnd import files
-from flnd.compress import (KINDS, LEVELS, Choice, Compressor, compress_file, compressed_with, parse_choice, recorded,
+from flnd.common import files
+from flnd.common.compress import (KINDS, LEVELS, Choice, Compressor, compress_file, compressed_with, parse_choice, recorded,
                            video_format)
 from flnd.session import Options
 

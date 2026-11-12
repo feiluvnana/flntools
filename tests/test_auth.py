@@ -1,4 +1,4 @@
-"""flnd/auth.py: cookie files, whether a source is logged in, logout, secrets sealed per source and name, and the key file.
+"""flnd/common/auth.py: cookie files, whether a source is logged in, logout, secrets sealed per source and name, and the key file.
 
 No browser, no network.
 """
@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import auth
+from flnd.common import auth
 from shared import cookies, crypto, kv
 
 

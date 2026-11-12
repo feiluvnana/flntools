@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping, MutableMapp
 
 import httpx
 
-from flnd import auth, files, net
-from flnd.compress import KINDS, Choice, Compressor, choice_of
+from flnd.common import auth, files, net
+from flnd.common.compress import KINDS, Choice, Compressor, choice_of
+from flnd.common.target import Target
 from flnd.sources.base import FetchError, Source
-from flnd.target import Target
 from shared import fmt, kv, log, prompt, theme
 
 if TYPE_CHECKING:

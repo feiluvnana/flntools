@@ -570,6 +570,8 @@ route(site, value) ──► for each wanted category, in order:
 
 ### B4. Modules and dependency rules
 
+The engine side's helpers live in the `flnd/common/` package and the helpers sources share in `flnd/sources/common/` (layout decided by the user, 2026-11-12).
+
 | Module | Holds | About (lines of code) |
 | --- | --- | --- |
 | `flnd/__init__.py` | the engine API's exports | 10 |
@@ -579,13 +581,13 @@ route(site, value) ──► for each wanted category, in order:
 | `flnd/engine.py` | `Engine`'s five methods, source groups, `Report` | 230 |
 | `flnd/settings.py`, `flnd/repair.py` | from `sync.py` ([B2](#b2-saved-settings-move-into-the-engine)) | 80, 110 |
 | `flnd/post.py` | compress, classify, mtime | 60 |
-| `flnd/net.py` | the client, the one retry layer, back-off; downloads delegate to `http.download` ([C2](#http-new-fetch-download-response)) | 200 (from about 300) |
-| `flnd/pace.py`, `flnd/auth.py`, `flnd/compress.py`, `flnd/files.py` | as Phase 6 leaves them; `files.write_atomic` goes for `shared.atomic` | — |
+| `flnd/common/net.py` | the client, the one retry layer, back-off; downloads delegate to `http.download` ([C2](#http-new-fetch-download-response)) | 200 (from about 300) |
+| `flnd/common/pace.py`, `flnd/common/auth.py`, `flnd/common/compress.py`, `flnd/common/files.py` | as Phase 6 leaves them; `files.write_atomic` goes for `shared.atomic` | — |
 | `flnd/cli.py` | parsing and printing | 200 (from 281) |
-| `flnd/sources/*.py`, `common.py` | the sources | about 1,050 (Phase 6 planned about 1,150) |
+| `flnd/sources/*.py`, `flnd/sources/common/` (`dash.py`, `relay.py`) | the sources | about 1,050 (Phase 6 planned about 1,150) |
 
 The rules, each one a test:
-1. A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib.
+1. A source imports only `flnd.source`, the `flnd.sources.common` package (`flnd.sources.common.dash`, `flnd.sources.common.relay`), `shared` and the stdlib.
 2. `flnd.source` imports nothing from the engine side: not `site`, `job`, `engine`, `net` or `settings`.
 3. `cli.py` imports `flnd` (the API), `shared` and `flnd.sources` (for help), and nothing else from flnd.
 4. Nothing imports `cli.py`.

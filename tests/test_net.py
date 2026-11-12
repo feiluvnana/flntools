@@ -1,4 +1,4 @@
-"""flnd/net.py: retries, signing, backing off, mirrors and atomic downloads, on httpx.MockTransport."""
+"""flnd/common/net.py: retries, signing, backing off, mirrors and atomic downloads, on httpx.MockTransport."""
 
 import fnmatch
 import io
@@ -13,7 +13,7 @@ import httpx
 
 from media_samples import needs_ffmpeg, needs_pillow, sample
 
-from flnd import files, net
+from flnd.common import files, net
 from flnd.sources.base import FetchError
 from shared import media, theme
 from shared._theme import Screen

@@ -28,11 +28,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Sequence
 
-from flnd import compress, files
-from flnd.compress import KINDS, Choice, Compressor
+from flnd.common import compress, files
+from flnd.common.compress import KINDS, Choice, Compressor
+from flnd.common.target import Target, TargetError
 from flnd.engine import HISTORY_FILE, HISTORY_TABLE, Engine
 from flnd.session import Options
-from flnd.target import Target, TargetError
 from shared import fmt, kv, log
 
 TARGETS_FILE, TARGETS_TABLE = "targets.db", "targets"

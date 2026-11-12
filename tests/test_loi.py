@@ -13,11 +13,11 @@ from cryptography.hazmat.primitives.padding import PKCS7
 from fakes import FakeSession
 from test_engine import EngineCase
 
-from flnd import auth
+from flnd.common import auth
+from flnd.common.target import Target, TargetError
 from flnd.session import Options
 from flnd.sources.base import FetchError
 from flnd.sources.loi import API, SITE_IV, SITE_KEY, Loibus, decode_token, decrypt_field, sign_request
-from flnd.target import Target, TargetError
 from shared import cookies, crypto
 
 # The site's own key and iv, as loix used them: "https://dl.example/a.zip", encrypted.

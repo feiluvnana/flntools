@@ -22,9 +22,9 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 from urllib.parse import unquote, urlsplit
 
+from flnd.common.target import Target, link, unreadable
 from flnd.session import Session
 from flnd.sources.base import FetchError, Source
-from flnd.target import Target, link, unreadable
 from shared import crypto
 
 if TYPE_CHECKING:

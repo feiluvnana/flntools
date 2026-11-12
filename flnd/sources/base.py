@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Mapping, Union
 
-from flnd.target import Target
+from flnd.common.target import Target
 
 if TYPE_CHECKING:
     import httpx

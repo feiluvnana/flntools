@@ -18,13 +18,13 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
-from flnd import auth
+from flnd.common import auth
+from flnd.common.target import Target, TargetError, resolve
 from flnd.engine import Engine
 from flnd.session import Options
 from flnd.sources import SOURCES
 from flnd.sources.base import LoginError
 from flnd.sources.tlg import QR_CODES, Telegram, flood_wait, from_web_storage, half_blocks
-from flnd.target import Target, TargetError, resolve
 from shared import fmt
 
 DAY = datetime.date(2026, 1, 5)

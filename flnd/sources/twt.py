@@ -21,9 +21,9 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
+from flnd.common.target import Target, link, name, unreadable
 from flnd.session import Session
 from flnd.sources.base import FetchError, Source
-from flnd.target import Target, link, name, unreadable
 from shared import selector
 
 # The user agent Twitter's API has always been sent: a desktop Chrome.

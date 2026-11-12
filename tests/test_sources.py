@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fakes import FakeSession
 
+from flnd.common.target import Target
 from flnd.session import Options, selected
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
@@ -18,7 +19,6 @@ from flnd.sources.loi import Loibus
 from flnd.sources.tik import TIKTOK_UA, TikTok
 from flnd.sources.tlg import Telegram
 from flnd.sources.twt import CHROME, Twitter
-from flnd.target import Target
 
 SOURCES_DIR = Path(__file__).resolve().parent.parent / "flnd" / "sources"
 FORBIDDEN = ("httpx", "playwright", "shared.worker", "shared.kv", "shared.log", "shared.prompt",

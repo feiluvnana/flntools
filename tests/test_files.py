@@ -1,4 +1,4 @@
-"""flnd/files.py: atomic writes and media validation, on a temp folder; ffmpeg and Pillow are mocked where named."""
+"""flnd/common/files.py: atomic writes and media validation, on a temp folder; ffmpeg and Pillow are mocked where named."""
 
 import fnmatch
 import io
@@ -9,7 +9,7 @@ from unittest import mock
 
 from media_samples import needs_pillow
 
-from flnd import files
+from flnd.common import files
 from shared import media, theme
 from shared._theme import Screen
 

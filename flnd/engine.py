@@ -17,11 +17,11 @@ from typing import Any, Iterator, Mapping, MutableMapping, Sequence
 
 import httpx
 
-from flnd import auth, net
+from flnd.common import auth, net
+from flnd.common.target import Target, TargetError, resolve
 from flnd.session import Options, Settings, SourceRun, TargetSession
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
-from flnd.target import Target, TargetError, resolve
 from shared import kv, log, worker
 
 __all__ = ["Engine"]

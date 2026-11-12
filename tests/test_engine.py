@@ -18,12 +18,12 @@ import httpx
 from media_samples import encoders, needs_ffmpeg, needs_pillow, sample
 
 from flnd import engine as engine_module
-from flnd import auth, net
-from flnd.compress import Choice
+from flnd.common import auth, net
+from flnd.common.compress import Choice
+from flnd.common.target import Target
 from flnd.engine import Engine
 from flnd.session import Options, TargetSession
 from flnd.sources.base import FetchError, Source
-from flnd.target import Target
 from shared import cookies, kv, media, theme
 from shared._theme import Screen
 
@@ -398,7 +398,7 @@ class SaveTest(EngineCase):
         import fnmatch
         import os
 
-        from flnd import files
+        from flnd.common import files
 
         real_replace, moved = os.replace, []
 
@@ -820,7 +820,7 @@ class EngineLoginTest(EngineCase):
         Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
         self.assertEqual(seen, [("qr", Target("aaa", "account", ""), True)])
         self.assertEqual(str(seen[0][1]), "aaa")
-        from flnd import auth
+        from flnd.common import auth
         with auth.secrets(self.home, "aaa") as secrets:
             self.assertEqual(secrets["session"], "s")
 

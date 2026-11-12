@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, MutableMapping
 
-from flnd import files
+from flnd.common import files
 from shared import log
 
 if TYPE_CHECKING:

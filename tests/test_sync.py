@@ -15,10 +15,10 @@ from media_samples import needs_pillow
 from test_engine import CDN, EngineCase, history, make_source, noise
 
 from flnd import sync
-from flnd.compress import Choice
+from flnd.common.compress import Choice
+from flnd.common.target import Target
 from flnd.engine import Engine
 from flnd.session import Options
-from flnd.target import Target
 from shared import kv
 
 WEBP_MID = Choice("webp", "mid")

@@ -7,10 +7,10 @@ from datetime import date, datetime
 from fakes import FakeSession
 from test_dash import INSTAGRAM
 
+from flnd.common.target import Target
 from flnd.session import Options
+from flnd.sources.common.relay import embedded_results
 from flnd.sources.ins import Instagram, best_file, is_complete, post_files, tab_media, taken_on
-from flnd.sources.relay import embedded_results
-from flnd.target import Target
 from shared import selector
 
 SITE = "https://www.instagram.com"

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, BinaryIO
 from shared import fmt, log
 
 if TYPE_CHECKING:
-    from flnd.target import Target
+    from flnd.common.target import Target
 
 # What every temporary file flnd writes matches, and what `flnd sync`'s repair deletes.
 PART_GLOB = ".*.part"

@@ -11,14 +11,14 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from flnd import auth
 from flnd import cli as flnd_cli
 from flnd import sources
-from flnd.compress import Choice
+from flnd.common import auth
+from flnd.common.compress import Choice
+from flnd.common.target import Target
 from flnd.engine import Engine
 from flnd.session import Options
 from flnd.sources.base import Source
-from flnd.target import Target
 from shared import cookies, kv, theme
 from shared._theme import Screen
 
@@ -308,7 +308,7 @@ class SyncCommandTest(RunsCase):
             followed.append(url)
             return "https://www.tiktok.com/@example_creator/video/7301234567890123456"
 
-        with mock.patch("flnd.net.follow", follow):
+        with mock.patch("flnd.common.net.follow", follow):
             self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/")[0], 0)
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
         self.assertEqual(self.synced[0][0][0], Target("tik", "video", "7301234567890123456"))
