@@ -1,52 +1,125 @@
-"""What a source is written against: `Source`, its routes and categories, `Post` and `File`, `Site` and `Login`.
+"""Writing a source: what a site's class declares, and what the engine does with it.
 
-A source is one class. Its fields say what the site is (`code`, `domains`, `pace`, the `folder`,
-`filename` and `key` formats, …), its routes say which targets it reads, and its categories say
-what it can download from them. The engine does the rest: it reads the target, calls the route
-and the categories `--from` asked for, filters by `--time`, names and keys every file, skips
-what is saved, downloads, compresses, dates the files and writes the history.
+A source is one class in `flnd/sources/<code>.py`. Its fields say what the site is (`code`,
+`domains`, `pace`, the formats), its routes say which targets it reads, and its categories say what
+it can download from them. The engine does the rest: it reads the target, runs the route and the
+categories `--from` asks for, filters by `--time`, names and keys each file, skips what is saved,
+downloads, compresses, dates the files and writes the history. To start a source, copy
+`tests/example_source.py`, a complete small one over fixtures; the examples here are from it.
 
     from flnd.source import File, Post, Site, Source, target
 
     class Example(Source):
         code, name, domains = "exm", "Example", ("example.com",)
-        folder = "{category}/{album}"               # an empty field and its separator are dropped
+        needs = ("token",)                              # any one of these cookies proves a login
 
         @target("example.com/p/{code:[\\w-]+}")
-        def post(self, site: Site, code: str):    # no categories: it yields its posts itself
+        def post(self, site: Site, code: str):          # no categories: the route yields its posts
             yield Post(code, [File(f"https://cdn.example.com/{code}.jpg")])
 
-        @target("{user}", "example.com/{user}")
-        def user(self, site: Site, user: str) -> dict:
+        @target("{user}", "example.com/{user}")         # `exm:example_user`, or a profile's link
+        def user(self, site: Site, user: str):
             return site.fetch(f"https://api.example.com/users/{user}").json   # the context
 
-        @user.category(newest_first=True)
+        @user.category(newest_first=True)               # what `--from posts` names
         def posts(self, site: Site, profile: dict):
-            for item in profile["posts"]:
+            items = site.fetch(f"https://api.example.com/users/{profile['id']}/posts").json["items"]
+            for item in items:
                 yield Post(item["id"], [File(url) for url in item["urls"]], date=item["taken_at"])
 
-How a target is read: a route is a method marked `@target(*patterns)`; the method's name is the
-target's kind, and each pattern is one form people write. The default `Source.resolve` reads a
-target's text through the routes:
-1. the source's `unsupported` patterns first, each refusing with its own message, unless a route
-   pattern matches the same text and is more specific: it has more literal segments (the host
-   counts as one; `{…}` and `*` don't), so twt's `x.com/i` refusal doesn't catch
-   `x.com/i/web/status/<id>`;
-2. then each route in the order the class declares it, and each route's patterns in order;
-3. the first pattern that matches gives `Target(code, kind, value)`, its one placeholder's value.
+The fields. `code` is the prefix of a target (`exm:`), `name` is shown in help, and `domains` are
+the site's hosts, short-link hosts included. The domains decide what is the source's own: its
+requests are paced and signed, its login cookies are sent, and its `prepare` runs; a CDN gets none
+of that. `needs` names cookies that prove a login, and `requires_login` makes a missing one an
+error. `pace` is `Pace(floor, budgets)` or a number of seconds between requests (0.5 by default).
+`folder`, `filename` and `key` are formats, described below. `concurrency` is how many files download
+at once (4), `pause` the seconds between two targets (5), and `wait` the seconds before a retry (1.0),
+or a function of the error and the attempt. The browser fields are `viewport`, `browser_args`,
+`stealth` and `user_agent`. `routes`, `forms`, `categories` and `single_kinds` are not written: they
+are collected from the routes when the class is created, and a `categories` field is refused.
 
-A URL on the source's domains that nothing matches raises a `TargetError` carrying that URL. The
-engine follows it once with a HEAD request (short links such as `vm.tiktok.com/…`) and reads where
-it leads, so a source never makes a request to read a target. Help and refusals list the forms the
-patterns generate, such as `ins:<user>`, so what's shown can't drift from what's accepted.
+Routes. A route is a method marked `@target(*patterns, shown=None)`. Its name is the target's kind,
+and it takes `(self, site, value)`, where `value` is the one placeholder. Each pattern is one form
+people write:
+- a pattern that starts with a domain matches URLs on that host: the scheme is optional, `www.`, `m.`
+  and `mobile.` are ignored, and so are a trailing slash, `#…`, a query it doesn't name and any path
+  after the pattern;
+- a pattern without a domain matches the text after `code:`, so `{user}` reads `exm:example_user`;
+- `{name}` is one segment, captured, with one leading `@` dropped; `{name:regex}` is one segment that
+  must match the regex; `*` is any one segment, not captured; `?key={name}` captures a query value.
 
-How a target is downloaded (`flnd/job.py`): a route with categories returns a context, whatever
-its categories share, and each category is a method marked `@<route>.category` that takes
-`(site, context)` and yields `Post`s. A route without categories yields its posts itself, and
-they are filed in the target's own folder. Either may be `async def` (tlg). The engine sets each
-post's `category`, reads its `date` with `day()`, and names each file from the formats (`fill`).
+`shown="exm:<video id>"` replaces the first form help and refusals show, when the generated one
+reads badly. `unsupported = {"example.com/stories": "stories aren't supported; give the profile"}`
+refuses links with their own message, tried before any route, unless a route pattern matches with
+more literal segments. A link on the source's domains that no route matches is followed once with a
+HEAD request by the engine (short links such as `vm.tiktok.com/…`), so a source never requests a page
+just to read a target. A mistake fails at import: a pattern on another host, one given twice, or a
+placeholder that isn't the method's value parameter.
 
-This module holds declarations only: the engine's `TargetSite`, `LoginSite` and the job live in
+Categories. A route that has categories returns a context, which each category receives. A category
+is a method marked `@<route>.category`, with `(self, site, context)` and yielding `Post`s, or an
+`async def` generator (tlg). Its name, which `--from` takes, is the method's name unless `name=` gives
+one. `newest_first=True` says the site lists newest first, so `--time` may stop the category after
+5 posts in a row older than `since`; set it only where that order is known, since a wrong `True`
+silently loses posts. `folder=`, `filename=` and `key=` give one category its own formats. A route
+without categories yields its posts itself, and they are filed in the target's own folder.
+
+Posts and files. `Post(id, files, *, date=None, headers=None, **fields)` is one post. Its `files`
+are a list of `File`s, or a function that returns them: the function is called only for a post that
+passes `--time` and isn't saved yet, so a saved post costs no request. `date` takes any form `day()`
+reads (a date, a datetime, Unix seconds or milliseconds, a digit string or ISO text); None is an
+undated post, which `--time` keeps. Each keyword field is the site's own, for the formats, such as
+`album=`, except the engine's (`category`, `num`, `count`, `index`, `extension` and `path`), which
+raise `TypeError`. `File(url, *, audio=None, headers=None, name=None, size=None)` takes a URL, a
+tuple of mirror URLs, or a `fetch(dest, progress)` function. `File.text(name, text)` writes a text
+file on each download of its post.
+
+The formats rule. `folder`, `filename` and `key` are `str.format` strings over a post's fields and
+the engine's. A missing or empty field is "", and the separator before it (`_`, `-`, space, `.`, `:`
+or `,`) goes with it, so `{date}_{id}{index}` without a date is `<id>`. A `/` separates folders, and each
+folder or file segment is made a safe file name, so a title with `../` can't leave the folder. A key
+is never a path, so it is kept as written.
+
+The `Site` handle. Every route and category receives one `Site` for its target. Its `fetch(url, *,
+method, headers, soft, in_page, **request)` makes one paced, retried request and returns its
+response, with `.json` and `.text`; it raises `FetchError`, whose `status` and `response` say why,
+and `soft=True` returns None for a 401, 403 or 404 instead. `goto(url)` loads a page in `site.page`,
+and `handoff` waits for a person (a captcha). `target`, `cookies` (read-only), `time`, `client`,
+`state` and `secrets` are what the target, its login and its source keep, and `info` and `warn` log
+a line naming the target. The engine waits out every rate limit, so a source never sleeps or retries
+itself. A throttle the status doesn't show, such as a 200 that says "please wait", is counted with
+`back_off(reason, retry_after=None)`, which waits the pause out before it returns:
+
+    body = site.fetch("https://api.example.com/feed").json
+    if body.get("message") == "please wait a few minutes":
+        site.back_off("asked to wait a few minutes", retry_after=120)
+
+Headers. `prepare(self, request, cookies)` runs before every attempt on the source's own domains, so
+a signature made there is fresh each time; it changes the request and returns it. Headers that a file
+needs, such as a CDN's Referer, go on `File(headers=)` or `Post(headers=)`, not in `prepare`:
+
+    def prepare(self, request, cookies):
+        if cookies.get("token"):
+            request.headers["Authorization"] = f"Bearer {cookies['token']}"
+        return request
+
+Testing. `tests/fakes.py`'s `collect` runs a target's route and wanted categories on a fake `Site`,
+with no network, and lists each file it would save:
+
+    saved = collect(Example, "exm:example_user", json=FIXTURES, options=Options(categories=("posts",)))
+    [file.path for file in saved]    # ["posts/2026-01-02_C1abc_0.jpg", …]
+
+Each source's test keeps a `ROUTES` table, `[("exm:example_user", ("user", "example_user")), …]`, one
+row per form, and `tests/test_source.py` checks that every pattern has one.
+
+The template. `tests/example_source.py` is a source that is run, not only read: `test_job` and
+`test_dry` drive it through the engine on `httpx.MockTransport`. It has a JSON API that wants a login
+token as a Bearer header, pages chained by a cursor, lazy albums, and a profile picture category that
+keeps its own names. Its module docstring gives the layout of its folders. Copy it to
+`flnd/sources/<code>.py` and replace the site's URLs and JSON paths. A source imports only
+`flnd.source`, `flnd.sources.common`, `shared` and the standard library.
+
+This module holds declarations only. The engine's `TargetSite`, `LoginSite` and the job live in
 `flnd/site.py` and `flnd/job.py`, which a source never imports. Importing it loads no third-party
 module.
 """
@@ -189,6 +262,7 @@ class _Pattern:
     """One compiled pattern: a domain pattern matches a `_Url`, a code pattern the text after `code:`."""
 
     def __init__(self, text: str):
+        """Split `text` into its domain or code part, its segments and its query, and compile each placeholder's regex."""
         self.text = text
         path, mark, query = _split(text, "?", once=True)
         segments = [segment for segment in _split(path, "/") if segment]
@@ -251,9 +325,12 @@ class Category:
         newest_first: whether it yields posts newest first, so the engine may stop early on
             `--time`. A wrong True silently loses posts, so it is set only where the site's order is known.
         name: the category's name, as `--from` and help write it; None is the method's name.
-        folder, filename, key: formats for this category's files instead of the source's, for a
-            category whose files were always named another way (a profile picture keyed by its path);
-            None keeps the source's.
+        folder: a format for this category's files' folders instead of the source's, for a category
+            whose files were always filed another way; None keeps the source's.
+        filename: a format for this category's file names instead of the source's, such as
+            `avatar_{id}`; None keeps the source's.
+        key: a format for this category's history keys instead of the source's, such as "" for a
+            category whose files were never keyed (a profile picture keyed by its path); None keeps it.
     """
 
     def __init__(self, function: Callable[..., Any], *, newest_first: bool = False, name: str | None = None,
@@ -340,7 +417,9 @@ class Route:
             function: the method, when the decorator is used bare (`@user.category`).
             newest_first: whether the category yields posts newest first; see `Category`.
             name: its name for `--from`, when it isn't the method's.
-            folder, filename, key: formats instead of the source's for its files; see `Category`.
+            folder: its folders' format instead of the source's; see `Category`.
+            filename: its file names' format instead of the source's; see `Category`.
+            key: its history keys' format instead of the source's; see `Category`.
 
         Returns:
             The method itself; or, with options, a decorator that registers and returns it.
@@ -742,7 +821,16 @@ class Site(Protocol):
         ...
 
     def handoff(self, *, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool:
-        """Show `message` and wait for a person to do a step in the window (a captcha); False when `timeout` passed first."""
+        """Show `message` and wait for a person to do a step in the window, such as a captcha.
+
+        Args:
+            until: returns True once the step is done; polled about once a second.
+            message: what the person should do, shown with a spinner.
+            timeout: seconds before giving up; None waits as long as it takes.
+
+        Returns:
+            True when `until` came true; False when `timeout` passed first.
+        """
         ...
 
     @property
@@ -766,11 +854,21 @@ class Site(Protocol):
         ...
 
     def info(self, message: str, **fields: Any) -> None:
-        """A line naming the target: `site.info("{n} stories", n=3)`."""
+        """A line naming the target: `site.info("{n} stories", n=3)`.
+
+        Args:
+            message: the text, with `{name}` fields filled in from `fields`.
+            **fields: the values the message's fields take.
+        """
         ...
 
     def warn(self, message: str, **fields: Any) -> None:
-        """A warning naming the target, like `info`."""
+        """A warning naming the target, like `info`.
+
+        Args:
+            message: the text, with `{name}` fields filled in from `fields`.
+            **fields: the values the message's fields take.
+        """
         ...
 
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
@@ -811,7 +909,12 @@ class Login(Protocol):
         ...
 
     def info(self, message: str, **fields: Any) -> None:
-        """A line naming the source."""
+        """A line naming the source, such as `login.info("Signed in as {name}", name=name)`.
+
+        Args:
+            message: the text, with `{name}` fields filled in from `fields`.
+            **fields: the values the message's fields take.
+        """
         ...
 
 
