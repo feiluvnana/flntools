@@ -1,9 +1,16 @@
 # Phase 6: lean and simple
 
-Phase 6 makes flntools quicker to set up, the same on every OS, smaller to read, and calmer to watch. It is based on an audit of the whole repository on 2026-11-12, and on the problems the user named:
+Phase 6 makes flntools quicker to set up, the same on every OS, smaller to read, and calmer to watch. It is based on an audit of the whole repository on 2026-11-12, and on the problems the user named.
+
+**The [redesign](redesign.md) is part of Phase 6.** It was the Phase 7 proposal, and the user merged it into Phase 6 on 2026-11-12. It gives sources, the engine and `shared` one fluent, consistently named API. **It wins over every other file here, [simplify](simplify.md) included.** Where it says nothing, the other files hold.
 
 | Problem | Where it's solved |
 | --- | --- |
+| the source and engine APIs should be simple, and `shared` fluent, concise and consistent, with verbs for actions and nouns for reads | [redesign](redesign.md): routes and categories as methods, typed `Post`/`File`, a 13-member `site`, `Engine` with one method per command, API conventions with a test, and `shared` redesigned module by module |
+| ideas from gallery-dl and download managers | [redesign](redesign.md#b5-what-flnd-takes-from-gallery-dl): early stops, `sync` stopping at saved posts, cookie write-back; downloads that resume, split, keep 6 connections per host and refresh expired links |
+| every credential encrypted, cookies included | [redesign](redesign.md#b7-every-credential-encrypted) |
+| a post link with `--from`, and categories without it | [redesign](redesign.md#a4-categories-are-methods): `--from` with a post link is an error; without `--from`, every category |
+
 | `make setup` takes a long time | [setup](setup.md): `uv sync` with a lockfile; the 305 MB browser download only when there is no Chrome, and never the unused headless shell |
 | make isn't well supported on Windows | [setup](setup.md): every task in a stdlib `scripts/dev.py`; the Makefile is a one-rule shortcut with no shell syntax |
 | the session API is bloated and its defaults aren't sensible | [session](session.md): 35 members become 26; scrolling ends on time, not a count, with no 200-scroll cap; page loads are paced and checked |
@@ -25,18 +32,22 @@ The audit also found 15 bugs, and the gallery-dl comparison a 16th, among them c
 
 ## Order
 
-Each step ends with `check` green and is pushed on its own.
-1. [fixes](fixes.md): the bugs, each with a test that fails first.
-2. [setup](setup.md): `uv.lock`, dependency groups, `scripts/dev.py`, the thin Makefile, and no browser download.
-3. [architecture](architecture.md), [cli](cli.md), [source](source.md), [pace](pace.md) and [session](session.md): gallery-dl's items-and-job architecture; the lean `Source` and its pace; four commands with `--image`/`--video`/`--audio`; Chrome only; the smaller session protocol and its defaults, with `goto` checked and paced; `compress.py` and `files.py` split out of `session.py`.
-4. [api](api.md): the private names in `shared`, and the few removals judged by usefulness.
-5. [ins](ins.md) and [flows](flows.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with what gallery-dl does, and live runs of the test accounts.
-6. [scripts](scripts.md) and [dates](dates.md): the sources rewritten on the new session and helpers, with every file dated by the engine.
-7. [classify](classify.md): `media.classify` and `--classify`.
-8. [ui](ui.md): the live area (no blinking, and cheap: only changed rows drawn, by one thread, only when something changed), the prompt cursor, and whole-line log colors.
-[simplify](simplify.md) applies to every step, each change in the step that touches its file.
+Each step ends with `check` green and is committed on its own. The [redesign](redesign.md) replaced the old steps 3 (its architecture part), 4 and 6 on 2026-11-12, and added steps; [redesign › Where each part is built](redesign.md#where-each-part-is-built) has the detail.
+1. [fixes](fixes.md): the bugs, each with a test that fails first. **Built** (`dc471b0`).
+2. [setup](setup.md): `uv.lock`, dependency groups, `scripts/dev.py`, the thin Makefile, and no browser download. **Built** (`f13c182`).
+3. [cli](cli.md) and [pace](pace.md): four commands with `--time` and `--image`/`--video`/`--audio`, saved settings, `flnd/auth.py`, Chrome only, `pace.py`, `compress.py` and `files.py`. **Built** (`e8aa96c`). Every category without `--from`, and `--from` refused for a single post, are in the working tree, not yet committed.
+4. [redesign › the `shared` API](redesign.md#part-c-the-shared-api): the conventions and their test, the API snapshot, the error tree, then each module redesigned; `http.fetch` and `http.Response`. It replaces [api](api.md)'s tables; api's `__all__` rule stays.
+5. [redesign › routes](redesign.md#a3-targets-are-routes): `flnd.source`, `@target` patterns, `unsupported`, generated forms.
+6. [redesign › categories, posts, `site` and the job](redesign.md#a4-categories-are-methods), and the six sources on them. It replaces [architecture](architecture.md), [source](source.md), and [scripts](scripts.md)' naming and saving. It takes in [session](session.md)'s rules (`goto` checked and paced, scrolling on the page's time, requests paced) and [dates](dates.md) (the engine dates every file).
+7. [redesign › the engine API](redesign.md#part-b-the-engine-api) and [every credential encrypted](redesign.md#b7-every-credential-encrypted).
+8. [redesign › downloads](redesign.md#b6-what-flnd-takes-from-download-managers-idm): `http.download` with resume and split downloads, 6 connections per host, expired links refreshed, graceful Ctrl-C.
+9. [ins](ins.md) and [flows](flows.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with what gallery-dl does, and live runs of the test accounts. Built on the redesign's `site.fetch(…, in_page=True)` and `pages()`.
+10. [redesign › the rest of gallery-dl's lessons](redesign.md#b5-what-flnd-takes-from-gallery-dl): `sync` stopping at saved posts, cookie write-back, `scripts/dev.py try`.
+11. [classify](classify.md): `--classify`, with the classifier as `Media.labels` ([redesign](redesign.md#media-a-fluent-media-object)) rather than `media.classify`.
+12. [ui](ui.md): the live area (no blinking, and cheap: only changed rows drawn, by one thread, only when something changed), the prompt cursor, and whole-line log colors.
+13. [comments](comments.md) and the redesign's docs: every file brought to the docstring and comment standard; `flnd/source.py`'s "writing a source"; plan/README.md's Naming section replaced by the [conventions](redesign.md#2-api-conventions).
 
-9. [comments](comments.md): every file brought to the docstring and comment standard. Each earlier step already writes its own new code to it.
+[simplify](simplify.md) applies to every step, each change in the step that touches its file, except where the redesign says otherwise.
 
 ## The WIP commit
 
@@ -53,11 +64,11 @@ The work-in-progress commit on `main` ("sussy") tried items of this phase: a Win
 
 ## Decisions
 
-All decided by the user:
+The redesign's own decisions, some still open, are in [redesign › Decisions](redesign.md#decisions). Ask the user before building the step that needs an open one. These were all decided by the user:
 1. ~~Remove `media`'s unused API?~~ **Decided 2026-11-12: keep it.** `shared` is judged by usefulness, not by flnd's calls ([api](api.md)).
 2. ~~Run the browser headless by default?~~ **Decided 2026-11-12: no.** The browser stays visible by default, as today.
 3. ~~Color `info` lines too?~~ **Decided 2026-11-12: yes.** Every level colors its whole line, `info` in cyan ([ui](ui.md#whole-log-lines-in-their-levels-color)).
-4. ~~Which classifier model?~~ **Decided 2026-11-12: MobileCLIP-S0**, or OpenCLIP ViT-B/32 if its licence doesn't allow flnd's use; checked before step 7 ([classify](classify.md#the-model)).
+4. ~~Which classifier model?~~ **Decided 2026-11-12: MobileCLIP-S0**, or OpenCLIP ViT-B/32 if its licence doesn't allow flnd's use; checked before step 11 ([classify](classify.md#the-model)).
 5. ~~A `nsfw` label?~~ **Decided 2026-11-12: yes**, with a higher threshold ([classify](classify.md#labels)).
 6. ~~Is `classify` required or an extra?~~ **Decided 2026-11-12: an extra**, which `media.classify` offers to install the first time it's used, as Chrome's Chromium and the model are ([classify](classify.md#flnd)).
 

@@ -1,5 +1,7 @@
 # architecture
 
+> **Replaced by [redesign](redesign.md)** (2026-11-12): routes and categories as methods instead of `items(session)`, typed `Post`/`File`, and the job in [redesign › B3](redesign.md#b3-the-job-one-fixed-pipeline). Kept from here: gallery-dl's design, formats, the history keyed by format, the postprocessor chain.
+
 Phase 6, step 3, the frame the [source](source.md), [session](session.md) and [scripts](scripts.md) steps are built in. The user decided on 2026-11-12 that flnd adopts gallery-dl's architecture, which has been tested against these same sites for years. This file says what that architecture is, how it maps onto flnd, and what it replaces. It is based on gallery-dl's `job.py` and `extractor/common.py` (GitHub master 1.32.19, Codeberg 1.33.0-dev).
 
 ## gallery-dl in one paragraph
@@ -71,7 +73,7 @@ def items(self, session):
 - **The engine fills what the source leaves out.** `count` from the `File`s of the post, `index` from `num` and `count`, and `date` from the [dates](dates.md) fallbacks (`Last-Modified`, then the download day). The `extension` from the content, as now.
 - **Skipping before work.** `session.saved(key)` stays, for a source that can skip a request when the post is already saved (ins's media info). The engine also skips a whole `Post` whose first file's key is saved, and a `--time` range rules out a `Post` before its files are listed. So a generator that's still listing doesn't cost a download.
 - **Ctrl-C** stops consuming the generator. Python closes it at the next `yield`. flnd has no download limit ([simplify](simplify.md#no-download-limit)).
-- **Responses while scrolling become a loop.** Today a source registers `on_response`, scrolls, and counts what its handler found. Now `session.responses(match, scroll=True)` is an iterator of the JSON responses that match, scrolling the page while the caller asks for more, and ending by the [end rule](session.md#scrolling-on-the-pages-own-time). So the scroll fallback reads like an API loop: `for data in session.responses("graphql", scroll=True): yield from self.parse(data)`.
+- **Responses while scrolling become a loop.** Today a source registers `on_response`, scrolls, and counts what its handler found. Now `watch_responses(session, match, scroll=True)`, a helper in `flnd/sources/common.py`, is an iterator of the JSON responses that match, scrolling the page while the caller asks for more, and ending by the [end rule](session.md#scrolling-on-the-pages-own-time). So the scroll fallback reads like an API loop: `for data in watch_responses(session, "graphql", scroll=True): yield from self.parse(data)`. It's a source helper, not a session member (user, 2026-11-12): only the scroll fallbacks need it, so it's built on `session.page` (its `on_response` and `scroll`), and the session's page scrolls at the source's learned floor.
 
 ## What changes in the other steps
 
@@ -80,9 +82,8 @@ def items(self, session):
   - Three fields with defaults are added: `folder`, `name` and `key`. Only sources whose layout differs set them: loi's post folders and `NN.jpg` previews, and tlg's `<chat>/<kind>`.
   - The fields become 11, and the hooks stay 5.
 - **[session](session.md):**
-  - `save`, `write`, `folder`, `full`, `on_response` and `scroll` leave the session. Items replace the first four, and `responses(match, scroll=)` replaces the last two.
-  - It gains `responses`.
-  - From 26 members to 21.
+  - `save`, `write`, `folder`, `full`, `on_response` and `scroll` leave the session. Items replace the first four, and the `watch_responses` helper in `flnd/sources/common.py` replaces the last two.
+  - From 26 members to 19 ([simplify](simplify.md#final-numbers)).
 - **[scripts](scripts.md):**
   - `save_post` goes: a source yields a `Post` and its `File`s.
   - `day` and `meta_results` stay.

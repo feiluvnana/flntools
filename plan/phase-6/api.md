@@ -1,5 +1,7 @@
 # API
 
+> **Replaced by [redesign › Part C](redesign.md#part-c-the-shared-api)** (2026-11-12) for every `shared` name, and by [redesign › Part A and B](redesign.md#part-a-the-source-api) for flnd's own APIs. Kept from here: an `__all__` in every module.
+
 Phase 6, step 4. Every public API in `shared` and flnd as it is on 2026-11-12, each with its Phase 6 change, or **—** for no change. Usage was counted with `grep` over `flnd/`. "No caller" means nothing in flnd uses it: only `shared` itself or the tests do.
 
 Two rules, decided by the user on 2026-11-12:

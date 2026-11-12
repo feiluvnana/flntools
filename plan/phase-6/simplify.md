@@ -1,5 +1,7 @@
 # simplify
 
+> **[redesign](redesign.md) wins over this file** (2026-11-12). Where they disagree, build to the redesign.
+
 Phase 6, across every step. The user asked on 2026-11-12 for flnd to have no download limit, and for everything to be simplified wherever it can be. This file is the result of a review of the whole plan and the code on that day. **Where it disagrees with another Phase 6 file, this one wins**, and the [final numbers](#final-numbers) below are the ones to build to.
 
 ## No download limit
@@ -112,7 +114,7 @@ Kept on purpose:
 | --- | --- | --- |
 | `Source` fields | 8 ([source](source.md)), 11 ([architecture](architecture.md)) | **11**: `code`, `name`, `domains`, `examples`, `categories`, `cookies`, `logins`, `pace`, and the formats **`folder`**, **`filename`** and **`key`**. The file name format is `filename`, because `name` is the source's display name. `pause` goes |
 | `Source` hooks | 5 | **5**: `resolve`, `items`, `prepare`, `login`, `connect` |
-| `Session` members | 26 ([session](session.md)), 21 ([architecture](architecture.md)) | **20**: `target`, `cookies`, `categories`, `since`, `until`, `wants`, `fetch_json`, `fetch_html`, `goto`, `responses`, `handoff`, `page`, `client`, `state`, `secrets`, `interactive`, `ask`, `info`, `warn`, `throttled` |
+| `Session` members | 26 ([session](session.md)), 21 ([architecture](architecture.md)) | **19**: `target`, `cookies`, `categories`, `since`, `until`, `wants`, `fetch_json`, `fetch_html`, `goto`, `handoff`, `page`, `client`, `state`, `secrets`, `interactive`, `ask`, `info`, `warn`, `throttled`. Scrolling while reading responses is `watch_responses(session, match, scroll=)`, a helper in `flnd/sources/common.py`, not a member (user, 2026-11-12) |
 | item types | 3 | **2**: `Post` and `File` |
 | ways to reach an API | 3 ([ins](ins.md#three-ways-to-reach-an-api)) | **3**: direct, in page and replay; each source uses the fewest that work: tik direct, twt direct, loi direct, ins and fbk replay with in page where needed |
 | scroll | 1.5 s ([README](README.md)), 3 s `delay` ([session](session.md)) | **as soon as the page shows progress**, waiting at most 3 s, above a 0.3 s floor times the learned speed |

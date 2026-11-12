@@ -1,5 +1,7 @@
 # dates
 
+> **Changed by [redesign](redesign.md)** (2026-11-12): a source gives `Post(date=…)` in any form, and the engine reads it ([redesign › A5](redesign.md#a5-post-and-file-typed-keywords-not-dicts)). The fallbacks and the `mtime` postprocessor below still hold.
+
 Phase 6, step 6, with [scripts](scripts.md). The user asked on 2026-11-12 that every saved photo and video carry its date, and that adding one be easy for a source. Today each source builds `<YYYY-MM-DD>_…` into its own file names, in its own way, and several files get no date at all.
 
 > **Changed by [architecture](architecture.md)** (decided 2026-11-12, flnd adopts gallery-dl's architecture): the engine's dating is the default `name` format (`{date:%Y-%m-%d}_…`) and the `mtime` postprocessor. The rules below are unchanged.

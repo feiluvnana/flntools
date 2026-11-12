@@ -1,5 +1,7 @@
 # source
 
+> **Replaced by [redesign](redesign.md)** (2026-11-12): the `Source` is in [redesign › A2](redesign.md#a2-the-source-declaration), and targets are `@target` routes ([A3](redesign.md#a3-targets-are-routes)). Kept from here: `prepare`, `pace`, and the fields that go.
+
 Phase 6, step 3, with [cli](cli.md) and [session](session.md). The user asked on 2026-11-12 for a leaner `Source`: fewer fields, each one meaning one thing, and merged where two say the same. Today a source can set 18 fields and 7 hooks, 25 in all. Several are never overridden, one is never read, and three pairs only make sense together.
 
 > **Changed by [architecture](architecture.md)** (decided 2026-11-12, flnd adopts gallery-dl's architecture): `run(session)` becomes `items(session)`, a generator of `Post`, `File` and `Queue`, and the source gains `folder`, `name` and `key` format strings with defaults. 11 fields and 5 hooks.

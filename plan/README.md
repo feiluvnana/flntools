@@ -6,7 +6,7 @@ flntools is flnd, a media downloader, and `shared`, the toolkit it is built on. 
 
 - **`shared` is flnd's toolkit, not a general library product.** flnd is its only user, since loi and tlg became flnd sources. The package boundary stays, because it keeps the engine and the sources clean. Nothing is added for imaginary outside users.
 - **Each module is small, with one obvious way to use it.** If the standard library already does the job, the module doesn't exist.
-- **Ceiling.** `shared` stays under **about 5,000 lines of code** (about 3,400 after Phase 4, about 4,500 after Phase 5, about 4,600 after [Phase 6](phase-6/api.md), `classify` included). The user raised it from 4,500 on 2026-11-11, so `media` has room. Going over means removing something first. Lines of code don't count docstrings, comments or blank lines, so the size limits never push against documentation.
+- **No size ceiling.** The user removed `shared`'s ceiling (about 5,000 lines of code) on 2026-11-12. A module is judged by how good and useful its API is, not by its line count. Earlier phase files still mention the ceiling, as history.
 
 ## Rules
 
@@ -91,21 +91,20 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 1. [media](phase-5/media.md): `shared.media`, one module for photos, videos and audio, with `probe`, `convert`, `compress`, `check` and `sniff` for any file, and `media.image`, `media.video` and `media.audio` for one kind. Photos go through Pillow and pi-heif in process; videos and audio through the ffmpeg program, which [ffmpeg](phase-5/ffmpeg.md) gets from the `imageio-ffmpeg` wheel and runs behind input whitelists.
 2. [flnd on media](phase-5/flnd.md) (built): extensions from content, DASH video and audio merged (Facebook and Instagram), downloads checked, `--compress-image` / `--compress-video` with `--format-image` / `--format-video`, and `flnd sync` with its saved target settings in `.flnd/targets.db`.
 
-**Phase 6: lean and simple.** Based on an audit of the whole repository on 2026-11-12 ([overview](phase-6/README.md)). Built in this order:
-1. [fixes](phase-6/fixes.md): 16 bugs, among them corrupted downloads on Windows, failed targets shown as ok with exit status 0, and Twitter's login sent to its CDNs.
-2. [setup](phase-6/setup.md): `uv sync` with a committed `uv.lock`, the browser downloaded only when there is no Chrome, every task in a stdlib `scripts/dev.py`, and a Makefile that runs the same on every OS.
-3. [architecture](phase-6/architecture.md): gallery-dl's design. A source yields `Post`, `File` and `Queue` items with metadata, and one job filters, names from format strings, checks the history, downloads and post-processes.
-   [cli](phase-6/cli.md): `flnd download`, `sync` (repair and fetch only, no options), `login` and `logout`; `--time <since>,<until>`; `--image`, `--video`, `--audio` `<format>,<level>`; `--unpack`, `--zip`, `--locale`, `--timezone` and `install-browser` gone, and with them `shared.archive`; Google Chrome only, with Chromium offered when it's missing.
-   [source](phase-6/source.md): 8 fields and 5 hooks instead of 18 and 7.
-   [pace](phase-6/pace.md): requests as fast as each site allows: its rate headers, Instagram's known budgets, and a learned gap above a floor.
-   [session](phase-6/session.md): 26 members instead of 35; scrolling ends after 10 s without progress and has no cap; page loads and API calls are paced and checked for 429s and login walls.
-4. [api](phase-6/api.md): every public API with its change or none; flnd's own APIs lose what flnd doesn't use, and `shared`'s are kept or removed by how useful they are.
-5. [ins](phase-6/ins.md): tagged and reposts posts read through Instagram's media info API, skipped before any request when already saved or out of range, and every throttle waited out. With [flows](phase-6/flows.md): what gallery-dl does for each site, taken where it's better.
-6. [scripts](phase-6/scripts.md): the sources rewritten shorter, with `save_post`, `day` and `meta_results` in `flnd/sources/common.py`.
-   [dates](phase-6/dates.md): the engine dates every file, in its name and its modified time, with the CDN's `Last-Modified` or the download day when the source has none.
-7. [classify](phase-6/classify.md): `media.classify`, a small CLIP-style model on ONNX Runtime, and `--classify`, which groups files by category in `labels/<label>/` link folders without renaming them.
-8. [ui](phase-6/ui.md): download rows that no longer blink (overwritten in place, synchronized, cursor hidden, short-lived rows never drawn), a prompt cursor where the text goes, and log lines in their level's color.
-9. [comments](phase-6/comments.md): a docstring for every module, class and function, with its arguments, result, errors and an example, and *why* comments at every non-obvious rule.
+**Phase 6: lean and simple, and the redesign.** Based on an audit of the whole repository on 2026-11-12 ([overview](phase-6/README.md)). The Phase 7 proposal, a fluent and consistently named API for sources, the engine and `shared`, was merged into it as [redesign](phase-6/redesign.md) the same day, and wins over the other Phase 6 files. Built in this order ([detail](phase-6/README.md#order)):
+1. [fixes](phase-6/fixes.md): 16 bugs, among them corrupted downloads on Windows, failed targets shown as ok with exit status 0, and Twitter's login sent to its CDNs. **Built.**
+2. [setup](phase-6/setup.md): `uv sync` with a committed `uv.lock`, the browser downloaded only when there is no Chrome, every task in a stdlib `scripts/dev.py`, and a Makefile that runs the same on every OS. **Built.**
+3. [cli](phase-6/cli.md) and [pace](phase-6/pace.md): `flnd download`, `sync`, `login` and `logout`; `--time`; `--image`, `--video`, `--audio`; saved settings; Chrome only; the pace. **Built.**
+4. [the `shared` API](phase-6/redesign.md#part-c-the-shared-api): the [conventions](phase-6/redesign.md#2-api-conventions) (verbs for actions, nouns for reads, one vocabulary, fluent objects) with a test, then each module redesigned, and `http`.
+5. [routes](phase-6/redesign.md#a3-targets-are-routes): targets read by `@target` patterns.
+6. [categories, posts, `site` and the job](phase-6/redesign.md#a4-categories-are-methods), and the six sources rewritten on them, with [session](phase-6/session.md)'s rules and [dates](phase-6/dates.md).
+7. [the engine API](phase-6/redesign.md#part-b-the-engine-api), one method per command, and [every credential encrypted](phase-6/redesign.md#b7-every-credential-encrypted).
+8. [downloads](phase-6/redesign.md#b6-what-flnd-takes-from-download-managers-idm) that resume, split, keep 6 connections per host and refresh expired links.
+9. [ins](phase-6/ins.md) and [flows](phase-6/flows.md): API first for every source, with what gallery-dl does.
+10. [gallery-dl's other lessons](phase-6/redesign.md#b5-what-flnd-takes-from-gallery-dl): `sync` stopping at saved posts, cookie write-back, a `try` dev task.
+11. [classify](phase-6/classify.md): `--classify`, on `Media.labels`.
+12. [ui](phase-6/ui.md): download rows that no longer blink, a prompt cursor where the text goes, and log lines in their level's color.
+13. [comments](phase-6/comments.md): a docstring for every module, class and function, *why* comments at every non-obvious rule, and the redesign's docs.
 
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
 
@@ -124,6 +123,8 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 - **Tests.** `unittest`, with one `tests/test_<module>.py` per module. Terminal tests use a fake `theme.screen`. Browser tests use local pages, and are skipped without Chromium. flnd's network tests use `httpx.MockTransport`.
 
 ## Naming
+
+> **Replaced in Phase 6, step 13, by the [API conventions](phase-6/redesign.md#2-api-conventions)**, which the user asked for on 2026-11-12. Build new code to those from step 4 on.
 
 1. **Use the familiar word.** If Unix or the stdlib already has a name, use it: `archive.zip` / `unzip`, `kv.open`, `worker.map`, `fmt.filename`.
 2. **Related functions share a prefix that says what they are:** `crypto.hash_sha256`, `crypto.encrypt_aes_gcm`, `page.wait_for_url`, `page.on_response`.
