@@ -30,7 +30,7 @@ ERRORS = [
     (selector.BrokenError, "selector", ValueError, shared.BrokenError),  # json's ValueError until step 4
     (selector.UnsafeError, "selector", ValueError, shared.UnsafeError),  # new in step 4; a ValueError as its kind is
     (cli.UsageError, "cli", Exception, None),
-    (prompt.PromptError, "prompt", Exception, None),
+    (prompt.Error, "prompt", Exception, None),       # PromptError, renamed to its base in step 4
     (worker.TaskError, "worker", Exception, None),
 ]
 KINDS = (shared.UnsafeError, shared.BrokenError, shared.RefusedError)

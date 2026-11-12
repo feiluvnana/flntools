@@ -212,15 +212,12 @@ shared.prompt.Keymap.submit: attribute
 shared.prompt.Keymap.toggle: attribute
 shared.prompt.Keymap.up: attribute
 shared.prompt.Keymap.yes: attribute
-shared.prompt.PromptError(shared.prompt.Error)
-shared.prompt.choice(message: str, options: Sequence | Mapping, *, description: str = '', default: Any = None, filter: bool = False, keys: bool | None = None, validate: Validate | None = None) -> Any
-shared.prompt.choices(message: str, options: Sequence | Mapping, *, description: str = '', default: Sequence | None = None, min: int = 0, max: int | None = None, filter: bool = False, keys: bool | None = None, validate: Validate | None = None) -> list
+shared.prompt.ask(message: str, *, secret: bool = False, default: str | None = None, placeholder: str = '', description: str = '', validate: Validate | None = None, mask: str | None = None, keys: bool | None = None) -> str
+shared.prompt.choose(message: str, options: Sequence | Mapping, *, many: bool = False, default: Any = None, filter: bool = False, min: int = 0, max: int | None = None, description: str = '', validate: Validate | None = None, keys: bool | None = None) -> Any
 shared.prompt.confirm(message: str, *, description: str = '', default: bool = False, yes: str = 'Yes', no: str = 'No', keys: bool | None = None, validate: Validate | None = None) -> bool
 shared.prompt.defaults() -> Iterator[None]
-shared.prompt.input(message: str, *, description: str = '', default: str | None = None, placeholder: str = '', keys: bool | None = None, validate: Validate | None = None) -> str
 shared.prompt.keymap: Keymap
 shared.prompt.keys: bool
-shared.prompt.secret(message: str, *, description: str = '', default: str | None = None, mask: str | None = None, keys: bool | None = None, validate: Validate | None = None) -> str
 shared.selector: module
 shared.selector.BrokenError(shared.selector.Error, shared.BrokenError)
 shared.selector.Error(shared.Error)

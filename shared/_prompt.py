@@ -1,10 +1,27 @@
-"""Questions in the terminal, in the look of Charm's huh. Each function returns the answer."""
+"""Ask a person a question in the terminal, in the look of Charm's huh: `ask`, `confirm` and `choose`.
+
+How it works: each function builds one question and returns its answer. In a terminal the question
+is drawn by `shared.theme`'s prompt drawer and redrawn after every key `theme.screen` reads, until
+the answer is submitted, then replaced by one done line. While it's open, `shared.log` holds the
+other threads' lines and live rows, and asks from other threads wait their turn. Without a
+terminal, or inside `with prompt.defaults():`, nothing is read: each question answers its default
+at once, and one without a default raises `Error`. Which keys do what is `prompt.keymap`, and
+whether the help line of keys is shown is `prompt.keys`. It wraps no library and has no `.raw`.
+
+    from shared import prompt
+
+    name = prompt.ask("Name", placeholder="ada")
+    token = prompt.ask("Token", secret=True)
+    if prompt.confirm("Deploy?", default=True):
+        source = prompt.choose("Source", {"Instagram": "ins", "TikTok": "tik"})
+        tabs = prompt.choose("Tabs", ["posts", "reels", "tagged"], many=True, min=1)
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Sequence, TypeVar, overload
+from typing import Any, Callable, Iterator, Literal, Sequence, TypeVar, overload
 
 import shared
 from shared import _theme
@@ -12,12 +29,13 @@ from shared._log import live_area
 from shared._style import strip
 from shared._theme import PromptView, Theme, fit
 
-__all__ = ["Error", "Keymap", "PromptError", "choice", "choices", "confirm", "defaults", "input", "keymap",
-           "keys", "secret"]
+__all__ = ["Error", "Keymap", "ask", "choose", "confirm", "defaults", "keymap", "keys"]
 
 Validate = Callable[[Any], "str | None"]
 
-# The actions a question lists in its help line, in the order they are listed.
+# The actions a question lists in its help line, in the order they are listed. The keys are the
+# question kinds `shared.theme`'s prompt drawer knows: a typed text, a hidden one, yes or no, one
+# option, several options.
 GUIDE_ACTIONS = {
     "input": ("submit",),
     "secret": ("submit",),
@@ -32,15 +50,17 @@ keys = True
 
 
 class Error(shared.Error):
-    """The base of every error `shared.prompt` raises."""
-
-
-class PromptError(Error):
     """A question that cannot be asked: no default to fall back on, or bad options."""
 
 
 class Keymap:
-    """The keys for each action. Assigning a tuple replaces that action's keys."""
+    """The keys for each action. Assigning a tuple replaces that action's keys.
+
+        prompt.keymap.submit = ("enter", "tab")
+        prompt.keymap.no = ()          # n no longer answers no
+
+    An unknown action, read or assigned, raises `AttributeError`.
+    """
 
     ACTIONS = ("up", "down", "left", "right", "submit", "toggle", "backspace", "yes", "no", "interrupt")
 
@@ -68,24 +88,68 @@ class Keymap:
 keymap = Keymap()
 
 
-def input(message: str, *, description: str = "", default: str | None = None, placeholder: str = "",
-          keys: bool | None = None, validate: Validate | None = None) -> str:
-    question = _Question("input", message, description, default=default, validate=validate, keys=keys)
+def ask(message: str, *, secret: bool = False, default: str | None = None, placeholder: str = "",
+        description: str = "", validate: Validate | None = None, mask: str | None = None,
+        keys: bool | None = None) -> str:
+    """Ask for a line of text, and return what was typed.
+
+        name = prompt.ask("Name", placeholder="ada", validate=lambda text: None if text else "Enter a name.")
+        token = prompt.ask("Token", secret=True)
+
+    Args:
+        message: the question, drawn as the frame's title and kept in the done line.
+        secret: hide what is typed: each character is drawn as `mask`, and the done line shows
+            only the message, never the answer.
+        default: the text the answer starts with, which can be edited; it is also the answer
+            without a terminal or inside `defaults()`. None means there is none.
+        placeholder: faint text shown while nothing is typed; it is never the answer.
+        description: more lines under the title, wrapped to the screen.
+        validate: called with the text on submit; a string it returns is shown as an error and
+            the question stays open, None accepts.
+        mask: the character drawn for each hidden one, with `secret`; None is • in Unicode and *
+            in ASCII. Ignored without `secret`.
+        keys: show the help line of keys; None follows `prompt.keys`.
+
+    Returns:
+        The text as typed, not stripped.
+
+    Raises:
+        Error: there is no terminal, or `defaults()` is on, and `default` is None.
+        KeyboardInterrupt: a `keymap.interrupt` key, ctrl+c by default, was pressed.
+
+    It blocks until answered, and holds other threads' log output while it's open.
+    """
+    question = _Question("secret" if secret else "input", message, description, default=default,
+                         validate=validate, keys=keys)
     question.buffer = default or ""
     question.placeholder = placeholder
-    return _ask(question)
-
-
-def secret(message: str, *, description: str = "", default: str | None = None, mask: str | None = None,
-           keys: bool | None = None, validate: Validate | None = None) -> str:
-    question = _Question("secret", message, description, default=default, validate=validate, keys=keys)
-    question.buffer = default or ""
-    question.mask = mask
+    if secret:
+        question.mask = mask
     return _ask(question)
 
 
 def confirm(message: str, *, description: str = "", default: bool = False, yes: str = "Yes", no: str = "No",
             keys: bool | None = None, validate: Validate | None = None) -> bool:
+    """Ask a yes-or-no question, and return True for yes.
+
+        if prompt.confirm("Overwrite?", yes="Overwrite", no="Keep"):
+            ...
+
+    Args:
+        message: the question, drawn as the frame's title and kept in the done line.
+        description: more lines under the title, wrapped to the screen.
+        default: the button selected at first, and the answer without a terminal or inside `defaults()`.
+        yes: the label of the yes button.
+        no: the label of the no button.
+        keys: show the help line of keys; None follows `prompt.keys`.
+        validate: called with the answer on submit; a string it returns is shown as an error and
+            the question stays open, None accepts.
+
+    Raises:
+        KeyboardInterrupt: a `keymap.interrupt` key, ctrl+c by default, was pressed.
+
+    `keymap.yes` and `keymap.no` answer at once; left and right move between the buttons.
+    """
     question = _Question("confirm", message, description, default=default, validate=validate, keys=keys)
     question.labels, question.values = [yes, no], [True, False]
     question.index = 0 if default else 1
@@ -96,25 +160,69 @@ Value = TypeVar("Value")
 
 
 @overload
-def choice(message: str, options: Mapping[Any, Value], *, description: str = "", default: Any = None,
-           filter: bool = False, keys: bool | None = None, validate: Validate | None = None) -> Value: ...
+def choose(message: str, options: Mapping[Any, Value], *, many: Literal[False] = False,
+           default: Value | None = None, filter: bool = False, description: str = "",
+           validate: Validate | None = None, keys: bool | None = None) -> Value: ...
 @overload
-def choice(message: str, options: Sequence[Value], *, description: str = "", default: Any = None,
-           filter: bool = False, keys: bool | None = None, validate: Validate | None = None) -> Value: ...
-def choice(message: str, options: Sequence | Mapping, *, description: str = "", default: Any = None,
-           filter: bool = False, keys: bool | None = None, validate: Validate | None = None) -> Any:
-    question = _Question("choice", message, description, default=default, validate=validate, keys=keys)
-    question.set_options(options, filter)
-    if default is not None:
-        question.index = question.position_of(default)
-    return _ask(question)
+def choose(message: str, options: Sequence[Value], *, many: Literal[False] = False,
+           default: Value | None = None, filter: bool = False, description: str = "",
+           validate: Validate | None = None, keys: bool | None = None) -> Value: ...
+@overload
+def choose(message: str, options: Mapping[Any, Value], *, many: Literal[True],
+           default: Sequence[Value] | None = None, filter: bool = False, min: int = 0, max: int | None = None,
+           description: str = "", validate: Validate | None = None, keys: bool | None = None) -> list[Value]: ...
+@overload
+def choose(message: str, options: Sequence[Value], *, many: Literal[True],
+           default: Sequence[Value] | None = None, filter: bool = False, min: int = 0, max: int | None = None,
+           description: str = "", validate: Validate | None = None, keys: bool | None = None) -> list[Value]: ...
+def choose(message: str, options: Sequence | Mapping, *, many: bool = False, default: Any = None,
+           filter: bool = False, min: int = 0, max: int | None = None, description: str = "",
+           validate: Validate | None = None, keys: bool | None = None) -> Any:
+    """Ask to pick one of the options, or several with `many=True`, and return the value or values.
 
+        source = prompt.choose("Source", {"Instagram": "ins", "TikTok": "tik"}, default="ins")
+        tabs = prompt.choose("Tabs", ["posts", "reels", "tagged"], many=True, min=1)
 
-def choices(message: str, options: Sequence | Mapping, *, description: str = "", default: Sequence | None = None,
-            min: int = 0, max: int | None = None, filter: bool = False, keys: bool | None = None,
-            validate: Validate | None = None) -> list:
+    Args:
+        message: the question, drawn as the frame's title and kept in the done line.
+        options: the values, each shown as `str(value)`; or a mapping of label to value, which
+            shows the labels and returns the values.
+        many: a checklist: the toggle key checks and unchecks the option under the cursor, and the
+            answer is the checked values, in the options' order.
+        default: the value the cursor starts on, or with `many` the values checked at first; it is
+            also the answer without a terminal or inside `defaults()`. None means there is none.
+        filter: typed letters narrow the options to those whose label starts with them, ignoring
+            case, so letters are text and not keys.
+        min: with `many`, the fewest options that can be checked on submit.
+        max: with `many`, the most options that can be checked on submit; None is no limit.
+        description: more lines under the title, wrapped to the screen.
+        validate: called with the answer on submit; a string it returns is shown as an error and
+            the question stays open, None accepts.
+        keys: show the help line of keys; None follows `prompt.keys`.
+
+    Returns:
+        One value, or with `many` a list of values: `str` and `list[str]` to a type checker when
+        the options are strings.
+
+    Raises:
+        Error: `options` is empty, `default` holds a value that isn't an option, or there is no
+            terminal (or `defaults()` is on) and `default` is None.
+        ValueError: `min` and `max` aren't 0 <= min <= max.
+        TypeError: `min` or `max` is given without `many`.
+        KeyboardInterrupt: a `keymap.interrupt` key, ctrl+c by default, was pressed.
+
+    A long list scrolls with the cursor, so the frame never outgrows the screen.
+    """
+    if not many:
+        if min != 0 or max is not None:
+            raise TypeError("choose takes min and max only with many=True")
+        question = _Question("choice", message, description, default=default, validate=validate, keys=keys)
+        question.set_options(options, filter)
+        if default is not None:
+            question.index = question.position_of(default)
+        return _ask(question)
     if min < 0 or (max is not None and max < min):
-        raise ValueError(f"choices needs 0 <= min <= max, got min={min} max={max}")
+        raise ValueError(f"choose needs 0 <= min <= max, got min={min} max={max}")
     question = _Question("choices", message, description, default=None if default is None else list(default),
                          validate=validate, keys=keys)
     question.set_options(options, filter)
@@ -129,7 +237,14 @@ _answering_with_defaults = 0
 
 @contextmanager
 def defaults() -> Iterator[None]:
-    """Answer each question with its default, reading no keys."""
+    """Answer each question with its default, reading no keys, inside the block.
+
+        with prompt.defaults():
+            prompt.confirm("Deploy?", default=True)    # True, at once
+
+    It is process-wide: questions asked from other threads inside the block answer their default
+    too. A question with no default raises `Error`.
+    """
     global _answering_with_defaults
     _answering_with_defaults += 1
     try:
@@ -168,12 +283,12 @@ class _Question:
         else:
             self.labels, self.values = [str(option) for option in options], list(options)
         if not self.values:
-            raise PromptError(f"{self.message!r} has no options")
+            raise Error(f"{self.message!r} has no options")
         self.filter = filter
 
     def position_of(self, value: Any) -> int:
         if value not in self.values:
-            raise PromptError(f"{value!r} is not an option of {self.message!r}")
+            raise Error(f"{value!r} is not an option of {self.message!r}")
         return self.values.index(value)
 
     def visible(self) -> list[int]:
@@ -265,7 +380,7 @@ def _ask(question: _Question) -> Any:
     screen = theme.screen
     if _answering_with_defaults or not screen.interactive:
         if question.default is None:
-            raise PromptError(f"{question.message!r} has no default and cannot be asked here")
+            raise Error(f"{question.message!r} has no default and cannot be asked here")
         return question.default
     if question.kind == "secret" and question.mask is None:
         question.mask = "•" if theme.unicode else "*"

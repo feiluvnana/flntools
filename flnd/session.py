@@ -474,15 +474,35 @@ class TargetSession:
         return self._settings.interactive and theme.screen.interactive
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
-        """Ask a question, during `flnd login` only; `flnd download` never asks, and raises `RuntimeError`."""
+        """Ask a question with `prompt.ask`, during `flnd login` only, and return what was typed.
+
+            code = session.ask("Code", description="Sent to your phone")
+
+        Args:
+            message: the question.
+            secret: hide what is typed, as for a password; the done line shows only the message.
+            description: more lines under the question.
+
+        Raises:
+            RuntimeError: not during `flnd login` in a terminal; `flnd download` never asks.
+        """
         self._check_interactive()
-        ask = prompt.secret if secret else prompt.input
-        return ask(message, description=description)
+        return prompt.ask(message, secret=secret, description=description)
 
     def choose(self, message: str, options: Sequence[str] | Mapping[str, str]) -> str:
-        """Ask to pick one option, during `flnd login` only, like `ask`; a mapping shows its keys."""
+        """Ask to pick one option with `prompt.choose`, during `flnd login` only, and return it.
+
+            method = session.choose("Log in with", {"Phone number": "phone", "QR code": "qr"})
+
+        Args:
+            message: the question.
+            options: the options; a mapping shows its keys and returns the value picked.
+
+        Raises:
+            RuntimeError: not during `flnd login` in a terminal, as for `ask`.
+        """
         self._check_interactive()
-        return prompt.choice(message, options)
+        return prompt.choose(message, options)
 
     def info(self, message: str, **fields: Any) -> None:
         """A `log.info` line naming the target: `session.info("{tab}: {n} items", tab="posts", n=3)`."""

@@ -211,7 +211,7 @@ def login_command() -> int:
         raise cli.UsageError("flnd login asks its questions in a terminal")
     site = SOURCES[_ask_source()]()
     methods = site.login_methods
-    method = methods[0] if len(methods) == 1 else prompt.choice(
+    method = methods[0] if len(methods) == 1 else prompt.choose(
         f"Log in to {site.name}", {METHOD_LABELS.get(name, name): name for name in methods})
     try:
         # A source with its own login (tlg) asks its own questions, through the engine's session.
@@ -219,10 +219,10 @@ def login_command() -> int:
             Engine(home=HOME).login(site, method)
             return 0
         if method == "file":
-            path = Path(prompt.input("Path to cookies.txt or .json", validate=_readable).strip()).expanduser()
+            path = Path(prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()).expanduser()
             message = auth.store(site, auth.from_file(site, path), home=HOME, origin=path.name)
         else:
-            browser = prompt.choice("Read cookies from", {label: name for name, label in auth.BROWSERS.items()})
+            browser = prompt.choose("Read cookies from", {label: name for name, label in auth.BROWSERS.items()})
             jar = auth.from_browser(site, browser=browser, profile=_ask_profile(browser))
             message = auth.store(site, jar, home=HOME, origin=auth.BROWSERS[browser])
     except auth.LoginError as error:
@@ -259,7 +259,7 @@ def _ask_source() -> str:
     for code, source in SOURCES.items():
         mark = " · logged in" if auth.logged_in(HOME, code) else ""
         options[f"{source.name} ({code}){mark}"] = code
-    return prompt.choice("Log in to", options)
+    return prompt.choose("Log in to", options)
 
 
 def _ask_profile(browser: str) -> Optional[str]:
@@ -270,7 +270,7 @@ def _ask_profile(browser: str) -> Optional[str]:
     profiles = cookies.profiles(browser)
     if len(profiles) <= 1:
         return profiles[0] if profiles else None
-    return prompt.choice("Profile", profiles, default=profiles[0])
+    return prompt.choose("Profile", profiles, default=profiles[0])
 
 
 def _readable(raw: str) -> Optional[str]:

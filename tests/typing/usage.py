@@ -28,8 +28,14 @@ assert_type(worker.as_ordered(len, ["ab"]), list[int])
 assert_type(worker.as_completed(double, [1, 2]), Iterator[worker.Result[int]])
 worker.as_ordered(double, [1], label="numbers", progress=lambda done, total: None)
 
-assert_type(prompt.choice("Source", {"Instagram": "ins", "TikTok": "tik"}), str)
-assert_type(prompt.choice("Count", [1, 2, 3]), int)
+assert_type(prompt.choose("Source", {"Instagram": "ins", "TikTok": "tik"}), str)
+assert_type(prompt.choose("Count", [1, 2, 3]), int)
+assert_type(prompt.choose("Tabs", ["posts", "reels"], many=False), str)
+assert_type(prompt.choose("Tabs", ["posts", "reels"], many=True), list[str])
+assert_type(prompt.choose("Source", {"Instagram": "ins"}, many=True, min=1, max=1), list[str])
+assert_type(prompt.ask("Token", secret=True), str)
+prompt.choose("Tabs", ["posts"], min=1)  # pyright: ignore[reportCallIssue]
+prompt.input("Name")  # pyright: ignore[reportAttributeAccessIssue]
 
 theme.color = "256"
 theme.color = "265"  # pyright: ignore[reportAttributeAccessIssue]

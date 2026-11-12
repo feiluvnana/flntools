@@ -419,7 +419,7 @@ class ThreadTest(LogCase):
         self.screen.readkey = readkey
         thread = threading.Thread(target=background)
         thread.start()
-        self.assertEqual(prompt.input("Name", default="ada"), "ada")
+        self.assertEqual(prompt.ask("Name", default="ada"), "ada")
         thread.join()
         self.assertEqual(self.lines(), [
             "┃ Name", "┃ > ada", "enter submit", "✓ Name: ada", "• background", "✓ bar ━━━━━━━━━━━━━━━━━━━━ 1/1",

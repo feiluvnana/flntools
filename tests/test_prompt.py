@@ -1,3 +1,9 @@
+"""shared.prompt's questions: `ask`, `confirm` and `choose`, drawn on a fake `theme.screen`.
+
+The screen is a `Screen` over StringIO with its `readkey` replaced by a list of key names, so each
+test presses keys and reads back the frames drawn. Nothing else is faked.
+"""
+
 import threading
 import time
 import unittest
@@ -40,10 +46,10 @@ class PromptCase(unittest.TestCase):
         return self.frames()[-1]
 
 
-class InputTest(PromptCase):
+class AskTest(PromptCase):
     def test_frame_with_description_and_placeholder(self):
         self.keys("s", "a", "m", "enter")
-        self.assertEqual(prompt.input("Name", description="Your account name", placeholder="ada"), "sam")
+        self.assertEqual(prompt.ask("Name", description="Your account name", placeholder="ada"), "sam")
         self.assertEqual(self.frames()[:4], ["┃ Name", "┃ Your account name", "┃ > ada", "enter submit"])
         self.assertEqual(self.frames()[-5:-1], ["┃ Name", "┃ Your account name", "┃ > sam", "enter submit"])
         self.assertEqual(self.last_line(), "✓ Name: sam")
@@ -51,7 +57,7 @@ class InputTest(PromptCase):
     def test_colors(self):
         self.keys("x", "enter")
         with theme.scope(color="16m"):
-            prompt.input("Name", placeholder="ada")
+            prompt.ask("Name", placeholder="ada")
         output = self.screen.out.getvalue()
         self.assertIn(f"{FAINT}┃{END} {INDIGO_BOLD}Name{END}\n", output)
         self.assertIn(f"{FAINT}┃{END} {FUCHSIA}>{END} {FAINT}ada{END}\n", output)
@@ -60,40 +66,54 @@ class InputTest(PromptCase):
 
     def test_default_is_the_buffer(self):
         self.keys("backspace", "y", "enter")
-        self.assertEqual(prompt.input("Name", default="ada"), "ady")
+        self.assertEqual(prompt.ask("Name", default="ada"), "ady")
         self.assertEqual(self.frames()[1], "┃ > ada")
 
     def test_letters_and_space_are_typed_not_actions(self):
         self.keys("k", "j", "space", "y", "enter")
-        self.assertEqual(prompt.input("Name"), "kj y")
+        self.assertEqual(prompt.ask("Name"), "kj y")
 
     def test_error(self):
         def nonempty(value):
             return None if value.strip() else "Enter a name."
 
         self.keys("enter", "a", "enter")
-        self.assertEqual(prompt.input("Name", validate=nonempty), "a")
+        self.assertEqual(prompt.ask("Name", validate=nonempty), "a")
         self.assertEqual(self.frames()[3:7], ["┃ Name *", "┃ >", "┃ * Enter a name.", "enter submit"])
         with theme.scope(color="16m"):
             self.keys("enter", "a", "enter")
-            prompt.input("Name", validate=nonempty)
+            prompt.ask("Name", validate=nonempty)
         output = self.screen.out.getvalue()
         self.assertIn(f"{INDIGO_BOLD}Name{END}\x1b[38;2;237;86;122m *{END}", output)
         self.assertIn("\x1b[38;2;237;86;122m* Enter a name.\x1b[0m", output)
 
     def test_secret(self):
         self.keys("a", "b", "c", "enter")
-        self.assertEqual(prompt.secret("Token"), "abc")
+        self.assertEqual(prompt.ask("Token", secret=True), "abc")
         self.assertIn("┃ > •••", self.frames())
         self.assertEqual(self.last_line(), "✓ Token")
         self.keys("a", "enter")
-        prompt.secret("Token", mask="*")
+        prompt.ask("Token", secret=True, mask="*")
         self.assertIn("┃ > *", self.frames())
+
+    def test_secret_never_draws_the_answer(self):
+        self.keys("p", "w", "enter")
+        theme.unicode = False
+        self.assertEqual(prompt.ask("Password", secret=True, description="Hidden"), "pw")
+        output = self.screen.out.getvalue()
+        self.assertIn("| > **", self.frames())
+        self.assertNotIn("pw", output)
+        self.assertEqual(self.last_line(), "+ Password")
+
+    def test_mask_is_ignored_without_secret(self):
+        self.keys("a", "enter")
+        self.assertEqual(prompt.ask("Name", mask="*"), "a")
+        self.assertIn("┃ > a", self.frames())
 
     def test_description_wraps_and_every_line_gets_the_bar(self):
         self.screen._width = 20
         self.keys("enter")
-        prompt.input("Name", default="x", description="one two three four five six\nsecond")
+        prompt.ask("Name", default="x", description="one two three four five six\nsecond")
         self.assertEqual(self.frames()[:6], [
             "┃ Name", "┃ one two three four", "┃ five six", "┃ second", "┃ > x", "enter submit",
         ])
@@ -102,28 +122,28 @@ class InputTest(PromptCase):
 class KeysLineTest(PromptCase):
     def test_on_by_default_and_off_per_question(self):
         self.keys("enter")
-        prompt.input("Name", default="x", keys=False)
+        prompt.ask("Name", default="x", keys=False)
         self.assertEqual(self.frames(), ["┃ Name", "┃ > x", "✓ Name: x"])
 
     def test_off_everywhere(self):
         prompt.keys = False
         self.keys("enter", "enter")
-        prompt.choice("Pick", ["a"])
-        prompt.choice("Pick", ["a"], keys=True)
+        prompt.choose("Pick", ["a"])
+        prompt.choose("Pick", ["a"], keys=True)
         self.assertEqual(self.frames(), ["┃ Pick", "┃ > a", "✓ Pick: a",
                                          "┃ Pick", "┃ > a", "↑/k up • ↓/j down • enter submit", "✓ Pick: a"])
 
     def test_typing_questions_list_no_letter_keys(self):
         self.keys("enter", "enter")
-        prompt.choice("Pick", ["a"], filter=True)
-        prompt.choices("Pick", ["a"], filter=True)
+        prompt.choose("Pick", ["a"], filter=True)
+        prompt.choose("Pick", ["a"], many=True, filter=True)
         self.assertIn("↑ up • ↓ down • enter submit", self.frames())
         self.assertIn("↑ up • ↓ down • space toggle • enter submit", self.frames())
 
     def test_ascii(self):
         theme.unicode = False
         self.keys("space", "enter", "enter")
-        prompt.choices("Sources", ["tik", "fbk"])
+        prompt.choose("Sources", ["tik", "fbk"], many=True)
         prompt.confirm("Deploy?")
         output = self.screen.out.getvalue()
         self.assertEqual(self.frames()[-10:-5], ["| Sources", "| > [x] tik", "|   [ ] fbk",
@@ -169,10 +189,10 @@ class ConfirmTest(PromptCase):
         self.assertEqual(self.last_line(), "✓ Overwrite? Overwrite")
 
 
-class ChoiceTest(PromptCase):
+class ChooseTest(PromptCase):
     def test_frame_and_done(self):
         self.keys("down", "down", "enter")
-        self.assertEqual(prompt.choice("Source", ["tik", "fbk", "ins", "twt"]), "ins")
+        self.assertEqual(prompt.choose("Source", ["tik", "fbk", "ins", "twt"]), "ins")
         self.assertEqual(self.frames()[:6], [
             "┃ Source", "┃ > tik", "┃   fbk", "┃   ins", "┃   twt", "↑/k up • ↓/j down • enter submit",
         ])
@@ -181,7 +201,7 @@ class ChoiceTest(PromptCase):
     def test_colors(self):
         self.keys("enter")
         with theme.scope(color="16m"):
-            prompt.choice("Source", ["tik", "fbk"])
+            prompt.choose("Source", ["tik", "fbk"])
         output = self.screen.out.getvalue()
         self.assertIn(f"{FUCHSIA}>{END} {GREEN}tik{END}\n", output)
         self.assertIn(f"{FAINT}┃{END}   {TEXT}fbk{END}\n", output)
@@ -190,45 +210,45 @@ class ChoiceTest(PromptCase):
         theme.glyphs.pointer = "->"
         try:
             self.keys("enter")
-            prompt.choice("Source", ["tik", "fbk"])
+            prompt.choose("Source", ["tik", "fbk"])
         finally:
             theme.glyphs.pointer = ">"
         self.assertEqual(self.frames()[1:3], ["┃ -> tik", "┃    fbk"])
 
     def test_mapping_and_default(self):
         self.keys("enter")
-        self.assertEqual(prompt.choice("Source", {"TikTok": "tik", "Instagram": "ins"}, default="ins"), "ins")
+        self.assertEqual(prompt.choose("Source", {"TikTok": "tik", "Instagram": "ins"}, default="ins"), "ins")
         self.assertEqual(self.last_line(), "✓ Source: Instagram")
 
     def test_up_stops_at_the_top_and_down_at_the_bottom(self):
         self.keys("up", "j", "j", "j", "enter")
-        self.assertEqual(prompt.choice("Source", ["a", "b"]), "b")
+        self.assertEqual(prompt.choose("Source", ["a", "b"]), "b")
 
     def test_bad_options(self):
-        with self.assertRaises(prompt.PromptError):
-            prompt.choice("Source", [])
-        with self.assertRaises(prompt.PromptError):
-            prompt.choice("Source", ["a"], default="z")
+        with self.assertRaises(prompt.Error):
+            prompt.choose("Source", [])
+        with self.assertRaises(prompt.Error):
+            prompt.choose("Source", ["a"], default="z")
         self.assertEqual(self.screen.out.getvalue(), "")
 
     def test_filter(self):
         self.keys("i", "n", "enter")
-        self.assertEqual(prompt.choice("Source", ["tik", "fbk", "ins", "twt"], filter=True), "ins")
+        self.assertEqual(prompt.choose("Source", ["tik", "fbk", "ins", "twt"], filter=True), "ins")
         self.assertEqual(self.frames()[-4:-1], ["┃ Source", "┃ > ins", "↑ up • ↓ down • enter submit"])
 
     def test_filter_types_letters_that_are_also_keys(self):
         self.keys("k", "enter")
-        self.assertEqual(prompt.choice("Source", ["tik", "kwai"], filter=True), "kwai")
+        self.assertEqual(prompt.choose("Source", ["tik", "kwai"], filter=True), "kwai")
 
     def test_filter_no_match(self):
         self.keys("z", "enter", "backspace", "t", "w", "enter")
-        self.assertEqual(prompt.choice("Source", ["tik", "twt"], filter=True), "twt")
+        self.assertEqual(prompt.choose("Source", ["tik", "twt"], filter=True), "twt")
         self.assertIn("┃ Source *", self.frames())
         self.assertIn("┃ * no match", self.frames())
 
     def test_validate(self):
         self.keys("enter", "down", "enter")
-        result = prompt.choice("Source", ["a", "b"], validate=lambda value: "not a" if value == "a" else None)
+        result = prompt.choose("Source", ["a", "b"], validate=lambda value: "not a" if value == "a" else None)
         self.assertEqual(result, "b")
         self.assertIn("┃ * not a", self.frames())
 
@@ -239,7 +259,7 @@ class ScrollTest(PromptCase):
     def test_a_long_list_scrolls_with_the_cursor(self):
         self.keys(*["down"] * 5, "enter")
         options = [f"o{n}" for n in range(10)]
-        self.assertEqual(prompt.choice("Pick", options), "o5")
+        self.assertEqual(prompt.choose("Pick", options), "o5")
         frames = self.screen.out.getvalue().split("↑/k up • ↓/j down • enter submit\n")[:-1]
         self.assertEqual(frames[0].splitlines(), ["┃ Pick", "┃ > o0", "┃   o1", "┃   o2", "┃   ↓ 7 more"])
         self.assertEqual(frames[-1].splitlines(), ["┃ Pick", "┃   ↑ 4 more", "┃   o4", "┃ > o5", "┃   o6",
@@ -250,7 +270,7 @@ class ScrollTest(PromptCase):
     def test_redraws_cleanly_on_a_tty(self):
         self.screen._tty = True
         self.keys(*["down"] * 9, "enter")
-        prompt.choice("Pick", [f"o{n}" for n in range(10)])
+        prompt.choose("Pick", [f"o{n}" for n in range(10)])
         output = self.screen.out.getvalue()
         frames = output.split("\r")
         # Each redraw moves up over exactly the lines the previous frame drew.
@@ -262,10 +282,10 @@ class ScrollTest(PromptCase):
         self.assertIn("┃   ↑ 7 more\n", output)
 
 
-class ChoicesTest(PromptCase):
+class ChooseManyTest(PromptCase):
     def test_frame_and_done(self):
         self.keys("space", "down", "down", "space", "enter")
-        self.assertEqual(prompt.choices("Sources", ["tik", "fbk", "ins", "twt"]), ["tik", "ins"])
+        self.assertEqual(prompt.choose("Sources", ["tik", "fbk", "ins", "twt"], many=True), ["tik", "ins"])
         self.assertEqual(self.frames()[-7:-1], ["┃ Sources", "┃   ✓ tik", "┃   • fbk", "┃ > ✓ ins", "┃   • twt",
                                                 "↑/k up • ↓/j down • space toggle • enter submit"])
         self.assertEqual(self.last_line(), "✓ Sources: tik, ins")
@@ -273,7 +293,7 @@ class ChoicesTest(PromptCase):
     def test_color_follows_the_checked_state(self):
         self.keys("space", "down", "enter")
         with theme.scope(color="16m"):
-            prompt.choices("Sources", ["tik", "fbk"])
+            prompt.choose("Sources", ["tik", "fbk"], many=True)
         last_frame = self.screen.out.getvalue().splitlines()[-4:-2]
         muted_dot = "\x1b[38;5;243m•\x1b[0m"
         self.assertEqual(last_frame, [f"{FAINT}┃{END}   {GREEN}✓{END} {GREEN}tik{END}",
@@ -281,25 +301,39 @@ class ChoicesTest(PromptCase):
 
     def test_default_and_toggle_off(self):
         self.keys("space", "enter")
-        self.assertEqual(prompt.choices("Sources", {"TikTok": "tik", "X": "twt"}, default=["tik", "twt"]), ["twt"])
+        self.assertEqual(prompt.choose("Sources", {"TikTok": "tik", "X": "twt"}, many=True, default=["tik", "twt"]), ["twt"])
 
     def test_min_and_max(self):
         self.keys("enter", "space", "down", "space", "enter", "space", "enter")
-        self.assertEqual(prompt.choices("Sources", ["a", "b"], min=1, max=1), ["a"])
+        self.assertEqual(prompt.choose("Sources", ["a", "b"], many=True, min=1, max=1), ["a"])
         self.assertIn("┃ * choose at least 1", self.frames())
         self.assertIn("┃ * choose at most 1", self.frames())
 
+    def test_max_alone(self):
+        # Checking all three is refused; unchecking the last one, under the cursor, is accepted.
+        self.keys("space", "down", "space", "down", "space", "enter", "space", "enter")
+        self.assertEqual(prompt.choose("Tabs", ["posts", "reels", "tagged"], many=True, max=2), ["posts", "reels"])
+        self.assertIn("┃ * choose at most 2", self.frames())
+
+    def test_min_and_max_need_many(self):
+        # Without many there is one answer, so a limit on how many is a mistake, not ignored.
+        with self.assertRaises(TypeError):
+            prompt.choose("Sources", ["a"], min=1)  # type: ignore[call-overload]
+        with self.assertRaises(TypeError):
+            prompt.choose("Sources", ["a"], max=1)  # type: ignore[call-overload]
+        self.assertEqual(self.screen.out.getvalue(), "")
+
     def test_bad_limits_and_default(self):
         with self.assertRaises(ValueError):
-            prompt.choices("Sources", ["a"], min=-1)
+            prompt.choose("Sources", ["a"], many=True, min=-1)
         with self.assertRaises(ValueError):
-            prompt.choices("Sources", ["a"], min=2, max=1)
-        with self.assertRaises(prompt.PromptError):
-            prompt.choices("Sources", ["a"], default=["z"])
+            prompt.choose("Sources", ["a"], many=True, min=2, max=1)
+        with self.assertRaises(prompt.Error):
+            prompt.choose("Sources", ["a"], many=True, default=["z"])
 
     def test_filter_keeps_checks(self):
         self.keys("space", "b", "space", "enter")
-        self.assertEqual(prompt.choices("Sources", ["a", "b"], filter=True), ["a", "b"])
+        self.assertEqual(prompt.choose("Sources", ["a", "b"], many=True, filter=True), ["a", "b"])
 
 
 class KeymapTest(PromptCase):
@@ -315,11 +349,11 @@ class KeymapTest(PromptCase):
         prompt.keymap.no = ("q",)
         prompt.keymap.interrupt = ("escape",)
         self.keys("s", "w", "s", "tab")
-        self.assertEqual(prompt.choice("Pick", ["a", "b"]), "b")
+        self.assertEqual(prompt.choose("Pick", ["a", "b"]), "b")
         self.keys("x", "tab")
-        self.assertEqual(prompt.choices("Pick", ["a", "b"]), ["a"])
+        self.assertEqual(prompt.choose("Pick", ["a", "b"], many=True), ["a"])
         self.keys("a", "b", "ctrl+h", "tab")
-        self.assertEqual(prompt.input("Name"), "a")
+        self.assertEqual(prompt.ask("Name"), "a")
         self.keys("o")
         self.assertIs(prompt.confirm("Sure?"), True)
         self.keys("q")
@@ -330,13 +364,13 @@ class KeymapTest(PromptCase):
         self.assertIs(prompt.confirm("Sure?", default=True), False)
         self.keys("escape")
         with self.assertRaises(KeyboardInterrupt):
-            prompt.input("Name")
+            prompt.ask("Name")
 
     def test_freed_key_and_empty_action(self):
         prompt.keymap.up = ("up",)
         prompt.keymap.no = ()
         self.keys("down", "k", "enter")
-        self.assertEqual(prompt.choice("Pick", ["a", "b"]), "b")
+        self.assertEqual(prompt.choose("Pick", ["a", "b"]), "b")
         self.keys("enter")
         prompt.confirm("Sure?")
         self.assertIn("←/h left • →/l right • y yes • enter submit", self.frames())
@@ -356,7 +390,7 @@ class KeymapTest(PromptCase):
     def test_ctrl_c(self):
         self.keys("ctrl+c")
         with self.assertRaises(KeyboardInterrupt):
-            prompt.choice("Pick", ["a"])
+            prompt.choose("Pick", ["a"])
 
 
 class WithoutKeysTest(PromptCase):
@@ -364,32 +398,32 @@ class WithoutKeysTest(PromptCase):
         self.screen.readkey = lambda: self.fail("read a key")
         with prompt.defaults():
             self.assertIs(prompt.confirm("Deploy?", default=True), True)
-            self.assertEqual(prompt.input("Name", default="ada"), "ada")
-            self.assertEqual(prompt.choice("Source", ["a", "b"], default="b"), "b")
-            self.assertEqual(prompt.choices("Sources", ["a", "b"], default=[]), [])
-            with self.assertRaises(prompt.PromptError):
-                prompt.input("Name")
-            with self.assertRaises(prompt.PromptError):
-                prompt.choice("Source", ["a"])
+            self.assertEqual(prompt.ask("Name", default="ada"), "ada")
+            self.assertEqual(prompt.choose("Source", ["a", "b"], default="b"), "b")
+            self.assertEqual(prompt.choose("Sources", ["a", "b"], many=True, default=[]), [])
+            with self.assertRaises(prompt.Error):
+                prompt.ask("Name")
+            with self.assertRaises(prompt.Error):
+                prompt.choose("Source", ["a"])
         self.assertEqual(self.screen.out.getvalue(), "")
 
     def test_non_interactive_screen(self):
         self.screen._interactive = False
-        self.assertEqual(prompt.secret("Token", default="t"), "t")
+        self.assertEqual(prompt.ask("Token", secret=True, default="t"), "t")
         self.assertIs(prompt.confirm("Deploy?"), False)
-        with self.assertRaises(prompt.PromptError):
-            prompt.choices("Sources", ["a"])
+        with self.assertRaises(prompt.Error):
+            prompt.choose("Sources", ["a"], many=True)
 
     def test_no_per_call_theme(self):
         with self.assertRaises(TypeError):
-            prompt.input("Name", default="a", theme=theme)  # type: ignore[call-arg]
+            prompt.ask("Name", default="a", theme=theme)  # type: ignore[call-arg]
 
 
 class LiveAreaTest(PromptCase):
     def test_done_line_replaces_the_frame_and_help_line(self):
         self.screen._tty = True
         self.keys("enter")
-        prompt.input("Name", default="a")
+        prompt.ask("Name", default="a")
         self.assertEqual(self.screen.out.getvalue(), "┃ Name\n┃ > a\nenter submit\r\x1b[2A\x1b[J✓ Name: a\n")
 
     def test_prompt_while_bar_is_open_on_tty(self):
@@ -420,7 +454,7 @@ class LiveAreaTest(PromptCase):
             if name == "second":
                 first_asking.wait(2)
                 second_started.set()
-            answers[name] = prompt.input(name.title(), default=name, keys=False)
+            answers[name] = prompt.ask(name.title(), default=name, keys=False)
 
         self.screen.readkey = readkey
         threads = [threading.Thread(target=ask, args=(name,), name=name) for name in ("first", "second")]
