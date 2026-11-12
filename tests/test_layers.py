@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
 
 # step-6 bridge: the sources that still import flnd.session; each port removes its own entry.
-BRIDGED = {"fbk", "tik", "tlg", "twt"}
+BRIDGED = {"fbk", "tik", "tlg"}
 # What a bridged source may import besides rule 1's.
 BRIDGE_IMPORTS = {"flnd.session"}
 # What cli.py imports today that rule 3 doesn't allow; step 7 (the engine API) empties it.
