@@ -28,6 +28,7 @@ from flnd import Engine, Range, __version__
 from flnd.sources import SOURCES
 from shared import cli, cookies, fmt, log, prompt, theme
 
+# flnd's data folder, relative to the directory flnd runs in: the logins, history and saved settings live there.
 HOME = Path(".flnd")
 METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
                  "phone": "With your phone number and a code"}
@@ -37,11 +38,13 @@ BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "
 
 
 def describe() -> str:
+    """The one-line summary that opens the help, naming every source in the registry."""
     names = [source.name for source in SOURCES.values()]
     return f"Dead simple media downloader for {', '.join(names[:-1])}, and {names[-1]}."
 
 
 def epilog() -> str:
+    """The help's footer: the target forms, each source's categories and the examples, generated from the sources."""
     # Each form a source's routes read, placeholders in angle brackets, so help can't drift from them.
     forms = "\n".join(f"  {form}" for source in SOURCES.values() for form in source.forms)
     categories = "\n".join(f"  {code}: {', '.join(source.categories)}" for code, source in SOURCES.items())
@@ -112,6 +115,8 @@ def download(
     """
     try:
         # Every value is checked before anything starts, so a usage error never follows any work.
+        # Only ValueError is a usage error: the engine raises it for a bad option or target, with the
+        # text to show. Anything else is a bug or a failed run, and propagates to report it.
         report = Engine(home=HOME).download(targets, categories=categories, time=Range() if time is None else time,
                                             image=image, video=video, audio=audio, classify=classify)
     except ValueError as error:
@@ -135,6 +140,7 @@ def sync(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)]) -> int:
     """
     try:
         # The engine logs each target's line and the totals, which only it can count (the folder's files and size).
+        # As for download, only ValueError is a usage error; the rest propagates.
         report = Engine(home=HOME).sync(targets)
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
@@ -148,7 +154,8 @@ def login_command() -> int:
     Every answer is asked, in a terminal: the source, then the method when there are several,
     then what the method needs.
     """
-    # Logging in is a one-time step done by a person, so there is no flag form for scripts.
+    # Logging in is a one-time step done by a person, so there is no flag form for scripts. With no
+    # terminal there is nobody to answer the questions, so the command refuses before asking any.
     if not theme.screen.interactive:
         raise cli.UsageError("flnd login asks its questions in a terminal")
     engine = Engine(home=HOME)
@@ -167,6 +174,8 @@ def login_command() -> int:
             answers.update(browser=browser, profile=_ask_profile(browser))
     try:
         message = engine.login(code, method, **answers)
+    # A login that didn't work is an expected result, shown as the error with what to do instead; any
+    # other exception is a bug and propagates.
     except Engine.LoginError as error:
         log.error("{error}", error=error)
         return 1
@@ -200,7 +209,7 @@ def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "
 
 def _ask_source(engine: Engine) -> str:
     """Ask which source to log in to, marking the ones logged in or holding only an API key, and return its code."""
-    # tlg keeps its API key before its login; the list tells the two apart.
+    # tlg keeps its API key before its login; the list tells the two apart, by the mark after its name.
     logins = engine.logins
     options = {f"{source.name} ({code})" + (f" · {logins[code]}" if code in logins else ""): code
                for code, source in SOURCES.items()}
@@ -219,5 +228,6 @@ def _ask_profile(browser: str) -> Optional[str]:
 
 
 def _readable(raw: str) -> Optional[str]:
+    """The validator for the cookie file's path: None when it names a file, else the message to ask again with."""
     path = Path(raw.strip()).expanduser()
     return None if path.is_file() else f"no file at {raw.strip() or '(empty)'}"
