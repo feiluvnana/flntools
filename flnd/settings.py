@@ -4,7 +4,7 @@ A row is keyed `<code>:<value>` and holds the target's kind (so `flnd sync` can 
 resolving it again), each saved setting as the command line writes it ("webp,mid") or null when it
 is off, the time it was recorded, and `complete`: each category whose listing last reached its end
 by itself, with the day it did (plan/phase-6/redesign.md, A9 rule 3; `sync` stops at saved posts
-only with that record, from step 10). `--from` and `--time` describe one run, so they are never
+only with that record). `--from` and `--time` describe one run, so they are never
 saved. `Engine.download` and `Engine.sync` decide what to save; this module only reads and writes.
 
     saved = settings.choices(settings.rows(home).get(settings.key(target), {}))

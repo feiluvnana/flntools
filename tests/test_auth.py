@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import httpx
+
 from flnd.common import auth
 from flnd.sources.ins import Instagram
 from shared import cookies, crypto, kv, theme
@@ -189,6 +191,69 @@ class VaultedCookiesTest(AuthCase):
         self.assertFalse(auth.api_key_saved(self.home, "tlg"))
         self.assertFalse(auth.logout(self.home, "tlg"))
         self.assertFalse(self.home.exists())
+
+
+class WriteBackTest(AuthCase):
+    """B5: the cookies the site rotated during a run update the saved jar, for names it already holds."""
+
+    def setUp(self):
+        super().setUp()
+        self.jar = [{"name": "ct0", "value": "old-ct0", "domain": ".x.example", "path": "/", "expires": 1900000000},
+                    {"name": "auth_token", "value": "login-token", "domain": ".x.example", "path": "/"}]
+        auth.save(self.home, "twt", cookies.Jar(self.jar))
+
+    def current(self, **values):
+        client = httpx.Cookies()
+        for name, value in values.items():
+            client.set(name, value, domain=".x.example", path="/")
+        return client.jar
+
+    def test_a_rotated_ct0_is_saved_and_the_rest_kept(self):
+        self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="new-ct0", auth_token="login-token")),
+                         ["ct0"])
+        saved = auth.load(self.home, "twt")
+        self.assertEqual((saved["ct0"], saved["auth_token"], len(saved)), ("new-ct0", "login-token", 2))
+        self.assertEqual([cookie["expires"] for cookie in saved if cookie["name"] == "ct0"], [1900000000])
+
+    def test_a_rotated_cookie_for_a_subdomain_still_updates_the_one_it_replaces(self):
+        client = httpx.Cookies()
+        client.set("ct0", "new-ct0", domain="api.x.example", path="/")
+        self.assertEqual(auth.write_back(self.home, "twt", client.jar), ["ct0"])
+        self.assertEqual(auth.load(self.home, "twt")["ct0"], "new-ct0")
+
+    def test_a_new_tracking_cookie_is_never_added(self):
+        self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="old-ct0", _ga="track", guest_id="g")), [])
+        self.assertEqual(auth.load(self.home, "twt").names, ["ct0", "auth_token"])
+        self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="new-ct0", _ga="track")), ["ct0"])
+        self.assertEqual(auth.load(self.home, "twt").names, ["ct0", "auth_token"])
+
+    def test_nothing_is_written_when_nothing_changed_or_there_is_no_login(self):
+        with mock.patch.object(auth, "save") as save:
+            self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="old-ct0", auth_token="login-token")), [])
+            # An empty value is a cookie the site is clearing, never a refresh.
+            self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="")), [])
+            self.assertEqual(auth.write_back(self.home, "twt", []), [])
+            self.assertEqual(auth.write_back(self.home, "tlg", self.current(ct0="x")), [])
+            self.assertEqual(auth.write_back(self.home / "never", "twt", self.current(ct0="x")), [])
+        save.assert_not_called()
+        self.assertFalse((self.home / "never").exists())
+
+    def test_no_cookie_value_reaches_a_log_line(self):
+        with mock.patch.object(auth, "log") as log:
+            auth.write_back(self.home, "twt", self.current(ct0="new-ct0"))
+            with mock.patch.object(auth, "save", side_effect=OSError("disk full: new-ct0")):
+                self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="newer-ct0")), [])
+        text = repr(log.mock_calls)
+        for value in ("old-ct0", "new-ct0", "newer-ct0", "login-token"):
+            self.assertNotIn(value, text)
+        self.assertIn("ct0", repr(log.debug.mock_calls))
+        log.warn.assert_called_once()
+
+    def test_a_vault_that_cannot_be_written_warns_and_does_not_fail(self):
+        with mock.patch.object(auth, "save", side_effect=OSError("read-only")), mock.patch.object(auth, "log") as log:
+            self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="new-ct0")), [])
+        log.warn.assert_called_once()
+        self.assertEqual(auth.load(self.home, "twt")["ct0"], "old-ct0")
 
 
 class VaultTest(AuthCase):

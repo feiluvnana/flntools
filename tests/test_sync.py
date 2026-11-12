@@ -40,7 +40,7 @@ class Site:
 
 def recorded(record):
     """An `Engine._run` that only calls `record(targets, options)`, and reports each target done with nothing written."""
-    def run(engine, targets, options):
+    def run(engine, targets, options, sync=False):
         record(targets, options)
         return [(TargetReport(target, (), 0), ()) for target in targets]
 

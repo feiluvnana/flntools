@@ -266,7 +266,7 @@ class Engine:
             for tally, folder in zip(tallies, folders):
                 repair.repair(history, folder, index[folder], tally)
         log.info("Storage: {path}", path=(self.home / "downloads").resolve())
-        reports = self._fetch(chosen)
+        reports = self._fetch(chosen, sync=True)
         with self._history() as history:
             for tally, folder in zip(tallies, folders):
                 repair.count(history, folder, tally)
@@ -435,17 +435,18 @@ class Engine:
                 # finished, since the next download with the same option would see no change.
                 settings.record(self.home, [(target, chosen[target])], given=given)
 
-    def _fetch(self, chosen: Sequence[tuple[Target, Options]]) -> list[TargetReport]:
+    def _fetch(self, chosen: Sequence[tuple[Target, Options]], *, sync: bool = False) -> list[TargetReport]:
         """Run the targets, those with the same options together, and give their reports in the order of `chosen`.
 
-        Each category that listed to its end is recorded as complete in `targets.db` (A9 rule 3).
+        Each category that listed to its end is recorded as complete in `targets.db` (A9 rule 3);
+        with `sync`, a category with that record stops after 5 saved posts in a row.
         """
         groups: dict[Options, list[int]] = {}
         for number, (_, options) in enumerate(chosen):
             groups.setdefault(options, []).append(number)
         reports: dict[int, TargetReport] = {}
         for options, numbers in groups.items():
-            ran = self._run([chosen[number][0] for number in numbers], options)
+            ran = self._run([chosen[number][0] for number in numbers], options, sync=sync)
             for number, (report, complete) in zip(numbers, ran):
                 reports[number] = report
                 settings.complete(self.home, report.target, complete)
@@ -455,7 +456,8 @@ class Engine:
                 raise KeyboardInterrupt
         return [reports[number] for number in range(len(chosen))]
 
-    def _run(self, targets: Sequence[Target], options: Options) -> list[tuple[TargetReport, tuple[str, ...]]]:
+    def _run(self, targets: Sequence[Target], options: Options, *,
+             sync: bool = False) -> list[tuple[TargetReport, tuple[str, ...]]]:
         """Download every target with one set of options, and give each one's report and complete categories.
 
             [(report, complete)] = engine._run(engine.resolve(["ins:example_user"]), Options(categories=("reels",)))
@@ -463,6 +465,7 @@ class Engine:
         Args:
             targets: the targets to download, as `resolve` gives them.
             options: what to take from each target and what to do with the files.
+            sync: stop a `newest_first` category at saved posts when its last listing was complete.
 
         Returns:
             One (report, the categories that listed to their end) per target, in the order given.
@@ -492,7 +495,7 @@ class Engine:
             work = [(self.sources[code](), [(number, targets[number], rows.add(str(targets[number])))
                                             for number in numbers])
                     for code, numbers in groups.items()]
-            for result in worker.as_completed(partial(_run_group, run_settings, done), work,
+            for result in worker.as_completed(partial(_run_group, run_settings, done, sync), work,
                                               concurrency=max(len(work), 1)):
                 if result.ok:
                     continue
@@ -736,7 +739,8 @@ def _follow(url: str) -> str:
 Done = MutableMapping[int, "tuple[TargetReport, tuple[str, ...]]"]
 
 
-def _run_group(run_settings: Settings, done: Done, work: tuple[Source, list[tuple[int, Target, Row]]]) -> None:
+def _run_group(run_settings: Settings, done: Done, sync: bool,
+               work: tuple[Source, list[tuple[int, Target, Row]]]) -> None:
     """Run one source's targets, one after another, on one worker, filling `done` as each ends.
 
     A target that ends is in `done` even when a later one stops the whole group, so its report
@@ -753,8 +757,12 @@ def _run_group(run_settings: Settings, done: Done, work: tuple[Source, list[tupl
                     done[number] = (TargetReport(target, (), 0, error="not logged in; run flnd login"), ())
                 return
             log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
-        with _connected(run, account):
-            _run_targets(run, rows, done)
+        try:
+            with _connected(run, account):
+                _run_targets(run, rows, done, sync)
+        finally:
+            # The cookies the site refreshed, even when the group failed or Ctrl-C stopped it (B5).
+            auth.write_back(run_settings.home, source.code, run.http.cookies.jar)
 
 
 @contextmanager
@@ -776,7 +784,7 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
         run.run_async(manager.__aexit__(None, None, None))
 
 
-def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done) -> None:
+def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done, sync: bool = False) -> None:
     """Each target of one source through the job, with a person's pause between them."""
     for index, (number, target, row) in enumerate(rows):
         if index and not net.stopping.is_set():
@@ -788,5 +796,5 @@ def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done
             row.fail()
             done[number] = (TargetReport(target, (), 0, error=job.STOPPED), ())
             continue
-        result = job.download(run, target, row)
+        result = job.download(run, target, row, sync=sync)
         done[number] = (TargetReport(target, result.written, result.skipped, error=result.error), result.complete)

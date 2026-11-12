@@ -16,9 +16,13 @@ uv run flnd download ins:example_user
 ```
 
 Or `make setup`, then `make flnd ARGS="download ins:example_user"`. Every task (`setup`, `test`,
-`lint`, `type`, `check`, `flnd`, `dist`) is in `scripts/dev.py`, so on Windows, which has no make,
+`lint`, `type`, `check`, `flnd`, `dist`, `try`) is in `scripts/dev.py`, so on Windows, which has no make,
 run `uv run --no-project scripts/dev.py <task>`, or install make with `winget install ezwinports.make`.
 `uv tool install --editable .` puts `flnd` on your PATH instead.
+
+`make try ARGS="ins:example_user --from reels --time 2026-01-01,"` is for working on a source: it runs
+the listing for real with the saved login in `.flnd`, downloads and records nothing, and prints each post
+with its planned file paths and URLs (without their signed query).
 
 ffmpeg comes with `uv sync`, as the `imageio-ffmpeg` dependency; flnd uses it to join Facebook and
 Instagram videos with their sound, and to compress videos and audio. Where that package has no wheel (musl Linux,

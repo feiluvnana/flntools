@@ -90,6 +90,19 @@ def flnd(python: str, args: list[str]) -> None:
     run(["uv", "run", "--python", python, "flnd", *args])
 
 
+def try_(python: str, args: list[str]) -> None:
+    """Run a source for real on one target and print what it would save, downloading and recording nothing.
+
+        dev.py try ins:example_user --from reels --time 2026-01-01,
+
+    The listing is live (network, browser, login) with the saved login of the `.flnd` in this
+    folder; the post tree comes out with each file's planned path and its URL without the query,
+    so no signed token is printed. This is gallery-dl's `--simulate`, kept out of `flnd` itself.
+    The work is `flnd/dry.py`, which needs the project's code, so it runs inside the environment.
+    """
+    run(["uv", "run", "--python", python, "python", "-m", "flnd.dry", *args])
+
+
 def api(python: str, args: list[str]) -> None:
     """Write `tests/data/api.txt`, the API snapshot, from inside the project environment.
 
@@ -451,7 +464,8 @@ def run(command: list[str], *, capture_output: bool = False) -> subprocess.Compl
 
 
 TASKS: dict[str, Callable[[str, list[str]], None]] = {
-    task.__name__: task for task in (setup, test, lint, type, check, api, flnd, dist)
+    # `try` is a keyword, so its function is `try_` and the task keeps the plain name.
+    task.__name__.rstrip("_"): task for task in (setup, test, lint, type, check, api, flnd, dist, try_)
 }
 
 

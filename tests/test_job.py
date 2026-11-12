@@ -23,7 +23,7 @@ from test_engine import EngineCase, compressing
 
 from flnd import cli as flnd_cli
 from flnd import engine as engine_module
-from flnd import job, site as site_module
+from flnd import Engine, job, site as site_module
 from flnd.common import net
 from flnd.common.compress import Choice
 from flnd.session import Options, single_targets
@@ -354,6 +354,124 @@ class TimeTest(unittest.TestCase):
         self.assertEqual(self.listed(Dated, Options(until=date(2026, 6, 30))), ["undated", "in"])
 
 
+class SyncStopTest(JobCase):
+    """`sync` stops a `newest_first` category after 5 saved posts in a row, only once its listing has reached its end."""
+
+    def setUp(self):
+        super().setUp()
+        self.ids = [f"p{number}" for number in range(8)]
+        self.listed, self.finished, self.fail_at = [], [], []
+        test = self
+
+        class Feed(Source):
+            code, name, domains = "fed", "Feed", ("example.com",)
+            key = "{id}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category(newest_first=True)
+            def posts(self, site, user):
+                try:
+                    for post_id in list(test.ids):
+                        if post_id in test.fail_at:
+                            raise FetchError("cut")
+                        test.listed.append(post_id)
+                        yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, 1))
+                finally:
+                    test.finished.append(True)
+
+        self.engine = Engine(home=self.home, sources={"fed": Feed})
+
+    def record(self):
+        with kv.open(self.home / "targets.db", table="targets") as rows:
+            return rows.get("fed:example_user", {}).get("complete")
+
+    def forget_record(self):
+        with kv.open(self.home / "targets.db", table="targets") as rows:
+            row = dict(rows["fed:example_user"])
+            row.pop("complete")
+            rows["fed:example_user"] = row
+
+    def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
+        self.assertTrue(self.engine.download(["fed:example_user"]).ok)
+        self.assertEqual(self.record(), {"posts": datetime.date.today().isoformat()})
+        self.ids = ["n1", "n2", *self.ids]
+        self.listed.clear(), self.finished.clear()
+        report = self.engine.sync(["fed:example_user"])
+        self.assertEqual(self.listed, ["n1", "n2", "p0", "p1", "p2", "p3", "p4"])
+        self.assertEqual(self.finished, [True])
+        self.assertEqual(sorted(path.name for path in report.targets[0].written), ["2026-01-01_n1.jpg", "2026-01-01_n2.jpg"])
+        # It stopped early, so the record is the earlier one, still there.
+        self.assertIn("posts", self.record())
+
+    def test_a_saved_run_shorter_than_5_does_not_stop_it(self):
+        self.engine.download(["fed:example_user"])
+        # Remove two saved files in the middle: the 4 saved ones before it never reach 5, then a new one resets.
+        for name in ("p2", "p3"):
+            next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
+        with kv.open(self.home / "history.db", table="downloads") as history:
+            for name in ("p2", "p3"):
+                del history[f"fed:{name}"]
+        self.listed.clear()
+        report = self.engine.sync(["fed:example_user"])
+        self.assertEqual(len(report.targets[0].written), 2)
+        # p0, p1 saved, p2 and p3 fetched again, then p4..p7: 4 saved in a row never stop it.
+        self.assertEqual(self.listed, self.ids)
+
+    def test_without_a_record_sync_lists_to_the_end(self):
+        self.engine.download(["fed:example_user"])
+        self.forget_record()
+        self.listed.clear()
+        self.engine.sync(["fed:example_user"])
+        self.assertEqual(self.listed, self.ids)
+        # The listing reached its end, so it is recorded now, and the next sync stops.
+        self.assertIsNotNone(self.record())
+        self.listed.clear()
+        self.engine.sync(["fed:example_user"])
+        self.assertEqual(self.listed, self.ids[:5])
+
+    def test_an_interrupted_listing_records_none_so_sync_lists_everything(self):
+        self.fail_at = ["p6"]
+        report = self.engine.download(["fed:example_user"])
+        self.assertFalse(report.ok)
+        self.assertIsNone(self.record())
+        self.fail_at, self.listed = [], []
+        self.engine.sync(["fed:example_user"])
+        # The first 6 were saved, but nothing says the feed was ever read to its end.
+        self.assertEqual(self.listed, self.ids)
+        self.assertIsNotNone(self.record())
+
+    def test_download_never_stops_at_saved_posts(self):
+        self.engine.download(["fed:example_user"])
+        self.listed.clear()
+        report = self.engine.download(["fed:example_user"])
+        self.assertEqual(self.listed, self.ids)
+        self.assertEqual((report.files, report.targets[0].skipped), (0, 8))
+
+    def test_a_feed_that_is_not_newest_first_is_never_stopped(self):
+        class Plain(Source):
+            code, name, domains = "pln", "Plain", ("example.com",)
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                for number in range(8):
+                    self.listed.append(number)
+                    yield Post(f"q{number}", [File(f"{CDN}/q{number}.jpg")])
+
+        Plain.listed = []
+        engine = Engine(home=self.home, sources={"pln": Plain})
+        engine.download(["pln:example_user"])
+        Plain.listed.clear()
+        engine.sync(["pln:example_user"])
+        self.assertEqual(len(Plain.listed), 8)
+
+
 class AsyncTest(JobCase):
     def test_async_routes_and_categories_run_on_the_sources_loop_with_no_handover_thread(self):
         threads = []
@@ -563,9 +681,9 @@ class CtrlCTest(JobCase):
         self.rows = []
         real = job.download
 
-        def spy(run, target, row):
+        def spy(run, target, row, **options):
             self.rows.append(row)
-            return real(run, target, row)
+            return real(run, target, row, **options)
 
         patcher = mock.patch.object(job, "download", spy)
         patcher.start()

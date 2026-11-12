@@ -298,6 +298,29 @@ class LoginStateTest(EngineCase):
         self.assertEqual(self.requests[0].headers["cookie"], "sid=1; other=2")
         self.assertFalse(any("not logged in" in line for line in self.lines()))
 
+    def test_the_cookies_the_site_rotated_are_saved_in_the_vault_after_the_group(self):
+        self.log_in("aaa", sid="1", ct0="old")
+        source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"), needs=("sid",))
+        self.routes["https://api.aaa.example/me"] = httpx.Response(200, json={}, headers=[
+            ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
+            ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
+        self.run_engine(source, targets=["aaa:a", "aaa:b"])
+        saved = auth.load(self.home, "aaa")
+        self.assertEqual((saved["ct0"], saved["sid"], "_tracker" in saved), ("new-ct0", "1", False))
+        self.assertNotIn("new-ct0", "\n".join(self.lines()))
+
+    def test_a_failed_group_still_saves_the_rotated_cookies(self):
+        self.log_in("aaa", sid="1", ct0="old")
+
+        def route(site):
+            site.fetch("https://api.aaa.example/me")
+            raise RuntimeError("blocked")
+
+        self.routes["https://api.aaa.example/me"] = httpx.Response(
+            200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
+        self.run_engine(make_source("aaa", route, needs=("sid",)), targets=["aaa:a"])
+        self.assertEqual(auth.load(self.home, "aaa")["ct0"], "new-ct0")
+
     def test_requires_login_fails_the_targets(self):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
@@ -581,7 +604,7 @@ class ApiTest(EngineCase):
     def test_text_and_values_are_read_alike(self):
         runs = []
 
-        def run(engine, targets, options):
+        def run(engine, targets, options, sync=False):
             runs.append(options)
             return [(TargetReport(target, (), 0), ()) for target in targets]
 
@@ -649,7 +672,7 @@ class ApiTest(EngineCase):
         self.assertFalse(self.home.exists())
         # Without --from the same link downloads whole.
         runs = []
-        with mock.patch.object(Engine, "_run", lambda engine, targets, options: runs.append(options) or
+        with mock.patch.object(Engine, "_run", lambda engine, targets, options, sync=False: runs.append(options) or
                                [(TargetReport(target, (), 0), ()) for target in targets]):
             self.assertTrue(engine.download(["https://www.instagram.com/p/C1abcDEFghi/"]).ok)
         self.assertEqual(runs, [Options()])

@@ -28,7 +28,7 @@ class TasksTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / "scripts" / "dev.py"), *argv],
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 2, argv)
-            self.assertIn("tasks: setup test lint type check api flnd dist", result.stderr)
+            self.assertIn("tasks: setup test lint type check api flnd dist try", result.stderr)
 
     def test_python_option_and_passthrough(self):
         with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run:
@@ -60,6 +60,20 @@ class TasksTest(unittest.TestCase):
             self.assertEqual(dev.main(["api"]), 0)
         self.assertEqual(run.call_args.args[0], ["uv", "run", "--python", "3.14", "python", "-c", dev.WRITE_API])
         self.assertIn("dev.write_api()", dev.WRITE_API)
+
+    def test_try_runs_the_dry_run_inside_the_environment_and_passes_its_arguments_through(self):
+        # The listing needs flnd's code, which this --no-project interpreter lacks, so it runs through uv.
+        with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run, \
+                mock.patch.dict(dev.os.environ, {"PYTHON": ""}):
+            self.assertEqual(dev.main(["try", "ins:example_user", "--from", "reels", "--time", "2026-01-01,"]), 0)
+        self.assertEqual(run.call_args.args[0], ["uv", "run", "--python", "3.14", "python", "-m", "flnd.dry",
+                                                 "ins:example_user", "--from", "reels", "--time", "2026-01-01,"])
+        self.assertEqual(run.call_args.kwargs["cwd"], dev.ROOT)
+        self.assertIsNone(run.call_args.kwargs.get("shell"))
+
+    def test_try_exits_with_the_failing_commands_code(self):
+        with mock.patch.object(dev.subprocess, "run", side_effect=subprocess.CalledProcessError(1, ["uv"])):
+            self.assertEqual(dev.main(["try", "ins:example_user"]), 1)
 
     def test_dist_writes_ffmpeg_source_in_utf8(self):
         def run(command, **kwargs):

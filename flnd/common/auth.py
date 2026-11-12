@@ -32,7 +32,8 @@ import sqlite3
 import time
 # Only `token_bytes`: `secrets` is this module's own function, the vault's entry point.
 from secrets import token_bytes
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Iterable, Iterator, MutableMapping
+from http.cookiejar import Cookie
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -150,6 +151,49 @@ def save(home: Path, code: str, jar: cookies.Jar) -> None:
     """
     with secrets(home, code) as vault:
         vault[COOKIES] = json.dumps(fix_domains(jar).raw)
+
+
+def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
+    """Save the cookies the site refreshed during a run into the vault's jar, for the names already in it.
+
+        auth.write_back(Path(".flnd"), "twt", run.http.cookies.jar)     # ["ct0"]
+
+    Args:
+        home: flnd's folder, `.flnd`.
+        code: the source's code.
+        current: the run's client cookies, as `http.cookiejar.Cookie`s (`client.cookies.jar`).
+
+    Returns:
+        The names whose value changed and were saved: twt's `ct0`, tik's `msToken`, ins's
+        `csrftoken`. Empty, with nothing written, when none changed.
+
+    A cookie is matched by name and domain (a rotated one may come for a subdomain), and only
+    names the jar already holds are updated, so a run never adds a tracking cookie to a login.
+    A failure to save is warned of, without a value, and never fails the run.
+    """
+    fresh = list(current)
+    if not fresh or not (home / DB_FILE).is_file():
+        return []
+    try:
+        saved = load(home, code).raw
+        changed: list[str] = []
+        for cookie in saved:
+            domain, path = str(cookie.get("domain", "")).lstrip("."), cookie.get("path") or "/"
+            same = [found for found in fresh if found.name == cookie["name"]
+                    and (found.domain.lstrip(".") == domain or found.domain.lstrip(".").endswith("." + domain))]
+            exact = [found for found in same if found.domain.lstrip(".") == domain and found.path == path]
+            if (exact or same) and (new := (exact or same)[-1]).value not in (None, "", cookie["value"]):
+                cookie["value"] = new.value
+                if new.expires is not None and isinstance(cookie.get("expires"), (int, float)):
+                    cookie["expires"] = new.expires
+                changed.append(str(cookie["name"]))
+        if changed:
+            save(home, code, cookies.Jar(saved))
+            log.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
+        return changed
+    except (OSError, ValueError) as error:
+        log.warn("{code}: could not save refreshed cookies ({kind})", code=code, kind=type(error).__name__)
+        return []
 
 
 def load(home: Path, code: str) -> cookies.Jar:
