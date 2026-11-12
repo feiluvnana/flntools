@@ -2,8 +2,6 @@
 
 import json
 import unittest
-from contextlib import nullcontext
-from datetime import date
 from unittest import mock
 
 import httpx
@@ -170,7 +168,7 @@ EVERYTHING = {
         {"item": item(tweet("600", [photo("parent")], author=OTHER_ID))},
         {"item": item(tweet("601", [photo("reply")], reply_to="600"))}]})),
 }
-# What the `run(session)` version of twt saved for those answers, recorded with the old FakeSession
+# What the `run(session)` version of twt saved for those answers, recorded through its fake session
 # before the port (the history key of a profile picture was then none, which meant its path):
 # (path, key) in the order saved. The photo `100_0` is on the Media tab too, and saved once. Each
 # key is without the source's code, which the history adds.

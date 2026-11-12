@@ -8,11 +8,10 @@ from typing import ClassVar, Iterator, Optional
 
 from typing_extensions import assert_type
 
-from flnd.session import Session, TargetSession
 from flnd.site import LoginSite, TargetSite
 from flnd.source import File, Login, Post, Site, Source
 from shared import cookies, http, log, media, prompt, theme, worker
-from tests.fakes import FakeSession, FakeSite
+from tests.fakes import FakeSite
 
 
 def double(number: int) -> int:
@@ -93,14 +92,6 @@ class StringNeeds(Source):
 class StringCategories(Source):
     code: ClassVar[str] = "abc"
     categories = "posts"  # pyright: ignore[reportAssignmentType]
-
-
-def sessions(engine: TargetSession, fake: FakeSession) -> None:
-    # Both the engine's session and the tests' fake match the protocol sources are written against.
-    checked: Session = engine
-    checked = fake
-    assert_type(checked.save("https://a.example/a.jpg", "a.jpg", category="posts"), bool)
-
 
 
 def sites(engine: TargetSite, fake: FakeSite, login: LoginSite) -> None:

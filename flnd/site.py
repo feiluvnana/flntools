@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     from shared._browser import Browser
     from shared._cookies import Jar
 
-    # step-6 bridge: `Settings` moves out of flnd/session.py with the rest of it.
     from flnd.session import Settings
 
 __all__ = ["LoginSite", "SourceRun", "TargetSite", "source_run"]
@@ -85,7 +84,7 @@ class SourceRun:
     http: httpx.Client
     # Pauses the source after a rate limit, however long it takes.
     backoff: net.Backoff
-    # Spaces out requests to the source's own domains; None for a bridged source, which isn't paced.
+    # Spaces out requests to the source's own domains.
     pacer: Pacer | None = None
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
@@ -161,36 +160,27 @@ def source_run(settings: Settings, source: Source) -> Iterator[SourceRun]:
         settings: the run's shared settings.
         source: the source, one instance for the run.
 
-    A ported source's client calls its `prepare` for its own domains only, and its pacer starts
-    from the speed `state` saved. A bridged source keeps `headers` and `sign`, sent everywhere,
-    and isn't paced, as before step 6.
+    A source's client calls its `prepare` for its own domains only, and its pacer starts from the
+    speed `state` saved.
     """
     jar = auth.load(settings.home, source.code)
-    if not source.ported():
-        # step-6 bridge: removed once every source is ported.
-        backoff = net.Backoff(source.code)
-        names = {cookie["name"]: cookie["value"] for cookie in jar}
-        client = net.client(user_agent=source.user_agent, headers=source.headers(names), jar=jar,
-                            sign=source.sign, wait=type(source).wait, backoff=backoff)
-        run = SourceRun(source, settings, jar, client, backoff)
-    else:
-        # The pacer's and the client's callbacks reach the run, which is made after both.
-        made: list[SourceRun] = []
-        pacer = Pacer(source.pace, source.domains, on_wait=lambda seconds: made[0].show_wait(seconds),
-                      clock=lambda: _clock(), sleep=lambda seconds: _sleep(seconds))
-        backoff = net.Backoff(source.code, on_hit=pacer.slow_down)
+    # The pacer's and the client's callbacks reach the run, which is made after both.
+    made: list[SourceRun] = []
+    pacer = Pacer(source.pace, source.domains, on_wait=lambda seconds: made[0].show_wait(seconds),
+                  clock=lambda: _clock(), sleep=lambda seconds: _sleep(seconds))
+    backoff = net.Backoff(source.code, on_hit=pacer.slow_down)
 
-        def prepare(request: httpx.Request) -> httpx.Request:
-            # A CDN never sees the source's headers or signature: its own domains only.
-            if not pacer.paces(str(request.url)):
-                return request
-            return source.prepare(request, _names(made[0].http.cookies))
+    def prepare(request: httpx.Request) -> httpx.Request:
+        # A CDN never sees the source's headers or signature: its own domains only.
+        if not pacer.paces(str(request.url)):
+            return request
+        return source.prepare(request, _names(made[0].http.cookies))
 
-        client = net.client(user_agent=source.user_agent, headers={}, jar=jar, sign=prepare,
-                            wait=type(source).wait, backoff=backoff)
-        run = SourceRun(source, settings, jar, client, backoff, pacer=pacer)
-        made.append(run)
-        pacer.load(run.state)
+    client = net.client(user_agent=source.user_agent, headers={}, jar=jar, sign=prepare,
+                        wait=type(source).wait, backoff=backoff)
+    run = SourceRun(source, settings, jar, client, backoff, pacer=pacer)
+    made.append(run)
+    pacer.load(run.state)
     try:
         yield run
     finally:

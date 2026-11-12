@@ -76,25 +76,21 @@ flnd.source.Source()
 flnd.source.Source.browser_args: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.concurrency: attribute -> ClassVar[int]
-flnd.source.Source.connect(site: Any, /) -> Any
+flnd.source.Source.connect(site: Site, /) -> Any
 flnd.source.Source.filename: attribute -> ClassVar[str]
 flnd.source.Source.folder: attribute -> ClassVar[str]
 flnd.source.Source.forms: attribute -> ClassVar[tuple[str, ...]]
-flnd.source.Source.headers(cookies: Mapping[str, str]) -> Mapping[str, str]
 flnd.source.Source.key: attribute -> ClassVar[str]
-flnd.source.Source.logged_in(site: Any, /) -> bool
-flnd.source.Source.login(login: Any, method: str, /) -> None
+flnd.source.Source.logged_in(site: Site, /) -> bool
+flnd.source.Source.login(login: Login, method: str, /) -> None
 flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.needs: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.pace: attribute -> ClassVar[Pace | float]
 flnd.source.Source.pause: attribute -> ClassVar[float]
-flnd.source.Source.ported() -> bool
 flnd.source.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
 flnd.source.Source.requires_login: attribute -> ClassVar[bool]
 flnd.source.Source.resolve(text: str) -> Target
 flnd.source.Source.routes: attribute -> ClassVar[tuple[Route, ...]]
-flnd.source.Source.run(session: Any) -> Any
-flnd.source.Source.sign(request: httpx.Request) -> httpx.Request
 flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.stealth: attribute -> ClassVar[bool]
 flnd.source.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]

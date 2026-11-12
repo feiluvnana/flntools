@@ -57,7 +57,6 @@ from shared import atomic, fmt, log
 if TYPE_CHECKING:
     from shared import worker
 
-    # step-6 bridge: `Options` and `selected` move out of flnd/session.py with the rest of it.
     from flnd.session import Options
 
 __all__ = ["Job", "Placed", "download", "place", "posts", "wanted"]

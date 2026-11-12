@@ -49,11 +49,6 @@ post's `category`, reads its `date` with `day()`, and names each file from the f
 This module holds declarations only: the engine's `TargetSite`, `LoginSite` and the job live in
 `flnd/site.py` and `flnd/job.py`, which a source never imports. Importing it loads no third-party
 module.
-
-Phase 6, step 6 bridge: a source that still has `run(session)` (bridged) runs through
-`flnd.session.TargetSession` as before; one whose routes have categories, or that has no `run`,
-runs through the job. `run`, `headers`, `sign` and a declared `categories` or `single_kinds` field
-are the bridged sources' and go once every source is ported.
 """
 
 from __future__ import annotations
@@ -63,9 +58,9 @@ import inspect
 import re
 import string
 from contextlib import nullcontext
-from dataclasses import FrozenInstanceError, dataclass
+from dataclasses import dataclass
 from types import MappingProxyType, MethodType
-from typing import (TYPE_CHECKING, Any, AsyncIterator, Callable, ClassVar, Iterable, Iterator, Literal, Mapping,
+from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Literal, Mapping,
                     MutableMapping, Protocol, Sequence, Union, overload)
 from urllib.parse import parse_qs, urlsplit
 
@@ -842,12 +837,10 @@ class Source:
     forms: ClassVar[tuple[str, ...]] = ()
     # What `--from` can take from this source; without `--from`, a target gets every one. Derived
     # from the routes' categories when the class is created.
-    # step-6 bridge: removed once every source is ported (a bridged source still declares it).
     categories: ClassVar[tuple[str, ...]] = ()
     # Target kinds that are one post, downloaded whole (ins "post", tik "video"): the routes without
     # categories. A post has none (tagged or reposts describe a profile's tab, not a post), so
     # `--from` with one is a usage error rather than a filter that silently drops every file.
-    # step-6 bridge: removed once every source is ported (a bridged source still declares it).
     single_kinds: ClassVar[tuple[str, ...]] = ()
     # Cookie names, any one of which proves a login.
     needs: ClassVar[tuple[str, ...]] = ()
@@ -899,28 +892,18 @@ class Source:
             if key in seen:
                 raise TypeError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
             seen.add(key)
-        if cls.ported():
-            if "categories" in vars(cls) or "single_kinds" in vars(cls):
-                raise TypeError(f"{cls.__name__}: its categories are its @<route>.category methods; "
-                                "declare no categories or single_kinds field")
-            names = [category.name for route in cls.routes for category in route.categories]
-            cls.categories = tuple(dict.fromkeys(names))
-            cls.single_kinds = tuple(route.kind for route in cls.routes if not route.categories)
+        if "categories" in vars(cls) or "single_kinds" in vars(cls):
+            raise TypeError(f"{cls.__name__}: its categories are its @<route>.category methods; "
+                            "declare no categories or single_kinds field")
+        names = [category.name for route in cls.routes for category in route.categories]
+        cls.categories = tuple(dict.fromkeys(names))
+        cls.single_kinds = tuple(route.kind for route in cls.routes if not route.categories)
         if not cls.routes:
             return
         code = getattr(cls, "code", "")
         forms = [form for route in cls.routes for form in route.forms(code)]
         # `ins:<user>` is the form people write most, so the forms after `code:` come first.
         cls.forms = tuple(sorted(forms, key=lambda form: not form.startswith(f"{code}:")))
-
-    @classmethod
-    def ported(cls) -> bool:
-        """Whether the engine runs this source through its routes and categories (the job), not `run(session)`.
-
-        step-6 bridge: removed once every source is ported. A source is ported when it doesn't
-        override `run`; until then, `run` is how it downloads, as before step 6.
-        """
-        return cls.run is Source.run
 
     def resolve(self, text: str) -> Target:
         """Read one target's text, as people write it, through the routes.
@@ -976,61 +959,34 @@ class Source:
         """
         return request
 
-    def login(self, login: Any, method: str, /) -> None:
+    def login(self, login: Login, method: str, /) -> None:
         """Log in by `method`, for a source with its own way (tlg), asking through `login` (a `Login`).
 
         Cookie sources keep this default, and the engine's `browser` and `file` methods log in.
         A login that fails raises `LoginError`, which `flnd login` reports.
 
         Args:
-            login: the `Login` handle; a bridged source gets its session.
-                step-6 bridge: typed `Login` once every source is ported.
+            login: the `Login` handle.
             method: one of the source's `login_methods`.
         """
         raise NotImplementedError(f"{self.code} has no login method {method!r}")
 
-    def connect(self, site: Any, /) -> Any:
+    def connect(self, site: Site, /) -> Any:
         """A context manager, or an async one, giving `site.client`; entered once per run.
 
         Args:
-            site: the `Site` of the source's account (a bridged source gets its session).
-                step-6 bridge: typed `Site` once every source is ported.
+            site: the `Site` of the source's account.
 
         Raises:
             LoginError: the source needs a login it doesn't have.
         """
         return nullcontext()
 
-    # step-6 bridge: removed once every source is ported (`run`, `headers` and `sign`).
-
-    def run(self, session: Any) -> Any:
-        """Scrape one target, reporting each file with `session.save`; it may be `async def`.
-
-        step-6 bridge: removed once every source is ported. A source that overrides it runs
-        through `flnd.session.TargetSession`, as before step 6.
-        """
-        raise NotImplementedError(f"{self.code} downloads through its routes and categories")
-
-    def headers(self, cookies: Mapping[str, str]) -> Mapping[str, str]:
-        """Extra headers for every request of a bridged source, built from the login's `{name: value}` cookies.
-
-        step-6 bridge: removed once every source is ported; `prepare` replaces it.
-        """
-        return {}
-
-    def sign(self, request: httpx.Request) -> httpx.Request:
-        """Sign a bridged source's request; it runs before every attempt, retries included, so timestamps stay fresh.
-
-        step-6 bridge: removed once every source is ported; `prepare` replaces it.
-        """
-        return request
-
-    def logged_in(self, site: Any, /) -> bool:
+    def logged_in(self, site: Site, /) -> bool:
         """Whether a login is stored: by default, one of `needs` is among the saved cookies.
 
         Args:
-            site: the account's `Site` (a bridged source gets its session); its `cookies` and
-                `secrets` say what the login kept. Typed `Site` once every source is ported.
+            site: the account's `Site`; its `cookies` and `secrets` say what the login kept.
         """
         return not self.needs or any(name in site.cookies for name in self.needs)
 

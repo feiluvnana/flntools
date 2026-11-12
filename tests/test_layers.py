@@ -13,8 +13,7 @@ The rules:
 3. `flnd/cli.py` imports from flnd only `flnd`, `flnd.engine` and `flnd.sources`;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it.
 
-Two lists exempt today's code, and may only shrink, as test_names.py's `ALLOWED` does:
-`BRIDGED`, the sources still on `run(session)` (step-6 bridge, each removed by its port), and
+One list exempts today's code, and may only shrink, as test_names.py's `ALLOWED` does:
 `CLI_UNTIL_STEP_7`, what cli.py imports until step 7 moves those decisions into the engine.
 """
 
@@ -25,10 +24,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
 
-# step-6 bridge: the sources that still import flnd.session; each port removes its own entry.
-BRIDGED = set()
-# What a bridged source may import besides rule 1's.
-BRIDGE_IMPORTS = {"flnd.session"}
 # What cli.py imports today that rule 3 doesn't allow; step 7 (the engine API) empties it.
 CLI_UNTIL_STEP_7 = {"flnd.common", "flnd.common.auth", "flnd.common.compress", "flnd.session", "flnd.source",
                     "flnd.sync"}
@@ -68,9 +63,8 @@ class LayersTest(unittest.TestCase):
             if name == "flnd.sources":
                 # The registry imports every source to list them; it isn't one.
                 continue
-            allowed = BRIDGE_IMPORTS if path.stem in BRIDGED else set()
             with self.subTest(module=name):
-                self.assertEqual(sorted(found for found in flnd_imports(path) - allowed if not source_allowed(found)), [])
+                self.assertEqual(sorted(found for found in flnd_imports(path) if not source_allowed(found)), [])
 
     def test_flnd_source_imports_nothing_from_the_engine_side(self):
         self.assertEqual(sorted(flnd_imports(FLND / "source.py") - {"flnd.common.pace", "flnd.common"}), [])
@@ -87,10 +81,6 @@ class LayersTest(unittest.TestCase):
                 self.assertNotIn("flnd.cli", flnd_imports(path))
 
     def test_the_exemptions_only_shrink(self):
-        # A ported source drops out of BRIDGED: it then imports flnd.session no more.
-        for code in sorted(BRIDGED):
-            with self.subTest(source=code):
-                self.assertIn("flnd.session", flnd_imports(FLND / "sources" / f"{code}.py"))
         found = flnd_imports(FLND / "cli.py")
         self.assertEqual(sorted(CLI_UNTIL_STEP_7 - found), [])
 

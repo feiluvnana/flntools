@@ -9,18 +9,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
 from media_samples import needs_pillow
-from test_engine import CDN, EngineCase, compressing, history, make_source, noise
+from test_engine import EngineCase, compressing
 
 from flnd.common import files
 from flnd.common.compress import (KINDS, LEVELS, Choice, Compressor, compress_file, compressed_with, parse_choice, recorded,
                            video_format)
-from flnd.session import Options
 
 LOW = Choice(None, "low")
-
-VIDEO_BYTES = b"\0\0\0\x18ftypisom" + bytes(64)
 
 
 class CompressFileTest(EngineCase):
@@ -124,40 +120,6 @@ class RealPhotoTest(EngineCase):
         self.assertEqual(fields, {"path": str(path), "size": len(before), "compressed": "none",
                                   "original_size": len(before)})
         self.assertEqual(sorted(entry.name for entry in folder.iterdir()), ["tiny.jpg"])
-
-
-@needs_pillow
-class EngineCompressTest(EngineCase):
-    def saver(self, *names):
-        def run(session):
-            for name in names:
-                session.save(f"{CDN}/{name}", name, category="posts")
-
-        return make_source("aaa", run)
-
-    def test_a_stalled_video_encode_doesnt_fail_the_run(self):
-        for name in ("1.mp4", "2.mp4"):
-            self.routes[f"{CDN}/{name}"] = httpx.Response(200, content=VIDEO_BYTES)
-        self.routes[f"{CDN}/a.jpg"] = httpx.Response(200, content=noise("JPEG"))
-        with compressing(side_effect=TimeoutError("ffmpeg made no progress for 60 s")):
-            total = self.run_engine(self.saver("1.mp4", "2.mp4", "a.jpg"), targets=["aaa:a"],
-                                    options=Options(image=LOW, video=LOW))
-        self.assertEqual(total, 3)
-        rows = history(self.home)
-        self.assertEqual([rows[f"aaa:{name}"]["compressed"] for name in ("1.mp4", "2.mp4", "a.jpg")], ["none"] * 3)
-        self.assertIn("✓ aaa:a", self.lines())
-        self.assertFalse(any(line.startswith("✗") for line in self.lines()), self.lines())
-        self.assertEqual(sum("not compressed" in line for line in self.lines()), 1)
-
-    def test_a_missing_extra_while_compressing_a_photo_keeps_the_download(self):
-        self.routes[f"{CDN}/a.jpg"] = httpx.Response(200, content=noise("JPEG"))
-        with compressing(side_effect=ImportError("no Pillow")):
-            total = self.run_engine(self.saver("a.jpg"), targets=["aaa:a"], options=Options(image=LOW))
-        self.assertEqual(total, 1)
-        self.assertNotIn("compressed", history(self.home)["aaa:a.jpg"])
-        self.assertIn("! a.jpg: not compressed: no Pillow", self.lines())
-
-
 
 
 class TableTest(unittest.TestCase):

@@ -21,7 +21,7 @@ import httpx
 
 from flnd import job
 from flnd.common import net
-from flnd.session import Options, Settings, TargetSession
+from flnd.session import Options, Settings
 from flnd.site import LoginSite, SourceRun, TargetSite, source_run
 from flnd.source import Source, Target, TargetError
 from flnd.sources import SOURCES
@@ -36,9 +36,9 @@ ACCOUNT = "account"
 
 # What in a source's code means it can drive a browser: the `Site` members and helpers that open
 # or use a page (`Site.page`, `goto`, `handoff`, `fetch(in_page=True)`, `watch_responses`,
-# `meta_results`), and, for a bridged source, the session's own (`open_page`, `on_response`, `scroll`).
+# `meta_results`, `scroll`), and the `Page` methods that listen to responses or requests.
 BROWSER_NAMES = frozenset({"page", "goto", "handoff", "in_page", "watch_responses", "meta_results",
-                           "open_page", "on_response", "on_request", "scroll", "browser"})
+                           "on_response", "on_request", "scroll", "browser"})
 
 # Pauses between targets read time through this, so tests can replace it.
 _sleep = time.sleep
@@ -95,7 +95,7 @@ class Engine:
 
         When a target's source can open a browser (`needs_browser`) and Google Chrome is missing,
         the "download Chromium?" question is asked once, before anything starts. A source with
-        categories runs through flnd/job.py; one with `run(session)` through `TargetSession`.
+        categories runs through flnd/job.py.
 
         Each target ends its row at ok or error; one failing never stops the others, and is added to
         `failed`. A whole source that can't start (its `logged_in` or `connect` raises) fails each of
@@ -132,11 +132,7 @@ class Engine:
     def login(self, source: Source, method: str) -> None:
         """Run a source's own login (tlg's), through a `Login` that may ask questions."""
         with source_run(self._settings(Options(), {}, interactive=True), source) as run:
-            if source.ported():
-                source.login(LoginSite(run), method)
-                return
-            # step-6 bridge: removed once every source is ported.
-            source.login(TargetSession(run, Target(source.code, ACCOUNT, "")), method)
+            source.login(LoginSite(run), method)
 
     def _settings(self, options: Options, history: MutableMapping[str, Any], *,
                   interactive: bool = False) -> Settings:
@@ -242,25 +238,21 @@ def needs_browser(source: type[Source], target: Target, options: Options) -> boo
         target: the target; its kind names its route.
         options: the run's options, whose `--from` decides which categories run.
 
-    The code read is the route and its wanted categories (all of `run`, for a bridged source),
-    and every function and method they name that lives in the source's module or in
-    `flnd.sources.common`, followed as far as it goes. It needs a browser when any of them names
-    one of `BROWSER_NAMES`. So no `Source` field says it, and it can't drift from the code: a source
-    that calls `site.goto` asks, and one that only calls `site.fetch` doesn't. It reads names, not
-    what runs, so a branch never taken still counts: it may ask once when no page ends up opening.
+    The code read is the route and its wanted categories, and every function and method they name
+    that lives in the source's module or in `flnd.sources.common`, followed as far as it goes. It
+    needs a browser when any of them names one of `BROWSER_NAMES`. So no `Source` field says it, and
+    it can't drift from the code: a source that calls `site.goto` asks, and one that only calls
+    `site.fetch` doesn't. It reads names, not what runs, so a branch never taken still counts: it
+    may ask once when no page ends up opening.
     """
-    if not source.ported():
-        # step-6 bridge: removed once every source is ported.
-        starts: list[Any] = [source.run]
-    else:
-        route = next((route for route in source.routes if route.kind == target.kind), None)
-        if route is None:
-            return False
-        starts = [route.function]
-        if route.categories:
-            categories = job.wanted(source, route, options)
-            starts = [route.function, *(getattr(source, category.attribute) for category in categories)] \
-                if categories else []
+    route = next((route for route in source.routes if route.kind == target.kind), None)
+    if route is None:
+        return False
+    starts: list[Any] = [route.function]
+    if route.categories:
+        categories = job.wanted(source, route, options)
+        starts = [route.function, *(getattr(source, category.attribute) for category in categories)] \
+            if categories else []
     return any(_names_browser(function, source) for function in starts)
 
 
@@ -334,10 +326,7 @@ def _follow(url: str) -> str:
 def _run_group(settings: Settings, work: tuple[Source, list[tuple[Target, Row]]]) -> int:
     source, rows = work
     with source_run(settings, source) as run:
-        account: Any = TargetSite(run, Target(source.code, ACCOUNT, ""))
-        if not source.ported():
-            # step-6 bridge: removed once every source is ported.
-            account = TargetSession(run, Target(source.code, ACCOUNT, ""))
+        account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not source.logged_in(account):
             if source.requires_login:
                 for target, row in rows:
@@ -379,21 +368,4 @@ def _run_targets(run: SourceRun, rows: list[tuple[Target, Row]]) -> int:
 
 
 def _run_target(run: SourceRun, target: Target, row: Row) -> int:
-    if run.source.ported():
-        return job.download(run, target, row)
-    # step-6 bridge: removed once every source is ported; the rest of this function is the bridged path.
-    session = TargetSession(run, target)
-    try:
-        outcome = run.source.run(session)
-        if inspect.iscoroutine(outcome):
-            run.run_async(outcome)
-    except BaseException as error:
-        saved = session.finish(error)
-        if not isinstance(error, Exception):
-            raise
-        log.error("{target}: {error}", target=str(target), error=error)
-        row.fail()
-        return saved
-    saved = session.finish()
-    row.finish()
-    return saved
+    return job.download(run, target, row)

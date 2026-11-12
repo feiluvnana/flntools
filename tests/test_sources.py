@@ -7,7 +7,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from fakes import FakeSession
+from fakes import FakeSite
 
 from flnd.session import Options, selected
 from flnd.source import Source, Target
@@ -106,8 +106,8 @@ def runtime_imports(tree):
 
 class SourceDefaultsTest(unittest.TestCase):
     def test_logged_in_needs_any_one_cookie(self):
-        self.assertFalse(TikTok().logged_in(FakeSession(Target("tik", "account", ""))))
-        self.assertTrue(TikTok().logged_in(FakeSession(Target("tik", "account", ""), cookies={"sid_tt": "1"})))
+        self.assertFalse(TikTok().logged_in(FakeSite(Target("tik", "account", ""))))
+        self.assertTrue(TikTok().logged_in(FakeSite(Target("tik", "account", ""), cookies={"sid_tt": "1"})))
 
     def test_a_source_without_needs_is_always_logged_in(self):
         class Open(Source):
@@ -116,13 +116,8 @@ class SourceDefaultsTest(unittest.TestCase):
             def resolve(self, text):
                 return Target(self.code, "user", text)
 
-            def run(self, session):
-                pass
-
-        account = FakeSession(Target("opn", "account", ""), source=Open)
+        account = FakeSite(Target("opn", "account", ""))
         self.assertTrue(Open().logged_in(account))
-        request = object()
-        self.assertIs(Open().sign(request), request)
         with Open().connect(account) as client:
             self.assertIsNone(client)
 

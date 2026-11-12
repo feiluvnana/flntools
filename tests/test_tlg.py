@@ -238,7 +238,6 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual((Telegram.categories, Telegram.single_kinds), (("photo", "video", "file"), ()))
         self.assertEqual((Telegram.login_methods, Telegram.requires_login), (("browser", "qr", "phone"), True))
         self.assertEqual((Telegram.folder, Telegram.key), ("{chat}/{category}", "{chat_id}:{id}"))
-        self.assertTrue(Telegram.ported())
 
     def test_one_route_whose_categories_are_newest_first_async_methods(self):
         (route,) = Telegram.routes
@@ -688,7 +687,7 @@ class WithOtherSourcesTest(DownloadCase):
                 both.wait()
             return original(client, entity, **options)
 
-        other = make_source("aaa", lambda session: both.wait())
+        other = make_source("aaa", lambda site: both.wait())
         with mock.patch.object(FakeClient, "iter_messages", iter_messages):
             engine = Engine(home=self.home, sources={"tlg": Telegram, "aaa": other})
             total = engine.run(engine.resolve(["tlg:@examplechannel", "aaa:a"]), Options())

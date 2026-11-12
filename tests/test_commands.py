@@ -11,6 +11,8 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
+from test_engine import make_source
+
 from flnd import cli as flnd_cli
 from flnd import sources
 from flnd.common import auth
@@ -319,21 +321,15 @@ class ExitStatusTest(FlndCase):
     def setUp(self):
         super().setUp()
 
-        def run(self, session):
-            if session.target.value == "bad":
-                raise RuntimeError("blocked")
-
-        def connect(self, session):
+        def connect(self, site):
             raise RuntimeError("the saved login no longer works")
 
-        def resolve(self, text):
-            return Target(self.code, "user", text)
+        def run(site):
+            if site.target.value == "bad":
+                raise RuntimeError("blocked")
 
-        common = {"name": "Test", "examples": (), "categories": ("posts",),
-                  "resolve": resolve, "run": run}
-        patcher = mock.patch.dict(sources.SOURCES, {
-            "aaa": type("Aaa", (Source,), {"code": "aaa", "domains": ("aaa.example",), **common}),
-            "bbb": type("Bbb", (Source,), {"code": "bbb", "domains": ("bbb.example",), "connect": connect, **common})})
+        patcher = mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa", run),
+                                                    "bbb": make_source("bbb", run, connect=connect)})
         patcher.start()
         self.addCleanup(patcher.stop)
         # No person's pause between targets: these sources make no request.
@@ -518,19 +514,13 @@ class OwnLoginTest(LoginCase):
             code, name, domains = "own", "Own", ("own.example",)
             login_methods = ("qr",)
 
-            def resolve(self, text):
-                return Target("own", "chat", text)
-
-            def run(self, session):
-                pass
-
-            def login(self, session, method):
-                calls.append((method, session.target.kind))
+            def login(self, login, method):
+                calls.append((method, type(login).__name__))
 
         with mock.patch.dict(flnd_cli.SOURCES, {"own": Own}):
             code, out = self.login("own")
         self.assertEqual(code, 0)
-        self.assertEqual(calls, [("qr", "account")])
+        self.assertEqual(calls, [("qr", "LoginSite")])
         self.assertNotIn("Log in to Own:", out)
 
 

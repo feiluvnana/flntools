@@ -17,14 +17,14 @@ import httpx
 from example_source import API, CDN, FIXTURES, Example
 from fakes import FakeSite, collect
 from test_commands import FlndCase
-from test_engine import EngineCase, compressing, make_source
+from test_engine import EngineCase, compressing
 
 from flnd import cli as flnd_cli
 from flnd import engine as engine_module
 from flnd import job, site as site_module
 from flnd.common.compress import Choice
 from flnd.session import Options, single_targets
-from flnd.source import File, Post, Source, Target, target
+from flnd.source import FetchError, File, LoginError, Post, Source, Target, target
 from shared import kv
 
 
@@ -179,6 +179,56 @@ class SavedTest(JobCase):
         self.assertEqual(self.run_engine(Twice, targets=["twc:example_user"]), 1)
         self.assertIn("• skip posts/1.jpg", self.lines())
 
+    def test_a_file_in_two_categories_is_downloaded_once(self):
+        class Both(Source):
+            code, name, domains = "bth", "Both", ("example.com",)
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield Post("1", [File(f"{CDN}/1.jpg")])
+
+            @user.category
+            def reels(self, site, user):
+                yield Post("1", [File(f"{CDN}/1.jpg")])
+                yield Post("2", [File(f"{CDN}/2.jpg")])
+
+        self.assertEqual(self.run_engine(Both, targets=["bth:example_user"]), 2)
+        # Both categories name it `1_0` (their folders differ), so the second is skipped as queued.
+        self.assertEqual(len(self.fetched(f"{CDN}/1.jpg")), 1)
+        self.assertEqual(sorted(self.history()), ["bth:1_0", "bth:2_0"])
+        self.assertEqual(self.files("bth"), ["posts/1.jpg", "reels/2.jpg"])
+        # A later run finds both saved, whichever category lists them.
+        self.requests.clear()
+        self.assertEqual(self.run_engine(Both, targets=["bth:example_user"]), 0)
+        self.assertEqual([request for request in self.requests if request.url.host == "cdn.example"], [])
+
+    def test_two_files_with_one_path_are_downloaded_once(self):
+        class Same(Source):
+            code, name, domains = "sme", "Same", ("example.com",)
+            folder = ""
+            filename = "shared"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield Post("1", [File(f"{CDN}/1.jpg")])
+
+            @user.category
+            def reels(self, site, user):
+                yield Post("2", [File(f"{CDN}/2.jpg")])
+
+        # Two keys, one path: the second file would overwrite the first, so it is skipped as queued.
+        self.assertEqual(self.run_engine(Same, targets=["sme:example_user"]), 1)
+        self.assertEqual(self.files("sme"), ["shared.jpg"])
+        self.assertEqual(self.fetched(f"{CDN}/2.jpg"), [])
+
 
 class FilesTest(JobCase):
     def test_text_files_are_written_whole_and_unkeyed(self):
@@ -226,6 +276,19 @@ class FilesTest(JobCase):
                          datetime.datetime(2026, 10, 21, 12, tzinfo=datetime.timezone.utc))
         # No date and no Last-Modified: the download day, which is when it was written.
         self.assertEqual(modified("albums/Summer_2026/A1.jpg").date(), datetime.datetime.now(datetime.timezone.utc).date())
+
+    def test_the_history_row_has_its_path_size_and_time_only(self):
+        self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
+        row = self.history()["exm:C1abc_0"]
+        saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
+        self.assertEqual(sorted(row), ["at", "path", "size"])
+        self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
+        written = datetime.datetime.fromisoformat(row["at"])
+        self.assertEqual(written.utcoffset(), datetime.timedelta(0))
+        self.assertEqual(written.microsecond, 0)
+        self.assertLess(abs(datetime.datetime.now(datetime.timezone.utc) - written), datetime.timedelta(minutes=1))
+        # Keys are `<code>:<key>`, one per file, a text file none.
+        self.assertEqual(sorted(self.history()), ["exm:B2def_0", "exm:C1abc_0", "exm:C1abc_1"])
 
     def test_compress_runs_before_the_history_row_is_written(self):
         with compressing(return_value=None) as compress:
@@ -333,6 +396,40 @@ class FailureTest(JobCase):
         self.assertEqual(engine.failed, [Target("brk", "user", "example_user")])
 
 
+    def test_a_route_or_category_that_raises_a_source_error_fails_only_its_target(self):
+        class Errors(Source):
+            code, name, domains = "err", "Errors", ("example.com",)
+            folder = ""
+
+            @target("{user}")
+            def user(self, site, user):
+                if user == "gone":
+                    raise FetchError("HTTP 404 for https://example.com/gone", status=404)
+                if user == "locked":
+                    raise LoginError("err: run flnd login err")
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                if user == "cut":
+                    raise FetchError("HTTP 500 for https://example.com/cut", status=500)
+                if user == "expired":
+                    raise LoginError("err: the saved login expired")
+                yield Post(user, [File(f"{CDN}/{user}.jpg")])
+
+        engine = engine_module.Engine(home=self.home, sources={"err": Errors})
+        names = ["gone", "locked", "cut", "expired", "good", "last"]
+        total = engine.run(engine.resolve([f"err:{name}" for name in names]), Options())
+        self.assertEqual(total, 2)
+        self.assertEqual([target.value for target in engine.failed], ["gone", "locked", "cut", "expired"])
+        lines = self.lines()
+        for line in ("✗ err:gone: HTTP 404 for https://example.com/gone", "✗ err:locked: err: run flnd login err",
+                     "✗ err:cut: HTTP 500 for https://example.com/cut", "✗ err:expired: err: the saved login expired",
+                     "✓ err:good", "✓ err:last"):
+            self.assertIn(line, lines)
+        self.assertEqual(self.files("err", "good"), ["good.jpg"])
+
+
 class BrowserUpFrontTest(JobCase):
     """The "download Chromium?" question, asked before any work when a chosen target's source can need a browser."""
 
@@ -374,14 +471,6 @@ class BrowserUpFrontTest(JobCase):
 
     def test_a_helper_the_category_calls_counts(self):
         self.assertTrue(engine_module.needs_browser(Uses, Target("use", "user", "example_user"), Options()))
-
-    def test_a_bridged_source_is_read_from_its_run(self):
-        def run(session):
-            session.goto("https://aaa.example/")
-
-        self.assertTrue(engine_module.needs_browser(make_source("aaa", run), Target("aaa", "user", "a"), Options()))
-        self.assertFalse(engine_module.needs_browser(make_source("bbb", lambda session: None),
-                                                     Target("bbb", "user", "a"), Options()))
 
     def test_the_six_sources(self):
         from flnd.sources import SOURCES

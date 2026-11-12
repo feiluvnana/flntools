@@ -16,7 +16,6 @@ from example_source import FIXTURES, Example as RoutedExample
 from fakes import collect
 
 from flnd.engine import resolve
-from flnd.session import Options
 from flnd.source import File, Post, Range, Source, Target, TargetError, _parse, day, fill, pages, target
 from flnd.sources import SOURCES
 
@@ -346,8 +345,6 @@ class CategoriesTest(unittest.TestCase):
         self.assertEqual([category.name for category in RoutedExample.routes[1].categories],
                          ["posts", "albums", "profile"])
         self.assertEqual(RoutedExample.single_kinds, ("post",))
-        self.assertTrue(RoutedExample.ported())
-        self.assertFalse(Example.ported())
 
     def test_options_and_a_name_that_is_not_the_methods(self):
         class Named(Source):

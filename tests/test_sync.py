@@ -18,24 +18,20 @@ from flnd import sync
 from flnd.common.compress import Choice
 from flnd.engine import Engine
 from flnd.session import Options
-from flnd.source import Target
+from flnd.source import File, Target
 from shared import kv
 
 WEBP_MID = Choice("webp", "mid")
 
 
 class Site:
-    """A test source's posts: `files` maps a name to its body; `run` saves every one."""
+    """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""
 
     def __init__(self, case, **files):
         self.case, self.files = case, files
 
     def source(self, code="aaa"):
-        def run(session):
-            for name in self.files:
-                session.save(f"{CDN}/{name}", name, category="posts")
-
-        return make_source(code, run)
+        return make_source(code, files=[File(f"{CDN}/{name}", name=name) for name in self.files])
 
     def serve(self):
         for name, body in self.files.items():
@@ -342,15 +338,12 @@ class RepairTest(SyncCase):
             Path(src).write_bytes(b"left over")
             left.append(Path(src))
 
-        def run(session):
-            session.save(f"{CDN}/a.jpg", "a.jpg", category="posts")
-            session.folder = "post"
-            session.write("info.md", "# Title\n")
+        files = [File(f"{CDN}/a.jpg", name="a.jpg"), File.text("info.md", "# Title\n")]
 
         with mock.patch.object(os, "replace", killed_after):
-            self.download(source=make_source("aaa", run))
+            self.download(source=make_source("aaa", files=files))
         self.assertEqual(sorted(path.name.split(".")[1] for path in left), ["a", "info"])
-        self.sync(source=make_source("aaa", run))
+        self.sync(source=make_source("aaa", files=files))
         self.assertEqual([path for path in left if path.exists()], [])
         self.assertEqual(self.names(), ["a.jpg", "info.md"])
 

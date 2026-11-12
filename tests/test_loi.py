@@ -144,7 +144,7 @@ def fixtures(**changed):
     return answers
 
 
-# Recorded from the `run(session)` source before step 6, with the old FakeSession: every (path,
+# Recorded from the `run(session)` source before step 6, through its fake session: every (path,
 # history key) it queued, and every file it wrote, for a post with a slash, a colon and a question
 # mark in its title and author, whose preview images and archive URLs are odd in the ways the site's are.
 NASTY = {**POST, "loi_title": "Night/city: set?", "category": {"id": 7, "name": "ex/ample"},

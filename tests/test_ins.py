@@ -220,7 +220,7 @@ def read(text="ins:someone", *, options=Options(), watch=None, pages=PAGES, seen
         return collect(Instagram, text, pages=pages, options=options, seen=seen)
 
 
-# What ins named and keyed before routes, recorded with the old `FakeSession` and `run(session)` in
+# What ins named and keyed before routes, recorded with the pre-routes `run(session)` source in
 # a UTC time zone over these fixtures. They are sorted: the old run opened every lazy post after
 # the last tab, and the new one opens each tab's when the tab is done.
 OLD_PROFILE = [
