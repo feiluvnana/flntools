@@ -48,9 +48,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
     "shared.fmt": (
         "shared.fmt.date: positional option pattern",
     ),
-    "shared.log": (
-        "shared.log.ProgressBar.update: positional option total",
-    ),
     "shared.media": (
         "shared.media.compress: option preset, not level",
         "shared.media.video.frames: option dest_dir, not dest",

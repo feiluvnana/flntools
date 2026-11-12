@@ -1,4 +1,24 @@
-"""Five log levels and progress bars, drawn through `theme.screen`."""
+"""Five log levels and progress rows, drawn through `theme.screen`.
+
+A line (`log.info`, `log.warn`, …) is formatted, dropped when it's below `log.level`, drawn by
+the theme and written above the live area: the open rows at the bottom of the screen. A
+`log.progress` or `log.group` block opens rows there; on a terminal they're redrawn in place
+(at most every 0.1 s, or at once when a row starts or ends), and when the block ends each row
+is written once more as a final line. Off a terminal only those final lines are written. How a
+line or row looks is the theme's (`shared.theme`); this module decides when and where.
+
+    log.level = "debug"
+    log.ok("{n} saved", n=3)
+    with log.progress("photos", total=len(links)) as bar:
+        for link in links:
+            bar.advance()
+    with log.group("download") as rows:
+        row = rows.add("ins:example")
+        row.total = 12
+
+Every function and property here may be called from several threads at once: lines and row
+changes go through the screen's lock, and `prompt` holds other threads' lines while it asks.
+"""
 
 from __future__ import annotations
 
@@ -15,8 +35,8 @@ from shared._style import strip
 from shared._theme import Bar, LogRecord, Screen, Theme, fit
 
 # `shared.log` is the `log` object: its methods, `Error` among them, are the module's names, and the
-# classes are what `log.progress` and `log.multi` return.
-__all__ = ["Error", "Group", "ProgressBar", "log"]
+# classes are what `log.progress` and `log.group` return.
+__all__ = ["Error", "Group", "Progress", "log"]
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -30,7 +50,15 @@ class Error(shared.Error):
 
 
 class Log:
-    """The `log` object: five levels, the level shown, and progress bars."""
+    """The `log` object: five levels, the level shown, and progress rows.
+
+    Each level's method takes a `str.format` message and its values:
+
+        log.warn("{source}: {error}", source="ins", error=error)
+
+    A keyword the message has no field for raises `TypeError`, so a misspelled field is caught
+    rather than dropped. Every method may be called from several threads.
+    """
 
     # `shared.log` is this object, not a module, so the module's error is reached through it.
     Error = Error
@@ -40,6 +68,11 @@ class Log:
 
     @property
     def level(self) -> Level:
+        """The lowest level written: `debug`, `info` (the default), `ok`, `warn`, `error` or `quiet`.
+
+        `quiet` writes errors only, and draws no running rows; a row that ends at error is still
+        written. Setting anything else raises `ValueError`.
+        """
         return self._level
 
     @level.setter
@@ -49,37 +82,68 @@ class Log:
         self._level = value
 
     def debug(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        """Write a debug line, shown under `log.level = "debug"` only."""
         self._line("debug", message, args, fields)
 
     def info(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        """Write an info line."""
         self._line("info", message, args, fields)
 
     def ok(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        """Write a line saying something succeeded."""
         self._line("ok", message, args, fields)
 
     def warn(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        """Write a warning line."""
         self._line("warn", message, args, fields)
 
     def error(self, message: str = "", /, *args: Any, **fields: Any) -> None:
+        """Write an error line, shown at every level, `quiet` included."""
         self._line("error", message, args, fields)
 
     @contextmanager
     def progress(self, label: str, *, total: float | None = None,
-                 show: Callable[[Any], str] = str) -> Iterator[ProgressBar]:
-        """One bar. A clean exit ends it at ok; an exception ends it at error and re-raises."""
+                 show: Callable[[Any], str] = str) -> Iterator[Progress]:
+        """One row for the length of the block, ending at ok on a clean exit and at error on an exception.
+
+            with log.progress("clip.mp4", total=size, show=fmt.size) as bar:
+                bar.advance(len(chunk))
+
+        Args:
+            label: the row's text.
+            total: how much there is to do, in the caller's unit; None draws a spinner and the count.
+            show: how a count and the total are written, such as `fmt.size`.
+
+        Returns:
+            The row, a `Progress`. An exception, `KeyboardInterrupt` included, is re-raised after
+            the row ends at error. The block may be used from one thread while others advance the row.
+        """
         group = Group(_theme.theme, title="")
         bar = group.add(label, total=total, show=show)
         with _ending(group):
             yield bar
 
     @contextmanager
-    def multi(self, title: str = "") -> Iterator[Group]:
-        """A title row with one row per job added under it."""
+    def group(self, title: str = "") -> Iterator[Group]:
+        """Rows added for the length of the block under one title row, which ends as `progress` does.
+
+            with log.group("download") as rows:
+                row = rows.add("ins:example")
+                row.finish()
+
+        Args:
+            title: the text of the title row; "" draws no title row.
+
+        Returns:
+            The `Group`, whose `add` opens a row. Unfinished rows end with the block, at ok on a
+            clean exit and at error on an exception. Rows may be added and advanced from several threads.
+        """
         group = Group(_theme.theme, title=title)
         with _ending(group):
             yield group
 
     def _line(self, level: str, message: str, args: tuple, fields: dict) -> None:
+        """Format a line, drop it below `level`, and write it above the live area."""
         # str.format ignores unused keywords, so a misspelled field would vanish without a word.
         unused = set(fields) - _field_names(message) if fields else ()
         if unused:
@@ -92,88 +156,122 @@ class Log:
         live_area(theme.screen).write_lines([render(theme, LogRecord(level, message))])
 
 
-class ProgressBar:
-    """One row in the live area."""
+class Progress:
+    """One row in the live area, from `log.progress` or `Group.add`.
+
+        bar.total = 10      # state is set
+        bar.advance()       # and moved on
+        bar.count, bar.finished
+
+    Its state is the settable `count`, `total` and `caption`; `advance`, `finish` and `fail`
+    are its transitions. Every member may be used from several threads at once: changes are
+    made under the screen's lock, so two threads advancing one row lose no count.
+    """
 
     def __init__(self, label: str, total: float | None, show: Callable[[Any], str], group: Group):
         self.label = label
         self.show = show
         self._total = total
         self._caption = ""
-        self._done: float = 0
+        self._count: float = 0
         self._group = group
         self.outcome: str | None = None
 
     @property
-    def done(self) -> float:
-        return self._done
+    def count(self) -> float:
+        """How much is done, in the unit of `total`; setting it below 0 sets 0."""
+        return self._count
+
+    @count.setter
+    def count(self, value: float) -> None:
+        with self._group.live.screen.lock:
+            self._count = max(value, 0)
+            self._group.changed()
 
     @property
     def finished(self) -> bool:
+        """Whether the row has ended, at ok or at error."""
         return self.outcome is not None
 
     @property
     def total(self) -> float | None:
+        """How much there is to do; None while it isn't known, which draws a spinner."""
         return self._total
 
     @total.setter
     def total(self, value: float | None) -> None:
-        self._total = value
-        self._group.changed()
+        with self._group.live.screen.lock:
+            self._total = value
+            self._group.changed()
 
     @property
     def caption(self) -> str:
+        """A note drawn after the count, such as "part 3"; `finish` clears it and `fail` keeps it."""
         return self._caption
 
     @caption.setter
     def caption(self, value: str) -> None:
-        self._caption = value
-        self._group.changed()
+        with self._group.live.screen.lock:
+            self._caption = value
+            self._group.changed()
 
     def advance(self, n: float = 1) -> None:
-        self.update(self._done + n)
+        """Add `n` to `count`, at once, so threads advancing one row lose no count.
 
-    def update(self, n: float, total: float | None = None) -> None:
-        """Set how much is done, and the total when given: `bar.update(current, total)`."""
-        self._done = max(n, 0)
-        if total is not None:
-            self._total = total
-        self._group.changed()
+        Args:
+            n: how much more is done, in the unit of `total`; a negative `n` takes back, down to 0.
+        """
+        with self._group.live.screen.lock:
+            self.count = self._count + n
 
     def finish(self) -> None:
-        """End this row at ok and clear its caption."""
+        """End this row at ok and clear its caption; a row already ended is left as it is."""
         self._end("ok")
 
     def fail(self) -> None:
-        """End this row at error and keep its caption."""
+        """End this row at error and keep its caption; a row already ended is left as it is."""
         self._end("error")
 
     def _end(self, outcome: str) -> None:
-        if self.finished:
-            return
-        self.outcome = outcome
-        if outcome == "ok":
-            self._caption = ""
-        self._group.changed(force=True)
+        with self._group.live.screen.lock:
+            if self.finished:
+                return
+            self.outcome = outcome
+            if outcome == "ok":
+                self._caption = ""
+            self._group.changed(force=True)
 
     def _record(self) -> LogRecord:
         level = "info" if self.outcome is None else self.outcome
-        view = Bar(self.label, self._done, self._total, self._caption, self.finished, self.show)
+        view = Bar(self.label, self._count, self._total, self._caption, self.finished, self.show)
         return LogRecord(level, self.label, view)
 
 
 class Group:
-    """The rows of one `progress` or `multi` block. `multi` yields it as `jobs`."""
+    """The rows of one `log.progress` or `log.group` block, under an optional title row.
+
+        with log.group("download") as rows:
+            row = rows.add("ins:example", total=12)
+
+    `add` may be called from several threads at once; rows are drawn in the order they were added.
+    """
 
     def __init__(self, theme: Theme, title: str):
         self.theme = theme
         self.title = title
-        self.bars: list[ProgressBar] = []
+        self.bars: list[Progress] = []
         self.outcome: str | None = None
         self.live = live_area(theme.screen)
 
-    def add(self, label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> ProgressBar:
-        bar = ProgressBar(label, total, show, self)
+    def add(self, label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress:
+        """Open a row at the bottom of the group, and return it.
+
+        Args:
+            label: the row's text.
+            total: how much there is to do, in the caller's unit; None draws a spinner and the count.
+            show: how a count and the total are written, such as `fmt.size`.
+        """
+        bar = Progress(label, total, show, self)
         with self.live.screen.lock:
             self.bars.append(bar)
         self.changed(force=True)
@@ -181,6 +279,7 @@ class Group:
         return bar
 
     def changed(self, force: bool = False) -> None:
+        """Redraw the live area, at most every 0.1 s unless `force`."""
         self.live.changed(force)
 
     def rows(self) -> list[tuple[str, str]]:
@@ -192,9 +291,10 @@ class Group:
 
     def end(self, outcome: str) -> None:
         """End every unfinished row and the title at this outcome."""
-        for bar in self.bars:
-            bar._end(outcome)
-        self.outcome = outcome
+        with self.live.screen.lock:
+            for bar in self.bars:
+                bar._end(outcome)
+            self.outcome = outcome
 
 
 class LiveArea:

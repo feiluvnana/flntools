@@ -93,7 +93,7 @@ class Engine:
         for target in targets:
             groups.setdefault(target.source, []).append(target)
         with kv.open(self.home / HISTORY_FILE, table=HISTORY_TABLE) as history, _stop_waits_on_ctrl_c(), \
-                log.multi("download") as rows:
+                log.group("download") as rows:
             settings = self._settings(options, history)
             work = [(self.sources[code](), [(target, rows.add(str(target))) for target in group])
                     for code, group in groups.items()]
@@ -103,7 +103,7 @@ class Engine:
                     total += result.value or 0
                     continue
                 # The whole group stopped before or between its targets: the targets it never reached
-                # failed too, or `log.multi` would end their rows at ok.
+                # failed too, or `log.group` would end their rows at ok.
                 source, group_rows = result.item
                 log.error("{source}: {error}", source=source.code, error=result.error)
                 for _, row in group_rows:

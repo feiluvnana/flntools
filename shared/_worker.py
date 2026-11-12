@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Generic, Iterable, Iterator, NamedTuple, TypedDict, TypeVar, overload
 
 import shared
-from shared._log import ProgressBar, log
+from shared._log import Progress, log
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -386,7 +386,7 @@ class _Run:
         self.executor: concurrent.futures.ProcessPoolExecutor | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.exits = ExitStack()
-        self.bar: ProgressBar | None = None
+        self.bar: Progress | None = None
         if label is not None:
             self.bar = self.exits.enter_context(log.progress(label, total=total))
         self.total = total

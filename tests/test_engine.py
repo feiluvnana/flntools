@@ -137,7 +137,7 @@ class GroupsTest(EngineCase):
 
 
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
-        # Fix 5: before it, only the error line was written and log.multi ended the rows at ok.
+        # Fix 5: before it, only the error line was written and log.group ended the rows at ok.
         def connect(self, session):
             raise RuntimeError("tlg: the saved login no longer works")
 

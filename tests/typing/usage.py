@@ -10,7 +10,7 @@ from typing_extensions import assert_type
 
 from flnd.session import Session, TargetSession
 from flnd.sources.base import Source
-from shared import cookies, media, prompt, theme, worker
+from shared import cookies, log, media, prompt, theme, worker
 from tests.fakes import FakeSession
 
 
@@ -36,6 +36,18 @@ theme.color = "265"  # pyright: ignore[reportAttributeAccessIssue]
 
 worker.as_ordered(len, [1, 2])  # pyright: ignore[reportArgumentType]
 worker.as_ordered(double, [1], progress="numbers")  # pyright: ignore[reportArgumentType]
+
+with log.progress("photos", total=2) as bar:
+    assert_type(bar.count, float)
+    bar.total = 3
+    bar.count = 1
+    bar.caption = "part 2"
+    bar.advance()
+    assert_type(bar.finished, bool)
+    bar.update(1, 2)  # pyright: ignore[reportAttributeAccessIssue]
+with log.group("download") as rows:
+    assert_type(rows.add("ins:example", total=12).total, Optional[float])
+log.multi("download")  # pyright: ignore[reportAttributeAccessIssue]
 
 assert_type(media.probe("a.jpg"), media.Info)
 assert_type(media.compress("a.jpg", preset="low"), Optional[Path])

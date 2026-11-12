@@ -234,7 +234,7 @@ def compress(src: PathLike, *, dest: PathLike | None = None, format: str | None 
         transcode(info, part, extension, quality=settings.quality, codec=codec, fps=settings.fps,
                   resolution=settings.photo_resolution if info.kind == "image" else settings.video_resolution,
                   speed=settings.speed, audio_bitrate=settings.audio_bitrate, strip=strip, copy=False,
-                  progress=progress or (bar.update if bar else None))
+                  progress=progress or (_reporter(bar) if bar else None))
         if part.stat().st_size >= info.size:
             part.unlink()
             log.info("{name}: compressing saved nothing; kept the original", name=src.name)
@@ -242,6 +242,15 @@ def compress(src: PathLike, *, dest: PathLike | None = None, format: str | None 
     if dest is None and out != src:
         src.unlink()
     return out
+
+
+def _reporter(bar: Any) -> Progress:
+    """A `progress(done, total)` callback that moves a `log.progress` row: the total first, then the count."""
+    def report(done: float, total: float | None = None) -> None:
+        if total is not None:
+            bar.total = total
+        bar.count = done
+    return report
 
 
 def check(path: PathLike) -> None:

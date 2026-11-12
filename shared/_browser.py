@@ -639,7 +639,7 @@ def _install_chromium() -> None:
             for line in installer.stdout or ():
                 lines.append(line.strip())
                 if found := INSTALL_PERCENT.search(line):
-                    bar.update(int(found[1]))
+                    bar.count = int(found[1])
         if installer.returncode:
             last = next((line for line in reversed(lines) if line), "no output")
             raise RuntimeError(f"Chromium was not downloaded: Playwright's installer exited with "

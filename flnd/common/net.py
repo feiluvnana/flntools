@@ -100,7 +100,10 @@ class Backoff:
             if show:
                 total = self._resume_at - _clock()
                 with log.progress(f"{self.code}: waiting", total=total, show=_seconds) as bar:
-                    self._sleep_out(lambda left: bar.update(total - left))
+                    def tick(left: float) -> None:
+                        bar.count = total - left
+
+                    self._sleep_out(tick)
             else:
                 self._sleep_out(lambda left: None)
         finally:
@@ -458,13 +461,13 @@ class _Row:
         if self.bar is None:
             self.bar = self.stack.enter_context(log.progress(self.label, total=total, show=fmt.size))
             return
-        self.base = self.bar.done
+        self.base = self.bar.count
         self.bar.total = self.base + total if total is not None and self.bar.total is not None else None
 
     def update(self, done: float, total: float | None = None) -> None:
         if total:
             self.bar.total = self.base + total
-        self.bar.update(self.base + done)
+        self.bar.count = self.base + done
 
     def caption(self, text: str) -> None:
         self.bar.caption = text

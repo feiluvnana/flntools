@@ -128,12 +128,12 @@ class PipeProgressTest(LogCase):
     def test_clean_exit(self):
         with log.progress("clip.mp4", total=3 * 1024 * 1024, show=fmt.size) as bar:
             bar.advance(1024 * 1024)
-            bar.update(1258291)
+            bar.count = 1258291
             bar.caption = "part 3"
             self.assertEqual(self.output(), "")
         self.assertEqual(self.lines(), ["✓ clip.mp4 ━━━━━━━━──────────── 1.2 MB/3.0 MB"])
         self.assertTrue(bar.finished)
-        self.assertEqual((bar.label, bar.done, bar.caption), ("clip.mp4", 1258291, ""))
+        self.assertEqual((bar.label, bar.count, bar.caption), ("clip.mp4", 1258291, ""))
 
     def test_exception(self):
         with self.assertRaises(KeyboardInterrupt):
@@ -143,11 +143,12 @@ class PipeProgressTest(LogCase):
                 raise KeyboardInterrupt
         self.assertEqual(self.lines(), ["✗ clip.mp4 ━━━━━━━━──────────── 4/10 part 3"])
 
-    def test_update_takes_a_total(self):
+    def test_count_and_total_are_set(self):
         with log.progress("upload") as bar:
-            bar.update(5, 10)
-            self.assertEqual((bar.done, bar.total), (5, 10))
-            bar.update(7)
+            bar.total = 10
+            bar.count = 5
+            self.assertEqual((bar.count, bar.total), (5, 10))
+            bar.count = 7
             self.assertEqual(bar.total, 10)
         self.assertEqual(self.lines(), ["✓ upload ━━━━━━━━━━━━━━────── 7/10"])
 
@@ -164,7 +165,7 @@ class PipeProgressTest(LogCase):
                 bar.advance()
         with log.progress("late") as late:
             late.total = 4
-            late.update(-5)
+            late.count = -5
         self.assertEqual(self.lines(), ["✓ scroll posts 12", "✓ late ──────────────────── 0/4"])
 
     def test_nested_bars(self):
@@ -174,9 +175,9 @@ class PipeProgressTest(LogCase):
             outer.advance()
         self.assertEqual(self.lines(), ["✓ file ━━━━━━━━━━━━━━━━━━━━ 2/2", "✓ run 1"])
 
-    def test_multi_with_finish_and_fail(self):
+    def test_group_with_finish_and_fail(self):
         with self.assertRaises(RuntimeError):
-            with log.multi("download") as jobs:
+            with log.group("download") as jobs:
                 ins = jobs.add("ins:ada", total=12)
                 twt = jobs.add("twt:bob")
                 fbk = jobs.add("fbk:cy")
@@ -193,8 +194,8 @@ class PipeProgressTest(LogCase):
             "✗ fbk:cy",
         ])
 
-    def test_multi_clean_exit(self):
-        with log.multi("download") as jobs:
+    def test_group_clean_exit(self):
+        with log.group("download") as jobs:
             jobs.add("a", total=1).advance()
         self.assertEqual(self.lines(), ["✓ download", "✓ a ━━━━━━━━━━━━━━━━━━━━ 1/1"])
 
@@ -226,7 +227,7 @@ class TtyProgressTest(LogCase):
         self.assertEqual(visible_screen(self.output()), ["✗ clip ──────────────────── 0/4 x"])
 
     def test_log_line_above_open_bars(self):
-        with log.multi("download") as jobs:
+        with log.group("download") as jobs:
             jobs.add("a", total=2)
             with log.progress("inner", total=1):
                 log.warn("careful")
@@ -239,7 +240,7 @@ class TtyProgressTest(LogCase):
 
     def test_live_area_capped_to_height(self):
         self.screen._height = 4
-        with log.multi("download") as jobs:
+        with log.group("download") as jobs:
             for name in "abcde":
                 jobs.add(name, total=1)
             rows = visible_screen(self.output())
@@ -269,10 +270,10 @@ class QuietPipeTest(LogCase):
             bar.advance()
         with self.assertRaises(RuntimeError), log.progress("bad", total=2):
             raise RuntimeError
-        with log.multi("download") as jobs:
+        with log.group("download") as jobs:
             jobs.add("a").finish()
             jobs.add("b").fail()
-        with self.assertRaises(RuntimeError), log.multi("upload") as jobs:
+        with self.assertRaises(RuntimeError), log.group("upload") as jobs:
             jobs.add("c")
             raise RuntimeError
 
@@ -364,6 +365,41 @@ class ThreadTest(LogCase):
         self.assertEqual(len(lines), 1600)
         for line in lines:
             self.assertRegex(line, r"^• thread \d line \d+ x{50}$")
+
+    def test_threads_share_a_group(self):
+        # C6: lines and row changes from several threads at once lose no count and raise nothing.
+        self.screen._tty = True
+        workers, steps = 8, 300
+        start, errors = threading.Barrier(workers), []
+        with log.group("download") as rows:
+            shared_row = rows.add("all", total=workers * steps)
+
+            def job(number):
+                try:
+                    own = rows.add(f"job {number}")
+                    start.wait()
+                    for step in range(steps):
+                        shared_row.advance()
+                        own.advance()
+                        if step % 50 == 0:
+                            log.info("job {n} at {step}", n=number, step=step)
+                    own.total = steps
+                    own.finish()
+                except BaseException as error:  # a thread's error would otherwise only be printed
+                    errors.append(error)
+
+            threads = [threading.Thread(target=job, args=(number,)) for number in range(workers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(shared_row.count, workers * steps)
+            self.assertEqual([row.count for row in rows.bars[1:]], [steps] * workers)
+        screen = visible_screen(self.output())
+        self.assertEqual(sum(line.startswith("• job ") for line in screen), workers * steps // 50)
+        self.assertIn(f"✓ all ━━━━━━━━━━━━━━━━━━━━ {workers * steps}/{workers * steps}", screen)
+        self.assertEqual(live_area(self.screen).groups, [])
 
     def test_output_is_held_while_a_prompt_is_open(self):
         asking, logged = threading.Event(), threading.Event()

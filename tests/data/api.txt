@@ -119,8 +119,8 @@ shared.kv.open(path: PathLike, *, table: str = 'default', timeout: float = 5.0) 
 shared.log: Log
 shared.log.Error(shared.Error)
 shared.log.Group(theme: Theme, title: str)
-shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> ProgressBar
-shared.log.Group.bars: attribute -> list[ProgressBar]
+shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress
+shared.log.Group.bars: attribute -> list[Progress]
 shared.log.Group.changed(force: bool = False) -> None
 shared.log.Group.end(outcome: str) -> None
 shared.log.Group.live: attribute
@@ -128,25 +128,24 @@ shared.log.Group.outcome: attribute -> str | None
 shared.log.Group.rows() -> list[tuple[str, str]]
 shared.log.Group.theme: attribute
 shared.log.Group.title: attribute
-shared.log.ProgressBar(label: str, total: float | None, show: Callable[[Any], str], group: Group)
-shared.log.ProgressBar.advance(n: float = 1) -> None
-shared.log.ProgressBar.caption: property, settable -> str
-shared.log.ProgressBar.done: property -> float
-shared.log.ProgressBar.fail() -> None
-shared.log.ProgressBar.finish() -> None
-shared.log.ProgressBar.finished: property -> bool
-shared.log.ProgressBar.label: attribute
-shared.log.ProgressBar.outcome: attribute -> str | None
-shared.log.ProgressBar.show: attribute
-shared.log.ProgressBar.total: property, settable -> float | None
-shared.log.ProgressBar.update(n: float, total: float | None = None) -> None
+shared.log.Progress(label: str, total: float | None, show: Callable[[Any], str], group: Group)
+shared.log.Progress.advance(n: float = 1) -> None
+shared.log.Progress.caption: property, settable -> str
+shared.log.Progress.count: property, settable -> float
+shared.log.Progress.fail() -> None
+shared.log.Progress.finish() -> None
+shared.log.Progress.finished: property -> bool
+shared.log.Progress.label: attribute
+shared.log.Progress.outcome: attribute -> str | None
+shared.log.Progress.show: attribute
+shared.log.Progress.total: property, settable -> float | None
 shared.log.debug(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.error(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.log.group(title: str = '') -> Iterator[Group]
 shared.log.info(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.level: property, settable -> Level
-shared.log.multi(title: str = '') -> Iterator[Group]
 shared.log.ok(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Iterator[ProgressBar]
+shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Iterator[Progress]
 shared.log.warn(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.media: module
 shared.media.BrokenError(shared.media.Error, shared.BrokenError)
