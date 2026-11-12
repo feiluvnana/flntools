@@ -42,9 +42,20 @@ RESET_SLACK = 5.0
 ONE_ATTEMPT = "shared.http.download"
 # The hosts whose CDNs passed a live check of `Range` and 4 connections at once (redesign D6), so
 # a big file from them downloads in ranges; a host matches itself and its subdomains. Every other
-# host gets one connection per file. It starts empty and grows by one entry as each CDN (fbcdn,
-# cdninstagram, tiktokcdn, twimg, loi's mirrors) passes its check by hand.
-SPLIT_HOSTS: frozenset[str] = frozenset()
+# host gets one connection per file. Each entry is a CDN that passed its check by hand; one that
+# failed, or that no listing ever served a file from, stays out with the reason.
+SPLIT_HOSTS: frozenset[str] = frozenset({
+    # live check passed 2026-11-12: 206, 4 ranges identical (fbk's videos and ins's files)
+    "fbcdn.net",
+    # live check passed 2026-11-12: 206, 4 ranges identical
+    "pbs.twimg.com",
+    # live check passed 2026-11-12: 206, 4 ranges identical
+    "video.twimg.com",
+    # live check passed 2026-11-12: 206, 4 ranges identical (loi's archive mirror)
+    "loicloud.com",
+    # cdninstagram.com: not checked, ins served every file from fbcdn.net hosts, never from this one.
+    # tiktokcdn.com: not checked, tik showed a captcha on the profile listing, so no file URL was reached.
+})
 CONNECTION_ERRORS = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)
 # Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}

@@ -380,10 +380,16 @@ class DownloadTest(NetCase):
         self.assertFalse(any("mirror 1 failed" in line for line in self.lines()))
 
 
+SPLIT_CHECKED = frozenset({"fbcdn.net", "pbs.twimg.com", "video.twimg.com", "loicloud.com"})
+
+
 class SplitHostsTest(unittest.TestCase):
-    def test_split_hosts_start_empty_and_match_a_host_and_its_subdomains(self):
-        """D6: only CDNs that passed a live check split; until then every file is one connection."""
-        self.assertEqual(net.SPLIT_HOSTS, frozenset())
+    def test_split_hosts_are_the_cdns_that_passed_a_live_check_and_match_subdomains(self):
+        """D6: only CDNs that passed a live check split; every other host is one connection."""
+        self.assertEqual(net.SPLIT_HOSTS, SPLIT_CHECKED)
+        self.assertEqual(net.split_parts("https://scontent.fhan1-1.fna.fbcdn.net/v.mp4"), "auto")
+        self.assertEqual(net.split_parts("https://video.twimg.com/v.mp4"), "auto")
+        self.assertEqual(net.split_parts("https://abs.twimg.com/v.mp4"), 1)
         self.assertEqual(net.split_parts("https://scontent-a.cdninstagram.com/v.mp4"), 1)
         with mock.patch.object(net, "SPLIT_HOSTS", frozenset({"cdninstagram.com"})):
             self.assertEqual(net.split_parts("https://scontent-a.cdninstagram.com/v.mp4"), "auto")
