@@ -84,12 +84,31 @@ class DateTest(unittest.TestCase):
         self.assertEqual(fmt.date(int(stamp)), "2026-11-11 12:08")
 
     def test_pattern(self):
-        self.assertEqual(fmt.date(datetime(2026, 11, 11, 12, 8), "%Y-%m-%d"), "2026-11-11")
-        self.assertEqual(fmt.date(date(2026, 11, 11), "%d/%m"), "11/11")
+        self.assertEqual(fmt.date(datetime(2026, 11, 11, 12, 8), pattern="%Y-%m-%d"), "2026-11-11")
+        self.assertEqual(fmt.date(date(2026, 11, 11), pattern="%d/%m"), "11/11")
 
     def test_date_rejects_bool(self):
         with self.assertRaises(TypeError):
             fmt.date(True)  # pyright: ignore[reportArgumentType]
+
+    def test_pattern_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            fmt.date(date(2026, 11, 11), "%d/%m")  # pyright: ignore[reportCallIssue]
+
+
+class CountTest(unittest.TestCase):
+    def test_singular_only_for_one(self):
+        self.assertEqual(fmt.count(1, "file"), "1 file")
+        self.assertEqual(fmt.count(0, "file"), "0 files")
+        self.assertEqual(fmt.count(3, "file"), "3 files")
+        self.assertEqual(fmt.count(-1, "file"), "-1 files")
+
+    def test_thousands_separators(self):
+        self.assertEqual(fmt.count(1200, "file"), "1,200 files")
+
+    def test_irregular_plural(self):
+        self.assertEqual(fmt.count(1, "story", plural="stories"), "1 story")
+        self.assertEqual(fmt.count(2, "story", plural="stories"), "2 stories")
 
 
 if __name__ == "__main__":

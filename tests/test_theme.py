@@ -68,7 +68,7 @@ class NoLeftoversTest(unittest.TestCase):
 
 class PaletteTest(unittest.TestCase):
     def setUp(self):
-        self.theme = Theme(color="16m", unicode=True, screen=Screen(out=StringIO(), width=40, height=20))
+        self.theme = Theme(color="16m", unicode=True, screen=Screen(dest=StringIO(), width=40, height=20))
 
     def test_defaults(self):
         palette = self.theme.palette
@@ -201,7 +201,7 @@ class ColorTest(unittest.TestCase):
 
 class ScopeTest(unittest.TestCase):
     def test_scope_restores(self):
-        screen = Screen(out=StringIO(), width=40, tty=False, interactive=False)
+        screen = Screen(dest=StringIO(), width=40, tty=False, interactive=False)
         before = (theme.color, theme.unicode, theme.screen)
         with theme.scope(color="8", unicode=False, screen=screen):
             self.assertEqual((theme.color, theme.unicode, theme.screen), ("8", False, screen))
@@ -215,19 +215,19 @@ class ScopeTest(unittest.TestCase):
 
 class ScreenTest(unittest.TestCase):
     def test_fake_screen(self):
-        screen = Screen(out=StringIO(), inp=StringIO("a\r"), width=30, tty=False, interactive=True)
+        screen = Screen(dest=StringIO(), inp=StringIO("a\r"), width=30, tty=False, interactive=True)
         self.assertEqual((screen.width, screen.tty, screen.interactive), (30, False, True))
         self.assertEqual((screen.readkey(), screen.readkey()), ("a", "enter"))
         with self.assertRaises(EOFError):
             screen.readkey()
 
     def test_write_strips_when_color_is_none(self):
-        screen = Screen(out=StringIO(), tty=False)
+        screen = Screen(dest=StringIO(), tty=False)
         with theme.scope(color="none"):
             screen.write("\x1b[31mred\x1b[0m")
         with theme.scope(color="16m"):
             screen.write("\x1b[31m!\x1b[0m")
-        self.assertEqual(screen.out.getvalue(), "red\x1b[31m!\x1b[0m")
+        self.assertEqual(screen.dest.getvalue(), "red\x1b[31m!\x1b[0m")
 
     def test_key_names(self):
         self.assertEqual([key_name(k) for k in ("\x1b[A", "\x1b[B", "\r", "\x7f", " ", "\x03", "é")],

@@ -24,7 +24,7 @@ def jpeg(size=(64, 48)):
 
 class FilesCase(unittest.TestCase):
     def setUp(self):
-        screen = Screen(out=io.StringIO(), inp=io.StringIO(""), width=300, tty=False, interactive=False)
+        screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=300, tty=False, interactive=False)
         scope = theme.scope(screen=screen, color="none", unicode=True)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)

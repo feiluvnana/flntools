@@ -123,24 +123,16 @@ class StyleTest(unittest.TestCase):
         painted = self.paint(style.gradient("#ff0000", "#0000ff"), "ab", depth="8")
         self.assertEqual(painted, "\x1b[91ma\x1b[34mb\x1b[0m")
 
-    def test_rainbow(self):
-        painted = self.paint(style.rainbow(), "abcdef")
-        for rgb in ("255;0;0", "255;255;0", "0;255;0", "0;255;255", "0;0;255", "255;0;255"):
-            self.assertIn(rgb, painted)
-        with theme.scope(color="16m"):
-            self.assertEqual(style.rainbow("ab"), style.rainbow()("ab"))
-        self.assertTrue(style.rainbow(background=True).black.bg_ramp)
-
-    def test_url(self):
-        link = style.url("https://example.com")
+    def test_link(self):
+        link = style.link("https://example.com")
         self.assertEqual(self.paint(link, "docs"), "\x1b]8;;https://example.com\x1b\\docs\x1b]8;;\x1b\\")
         self.assertEqual(self.paint(link, "docs", depth="none"), "docs")
-        colored = self.paint(style.cyan.underline.url("a/b"), "a/b")
+        colored = self.paint(style.cyan.underline.link("a/b"), "a/b")
         self.assertEqual(colored, "\x1b]8;;a/b\x1b\\\x1b[4;36ma/b\x1b[0m\x1b]8;;\x1b\\")
 
     def test_strip(self):
         with theme.scope(color="16m"):
-            text = style.red("a") + style.url("u")("b")
+            text = style.red("a") + style.link("u")("b")
         self.assertEqual(style.strip(text), "ab")
 
     def test_painted_text_is_a_plain_str(self):

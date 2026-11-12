@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 # A source's own login (tlg) raises it too, so it lives in base; `auth.LoginError` is the same class.
 from flnd.sources.base import LoginError
-from shared import cookies, crypto, kv
+from shared import cookies, crypto, fmt, kv
 
 if TYPE_CHECKING:
     from flnd.sources.base import Source
@@ -108,7 +108,7 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     fix_domains(jar).save(path)
     # One cookie file per source, so an old JSON file can't shadow the new one.
     path.with_suffix(".json").unlink(missing_ok=True)
-    return f"{source.code}: logged in from {origin} ({len(jar)} cookies)"
+    return f"{source.code}: logged in from {origin} ({fmt.count(len(jar), 'cookie')})"
 
 
 def load(home: Path, code: str) -> cookies.Jar:

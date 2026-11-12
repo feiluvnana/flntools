@@ -118,7 +118,7 @@ class Instagram(Source):
         session.folder = tab
         if load(session, profile, url):
             session.scroll(count=lambda: len(profile.listed[tab]))
-        session.info("{tab}: {n} posts listed", tab=tab, n=len(profile.listed[tab]))
+        session.info("{tab}: {posts} listed", tab=tab, posts=fmt.count(len(profile.listed[tab]), "post"))
 
 
 @dataclass
@@ -209,7 +209,7 @@ def save_story_page(session: Session, url: str, *, category: str, folder: str) -
         story_id, day = str(story.get("pk") or story.get("id", "")).split("_")[0], taken_on(story)
         file_name = f"{day}_{story_id}.{extension}" if day else f"{story_id}.{extension}"
         session.save(url, file_name, category=category, date=day, folder=folder, headers=CDN_HEADERS, audio=audio)
-    session.info("{folder}: {n} stories", folder=folder, n=len(stories))
+    session.info("{folder}: {stories}", folder=folder, stories=fmt.count(len(stories), "story", plural="stories"))
 
 
 def post_name(post: dict) -> str:

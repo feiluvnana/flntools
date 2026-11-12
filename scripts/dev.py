@@ -105,7 +105,7 @@ def dist(python: str, args: list[str]) -> None:
     # PyInstaller lives in the `dist` group, which `setup` leaves out; `uv run` below keeps it installed.
     run(["uv", "sync", "--python", python, "--group", "dist"])
     # This script runs outside the project environment, so the build runs inside it, through uv.
-    build = "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', data=('licenses',))"
+    build = "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', data=('licenses',), dest='dist')"
     run(["uv", "run", "--python", python, "--group", "dist", "python", "-c", build])
     # utf-8 on every OS: a shell's `>` on Windows would write the console's code page instead.
     (ROOT / "dist" / "flnd" / "licenses" / "ffmpeg-source.txt").write_text(ffmpeg_source(python), encoding="utf-8")

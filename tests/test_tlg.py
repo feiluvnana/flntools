@@ -271,7 +271,7 @@ class LoginTest(LoginCase):
         self.assertEqual((self.telegram.phone, self.telegram.code), ("+15550100", "12345"))
         client = self.telegram.clients[0]
         self.assertEqual((client.api_id, client.api_hash, client.string), (12345, CREDENTIALS["api_hash"], SESSION))
-        screen = self.screen.out.getvalue()
+        screen = self.screen.dest.getvalue()
         self.assertNotIn("hunter2", screen)
         self.assertNotIn(CREDENTIALS["api_hash"], screen)
 
@@ -286,7 +286,7 @@ class LoginTest(LoginCase):
         self.answer(*CREDENTIALS.values())
         self.log_in("qr")
         self.assert_logged_in()
-        out = self.screen.out.getvalue()
+        out = self.screen.dest.getvalue()
         self.assertEqual(out.count("Settings → Devices → Link Desktop Device"), 2)
         self.assertIn("█", out)
 
@@ -364,7 +364,7 @@ class LoginCommandTest(FlndCase):
         with mock.patch.object(Telegram, "login", lambda self, session, method: methods.append(method)):
             self.assertEqual(self.run_app("login")[0], 0)
         self.assertEqual(methods, ["qr"])
-        out = self.screen.out.getvalue()
+        out = self.screen.dest.getvalue()
         self.assertIn("✓ Log in to: Telegram (tlg)", out)
         self.assertIn("✓ Log in to Telegram: With a QR code", out)
 
@@ -384,7 +384,7 @@ class LoginCommandTest(FlndCase):
         self.choose_telegram("enter")
         with mock.patch.object(Telegram, "login", lambda self, session, method: None):
             self.run_app("login")
-        self.assertIn("Telegram (tlg) · logged in", self.screen.out.getvalue())
+        self.assertIn("Telegram (tlg) · logged in", self.screen.dest.getvalue())
 
 
 class DownloadCase(LoginCase):

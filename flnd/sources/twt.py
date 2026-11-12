@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from flnd.common.target import Target, link, name, unreadable
 from flnd.session import Session
 from flnd.sources.base import FetchError, Source
-from shared import selector
+from shared import fmt, selector
 
 # The user agent Twitter's API has always been sent: a desktop Chrome.
 CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -169,7 +169,7 @@ class Twitter(Source):
                 save_tweet(session, tweet, timeline.category, user_id)
             if not new or not cursor:
                 break
-        session.info("{category}: {n} pages read", category=timeline.category, n=pages)
+        session.info("{category}: {pages} read", category=timeline.category, pages=fmt.count(pages, "page"))
         return True
 
     def _save_one_tweet(self, session: Session, tweet_id: str) -> None:
@@ -211,7 +211,7 @@ class Twitter(Source):
                 if session.goto(profile + timeline.tab):
                     session.scroll(count=lambda: found[0])
         session.folder = None
-        session.info("{n} tweets read in the browser", n=found[0])
+        session.info("{tweets} read in the browser", tweets=fmt.count(found[0], "tweet"))
 
 
 def status_id(parts: list[str]) -> str | None:

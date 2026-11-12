@@ -371,11 +371,11 @@ def _summary(lines: Sequence[Line]) -> None:
     """One line per target, then the totals: `ins:example_user: 120 files, 85.2 MB; 2 repaired, 1 missing`."""
     for line in lines:
         log.info("{target}: {body}", target=line.target, body=_described(line))
-    total = Line(f"{len(lines)} targets", files=sum(line.files for line in lines),
+    total = Line(fmt.count(len(lines), "target"), files=sum(line.files for line in lines),
                  size=sum(line.size for line in lines), repaired=sum(line.repaired for line in lines),
                  missing=sum(line.missing for line in lines))
     log.info("total: {targets}, {body}", targets=total.target, body=_described(total))
 
 
 def _described(line: Line) -> str:
-    return f"{line.files:,} files, {fmt.size(line.size)}; {line.repaired:,} repaired, {line.missing:,} missing"
+    return f"{fmt.count(line.files, 'file')}, {fmt.size(line.size)}; {line.repaired:,} repaired, {line.missing:,} missing"

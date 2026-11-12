@@ -1,4 +1,12 @@
-"""Values as short text, and text as safe file names. Pure functions; the caller adds color."""
+"""Values as short text for a person to read, and text as safe file names.
+
+Each function takes one value and returns a plain `str`: a size in bytes, a duration, a date, a
+count with its noun, or a file name every platform accepts. They are pure, so the caller adds
+color (`shared.style`) and decides where the text goes. Stdlib only: nothing is wrapped, so there
+is no `.raw`.
+
+    log.ok("saved {count}, {size}", count=fmt.count(3, "file"), size=fmt.size(1536))  # 3 files, 1.5 KB
+"""
 
 from __future__ import annotations
 
@@ -7,7 +15,7 @@ import re
 
 import shared
 
-__all__ = ["Error", "date", "duration", "filename", "size"]
+__all__ = ["Error", "count", "date", "duration", "filename", "size"]
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f]')
@@ -46,10 +54,34 @@ def duration(seconds: float) -> str:
     return " ".join(nonzero[:2])
 
 
-def date(value: _datetime.date | float, pattern: str | None = None) -> str:
+def count(n: int, noun: str, *, plural: str | None = None) -> str:
+    """A number with its noun, singular for exactly one: `1 file`, `0 files`, `1,200 files`.
+
+        fmt.count(3, "file")                       # '3 files'
+        fmt.count(1, "story", plural="stories")    # '1 story'
+
+    Args:
+        n: how many; written with thousands separators.
+        noun: the singular noun, such as "file".
+        plural: the plural for a noun that doesn't just add "s", such as "stories"; None adds "s".
+    """
+    if n == 1:
+        return f"{n:,} {noun}"
+    return f"{n:,} {plural if plural is not None else noun + 's'}"
+
+
+def date(value: _datetime.date | float, *, pattern: str | None = None) -> str:
     """A date as `YYYY-MM-DD`; a datetime or Unix timestamp as `YYYY-MM-DD HH:MM`.
 
-    A bool raises TypeError: it is an int, but never a timestamp.
+        fmt.date(datetime.date(2026, 11, 11))       # '2026-11-11'
+        fmt.date(stamp, pattern="%d/%m")            # '11/11', in local time
+
+    Args:
+        value: a date, a datetime, or a Unix timestamp in seconds, read in local time.
+        pattern: a `strftime` pattern; None picks one of the two above by the value's kind.
+
+    Raises:
+        TypeError: `value` is a bool: it is an int, but never a timestamp.
     """
     if isinstance(value, bool):
         raise TypeError("fmt.date() takes a date, datetime, or Unix timestamp, not a bool")

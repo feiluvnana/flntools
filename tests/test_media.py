@@ -380,7 +380,7 @@ def record(built: list):
 class FakeScreenCase(unittest.TestCase):
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp(dir=FOLDER))
-        self.screen = Screen(out=StringIO(), inp=StringIO(""), width=80, tty=False, interactive=False)
+        self.screen = Screen(dest=StringIO(), inp=StringIO(""), width=80, tty=False, interactive=False)
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
 
@@ -465,7 +465,7 @@ class CompressPhotoTest(FakeScreenCase):
         before = path.read_bytes()
         self.assertIsNone(media.compress(path))
         self.assertEqual(path.read_bytes(), before)
-        self.assertIn("compressing saved nothing", self.screen.out.getvalue())
+        self.assertIn("compressing saved nothing", self.screen.dest.getvalue())
 
     def test_bad_settings(self):
         for settings in ({"preset": "tiny"}, {"codec": "av1"}, {"quality": 0}, {"quality": 101}, {"fps": 0},
@@ -566,7 +566,7 @@ class CompressVideoTest(FakeScreenCase):
 
     def test_default_progress_bar(self):
         media.compress(sample("big.mp4"), dest=self.folder / "bar.mp4", preset="low")
-        self.assertIn("big.mp4", self.screen.out.getvalue())
+        self.assertIn("big.mp4", self.screen.dest.getvalue())
 
 
 @unittest.skipIf(sys.platform == "win32", "the fake ffmpeg is a shell script")

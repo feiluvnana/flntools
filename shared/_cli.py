@@ -1,4 +1,26 @@
-"""Command-line apps whose function signatures are the parser."""
+"""Command-line apps whose function signatures are the parser.
+
+A handler is a plain function: each parameter becomes a positional, an option or a flag, read from
+its annotation and default, and its docstring's first line and `Args:` section become the help.
+`App.run` follows the command words down to a handler, parses the rest with argparse (wrapped, never
+exposed: there is no `.raw`), calls the handler and returns its exit code. A bad command line raises
+`UsageError`, drawn by `shared.theme` as `✗ message` and the usage, with exit code 2; help is drawn
+by the same theme, to stdout.
+
+    app = cli.App("notes", version="1.0")
+
+    @app.command
+    def add(text: str, *, tag: list[str] = []) -> int:
+        \"\"\"Add a note.
+
+        Args:
+            text: the note.
+            tag: a label for it; may be given more than once.
+        \"\"\"
+        return 0
+
+    app()                                          # notes add "buy milk" --tag home
+"""
 
 from __future__ import annotations
 
@@ -43,7 +65,21 @@ class App:
             return register(target)
         return lambda fn: register(fn, target)
 
-    def group(self, name: str, description: str = "") -> App:
+    def group(self, name: str, *, description: str = "") -> App:
+        """Add a group of commands under `name`, and return it to register its commands on.
+
+            auth = app.group("auth", description="Cookie files for a source.")
+
+            @auth.command
+            def show(source: str) -> int: ...            # app auth show <source>
+
+        Args:
+            name: the word that selects the group on the command line.
+            description: the group's help text; its first line is its row in the parent's help.
+
+        Raises:
+            ValueError: this app already has a command or group called `name`, or has its own handler.
+        """
         child = App(name, description=description)
         child.parent = self
         self._add(name, child)

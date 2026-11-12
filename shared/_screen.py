@@ -13,19 +13,32 @@ __all__ = ["Screen", "isatty", "key_name"]
 
 
 class Screen:
-    """The terminal that `log` and `prompt` write to and read keys from."""
+    """The terminal that `log` and `prompt` write to and read keys from.
 
-    def __init__(self, out=None, inp=None, *, width: int | None = None, height: int | None = None,
+        screen = Screen(dest=io.StringIO(), width=80, tty=False, interactive=False)  # a fake, for tests
+
+    Args:
+        dest: the text stream output goes to; None is `sys.stderr`, looked up at each write.
+        inp: the binary stream keys are read from; None opens the terminal itself (`/dev/tty`, or
+            `CONIN$` on Windows) on first use, so a piped stdin never answers a prompt.
+        width: the width in columns; None asks the terminal, and 80 when it can't say.
+        height: the height in lines; None asks the terminal, and 24 when it can't say.
+        tty: whether `dest` is a terminal, so lines may be redrawn; None asks `dest`.
+        interactive: whether a person can answer prompts; None is `tty` with a terminal to read.
+    """
+
+    def __init__(self, dest=None, inp=None, *, width: int | None = None, height: int | None = None,
                  tty: bool | None = None, interactive: bool | None = None):
-        self._out, self._inp, self._width, self._height = out, inp, width, height
+        self._dest, self._inp, self._width, self._height = dest, inp, width, height
         self._tty, self._interactive = tty, interactive
         self._terminal_failed = False
         self._vt_enabled = False
         self.lock = threading.RLock()
 
     @property
-    def out(self):
-        return self._out if self._out is not None else sys.stderr
+    def dest(self):
+        """The text stream output goes to: the one given, else `sys.stderr` as it is now."""
+        return self._dest if self._dest is not None else sys.stderr
 
     @property
     def inp(self):
@@ -38,7 +51,7 @@ class Screen:
 
     @property
     def tty(self) -> bool:
-        return self._tty if self._tty is not None else isatty(self.out)
+        return self._tty if self._tty is not None else isatty(self.dest)
 
     @property
     def interactive(self) -> bool:
@@ -51,7 +64,7 @@ class Screen:
         if self._width:
             return self._width
         try:
-            return os.get_terminal_size(self.out.fileno()).columns
+            return os.get_terminal_size(self.dest.fileno()).columns
         except (AttributeError, OSError, ValueError):
             return 80
 
@@ -60,7 +73,7 @@ class Screen:
         if self._height:
             return self._height
         try:
-            return os.get_terminal_size(self.out.fileno()).lines
+            return os.get_terminal_size(self.dest.fileno()).lines
         except (AttributeError, OSError, ValueError):
             return 24
 
@@ -87,8 +100,8 @@ class Screen:
             if os.name == "nt" and not self._vt_enabled:
                 self._vt_enabled = True
                 _enable_windows_vt()
-            self.out.write(text)
-            self.out.flush()
+            self.dest.write(text)
+            self.dest.flush()
 
 
 def isatty(stream) -> bool:

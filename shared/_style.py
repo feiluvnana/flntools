@@ -1,4 +1,14 @@
-"""Chainable terminal styles in the shape of Node's chalk."""
+"""Chainable terminal styles in the shape of Node's chalk: colors, modifiers, gradients and links.
+
+`style` is one empty `Chain`. Each property or method returns a new `Chain` with one more style, so
+styles chain and can be kept for reuse; calling a chain paints a string. Painting asks the process
+theme (`shared.theme`) for its color depth at call time, so the same chain prints plain text into a
+pipe and 24-bit color into a modern terminal. The module wraps no library: it writes SGR and OSC 8
+escape sequences itself, and has no `.raw`.
+
+    danger = style.red.bold
+    print(danger("disk full"), style.cyan.link("https://example.com")("docs"))
+"""
 
 from __future__ import annotations
 
@@ -26,7 +36,6 @@ NAMED_COLORS = {
     "gray": 8,
 }
 MODIFIER_CODES = {"bold": "1", "dim": "2", "italic": "3", "underline": "4", "reverse": "7", "strike": "9"}
-RAINBOW_STOPS = ("#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff")
 
 
 class Error(shared.Error):
@@ -46,7 +55,8 @@ class Chain:
     fg_ramp: tuple = ()
     bg_ramp: tuple = ()
     modifiers: frozenset = frozenset()
-    link: str | None = None
+    # The URL an OSC 8 hyperlink opens, set by `link(url)`; None paints no link.
+    href: str | None = None
 
     # `shared.style` is a Chain, not a module, so the module's error is reached through it.
     # Not a field: it has no annotation.
@@ -74,12 +84,18 @@ class Chain:
         ramp = tuple(parse_color(stop) for stop in stops)
         return replace(self, bg_ramp=ramp) if background else replace(self, fg_ramp=ramp)
 
-    def rainbow(self, text: object = None, /, *, background: bool = False) -> Chain | str:
-        chain = self.gradient(*RAINBOW_STOPS, background=background)
-        return chain if text is None else chain(text)
+    def link(self, url: str) -> Chain:
+        """This style, also making the text an OSC 8 hyperlink that opens `url`.
 
-    def url(self, target: str) -> Chain:
-        return replace(self, link=target)
+            print(style.cyan.link("https://example.com")("docs"))
+
+        Args:
+            url: what the link opens; a terminal without OSC 8 support shows the text alone.
+
+        Returns:
+            A new `Chain`; with no color (depth "none") it paints the text with no link either.
+        """
+        return replace(self, href=url)
 
     @staticmethod
     def strip(text: str) -> str:
@@ -99,8 +115,8 @@ class Chain:
             body = opener + text.replace(RESET, RESET + opener) + RESET
         else:
             body = text
-        if self.link:
-            body = f"\x1b]8;;{self.link}\x1b\\{body}{LINK_CLOSE}"
+        if self.href:
+            body = f"\x1b]8;;{self.href}\x1b\\{body}{LINK_CLOSE}"
         return body
 
     def _static_codes(self, depth: str) -> list[str]:

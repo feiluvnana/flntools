@@ -48,18 +48,18 @@ def wait_until(condition, limit: float = LONG) -> None:
 
 class WorkerCase(unittest.TestCase):
     def setUp(self):
-        self.screen = Screen(out=StringIO(), inp=StringIO(""), width=200, tty=False, interactive=False)
+        self.screen = Screen(dest=StringIO(), inp=StringIO(""), width=200, tty=False, interactive=False)
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
         self.addCleanup(self.scope.__exit__, None, None, None)
 
     def lines(self) -> list[str]:
-        return self.screen.out.getvalue().splitlines()
+        return self.screen.dest.getvalue().splitlines()
 
     def after_line(self, text: str, action) -> None:
         """Run `action` in a thread once `text` is on the screen."""
         def watch():
-            wait_until(lambda: text in self.screen.out.getvalue())
+            wait_until(lambda: text in self.screen.dest.getvalue())
             action()
 
         threading.Thread(target=watch, daemon=True).start()

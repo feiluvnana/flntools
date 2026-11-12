@@ -516,7 +516,7 @@ class TargetSession:
         return prompt.choose(message, options)
 
     def info(self, message: str, **fields: Any) -> None:
-        """A `log.info` line naming the target: `session.info("{tab}: {n} items", tab="posts", n=3)`."""
+        """A `log.info` line naming the target: `session.info("{tab}: {posts} listed", tab="posts", posts=fmt.count(3, "post"))`."""
         log.info("{target}: " + message, target=str(self.target), **fields)
 
     def warn(self, message: str, **fields: Any) -> None:

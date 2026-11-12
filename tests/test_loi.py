@@ -277,7 +277,7 @@ class LoginTest(unittest.TestCase):
                         lambda browser="chrome", *, profile=None: cookies.Jar(c for jar in store.values() for c in jar)):
             jar = auth.from_browser(Loibus(), browser="chrome")
             self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="Chrome"),
-                             "loi: logged in from Chrome (1 cookies)")
+                             "loi: logged in from Chrome (1 cookie)")
             store.clear()
             with self.assertRaisesRegex(auth.LoginError, "no access-token"):
                 auth.store(Loibus(), auth.from_browser(Loibus(), browser="chrome"), home=self.home, origin="Chrome")

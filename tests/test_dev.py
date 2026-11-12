@@ -78,7 +78,7 @@ class TasksTest(unittest.TestCase):
         self.assertIn("ffmpeg version 7.1 © the FFmpeg developers", text)
         commands = [call.args[0] for call in fake.call_args_list]
         self.assertEqual(commands[0], ["uv", "sync", "--python", "3.14", "--group", "dist"])
-        self.assertIn("bundler.build('flnd/__main__.py', name='flnd', data=('licenses',))", commands[1][-1])
+        self.assertIn("bundler.build('flnd/__main__.py', name='flnd', data=('licenses',), dest='dist')", commands[1][-1])
         self.assertEqual(commands[-1], ["/bin/ffmpeg", "-hide_banner", "-version"])
         # Every command is a list of arguments, never a shell string.
         self.assertTrue(all(call.kwargs.get("shell") is None for call in fake.call_args_list))

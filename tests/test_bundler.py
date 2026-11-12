@@ -32,7 +32,7 @@ class CommandTest(unittest.TestCase):
         self.addCleanup(self.work.cleanup)
 
     def argv(self, **options):
-        defaults = {"name": "tool", "hidden": (), "out": Path(self.work.name) / "dist", "work": Path(self.work.name)}
+        defaults = {"name": "tool", "hidden": (), "dest": Path(self.work.name) / "dist", "work": Path(self.work.name)}
         return bundler._arguments("tool.py", **{**defaults, **options})
 
     def test_one_folder_with_no_spec_file_left_behind(self):
@@ -111,7 +111,7 @@ class FakePyInstallerTest(unittest.TestCase):
         assets = self.root / "assets"
         (assets / "inner").mkdir(parents=True)
         (assets / "inner" / "a.txt").write_text("a")
-        folder = bundler.build("tool.py", name="tool", data=(assets,), out=self.root / "dist")
+        folder = bundler.build("tool.py", name="tool", data=(assets,), dest=self.root / "dist")
         self.assertEqual(folder, (self.root / "dist" / "tool").resolve())
         self.assertEqual((folder / "assets" / "inner" / "a.txt").read_text(), "a")
         self.assertEqual(len(self.calls), 1)
@@ -120,7 +120,7 @@ class FakePyInstallerTest(unittest.TestCase):
     def test_a_failure_raises_with_pyinstallers_last_lines(self):
         self.fail = True
         with self.assertRaises(RuntimeError) as caught:
-            bundler.build("tool.py", name="tool", out=self.root / "dist")
+            bundler.build("tool.py", name="tool", dest=self.root / "dist")
         message = str(caught.exception)
         self.assertIn("PyInstaller could not build tool", message)
         self.assertIn("Unable to find module 'missing'", message)
@@ -129,7 +129,7 @@ class FakePyInstallerTest(unittest.TestCase):
 
     def test_a_missing_data_folder_raises_before_building(self):
         with self.assertRaises(FileNotFoundError):
-            bundler.build("tool.py", name="tool", data=(self.root / "nothing",), out=self.root / "dist")
+            bundler.build("tool.py", name="tool", data=(self.root / "nothing",), dest=self.root / "dist")
         self.assertEqual(self.calls, [])
 
 
@@ -155,7 +155,7 @@ class RealBuildTest(unittest.TestCase):
             script = Path(folder) / "probe.py"
             script.write_text("import sys\nfrom shared import media\n"
                               "print(media.probe(sys.argv[1]).kind, media.probe(sys.argv[2]).video)\n")
-            built = bundler.build(script, name="probe", out=Path(folder) / "dist")
+            built = bundler.build(script, name="probe", dest=Path(folder) / "dist")
             program = built / ("probe.exe" if sys.platform == "win32" else "probe")
             result = subprocess.run([str(program), str(photo), str(video)], capture_output=True, text=True,
                                     timeout=120, cwd=folder)
@@ -165,7 +165,7 @@ class RealBuildTest(unittest.TestCase):
     def test_a_built_flnd_ships_ffmpeg_and_its_licences(self):
         # What `make dist` builds: flnd with licenses/, whose bundled ffmpeg runs from inside it.
         with tempfile.TemporaryDirectory() as folder:
-            built = bundler.build(ROOT / "flnd" / "__main__.py", name="flnd", out=Path(folder) / "dist",
+            built = bundler.build(ROOT / "flnd" / "__main__.py", name="flnd", dest=Path(folder) / "dist",
                                   data=(ROOT / "licenses",))
             program = built / ("flnd.exe" if sys.platform == "win32" else "flnd")
             result = subprocess.run([str(program), "sync"], capture_output=True, text=True,
@@ -189,7 +189,7 @@ class RealBuildTest(unittest.TestCase):
                 "Path('note.txt').write_text('hello')\n"
                 "archive.zip('note.txt', 'note.7z', password='pw')\n"
                 "print(Path(archive.unzip('note.7z', 'out', password='pw')[0]).read_text())\n")
-            built = bundler.build(script, name="tiny", out=Path(folder) / "dist")
+            built = bundler.build(script, name="tiny", dest=Path(folder) / "dist")
             program = built / ("tiny.exe" if sys.platform == "win32" else "tiny")
             result = subprocess.run([str(program)], capture_output=True, text=True, timeout=120, cwd=folder)
         self.assertEqual(result.returncode, 0, result.stderr)

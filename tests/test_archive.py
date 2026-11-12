@@ -198,7 +198,15 @@ class SniffTest(ArchiveCase):
 
     def test_not_an_archive(self):
         (self.root / "notes.zip").write_bytes(b"just some text, no archive here")
-        self.assert_refused(ValueError, self.root / "notes.zip")
+        self.assert_refused(archive.BrokenError, self.root / "notes.zip")
+
+    def test_damaged_index(self):
+        for suffix in (".zip", ".7z", ".tar.gz"):
+            with self.subTest(suffix=suffix):
+                whole = archive.zip(self.album, self.root / f"whole{suffix}")[0]
+                cut = self.root / f"cut{suffix}"
+                cut.write_bytes(whole.read_bytes()[:-60])
+                self.assert_refused(archive.BrokenError, cut)
 
     def test_spanned_zip_found_from_its_first_part(self):
         entries = {"album/a.txt": b"alpha", "album/big.bin": os.urandom(3000), "album/c.txt": b"gamma"}
@@ -333,6 +341,110 @@ class SafetyTest(ArchiveCase):
         inner = archive.zip(self.album, self.root / "inner.zip")[0]
         outer = archive.zip(inner, self.root / "outer.tar")[0]
         self.assertEqual(archive.unzip(outer, self.out), [self.out / "inner.zip"])
+
+
+class LsTest(ArchiveCase):
+    """`ls` lists what `unzip` would write, refuses what it would refuse, and writes nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.index = [archive.Entry("album", 0, "dir"), archive.Entry("album/a.txt", 5, "file"),
+                      archive.Entry("album/empty", 0, "dir"), archive.Entry("album/photos", 0, "dir"),
+                      archive.Entry("album/photos/1.jpg", 5000, "file")]
+
+    def assert_lists(self, path: Path, expected: list[archive.Entry], **options):
+        before = sorted(self.root.rglob("*"))
+        self.assertEqual(sorted(archive.ls(path, **options), key=lambda entry: entry.name), expected)
+        self.assertEqual(sorted(self.root.rglob("*")), before)
+
+    def test_zip(self):
+        self.assert_lists(archive.zip(self.album, self.root / "b.zip")[0], self.index)
+
+    def test_7z(self):
+        self.assert_lists(archive.zip(self.album, self.root / "b.7z")[0], self.index)
+
+    def test_each_tar(self):
+        for suffix in (*TAR_SUFFIXES, *((".tar.zst",) if HAS_ZSTD else ())):
+            with self.subTest(suffix=suffix):
+                self.assert_lists(archive.zip(self.album, self.root / f"b{suffix}")[0], self.index)
+
+    def test_compressed_file(self):
+        openers = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}
+        if HAS_ZSTD:
+            from compression import zstd  # type: ignore[import-not-found]
+            openers[".zst"] = zstd.open
+        for suffix, opener in openers.items():
+            with self.subTest(suffix=suffix):
+                with opener(self.root / f"notes.txt{suffix}", "wb") as out:
+                    out.write(b"some notes")
+                # A compressed file doesn't declare its size, so none is listed.
+                self.assert_lists(self.root / f"notes.txt{suffix}", [archive.Entry("notes.txt", None, "file")])
+
+    def test_rar(self):
+        (self.root / "a.rar").write_bytes(b"Rar!\x1a\x07\x01\x00" + bytes(40))
+        listing = (b"\nArchive: a.rar\nDetails: RAR 5\n\n        Name: album\n        Type: Directory\n\n"
+                   b"        Name: album/notes.txt\n        Type: File\n        Size: 5\n Packed size: 5\n")
+        finished = subprocess.CompletedProcess([], 0, stdout=listing, stderr=b"")
+        with mock.patch("shutil.which", return_value="/usr/bin/unrar"), \
+                mock.patch("subprocess.run", return_value=finished):
+            self.assert_lists(self.root / "a.rar", [archive.Entry("album", 0, "dir"),
+                                                    archive.Entry("album/notes.txt", 5, "file")])
+            linked = listing + b"\n        Name: escape\n        Type: Symbolic link\n        Size: 9\n"
+            with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, linked, b"")):
+                with self.assertRaises(archive.UnsafeError):
+                    archive.ls(self.root / "a.rar")
+
+    def test_in_the_archives_order(self):
+        zipped = zip_with(self.root / "order.zip", {"b.txt": b"b", "a.txt": b"a"})
+        self.assertEqual([entry.name for entry in archive.ls(zipped)], ["b.txt", "a.txt"])
+
+    def test_password(self):
+        for suffix in (".zip", ".7z"):
+            with self.subTest(suffix=suffix):
+                locked = archive.zip(self.album, self.root / f"locked{suffix}", password="pw")[0]
+                self.assert_lists(locked, self.index, password="pw")
+                with self.assertRaises(archive.PasswordError):
+                    archive.ls(locked)
+        # The 7z's names are encrypted too, so a wrong password shows at once.
+        with self.assertRaises(archive.PasswordError):
+            archive.ls(self.root / "locked.7z", password="wrong")
+
+    def test_parts_found_from_the_first(self):
+        for suffix in (".zip", ".7z", ".tar.gz"):
+            with self.subTest(suffix=suffix):
+                size = archive.zip(self.album, self.root / f"whole{suffix}")[0].stat().st_size
+                parts = archive.zip(self.album, self.root / f"split{suffix}", split=size // 3 + 1)
+                self.assert_lists(parts[0], self.index)
+        spanned = spanned_zip(self.root, {"a.txt": b"alpha", "big.bin": bytes(3000)}, part_size=1000)
+        self.assertEqual(archive.ls(spanned[0]), [archive.Entry("a.txt", 5, "file"), archive.Entry("big.bin", 3000, "file")])
+
+    def test_unsafe_names_links_and_devices(self):
+        for name in ("../evil.txt", "/etc/evil.txt", "C:\\evil.txt", "x/a:b", "NUL", "dir/com1.txt"):
+            with self.subTest(name=name):
+                with self.assertRaises(archive.UnsafeError):
+                    archive.ls(zip_with(self.root / "evil.zip", {"ok.txt": b"ok", name: b"x"}))
+                with self.assertRaises(archive.UnsafeError):
+                    archive.ls(tar_with(self.root / "evil.tar", [(name, tarfile.REGTYPE, b"")]))
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE, tarfile.FIFOTYPE):
+            with self.subTest(kind=kind):
+                with self.assertRaises(archive.UnsafeError):
+                    archive.ls(tar_with(self.root / "odd.tar", [("odd", kind, b"ok.txt")]))
+
+    def test_bombs(self):
+        bundle = archive.zip(self.album, self.root / "bundle.zip")[0]
+        for limits in (archive.Limits(size=1000), archive.Limits(files=3)):
+            with self.subTest(limits=limits), self.assertRaises(archive.BombError):
+                archive.ls(bundle, limits=limits)
+        zeros = zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)})
+        with self.assertRaises(archive.BombError):
+            archive.ls(zeros)
+        self.assertEqual(archive.ls(zeros, limits=archive.Limits(ratio=10_000)),
+                         [archive.Entry("zeros", 1_000_000, "file")])
+
+    def test_not_an_archive(self):
+        (self.root / "notes.zip").write_bytes(b"just some text, no archive here")
+        with self.assertRaises(archive.BrokenError):
+            archive.ls(self.root / "notes.zip")
 
 
 class ErrorTest(ArchiveCase):

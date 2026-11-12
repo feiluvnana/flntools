@@ -30,26 +30,9 @@ POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR
 # step-4 commit renames its names and removes its own entries here, with the api.txt diff that shows
 # the renames. Nothing else is exempt: a new name that breaks a convention fails.
 ALLOWED: dict[str, tuple[str, ...]] = {
-    "shared.bundler": (
-        "shared.bundler.build: option out, not dest",
-    ),
-    "shared.cli": (
-        "shared.cli.App.group: positional option description",
-        "shared.cli.arg: positional option choices",
-        "shared.cli.arg: positional option metavar",
-        "shared.cli.arg: positional option nargs",
-        "shared.cli.arg: positional option stdin",
-        "shared.cli.arg: positional option type",
-    ),
-    "shared.fmt": (
-        "shared.fmt.date: positional option pattern",
-    ),
     "shared.media": (
         "shared.media.compress: option preset, not level",
         "shared.media.video.frames: option dest_dir, not dest",
-    ),
-    "shared.theme": (
-        "shared.theme.Screen: option out, not dest",
     ),
 }
 

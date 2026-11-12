@@ -25,7 +25,7 @@ class PromptCase(unittest.TestCase):
     height = 24
 
     def setUp(self):
-        self.screen = Screen(out=StringIO(), inp=StringIO(""), width=self.width, height=self.height, tty=False,
+        self.screen = Screen(dest=StringIO(), inp=StringIO(""), width=self.width, height=self.height, tty=False,
                              interactive=True)
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
@@ -40,7 +40,7 @@ class PromptCase(unittest.TestCase):
 
     def frames(self) -> list[str]:
         """Each drawn line; on a non-TTY screen every frame ends with a newline."""
-        return self.screen.out.getvalue().splitlines()
+        return self.screen.dest.getvalue().splitlines()
 
     def last_line(self) -> str:
         return self.frames()[-1]
@@ -58,7 +58,7 @@ class AskTest(PromptCase):
         self.keys("x", "enter")
         with theme.scope(color="16m"):
             prompt.ask("Name", placeholder="ada")
-        output = self.screen.out.getvalue()
+        output = self.screen.dest.getvalue()
         self.assertIn(f"{FAINT}┃{END} {INDIGO_BOLD}Name{END}\n", output)
         self.assertIn(f"{FAINT}┃{END} {FUCHSIA}>{END} {FAINT}ada{END}\n", output)
         self.assertIn(f"{FUCHSIA}>{END} {TEXT}x{END}\n", output)
@@ -83,7 +83,7 @@ class AskTest(PromptCase):
         with theme.scope(color="16m"):
             self.keys("enter", "a", "enter")
             prompt.ask("Name", validate=nonempty)
-        output = self.screen.out.getvalue()
+        output = self.screen.dest.getvalue()
         self.assertIn(f"{INDIGO_BOLD}Name{END}\x1b[38;2;237;86;122m *{END}", output)
         self.assertIn("\x1b[38;2;237;86;122m* Enter a name.\x1b[0m", output)
 
@@ -100,7 +100,7 @@ class AskTest(PromptCase):
         self.keys("p", "w", "enter")
         theme.unicode = False
         self.assertEqual(prompt.ask("Password", secret=True, description="Hidden"), "pw")
-        output = self.screen.out.getvalue()
+        output = self.screen.dest.getvalue()
         self.assertIn("| > **", self.frames())
         self.assertNotIn("pw", output)
         self.assertEqual(self.last_line(), "+ Password")
@@ -145,7 +145,7 @@ class KeysLineTest(PromptCase):
         self.keys("space", "enter", "enter")
         prompt.choose("Sources", ["tik", "fbk"], many=True)
         prompt.confirm("Deploy?")
-        output = self.screen.out.getvalue()
+        output = self.screen.dest.getvalue()
         self.assertEqual(self.frames()[-10:-5], ["| Sources", "| > [x] tik", "|   [ ] fbk",
                                                  "up/k up | down/j down | space toggle | enter submit",
                                                  "+ Sources: tik"])
@@ -166,7 +166,7 @@ class ConfirmTest(PromptCase):
             prompt.confirm("Deploy?", keys=False)
         active = "\x1b[38;2;255;253;245;48;2;247;128;226m  No  \x1b[0m"
         inactive = "\x1b[38;5;252;48;5;237m  Yes  \x1b[0m"
-        self.assertIn(f"{FAINT}┃{END} {inactive}  {active}\n", self.screen.out.getvalue())
+        self.assertIn(f"{FAINT}┃{END} {inactive}  {active}\n", self.screen.dest.getvalue())
 
     def test_yes_and_no_keys_answer_at_once(self):
         self.keys("y")
@@ -202,7 +202,7 @@ class ChooseTest(PromptCase):
         self.keys("enter")
         with theme.scope(color="16m"):
             prompt.choose("Source", ["tik", "fbk"])
-        output = self.screen.out.getvalue()
+        output = self.screen.dest.getvalue()
         self.assertIn(f"{FUCHSIA}>{END} {GREEN}tik{END}\n", output)
         self.assertIn(f"{FAINT}┃{END}   {TEXT}fbk{END}\n", output)
 
@@ -229,7 +229,7 @@ class ChooseTest(PromptCase):
             prompt.choose("Source", [])
         with self.assertRaises(prompt.Error):
             prompt.choose("Source", ["a"], default="z")
-        self.assertEqual(self.screen.out.getvalue(), "")
+        self.assertEqual(self.screen.dest.getvalue(), "")
 
     def test_filter(self):
         self.keys("i", "n", "enter")
@@ -260,7 +260,7 @@ class ScrollTest(PromptCase):
         self.keys(*["down"] * 5, "enter")
         options = [f"o{n}" for n in range(10)]
         self.assertEqual(prompt.choose("Pick", options), "o5")
-        frames = self.screen.out.getvalue().split("↑/k up • ↓/j down • enter submit\n")[:-1]
+        frames = self.screen.dest.getvalue().split("↑/k up • ↓/j down • enter submit\n")[:-1]
         self.assertEqual(frames[0].splitlines(), ["┃ Pick", "┃ > o0", "┃   o1", "┃   o2", "┃   ↓ 7 more"])
         self.assertEqual(frames[-1].splitlines(), ["┃ Pick", "┃   ↑ 4 more", "┃   o4", "┃ > o5", "┃   o6",
                                                    "┃   ↓ 3 more"])
@@ -271,7 +271,7 @@ class ScrollTest(PromptCase):
         self.screen._tty = True
         self.keys(*["down"] * 9, "enter")
         prompt.choose("Pick", [f"o{n}" for n in range(10)])
-        output = self.screen.out.getvalue()
+        output = self.screen.dest.getvalue()
         frames = output.split("\r")
         # Each redraw moves up over exactly the lines the previous frame drew.
         for previous, current in zip(frames, frames[1:]):
@@ -294,7 +294,7 @@ class ChooseManyTest(PromptCase):
         self.keys("space", "down", "enter")
         with theme.scope(color="16m"):
             prompt.choose("Sources", ["tik", "fbk"], many=True)
-        last_frame = self.screen.out.getvalue().splitlines()[-4:-2]
+        last_frame = self.screen.dest.getvalue().splitlines()[-4:-2]
         muted_dot = "\x1b[38;5;243m•\x1b[0m"
         self.assertEqual(last_frame, [f"{FAINT}┃{END}   {GREEN}✓{END} {GREEN}tik{END}",
                                       f"{FAINT}┃{END} {FUCHSIA}>{END} {muted_dot} {TEXT}fbk{END}"])
@@ -321,7 +321,7 @@ class ChooseManyTest(PromptCase):
             prompt.choose("Sources", ["a"], min=1)  # type: ignore[call-overload]
         with self.assertRaises(TypeError):
             prompt.choose("Sources", ["a"], max=1)  # type: ignore[call-overload]
-        self.assertEqual(self.screen.out.getvalue(), "")
+        self.assertEqual(self.screen.dest.getvalue(), "")
 
     def test_bad_limits_and_default(self):
         with self.assertRaises(ValueError):
@@ -405,7 +405,7 @@ class WithoutKeysTest(PromptCase):
                 prompt.ask("Name")
             with self.assertRaises(prompt.Error):
                 prompt.choose("Source", ["a"])
-        self.assertEqual(self.screen.out.getvalue(), "")
+        self.assertEqual(self.screen.dest.getvalue(), "")
 
     def test_non_interactive_screen(self):
         self.screen._interactive = False
@@ -424,7 +424,7 @@ class LiveAreaTest(PromptCase):
         self.screen._tty = True
         self.keys("enter")
         prompt.ask("Name", default="a")
-        self.assertEqual(self.screen.out.getvalue(), "┃ Name\n┃ > a\nenter submit\r\x1b[2A\x1b[J✓ Name: a\n")
+        self.assertEqual(self.screen.dest.getvalue(), "┃ Name\n┃ > a\nenter submit\r\x1b[2A\x1b[J✓ Name: a\n")
 
     def test_prompt_while_bar_is_open_on_tty(self):
         self.screen._tty = True
@@ -432,7 +432,7 @@ class LiveAreaTest(PromptCase):
         with log.progress("run", total=2) as bar:
             bar.advance()
             self.assertIs(prompt.confirm("Go?", default=True), True)
-        output = self.screen.out.getvalue()
+        output = self.screen.dest.getvalue()
         cleared = output.index("\x1b[1A\x1b[J")
         self.assertLess(output.index("• run"), cleared)
         self.assertLess(cleared, output.index("Go?"))

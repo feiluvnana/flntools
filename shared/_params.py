@@ -63,9 +63,24 @@ def opt(*flags: str, help: str | None = None, metavar: str | None = None, choice
     return Opt(flags, help, metavar, None if choices is None else tuple(choices), type, stdin)
 
 
-def arg(help: str | None = None, metavar: str | None = None, nargs: str | None = None, choices: Any = None,
+def arg(help: str | None = None, *, metavar: str | None = None, nargs: str | None = None, choices: Any = None,
         type: Callable[[str], Any] | None = None, stdin: bool = True) -> Arg:
-    """A positional's settings. nargs is "?", "*" or "+"."""
+    """A positional's settings, given in the parameter's `Annotated[...]`.
+
+        def remove(names: Annotated[list[str], cli.arg(nargs="+", metavar="NAME")]) -> int: ...
+
+    Args:
+        help: the help row; None takes it from the handler docstring's `Args:` entry.
+        metavar: the placeholder shown in the usage and help; None is the parameter's name.
+        nargs: "?", "*" or "+"; None reads it from the annotation and the default.
+        choices: the values accepted; None accepts any, or a `Literal`'s values.
+        type: turns one word of the command line into the value; None reads it from the annotation.
+        stdin: whether a "*" or "+" positional given no words reads them from a piped stdin, one per
+            line, skipping blank lines and `#` comments. A terminal on stdin is never read.
+
+    Raises:
+        TypeError: `nargs` is none of "?", "*" and "+".
+    """
     if nargs is not None and nargs not in NARGS:
         raise TypeError(f"nargs must be one of {', '.join(NARGS)}, not {nargs!r}")
     return Arg(help, metavar, nargs, None if choices is None else tuple(choices), type, stdin)

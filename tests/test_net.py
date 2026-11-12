@@ -29,7 +29,7 @@ class Broken(httpx.SyncByteStream):
 
 class NetCase(unittest.TestCase):
     def setUp(self):
-        self.screen = Screen(out=io.StringIO(), inp=io.StringIO(""), width=300, tty=False, interactive=False)
+        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=300, tty=False, interactive=False)
         scope = theme.scope(screen=self.screen, color="none", unicode=True)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
@@ -70,7 +70,7 @@ class NetCase(unittest.TestCase):
                               backoff=self.backoff)
 
     def lines(self):
-        return self.screen.out.getvalue().splitlines()
+        return self.screen.dest.getvalue().splitlines()
 
 
 class ClientTest(NetCase):

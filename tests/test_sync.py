@@ -92,8 +92,8 @@ class SettingsTest(SyncCase):
 
     def test_a_run_says_which_saved_settings_it_uses(self):
         self.download(image=WEBP_MID, audio=Choice("opus", "mid"))
-        self.screen.out.truncate(0)
-        self.screen.out.seek(0)
+        self.screen.dest.truncate(0)
+        self.screen.dest.seek(0)
         self.download(audio=None)
         self.assertIn("• aaa:a: --image webp,mid (saved)", self.lines())
         self.assertFalse(any("--audio" in line for line in self.lines()))

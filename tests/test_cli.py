@@ -31,7 +31,7 @@ class Color(enum.Enum):
 
 class CliCase(unittest.TestCase):
     def setUp(self):
-        self.screen = Screen(out=io.StringIO(), inp=io.StringIO(""), width=80, tty=False, interactive=True)
+        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=80, tty=False, interactive=True)
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
         self.previous_level = log.level
@@ -52,7 +52,7 @@ class CliCase(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             code = app.run(list(argv))
-        return code, out.getvalue(), self.screen.out.getvalue()
+        return code, out.getvalue(), self.screen.dest.getvalue()
 
     def parsed(self, fn, *argv):
         return single(fn).parse(list(argv)).arguments
@@ -328,7 +328,7 @@ class StructureTest(CliCase):
         with mock.patch("sys.argv", ["greet", "--name", "ada"]), self.assertRaises(SystemExit) as exit:
             cli.run(greet)
         self.assertEqual(exit.exception.code, 0)
-        self.assertEqual(self.screen.out.getvalue(), "✓ hi ada\n")
+        self.assertEqual(self.screen.dest.getvalue(), "✓ hi ada\n")
 
 
 class HelpScreenTest(CliCase):

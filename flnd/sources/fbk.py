@@ -127,7 +127,7 @@ class Facebook(Source):
             if (path or results is None) and read_page(session, f"{profile}/{path}", feed) is None:
                 continue
             session.scroll(count=lambda: feed.found[tab.category])
-            session.info("{tab}: {n} files found", tab=tab.category, n=feed.found[tab.category])
+            session.info("{tab}: {files} found", tab=tab.category, files=fmt.count(feed.found[tab.category], "file"))
         self._read_albums(session, feed)
         session.folder = None
         if header is None:

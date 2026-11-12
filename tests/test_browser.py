@@ -126,7 +126,7 @@ def fulfill(route):
 
 class BrowserCase(unittest.TestCase):
     def setUp(self):
-        self.screen = Screen(out=StringIO(), inp=StringIO(""), width=300, tty=False, interactive=False)
+        self.screen = Screen(dest=StringIO(), inp=StringIO(""), width=300, tty=False, interactive=False)
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
         self.previous_level = log.level
@@ -143,7 +143,7 @@ class BrowserCase(unittest.TestCase):
         self.scope.__exit__(None, None, None)
 
     def lines(self) -> list[str]:
-        return self.screen.out.getvalue().splitlines()
+        return self.screen.dest.getvalue().splitlines()
 
 
 class ImportTest(BrowserCase):
@@ -351,7 +351,7 @@ class ChromeOnlyTest(BrowserCase):
         # Into Playwright's user cache: the installer's folder is left to Playwright.
         self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", {key: value for key, value in options["env"].items()
                                                       if key not in os.environ})
-        out = self.screen.out.getvalue()
+        out = self.screen.dest.getvalue()
         self.assertIn(f"✓ {browser.CHROMIUM_QUESTION} Yes", out)
         self.assertIn("✓ Downloading Chromium", out)
         # A later run finds it and doesn't ask: the screen has no key left to answer with.
@@ -364,7 +364,7 @@ class ChromeOnlyTest(BrowserCase):
             with self.assertRaises(RuntimeError) as caught:
                 browser.open()
             self.assertEqual(str(caught.exception), "flnd needs Google Chrome: install it from https://www.google.com/chrome/")
-        self.assertEqual(self.screen.out.getvalue().count(f"✓ {browser.CHROMIUM_QUESTION} No"), 1)
+        self.assertEqual(self.screen.dest.getvalue().count(f"✓ {browser.CHROMIUM_QUESTION} No"), 1)
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertEqual(self.playwright.stop.call_count, 2)
 
@@ -372,7 +372,7 @@ class ChromeOnlyTest(BrowserCase):
         with self.assertRaisesRegex(RuntimeError, "^flnd needs Google Chrome: install it from"):
             browser.open()
         self.assertEqual((self.launched, self.installs), ([], []))
-        self.assertNotIn(browser.CHROMIUM_QUESTION, self.screen.out.getvalue())
+        self.assertNotIn(browser.CHROMIUM_QUESTION, self.screen.dest.getvalue())
 
     def test_a_failed_download(self):
         self.terminal("y")
@@ -380,7 +380,7 @@ class ChromeOnlyTest(BrowserCase):
                 self.assertRaisesRegex(RuntimeError, "installer exited with 1: Error: ENOSPC"):
             browser.open()
         self.assertEqual(self.launched, [])
-        self.assertIn("✗ Downloading Chromium", self.screen.out.getvalue())
+        self.assertIn("✗ Downloading Chromium", self.screen.dest.getvalue())
 
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []

@@ -52,7 +52,7 @@ def make_source(code, run, **declared):
 
 class EngineCase(unittest.TestCase):
     def setUp(self):
-        self.screen = Screen(out=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
+        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
         scope = theme.scope(screen=self.screen, color="none", unicode=True)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
@@ -94,7 +94,7 @@ class EngineCase(unittest.TestCase):
         cookies.Jar(jar).save(auth.cookie_file(self.home, code))
 
     def lines(self):
-        return self.screen.out.getvalue().splitlines()
+        return self.screen.dest.getvalue().splitlines()
 
     def target_dir(self, code, name):
         return self.home / "downloads" / code / name
@@ -850,7 +850,7 @@ class EngineLoginTest(EngineCase):
         source = make_source("aaa", lambda session: None, login=own_login, login_methods=("qr",))
         Engine(home=self.home, sources={"aaa": source}).login(source(), "qr")
         self.assertEqual(answers, ["1"])
-        self.assertEqual(self.screen.out.getvalue().splitlines()[:3],
+        self.assertEqual(self.screen.dest.getvalue().splitlines()[:3],
                          ["┃ Phone number", "┃ With the country code, such as +44", "┃ >"])
 
 

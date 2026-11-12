@@ -27,7 +27,7 @@ from flnd.engine import Engine
 from flnd.session import Options, single_targets, unknown_categories
 from flnd.sources import SOURCES
 from flnd.sources.base import Source
-from shared import cli, cookies, log, prompt, theme
+from shared import cli, cookies, fmt, log, prompt, theme
 
 HOME = Path(".flnd")
 METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
@@ -109,7 +109,7 @@ def download(
                       since=since, until=until)
     log.info("Storage: {path}", path=(HOME / "downloads").resolve())
     total = syncing.download(engine, resolved, options, given)
-    log.ok("Complete. {n} files", n=total)
+    log.ok("Complete. {files}", files=fmt.count(total, "file"))
     return _status(engine)
 
 

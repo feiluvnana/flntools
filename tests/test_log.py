@@ -37,7 +37,7 @@ class LogCase(unittest.TestCase):
     width = 80
 
     def setUp(self):
-        self.screen = Screen(out=StringIO(), inp=StringIO(""), width=self.width, tty=self.tty, interactive=True)
+        self.screen = Screen(dest=StringIO(), inp=StringIO(""), width=self.width, tty=self.tty, interactive=True)
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
         self.previous_level = log.level
@@ -47,7 +47,7 @@ class LogCase(unittest.TestCase):
         self.scope.__exit__(None, None, None)
 
     def output(self) -> str:
-        return self.screen.out.getvalue()
+        return self.screen.dest.getvalue()
 
     def lines(self) -> list[str]:
         return self.output().splitlines()
@@ -73,8 +73,8 @@ class LevelTest(LogCase):
             "quiet": ["error"],
         }
         for level, expected in shown.items():
-            self.screen.out.seek(0)
-            self.screen.out.truncate()
+            self.screen.dest.seek(0)
+            self.screen.dest.truncate()
             log.level = level
             for name in ("debug", "info", "ok", "warn", "error"):
                 getattr(log, name)(name)

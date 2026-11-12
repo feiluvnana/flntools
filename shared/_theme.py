@@ -1,8 +1,18 @@
 """The look of everything `shared` prints: glyphs, the palette, drawers, and color depth.
 
+`shared.theme` is one process-wide `Theme`. `log`, `prompt` and `cli` build a record (a
+`LogRecord`, a `PromptView`, a `HelpModel`) and hand it to `theme.draw(kind, record)`, which calls
+that kind's drawer and paints the result with `shared.style` for `theme.color`. The text goes to
+`theme.screen`, a `Screen` that writes to its `dest` (stderr unless a test gives another) and reads
+keys from the terminal. Color depth and Unicode support are detected from stderr once, at import.
+Stdlib only: nothing is wrapped, so there is no `.raw`.
+
 Restyling means changing `theme.palette` or `theme.glyphs`. A script that wants something
 stranger replaces a drawer, a plain function of (theme, value) that returns the drawn text:
-`theme.drawers.log = lambda theme, record: f"[{record.level}] {record.message}"`.
+
+    theme.drawers.log = lambda theme, record: f"[{record.level}] {record.message}"
+    with theme.scope(color="none", screen=Screen(dest=io.StringIO())):   # plain text, captured
+        log.info("hello")
 """
 
 from __future__ import annotations

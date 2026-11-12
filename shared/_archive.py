@@ -1,7 +1,20 @@
-"""Pack files into zip, 7z or tar, and unpack every common archive without trusting it.
+"""Pack files into zip, 7z or tar, and list or unpack every common archive without trusting it.
+
+`zip` writes one archive, its format chosen by the destination's extension, atomically and
+optionally split into parts. `unzip` and `ls` sniff the format from the bytes, never the name, join
+the parts of a split archive, and read its index. Every entry is checked before anything is
+written: a name that would land outside the destination or that Windows would misread, a link or
+device file, and an archive that would expand past its `Limits` are all refused. `unzip` then
+stages the files in a hidden folder and moves them into place only when every one is written.
 
 Plain zip and tar use only the stdlib. Password zips and 7z need the `archive` extra
-(`pyzipper`, `py7zr`), and RAR is read through the `unrar` program.
+(`pyzipper`, `py7zr`), and RAR is read through the `unrar` program. Each library is wrapped
+for one call, so there is no `.raw`.
+
+    archive.zip("photos", "backup.7z", password="pw")
+    for entry in archive.ls("backup.7z", password="pw"):
+        print(entry.name, entry.size)
+    archive.unzip("backup.7z", "restored/", password="pw")
 """
 
 from __future__ import annotations
@@ -31,7 +44,8 @@ import shared
 from shared import _atomic
 from shared import _fmt as fmt
 
-__all__ = ["BombError", "ConflictError", "Error", "Limits", "PasswordError", "UnsafeError", "unzip", "zip"]
+__all__ = ["BombError", "BrokenError", "ConflictError", "Entry", "Error", "Limits", "PasswordError", "UnsafeError",
+           "ls", "unzip", "zip"]
 
 if TYPE_CHECKING:
     Extract = Callable[[list["_Entry"], Callable[["_Entry"], "_Output"]], None]
@@ -78,12 +92,32 @@ class BombError(Error, shared.UnsafeError):
     """An archive would expand past its `Limits`."""
 
 
+class BrokenError(Error, shared.BrokenError):
+    """The file is no archive `unzip` reads, or its index is damaged, or `unrar` failed on it."""
+
+
 class ConflictError(Error, ValueError):
     """Files from the archive already exist in dest, and `conflict="error"`."""
 
 
 class PasswordError(Error, shared.RefusedError, ValueError):
     """The archive needs a password, or the one given is wrong."""
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One file or folder an archive holds, as `ls` lists it.
+
+        [entry.name for entry in archive.ls("backup.zip") if entry.kind == "file"]
+    """
+
+    # The path `unzip` writes it to under dest, its parts joined by "/": "album/photos/1.jpg".
+    name: str
+    # Its size unpacked, in bytes, as the archive declares it: 0 for a folder, and None for the one
+    # file of a .gz, .bz2, .xz or .zst, whose size isn't declared (a gzip's trailer is only mod 4 GB).
+    size: int | None
+    # "file" or "dir"; links and device files are refused, so `ls` never lists one.
+    kind: Literal["file", "dir"]
 
 
 @dataclass(frozen=True)
@@ -139,6 +173,39 @@ def zip(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str
             leftover.unlink(missing_ok=True)
 
 
+def ls(path: PathLike, *, password: str | None = None, limits: Limits = Limits()) -> list[Entry]:
+    """The index of a zip, 7z, RAR or tar archive, or of a compressed file, without unpacking it.
+
+        archive.ls("in/photos.7z.001", password="pw")   # [Entry(name='photos', size=0, kind='dir'), …]
+
+    It reads what `unzip` reads, under the same checks, so an archive it lists is one `unzip`
+    would unpack, and in the same order. A first part (`.001`, `.z01`) finds its siblings.
+
+    Args:
+        path: the archive, or the first part of a split one; its format is sniffed from the bytes.
+        password: the password of an encrypted zip, 7z or RAR; None for none.
+        limits: how far the archive may expand by what its index declares, as for `unzip`.
+
+    Raises:
+        UnsafeError: an entry's name would land outside dest, holds a `:` or a Windows device name
+            such as `NUL`, or the entry is a link, device file, pipe or socket.
+        BombError: the index declares more than `limits` allow. A size the index doesn't declare,
+            or declares falsely, is only caught by `unzip`, as it writes.
+        PasswordError: the archive is encrypted and no password is given, or a 7z whose names are
+            encrypted gets a wrong one. A zip's index isn't encrypted, so a wrong password for a
+            zip shows only when `unzip` reads its contents.
+        BrokenError: the file is no archive this reads, or its index is damaged.
+        RuntimeError: a .zst file before Python 3.14, or a RAR without the `unrar` program.
+
+    Reads the whole archive for tar, whose index is spread through it, and copies a split
+    archive's parts into one temporary file.
+    """
+    with _checked(_find_parts(Path(path)), password, limits) as (entries, _extract, _size):
+        # `_check` refused links and specials, so every entry left is a file or a folder.
+        return [Entry(entry.name, 0, "dir") if entry.kind == "dir" else Entry(entry.name, entry.size, "file")
+                for entry in entries]
+
+
 def unzip(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None,
           conflict: Conflict = "error", limits: Limits = Limits()) -> list[Path]:
     """Unpack a zip, 7z, RAR or tar archive, or all the parts of one, directly into dest.
@@ -149,22 +216,38 @@ def unzip(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str
     finds its siblings. Returns the files written. Every entry is checked before anything
     is written: traversal, links and devices raise `UnsafeError`, archives past `limits`
     raise `BombError`, and files that already exist follow `conflict`.
+
+    Raises:
+        BrokenError: the file is no archive this reads, or its index is damaged.
+        (The other errors are `ls`'s, plus `ConflictError` and a `PasswordError` for a wrong
+        password found while reading the contents.)
     """
     if conflict not in CONFLICTS:
         raise ValueError(f"conflict must be one of {', '.join(CONFLICTS)}, not {conflict!r}")
     dest = Path(dest)
     single = isinstance(parts, (str, os.PathLike))
     part_paths = _find_parts(Path(parts)) if single else [Path(part) for part in parts]
+    with _checked(part_paths, password, limits) as (entries, extract, archive_size):
+        plan = _plan(entries, dest, conflict)
+        # A stream that doesn't declare its size may still grow only as far as the limits allow.
+        undeclared_cap = min(limits.size, int(limits.ratio * max(archive_size, 1)))
+        return _extract(extract, plan, dest, undeclared_cap)
+
+
+@contextmanager
+def _checked(parts: list[Path], password: str | None, limits: Limits) -> Iterator[tuple[list[_Entry], Extract, int]]:
+    """The parts joined and opened: their checked entries, what extracts them, and the joined size.
+
+    What `ls` and `unzip` share, so the two can't drift apart in what they refuse.
+    """
     with tempfile.TemporaryDirectory() as workdir:
-        joined = _join(part_paths, Path(workdir))
+        joined = _join(parts, Path(workdir))
         archive_size = joined.stat().st_size
-        with _open(joined, part_paths, password, limits) as (entries, extract):
+        with _open(joined, parts, password, limits) as (entries, extract):
+            # An entry named "." or "/" names nothing to write, so it is dropped.
             entries = [entry for entry in entries if entry.name]
             _check(entries, limits, archive_size)
-            plan = _plan(entries, dest, conflict)
-            # A stream that doesn't declare its size may still grow only as far as the limits allow.
-            undeclared_cap = min(limits.size, int(limits.ratio * max(archive_size, 1)))
-            return _extract(extract, plan, dest, undeclared_cap)
+            yield entries, extract, archive_size
 
 
 def _write_format(dest: Path, password: str | None) -> str:
@@ -296,7 +379,7 @@ def _open(path: Path, parts: list[Path], password: str | None,
     if compression is not None:
         unpacked_name = Path(re.sub(r"\.\d{3}$", "", parts[0].name)).stem
         return _read_single(path, compression, unpacked_name)
-    raise ValueError(f"{parts[0].name} is not a zip, 7z, RAR or tar archive, nor a compressed file")
+    raise BrokenError(f"{parts[0].name} is not a zip, 7z, RAR or tar archive, nor a compressed file")
 
 
 def _is_tar(path: Path, compression: str | None) -> bool:
@@ -307,13 +390,15 @@ def _is_tar(path: Path, compression: str | None) -> bool:
 
 @contextmanager
 def _read_zip(path: Path, password: str | None, part_sizes: list[int] | None) -> Opened:
-    if password is None:
-        packed = zipfile.ZipFile(path)
-    else:
-        # pyzipper reads both ZipCrypto and AES, and zipfile only ZipCrypto.
-        pyzipper = _require("pyzipper")
-        packed = pyzipper.AESZipFile(path)
-        packed.setpassword(password.encode())
+    # Opening reads only the central directory, so BadZipFile here means the index is damaged.
+    with _broken_errors(path, zipfile.BadZipFile):
+        if password is None:
+            packed = zipfile.ZipFile(path)
+        else:
+            # pyzipper reads both ZipCrypto and AES, and zipfile only ZipCrypto.
+            pyzipper = _require("pyzipper")
+            packed = pyzipper.AESZipFile(path)
+            packed.setpassword(password.encode())
     with packed:
         infos = packed.infolist()
         if password is None and any(info.flag_bits & 1 for info in infos):
@@ -356,6 +441,15 @@ def _extract_zip(packed: Any, selected: list[_Entry], open_output: Callable[[_En
 
 
 @contextmanager
+def _broken_errors(path: Path, *errors: type[Exception]) -> Iterator[None]:
+    """Raise `BrokenError` for `errors`, the ones a library raises for a damaged index."""
+    try:
+        yield
+    except errors as error:
+        raise BrokenError(f"{path.name} is damaged: {error}") from error
+
+
+@contextmanager
 def _password_errors(name: str, *, encrypted: bool, missing: tuple[type[Exception], ...] = ()) -> Iterator[None]:
     try:
         yield
@@ -372,8 +466,10 @@ def _password_errors(name: str, *, encrypted: bool, missing: tuple[type[Exceptio
 @contextmanager
 def _read_tar(path: Path, max_entries: int) -> Opened:
     with tarfile.open(path, "r:*") as packed:
-        # Listing stops one past the limit, so a bomb of tiny entries isn't read to the end.
-        members = list(itertools.islice(packed, max_entries + 1))
+        # Listing stops one past the limit, so a bomb of tiny entries isn't read to the end. A tar
+        # cut off partway raises ReadError, or EOFError from its decompressor, while it is listed.
+        with _broken_errors(path, tarfile.ReadError, EOFError):
+            members = list(itertools.islice(packed, max_entries + 1))
 
         def extract(selected: list[_Entry], open_output: Callable[[_Entry], _Output]) -> None:
             for entry in selected:
@@ -397,7 +493,8 @@ def _read_7z(path: Path, password: str | None) -> Opened:
     py7zr = _require("py7zr")
     password_errors = functools.partial(_password_errors, path.name, encrypted=password is not None,
                                         missing=(py7zr.exceptions.PasswordRequired,))
-    with password_errors(), py7zr.SevenZipFile(path, password=password) as packed:
+    with _broken_errors(path, py7zr.exceptions.Bad7zFile), password_errors(), \
+            py7zr.SevenZipFile(path, password=password) as packed:
         entries = [_sevenzip_entry(file) for file in packed.files]
 
         def extract(selected: list[_Entry], open_output: Callable[[_Entry], _Output]) -> None:
@@ -448,7 +545,7 @@ def _check_unrar(returncode: int, stderr: bytes = b"") -> None:
     if returncode == UNRAR_BAD_PASSWORD:
         raise PasswordError("the RAR needs a password, or the one given is wrong")
     if returncode:
-        raise ValueError(f"unrar failed with code {returncode} {stderr.decode('utf-8', 'replace').strip()}".strip())
+        raise BrokenError(f"unrar failed with code {returncode} {stderr.decode('utf-8', 'replace').strip()}".strip())
 
 
 def _rar_entries(listing: str) -> list[_Entry]:

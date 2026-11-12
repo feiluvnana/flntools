@@ -50,7 +50,7 @@ class FlndCase(unittest.TestCase):
         self.previous_cwd = os.getcwd()
         os.chdir(self.tmp.name)
         self.addCleanup(os.chdir, self.previous_cwd)
-        self.screen = Screen(out=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
+        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
         scope = theme.scope(screen=self.screen, color="none", unicode=True)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
@@ -71,7 +71,7 @@ class FlndCase(unittest.TestCase):
         stdout = io.StringIO()
         with redirect_stdout(stdout):
             code = flnd_cli.app.run(list(argv))
-        return code, stdout.getvalue(), self.screen.out.getvalue()
+        return code, stdout.getvalue(), self.screen.dest.getvalue()
 
     def cookie_file(self, text, name="cookies.txt"):
         path = Path(self.tmp.name) / name
@@ -415,13 +415,13 @@ class LoginFileTest(LoginCase):
         code, out = self.login("twt", "down", "enter", *"nope", "enter", *["backspace"] * 4, *str(path), "enter")
         self.assertEqual(code, 0)
         self.assertIn("┃ * no file at nope", out)
-        self.assertIn("✓ twt: logged in from cookies.txt (1 cookies)", out)
+        self.assertIn("✓ twt: logged in from cookies.txt (1 cookie)", out)
 
     def test_logged_in_sources_are_marked(self):
         self.from_file("ins", self.cookie_file(NETSCAPE))
-        self.screen.out.truncate(0)
+        self.screen.dest.truncate(0)
         self.from_file("twt", self.cookie_file(NETSCAPE))
-        out = self.screen.out.getvalue()
+        out = self.screen.dest.getvalue()
         self.assertIn("Instagram (ins) · logged in", out)
         self.assertIn("TikTok (tik)", out)
         self.assertNotIn("TikTok (tik) · logged in", out)
@@ -535,8 +535,8 @@ class LogoutTest(FlndCase):
         self.assertTrue(Path(".flnd/cookies/twt.txt").exists())
         with auth.secrets(Path(".flnd"), "ins") as secrets:
             self.assertEqual(len(secrets), 0)
-        self.screen.out.truncate(0)
-        self.screen.out.seek(0)
+        self.screen.dest.truncate(0)
+        self.screen.dest.seek(0)
         code, _, out = self.run_app("logout", "ins", "twt", "tik")
         self.assertEqual((code, out), (0, "• ins: not logged in\n✓ twt: logged out\n• tik: not logged in\n"))
 
