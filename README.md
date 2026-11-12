@@ -16,7 +16,7 @@ uv run flnd download ins:example_user
 ```
 
 Or `make setup`, then `make flnd ARGS="download ins:example_user"`. Every task (`setup`, `test`,
-`lint`, `type`, `check`, `flnd`, `dist`, `try`) is in `scripts/dev.py`, so on Windows, which has no make,
+`lint`, `type`, `check`, `baseline`, `api`, `flnd`, `dist`, `try`) is in `scripts/dev.py`, so on Windows, which has no make,
 run `uv run --no-project scripts/dev.py <task>`, or install make with `winget install ezwinports.make`.
 `uv tool install --editable .` puts `flnd` on your PATH instead.
 
@@ -65,11 +65,12 @@ python -m flnd download <targets...>
 ```
 
 Files go to `.flnd/downloads/`, and the browser window is visible while a source runs.
+flnd uses the `HTTPS_PROXY` and `ALL_PROXY` environment variables (httpx reads them).
 
 ### Target Format
 
 `<source>:<name, id or URL>`, or just the URL: `ins:example_user`, `ins:@example_user` and
-`https://www.instagram.com/example_user/` are the same target. `flnd download --help` lists every
+`https://www.instagram.com/example_user/` are the same target. `flnd --help` lists every
 accepted form.
 
 Sources:
@@ -238,12 +239,33 @@ when Google Chrome is missing, and exits 1 when a target failed.
 
 ---
 
+## Run it on a schedule
+
+`flnd sync` suits a daily job: it asks nothing, and its exit status (1 when a target failed) tells
+the scheduler whether it went well. Run it from the repo folder, because `.flnd/` is taken from where
+flnd runs, and install Google Chrome first, since a scheduled run has no one to answer the Chromium
+question. Cron, with uv's full path (`which uv` shows it), every day at 03:15:
+
+```bash
+15 3 * * * cd /path/to/flntools && /full/path/to/uv run flnd sync
+```
+
+Windows, with Task Scheduler's `schtasks`, the same daily run:
+
+```bat
+schtasks /create /tn "flnd sync" /sc daily /st 03:15 /tr "cmd /c cd /d C:\path\to\flntools && uv run flnd sync"
+```
+
+---
+
 ## Logging in
 
 Most sources work better logged in. `flnd login` reads your login cookies from your browser, or from a cookie file you exported.
 It takes no arguments and asks everything, in a terminal: the source (those already logged in say so),
 then from your browser or a cookie file, then which browser (Chrome, Firefox, Edge, Brave or Chromium)
 and profile, the default one preselected, or the file's path (Netscape cookies.txt or JSON).
+For Telegram the methods are its own: your browser's Telegram Web login, a QR code, or your phone
+number and the code Telegram sends.
 
 ```bash
 flnd login                  # asks the source, the method, then the browser or the file

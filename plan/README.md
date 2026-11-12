@@ -31,17 +31,18 @@ from shared import archive, crypto, cookies, kv, selector, browser, worker, bund
 | `prompt` | [phase-1](phase-1/prompt.md), [huh look](phase-4/prompt.md) | `_prompt.py` | — | — |
 | `cli` | [phase-1](phase-1/cli.md), [trim](phase-4/terminal.md#cli) | `_cli.py`, `_params.py` | `argparse` | — |
 | `archive` | [phase-4](phase-4/archive.md) | `_archive.py` | `zipfile`, `tarfile`, `pyzipper`, `py7zr` | `archive` |
-| `crypto` | [phase-4](phase-4/crypto.md) | `_crypto.py` | `hashlib`, `cryptography` | `browser` or `cryptography` |
+| `crypto` | [phase-4](phase-4/crypto.md) | `_crypto.py` | `hashlib`, `cryptography` | `browser` (for `cryptography`) |
 | `kv` | [phase-4](phase-4/kv.md) | `_kv.py` | `sqlite3` | — |
-| `cookies` | [phase-4](phase-4/cookies.md) | `_cookies.py` | `sqlite3`, `cryptography` | `browser` for `load_from_browser` |
+| `atomic` | [phase-6](phase-6/redesign.md#fmt-style-theme-cli-archive-bundler) | `_atomic.py` | `os.replace` | — |
+| `cookies` | [phase-4](phase-4/cookies.md) | `_cookies.py` | `sqlite3`, `cryptography` | `browser` for `from_browser` |
 | `selector` | [phase-4](phase-4/selector.md) | `_selector.py` | parsel, jmespath, python-jsonpath | `selector` |
+| `http` | [phase-6](phase-6/redesign.md#http-new-fetch-download-response) | `_http.py` | httpx | `http` |
 | `browser` | [phase-4](phase-4/browser.md) | `_browser.py` | Playwright | `browser` |
 | `worker` | [phase-4](phase-4/worker.md) | `_worker.py` | `concurrent.futures`, `asyncio` | — |
 | `bundler` | [phase-4](phase-4/packaging.md#bundler) | `_bundler.py` | PyInstaller | `bundler` |
 | `media` | [phase-5](phase-5/media.md), [ffmpeg](phase-5/ffmpeg.md), [classify](phase-6/classify.md) | `_media.py`, `_ffmpeg.py`, `_pillow.py`, `_media_image.py`, `_media_video.py`, `_media_audio.py`; `_classify.py` from Phase 6 | Pillow, pi-heif, the ffmpeg program (imageio-ffmpeg); ONNX Runtime for `classify` | `media`; `classify` |
 
-Removed in Phase 4:
-- **`http`:** downloads, retries and signing moved into flnd's [engine](phase-4/engine.md#downloads); response parsing moved to `selector`.
+Removed in Phase 4 (`http` came back in Phase 6, as a module of its own):
 - **`path`:** `pathlib` covers it, and `safename` became `fmt.filename`.
 - **`store`:** became `kv`.
 - **`scrape`:** became `selector`.
@@ -110,9 +111,9 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 
 ## Conventions
 
-- **Python and dependencies.** Python 3.11 and later. 3.10 reached its end of life in October 2026, and Pillow and PyAV have dropped it. `style`, `fmt`, `theme`, `log`, `prompt`, `cli`, `kv` and `worker` use only the stdlib, and so does `cookies` apart from `load_from_browser`.
+- **Python and dependencies.** Python 3.11 and later. 3.10 reached its end of life in October 2026, and Pillow and PyAV have dropped it. `style`, `fmt`, `theme`, `log`, `prompt`, `cli`, `kv` and `worker` use only the stdlib, and so does `cookies` apart from `from_browser`.
 - **Public surface.** Every file in `shared` starts with `_`, and [`shared/__init__.py`](../shared/__init__.py) is the only public surface.
-- **Lazy imports.** `archive`, `crypto`, `cookies`, `kv`, `selector`, `browser`, `worker`, `bundler` and `media` load through a module `__getattr__`, with a `TYPE_CHECKING` block for type checkers. `from shared import log` never imports Playwright, parsel, cryptography or Pillow.
+- **Lazy imports.** `archive`, `atomic`, `crypto`, `cookies`, `http`, `kv`, `selector`, `browser`, `worker`, `bundler` and `media` load through a module `__getattr__`, with a `TYPE_CHECKING` block for type checkers. `from shared import log` never imports Playwright, parsel, cryptography or Pillow.
 - **Missing extras.** A missing extra raises `ImportError("shared.browser needs playwright: pip install 'flntools[browser]'")` on first use.
 - **Readable code.** Code is written for the next person to read it, and kept short:
   - **Order.** A module reads top to bottom: public names first, then the helpers they call, in the order they are called.
@@ -124,18 +125,54 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 
 ## Naming
 
-> **Replaced in Phase 6, step 13, by the [API conventions](phase-6/redesign.md#2-api-conventions)**, which the user asked for on 2026-11-12. Build new code to those from step 4 on.
+These are the [API conventions](phase-6/redesign.md#2-api-conventions) that the user asked for on 2026-11-12. They replace the earlier rules from Phase 6 step 4 on, and apply to every public name in `shared`, `flnd.source` and flnd's engine API. This is the summary; the full text, with the examples, is in redesign §2.
 
-1. **Use the familiar word.** If Unix or the stdlib already has a name, use it: `archive.zip` / `unzip`, `kv.open`, `worker.map`, `fmt.filename`.
-2. **Related functions share a prefix that says what they are:** `crypto.hash_sha256`, `crypto.encrypt_aes_gcm`, `page.wait_for_url`, `page.on_response`.
-3. **A wrapper keeps its library's names** for things it passes through: `user_agent`, `viewport`.
-4. **Properties for values, methods for actions.** Something you only read, with no arguments, is a property named as a noun: `page.selector`, `page.url`, `selection.text`, `selection.first`, `b.cookies.all`, `b.pages`, `.raw`. A method is used only when it needs arguments, makes a request, or changes something. A read that needs an argument is `get_<thing>(…)`: `kv.get_keys(prefix=)`. A query that returns another wrapper is named for its language: `css`, `xpath`, `jmespath`, `jsonpath`. A network request is `fetch_<thing>(…)`: `session.fetch_json(url)`. Clear names are worth a few characters.
-5. **Times are seconds, as a `float`.** A wrapper converts to its library's unit itself.
-6. **Classes are `CapWords`, and exceptions end in `Error`.** Bad input data raises a `ValueError` subclass (`archive.UnsafeError`, `crypto.CryptoError`); a misuse raises a `RuntimeError` subclass (`prompt.PromptError`). Callers handle `worker.TaskError` and `cli.UsageError` on purpose.
-7. **The main input is positional, and options are keyword-only.**
-8. **Builtin names** are reused only where the name is the obvious one in its namespace, and the module never needs the builtin: `kv.open`, `archive.zip`, `prompt.input`.
+**Words** ([2.1](phase-6/redesign.md#21-words)):
 
-flnd's own helpers keep normal `snake_case`. The chalk-style color names (`style.bright_red`, `bg_red`) keep chalk's compounds.
+- **W1** A verb changes something, waits for something, or talks to the network or a person: `save`, `open`, `fetch`, `wait`, `ask`. Everything else is a noun.
+- **W2** A noun is a property when it takes no argument (`page.url`), and a method named for what it returns when it takes one (`store.keys(prefix="")`). What a read costs goes in its docstring, not its name.
+- **W3** One word when one word says it, two only when one is ambiguous: `cookies.load`, `crypto.sha256`, `log.group`.
+- **W4** The familiar word wins, the one the stdlib, Unix or the wrapped library already uses: `open`/`close`, `as_completed`, `goto`, `css`, `zip`/`unzip`.
+- **W5** A boolean property is an adjective or a participle (`ok`, `finished`, `closed`), not `is_ok` or `done`.
+- **W6** Plural for a collection, singular for one: `pages`, `keys()`; `first`, `page`.
+- **W7** No prefix that only says "function": `get_`, `do_`, `to_`, `load_from_`, `make_`, `create_`. It's `jar.header`, not `cookies.to_header(jar)`.
+
+**One vocabulary** ([2.2](phase-6/redesign.md#22-one-vocabulary)). A word means the same thing everywhere, and nothing else means that:
+
+| Word | Means |
+| --- | --- |
+| `open(…)` | start a live resource, which `close()` or `with` ends |
+| `load(path)` / `save(dest)` | file to value / value to file, atomically |
+| `parse(text)` | text to value, raising `ValueError` |
+| `fetch(url)` | one network request, returning a `Response` |
+| `download(url, dest)` | network to a file |
+| `check()` | validate, raising the module's error |
+| `wait(…)` | block until a condition |
+| `ask` / `confirm` / `choose` | ask a person |
+| `on_<event>(…)` | subscribe; returns a `Subscription` |
+| `replace(**changes)` | a copy with fields changed |
+| `filter(…)` | a copy with fewer items |
+| `dest` | where output goes; never `out`, `dest_dir` or `path` |
+| `timeout` | seconds, as a `float` |
+| `progress` | a callback `progress(done, total)`; never a label |
+| `label` | the text of a progress row that `shared` draws |
+| `level` | `best`, `high`, `mid` or `low`, as the CLI names them; replaces `preset` |
+| `match` | a `str` (substring), compiled regex or predicate over a URL |
+| `until` | a predicate that ends a loop |
+
+**Shapes** ([2.3](phase-6/redesign.md#23-shapes)):
+
+- **S1** Fluent objects for things worked on several ways (`Selection`, `Jar`, `Media`, `Page`); functions for one-shot jobs (`archive.zip`, `http.download`, `crypto.encrypt`).
+- **S2** Transforms never write over their input. Only `save` writes, atomically: `media.open("a.mov").trim(end=10).compress("mid").save("a.mp4")`.
+- **S3** The main input is positional, and options are keyword-only, named from the vocabulary: `http.download(url, dest, *, parts="auto")`.
+- **S4** State is a settable property, and transitions are verbs: `bar.total = 10`, then `bar.advance()`.
+- **S5** Every live resource is a context manager with `close()`, and every wrapper has `.raw` (Rule 2).
+- **S6** One error base per module, `<module>.Error`, with `<Kind>Error` under it. Errors about untrusted, damaged or refused input also subclass `shared.UnsafeError`, `shared.BrokenError` or `shared.RefusedError` ([C4](phase-6/redesign.md#c4-errors)).
+- **S7** One spelling: no aliases, and no deprecated names kept. `shared` has one user, changed in the same commit.
+
+**Enforced.** `tests/test_names.py` walks the [API snapshot](phase-6/redesign.md#c5-namespace-and-the-api-snapshot) and fails on a public name with a W7 prefix, a module whose errors don't share a `<module>.Error` base, a public function with an option after its first parameter that isn't keyword-only, and an option outside the vocabulary (`out=`, `dest_dir=`, `preset=`, a `progress=` that isn't callable). Breaches still in today's code are listed in its `ALLOWED`, per module, and that list can only shrink. A rename shows in review as a one-line diff of `tests/data/api.txt`.
+
+A chalk-style color name keeps chalk's compounds: `style.bright_red`, `bg_red`.
 
 ## pyproject
 
@@ -143,8 +180,10 @@ flnd's own helpers keep normal `snake_case`. The chalk-style color names (`style
 [project.optional-dependencies]                                  # for shared alone, without flnd
 archive = ["pyzipper", "py7zr"]                                  # password zips and 7z; plain zip and tar need nothing
 selector = ["parsel>=1.9.0", "python-jsonpath"]
+http = ["httpx>=0.27.0", "parsel>=1.9.0", "python-jsonpath"]     # httpx for `fetch`; selector's packages for Response.html
 browser = ["playwright==1.65.*", "cryptography>=42"]             # a minor pin: each release downloads a new browser
 media = ["pillow>=11.3", "pi-heif>=1.0", "imageio-ffmpeg>=0.6"]   # Pillow and HEIC for photos; the ffmpeg binary
+classify = ["onnxruntime>=1.20", "numpy>=2"]                     # Media.labels; offered for install the first time it is needed
 
 [dependency-groups]
 dev = ["pyright[nodejs]==1.1.414", "typing_extensions>=4.12", "packaging"]
@@ -154,14 +193,14 @@ dist = ["pyinstaller>=6"]                                        # only the `dis
 default-groups = ["dev"]
 ```
 
-flnd's own dependencies are `httpx`, `playwright==1.65.*`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pyzipper`, `py7zr`, `pillow`, `pi-heif` and `imageio-ffmpeg`, because flnd always needs them (`qrcode` draws tlg's QR login, and `imageio-ffmpeg` brings ffmpeg). `pyzipper` and `py7zr` leave them in [step 3](phase-6/cli.md), with `--unpack` and `--zip`; [step 7](phase-6/classify.md) adds the `classify` extra. The dev group adds `pyright[nodejs]` (with its own Node.js), `typing_extensions` and `packaging` (for the licence test). `uv.lock` pins every version.
+flnd's own dependencies are `httpx`, `playwright==1.65.*`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pillow`, `pi-heif` and `imageio-ffmpeg`, because flnd always needs them (`qrcode` draws tlg's QR login, and `imageio-ffmpeg` brings ffmpeg). `pyzipper` and `py7zr` are not among them, since flnd saves archives as the site sends them; they stay in the `archive` extra for `shared` alone. The `classify` extra (ONNX Runtime and NumPy) is optional, and the first use of `--classify` offers to install it ([step 11](phase-6/classify.md)). The dev group adds `pyright[nodejs]` (with its own Node.js), `typing_extensions` and `packaging` (for the licence test). `uv.lock` pins every version.
 
 ## Makefile
 
 From [Phase 6, step 2](phase-6/setup.md), every task is in [`scripts/dev.py`](phase-6/setup.md#scriptsdevpy), stdlib only, so it runs the same on macOS, Linux and Windows with nothing but uv: `uv run --no-project scripts/dev.py <task>`. The Makefile is a shortcut for people who have make:
 
 ```makefile
-TASKS := setup test lint type check flnd dist
+TASKS := setup test lint type check baseline api flnd dist try
 .PHONY: $(TASKS)
 
 $(TASKS):
