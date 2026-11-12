@@ -98,7 +98,9 @@ DEVICE_DIGITS = 19
 class Feed(NamedTuple):
     """One list the profile loads: its category, and the API path its pages come from."""
 
+    # The category the list fills: "videos", "stories", "reposts", "favorites" or "liked".
     category: str
+    # The API path its pages come from, without the host; `is_feed_of` matches responses by it.
     api: str
 
 
@@ -142,7 +144,9 @@ def list_pages(site: Site, category: str, user: Mapping[str, Any]) -> Iterator[D
     value = user.get("secUid") if key == "secUid" else user.get("id")
     if not value:
         raise Refused(f"the profile's data has no {key}")
+    # A one-item list, so `ask` can swap in a new device id for a repeated page without a `nonlocal`.
     device = [new_device()]
+    # Every id listed so far, to tell a page of old items from a page with new ones.
     seen: set[str] = set()
 
     def ask(cursor: str | None) -> tuple[Dict[str, Any], set[str]]:
@@ -153,6 +157,7 @@ def list_pages(site: Site, category: str, user: Mapping[str, Any]) -> Iterator[D
 
     def fetch(cursor: str | None) -> Dict[str, Any]:
         data, ids = ask(cursor)
+        # A page of only seen items is retried once with a new device, as gallery-dl does, before the list is trusted to end.
         if cursor and ids and ids <= seen:
             device[0] = new_device()
             data, ids = ask(cursor)
@@ -166,7 +171,22 @@ def list_pages(site: Site, category: str, user: Mapping[str, Any]) -> Iterator[D
 
 
 def list_page(site: Site, url: str, params: Mapping[str, str]) -> Dict[str, Any]:
-    """One page of a list API, as its JSON object; a refusal of any kind raises `Refused`."""
+    """One page of a list API, as its JSON object; a refusal of any kind raises `Refused`.
+
+    Args:
+        site: the target's site, which paces the request and waits out a 429.
+        url: the list API's full URL, without the query.
+        params: the query string: the web client's fixed parameters, the list's own id, `count`,
+            `cursor` and `device_id`.
+
+    Returns:
+        The page's JSON object.
+
+    Raises:
+        Refused: the site fails the request, the answer isn't JSON or isn't an object, or it
+            carries an error `statusCode`; the caller reads the list in the browser instead.
+    """
+    # A failure the site raises is a refusal of this list, not a crash: the list is read in the browser.
     try:
         response = site.fetch(url, params=params, headers={"Referer": f"{SITE}/"})
     except FetchError as error:
@@ -178,12 +198,14 @@ def list_page(site: Site, url: str, params: Mapping[str, str]) -> Dict[str, Any]
         raise Refused("its answer isn't JSON") from None
     if not isinstance(data, dict):
         raise Refused("its answer isn't a list")
+    # TikTok reports a failure inside a 200 response, as `statusCode`; some pages spell it `status_code`.
     status = data.get("statusCode", data.get("status_code", 0))
     if status not in (0, None):
         raise Refused(f"statusCode {status}")
     return data
 
 
+# The API paths whose responses fill each category; a category can have more than one (stories).
 FEEDS = (
     Feed("videos", "/api/post/item_list"),
     Feed("stories", "/api/story/item_list"),
@@ -205,7 +227,11 @@ def is_feed_of(category: str) -> Callable[[str], bool]:
 
 
 def has_captcha(site: Site) -> bool:
-    """Whether the page shows a captcha: its container, or its words in the text a reader sees."""
+    """Whether the page shows a captcha: its container, or its words in the text a reader sees.
+
+    Args:
+        site: the target's site, whose open page is checked.
+    """
     page = site.page.document
     return bool(page.css(CAPTCHA_CSS)) or bool(CAPTCHA_TEXT.search(" ".join(page.xpath(VISIBLE_TEXT).all)))
 
@@ -227,6 +253,7 @@ class Profile:
     """
 
     def __init__(self, site: Site, name: str):
+        """Set the profile's URL and empty state; nothing is fetched until a category asks for it."""
         self.site = site
         self.url = f"{SITE}/@{name}"
         # The profile's own data (its `user` with `secUid` and `id`, its `stats`); empty until read.
@@ -255,9 +282,11 @@ class Profile:
     def described(self) -> bool:
         """Whether the profile's HTML, fetched directly on the first call, gave its data with a `secUid`."""
         if self._direct is None:
+            # Set before the fetch: a failure leaves it False, so later calls answer without fetching again.
             self._direct = False
             try:
                 page = self.site.fetch(self.url).html
+            # The HTML can't be fetched or parsed; the profile is then read in the browser, as before.
             except (FetchError, http.Error):
                 return False
             user = page.script(PAGE_DATA).jmespath(USER).first
@@ -296,6 +325,9 @@ class Profile:
 
         Reading gives both kinds at once; the kind not asked for waits in its queue for the
         category that is. The iterator ends when the feed does.
+
+        Args:
+            wanted: "videos" or "playlists": which queue to take items from.
         """
         queue = self._queues[wanted]
         while True:
@@ -335,6 +367,7 @@ class Profile:
 
         One line says when the account doesn't show the list, or shows nothing in it.
         """
+        # The items the API yielded, so a browser fallback that re-reads the tab doesn't yield them twice.
         seen: set[tuple[str, int]] = set()
         if self.described():
             try:
@@ -361,6 +394,7 @@ class Profile:
             if self.site.handoff(until=lambda: not has_captcha(self.site), timeout=CAPTCHA_TIMEOUT,
                                  message="Solve the TikTok captcha in the browser window"):
                 return
+            # A captcha nobody solved in time is handled as a rate limit: back off, then load the page again.
             self.site.back_off("TikTok captcha")
             self.site.goto(self.url)
             self.site.page.raw.wait_for_timeout(SETTLE * 1000)
@@ -368,6 +402,7 @@ class Profile:
     def _clicked(self, category: str, tab: str) -> Iterator[Dict[str, Any]]:
         """Open one profile tab in the browser by a click and read its feed to the end."""
         css = f'[data-e2e="{tab}"]'
+        # Liked and Favorites are on the page only when the account made them public.
         if not self.site.page.document.css(css):
             self.site.info("{tab}: not public on this account", tab=category)
             return
@@ -405,6 +440,7 @@ class Profile:
         # The captcha shows a few seconds after the load event, over a page that looks ready.
         self.site.page.raw.wait_for_timeout(SETTLE * 1000)
         self.wait_out_captcha()
+        # A reload that finds no data keeps what an earlier load read, rather than forgetting the secUid.
         self.user = self.site.page.document.script(PAGE_DATA).jmespath(USER).first or self.user or {}
         return True
 
@@ -412,6 +448,7 @@ class Profile:
         """Read the post feed's next page into the queues; False once the feed has ended."""
         if not self.start():
             return False
+        # Step 1: the list API, page by page, for as long as it answers.
         if self._api is not None:
             try:
                 data = next(self._api)
@@ -433,6 +470,7 @@ class Profile:
                 return True
             if not self._watch(posts=True):
                 return False
+        # Step 2: the browser's watched responses, which arrive as the page scrolls.
         while self._posts is not None:
             for data in self._posts:
                 self._file(data)
@@ -455,6 +493,7 @@ class Profile:
                 continue
             self._seen.add((item["id"], item["idx"]))
             self._queues["playlists" if item["playlist"] else "videos"].append(item)
+        # Only a watched page can end the feed by `hasMore`; an API page ends it by running out (`StopIteration`).
         if not api and isinstance(data, dict) and "hasMore" in data and not data["hasMore"] and self._posts is not None:
             self._end()
 
@@ -494,20 +533,35 @@ class TikTok(Source):
     @target(r"{id:\d{16,}}", r"tiktok.com/*/video/{id:\d+}", r"tiktok.com/*/photo/{id:\d+}",
             r"tiktok.com/video/{id:\d+}", r"tiktok.com/photo/{id:\d+}")
     def video(self, site: Site, id: str) -> Iterator[Post]:
-        """One video or photo post, by its id: `Target("tik", "video", "7301234567890123456")`."""
+        """One video or photo post, by its id: `Target("tik", "video", "7301234567890123456")`.
+
+        Args:
+            site: the target's site; the embed page needs no browser.
+            id: the post's numeric id, from the target or the URL.
+        """
         yield from embed_posts(site, id)
 
     # The link's `@` is written in the pattern, so its regex is spelled out: a default `{user}` would
     # drop a second `@`, and `tiktok.com/@@name` is refused as it always was.
     @target("{user}", r"tiktok.com/@{user:[\w.]+}")
     def user(self, site: Site, user: str) -> Profile:
-        """A profile, by its user name; a `@` in front of it is dropped. Nothing is opened yet."""
+        """A profile, by its user name; a `@` in front of it is dropped. Nothing is opened yet.
+
+        Args:
+            site: the target's site, whose tab the profile is opened in.
+            user: the user name, without `@`.
+        """
         return Profile(site, user)
 
     # Newest first, apart from pinned videos at the top, which the engine's early stop allows for.
     @user.category(newest_first=True)
     def videos(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The videos and photo posts that are in no playlist; the page's links when every list is walled."""
+        """The videos and photo posts that are in no playlist; the page's links when every list is walled.
+
+        Args:
+            site: the target's site, whose page is read for links when the API gave nothing.
+            profile: the `Profile` the route built, shared with the other categories.
+        """
         for item in profile.feed("videos"):
             yield post_of(site, item, "videos")
         if not profile.found["videos"] and profile.on_page:
@@ -519,37 +573,67 @@ class TikTok(Source):
 
     @user.category
     def stories(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's stories: their list API, or the page they come with."""
+        """The profile's stories: their list API, or the page they come with.
+
+        Args:
+            site: the target's site, which the stories' posts are built for.
+            profile: the `Profile` the route built, shared with the other categories.
+        """
         for item in profile.stories():
             yield post_of(site, item, "stories")
 
     @user.category(newest_first=True)
     def playlists(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The videos that are in a playlist, each under `albums/<playlist title>/`."""
+        """The videos that are in a playlist, each under `albums/<playlist title>/`.
+
+        Args:
+            site: the target's site, which the posts are built for.
+            profile: the `Profile` the route built, shared with the other categories.
+        """
         for item in profile.feed("playlists"):
             yield post_of(site, item, "videos")
 
     @user.category
     def reposts(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The Reposts tab. Not `newest_first`: it is ordered by when each was reposted, not posted."""
+        """The Reposts tab. Not `newest_first`: it is ordered by when each was reposted, not posted.
+
+        Args:
+            site: the target's site, which the posts are built for.
+            profile: the `Profile` the route built, shared with the other categories.
+        """
         for item in profile.tab("reposts", "repost-tab"):
             yield post_of(site, item, "reposts")
 
     @user.category
     def liked(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The Liked tab, when the account made it public."""
+        """The Liked tab, when the account made it public.
+
+        Args:
+            site: the target's site, which the posts are built for.
+            profile: the `Profile` the route built, shared with the other categories.
+        """
         for item in profile.tab("liked", "liked-tab"):
             yield post_of(site, item, "liked")
 
     @user.category
     def favorites(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The Favorites tab, when the account made it public."""
+        """The Favorites tab, when the account made it public.
+
+        Args:
+            site: the target's site, which the posts are built for.
+            profile: the `Profile` the route built, shared with the other categories.
+        """
         for item in profile.tab("favorites", "favorites-tab"):
             yield post_of(site, item, "favorites")
 
     @user.category(folder="profile", key="")
     def profile(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile picture, named `avatar_<picture id>.jpg` and keyed by that path, as always."""
+        """The profile picture, named `avatar_<picture id>.jpg` and keyed by that path, as always.
+
+        Args:
+            site: the target's site, whose cookies the picture's CDN wants.
+            profile: the `Profile` the route built; its page is opened only when the HTML gave no `secUid`.
+        """
         if not profile.described() and not profile.open(feeds=False):
             return
         url = selector.parse(profile.user).jmespath("user.avatarLarger").first
@@ -566,8 +650,11 @@ def embed_posts(site: Site, video_id: str) -> Iterator[Post]:
         site: the target's site; the embed page needs no browser.
         video_id: the post's id.
     """
+    # No redirects: a redirect lands on a page with no item to read, so it is reported as a miss below.
+    # Seconds for one embed page, set by flnd rather than by the site.
     try:
         page = site.fetch(f"https://www.tiktok.com/embed/v2/{video_id}", timeout=20.0, follow_redirects=False).html
+    # A failed fetch is a warning for this one post, so the rest of the run goes on.
     except FetchError as error:
         site.warn("{err} on embed endpoint for {id}", err=error, id=video_id)
         return
@@ -605,9 +692,14 @@ def post_of(site: Site, item: Dict[str, Any], category: str) -> Post:
 
 
 def cdn_headers(cookies: Mapping[str, str]) -> Dict[str, str]:
-    """What TikTok's CDN wants to not answer 403 Forbidden: the Referer and the session cookies (tt_chain_token)."""
+    """What TikTok's CDN wants to not answer 403 Forbidden: the Referer and the session cookies (tt_chain_token).
+
+    Args:
+        cookies: the target's cookies, by name.
+    """
     token = cookies.get("tt_chain_token", "")
     sess = cookies.get("sessionid", "")
+    # The CDN's cookie carries tt_chain_token only when the session has one; sessionid is always sent.
     cookie_header = f"tt_chain_token={token}; sessionid={sess}" if token else f"sessionid={sess}"
     return {"Referer": "https://www.tiktok.com/", "User-Agent": TIKTOK_UA, "Cookie": cookie_header}
 
@@ -625,6 +717,7 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
     if not isinstance(data, dict):
         return []
     items = []
+    # The post list says `itemList`, the story list `storyList`, and some older responses `story_list`.
     for raw in selector.parse(data).jmespath("itemList || storyList || story_list").all:
         item_id = str(raw.get("id") or raw.get("aweme_id") or "")
         if not item_id:
@@ -632,6 +725,7 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
         common = {"id": item_id, "date": stamp_of(raw, item_id),
                   "playlist": selector.parse(raw).jmespath("playlist.name || playlist_info.name").first}
 
+        # A photo post has `imagePost` and no video; the two are never both read.
         images = selector.parse(raw).jmespath("imagePost.images").all
         if images:
             # A photo-mode carousel: each picture is a file of its own, numbered from 1.
@@ -649,8 +743,13 @@ def stamp_of(raw: Dict[str, Any], item_id: str) -> int | float | None:
 
     The engine turns it into a day, in UTC (`day`), as twt and tlg do: a local day would name the
     same video differently, and put it on the other side of `--since`, on two machines (fix #15, 2026-11).
+
+    Args:
+        raw: one item of a TikTok response, as its JSON object.
+        item_id: the item's id, which `stamp_of` reads a time from when `createTime` is missing.
     """
     create_time = raw.get("createTime") or raw.get("create_time")
+    # Some responses send the time as a string of digits, which is read as a number.
     if isinstance(create_time, str) and create_time.isdigit():
         create_time = int(create_time)
     if isinstance(create_time, (int, float)) and create_time > FIRST_UNIX_TIME:
@@ -679,6 +778,7 @@ def best_video(video: Dict[str, Any]) -> str | None:
     gallery-dl. The DASH skip and the `Bitrate` tie-break are flnd's own (fix #16, 2026-11), and
     `_is_dash`'s marks stay unconfirmed until a live check.
     """
+    # Each candidate is (pixels, bitrate, url): the largest picture wins, and the bitrate breaks a tie.
     candidates = [(_pixels(entry), entry.get("Bitrate") or 0, urls[0]) for entry in video.get("bitrateInfo") or []
                   if isinstance(entry, dict) and not _is_dash(entry)
                   and (urls := selector.parse(entry).jmespath("PlayAddr.UrlList").all)]
