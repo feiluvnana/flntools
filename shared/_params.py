@@ -17,7 +17,7 @@ import shared
 from shared._screen import isatty
 
 # What `_cli` builds on; `shared.cli` re-exports `Error`, `UsageError`, `opt` and `arg`.
-__all__ = ["Arg", "Error", "Opt", "Param", "UsageError", "arg", "opt", "read_signature"]
+__all__ = ["Arg", "Error", "Opt", "Param", "UsageError", "arg", "opt", "read_signature", "spell_consts"]
 
 REQUIRED = inspect.Parameter.empty
 MANY_NARGS = ("*", "+")
@@ -45,6 +45,7 @@ class Opt:
     choices: tuple | None = None
     type: Callable[[str], Any] | None = None
     stdin: bool = False
+    const: Any = None
 
 
 @dataclass(frozen=True)
@@ -58,9 +59,31 @@ class Arg:
 
 
 def opt(*flags: str, help: str | None = None, metavar: str | None = None, choices: Any = None,
-        type: Callable[[str], Any] | None = None, stdin: bool = False) -> Opt:
-    """An option's spellings and settings. A long flag such as "--from" replaces the parameter's own name."""
-    return Opt(flags, help, metavar, None if choices is None else tuple(choices), type, stdin)
+        type: Callable[[str], Any] | None = None, stdin: bool = False, const: Any = None) -> Opt:
+    """An option's spellings and settings. A long flag such as "--from" replaces the parameter's own name.
+
+        def download(*, classify: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None): ...
+
+    Args:
+        flags: its spellings, such as "-f" and "--from"; none keeps `--<name>`.
+        help: the help row; None takes it from the handler docstring's `Args:` entry.
+        metavar: the placeholder shown in the usage and help; None is the name in capitals.
+        choices: the values accepted; None accepts any, or a `Literal`'s values.
+        type: turns the option's word into the value; None reads it from the annotation.
+        stdin: whether the option reads a piped stdin when the command line gives nothing else.
+        const: makes the value optional, and needs `choices`: the option takes the next word
+            only when that word is one of `choices` (`--classify off`), and otherwise gets
+            `const` and leaves the next word to what follows (`--classify ins:a` is the option
+            and then a positional). `--classify=off` always takes its word. None means a word
+            is required.
+
+    Raises:
+        TypeError: `const` without `choices`, which would leave no way to tell a value from a
+            positional.
+    """
+    if const is not None and choices is None:
+        raise TypeError("const= needs choices=, to tell the option's word from the next argument")
+    return Opt(flags, help, metavar, None if choices is None else tuple(choices), type, stdin, const)
 
 
 def arg(help: str | None = None, *, metavar: str | None = None, nargs: str | None = None, choices: Any = None,
@@ -112,6 +135,7 @@ class Param:
     stdin: bool = False
     choices: tuple = ()
     tokens: tuple = ()  # the command-line spelling of each choice
+    const: Any = None  # what an option given without its value gets; None means the value is required
 
     @property
     def positional(self) -> bool:
@@ -146,7 +170,7 @@ class Param:
     def label(self) -> str:
         if self.kind == "flag":
             return ", ".join(self.flags[:-1] + ("--[no-]" + self.long_flag[2:],))
-        return f"{', '.join(self.flags)} {self.metavar}"
+        return f"{', '.join(self.flags)} {f'[{self.metavar}]' if self.const is not None else self.metavar}"
 
     def help_row(self) -> str:
         """The help line, with the values listed for a choice."""
@@ -172,6 +196,8 @@ class Param:
                 *self.flags, dest=self.name, action=argparse.BooleanOptionalAction, default=self.parsed_default,
             )
         else:
+            # An option with `const` always gets a word here: `spell_consts` has already written
+            # `--flag=<const>` for the flag given alone, so argparse never guesses.
             parser.add_argument(
                 *self.flags, dest=self.name, type=_pieces(self.convert) if self.repeat else self.convert,
                 metavar=self.metavar, action="extend" if self.repeat else "store", required=self.required,
@@ -196,6 +222,29 @@ class Param:
         if self.collect is not None and value is not None:
             return self.collect(value)
         return value
+
+
+def spell_consts(params: list[Param], tokens: list[str]) -> list[str]:
+    """The command line with each optional-value option given alone written as `--flag=<const>`.
+
+        spell_consts(params, ["--classify", "ins:a"])      # ["--classify=on", "ins:a"]
+        spell_consts(params, ["--classify", "off", "ins:a"])  # unchanged
+
+    argparse's `nargs="?"` takes whatever word follows, so `--classify ins:a` would read the
+    target as the option's value. Here the next word is the value only when it is one of the
+    option's choices, spelled as the command line writes them; anything after `--` is left alone.
+    """
+    flags = {flag: param for param in params if param.const is not None for flag in param.flags}
+    out: list[str] = []
+    for index, token in enumerate(tokens):
+        if token == "--":
+            return out + tokens[index:]
+        param = flags.get(token)
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
+        if param is not None and following not in param.tokens:
+            token = f"{token}={param.const}"
+        out.append(token)
+    return out
 
 
 def _read_params(fn: Callable, signature: inspect.Signature, arg_help: dict) -> list[Param]:
@@ -271,6 +320,7 @@ def _read_param(fn: Callable, parameter: inspect.Parameter, annotation: Any, arg
         collect=None if spread else collect, repeat=bool(collect) and not positional, spread=spread,
         keyword=keyword, help=help_text, metavar=(meta.metavar if meta and meta.metavar else default_metavar),
         wants_stdin=meta.stdin if meta is not None else positional, choices=choices, tokens=tokens,
+        const=meta.const if isinstance(meta, Opt) else None,
     )
 
 

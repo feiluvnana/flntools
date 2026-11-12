@@ -648,7 +648,7 @@ class ApiTest(EngineCase):
         engine = self.engine(make_source("aaa"))
         for options, message in (({"time": "2026-01-01"}, TIME_USAGE), ({"image": "heic"}, "--image heic: give a format"),
                                  ({"video": "webm:h265"}, "--video webm:h265: webm holds vp9, not h265"),
-                                 ({"classify": True}, "--classify comes in a later step"),
+                                 ({"classify": "maybe"}, "--classify takes on or off"),
                                  ({"categories": "reels"}, "no source here has 'reels'")):
             with self.subTest(options=options), self.assertRaises(ValueError) as caught:
                 engine.download(["aaa:a"], **options)

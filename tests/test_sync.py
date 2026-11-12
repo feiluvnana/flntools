@@ -100,7 +100,7 @@ class SettingsTest(SyncCase):
         self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1), until=datetime.date(2026, 6, 30)))
         row = self.saved()["aaa:a"]
         # `complete` is what was listed to its end, not a setting: here the one category, `posts`.
-        self.assertEqual(sorted(row), ["at", "audio", "complete", "image", "kind", "video"])
+        self.assertEqual(sorted(row), ["at", "audio", "classify", "complete", "image", "kind", "video"])
         self.assertEqual(sorted(row["complete"]), ["posts"])
         self.assertEqual(self.plan()[0][1], Options())
 

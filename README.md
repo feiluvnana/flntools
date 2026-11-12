@@ -41,7 +41,8 @@ make dist            # dist/flnd/flnd (flnd.exe on Windows), for the OS you buil
 
 Copy the whole `dist/flnd/` folder; it holds `flnd`, `_internal/` and `licenses/`, the third-party licences.
 The bundle includes ffmpeg, a GPL program: `licenses/ffmpeg.txt` has its licence and the offer of its
-source, and `licenses/ffmpeg-source.txt` the exact build.
+source, and `licenses/ffmpeg-source.txt` the exact build. It includes ONNX Runtime and NumPy too, for
+`--classify`, which then needs only its model.
 It uses Google Chrome too, or offers the same Chromium download. The bundled `flnd` still writes `.flnd/`
 in the folder you run it from.
 
@@ -51,7 +52,7 @@ in the folder you run it from.
 
 ```bash
 flnd download <targets...> [--from CATEGORIES] [--time SINCE,UNTIL]
-              [--image FORMAT,LEVEL] [--video FORMAT,LEVEL] [--audio FORMAT,LEVEL]
+              [--image FORMAT,LEVEL] [--video FORMAT,LEVEL] [--audio FORMAT,LEVEL] [--classify [off]]
 flnd sync [targets...]
 flnd login
 flnd logout <sources...> | all
@@ -134,6 +135,10 @@ flnd download tik:example_creator --video h265,mid
 
 # Stop compressing photos for this target from now on
 flnd download ins:example_user --image off
+
+# Group photos and videos by what they show, in labels/food/, labels/pet/, …; saved for the target
+flnd download ins:example_user --classify
+flnd download ins:example_user --classify off
 ```
 
 ### Options
@@ -162,11 +167,29 @@ Every source takes the same options:
   container (`mp4`, `mov`, `mkv`, `webm`, `avi`, `ts`, `3gp`, `gif`), a codec (`h264`, `h265`, `vp9`),
   or both as `mkv:h265`; for `--audio`: `mp3`, `m4a`, `aac`, `opus`, `ogg`, `flac`.
 
-`--image`, `--video` and `--audio` are **saved for each target** in `.flnd/targets.db`, each on its
-own, and used by every later `download` and `sync` of it; a run that uses saved ones says so, as
-`ins:example_user: --image webp,mid (saved)`. Giving one again changes it, and that `download`
-compresses the target's files already saved with the new setting first, then the new ones. `off`
-turns one off (`--image off`). `--from` and `--time` are never saved.
+- `--classify`: group each photo and video by what it shows, as links in `labels/<label>/` beside
+  the target's own folders. **No file is renamed or moved**: a link is a second name for the same
+  file (a hard link, taking no space; a symlink where that can't be made), and a file with two
+  labels is in both folders. The labels are `selfie`, `portrait`, `group`, `food`, `pet`, `animal`,
+  `nature`, `city`, `travel`, `screenshot`, `document`, `meme`, `art`, `fashion`, `sport`, `car`
+  and `nsfw` (a hint, not a filter: it needs a higher score), and `other` when none fits; a video
+  is judged on three of its frames. Two files of the same name from different folders meet as
+  `a.jpg` and `tagged_a.jpg`. It runs a small CLIP model (OpenCLIP ViT-B/32, about 150 MB) on the
+  CPU, about 20 ms a photo, which the first use asks to download, in a terminal, into your user
+  cache (`~/.cache/flntools/models`, `%LOCALAPPDATA%\flntools\models` on Windows). It needs ONNX
+  Runtime and NumPy, the `classify` extra (`uv sync --extra classify`), which the first use also
+  offers to install, both before the run starts. A no, or no terminal (then nothing is asked),
+  warns once, and the run downloads without classifying, saving every file
+  unlabelled. `--classify off` deletes `labels/`. FAT and exFAT drives have no links, so there the
+  folders are skipped, with one warning, and only the labels are recorded. Most copy tools don't
+  keep hard links, so a target folder copied elsewhere holds each labelled file twice.
+
+`--image`, `--video`, `--audio` and `--classify` are **saved for each target** in `.flnd/targets.db`,
+each on its own, and used by every later `download` and `sync` of it; a run that uses saved ones says
+so, as `ins:example_user: --image webp,mid --classify (saved)`. Giving one again changes it, and that
+`download` applies the new setting to the target's files already saved first (compressing them, or
+labelling the ones without labels), then to the new ones. `off` turns one off (`--image off`,
+`--classify off`). `--from` and `--time` are never saved.
 
 A saved photo, video or audio file gets the extension its content calls for (a WebP is saved as
 `.webp`, not `.jpg`), a web page served instead of a photo is retried rather than saved, and a
@@ -181,8 +204,9 @@ resumes from it. The **first Ctrl-C** stops listing and lets the files downloadi
 rows say `stopping: 2 files finishing (Ctrl-C again to stop now)`); the **second** stops at once,
 keeping the unfinished files to resume. Either way flnd exits 130.
 
-`flnd download` asks no questions, except the one above, whether to download Chromium when Google
-Chrome is missing. `flnd` alone prints the help.
+`flnd download` asks no questions, except whether to download Chromium when Google Chrome is
+missing, and, with `--classify`, the model and the extra the first time; both are asked before any
+download starts. `flnd` alone prints the help.
 
 ---
 
@@ -194,7 +218,7 @@ flnd sync ins:example_user tik:example_creator        # only these
 ```
 
 `flnd sync` takes no options and changes nothing about how a target is downloaded: each target runs
-with its saved `--image`, `--video` and `--audio`, and each source's default categories. To change a
+with its saved `--image`, `--video`, `--audio` and `--classify`, and each source's default categories. To change a
 setting, run `flnd download` with it. Folders downloaded before flnd saved settings are synced
 without any. For each target:
 
@@ -202,7 +226,11 @@ without any. For each target:
    leftover `.part` files are removed, except an unfinished download from the last 7 days, which
    the fetch resumes;
 2. **fetch**: new posts are downloaded, as `flnd download` would;
-3. **summary**: one line per target, `ins:example_user: 120 files, 85.2 MB; 2 repaired, 1 missing`
+3. **labels**, with `--classify`: the `labels/` links are rebuilt from the history, so a deleted
+   link comes back and a link whose file is gone is removed; files already saved aren't judged again.
+   A file you deleted whose hard link in `labels/` is now its only copy is moved back first, never
+   deleted;
+4. **summary**: one line per target, `ins:example_user: 120 files, 85.2 MB; 2 repaired, 1 missing`
    (missing: files the site no longer lists), then the totals.
 
 `sync` never deletes a file whose post was deleted, asks no questions but that same Chromium one
@@ -246,7 +274,8 @@ Files are saved with platform-optimized subfolder layouts and automatic deduplic
 │   ├── reposts/                # Reposts
 │   ├── stories/                # Active 24h stories
 │   ├── highlights/<title>/     # Story highlights
-│   └── profile/                # HD profile picture
+│   ├── profile/                # HD profile picture
+│   └── labels/<label>/         # With --classify: links to the files above, by what they show
 │
 ├── fbk/<username_or_id>/
 │   ├── posts/                  # Timeline posts

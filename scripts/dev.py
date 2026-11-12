@@ -59,9 +59,11 @@ def setup(python: str, args: list[str]) -> None:
     """Create or update `.venv` from `uv.lock`, with the dev group; downloads no browser.
 
     `--extra archive` keeps pyzipper and py7zr installed for the archive tests, also once flnd's own
-    dependencies drop them. A second run checks the lock and installs nothing, well under a second.
+    dependencies drop them, and `--extra classify` ONNX Runtime and NumPy for `Media.labels`' tests
+    (which never download the model). A second run checks the lock and installs nothing, well under
+    a second.
     """
-    run(["uv", "sync", "--python", python, "--extra", "archive", *args])
+    run(["uv", "sync", "--python", python, "--extra", "archive", "--extra", "classify", *args])
 
 
 def test(python: str, args: list[str]) -> None:
@@ -116,7 +118,9 @@ def api(python: str, args: list[str]) -> None:
 def dist(python: str, args: list[str]) -> None:
     """Build the one-folder bundle `dist/flnd/` and add `licenses/ffmpeg-source.txt` to it."""
     # PyInstaller lives in the `dist` group, which `setup` leaves out; `uv run` below keeps it installed.
-    run(["uv", "sync", "--python", python, "--group", "dist"])
+    # A bundle can't install packages into itself, so it carries the `classify` extra: only the
+    # model is downloaded on first use (plan/phase-6/classify.md).
+    run(["uv", "sync", "--python", python, "--group", "dist", "--extra", "classify"])
     # This script runs outside the project environment, so the build runs inside it, through uv.
     build = "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', data=('licenses',), dest='dist')"
     run(["uv", "run", "--python", python, "--group", "dist", "python", "-c", build])

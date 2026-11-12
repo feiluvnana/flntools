@@ -31,7 +31,7 @@ import typing
 from typing import Any, Callable
 
 from shared import _theme
-from shared._params import Error, UsageError, arg, opt, read_signature
+from shared._params import Error, UsageError, arg, opt, read_signature, spell_consts
 from shared._style import strip
 from shared._theme import HelpModel, detect_color
 
@@ -203,7 +203,7 @@ class Command:
         for param in self.params:
             param.add_to(parser)
         try:
-            namespace = parser.parse_args(tokens)
+            namespace = parser.parse_args(spell_consts(self.params, tokens))
             given = {param.name for param in self.params if param.is_given(getattr(namespace, param.name))}
             values = {
                 param.name: param.finish(getattr(namespace, param.name), others_given=bool(given - {param.name}))

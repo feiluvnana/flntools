@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, MutableMapping, Sequence
 
-from flnd.common import files
+from flnd.common import files, labels
 from shared import fmt, log
 
 
@@ -152,8 +152,9 @@ def count(history: MutableMapping[str, Any], folder: Path, tally: Tally) -> None
         else:
             log.warn("{target}: {name} is missing; its post may be gone", target=tally.target, name=name)
     tally.missing = len(gone)
-    on_disk = [path for path in folder.rglob("*") if path.is_file() and not path.name.startswith(".")] \
-        if folder.is_dir() else []
+    # `labels/` holds second names of these same files (classify's links), so it isn't counted.
+    on_disk = [path for path in folder.rglob("*") if path.is_file() and not path.name.startswith(".")
+               and path.relative_to(folder).parts[0] != labels.VIEWS] if folder.is_dir() else []
     tally.files, tally.size = len(on_disk), sum(path.stat().st_size for path in on_disk)
 
 

@@ -6,6 +6,7 @@
     if out.size < clip.size:
         out.save("clip.mp4")                        # only save writes, atomically
     media.open("a.jpg").compress("low", format="webp").save()          # over the original
+    media.open("a.jpg").labels()                    # [("food", 0.71)]
 
 `media.open(path)` probes the file once and returns a `Media`, whose properties are what the probe
 read (`Info`'s fields). Each transform (`compress`, `convert`, `resize`, `crop`, `trim`, `merge`,
@@ -14,8 +15,9 @@ for real: it writes a new temporary file, `.<name>.<random>.part` beside the fil
 from, and returns a new `Media` for it. Nothing is written over the input. `save(dest)` ends the
 chain by renaming the last temporary file onto `dest`, on the same disk, so it is atomic; `save()`
 writes over the file the chain started from. `close()`, `with`, and garbage collection drop the
-temporary files a chain still holds. `frames` writes photos into a folder, and `check` decodes the
-file to find damage.
+temporary files a chain still holds. `frames` writes photos into a folder, `check` decodes the
+file to find damage, and `labels` names what a photo or video shows, with a CLIP model run by ONNX
+Runtime (the `classify` extra; shared/_classify.py), downloaded on first use after asking.
 
 Photos go through Pillow (with pi-heif for HEIC), in process. Videos and audio go through the
 ffmpeg program, out of process, found on first use: imageio-ffmpeg's, else the one on PATH. Every
@@ -53,7 +55,8 @@ if TYPE_CHECKING:
 
     from typing_extensions import Self
 
-__all__ = ["BrokenError", "Error", "Info", "KindError", "Media", "UnsafeError", "kind", "open", "sniff"]
+__all__ = ["LABELS", "BrokenError", "Error", "Info", "KindError", "Media", "UnsafeError", "kind", "open",
+           "prepare_labels", "sniff"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 Progress = Callable[..., Any]
@@ -176,6 +179,11 @@ READ_ONLY = {".heic": "image", ".heif": "image", ".oga": "audio", ".flv": "video
              ".wmv": "video"}
 REFUSED = (b"%!PS", b"\xc5\xd0\xd3\xc6", b"%PDF", b"\xd7\xcd\xc6\x9a")  # EPS (Ghostscript), PDF, WMF
 GIF_FPS = 15
+# What `Media.labels` can tell, as a downloader's user most often wants to sort by. Each is a prompt
+# the model scores pictures against (shared/_classify.py keeps them, tokenized); `nsfw` needs a
+# higher score than the others (decided 2026-11-12).
+LABELS = ("selfie", "portrait", "group", "food", "pet", "animal", "nature", "city", "travel", "screenshot",
+          "document", "meme", "art", "fashion", "sport", "car", "nsfw")
 
 
 def open(path: PathLike) -> Media:
@@ -410,6 +418,48 @@ class Media:
 
         return _media_video.frames(self.info, Path(self._chain.origin.name).stem, Path(dest), every=every, at=at,
                                    count=count, format=format, quality=quality, limit=limit)
+
+    def labels(self, *, top: int = 3, threshold: float = 0.25,
+               choices: Sequence[str] = LABELS) -> list[tuple[str, float]]:
+        """What the photo or video shows, as up to `top` labels with their scores, best first.
+
+            media.open("a.jpg").labels()                         # [("food", 0.71)]
+            media.open("clip.mp4").labels(top=1)                 # [("pet", 0.64)]
+            media.open("b.png").labels(choices=("meme", "art"))  # [("meme", 0.83)]
+
+        Args:
+            top: the most labels to return, at least 1.
+            threshold: the score, from 0 to 1, a label needs to be returned; `nsfw` needs 0.5
+                at least, whatever this is, since the model spots it less reliably.
+            choices: the labels to choose from, each one of `media.LABELS`. The scores are the
+                softmax over these, so they add up to 1 and depend on what else is offered.
+
+        Returns:
+            (label, score) pairs, best first; `[("other", score)]`, with the best label's score,
+            when no label reaches the threshold. A video or animation is scored on three frames,
+            at 10%, 50% and 90% of its length, and the scores averaged.
+
+        Raises:
+            KindError: an audio file.
+            ValueError: a label isn't in `media.LABELS`, `choices` is empty, `top` is below 1, or
+                `threshold` is outside 0 to 1.
+            BrokenError: the picture or frames can't be decoded.
+            ImportError: ONNX Runtime and NumPy, the `classify` extra, are missing, and installing
+                them was declined, couldn't be asked (no terminal) or failed.
+            RuntimeError: the model isn't downloaded and its download was declined, couldn't be
+                asked (no terminal) or failed, naming the URL; or it doesn't load.
+
+        The first call in a process loads the model (OpenCLIP ViT-B/32, about 150 MB), which a
+        terminal is first asked to download into the user's cache folder, checked against a pinned
+        SHA-256; without a terminal nothing is asked, and it raises. Missing ONNX Runtime is offered
+        for install the same way. A photo then takes about 20 ms on a laptop's CPU, a video a moment
+        more for its frames (ffmpeg). Safe from several threads: they share the model one at a time.
+        """
+        self._usable()
+        self._expect("labels", "photos and videos", self.kind in ("image", "video"))
+        from shared import _classify
+
+        return _classify.labels(self.info, top=top, threshold=threshold, choices=choices)
 
     # Transforms: each writes a temporary file and returns a new Media.
 
@@ -876,6 +926,32 @@ def _brand(head: bytes) -> str:
     if brand == b"M4A ":
         return ".m4a"
     return ".3gp" if brand in (b"3gp4", b"3gp5", b"3gp6") else ".mp4"
+
+
+def prepare_labels() -> None:
+    """Make `Media.labels` ready now: its packages imported and its model downloaded and loaded, asking first.
+
+        try:
+            media.prepare_labels()          # before a long run, so its questions come first
+        except (ImportError, RuntimeError) as error:
+            print(f"no labels this run: {error}")
+
+    It asks what `Media.labels` would ask on its first call, the same way and at most once each
+    per process: in a terminal, whether to install ONNX Runtime and NumPy when they're missing,
+    then whether to download the model when it isn't in the cache folder. Without a terminal it
+    asks nothing. When everything is there already, it only loads the model (about a second).
+
+    Raises:
+        ImportError: ONNX Runtime or NumPy is missing, and installing them was declined,
+            couldn't be asked (no terminal), or failed.
+        RuntimeError: the model isn't downloaded and its download was declined, couldn't be
+            asked, or failed, naming the URL; or it doesn't load.
+
+    Safe from several threads; a later `Media.labels` uses the model loaded here.
+    """
+    from shared import _classify
+
+    _classify.prepare()
 
 
 def kind(name: str) -> str | None:

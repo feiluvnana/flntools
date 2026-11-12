@@ -68,9 +68,9 @@ The redesign's own decisions, some still open, are in [redesign › Decisions](r
 1. ~~Remove `media`'s unused API?~~ **Decided 2026-11-12: keep it.** `shared` is judged by usefulness, not by flnd's calls ([api](api.md)).
 2. ~~Run the browser headless by default?~~ **Decided 2026-11-12: no.** The browser stays visible by default, as today.
 3. ~~Color `info` lines too?~~ **Decided 2026-11-12: yes.** Every level colors its whole line, `info` in cyan ([ui](ui.md#whole-log-lines-in-their-levels-color)).
-4. ~~Which classifier model?~~ **Decided 2026-11-12: MobileCLIP-S0**, or OpenCLIP ViT-B/32 if its licence doesn't allow flnd's use; checked before step 11 ([classify](classify.md#the-model)).
+4. ~~Which classifier model?~~ **Decided 2026-11-12: MobileCLIP-S0**, or OpenCLIP ViT-B/32 if its licence doesn't allow flnd's use; checked before step 11 ([classify](classify.md#the-model)). **Checked 2026-11-12: OpenCLIP ViT-B/32 (LAION-2B, MIT)**, as MobileCLIP's weights are for research only ([classify › Licence](classify.md#licence-and-model-file-checked-2026-11-12)).
 5. ~~A `nsfw` label?~~ **Decided 2026-11-12: yes**, with a higher threshold ([classify](classify.md#labels)).
 6. ~~Is `classify` required or an extra?~~ **Decided 2026-11-12: an extra**, which `media.classify` offers to install the first time it's used, as Chrome's Chromium and the model are ([classify](classify.md#flnd)).
 
-Still to check while building, not decisions: MobileCLIP-S0's licence, and the live checks in [ins](ins.md#live-checks) and [source](source.md#tests).
+Still to check while building, not decisions: the live checks in [ins](ins.md#live-checks) and [source](source.md#tests).
 7. ~~Keep encrypting secrets?~~ **Decided 2026-11-12: keep it.** `vault` stays, merged with `login` into `flnd/auth.py` ([simplify](simplify.md#decision)).
