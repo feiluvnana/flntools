@@ -103,7 +103,7 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 5. [ins](phase-6/ins.md): tagged and reposts posts read through Instagram's media info API, skipped before any request when already saved or out of range, and every throttle waited out. With [flows](phase-6/flows.md): what gallery-dl does for each site, taken where it's better.
 6. [scripts](phase-6/scripts.md): the sources rewritten shorter, with `save_post`, `day` and `meta_results` in `flnd/sources/common.py`.
    [dates](phase-6/dates.md): the engine dates every file, in its name and its modified time, with the CDN's `Last-Modified` or the download day when the source has none.
-7. [classify](phase-6/classify.md): `media.classify`, a small CLIP-style model on ONNX Runtime, and `--classify`, which puts each file's categories at the start of its name.
+7. [classify](phase-6/classify.md): `media.classify`, a small CLIP-style model on ONNX Runtime, and `--classify`, which groups files by category in `labels/<label>/` link folders without renaming them.
 8. [ui](phase-6/ui.md): download rows that no longer blink (overwritten in place, synchronized, cursor hidden, short-lived rows never drawn), a prompt cursor where the text goes, and log lines in their level's color.
 9. [comments](phase-6/comments.md): a docstring for every module, class and function, with its arguments, result, errors and an example, and *why* comments at every non-obvious rule.
 

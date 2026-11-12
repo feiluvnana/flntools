@@ -28,7 +28,7 @@ flnd logout   <sources…> | all
 | `--image <format>,<level>` | **new**: replaces `--compress-image` and `--format-image` |
 | `--video <format>,<level>` | **new**: replaces `--compress-video` and `--format-video` |
 | `--audio <format>,<level>` | **new**: the same for audio files, such as tlg's music and voice messages |
-| `--classify` | **new**, `download` only: put each photo's and video's categories at the start of its name, saved for the target like `--image` ([classify](classify.md#flnd)) |
+| `--classify` | **new**, `download` only: group each photo and video by category in `labels/<label>/` link folders, without renaming anything; saved for the target like `--image` ([classify](classify.md#flnd)) |
 | `--unpack`, `--zip` | **removed** |
 | `--locale`, `--timezone` | **removed**: Chrome uses the computer's own, which is what matches the connection |
 

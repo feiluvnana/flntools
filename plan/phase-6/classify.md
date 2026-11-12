@@ -1,6 +1,6 @@
 # classify
 
-Phase 6, step 7, after [scripts](scripts.md) and [dates](dates.md). The user asked on 2026-11-12 for a classifier: `media.classify(path)` tells what kind of photo or video a file is, using a small but accurate model, and flnd puts the categories at the start of the file name.
+Phase 6, step 7, after [scripts](scripts.md) and [dates](dates.md). The user asked on 2026-11-12 for a classifier: `media.classify(path)` tells what kind of photo or video a file is, using a small but accurate model, and flnd groups the files by category in link folders, without renaming them.
 
 ```python
 from shared import media
@@ -11,9 +11,12 @@ media.classify("clip.mp4", top=2)                  # [("pet", 0.64), ("nature", 
 
 ```
 flnd download ins:example_user --classify
-  posts/food_2026-01-02_ABC123.jpg
-  posts/pet+nature_2026-01-05_DEF456_0.jpg
-  reels/other_2026-01-07_GHI789.mp4
+  posts/2026-01-02_ABC123.jpg                  the files keep their names and places
+  posts/2026-01-05_DEF456_0.jpg
+  labels/food/2026-01-02_ABC123.jpg            links to them, grouped by label
+  labels/pet/2026-01-05_DEF456_0.jpg
+  labels/nature/2026-01-05_DEF456_0.jpg        a file with two labels is in both
+  labels/other/2026-01-07_GHI789.mp4
 ```
 
 ## The model
@@ -77,8 +80,11 @@ The labels a downloader's user most often wants to sort by, each with the prompt
 ## flnd
 
 **`--classify`**, a sixth option on `download`, saved for the target and used by `sync` ([cli](cli.md#download)):
-- After each photo or video is saved (and compressed, when asked), the engine classifies it and renames it to `<labels>_<YYYY-MM-DD>_<name>`, with the labels joined by `+`, such as `pet+nature_`.
-- **The history key doesn't change**, so a renamed file is never downloaded again. The row records the labels.
+- After each photo or video is saved (and compressed, when asked), the engine classifies it and **links it into `labels/<label>/`** under the target's folder, once per label. **The file itself is never renamed or moved** (decided 2026-11-12), so its name, its place and its history row stay as they are. The row records the labels.
+- **The link is a hard link**: the same file under a second name. It takes no extra space, opens in any app, and needs no rights on Windows. Where a hard link can't be made (another volume), it is a **symlink**, relative to the link's folder, so the target folder can be moved as a whole. Where neither works (FAT and exFAT have neither), the views are skipped with one warning per run, and the labels are still recorded.
+- **The views are rebuilt, never trusted.** `flnd sync` re-creates any link that's missing from the recorded labels, and removes links whose file is gone. Deleting `labels/` costs nothing, and `--classify off` removes it.
+- Two files with the same name in different category folders (`posts/` and `tagged/`) can meet in one label folder. The second gets its category in front: `tagged_2026-01-02_ABC123.jpg`.
+- **Copying a target folder elsewhere** copies hard-linked files twice, since most copy tools don't keep hard links. That is noted in README.
 - Classifying runs in its own one-at-a-time pool next to the video encodes, so downloads never wait for it.
 - A `download` that turns `--classify` on for a target classifies its files already saved, too; `flnd sync` classifies only the new ones ([cli › sync](cli.md#sync)).
 - `--classify` is saved with the target, like `--image`, and `--classify off` turns it off ([cli › Saved settings](cli.md#saved-settings)).
@@ -94,7 +100,7 @@ The labels a downloader's user most often wants to sort by, each with the prompt
 ## Deferred
 
 - **Free-text labels** (`--classify selfie,beach,my cat`): need the text tower and CLIP's tokenizer at run time, about 60 MB more and a tokenizer of about 80 lines.
-- **Sorting into folders by label** instead of name prefixes.
+- **Tags inside files or the filesystem** (XMP keywords, Finder tags): considered and not wanted (2026-11-12); the link folders are the grouping.
 - **Faces and people by name.**
 
 ## Tests
@@ -106,5 +112,11 @@ The labels a downloader's user most often wants to sort by, each with the prompt
   - an unknown label raises `ValueError`;
   - a SHA-256 mismatch on the model file raises `RuntimeError` and deletes the file.
 - They are skipped without the `classify` extra.
-- flnd: `--classify` renames a saved photo to `food_<day>_<name>`, keeps its history key, and records the labels. A failed classify leaves the file saved with one warning.
+- flnd:
+  - `--classify` links a saved photo into `labels/food/` with a hard link (same inode), leaves the original's name and place alone, and records the labels;
+  - a hard link that fails becomes a relative symlink;
+  - on a file system without either, the views are skipped with one warning;
+  - `flnd sync` restores a deleted link;
+  - `--classify off` removes `labels/`;
+  - a failed classify leaves the file saved with one warning.
 - Once, live and by hand: a folder of about 50 real photos from the test account, labelled, with the results looked over by the user.

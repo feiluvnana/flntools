@@ -37,7 +37,7 @@ And for **every** source, the file's modified time is the moment it was download
 
 ### Names and keys
 
-- A name the engine dates is `<YYYY-MM-DD>_<name>`, the same as today's names, so files already saved keep their names. With [`--classify`](classify.md) it is `<labels>_<YYYY-MM-DD>_<name>`.
+- A name the engine dates is `<YYYY-MM-DD>_<name>`, the same as today's names, so files already saved keep their names. [`--classify`](classify.md) never changes it; it only adds links in `labels/`.
 - The history key defaults to `folder/name` **without** the date, so a file whose date changes (a fallback replaced by the real date) keeps its row. The one-time history rewrite in [scripts](scripts.md#save_post) also strips the date from old keys.
 - `flnd sync`'s repair step sets the modified time of every file it already has to its recorded date, so folders downloaded before Phase 6 sort by post date too.
 

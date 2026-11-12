@@ -26,7 +26,7 @@ The extractor never decides where a file goes, whether it is already there, or w
 | `archive_fmt` and the sqlite archive | **`Source.key`**, default `"{id}_{num}"`, in `.flnd/history.db`: the history, keyed by format | `save(key=)` and the per-source key rules |
 | filters (`date-after`, `image-range`, …) | `--from` (on `meta["category"]`) and `--time` (on `meta["date"]`), applied to `Post` and `File` by the engine | `session.wants` in every source |
 | downloaders by scheme | `net.download` for `http(s)`, a `fetch` callable for SDK media (tlg), and the DASH merge when `audio` is set | — |
-| postprocessors at hooks | **one chain after each file**, in this order: `compress` (`--image`/`--video`/`--audio`), `classify` (`--classify`), `mtime` (the file's date). Each is a function `(path, meta) -> path` in `flnd/post.py` | the compress, rename and timestamp code spread through `session.py` |
+| postprocessors at hooks | **one chain after each file**, in this order: `compress` (`--image`/`--video`/`--audio`), `classify` (`--classify`, which links the file into `labels/<label>/` and never renames it), `mtime` (the file's date). Each is a function `(path, meta) -> path` in `flnd/post.py` | the compress, rename and timestamp code spread through `session.py` |
 | `sleep-request`, `sleep-429` | [pace](pace.md) | — |
 | `ratelimit`, `abort`, `exit` | throttles waited out ([ins](ins.md#4-see-and-wait-out-every-throttle)), and hard stops raise `LoginError`; flnd has no download limit | — |
 
@@ -107,7 +107,7 @@ def items(self, session):
   - a saved post skipped whole;
   - Ctrl-C closes the generator, and its `finally` runs;
   - a `Queue` runs once as a child;
-  - the postprocessors run in order and are given the renamed path;
+  - the postprocessors run in order, each given the path the one before returned (compress may change the extension);
   - `text=` writes a file atomically.
 - An async `items` (tlg's) is consumed the same way.
 - `tests/fakes.py`: `FakeSession` loses `save` and its record of saves. Source tests assert on the list `items` yields, which is simpler than today's saves.
