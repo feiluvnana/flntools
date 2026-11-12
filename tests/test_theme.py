@@ -272,3 +272,61 @@ class ScreenTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(os.name == "nt", "reads a POSIX descriptor")
+class ReadKeyPosixTest(unittest.TestCase):
+    def read(self, data: bytes, count: int = 1) -> list[str]:
+        """Feed `data` through a pipe (kept open) and read `count` keys."""
+        from shared._screen import _readkey_posix
+
+        r, w = os.pipe()
+        try:
+            os.write(w, data)
+            return [_readkey_posix(r, raw=True) for _ in range(count)]
+        finally:
+            os.close(r)
+            os.close(w)
+
+    def test_ss3_arrows_are_one_key(self):
+        self.assertEqual(self.read(b"\x1bOA\x1bOB\x1bOC\x1bOD\x1bOH\x1bOF", 6), ["up", "down", "right", "left", "home", "end"])
+
+    def test_csi_arrow_still_one_key(self):
+        self.assertEqual(self.read(b"\x1b[A"), ["up"])
+
+    def test_lone_escape_and_alt_o(self):
+        self.assertEqual(self.read(b"\x1b"), ["escape"])
+        self.assertEqual(self.read(b"\x1bO"), ["\x1bO"])
+
+
+class WindowsVtHandleTest(unittest.TestCase):
+    def enable(self, dest):
+        import ctypes
+        import sys
+
+        from shared._screen import _enable_windows_vt
+
+        windll = mock.MagicMock()
+        windll.kernel32.GetConsoleMode.return_value = 1
+        with mock.patch.object(sys, "platform", "win32"), mock.patch.object(ctypes, "windll", windll, create=True):
+            _enable_windows_vt(dest)
+        return windll.kernel32
+
+    def test_stdout_uses_handle_minus_11(self):
+        import sys
+
+        kernel32 = self.enable(sys.stdout)
+        kernel32.GetStdHandle.assert_called_once_with(-11)
+        kernel32.SetConsoleMode.assert_called_once()
+
+    def test_stderr_uses_handle_minus_12(self):
+        import sys
+
+        kernel32 = self.enable(sys.stderr)
+        kernel32.GetStdHandle.assert_called_once_with(-12)
+        kernel32.SetConsoleMode.assert_called_once()
+
+    def test_other_streams_are_skipped(self):
+        kernel32 = self.enable(StringIO())
+        kernel32.GetStdHandle.assert_not_called()
+        kernel32.SetConsoleMode.assert_not_called()

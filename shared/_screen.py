@@ -216,7 +216,7 @@ class Screen:
         with self.lock:
             if os.name == "nt" and not self._vt_enabled:
                 self._vt_enabled = True
-                _enable_windows_vt()
+                _enable_windows_vt(self.dest)
             self.dest.write(text)
             self.dest.flush()
 
@@ -282,7 +282,7 @@ def isatty(stream) -> bool:
         return False
 
 
-# Keys by the bytes a terminal sends for them. Each arrow key appears twice: "\x1b[" is the normal
+# Keys by the bytes a terminal sends for them. Each arrow, Home and End key appears twice: "\x1b[" is the normal
 # form, and "\x1bO" is the form the terminal sends in application cursor-key mode, which some
 # programs switch on. Backspace appears as DEL ("\x7f") and as BS ("\x08"), because terminals
 # differ on which one the Backspace key sends.
@@ -290,7 +290,7 @@ KEY_NAMES = {
     "\r": "enter", "\n": "enter", "\x7f": "backspace", "\x08": "backspace", "\t": "tab",
     " ": "space", "\x1b": "escape", "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right",
     "\x1b[D": "left", "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right", "\x1bOD": "left",
-    "\x1b[H": "home", "\x1b[F": "end", "\x1b[3~": "delete",
+    "\x1b[H": "home", "\x1b[F": "end", "\x1bOH": "home", "\x1bOF": "end", "\x1b[3~": "delete",
 }
 # On Windows, `msvcrt.getwch` sends an arrow or edit key as a \x00 or \xe0 prefix followed by one
 # of these letters (the console's scan codes), so the letter alone names the key.
@@ -355,9 +355,13 @@ def _readkey_posix(fd: int, raw: bool = False) -> str:
             # immediate. The 8-byte cap bounds the read; key sequences are shorter than that.
             while len(data) < 8 and select.select([fd], [], [], 0.03)[0]:
                 data += os.read(fd, 1)
-                # A CSI sequence ends at its first letter or "~". This also stops after the "O" of
-                # an SS3 arrow ("\x1bO" then a letter), so those arrows are not read whole yet.
-                if data[-1:].isalpha() or data.endswith(b"~"):
+                # An SS3 key ("\x1bO" then one final byte, such as an arrow in application
+                # cursor-key mode) needs one more byte after the "O". A lone Alt+O has none, so
+                # the wait times out and it comes back as "\x1bO". Otherwise a CSI sequence ends
+                # at its first letter or "~".
+                if data == b"\x1bO":
+                    continue
+                if data.startswith(b"\x1bO") or data[-1:].isalpha() or data.endswith(b"~"):
                     break
             if data == PASTE_START:
                 return _read_paste(fd)
@@ -409,15 +413,26 @@ def _readkey_windows() -> str:
     return key_name(char)
 
 
-def _enable_windows_vt() -> None:
-    """Turn on ANSI escape handling for the Windows console, so colour and cursor codes work."""
+def _enable_windows_vt(dest) -> None:
+    """Turn on ANSI escape handling for the Windows console, so colour and cursor codes work.
+
+    Args:
+        dest: the stream output goes to. Its console handle is the one switched: stdout's when it
+            is `sys.stdout`, stderr's when it is `sys.stderr`. Any other stream (a file, a test's
+            StringIO) is not a console handle of ours, so nothing is changed.
+    """
     assert sys.platform == "win32"
+    if dest is sys.stdout:
+        std_handle = -11  # STD_OUTPUT_HANDLE
+    elif dest is sys.stderr:
+        std_handle = -12  # STD_ERROR_HANDLE
+    else:
+        return
     try:
         import ctypes
 
         kernel32 = ctypes.windll.kernel32
-        # -12 is STD_ERROR_HANDLE, the default `dest`. A Screen on another stream is not switched here.
-        handle = kernel32.GetStdHandle(-12)
+        handle = kernel32.GetStdHandle(std_handle)
         mode = ctypes.c_uint32()
         if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
             # 0x0004 is ENABLE_VIRTUAL_TERMINAL_PROCESSING; the mode is kept and this bit added.

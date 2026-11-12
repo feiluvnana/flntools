@@ -673,5 +673,51 @@ class RealTerminalCase(unittest.TestCase):
         self.assertIsNone(re.search(rb"(?<!\r)\n", out), out)
 
 
+CHOOSE_CHILD = """
+import sys
+sys.path.insert(0, {root!r})
+from shared import prompt
+choice = prompt.choose("Pick", ["alpha", "beta"], keys=False)
+sys.stdout.write("PICKED %s\\n" % (choice,))
+sys.stdout.flush()
+"""
+
+
+@unittest.skipUnless(HAS_PTY, "needs a POSIX pty")
+class ApplicationCursorKeysTest(unittest.TestCase):
+    """An arrow sent as `ESC O B` (application cursor-key mode) is one key on a real pty."""
+
+    def test_ss3_down_then_enter_picks_the_second_option(self):
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(TERM="xterm-256color", COLUMNS="100", LINES="30")
+            os.execv(sys.executable, [sys.executable, "-c", CHOOSE_CHILD.format(root=str(Path(__file__).parent.parent))])
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+        out = b""
+
+        def pump(until: bytes, timeout=10.0) -> None:
+            nonlocal out
+            end = time.monotonic() + timeout
+            while until not in out and time.monotonic() < end:
+                if select.select([fd], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except OSError:
+                        return
+                    if not chunk:
+                        return
+                    out += chunk
+
+        try:
+            pump(b"beta")
+            time.sleep(0.2)
+            os.write(fd, b"\x1bOB\r")
+            pump(b"PICKED")
+        finally:
+            os.close(fd)
+            os.waitpid(pid, 0)
+        self.assertIn(b"PICKED beta", out)
+
+
 if __name__ == "__main__":
     unittest.main()
