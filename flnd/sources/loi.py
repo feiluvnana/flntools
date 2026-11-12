@@ -1,15 +1,31 @@
 """LOIBUS (loix.cc): one post's info, preview images and, for VIP accounts, its archives.
 
+The `post` route reads the post's JSON once. `photo` yields its info.md and preview images.
+`archive` decrypts the download links, counts the post against the day's VIP quota, and yields
+info.md again, now with the links, and the archives:
+
+    flnd download loi:5930 --from archive
+
+The site's quirks:
   - Every API request is signed with a fresh timestamp, and carries the `access-token` cookie as
-    a Bearer token. Files on other hosts get neither.
-  - The download links come AES-encrypted, with the site's own key; the unzip password doesn't.
-  - Archives are `--from archive`, and count against the account's daily VIP quota.
+    a Bearer token. `prepare` does both for api.moegoat.com on every attempt. A file on another
+    host gets neither, and gets the site's referer and origin from its post instead.
+  - The download links come AES-128-CBC encrypted, with the site's own key and IV, which its
+    JavaScript holds. The unzip password comes in the clear.
+  - Archives count against the account's daily VIP quota. The site says how many an account has
+    taken today, and counts a post taken twice in a day once, so `state` remembers which posts
+    this tool took.
+  - Archives are saved as the server sends them, under the name in their URL, whatever their
+    extension says; info.md's unzip password opens them with any archive tool.
 
 Folder layout, under `.flnd/downloads/loi/<id>/<author>/<id> <title>/`:
   info.md         the post's fields, its download links and the unzip password
   images/         the preview images, 01.jpg, 02.jpg, …
   loi-<hash>.7z   the archives (--from archive), saved as the server sends them and named as it
-                  names them; info.md's unzip password opens them with any archive tool
+                  names them
+
+Every file's history key is its path, as it was before the categories became methods, so a file
+saved then is not downloaded again.
 """
 
 from __future__ import annotations
@@ -19,11 +35,10 @@ import binascii
 import datetime
 import secrets
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import unquote, urlsplit
 
-from flnd.session import Session
-from flnd.source import FetchError, Source, target
+from flnd.source import FetchError, File, Post, Site, Source, day, target
 from shared import crypto
 
 if TYPE_CHECKING:
@@ -32,6 +47,9 @@ if TYPE_CHECKING:
 API = "https://api.moegoat.com/api/"
 API_HOST = "api.moegoat.com"
 SITE = "https://loix.cc/"
+# What the site's own pages send with every request. Its image servers and archive mirrors give
+# 403 without them, and a post gives them to its files because those hosts aren't the source's.
+SITE_HEADERS = {"referer": SITE, "origin": SITE.rstrip("/")}
 # The web client's signing constants, from its JavaScript.
 SALT = "loibus-sec-decoy-salt-v1"
 REQUEST_ID_PREFIX = "loibus-web-request-id-v1"
@@ -52,79 +70,104 @@ class Loibus(Source):
     domains = ("loix.cc", "moegoat.com")
     # Without it: the info and images only, no archives.
     needs = ("access-token",)
-    # Its content is naturally typed, so the types are the categories.
-    categories = ("photo", "archive")
+    # `<author>/<id> <title>/<part>`: `part` is "images" for the previews and empty for the rest.
+    folder = "{author}/{id} {title}/{part}"
+    # Every file is named by its post (`File.name`), so this format is never used.
+    filename = "{id}"
+    # Every key is the file's path, as the history has always had it, so this never changes.
+    key = ""
 
-    # The routes only read targets: step 6 gives them their bodies, and until then `run` reads the
-    # target they give from `session.target`.
     @target(r"{id:\d+}", r"loix.cc/lois/{id:\d+}", r"moegoat.com/lois/{id:\d+}")
-    def post(self, session: Session, id: str) -> None:
-        """One post, by its id: `Target("loi", "post", "5930")`, or a post's URL on either site."""
+    def post(self, site: Site, id: str) -> dict[str, Any]:
+        """One post, by its id: `Target("loi", "post", "5930")`, or a post's URL on either site.
 
-    def headers(self, cookies: Mapping[str, str]) -> Mapping[str, str]:
-        """The site's referer and origin, and the login's Bearer token, which `sign` keeps for the API only."""
-        token = decode_token(cookies.get("access-token", ""))
-        return {"referer": SITE, "origin": SITE.rstrip("/"), **({"authorization": f"Bearer {token}"} if token else {})}
+        Args:
+            site: the target's handle.
+            id: the post's id.
 
-    def sign(self, request: httpx.Request) -> httpx.Request:
-        """Sign an API request afresh on every attempt; a file on another host loses the token instead."""
+        Returns:
+            The post's JSON, which both categories receive.
+
+        Raises:
+            FetchError: the site has no post with this id.
+        """
+        body = site.fetch(f"{API}lois/{id}").json
+        post = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(post, dict) or not post.get("loi_title"):
+            raise FetchError(f"post {id} isn't there")
+        return post
+
+    @post.category
+    def photo(self, site: Site, post: dict[str, Any]) -> Iterator[Post]:
+        """The post's info.md, without links, and its preview images."""
+        yield Post(post["id"], [File.text("info.md", info_md(post, None))], date=post.get("date"), **fields_of(post))
+        if post.get("images"):
+            files = [File(url, name=image_name(number, url)) for number, url in enumerate(post["images"], start=1)]
+            yield Post(post["id"], files, date=post.get("date"), headers=SITE_HEADERS, part="images",
+                       **fields_of(post))
+
+    @post.category
+    def archive(self, site: Site, post: dict[str, Any]) -> Iterator[Post]:
+        """The post's info.md, now with its download links, and its archives; each post counts once against the VIP quota.
+
+        Without a login, with the quota used up, or when the site gives this account no links, it
+        yields info.md without links and warns why.
+        """
+        # The job skips a post outside `--time` too, but only after its links were fetched and counted.
+        if day(post.get("date")) not in site.time:
+            return
+        links = self._links(site, post)
+        archives = group_mirrors(links) if links else []
+        # Counted as soon as the links are in hand: the job's own checks (a file already saved)
+        # come after the yield, and can't be told from here.
+        if archives:
+            count_download(site, post["id"])
+        yield Post(post["id"], [File.text("info.md", info_md(post, links)),
+                                *(File(mirrors, name=name) for name, mirrors in archives)],
+                   date=post.get("date"), headers=SITE_HEADERS, **fields_of(post))
+
+    def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
+        """Give a request to the source's domains the site's referer and origin, and sign an API request with the token.
+
+        Args:
+            request: the request about to be sent.
+            cookies: the login's cookies, whose `access-token` becomes the Bearer token.
+
+        Returns:
+            The same request. It runs again for each retry, so every attempt has a fresh signature.
+        """
+        request.headers.setdefault("referer", SITE_HEADERS["referer"])
+        request.headers.setdefault("origin", SITE_HEADERS["origin"])
         if request.url.host != API_HOST:
-            request.headers.pop("authorization", None)
             return request
+        token = decode_token(cookies.get("access-token", ""))
+        if token:
+            request.headers["authorization"] = f"Bearer {token}"
         return sign_request(request, now_ms=_clock_ms())
 
-    def run(self, session: Session) -> None:
-        post = session.fetch_json(f"{API}lois/{session.target.value}").get("data")
-        if not isinstance(post, dict) or not post.get("loi_title"):
-            raise FetchError(f"post {session.target.value} isn't there")
-        day = posted_on(post)
-        if not session.wants(date=day):
-            session.info("posted {day}, outside --since and --until", day=day)
-            return
-        session.folder = folder_of(post)
-        links = self._links(session, post) if session.wants(category="archive") else None
-        session.write("info.md", info_md(post, links))
-        for number, url in enumerate(post.get("images") or [], start=1):
-            session.save(url, image_name(number, url), category="photo", date=day, folder=f"{session.folder}/images")
-        if links is None:
-            return
-        queued = [session.save(mirrors, name, category="archive", date=day) for name, mirrors in group_mirrors(links)]
-        if any(queued):
-            count_download(session, post["id"])
-
-    def _links(self, session: Session, post: dict) -> dict | None:
+    def _links(self, site: Site, post: dict[str, Any]) -> dict[str, Any] | None:
         """The post's decrypted download links, or None (with a warning) when there are none for this login."""
-        if not decode_token(session.cookies.get("access-token", "")):
-            session.warn("archives need a login; run flnd login")
+        if not decode_token(site.cookies.get("access-token", "")):
+            site.warn("archives need a login; run flnd login")
             return None
-        used, limit = quota(session, post["id"])
+        used, limit = quota(site, post["id"])
         if limit and used >= limit:
-            session.warn("the daily VIP quota is used up ({used} of {limit}); archives skipped", used=used, limit=limit)
+            site.warn("the daily VIP quota is used up ({used} of {limit}); archives skipped", used=used, limit=limit)
             return None
-        body = session.fetch_json(f"{API}user/loi/download_v6/{post['id']}", soft=True)
+        body = _json(site, f"{API}user/loi/download_v6/{post['id']}")
         data = body.get("data") if isinstance(body, dict) else None
         if not isinstance(data, dict) or not data.get("sv_list"):
             needed = f"VIP{post['vip_requirement']}" if post.get("vip_requirement") else "a login"
-            session.warn("the site gives no download links for this post ({needed} needed)", needed=needed)
+            site.warn("the site gives no download links for this post ({needed} needed)", needed=needed)
             return None
         return {"servers": [(str(server.get("sv_name") or "Server"), decrypt_field(server.get("sv_url")))
                             for server in data["sv_list"] if isinstance(server, dict) and server.get("sv_url")],
                 "pan": decrypt_field(data.get("bdp")), "pan_key": decrypt_field(data.get("bdp_key"))}
 
 
-def posted_on(post: dict) -> datetime.date | None:
-    """The day a post went up, from its `2026-11-10 01:58:16`."""
-    try:
-        return datetime.date.fromisoformat(str(post.get("date") or "")[:10])
-    except ValueError:
-        return None
-
-
-def folder_of(post: dict) -> str:
-    """Where a post's files go, under the target's folder: `<author>/<id> <title>`."""
-    author = (post.get("category") or {}).get("name") or "misc"
-    # A slash in a title is part of its name, not a folder.
-    return f"{author.replace('/', '_')}/{post['id']} {post['loi_title'].replace('/', '_')}"
+def fields_of(post: dict[str, Any]) -> dict[str, Any]:
+    """The post's fields for the folder format: its `author`, `misc` when it has none, and its `title`."""
+    return {"author": (post.get("category") or {}).get("name") or "misc", "title": post["loi_title"]}
 
 
 def image_name(number: int, url: str) -> str:
@@ -142,10 +185,16 @@ def group_mirrors(links: dict) -> list[tuple[str, list[str]]]:
     return list(groups.items())
 
 
-def quota(session: Session, post_id: int) -> tuple[int, int]:
+def _json(site: Site, url: str) -> Any:
+    """A URL's JSON, or None when the site refuses this login (401, 403 or 404)."""
+    response = site.fetch(url, soft=True)
+    return None if response is None else response.json
+
+
+def quota(site: Site, post_id: int) -> tuple[int, int]:
     """Archives taken today and the account's daily VIP limit, 0 when unknown; a post taken today is free again."""
-    taken = today_posts(session)
-    user = session.fetch_json(f"{API}user/info", soft=True)
+    taken = today_posts(site)
+    user = _json(site, f"{API}user/info")
     data = user.get("data") if isinstance(user, dict) else None
     if post_id in taken or not isinstance(data, dict):
         return len(taken), 0
@@ -153,16 +202,16 @@ def quota(session: Session, post_id: int) -> tuple[int, int]:
     return len(taken), limit * (2 if data.get("svip") == 1 else 1)
 
 
-def count_download(session: Session, post_id: int) -> None:
+def count_download(site: Site, post_id: int) -> None:
     """Count a post against today's quota, once."""
-    taken = today_posts(session)
+    taken = today_posts(site)
     if post_id not in taken:
-        session.state["quota"] = {"day": datetime.date.today().isoformat(), "posts": [*taken, post_id]}
+        site.state["quota"] = {"day": datetime.date.today().isoformat(), "posts": [*taken, post_id]}
 
 
-def today_posts(session: Session) -> list[int]:
+def today_posts(site: Site) -> list[int]:
     """The posts whose archives were taken today; yesterday's list no longer counts."""
-    record = session.state.get("quota") or {}
+    record = site.state.get("quota") or {}
     return list(record.get("posts", [])) if record.get("day") == datetime.date.today().isoformat() else []
 
 

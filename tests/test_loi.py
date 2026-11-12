@@ -10,7 +10,7 @@ from unittest import mock
 import httpx
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
-from fakes import FakeSession
+from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
 from flnd.common import auth
@@ -41,13 +41,22 @@ class SignTest(unittest.TestCase):
         second = sign_request(httpx.Request("GET", "https://api.moegoat.com/api/user/info"), now_ms=1)
         self.assertNotEqual(first.headers["x-request-id"], second.headers["x-request-id"])
 
-    def test_only_api_requests_are_signed_and_carry_the_token(self):
-        token = {"authorization": "Bearer tok"}
-        image = Loibus().sign(httpx.Request("GET", "https://img.example/a.jpg", headers=token))
-        self.assertNotIn("x-request-id", image.headers)
-        self.assertNotIn("authorization", image.headers)
-        api = Loibus().sign(httpx.Request("GET", "https://api.moegoat.com/api/lois/1", headers=token))
+    def test_an_api_request_is_signed_and_carries_the_token(self):
+        cookies = {"access-token": "Bearer%20tok"}
+        api = Loibus().prepare(httpx.Request("GET", "https://api.moegoat.com/api/lois/1"), cookies)
         self.assertEqual((api.headers["authorization"], len(api.headers["x-request-id"])), ("Bearer tok", 36))
+        self.assertEqual((api.headers["referer"], api.headers["origin"]), ("https://loix.cc/", "https://loix.cc"))
+
+    def test_another_host_of_the_site_gets_no_token_and_no_signature(self):
+        page = Loibus().prepare(httpx.Request("GET", "https://img.moegoat.com/a.jpg"), {"access-token": "tok"})
+        self.assertNotIn("x-request-id", page.headers)
+        self.assertNotIn("authorization", page.headers)
+        self.assertEqual(page.headers["referer"], "https://loix.cc/")
+
+    def test_without_a_token_the_request_is_signed_only(self):
+        api = Loibus().prepare(httpx.Request("GET", "https://api.moegoat.com/api/lois/1"), {})
+        self.assertNotIn("authorization", api.headers)
+        self.assertIn("x-request-signature", api.headers)
 
 
 class FieldsTest(unittest.TestCase):
@@ -64,11 +73,6 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(decode_token("Bearer%20abc.def"), "abc.def")
         self.assertEqual(decode_token("abc"), "abc")
         self.assertEqual(decode_token(""), "")
-
-    def test_headers_carry_the_token(self):
-        self.assertEqual(Loibus().headers({"access-token": "Bearer%20tok"})["authorization"], "Bearer tok")
-        self.assertNotIn("authorization", Loibus().headers({}))
-        self.assertEqual(Loibus().headers({})["referer"], "https://loix.cc/")
 
 
 # Every form loi reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
@@ -140,87 +144,168 @@ def fixtures(**changed):
     return answers
 
 
+# Recorded from the `run(session)` source before step 6, with the old FakeSession: every (path,
+# history key) it queued, and every file it wrote, for a post with a slash, a colon and a question
+# mark in its title and author, whose preview images and archive URLs are odd in the ways the site's are.
+NASTY = {**POST, "loi_title": "Night/city: set?", "category": {"id": 7, "name": "ex/ample"},
+         "images": ["https://images.example/aaa", "https://images.example/bbb.png",
+                    "https://images.example/c.webp?x=1"]}
+NASTY_LINKS = {"status": "success", "data": {"sv_list": [
+    {"sv_name": "A", "sv_url": encrypt("https://one.example/loi%20abc.7z")},
+    {"sv_name": "B", "sv_url": encrypt("https://two.example/loi%20abc.7z")},
+    {"sv_name": "A", "sv_url": encrypt("https://one.example/extra.zip")},
+    {"sv_name": "A", "sv_url": encrypt("https://one.example/")}], "bdp": "", "bdp_key": ""}}
+NASTY_FOLDER = "ex_ample/5930_Night_city_set"
+NASTY_IMAGES = [(f"{NASTY_FOLDER}/images/{name}", f"{NASTY_FOLDER}/images/{name}")
+                for name in ("01.jpg", "02.png", "03.webp")]
+NASTY_ARCHIVES = [(f"{NASTY_FOLDER}/{name}", f"{NASTY_FOLDER}/{name}")
+                  for name in ("loi_abc.7z", "extra.zip", "archive.zip")]
+NASTY_PAIRS = {("all",): NASTY_IMAGES + NASTY_ARCHIVES, ("photo",): NASTY_IMAGES, ("archive",): NASTY_ARCHIVES}
+
+
+def saved(categories=None, *, cookies=TOKEN, seen=None, post=POST, options=None, **changed):
+    """What the job would download for post 5930, over `fixtures`, `changed` replacing some of them."""
+    answers = fixtures(**changed)
+    if "lois/5930" not in changed:
+        answers[f"{API}lois/5930"] = {"status": "success", "data": post}
+    return collect(Loibus, "loi:5930", json=answers, cookies=cookies, seen=seen,
+                   options=options or Options(categories=categories))
+
+
+def pairs(files):
+    """(path, key) of each downloaded file, leaving out the text files the source writes itself."""
+    return [(item.path, item.key) for item in files if item.file.content is None]
+
+
+def texts(files):
+    """The path and text of each text file."""
+    return {item.path: item.file.content for item in files if item.file.content is not None}
+
+
+def archive_site(*, cookies=TOKEN, **changed):
+    """A FakeSite for post 5930, and what it saw, for running a category on it directly."""
+    seen = Seen()
+    return FakeSite(Target("loi", "post", "5930"), cookies=cookies, json=fixtures(**changed), seen=seen), seen
+
+
+class NamesTest(unittest.TestCase):
+    def test_names_and_keys_are_those_run_gave(self):
+        """Every (path, key) of `run(session)`, recorded before the port, in each `--from`, is what `collect` gives now."""
+        for categories, expected in NASTY_PAIRS.items():
+            with self.subTest(categories=categories):
+                files = saved(categories, post=NASTY, **{"user/loi/download_v6/5930": NASTY_LINKS})
+                self.assertEqual(pairs(files), expected)
+                self.assertEqual(list(texts(files)), [f"{NASTY_FOLDER}/info.md"])
+
+    def test_a_post_without_an_author_is_misc(self):
+        files = saved(("photo",), post={**POST, "category": None})
+        self.assertEqual(list(texts(files)), ["misc/5930_Night_city_set/info.md"])
+
+    def test_a_key_is_its_path_and_the_archive_keeps_its_name(self):
+        files = saved(("archive",))
+        folder = "example_author/5930_Night_city_set"
+        self.assertEqual(pairs(files), [(f"{folder}/loi-abc.7z",) * 2, (f"{folder}/extra.zip",) * 2])
+
+
 class RunTest(unittest.TestCase):
-    def session(self, *, cookies=TOKEN, categories=None, **changed):
-        return FakeSession(Target("loi", "post", "5930"), cookies=cookies, json=fixtures(**changed),
-                           options=Options(categories=categories))
-
-    def requested(self, session):
-        return [url.removeprefix(API) for _, url, _ in session.requests]
-
     def test_without_a_token_info_and_images_only(self):
-        session = self.session(cookies={}, categories=("all",))
-        Loibus().run(session)
-        self.assertEqual(session.paths(), [f"{FOLDER}/images/01.jpg", f"{FOLDER}/images/02.png"])
-        self.assertEqual([item["source"] for item in session.saved], POST["images"])
-        self.assertEqual(session.saved[0]["date"], datetime.date(2026, 11, 9))
-        self.assertEqual(self.requested(session), ["lois/5930"])
-        self.assertIn("! archives need a login; run flnd login", session.messages)
-        info = session.written[f"{FOLDER}/info.md"]
+        seen = Seen()
+        files = saved(("all",), cookies={}, seen=seen)
+        folder = "example_author/5930_Night_city_set"
+        self.assertEqual([item.path for item in files], [f"{folder}/info.md", f"{folder}/images/01.jpg",
+                                                         f"{folder}/images/02.png"])
+        self.assertEqual([item.url for item in files[1:]], POST["images"])
+        self.assertEqual(files[1].post.date, "2026-11-09 12:00:00")
+        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests], ["lois/5930"])
+        self.assertIn("! archives need a login; run flnd login", seen.messages)
+        info = texts(files)[f"{folder}/info.md"]
         self.assertIn("# Night city: set", info)
         self.assertIn("`pass-word`", info)
         self.assertIn("> line one\n>\n> line two", info)
         self.assertNotIn("Download Sources", info)
 
     def test_archives_are_grouped_by_file_and_the_password_is_in_info_md(self):
-        session = self.session(categories=("archive",))
-        Loibus().run(session)
-        self.assertEqual(session.paths(), [f"{FOLDER}/loi-abc.7z", f"{FOLDER}/extra.zip"])
-        self.assertEqual(session.saved[0]["source"], ["https://one.example/loi-abc.7z", "https://two.example/loi-abc.7z"])
-        self.assertEqual(self.requested(session), ["lois/5930", "user/info", "user/loi/download_v6/5930"])
-        info = session.written[f"{FOLDER}/info.md"]
+        seen = Seen()
+        files = saved(("archive",), seen=seen)
+        folder = "example_author/5930_Night_city_set"
+        self.assertEqual([item.path for item in files], [f"{folder}/info.md", f"{folder}/loi-abc.7z",
+                                                         f"{folder}/extra.zip"])
+        self.assertEqual(files[1].url, ("https://one.example/loi-abc.7z", "https://two.example/loi-abc.7z"))
+        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests],
+                         ["lois/5930", "user/info", "user/loi/download_v6/5930"])
+        info = texts(files)[f"{folder}/info.md"]
         # flnd no longer unpacks (--unpack is gone), so the password lives only in info.md.
         self.assertIn("`pass-word`", info)
         self.assertIn("- **Server [VIP line 2]**: [Download](https://two.example/loi-abc.7z)", info)
         self.assertIn("| Media Count | pictures 2 · videos 0 |", info)
         self.assertIn("[Link](https://pan.example/s/1) (Password: `abcd`)", info)
-        self.assertEqual(session.state["quota"], {"day": datetime.date.today().isoformat(), "posts": [5930]})
+
+    def test_every_category_writes_info_md_and_the_archives_one_has_the_links(self):
+        photo, archive = Loibus().photo, Loibus().archive
+        site, _ = archive_site()
+        first = [item.content for post in photo(site, POST) for item in post.files if item.content]
+        second = [item.content for post in archive(site, POST) for item in post.files if item.content]
+        self.assertNotIn("Download Sources", first[0])
+        self.assertIn("Download Sources", second[0])
+
+    def test_the_archive_counts_the_post_once(self):
+        site, _ = archive_site()
+        list(Loibus().archive(site, POST))
+        list(Loibus().archive(site, POST))
+        self.assertEqual(site.state["quota"], {"day": datetime.date.today().isoformat(), "posts": [5930]})
 
     def test_from_photo_never_asks_for_links(self):
-        session = self.session(categories=("photo",))
-        Loibus().run(session)
-        self.assertEqual(self.requested(session), ["lois/5930"])
-        self.assertEqual(len(session.saved), 2)
-        self.assertNotIn("quota", session.state)
+        seen = Seen()
+        files = saved(("photo",), seen=seen)
+        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests], ["lois/5930"])
+        self.assertEqual(len(pairs(files)), 2)
+
+    def test_files_carry_the_sites_referer_and_origin(self):
+        files = saved(("all",))
+        for item in files:
+            if item.file.content is None:
+                self.assertEqual(dict(item.post.headers), {"referer": "https://loix.cc/", "origin": "https://loix.cc"})
 
     def test_a_used_up_quota_skips_the_archives(self):
-        session = self.session(categories=("all",))
-        today = datetime.date.today().isoformat()
-        session.state["quota"] = {"day": today, "posts": list(range(15))}
-        Loibus().run(session)
-        self.assertEqual(len(session.saved), 2)
-        self.assertNotIn("user/loi/download_v6/5930", self.requested(session))
-        self.assertIn("! the daily VIP quota is used up (15 of 15); archives skipped", session.messages)
+        site, seen = archive_site()
+        site.state["quota"] = {"day": datetime.date.today().isoformat(), "posts": list(range(15))}
+        posts = list(Loibus().archive(site, POST))
+        self.assertEqual([item.name for post in posts for item in post.files], ["info.md"])
+        self.assertNotIn("user/loi/download_v6/5930", [url.removeprefix(API) for _, url, _ in seen.requests])
+        self.assertIn("! the daily VIP quota is used up (15 of 15); archives skipped", seen.messages)
 
     def test_a_post_counted_today_is_free_and_yesterday_is_forgotten(self):
-        session = self.session(categories=("archive",))
         today = datetime.date.today().isoformat()
-        session.state["quota"] = {"day": today, "posts": [*range(14), 5930]}
-        Loibus().run(session)
-        self.assertEqual(len(session.saved), 2)
-        self.assertEqual(len(session.state["quota"]["posts"]), 15)
-        session = self.session(categories=("archive",))
-        session.state["quota"] = {"day": "2000-01-01", "posts": list(range(15))}
-        Loibus().run(session)
-        self.assertEqual(session.state["quota"], {"day": today, "posts": [5930]})
+        site, _ = archive_site()
+        site.state["quota"] = {"day": today, "posts": [*range(14), 5930]}
+        posts = list(Loibus().archive(site, POST))
+        self.assertEqual(len(posts[0].files), 3)
+        self.assertEqual(len(site.state["quota"]["posts"]), 15)
+        site, _ = archive_site()
+        site.state["quota"] = {"day": "2000-01-01", "posts": list(range(15))}
+        list(Loibus().archive(site, POST))
+        self.assertEqual(site.state["quota"], {"day": today, "posts": [5930]})
 
     def test_refused_links_are_a_warning(self):
-        session = self.session(categories=("archive",), **{"user/loi/download_v6/5930": FetchError("HTTP 403", status=403)})
-        Loibus().run(session)
-        self.assertEqual(session.paths(), [])
-        self.assertIn("! the site gives no download links for this post (VIP1 needed)", session.messages)
-        self.assertNotIn("quota", session.state)
+        seen = Seen()
+        files = saved(("archive",), seen=seen, **{"user/loi/download_v6/5930": FetchError("HTTP 403", status=403)})
+        self.assertEqual(pairs(files), [])
+        self.assertIn("! the site gives no download links for this post (VIP1 needed)", seen.messages)
 
-    def test_a_post_outside_the_dates_is_skipped(self):
-        session = FakeSession(Target("loi", "post", "5930"), json=fixtures(),
-                              options=Options(since=datetime.date(2026, 11, 10)))
-        Loibus().run(session)
-        self.assertEqual((session.paths(), session.written), ([], {}))
+    def test_a_refused_post_is_not_counted(self):
+        site, _ = archive_site(**{"user/loi/download_v6/5930": FetchError("HTTP 403", status=403)})
+        list(Loibus().archive(site, POST))
+        self.assertNotIn("quota", site.state)
+
+    def test_a_post_outside_the_dates_costs_no_quota_and_no_request(self):
+        seen = Seen()
+        files = saved(seen=seen, options=Options(since=datetime.date(2026, 11, 10)))
+        self.assertEqual(files, [])
+        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests], ["lois/5930"])
 
     def test_a_missing_post_is_an_error(self):
-        session = self.session(**{"lois/5930": {"status": "error", "data": None}})
         with self.assertRaisesRegex(FetchError, "post 5930 isn't there"):
-            Loibus().run(session)
+            saved(**{"lois/5930": {"status": "error", "data": None}})
 
 
 # A 7z archive's first bytes, which the server sends under a .zip name; flnd saves it as it comes.
