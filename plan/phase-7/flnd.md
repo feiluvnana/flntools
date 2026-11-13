@@ -132,7 +132,7 @@ mistake prints the help's error line and exits 2.
 ## 3. Targets
 
 A target is `<site>:<value>`, a URL, or a query `<site>?<query>` (§9), where `<site>` is the site's code; `ins:example_user`, `ins:@example_user` and
-`https://www.instagram.com/example_user/` are the same target. Each downloader declares its forms
+`https://www.instagram.com/example_user/` are the same target. Each source declares its forms
 as patterns (`@target`), and `flnd --help` lists them, generated from those patterns.
 
 | Site | Code | Targets | Categories (all by default) |
@@ -154,86 +154,71 @@ as patterns (`@target`), and `flnd --help` lists them, generated from those patt
 
 ---
 
-## 4. Sites: `Site` and `Downloader`
+## 4. Sites: `Source`
 
-One module per site, in `flnd/sites/<code>.py` (was `flnd/sources/`). It holds the **site's
-knowledge**: how to read its pages and APIs, its quirks, its login wall and blocks. It declares up
-to two classes, **kept apart** (user, 2026-11-13), each matching what the user does with it:
-
-```
-Site          the site's access: login, cookies, domains, pace, signing, browser   ← auth
- └─ Downloader  routes: targets → categories → posts → files; or targets, run as targets   ← download, sync
-```
-
-A site has a `Site` and a `Downloader`, which names its `Site`. They share only the `Site` and the module's own
-helper functions (how to read the site's JSON, say). The site helpers more than one site uses live
-in `flnd/sites/common/` (`replay` feed reading, `relay`, `dash`, `watch`).
+One module per site, in `flnd/sources/<code>.py`. It holds **one unified `Source` subclass** with the
+site's knowledge: its access fields and login hooks, its pages and APIs, its quirks, and its routes
+and categories. (User decision, 2026-11-14: keep `Source` as one class per site rather than
+splitting into `Site` and `Downloader`.) The helpers more than one site uses live in
+`flnd/sources/common/` (`replay` feed reading, `relay`, `dash`, `watch`).
 
 ### Public modules
 
-| Module | What a site module imports from it |
+| Module | What a source module imports from it |
 | --- | --- |
-| `flnd.site` | `Site`, `FetchError`, `LoginError`, `Page`, `pages` |
-| `flnd.downloader` | `Downloader`, `target`, `Post`, `File`, `Range`, `day`, `fill` |
+| `flnd.source` | `Source`, `Site` (Protocol), `FetchError`, `LoginError`, `TargetError`, `target`, `Post`, `File`, `Range`, `day`, `fill`, `pages` |
 | `flnd.query` | `Param`, the kinds (`Text`, `Name`, `Number`, `Date`, `Choice`), `Query`, `Term`, `Value`, `Lookup`, `QueryError` |
 
-A site module imports only these, `flnd.sites.common`, `shared` and the standard library.
-`flnd/sites/__init__.py` collects `SITES` and `DOWNLOADERS` by code. Today's `Source`
-splits into `Site` and `Downloader`, today's `flnd.source` into `flnd.site` and
-`flnd.downloader`, and `sources.db` becomes `sites.db`, with no alias left behind (one spelling)
-[7.10]. "Source" leaves flnd's vocabulary: the word is **site** everywhere, in code, messages and
-docs.
+A source module imports only these, `flnd.sources.common`, `shared` and the standard library.
+`flnd/sources/__init__.py` collects `SOURCES` by code, and `.flnd/metadata/sources.db` holds each
+site's own state. `flnd.source.Site` stays as the runtime site handle Protocol passed to `Source`
+methods.
 
-### `Site`: the access
+### `Source`: the unified site class
 
 ```python
-class Example(Site):
+class Example(Source):
     code, name, domains = "exm", "Example", ("example.com",)
     needs = ("sessionid",)                      # cookies a login must have
     pace = 0.5                                  # least seconds between two requests to the site
-
-    def prepare(self, request): ...             # optional: sign each request (loi)
-```
-
-- **Fields**: `code`, `name`, `domains`, `needs`, `requires_login`, `login_methods`, `pace`,
-  `user_agent`, `stealth`; **hooks**: `prepare` (sign or adjust each request), and the site's own
-  login when it has one (Telegram's QR, phone, Telegram Web).
-- **Live**: the engine makes one `Site` object per site for a run, and passes it as `site` to
-  every `Downloader` method. Its members: `cookies`; `fetch(url, …)` (paced, signed,
-  with the site's back-off; a `FetchError` on failure; `in_page=True` sends it from the browser
-  page); `goto(url)` and `page` (the browser tab, opened on first use); `handoff(until=, message=)`
-  (a captcha or login a person solves in the visible browser); `client`; `state` (the site's own
-  saved values); `secrets`; `info`, `warn`; `back_off(reason, retry_after=)`; and `pages(fetch,
-  cursor)` for cursor pagination. Nothing in it is about downloading.
-- `auth login`, `logout` and `ls` work on `Site`s alone.
-
-### `Downloader`: the download API
-
-```python
-class ExampleDownloader(Downloader):
-    site = Example                              # whose access it uses
     folder, filename, key = "{category}", "{date}_{id}{index}", "{id}_{num}"
 
+    def prepare(self, request, cookies): ...    # optional: sign each request (loi)
+
     @target("{user}", "example.com/{user}")     # a route: a target in, a context out
-    def user(self, site, user): return profile_of(site, user)
+    def user(self, site: Site, user: str): return profile_of(site, user)
 
     @user.category(newest_first=True)           # a category: posts out
-    def posts(self, site, profile): yield from posts_of(site, profile)
+    def posts(self, site: Site, profile): yield from posts_of(site, profile)
 
-    def date(self, site, post): ...             # optional: one item's date, by its own page [7.5]
+    def date(self, site: Site, post): ...       # optional: one item's date, by its own page [7.5]
+
     @target("?{query}", params={"tag": Param(Name, "a tag", lookup=tags)})   # a query route [7.10]
-    def tagged(self, site, query: Query) -> Iterator[str]:
+    def tagged(self, site: Site, query: Query) -> Iterator[str]:
         for item in example_search(site, query):
             yield f"exm:{item['id']}"
 ```
 
+- **Access fields & hooks**: `code`, `name`, `domains`, `needs`, `requires_login`, `login_methods`,
+  `pace`, `user_agent`, `stealth`, `browser`; hooks: `prepare` (sign or adjust each request), and
+  the site's own login when it has one (Telegram's QR, phone, Telegram Web). `auth login`, `logout`
+  and `ls` work from `Source` declarations and hooks.
+- **Live `Site` handle (`flnd.source.Site` Protocol)**: the engine makes one runtime `Site` handle
+  per target/run and passes it as `site` to every route, category, and `date` method. Its members:
+  `target`, `time` (`--time`), `cookies` (read-only); `fetch(url, …)` / `try_fetch(url, …)` (paced,
+  signed, with the site's back-off; `FetchError` on failure; `in_page=True` sends it from the
+  browser page); `goto(url)` and `page` (the browser tab, opened on first use); `handoff(until=,
+  message=)` (a captcha or login a person solves in the visible browser); `client`; `state` (the
+  site's own saved values in `sources.db`); `secrets`; `info`, `warn`; `back_off(reason,
+  retry_after=)`. (`pages(fetch, cursor)` is a helper in `flnd.source` for cursor pagination.)
+- **Download fields**: `unsupported` (pages of the site that aren't targets), `folder`,
+  `filename`, `key`, `concurrency`.
+
 | Part | What it is |
 | --- | --- |
 | **route** (`@target`) | A target's patterns and the method that reads it, of one of three kinds: **a context** that its categories receive (a user, a manga); **posts** it yields itself (a single post, a chapter); or **targets** it yields, which the engine runs as ordinary targets (an author page, a genre page, a query: `@target("?{query}", params={...})`, whose method gets a `Query`). |
-| **category** (`@<route>.category`) | One thing a target can download, a generator of `Post`s. `newest_first` lets the engine stop early (§6). Its own `folder` and `key` may differ from the downloader's. |
+| **category** (`@<route>.category`) | One thing a target can download, a generator of `Post`s. `newest_first` lets the engine stop early (§6). Its own `folder`, `filename` and `key` may differ from the source's. |
 | **`date` hook** [7.5] | Asked for a post still undated when its category ends: one paced request for that item's own date. |
-| **fields** | `site`, `unsupported` (pages of the site that aren't targets), `folder`, `filename`, `key`. |
-| **per target** | The downloader's instance holds `self.target` and `self.time` (`--time`), which only the download side has. |
 
 - **`Post(id, files, date=, headers=, **fields)`**: one post. `files` is a tuple, or a function
   (a **lazy** post) the engine calls only when a file is needed, so a saved post costs no request.
@@ -242,7 +227,7 @@ class ExampleDownloader(Downloader):
 - **`File(url, name=, audio=, size=, headers=)`**: one file. `url` is one URL, a tuple of mirrors
   tried in order (every alternate CDN address, best first **[7.3]**), or a function that fetches the
   file itself (Telegram). `audio` is a second stream merged into a video (DASH). `File.text(name,
-  content)` is a text file the downloader writes (loi's `info.md`).
+  content)` is a text file the source writes (loi's `info.md`).
 
 ### Per site, after Phase 7
 
@@ -306,7 +291,7 @@ holds it.
 ### Every file dated [7.5]
 
 A post's date comes from the listing. One still undated when its category ends is dated, in
-order, by: another copy's date in the map; the downloader's `date` hook (Facebook: the photo's own
+order, by: another copy's date in the map; the source's `date` hook (Facebook: the photo's own
 page, one paced request); else the date of the nearest dated post in listing order, marked
 `estimated` in its row. A block while dating estimates the rest without failing the run. The date
 goes in the name (`2026-11-11_<id>.jpg`) and is the file's modified time (UTC day); a file with no
@@ -330,7 +315,7 @@ one and removes one whose file is gone after restoring it.
      sync, so silent corruption is found within a month; checks run on a thread pool, alongside the
      listing;
    - a missing, empty or broken file is downloaded again; a leftover `.part` is removed;
-   - a file saved **undated or with an estimated date** is dated through the downloader's `date` hook
+   - a file saved **undated or with an estimated date** is dated through the source's `date` hook
      and renamed, its row and modified time updated [7.5].
 2. **Fetch.** Every category, newest first where it can. A `newest_first` category whose last
    listing reached its end stops after **5 saved posts in a row**: sync has caught up. A queued
@@ -394,15 +379,13 @@ Videos encode one at a time across the run; photos on a pool of 8 [7.8].
 
 ### The decision
 
-The user's decisions (2026-11-13): "So should only have download. Now download can choose a query target. Remove finder and call it a day." and "delete finder, make everything downloader, downloader can have multiple kind of target". So there is one command and one class per site. A query is a route of the site's `Downloader`, and `download` takes `<site>?<query>` wherever it takes a target: arguments, stdin lines and `download --sync`.
+The user's decisions (2026-11-13, updated 2026-11-14 to keep `Source` unified): "So should only have download. Now download can choose a query target. Remove finder and call it a day." and "delete finder, make everything downloader, downloader can have multiple kind of target". So there is one command and one `Source` class per site. A query is a route of the site's `Source`, and `download` takes `<site>?<query>` wherever it takes a target: arguments, stdin lines and `download --sync`.
 
 ### A query route
 
 ```python
-# flnd/sites/mht.py: one site module; its helpers serve every class in it
-class Mimi(Site): ...                           # the access (§4)
-class MimiDownloader(Downloader):
-    site = Mimi
+# flnd/sources/mht.py: one source module; its helpers serve the class in it
+class Mimi(Source):
 
     @target("?{query}", params={                # a query route: a Query in, targets out
         "title":     Param(Text, "words in the title (bare words mean this too)"),
@@ -453,7 +436,7 @@ on Python 3.14 on 2026-11-13):
   every field against the route's `params` (unknown name, wrong kind), splits an OR the site can't
   send into several searches (below), turns names into ids through the lookups, and hands the
   query route, once per search, a plain **`Query`**: `text` (the free words), `terms` (each `Term(param,
-  values, negated, low, high)`), and `time` (`--time`). A downloader never sees luqum's tree.
+  values, negated, low, high)`), and `time` (`--time`). A source never sees luqum's tree.
 - **OR on a site without it runs as several searches, merged** (user, 2026-11-13). Most sites
   take AND but not OR. `flnd/query.py` rewrites the query into an OR of AND-groups (De Morgan
   first, so `-(a OR b)` is `-a -b`), and each AND-group the site can send becomes **one search**:
@@ -475,14 +458,14 @@ on Python 3.14 on 2026-11-13):
   declared `compare=False`, a negation the site can't send, a parameter it doesn't take. The message
   names the part of the query and what that site takes. No query is silently widened or narrowed.
 - **Lookups** (a genre's or an author's id by name) are asked once per run and kept in
-  `sites.db` for a day; names match ignoring case and accents; a name that matches several stops
+  `sources.db` for a day; names match ignoring case and accents; a name that matches several stops
   with the candidates.
 - luqum builds its parsing tables on first import and `ply` prints warnings then; `flnd/query.py`
   builds them quietly (ply's error log silenced) and once per run. luqum goes in `pyproject.toml`'s
   dependencies.
 - **Which sites first**: loi's query targets, then others where a site has a search worth having
   (Facebook's people and pages, Instagram's accounts and hashtags, X's search). A new site (a manga
-  reader) is a new module with a `Site` and a `Downloader`.
+  reader) is a new module with a `Source` subclass.
 
 ## 10. Storage: `.flnd/`
 
@@ -494,7 +477,7 @@ on Python 3.14 on 2026-11-13):
   metadata/
     history.db       every saved file by key: path, size, mtime, date, marks
     targets.db       each target's saved settings (--shrink), complete listings, saved cursors, a synced query's seen results
-    sites.db         each site's own state (learned pace, tokens, loi's quota), a table per site
+    sources.db       each site's own state (learned pace, tokens, loi's quota), a table per site
     secrets.db       every login, encrypted (cookies, Telegram's session, API keys)
     secret.key       the key that opens secrets.db
   log/<date>_<time>_<command>.log                 one plain log per run, kept 30 days
@@ -600,11 +583,11 @@ stopped, and raises only `<module>.Error` types (`MissingError` for a missing pr
   commit; `api` and `baseline` regenerate the snapshots. Tests fake the network, browser and
   clock; live checks are by hand on the test accounts, never in tests.
 - Commits `<action>:<summary>`, signed, one logical change each; pushed only when asked.
-- **Layout, after step 10** (AGENTS.md is updated in the same commit): `flnd/` keeps `cli`,
-  `engine`, `job` (downloads), `site` (the public `Site`, and its live members,
-  which today's engine-side `site.py` holds), `downloader`, `post`, `settings`, `repair`,
-  `session`; `flnd/common/` the engine's helpers; `flnd/sites/` one module per site, and
-  `flnd/sites/common/` what sites share.
+- **Layout, after step 10** (AGENTS.md is updated in the same commit if needed): `flnd/` keeps `cli`,
+  `engine`, `job` (downloads), `source` (the public `Source`, `Site` Protocol, `Post`, `File`,
+  `target`), `site` (the engine's runtime `TargetSite`, `LoginSite` implementing `Site`), `query`,
+  `post`, `settings`, `repair`, `session`; `flnd/common/` the engine's helpers; `flnd/sources/`
+  one module per site (`SOURCES` in `__init__.py`), and `flnd/sources/common/` what sources share.
 
 ---
 
@@ -631,8 +614,8 @@ filters beyond `--from` and `--time`; zip or exec postprocessors; metadata sidec
 | 7 | `shared` as a black box | |
 | 8 | speed | |
 | 9 | status lines, colour and motion | |
-| **10** | **sites split cleanly: `Source` becomes `Site` + `Downloader`, `flnd/sources/` becomes `flnd/sites/`; then query targets (`<site>?<query>`, a query route of a `Downloader`; `Param`, `Query`) with Lucene queries parsed by luqum (`flnd/query.py`); the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's query targets first** | new |
-| **11** | **mimihentai (`mht`)**: its `Site` and `Downloader` (a manga's chapters, and a query route over its advanced search), per §17 | new |
+| **10** | **query targets (`<site>?<query>`, a query route of a `Source`; `Param`, `Query`) with Lucene queries parsed by luqum (`flnd/query.py`); the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's query targets first (`Source` stays unified in `flnd/sources/`, no `Site`/`Downloader` split per 2026-11-14 decision)** | new |
+| **11** | **mimihentai (`mht`)**: its `Source` in `flnd/sources/mht.py` (a manga's chapters, and a query route over its advanced search), per §17 | new |
 
 Query targets come last: they build on the black-box `shared` (7), the status lines (9) and the
 listing memory's common fields (4). Loi's first query targets wait for the user's example pages.

@@ -21,7 +21,7 @@ metadata and a log of each run.
 | `sync` decodes the whole library every run; encodes that can't win; one back-off for site and CDN | [speed](speed.md#3-less-work-around-the-downloads) |
 | `shared` makes flnd think: rebuilt fetches, side channels for headers, error text matched, no way to stop a download | [shared](shared.md): `shared` as a black box |
 | files flnd never gets (X's older tweets, a second CDN host) | [fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), from gallery-dl |
-| flnd only takes targets; it should also download what a query matches on a site | [flnd](flnd.md#9-query-targets-710): a query is a target in `download` (`<site>?<query>`), a route of the site's `Downloader` |
+| flnd only takes targets; it should also download what a query matches on a site | [flnd](flnd.md#9-query-targets-710): a query is a target in `download` (`<site>?<query>`), a route of the site's `Source` |
 | the commands are flat; logins and kept targets have no home | [flnd](flnd.md#2-commands): `flnd auth login`/`logout`/`ls`, `flnd sync`/`sync ls`/`sync toggle` with `download --sync` |
 | the code is hard to follow: more prose than code, plan ids in comments, thin layers, callbacks, names that don't fit | [readable](readable.md): new writing rules, eleven refactors, a final docs diet, `shared` and `flnd` both |
 | flnd's code could be leaner | [lean](lean.md): proposals from two audits, about 425 lines |
@@ -48,11 +48,11 @@ Each step ends with `check` green and is committed on its own.
    downloads, and lower listing floors.
 9. **Built** (d1e8e15). [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
    line under them.
-10. [flnd › sites and query targets](flnd.md#4-sites-site-and-downloader): `Source` splits into `Site`
-    and `Downloader`, `flnd/sources/` becomes `flnd/sites/` ("site" everywhere); query targets
-    (`<site>?<query>`, a route of a downloader) on the same job; the `sync` and `auth` command
-    groups (`sync` opt-in: `download --sync`, `sync ls`, `sync toggle`); loi's query targets first.
-11. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` site, its downloader and query targets.
+10. [flnd › sources and query targets](flnd.md#4-sites-source): `Source` stays one unified class
+    per site in `flnd/sources/` (no `Site`/`Downloader` split); query targets (`<site>?<query>`,
+    a route of a `Source`) on the same job; the `sync` and `auth` command groups (`sync` opt-in:
+    `download --sync`, `sync ls`, `sync toggle`); loi's query targets first.
+11. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` source (`Source` subclass) and its query targets.
 12. [readable](readable.md): the docs diet and no plan or history in code, over `shared` and
     `flnd`, with the enforcement switched on. Its writing rules hold from now, and its refactors
     land in the steps that touch their files.
@@ -101,13 +101,17 @@ All decided by the user on 2026-11-13:
     as an opt-in group** (user, 2026-11-13, replacing the `target` group): `download --sync` marks
     targets, `flnd sync` updates only those, `sync ls` lists every known target with its sync
     status, `sync toggle` flips it; old rows count as synced. `sync ls` and `auth ls` take nothing.
-23. **Query targets**: `download '<site>?<query>'` downloads what a query matches, as a route of the site's `Downloader`; no `find` command and no `Finder`. A downloader has routes of several kinds (user, 2026-11-13, replacing the earlier find design).
-24. **"Site", not "source"**: `Site` (access) apart from `Downloader`; `flnd/sites/`,
-    `flnd.site`, `flnd.downloader`, `flnd.query`, `SITES`, `sites.db`.
+23. **Query targets**: `download '<site>?<query>'` downloads what a query matches, as a route of the site's `Source`; no `find` command and no `Finder`. A `Source` has routes of several kinds (user, 2026-11-13, replacing the earlier find design).
+24. ~~**"Site", not "source"**: `Site` (access) apart from `Downloader`; `flnd/sites/`, `flnd.site`, `flnd.downloader`, `flnd.query`, `SITES`, `sites.db`.~~ (**Reversed on 2026-11-14** by #26; `flnd.query` stays.)
 25. **The code reads easily, and `shared` and `flnd` stay lean**: the writing rules of
     [readable](readable.md) replace Phase 6's comments.md and hold from now; its refactors R1–R11
     land in the steps that touch their files, R3's `browser = True` included; step 12 does the docs
     diet. mimihentai (`mht`) is step 11 ([flnd](flnd.md#17-mimihentai-mht-711)).
+26. **Keep `Source` as one unified class per site** (user, 2026-11-14, reversing #24's split):
+    do NOT split `Source` into `Site` and `Downloader`. Each site stays one `Source` subclass in
+    `flnd/sources/<code>.py`, with `flnd/source.py` (`flnd.source`), `SOURCES` in
+    `flnd/sources/__init__.py`, and `sources.db` in `.flnd/metadata/`. `flnd.source.Site` stays
+    as the site runtime handle Protocol passed to `Source` methods.
 
 3 and 7 reverse Phase 6 [simplify §3](../phase-6/simplify.md#3-no-history-migrations)'s "no
 rename when the real date is found": the user's later decision.

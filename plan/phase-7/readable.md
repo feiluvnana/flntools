@@ -74,11 +74,11 @@ own commit before them, with the check green and behaviour unchanged.
 | --- | --- | --- | --- |
 | R1 | **The job holds its loop.** `job.download` runs the categories itself; `queue` returns an `Outcome` (`QUEUED`, `SAVED`, `EMPTY`, `STOPPED`); the `ended`, `saved` and `listed` callbacks, the three-state `caught_up` and the frozen-object write go. | job.py, dry.py | −40 |
 | R2 | **`Job` splits in two**: a single-threaded `Ledger` (queued, held, skips, counts) and `Downloads` (the pools, the refresh queue, the condition). 25 attributes become about 10 + 12, each class explainable in a sentence. | job.py | −20 |
-| R3 | **`Downloader.browser = True`** declares what the bytecode walk guesses; the walk becomes a test that every downloader using `goto` or `page` declares it. This reverses Phase 6's redesign "no field for it", by the user's decision of 2026-11-13: readable over clever. | engine.py, sites | −45 |
+| R3 | **`Source.browser = True`** declares what the bytecode walk guesses; the walk becomes a test that every source using `goto` or `page` declares it. This reverses Phase 6's redesign "no field for it", by the user's decision of 2026-11-13: readable over clever. | engine.py, sources | −45 |
 | R4 | **One pace object, in `shared`** (user, 2026-11-13): `net.Backoff` and `Pacer` merge into `http.Client(pace=Pace(floor, budgets))`, which reads rate headers, keeps budgets and a learned gap, and backs off a 429, per host; flnd only declares each site's numbers. The `made[0]` lambdas, `show_wait`, `on_hit`, `Transport`, `patiently` and `retrying` go. [shared](shared.md) #1's per-host back-off and [speed](speed.md)'s site/CDN split are two instances of it. | _http.py, site.py, net.py, pace.py | −80 in flnd |
 | R5 | **Five engine layers become two.** `download`/`_download` and `sync`/`_sync` become one logged method each; `_fetch`, `_run`, `_run_group`, `_run_targets`, `_connected` become `_run` and `_run_site`. lean's E5 alone keeps all five. | engine.py | −60 |
 | R6 | **Modules named for what they hold**: `settings.py` → `targets.py`, `session.py` → `options.py`, `session.Settings` → `RunShared`, `common/files.py` → `paths.py`; no import aliases left. Mechanical: a Haiku subagent. | flnd | ±0 |
-| R7 | **`site` documented once**, on `flnd.site.Site`; `soft=` becomes a second method (`fetch` and `try_fetch`), so three overloads in three places go. | site.py, _http.py | −20 code, −150 docs |
+| R7 | **`Site` documented once**, on `flnd.source.Site`; `soft=` becomes a second method (`fetch` and `try_fetch`), so three overloads in three places go. | source.py, site.py, _http.py | −20 code, −150 docs |
 | R8 | **The docs diet** to the rules above, `shared` and `flnd` both: module docstrings to 15 lines, obvious `Args:` trimmed, tutorials to runnable tests. Checked by comments.md's own test that the code without docstrings is unchanged. | all | −3,000 doc lines |
 | R9 | **Records for long option lists**: `media.output`'s 15 become an `Encoding`; `http.download`'s 12 keep their names but group in a `Transfer`; `net.download` becomes about 10 lines taking a `File`. | _media.py, _http.py, net.py | −30 |
 | R10 | **No plan or history in code**: the ~130 references go, lines wrap to 100, the `test_names` patterns land. | all | ~700 lines touched |
@@ -90,7 +90,7 @@ own commit before them, with the check green and behaviour unchanged.
    from here writes to them.
 2. **With each step**: R1 and R2 with step 4 (the listing memory rewrites `queue`); R4 and R11
    with step 7 (`shared` as a black box); R5 with step 8 (sites side by side); R3, R6, R7 with step
-   10 (the site split); R9 with steps 7–8.
+   10 (keeping unified `Source` per 2026-11-14 decision); R9 with steps 7–8.
 3. **Last, step 12**: R8 and R10 over both trees, mechanical where it is (Haiku), and the
    enforcement switched on, so the finished code reads one way.
 
