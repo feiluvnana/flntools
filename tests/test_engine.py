@@ -17,6 +17,7 @@ import unittest
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import mock
 
 import httpx
@@ -25,7 +26,7 @@ from media_samples import needs_pillow
 
 from flnd import engine as engine_module
 from flnd.common import auth, files, net
-from flnd import Choice, Engine, Range, Report, Target, TargetReport
+from flnd import Engine, Range, Report, Target, TargetReport
 from flnd.session import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
@@ -48,11 +49,18 @@ class FakeMedia:
 
     The function is `compress(path, **settings)`, with the level as `settings["level"]`. It returns
     None for "nothing smaller", or the path of a smaller file it wrote, which `save` then returns.
+    `info.video` is `video_codec`, which a test sets to give a video its codec.
     """
+
+    video_codec = None
 
     def __init__(self, path, compress, check):
         self.path, self._compress, self._check = Path(path), compress, check
         self.size = self.path.stat().st_size
+
+    @property
+    def info(self):
+        return SimpleNamespace(video=self.video_codec)
 
     def __enter__(self):
         return self
@@ -554,8 +562,7 @@ class ApiTest(EngineCase):
     def test_flnd_exports_exactly_the_engine_api(self):
         import flnd
 
-        self.assertEqual(sorted(flnd.__all__), ["Choice", "Engine", "Range", "Report", "Target", "TargetError",
-                                                "TargetReport"])
+        self.assertEqual(sorted(flnd.__all__), ["Engine", "Range", "Report", "Target", "TargetError", "TargetReport"])
         self.assertFalse(hasattr(Engine, "run"))
         self.assertFalse(hasattr(Engine(home=self.home), "failed"))
 
@@ -598,7 +605,7 @@ class ApiTest(EngineCase):
         self.assertEqual(rows["aaa:whole"]["complete"], {"posts": datetime.date.today().isoformat()})
         self.assertNotIn("complete", rows["aaa:cut"])
         # A setting saved later keeps the record.
-        self.engine(make_source("aaa")).download(["aaa:whole"], image="mid")
+        self.engine(make_source("aaa")).download(["aaa:whole"], shrink=True)
         self.assertIn("complete", self.saved()["aaa:whole"])
 
     def test_text_and_values_are_read_alike(self):
@@ -610,29 +617,29 @@ class ApiTest(EngineCase):
 
         engine = self.engine(make_source("aaa"))
         with mock.patch.object(Engine, "_run", run):
-            engine.download(["aaa:a"], categories="posts", time="2026-01-01,2026-06-30", video="h265,low")
+            engine.download(["aaa:a"], categories="posts", time="2026-01-01,2026-06-30", shrink=True)
             engine.download(["aaa:b"], categories=["posts"], time=Range(datetime.date(2026, 1, 1),
                                                                         datetime.date(2026, 6, 30)),
-                            video=Choice("h265", "low"))
+                            shrink=True)
         self.assertEqual(runs[0], runs[1])
         self.assertEqual(runs[0], Options(categories=("posts",), since=datetime.date(2026, 1, 1),
-                                          until=datetime.date(2026, 6, 30), video=Choice("h265", "low")))
+                                          until=datetime.date(2026, 6, 30), shrink=True))
 
     def test_off_turns_a_saved_setting_off_and_none_keeps_it(self):
         engine = self.engine(make_source("aaa"))
-        report = engine.download(["aaa:a"], image="webp,mid", audio=Choice("opus", "mid"))
+        report = engine.download(["aaa:a"], shrink=True)
         self.assertEqual(report.targets[0].settings, "")
-        self.assertEqual((self.saved()["aaa:a"]["image"], self.saved()["aaa:a"]["audio"]), ("webp,mid", "opus,mid"))
-        # None keeps each saved setting, and says it uses them.
+        self.assertIs(self.saved()["aaa:a"]["shrink"], True)
+        # None keeps the saved setting, and says it uses it.
         report = engine.download(["aaa:a"])
-        self.assertEqual(report.targets[0].settings, "--image webp,mid --audio opus,mid (saved)")
-        self.assertEqual(self.saved()["aaa:a"]["image"], "webp,mid")
-        # "off" turns one off and keeps the other.
-        report = engine.download(["aaa:a"], image="off")
-        self.assertEqual(report.targets[0].settings, "--audio opus,mid (saved)")
-        self.assertEqual((self.saved()["aaa:a"]["image"], self.saved()["aaa:a"]["audio"]), (None, "opus,mid"))
-        engine.download(["aaa:a"])
-        self.assertIsNone(self.saved()["aaa:a"]["image"])
+        self.assertEqual(report.targets[0].settings, "--shrink (saved)")
+        self.assertIs(self.saved()["aaa:a"]["shrink"], True)
+        # False turns it off, and nothing is shown as saved after that.
+        report = engine.download(["aaa:a"], shrink=False)
+        self.assertEqual(report.targets[0].settings, "")
+        self.assertIs(self.saved()["aaa:a"]["shrink"], False)
+        self.assertEqual(engine.download(["aaa:a"]).targets[0].settings, "")
+        self.assertIs(self.saved()["aaa:a"]["shrink"], False)
 
     def test_bad_values_are_value_errors_before_anything_starts(self):
         from flnd.source import TIME_USAGE
@@ -642,12 +649,8 @@ class ApiTest(EngineCase):
                 Range.parse(text)
         self.assertEqual(Range.parse("*,2026-06-30"), Range(None, datetime.date(2026, 6, 30)))
         self.assertEqual(Range.parse("2026-01-01,"), Range(datetime.date(2026, 1, 1), None))
-        with self.assertRaisesRegex(ValueError, "^--image webp,huge: the level is best, high, mid or low$"):
-            Choice.parse("webp,huge", kind="image")
-        self.assertIsNone(Choice.parse("OFF", kind="video"))
         engine = self.engine(make_source("aaa"))
-        for options, message in (({"time": "2026-01-01"}, TIME_USAGE), ({"image": "heic"}, "--image heic: give a format"),
-                                 ({"video": "webm:h265"}, "--video webm:h265: webm holds vp9, not h265"),
+        for options, message in (({"time": "2026-01-01"}, TIME_USAGE),
                                  ({"categories": "reels"}, "no source here has 'reels'")):
             with self.subTest(options=options), self.assertRaises(ValueError) as caught:
                 engine.download(["aaa:a"], **options)
@@ -685,7 +688,7 @@ class ApiTest(EngineCase):
             return [File(f"{CDN}/{name}", name=name) for name in sorted(listed)]
 
         engine = self.engine(make_source("aaa", files=files))
-        engine.download(["aaa:a"], image="mid")
+        engine.download(["aaa:a"], shrink=True)
         folder = self.target_dir("aaa", "a")
         (folder / "a.jpg").unlink()
         (folder / "c.jpg").unlink()
@@ -695,7 +698,7 @@ class ApiTest(EngineCase):
         [target] = report.targets
         self.assertEqual((target.target, target.repaired, target.missing), (Target("aaa", "user", "a"), 1, 1))
         self.assertEqual([path.name for path in target.written], ["a.jpg"])
-        self.assertEqual((target.settings, report.ok), ("--image mid (saved)", True))
+        self.assertEqual((target.settings, report.ok), ("--shrink (saved)", True))
         self.assertIn("• aaa:a: 2 files, ", "\n".join(self.lines()))
         self.assertEqual(engine.sync([Target("aaa", "user", "a")]).targets[0].repaired, 0)
 

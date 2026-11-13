@@ -25,7 +25,6 @@ from flnd import cli as flnd_cli
 from flnd import engine as engine_module
 from flnd import Engine, job, site as site_module
 from flnd.common import files, net
-from flnd.common.compress import Choice
 from flnd.session import Options, single_targets
 from flnd.source import FetchError, File, LoginError, Post, Source, Target, target
 from shared import kv
@@ -298,7 +297,7 @@ class FilesTest(JobCase):
     def test_compress_runs_before_the_history_row_is_written(self):
         with compressing(return_value=None) as compress:
             self.run_engine(Example, targets=["exm:example_user"],
-                            options=Options(categories=("profile",), image=Choice("webp", "mid")))
+                            options=Options(categories=("profile",), shrink=True))
         compress.assert_called_once()
         row = self.history()["exm:profile/avatar_42.jpg"]
         self.assertEqual(row["compressed"], "none")

@@ -1,6 +1,6 @@
 # shrink
 
-Phase 7, step 2. The user decided on 2026-11-13: **`--image`, `--video` and `--audio` go, and one
+Phase 7, step 2, **built** 2026-11-13. The user decided on 2026-11-13: **`--image`, `--video` and `--audio` go, and one
 flag, `--shrink`, replaces them.** With it, flnd compresses each saved photo, video and audio file
 to a balanced quality.
 
@@ -47,3 +47,15 @@ for saved settings says `ins:example_user: --shrink (saved)`.
 `--shrink` saves on and shrinks a target's saved files; `--shrink off` saves off and touches no
 file; a later `sync` shrinks only new files; a file that comes out bigger keeps its original; a
 JPEG stays JPEG and an MP4 stays MP4; `--image` is an unknown option.
+
+## As built (2026-11-13)
+
+- `media.compress` without a codec writes the container's default (H.264 in an MP4), so flnd
+  passes the video's own codec when media can write it (`OWN_CODECS`: `h264`, `hevc` as `h265`,
+  `vp9`); any other codec gets the container's default, which still opens everywhere the MP4 did.
+  `shared.media` is unchanged.
+- `targets.db` saves `shrink: true|false`. `Engine.download(shrink=)` is True, False or None, and
+  the CLI's `--shrink [on|off]` maps onto it (`cli.opt(choices=("on", "off"), const="on")`).
+- `apply` shrinks every photo, video and audio row whose `compressed` isn't `"mid"`; a `"none"` row
+  (nothing smaller last time) is tried again when `--shrink` is turned on again, as before.
+- lean E3 (`post.py` into the job) is not part of this step; it is its own commit before step 3.

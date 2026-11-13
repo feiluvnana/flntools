@@ -1,12 +1,8 @@
 flnd: module
-flnd.Choice(format: str | None, level: str)
-flnd.Choice.format: field -> str | None
-flnd.Choice.level: field -> str
-flnd.Choice.parse(text: str, *, kind: str) -> Choice | None
 flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
 flnd.Engine.LoginError(flnd.source.Error)
 flnd.Engine.cookie_logins: property -> tuple[str, ...]
-flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), image: Choice | str | None = None, video: Choice | str | None = None, audio: Choice | str | None = None) -> Report
+flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None) -> Report
 flnd.Engine.home: attribute
 flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
 flnd.Engine.logins: property -> dict[str, str]

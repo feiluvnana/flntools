@@ -112,7 +112,7 @@ class KindTest(unittest.TestCase):
                 self.assertEqual(media.kind(name), kind)
 
     def test_every_level_is_a_preset(self):
-        # flnd's --image, --video and --audio levels are media's level names, and the old names are gone.
+        # The level names media's callers use (flnd's --shrink is "mid"), and the old names are gone.
         self.assertEqual(tuple(_media.PRESETS), ("best", "high", "mid", "low"))
 
 

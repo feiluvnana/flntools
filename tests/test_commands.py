@@ -13,7 +13,7 @@ from unittest import mock
 
 from test_engine import make_source
 
-from flnd import Choice, Engine, Target, TargetReport
+from flnd import Engine, Target, TargetReport
 from flnd import cli as flnd_cli
 from flnd import sources
 from flnd.common import auth, files
@@ -192,8 +192,7 @@ class DownloadTest(RunsCase):
         self.assertNotIn("--compress", stdout)
         self.assertEqual(self.run_app("auth", "set-cookie")[0], 2)
         download_help = self.run_app("download", "--help")[1]
-        for option in ("--from CATEGORIES", "--time SINCE,UNTIL", "--image FORMAT,LEVEL", "--video FORMAT,LEVEL",
-                       "--audio FORMAT,LEVEL"):
+        for option in ("--from CATEGORIES", "--time SINCE,UNTIL"):
             self.assertIn(f"  {option}  ", download_help)
         for gone in ("--since", "--until", "unpack", "--zip", "--locale", "--timezone", "--compress", "--format-"):
             self.assertNotIn(gone, download_help)
@@ -234,45 +233,36 @@ class TimeTest(RunsCase):
         self.assertFalse((Path(".flnd") / files.TARGETS).exists())
 
 
-class MediaOptionsTest(RunsCase):
-    def test_choices_reach_the_engine_and_are_saved_for_the_target(self):
-        code, _, out = self.run_app("download", "ins:example_user", "--image", "best,webp", "--video", "mkv:h265,low",
-                                    "--audio", "opus")
+class ShrinkOptionTest(RunsCase):
+    def test_shrink_reaches_the_engine_and_is_saved_for_the_target(self):
+        code, _, out = self.run_app("download", "ins:example_user", "--shrink")
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[0][2], Options(image=Choice("webp", "best"), video=Choice("mkv:h265", "low"),
-                                                  audio=Choice("opus", "high")))
+        self.assertEqual(self.runs[0][2], Options(shrink=True))
         with kv.open(Path(".flnd") / files.TARGETS, table="targets") as targets:
             row = targets["ins:example_user"]
-        self.assertEqual((row["kind"], row["image"], row["video"], row["audio"]),
-                         ("user", "webp,best", "mkv:h265,low", "opus,high"))
+        self.assertEqual((row["kind"], row["shrink"]), ("user", True))
 
-    def test_saved_ones_are_used_again_changed_one_at_a_time_and_turned_off(self):
-        self.run_app("download", "ins:example_user", "--image", "webp,mid", "--video", "h265")
+    def test_saved_shrink_is_used_again_and_off_turns_it_off(self):
+        self.run_app("download", "ins:example_user", "--shrink")
         code, _, out = self.run_app("download", "ins:example_user")
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[1][2], Options(image=Choice("webp", "mid"), video=Choice("h265", "high")))
-        self.assertIn("• ins:example_user: --image webp,mid --video h265,high (saved)", out)
-        self.run_app("download", "ins:example_user", "--image", "best")
-        self.assertEqual(self.runs[2][2], Options(image=Choice(None, "best"), video=Choice("h265", "high")))
-        self.run_app("download", "ins:example_user", "--image", "off", "--video", "OFF")
-        self.assertEqual(self.runs[3][2], Options())
+        self.assertEqual(self.runs[1][2], Options(shrink=True))
+        self.assertIn("• ins:example_user: --shrink (saved)", out)
+        self.run_app("download", "ins:example_user", "--shrink", "off")
+        self.assertEqual(self.runs[2][2], Options(shrink=False))
         self.run_app("download", "ins:example_user")
-        self.assertEqual(self.runs[4][2], Options())
+        self.assertEqual(self.runs[3][2], Options())
 
     def test_from_and_time_are_not_saved(self):
         self.run_app("download", "ins:example_user", "--from", "reels", "--time", "2026-01-01,")
         self.run_app("download", "ins:example_user")
         self.assertEqual(self.runs[1][2], Options())
 
-    def test_bad_values_are_usage_errors_naming_what_each_part_takes(self):
-        for args, message in ((("--image", "webp,huge"), "✗ --image webp,huge: the level is best, high, mid or low"),
-                              (("--video", "webm:h265"), "✗ --video webm:h265: webm holds vp9, not h265"),
-                              (("--image", "heic"), "✗ --image heic: give a format (jpg, webp, avif, png, gif, tif "
-                                                    "or bmp), a level (best, high, mid or low), or both"),
-                              (("--audio", "opus,mid,low"), "✗ --audio takes <format>,<level>")):
+    def test_the_old_media_options_are_unknown(self):
+        for args in (("--image", "webp,mid"), ("--video", "h265,low"), ("--audio", "opus")):
             code, _, out = self.run_app("download", "ins:a", *args)
             self.assertEqual(code, 2, args)
-            self.assertIn(message, out)
+            self.assertIn("✗ unrecognized arguments", out)
         self.assertEqual(self.runs, [])
         self.assertFalse((Path(".flnd") / files.TARGETS).exists())
 
@@ -293,18 +283,18 @@ class SyncCommandTest(RunsCase):
         self.addCleanup(patcher.stop)
 
     def test_every_recorded_target_with_its_saved_settings(self):
-        self.run_app("download", "ins:example_user", "--image", "low", "--from", "reels")
+        self.run_app("download", "ins:example_user", "--shrink", "--from", "reels")
         self.run_app("download", "twt:example_handle")
         code, _, out = self.run_app("sync")
         self.assertEqual(code, 0, out)
-        self.assertEqual(dict(self.synced[0]), {Target("ins", "user", "example_user"): Options(image=Choice(None, "low")),
+        self.assertEqual(dict(self.synced[0]), {Target("ins", "user", "example_user"): Options(shrink=True),
                                                 Target("twt", "user", "example_handle"): Options()})
         self.run_app("sync", "twt:example_handle")
         self.assertEqual(self.synced[1], [(Target("twt", "user", "example_handle"), Options())])
 
     def test_sync_takes_no_options(self):
         self.run_app("download", "ins:example_user")
-        for args in (("--only", "info"), ("--from", "reels"), ("--time", "2026-01-01,"), ("--image", "mid"),
+        for args in (("--only", "info"), ("--from", "reels"), ("--time", "2026-01-01,"), ("--shrink", "on"),
                      ("--compress-video", "small"), ("--since", "2026-01-01")):
             code, _, out = self.run_app("sync", *args)
             self.assertEqual(code, 2, args)

@@ -72,7 +72,7 @@ from flnd import post as postprocess
 from flnd import settings as saved_settings
 from flnd.common import files as disk
 from flnd.common import net
-from flnd.common.compress import KINDS, choice_of
+from flnd.common.compress import KINDS, ONE_AT_A_TIME
 from flnd.site import SourceRun, TargetSite
 from flnd.source import Category, FetchError, File, Post, Range, Route, Site, Source, Target, day, fill
 from shared import atomic, fmt, log
@@ -621,10 +621,11 @@ class Job:
         kind = disk.kind_of(saved.name)
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
-        fields = postprocess.Fields(day=day(placed.post.date), kind=kind, choice=choice_of(self.settings.options, kind),
+        shrink = self.settings.options.shrink and kind in KINDS
+        fields = postprocess.Fields(day=day(placed.post.date), kind=kind, shrink=shrink,
                                     compressor=self.settings.compressor, last_modified=received.get("last-modified"),
                                     row=row, values=placed.values)
-        if fields.choice is not None and kind is not None and KINDS[kind].one_at_a_time:
+        if shrink and kind in ONE_AT_A_TIME:
             # A video waits for the run's one encode at a time on a pool of its own, so downloads go on.
             # It counts as written now, as its download is done; its encode only moves it.
             with self._writing:

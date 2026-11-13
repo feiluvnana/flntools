@@ -6,7 +6,7 @@ be a `.webp` now). A postprocessor records what it did on `fields.row`, the file
 which the job writes only after the last one. The order is fixed and there is no user-built chain:
 flnd's options decide what each one does.
 
-1. `compress`: `--image`, `--video` and `--audio`, through `Compressor` (flnd/common/compress.py),
+1. `compress`: `--shrink`, through `Compressor` (flnd/common/compress.py),
    whose rules are unchanged: replaced only when smaller, videos one at a time across the run,
    and a machine that can't compress a kind stops trying it.
 2. `mtime`: the file's modified time becomes its post's day at noon UTC, so sorting by date in
@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from shared import log
 
 if TYPE_CHECKING:
-    from flnd.common.compress import Choice, Compressor
+    from flnd.common.compress import Compressor
 
 __all__ = ["ORDER", "Fields", "Postprocessor", "compress", "mtime"]
 
@@ -49,8 +49,8 @@ class Fields:
     day: datetime.date | None = None
     # "image", "video" or "audio" by the saved file's extension; None for any other file.
     kind: str | None = None
-    # The run's compress choice for `kind`; None leaves the file as it came.
-    choice: Choice | None = None
+    # Whether the run shrinks the file (`--shrink`); False leaves it as it came.
+    shrink: bool = False
     # The run's one `Compressor`, shared by every source; None compresses nothing.
     compressor: Compressor | None = None
     # The download's `Last-Modified` header, when the server sent one.
@@ -66,25 +66,25 @@ Postprocessor = Callable[[Path, Fields], Path]
 
 
 def compress(path: Path, fields: Fields) -> Path:
-    """Compress the file with the run's choice for its kind, and return where it is now.
+    """Shrink the file when the run asks for it (`--shrink`), and return where it is now.
 
-        path = compress(Path("posts/a.jpg"), fields)      # posts/a.webp with --image webp,mid
+        path = compress(Path("posts/a.jpg"), fields)      # posts/a.jpg, smaller, with --shrink
 
     Args:
         path: the downloaded file; replaced by its compressed copy only when that is smaller.
-        fields: its kind, the run's choice and compressor; the history fields `Compressor`
+        fields: its kind, whether the run shrinks, and its compressor; the history fields `Compressor`
             returns (`path`, `size`, `compressed`, `original_size`) are merged into `row`.
 
     Returns:
-        The file's path, which is the compressed copy's when its format changed.
+        The file's path, which is the compressed copy's when media gave it another extension.
 
     It is slow: a photo takes a moment, a video minutes, on the caller's thread. A video waits for
     the run's one encode at a time. A file this machine can't compress is left as it is, with no
     `compressed` field, so a later run, once ffmpeg or the extra is installed, compresses it.
     """
-    if fields.choice is None or fields.kind is None or fields.compressor is None:
+    if not fields.shrink or fields.kind is None or fields.compressor is None:
         return path
-    found = fields.compressor.compress(path, fields.kind, fields.choice)
+    found = fields.compressor.compress(path, fields.kind)
     if found is None:
         return path
     fields.row.update(found)

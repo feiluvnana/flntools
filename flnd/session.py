@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
-from flnd.common.compress import Choice, Compressor
+from flnd.common.compress import Compressor
 from flnd.source import Source, Target
 
 # `--from all` takes every category of every source.
@@ -21,7 +21,7 @@ ALL = "all"
 
 @dataclass(frozen=True)
 class Options:
-    """What one run downloads and how it compresses it: `Options(categories=("reels",), image=Choice("webp", "mid"))`.
+    """What one run downloads and how it compresses it: `Options(categories=("reels",), shrink=True)`.
 
     The same for every target of one `Engine._run`; `Engine.download` and `Engine.sync` run targets
     whose saved settings differ separately. It is hashable, so it can key those groups.
@@ -32,10 +32,8 @@ class Options:
     # `--time`'s two days, both included; None is no limit on that side.
     since: datetime.date | None = None
     until: datetime.date | None = None
-    # `--image`, `--video` and `--audio`: how each new file of the kind is compressed; None keeps it as sent.
-    image: Choice | None = None
-    video: Choice | None = None
-    audio: Choice | None = None
+    # `--shrink`: compress each new photo, video and audio file at media's balanced level, in its own format.
+    shrink: bool = False
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:

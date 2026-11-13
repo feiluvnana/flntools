@@ -3,7 +3,7 @@
 Usage:
   flnd download ins:example_user https://x.com/example_handle --from reels,media --time 2026-01-01,
   cat list.txt | flnd download
-  flnd download ins:example_user --video h265,low --image webp,mid
+  flnd download ins:example_user --shrink
   flnd sync
   flnd login
   flnd logout ins tik
@@ -61,7 +61,7 @@ Examples:
   flnd download tik:example_creator twt:example_handle --from all
   flnd download fbk:example.page --from profile,stories
   flnd download https://x.com/example_handle/status/1790000000000000000
-  flnd download ins:example_user --image webp,mid --video h265,low
+  flnd download ins:example_user --shrink
   flnd download twt:example_handle --time 2026-01-01,2026-06-30
   cat list.txt | flnd download
   flnd sync
@@ -71,10 +71,6 @@ Examples:
 
 
 app = cli.App("flnd", version=__version__, description=describe(), epilog=epilog())
-# --image, --video and --audio: a format, a level, or both as <format>,<level> in either order, or
-# off. Passed to the engine as text, which `Choice.parse` reads, so "off" can be told from "not
-# given" and an error can name what each part takes.
-MediaChoice = Annotated[Optional[str], cli.opt(metavar="FORMAT,LEVEL")]
 
 
 @app.command
@@ -83,15 +79,14 @@ def download(
     *,
     categories: Annotated[Optional[list[str]], cli.opt("--from", metavar="CATEGORIES")] = None,
     time: Annotated[Optional[str], cli.opt(metavar="SINCE,UNTIL")] = None,
-    image: MediaChoice = None,
-    video: MediaChoice = None,
-    audio: MediaChoice = None,
+    # `--shrink` alone is on; `--shrink off` turns a saved one off; not given keeps the saved one.
+    shrink: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None,
     verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
 ) -> int:
     """Download each target.
 
-    --image, --video and --audio are saved for each target and used by every later download and
-    sync of it; giving one again changes it, for the files already saved too, and off turns it off.
+    --shrink is saved for each target and used by every later download and sync of it; turning
+    it on shrinks the files already saved too, and --shrink off turns it off.
 
     Args:
         targets: source:value pairs or URLs; read one per line from stdin when none are given.
@@ -99,11 +94,8 @@ def download(
             Without it, every category. Not for a single post's link, which is downloaded whole.
         time: only items dated from one day to another, both included, as 2026-01-01,2026-06-30;
             leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
-        image: compress each photo, replacing it when smaller, metadata (GPS too) stripped: a format
-            (jpg, webp, avif, png, gif, tif, bmp), a level (best, high, mid, low), or both; off stops it.
-        video: compress each video the same way: a container (mp4, mkv, webm, …), a codec (h264,
-            h265, vp9) or container:codec, and a level. h265 is smaller, but many browsers can't play it.
-        audio: compress each audio file the same way: mp3, m4a, aac, opus, ogg or flac, and a level.
+        shrink: compress each photo, video and audio file to a balanced quality in its own format,
+            replacing it when smaller, metadata (GPS too) stripped; off stops it.
         verbose: also show the details, such as each file skipped as already saved and the name that holds it.
     """
     # Debug lines, such as each skipped file, are shown only when asked for.
@@ -114,7 +106,7 @@ def download(
         # Only ValueError is a usage error: the engine raises it for a bad option or target, with the
         # text to show. Anything else is a bug or a failed run, and propagates to report it.
         report = Engine(home=HOME).download(targets, categories=categories, time=Range() if time is None else time,
-                                            image=image, video=video, audio=audio)
+                                            shrink=None if shrink is None else shrink == "on")
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
     log.ok("Complete. {files}", files=fmt.count(report.files, "file"))
@@ -127,7 +119,7 @@ def download(
 def sync(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)]) -> int:
     """Bring downloaded targets up to date: repair broken or missing files, fetch new posts, and sum up.
 
-    Each target runs with its saved --image, --video and --audio and each source's default
+    Each target runs with its saved --shrink and each source's default
     categories; sync changes no setting. To change one, run flnd download with it.
 
     Args:

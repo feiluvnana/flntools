@@ -3,8 +3,8 @@ records, `Engine.download`'s use of them, repair, the fetch and the summary.
 
 Each test runs on a temporary `.flnd` with test sources on `httpx.MockTransport` (see `EngineCase`),
 and the fake screen. `shared.media.open` is replaced by `test_engine.FakeMedia` wherever a test only
-needs to know what was compressed with what. A setting given as None here is `off`, as `download`
-was given it on the command line; one left out keeps the saved setting.
+needs to know what was shrunk. `shrink=False` here is `--shrink off`, as `download` is given it on the
+command line; the default, None, keeps the saved setting.
 """
 
 import datetime
@@ -16,14 +16,11 @@ import httpx
 from media_samples import needs_pillow
 from test_engine import CDN, EngineCase, FakeMedia, compressing, history, make_source, noise
 
-from flnd import Choice, Engine, Range, TargetReport
+from flnd import Engine, Range, TargetReport
 from flnd.common import files
 from flnd.session import Options
 from flnd.source import File, Target
 from shared import kv
-
-WEBP_MID = Choice("webp", "mid")
-
 
 class Site:
     """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""
@@ -59,12 +56,10 @@ class SyncCase(EngineCase):
         source = source or self.site.source()
         return Engine(home=self.home, sources={source.code: source})
 
-    def download(self, options=Options(), source=None, texts=("aaa:a",), **given):
-        """`Engine.download` with `options`' --from and --time, and each setting given, None for `off`."""
+    def download(self, options=Options(), source=None, texts=("aaa:a",), shrink=None):
+        """`Engine.download` with `options`' --from and --time, and `shrink` as given: None keeps the saved one."""
         report = self.engine(source).download(list(texts), categories=options.categories,
-                                              time=Range(options.since, options.until),
-                                              **{name: "off" if choice is None else choice
-                                                 for name, choice in given.items()})
+                                              time=Range(options.since, options.until), shrink=shrink)
         return report.files
 
     def sync(self, texts=(), source=None):
@@ -86,66 +81,45 @@ class SyncCase(EngineCase):
 
 
 class SettingsTest(SyncCase):
-    def test_each_option_is_saved_on_its_own_and_off_clears_it(self):
-        self.download(image=WEBP_MID)
-        self.assertEqual(self.saved()["aaa:a"]["image"], "webp,mid")
-        self.download(video=Choice("h265", "low"))
-        row = self.saved()["aaa:a"]
-        self.assertEqual((row["kind"], row["image"], row["video"], row["audio"]), ("user", "webp,mid", "h265,low", None))
+    def test_shrink_is_saved_per_target_and_off_clears_it(self):
+        self.download(shrink=True)
+        self.assertIs(self.saved()["aaa:a"]["shrink"], True)
         [(target, options)] = self.plan()
-        self.assertEqual(options, Options(image=WEBP_MID, video=Choice("h265", "low")))
-        self.download(image=None)
-        self.assertEqual(self.plan([target])[0][1], Options(video=Choice("h265", "low")))
+        self.assertEqual(options, Options(shrink=True))
+        self.download(shrink=False)
+        self.assertIs(self.saved()["aaa:a"]["shrink"], False)
+        self.assertEqual(self.plan([target])[0][1], Options())
 
     def test_from_and_time_are_never_saved(self):
         self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1), until=datetime.date(2026, 6, 30)))
         row = self.saved()["aaa:a"]
         # `complete` is what was listed to its end, not a setting: here the one category, `posts`.
-        self.assertEqual(sorted(row), ["at", "audio", "complete", "image", "kind", "video"])
+        self.assertEqual(sorted(row), ["at", "complete", "kind", "shrink"])
         self.assertEqual(sorted(row["complete"]), ["posts"])
         self.assertEqual(self.plan()[0][1], Options())
 
     def test_a_run_says_which_saved_settings_it_uses(self):
-        self.download(image=WEBP_MID, audio=Choice("opus", "mid"))
+        self.download(shrink=True)
+        self.download()
+        self.assertIn("• aaa:a: --shrink (saved)", self.lines())
+        self.download(shrink=False)
         self.screen.dest.truncate(0)
         self.screen.dest.seek(0)
-        self.download(audio=None)
-        self.assertIn("• aaa:a: --image webp,mid (saved)", self.lines())
-        self.assertFalse(any("--audio" in line for line in self.lines()))
         self.download()
-        self.assertEqual(sum("(saved)" in line for line in self.lines()), 2)
+        self.assertFalse(any("(saved)" in line for line in self.lines()))
 
     def test_the_saved_settings_reach_the_run_and_targets_with_others_run_apart(self):
         runs = []
         with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append((targets, options)))):
-            self.download(texts=("aaa:a",), image=WEBP_MID)
+            self.download(texts=("aaa:a",), shrink=True)
             self.download(Options(categories=("posts",)), texts=("aaa:a", "aaa:b"))
-        self.assertEqual(runs[0], ([Target("aaa", "user", "a")], Options(image=WEBP_MID)))
+        self.assertEqual(runs[0], ([Target("aaa", "user", "a")], Options(shrink=True)))
         self.assertEqual(sorted(runs[1:], key=lambda run: run[0][0].value),
-                         [([Target("aaa", "user", "a")], Options(categories=("posts",), image=WEBP_MID)),
+                         [([Target("aaa", "user", "a")], Options(categories=("posts",), shrink=True)),
                           ([Target("aaa", "user", "b")], Options(categories=("posts",)))])
 
-    def test_phase_5_rows_read_into_the_new_form(self):
-        with kv.open(self.home / files.TARGETS, table="targets") as targets:
-            targets["aaa:a"] = {"kind": "user", "categories": ["posts"], "unpack": True, "zip": True,
-                                "compress_image": "small", "compress_video": None, "format_image": None,
-                                "format_video": None, "at": "2026-11-01T00:00:00+00:00"}
-            targets["aaa:b"] = {"kind": "user", "categories": None, "unpack": False, "zip": False,
-                                "compress_image": "balanced", "compress_video": "high", "format_image": "webp",
-                                "format_video": "mkv:h265", "at": "2026-11-01T00:00:00+00:00"}
-        chosen = dict(self.plan())
-        self.assertEqual(chosen[Target("aaa", "user", "a")], Options(image=Choice(None, "low")))
-        self.assertEqual(chosen[Target("aaa", "user", "b")], Options(image=WEBP_MID, video=Choice("mkv:h265", "high")))
-        # A sync records them again in today's form, changing no setting.
-        self.sync()
-        rows = self.saved()
-        self.assertEqual({name: rows["aaa:b"][name] for name in ("image", "video", "audio")},
-                         {"image": "webp,mid", "video": "mkv:h265,high", "audio": None})
-        self.assertNotIn("unpack", rows["aaa:a"])
-        self.assertNotIn("categories", rows["aaa:a"])
-
     def test_every_recorded_target_and_unrecorded_folders(self):
-        self.download(image=WEBP_MID)
+        self.download(shrink=True)
         (self.home / files.MEDIA / "aaa" / "older").mkdir(parents=True)
         (self.home / files.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
         chosen = dict(self.plan())
@@ -156,19 +130,6 @@ class SettingsTest(SyncCase):
         self.assertEqual(len(self.plan()), 2)
         self.sync()
         self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
-
-    def test_a_saved_setting_this_flnd_cant_read_is_kept_until_given_again(self):
-        self.download()
-        with kv.open(self.home / files.TARGETS, table="targets") as targets:
-            targets["aaa:a"] = {**targets["aaa:a"], "image": "webp,huge", "video": "h265,low"}
-        self.assertEqual(self.plan()[0][1], Options(video=Choice("h265", "low")))
-        self.sync()
-        self.download(video=None)
-        row = self.saved()["aaa:a"]
-        self.assertEqual((row["image"], row["video"]), ("webp,huge", None))
-        # Given again, even as off, it is replaced.
-        self.download(image=None)
-        self.assertIsNone(self.saved()["aaa:a"]["image"])
 
     def test_planning_creates_no_file(self):
         self.assertEqual(self.plan(), [])
@@ -183,7 +144,9 @@ class DownloadAppliesTest(SyncCase):
         self.compressed = []
 
         def compress(path, **settings):
-            self.compressed.append((Path(path).name, settings["format"], settings["level"]))
+            # Each file is shrunk at media's level, in its own format: no format is asked for.
+            self.assertNotIn("format", settings)
+            self.compressed.append((Path(path).name, settings["level"]))
             return None
 
         self.enterContext(compressing(compress))
@@ -193,47 +156,44 @@ class DownloadAppliesTest(SyncCase):
         self.assertEqual(self.compressed, [])
         self.site.files["d.jpg"] = noise("JPEG")
         self.site.serve()
-        self.download(image=WEBP_MID)
+        self.download(shrink=True)
         # The three saved before, in the history's order, then the new one as it is downloaded.
-        self.assertEqual(sorted(self.compressed[:3]), [(name, "webp", "mid") for name in ("a.jpg", "b.jpg", "c.jpg")])
-        self.assertEqual(self.compressed[3:], [("d.jpg", "webp", "mid")])
+        self.assertEqual(sorted(self.compressed[:3]), [(name, "mid") for name in ("a.jpg", "b.jpg", "c.jpg")])
+        self.assertEqual(self.compressed[3:], [("d.jpg", "mid")])
         rows = history(self.home)
         self.assertEqual({rows[f"aaa:{name}.jpg"]["compressed"] for name in "abcd"}, {"none"})
 
     def test_the_same_setting_again_or_off_compresses_nothing_saved(self):
-        self.download(image=WEBP_MID)
+        self.download(shrink=True)
         self.assertEqual(len(self.compressed), 3)
-        self.download(image=WEBP_MID)
+        self.download(shrink=True)
         self.download()
-        self.download(image=None)
+        self.download(shrink=False)
         self.assertEqual(len(self.compressed), 3)
 
     def test_a_file_already_compressed_with_the_new_setting_is_left(self):
         self.download()
         with kv.open(self.home / files.HISTORY, table="downloads") as rows:
-            # Phase 5 wrote "balanced"; it reads as "mid", today's name.
-            rows["aaa:a.jpg"] = {**rows["aaa:a.jpg"], "compressed": "balanced"}
-            # Another level is compressed again, whatever its format.
-            rows["aaa:b.jpg"] = {**rows["aaa:b.jpg"], "compressed": "webp,low"}
-        self.download(image=Choice(None, "mid"))
-        self.assertEqual(sorted(name for name, _, _ in self.compressed), ["b.jpg", "c.jpg"])
+            rows["aaa:a.jpg"] = {**rows["aaa:a.jpg"], "compressed": "mid"}
+            # Another level is compressed again.
+            rows["aaa:b.jpg"] = {**rows["aaa:b.jpg"], "compressed": "low"}
+        self.download(shrink=True)
+        self.assertEqual(sorted(name for name, _ in self.compressed), ["b.jpg", "c.jpg"])
 
     def shrink(self, fail_on=None):
-        """Replace `shared.media.open` with a `FakeMedia` whose compress writes a smaller copy, in the format asked for.
+        """Replace `shared.media.open` with a `FakeMedia` whose compress writes a smaller copy in place.
 
         Args:
             fail_on: the call, counted from 1, that raises KeyboardInterrupt instead, as Ctrl-C would.
         """
         def compress(path, **settings):
             path = Path(path)
-            self.compressed.append((path.name, settings["format"], settings["level"]))
+            self.compressed.append((path.name, settings["level"]))
             if len(self.compressed) == fail_on:
                 raise KeyboardInterrupt
-            out = path.with_suffix(f".{settings['format']}") if settings["format"] else path
             body = path.read_bytes()
-            path.unlink()
-            out.write_bytes(body[:len(body) // 2])
-            return out
+            path.write_bytes(body[:len(body) // 2])
+            return path
 
         return compressing(compress)
 
@@ -241,54 +201,36 @@ class DownloadAppliesTest(SyncCase):
         self.download()
         before = history(self.home)["aaa:a.jpg"]["size"]
         with self.shrink():
-            self.download(image=WEBP_MID)
+            self.download(shrink=True)
         row = history(self.home)["aaa:a.jpg"]
-        webp = self.folder() / "a.webp"
+        photo = self.folder() / "a.jpg"
         self.assertEqual((Path(row["path"]), row["size"], row["compressed"], row["original_size"]),
-                         (webp, webp.stat().st_size, "webp,mid", before))
-        self.assertNotIn("a.jpg", self.names())
+                         (photo, photo.stat().st_size, "mid", before))
+        self.assertEqual(self.names(), ["a.jpg", "b.jpg", "c.jpg"])
 
     def test_an_apply_cut_short_keeps_the_old_setting_and_is_finished_next_time(self):
         self.download()
         with self.shrink(fail_on=2), self.assertRaises(KeyboardInterrupt):
-            self.download(image=WEBP_MID)
-        self.assertIsNone(self.saved()["aaa:a"]["image"])
+            self.download(shrink=True)
+        self.assertIs(self.saved()["aaa:a"]["shrink"], False)
         first, cut = self.compressed[0][0], self.compressed[1][0]
         self.compressed.clear()
         with self.shrink():
-            self.download(image=WEBP_MID)
+            self.download(shrink=True)
         rest = sorted({"a.jpg", "b.jpg", "c.jpg"} - {first})
         self.assertIn(cut, rest)
-        self.assertEqual(sorted(name for name, _, _ in self.compressed), rest)
-        self.assertEqual(self.saved()["aaa:a"]["image"], "webp,mid")
-        self.assertEqual(self.names(), ["a.webp", "b.webp", "c.webp"])
+        self.assertEqual(sorted(name for name, _ in self.compressed), rest)
+        self.assertIs(self.saved()["aaa:a"]["shrink"], True)
+        self.assertEqual(self.names(), ["a.jpg", "b.jpg", "c.jpg"])
 
-    def test_a_level_alone_keeps_files_at_that_level_in_any_format(self):
-        self.download()
-        with self.shrink():
-            self.download(image=WEBP_MID)
-            self.download(image=Choice(None, "mid"))
-            # webp,mid to mid: each file keeps its format, and they are already mid.
-            self.assertEqual(len(self.compressed), 3)
-            self.assertEqual(self.saved()["aaa:a"]["image"], "mid")
-            self.download(image=Choice(None, "low"))
-            self.assertEqual(self.compressed[3:], [(name, None, "low") for name in ("a.webp", "b.webp", "c.webp")])
-            self.download(image=Choice(None, "mid"))
-            self.compressed.clear()
-            # mid to webp,mid: a file compressed at mid in its own format isn't WebP yet.
-            for name in ("a", "b", "c"):
-                with kv.open(self.home / files.HISTORY, table="downloads") as rows:
-                    rows[f"aaa:{name}.jpg"] = {**rows[f"aaa:{name}.jpg"], "compressed": "mid"}
-            self.download(image=WEBP_MID)
-        self.assertEqual(sorted(self.compressed), [(name, "webp", "mid") for name in ("a.webp", "b.webp", "c.webp")])
-
-    def test_only_the_changed_kind_is_applied(self):
+    def test_photos_and_videos_are_all_shrunk_at_the_level(self):
         self.site.files["v.mp4"] = b"\0\0\0\x18ftypisom" + bytes(64)
         self.site.serve()
         with mock.patch.object(FakeMedia, "check", lambda self: self):
             self.download()
-            self.download(video=Choice("h265", "low"))
-        self.assertEqual(self.compressed, [("v.mp4", None, "low")])
+            self.download(shrink=True)
+        self.assertEqual(sorted(self.compressed), [("a.jpg", "mid"), ("b.jpg", "mid"), ("c.jpg", "mid"),
+                                                   ("v.mp4", "mid")])
 
 
 class RepairTest(SyncCase):
@@ -410,7 +352,7 @@ class FetchTest(SyncCase):
 
         self.download()
         with kv.open(self.home / files.TARGETS, table="targets") as targets:
-            targets["aaa:a"] = {**targets["aaa:a"], "image": "webp,mid"}
+            targets["aaa:a"] = {**targets["aaa:a"], "shrink": True}
         self.site.files["d.jpg"] = noise("JPEG")
         self.site.serve()
         with compressing(compress):
@@ -419,10 +361,10 @@ class FetchTest(SyncCase):
 
     def test_sync_takes_every_category(self):
         runs = []
-        self.download(Options(categories=("posts",)), image=WEBP_MID)
+        self.download(Options(categories=("posts",)), shrink=True)
         with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append(options))):
             self.sync()
-        self.assertEqual(runs, [Options(image=WEBP_MID)])
+        self.assertEqual(runs, [Options(shrink=True)])
 
 
 class HistoryTest(SyncCase):

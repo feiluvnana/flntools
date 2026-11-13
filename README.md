@@ -51,7 +51,7 @@ in the folder you run it from.
 
 ```bash
 flnd download <targets...> [--from CATEGORIES] [--time SINCE,UNTIL]
-              [--image FORMAT,LEVEL] [--video FORMAT,LEVEL] [--audio FORMAT,LEVEL] [-v]
+              [--shrink [off]] [-v]
 flnd sync [targets...]
 flnd login
 flnd logout <sources...> | all
@@ -129,15 +129,12 @@ flnd download https://loix.cc/lois/5930
 # Only its info and preview images, without using the daily VIP quota
 flnd download https://loix.cc/lois/5930 --from photo
 
-# Smaller files: photos as WebP, videos at most 720p; the originals are replaced, and this is
-# saved for the target, so later downloads and syncs do the same
-flnd download ins:example_user --image webp,mid --video low
+# Smaller files, each in its own format; the originals are replaced, and this is saved for the
+# target, so later downloads and syncs do the same
+flnd download ins:example_user --shrink
 
-# Videos as H.265, 30-50% smaller again, but many browsers can't play it
-flnd download tik:example_creator --video h265,mid
-
-# Stop compressing photos for this target from now on
-flnd download ins:example_user --image off
+# Stop shrinking this target's new files from now on
+flnd download ins:example_user --shrink off
 ```
 
 ### Options
@@ -150,27 +147,17 @@ Every source takes the same options:
 - `--time <since>,<until>`: only items dated in that range, both days included (YYYY-MM-DD). Leave a
   side empty for no limit: `--time 2026-01-01,` or `--time ,2026-06-30`. `*` works too, quoted
   (`--time 2026-01-01,'*'`), since zsh stops at a bare `*` with "no matches found";
-- `--image`, `--video`, `--audio`: compress each new photo, video or audio file after it is saved.
-  Each takes a format, a level, or both, in either order: `--image webp,mid`, `--image mid` (each
-  file's own format), `--image avif` (level `high`). It **replaces the original** when the result is
-  smaller, and strips its metadata (date taken, camera, GPS); the post's date stays in the file name;
+- `--shrink`: compress each new photo, video and audio file after it is saved, to a balanced
+  quality (photos up to 2,304 px, videos up to 1080p, quality 80) **in its own format**: a JPEG
+  stays a JPEG, an MP4 stays an MP4 in its own codec, so every file opens where it opened before.
+  It **replaces the original** when the result is smaller, and strips its metadata (date taken,
+  camera, GPS); the post's date stays in the file name. Videos are encoded one at a time.
 
-  | Level | Means |
-  | --- | --- |
-  | `best` | no visible loss: quality 95, full resolution |
-  | `high` | quality 90, full resolution |
-  | `mid` | quality 80, photos up to 2,304 px, videos up to 1080p |
-  | `low` | quality 70, photos up to 1,536 px, videos up to 720p and 30 fps |
-
-  The formats are, for `--image`: `jpg`, `webp`, `avif`, `png`, `gif`, `tif`, `bmp`; for `--video`: a
-  container (`mp4`, `mov`, `mkv`, `webm`, `avi`, `ts`, `3gp`, `gif`), a codec (`h264`, `h265`, `vp9`),
-  or both as `mkv:h265`; for `--audio`: `mp3`, `m4a`, `aac`, `opus`, `ogg`, `flac`.
-
-`--image`, `--video` and `--audio` are **saved for each target** in `.flnd/metadata/targets.db`, each on its
-own, and used by every later `download` and `sync` of it; a run that uses saved ones says so, as
-`ins:example_user: --image webp,mid (saved)`. Giving one again changes it, and that `download`
-compresses the target's files already saved with the new setting first, then the new ones. `off`
-turns one off (`--image off`). `--from` and `--time` are never saved.
+`--shrink` is **saved for each target** in `.flnd/metadata/targets.db`, and used by every later
+`download` and `sync` of it; a run that uses it says so, as `ins:example_user: --shrink (saved)`.
+The `download` that turns it on shrinks the target's files already saved first, then the new ones.
+`--shrink off` turns it off and touches no file. `--from` and `--time` are never saved. To convert
+to another format (WebP, H.265), use any converter afterwards.
 
 A saved photo, video or audio file gets the extension its content calls for (a WebP is saved as
 `.webp`, not `.jpg`), a web page served instead of a photo is retried rather than saved, and a
@@ -198,7 +185,7 @@ flnd sync ins:example_user tik:example_creator        # only these
 ```
 
 `flnd sync` takes no options and changes nothing about how a target is downloaded: each target runs
-with its saved `--image`, `--video` and `--audio`, and each source's default categories. To change a
+with its saved `--shrink`, and each source's default categories. To change a
 setting, run `flnd download` with it. Folders downloaded before flnd saved settings are synced
 without any. For each target:
 

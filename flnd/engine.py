@@ -3,7 +3,7 @@
 `Engine` is the whole engine API (plan/phase-6/redesign.md, B1): `resolve` reads targets,
 `download` and `sync` run them and return a `Report`, `login` and `logout` keep the logins. Every
 decision a command makes is here, where a test reaches it without a terminal: reading the options'
-text (`Range.parse`, `Choice.parse`), refusing `--from` for a single post, each target's saved
+text (`Range.parse`), refusing `--from` for a single post, each target's saved
 settings (flnd/settings.py) and applying a changed one to the files already saved, `sync`'s repair
 and tally (flnd/repair.py), and grouping targets by their settings. flnd/cli.py only parses,
 asks `login`'s questions and prints.
@@ -19,7 +19,7 @@ line and row, the totals and the exit status. Logs older than `LOG_DAYS` are del
 
     engine = Engine(home=Path(".flnd"))
     report = engine.download(["ins:example_user", "https://x.com/example_handle"], categories="reels,tagged",
-                             time="2026-01-01,", image="webp,mid")
+                             time="2026-01-01,", shrink=True)
     report = engine.sync()
     exit_status = 0 if report.ok else 1
 """
@@ -44,7 +44,7 @@ import httpx
 
 from flnd import job, repair, settings
 from flnd.common import auth, compress, files, net
-from flnd.common.compress import KINDS, Choice, Compressor
+from flnd.common.compress import Compressor
 from flnd.session import Options, Settings, single_targets, unknown_categories
 from flnd.site import LoginSite, SourceRun, TargetSite, source_run
 from flnd.source import LoginError, Range, Source, Target, TargetError
@@ -92,7 +92,7 @@ class TargetReport:
     repaired: int = 0
     # `sync` only: files the history names that the site no longer lists.
     missing: int = 0
-    # The saved settings this run used, as shown at its start: "--image webp,mid (saved)"; "" for none.
+    # The saved settings this run used, as shown at its start: "--shrink (saved)"; "" for none.
     settings: str = ""
     # Why the target failed, as logged; None when it didn't.
     error: str | None = None
@@ -169,12 +169,11 @@ class Engine:
         return [resolve(text, self.sources, follow=_follow) for text in texts]
 
     def download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None,
-                 time: Range | str = Range(), image: Choice | str | None = None, video: Choice | str | None = None,
-                 audio: Choice | str | None = None) -> Report:
-        """Download each target, with its saved settings and the ones given on top, and say what was done.
+                 time: Range | str = Range(), shrink: bool | None = None) -> Report:
+        """Download each target, with its saved `--shrink` or the one given, and say what was done.
 
             report = engine.download(["ins:example_user"], categories="reels,tagged", time="2026-01-01,",
-                                     image="webp,mid")
+                                     shrink=True)
 
         Args:
             targets: `Target`s, or texts that `resolve` reads; a text that can't be read raises
@@ -182,13 +181,12 @@ class Engine:
             categories: `--from`: names as a comma list, or a sequence of them; "all", or None,
                 takes every category. Refused for a single post's link, which is downloaded whole.
             time: `--time`: a `Range`, or its text ("2026-01-01,2026-06-30"); `Range()` is no limit.
-            image: `--image`: a `Choice`, its text ("webp,mid"), "off" to turn the saved one off,
-                or None to keep the target's saved setting.
-            video: `--video`, as `image`.
-            audio: `--audio`, as `image`.
+            shrink: `--shrink`: True shrinks each photo, video and audio file at media's balanced
+                level in its own format, False (`--shrink off`) stops it, and None keeps the
+                target's saved setting.
 
         Returns:
-            One `TargetReport` per target, in the order given, each with the saved settings it used.
+            One `TargetReport` per target, in the order given, each with the saved setting it used.
 
         Raises:
             ValueError: an option's text can't be read, `--from` names no category of these
@@ -197,28 +195,24 @@ class Engine:
                 Raised before any file but the run log is read or written, and before any request but a short link's.
             OSError: `targets.db` or the history can't be read or written.
 
-        A setting given here is saved for each target, and used by every later `download` and
-        `sync` of it; `--from` and `--time` are never saved. A setting that changes is applied to
-        the target's files already saved before anything is downloaded, so a folder is never
-        half one setting and half another; that is slow, and replaces originals with their
-        smaller copies. It is saved only once that is done, so an apply cut short (Ctrl-C, a
-        crash, a full disk) is finished by the next download with the same option. Targets
-        whose settings then differ run apart, one group after another.
+        `--shrink` given here is saved for each target, and used by every later `download` and
+        `sync` of it; `--from` and `--time` are never saved. Turning it on shrinks the target's
+        files already saved before anything is downloaded, so a folder is never half shrunk;
+        that is slow, and replaces originals with their smaller copies. It is saved only once
+        that is done, so a shrink cut short (Ctrl-C, a crash, a full disk) is finished by the
+        next `download --shrink`. Turning it off touches no file. Targets whose settings then
+        differ run apart, one group after another.
         """
-        with self._logged("download", targets=targets, categories=categories, time=time, image=image,
-                          video=video, audio=audio):
-            report = self._download(targets, categories=categories, time=time, image=image, video=video,
-                                    audio=audio)
+        with self._logged("download", targets=targets, categories=categories, time=time, shrink=shrink):
+            report = self._download(targets, categories=categories, time=time, shrink=shrink)
             _log_totals(report)
             return report
 
     def _download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None,
-                  time: Range | str, image: Choice | str | None, video: Choice | str | None,
-                  audio: Choice | str | None) -> Report:
+                  time: Range | str, shrink: bool | None) -> Report:
         """`download`'s work, inside its run log."""
         # Read every option before anything starts, in the CLI's order, so the first bad one is the error.
         span = Range.parse(time) if isinstance(time, str) else time
-        given = _given(image=image, video=video, audio=audio)
         resolved = self._resolved(targets)
         names = self._categories(categories, resolved)
         options = Options(categories=names, since=span.since, until=span.until)
@@ -226,20 +220,16 @@ class Engine:
         rows = settings.rows(self.home)
         chosen: list[tuple[Target, Options]] = []
         shown: list[str] = []
-        changes: list[tuple[Target, str, Choice]] = []
+        turned_on: list[Target] = []
         for target in resolved:
-            row = rows.get(settings.key(target), {})
-            saved = settings.choices(row)
-            shown.append(settings.announce(target, {name: choice for name, choice in saved.items()
-                                                    if name not in given}))
-            chosen.append((target, _with(options, {**saved, **given})))
-            changes += [(target, name, choice) for name, choice in given.items()
-                        if choice is not None and choice != saved.get(name)]
-        changed = {target for target, _, _ in changes}
-        settings.record(self.home, [(target, options) for target, options in chosen if target not in changed],
-                        given=given)
-        if changed:
-            self._apply(changes, dict(chosen), given)
+            saved = settings.shrink(rows.get(settings.key(target), {}))
+            shown.append(settings.announce(target, saved) if shrink is None else "")
+            chosen.append((target, replace(options, shrink=saved if shrink is None else shrink)))
+            if shrink and not saved:
+                turned_on.append(target)
+        settings.record(self.home, [(target, options) for target, options in chosen if target not in turned_on])
+        if turned_on:
+            self._apply(turned_on, dict(chosen))
         reports = self._fetch(chosen)
         return Report(tuple(replace(report, settings=text) for report, text in zip(reports, shown)))
 
@@ -278,8 +268,7 @@ class Engine:
         chosen = self._plan(resolved)
         # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
         settings.record(self.home, chosen)
-        shown = [settings.announce(target, {name: getattr(options, name) for name in settings.SAVED})
-                 for target, options in chosen]
+        shown = [settings.announce(target, options.shrink) for target, options in chosen]
         tallies = [repair.Tally(str(target)) for target, _ in chosen]
         folders = [files.target_folder(self.home, target) for target, _ in chosen]
         with self._history() as history:
@@ -459,8 +448,7 @@ class Engine:
             targets = [Target(code, row["kind"], value) for key, row in rows.items()
                        for code, value in [key.split(":", 1)] if code in self.sources]
             targets += list(self._unrecorded(targets))
-        return [(target, _with(Options(), settings.choices(rows.get(settings.key(target), {}))))
-                for target in targets]
+        return [(target, Options(shrink=settings.shrink(rows.get(settings.key(target), {})))) for target in targets]
 
     def _unrecorded(self, known: Sequence[Target]) -> Iterator[Target]:
         """Folders under `media/<code>/` no row names: downloaded before Phase 5 recorded settings."""
@@ -474,30 +462,25 @@ class Engine:
                     except TargetError as error:
                         log.warn("{folder}: not synced: {error}", folder=f"{code}/{folder.name}", error=error)
 
-    def _apply(self, changes: Sequence[tuple[Target, str, Choice]], chosen: Mapping[Target, Options],
-               given: Iterable[str]) -> None:
-        """Bring each changed target's files already saved to its new settings, then save its settings.
+    def _apply(self, targets: Sequence[Target], chosen: Mapping[Target, Options]) -> None:
+        """Shrink the files already saved of each target `download --shrink` turns it on for, then save its setting.
 
         Args:
-            changes: (target, `settings.SAVED` name, new choice) for each compress setting `download` changes.
-            chosen: each target's options, saved settings and given ones together, as `record` takes them.
-            given: the `SAVED` names given, for `record`.
+            targets: the targets whose `--shrink` this download turns on.
+            chosen: each target's options, as `record` takes them.
 
         Raises:
             OSError: the history or `targets.db` can't be written.
         """
-        folders = {target: files.target_folder(self.home, target) for target, _, _ in changes}
+        folders = {target: files.target_folder(self.home, target) for target in targets}
         compressor = Compressor()
         with self._history() as history:
             index = repair.index(history, list(folders.values()))
-            for target in folders:
-                for changed, name, choice in changes:
-                    if changed == target:
-                        kind = next(kind for kind, spec in KINDS.items() if spec.option == name)
-                        compress.apply(history, index[folders[target]], kind, choice, compressor, label=str(target))
-                # Saved only now that every file has it: saved before, an apply cut short would never be
-                # finished, since the next download with the same option would see no change.
-                settings.record(self.home, [(target, chosen[target])], given=given)
+            for target, folder in folders.items():
+                compress.apply(history, index[folder], compressor, label=str(target))
+                # Saved only now that every file is shrunk: saved before, a shrink cut short would never
+                # be finished, since the next `download --shrink` would see no change.
+                settings.record(self.home, [(target, chosen[target])])
 
     def _fetch(self, chosen: Sequence[tuple[Target, Options]], *, sync: bool = False) -> list[TargetReport]:
         """Run the targets, those with the same options together, and give their reports in the order of `chosen`.
@@ -601,25 +584,6 @@ def _prune(folder: Path) -> None:
         # Gone already (another run pruned it), or not removable here: the next run tries again.
         except OSError:
             pass
-
-
-def _given(**values: Choice | str | None) -> dict[str, Choice | None]:
-    """The `--image`, `--video` and `--audio` given, by name: a `Choice`, or None for off.
-
-    A name given None is left out, so the target keeps its saved setting; text is read by
-    `Choice.parse`, whose `ValueError` names the option and what each part takes.
-    """
-    given: dict[str, Choice | None] = {}
-    for kind, value in values.items():
-        if value is None:
-            continue
-        given[kind] = Choice.parse(value, kind=kind) if isinstance(value, str) else value
-    return given
-
-
-def _with(options: Options, choices: Mapping[str, Choice | None]) -> Options:
-    """`options` with the saved settings in `choices`; one `choices` leaves out is None."""
-    return replace(options, image=choices.get("image"), video=choices.get("video"), audio=choices.get("audio"))
 
 
 def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[[str], str] | None = None) -> Target:
