@@ -614,7 +614,13 @@ class Post:
         """
         made = Post(fields.pop("id", self.id), fields.pop("files", self.files), date=fields.pop("date", self.date),
                     headers=fields.pop("headers", self.headers), **{**self.fields, **fields})
-        object.__setattr__(made, "category", self.category)
+        _assign(made, category=self.category)
+        return made
+
+    def filed(self, category: str) -> Post:
+        """A copy filed under `category`, which only the engine sets, as it lists the category."""
+        made = self.replace()
+        _assign(made, category=category)
         return made
 
     @property

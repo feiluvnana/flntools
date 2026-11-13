@@ -66,8 +66,10 @@ import string
 import threading
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable, Collection, Coroutine, Generator, Mapping, Sequence
+from typing import (TYPE_CHECKING, Any, Callable, Collection, Coroutine, Generator, Iterator,
+                    Mapping, Sequence)
 from urllib.parse import urlsplit
 
 from flnd import settings as saved_settings
@@ -173,76 +175,40 @@ def wanted(source: type[Source], route: Route, options: Options) -> tuple[Catego
     return tuple(category for category in route.categories if category.name in names)
 
 
-def posts(source: Source, site: Site, target: Target, options: Options, *, run_async: RunAsync,
-          ended: Callable[[str], None] | None = None, saved: Callable[[], bool | None] | None = None,
-          listed: Collection[str] = (), cursors: Mapping[str, str] | None = None,
-          resumes: dict[str, Resume] | None = None) -> Generator[Post, None, None]:
+def posts(source: Source, site: Site, target: Target, options: Options, *,
+          run_async: RunAsync) -> Generator[Post, None, None]:
     """Every post the target's route and wanted categories yield that `--time` keeps, its `category` set.
 
         for post in posts(source, site, target, options, run_async=run.run_async): ...
 
-    Args:
-        source: the target's source.
-        site: the handle the route and categories act through.
-        target: the target, whose `kind` names its route.
-        options: the run's options: `--from` and `--time`.
-        run_async: runs a coroutine to its end, for an `async def` route or category.
-        ended: called with a category's name when its generator ends by itself, having yielded
-            every post; not after a `newest_first` early stop, an error, or this iterator closing.
-        saved: says, once the caller has handled the post last yielded, whether all of its files
-            were already saved; None for a run that doesn't stop at saved posts (`download`).
-        listed: the categories whose last listing reached its end (`targets.db`'s `complete`
-            record). With `saved`, a `newest_first` one of these ends after 5 saved posts in a row.
-        cursors: the cursors interrupted listings saved, by category. A `newest_first` category
-            with one lists from it to the end, then from the newest down to 5 saved posts in a row.
-        resumes: filled with each category's `Resume`, whose `cursor` the caller saves when the
-            category doesn't end by itself.
-
-    Raises:
-        Whatever the route or a category raises, such as `FetchError` or `LoginError`.
-
-    Closing this iterator closes the category being read, so its `finally` blocks run.
+    It lists without saved posts or cursors, for `flnd/dry.py`; `download` runs its own loop.
+    Closing it closes the category being read, so its `finally` blocks run.
     """
-    route = next(route for route in source.routes if route.kind == target.kind)
     time = Range(options.since, options.until)
-    function = getattr(source, route.kind)
-    if not route.categories:
-        log.debug("{target}: list {route}", target=str(target), route=route.kind)
-        yield from _kept(function(site, target.value), "", newest_first=False, time=time, run_async=run_async,
-                         saved=None)
-        return
+    route = next(route for route in source.routes if route.kind == target.kind)
     categories = wanted(type(source), route, options)
-    if not categories:
+    if route.categories and not categories:
         return
-    context = function(site, target.value)
-    if inspect.iscoroutine(context):
-        context = run_async(context)
+    context = _context(source, route, site, target, run_async)
+    if not route.categories:
+        yield from _Kept(context, "", newest_first=False, time=time, run_async=run_async)
+        return
     for category in categories:
-        # A phase mark for the run log, so a reader finds which listing a line belongs to.
-        log.debug("{target}: list {category}", target=str(target), category=category.name)
-        start = (cursors or {}).get(category.name) if category.newest_first else None
-        resume = Resume(start, label=f"{target}: {category.name}")
-        if resumes is not None:
-            resumes[category.name] = resume
-        if start:
-            log.info("{target}: {category}: going on where an interrupted run stopped",
-                     target=str(target), category=category.name)
-        stops = saved if category.newest_first and category.name in listed and not start else None
         method = getattr(source, category.attribute)
-        with listing(resume):
-            finished = yield from _kept(method(site, context), category.name, time=time,
-                                        newest_first=category.newest_first, run_async=run_async,
-                                        saved=stops)
-        if finished and ended is not None:
-            ended(category.name)
-        if finished and start and not resume.refused:
-            # The newest posts came after the interrupted run began: read down to where it started,
-            # which 5 saved posts in a row mark.
-            log.debug("{target}: list {category} from the newest", target=str(target),
-                      category=category.name)
-            with listing(Resume()):
-                yield from _kept(method(site, context), category.name, newest_first=True, time=time,
-                                 run_async=run_async, saved=saved)
+        yield from _Kept(method(site, context), category.name, newest_first=category.newest_first,
+                         time=time, run_async=run_async)
+
+
+def _context(source: Source, route: Route, site: Site, target: Target, run_async: RunAsync) -> Any:
+    """What calling the target's route gave: its own posts, or its categories' context.
+
+    Called only when a category of it is wanted, so a route whose categories are all left out
+    makes no request.
+    """
+    context = getattr(source, route.kind)(site, target.value)
+    if route.categories and inspect.iscoroutine(context):
+        context = run_async(context)
+    return context
 
 
 def plan(run: SourceRun, target: Target, *, row: Any = None) -> Generator[Placed, None, None]:
@@ -338,7 +304,6 @@ class Job:
         # Whether the post `queue` last took had every file already saved (none queued), which
         # `sync`'s saved-run stop counts; None for a post with no file to save (none, or text only),
         # which neither counts nor breaks the run.
-        self.caught_up: bool | None = False
         self._categories = {category.name: category for route in self.source.routes for category in route.categories}
         self._pool: worker.Pool | None = None
         self._encodes: worker.Pool | None = None
@@ -374,14 +339,14 @@ class Job:
         # The thread that lists, where a lazy post's `files` may run.
         self._lister = threading.current_thread()
 
-    def queue(self, post: Post) -> bool:
+    def queue(self, post: Post) -> Outcome:
         """Queue every file of one post that isn't saved or queued yet, listing a lazy post's files only if needed.
 
         Args:
-            post: a post `posts` kept, its category set.
+            post: a post the listing kept, its category set.
 
         Returns:
-            False when Ctrl-C stopped it before every file was queued, so the listing stops too.
+            What became of it; `STOPPED` when Ctrl-C stopped it before every file was queued.
 
         Raises:
             Whatever a lazy post's `files` raises, such as `FetchError`.
@@ -394,14 +359,11 @@ class Job:
         if post.category != self._category:
             self.sum_up()
             self._category = post.category
-        self.caught_up = False
-        saved = self._saved_first(post, category) if post.lazy else False
-        if saved is not False:
+        skipped = self._saved_first(post, category) if post.lazy else None
+        if skipped is not None:
             self._skip()
-            # Queued earlier in this run isn't saved yet: it counts neither way.
-            self.caught_up = saved
             log.debug("skip {post}: already saved", post=post.id)
-            return True
+            return skipped
         # Step 2: list the files (a lazy post's `files` is called here), then queue each one not saved or queued.
         listed = list(post.files()) if callable(post.files) else list(post.files)
         found = fresh = 0
@@ -431,7 +393,7 @@ class Job:
                 continue
             # Waiting for room first keeps the pool from growing without bound while the listing runs ahead.
             if not self._room():
-                return False
+                return Outcome.STOPPED
             fresh += 1
             self._queued.update(dict.fromkeys((dest, key), placed.path))
             try:
@@ -439,10 +401,9 @@ class Job:
             except BaseException:
                 self._ended()
                 raise
-        # Something skipped and nothing queued means the post was already saved, which `sync` counts toward
-        # its stop; nothing at all means no file to save, which neither counts nor breaks the run.
-        self.caught_up = (not fresh) if found else (False if fresh else None)
-        return True
+        if fresh:
+            return Outcome.QUEUED
+        return Outcome.SAVED if found else Outcome.EMPTY
 
     def wait(self, row: Any = None) -> None:
         """Wait until every download submitted has ended, answering their refresh requests meanwhile.
@@ -508,21 +469,21 @@ class Job:
         with self._writing:
             return tuple(self._written.values())
 
-    def _saved_first(self, post: Post, category: Category | None) -> bool | None:
+    def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
         """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed files.
 
         The first file's history row holds the post's file count (`FILES`), so a post whose later
         file failed is listed again; a row without it (a post of one file) needs only its own key.
-        None when every file is held but one only because it was queued earlier in this run: the
-        post is skipped, and counts neither way toward `sync`'s stop.
+        `SAVED` when they are, `EMPTY` when one is only queued earlier in this run (it may still
+        fail, so it counts neither way), None when the post must be listed.
         """
         template = _format(self.source, category, "key")
         if not template or _fields(template) & LISTED_FIELDS:
-            return False
+            return None
         values = {**post.fields, "id": post.id, "date": day(post.date), "category": post.category}
         keys = [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}" for num in range(2)]
         if keys[0] == f"{self.source.code}:" or self._held(None, keys[0]) is None:
-            return False
+            return None
         row = self.settings.history.get(keys[0])
         count = row.get(FILES) if isinstance(row, dict) else None
         checked = [keys[0]]
@@ -531,8 +492,8 @@ class Job:
             checked += [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}"
                         for num in range(1, count)]
             if any(self._held(None, key) is None for key in checked[1:]):
-                return False
-        return None if any(key in self._queued for key in checked) else True
+                return None
+        return Outcome.EMPTY if any(key in self._queued for key in checked) else Outcome.SAVED
 
     def sum_up(self) -> None:
         """Log how many files the category being listed skipped as already saved, once, if any.
@@ -810,24 +771,17 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     complete: list[str] = []
     listed = _listed(run.settings.home, target) if sync else {}
     resumes: dict[str, Resume] = {}
-    stream = posts(run.source, site, target, run.settings.options, run_async=run.run_async,
-                   ended=complete.append, saved=lambda: job.caught_up, listed=listed,
-                   cursors=saved_settings.cursors(run.settings.home, target), resumes=resumes)
     error: BaseException | None = None
     try:
         try:
-            for post in stream:
-                # The first Ctrl-C stops listing here (D8); `queue` sees it too, between files.
-                if net.stopping.is_set() or not job.queue(post):
-                    break
+            # The first Ctrl-C stops listing between posts (D8); `queue` sees it too, between files.
+            _read(job, run, site, target, listed=listed, resumes=resumes, complete=complete)
         except KeyboardInterrupt:
             # The first Ctrl-C ends a rate-limit or pacing wait at once, raising this; that is
             # the graceful stop, not a failure. A second one is.
             if not net.stopping.is_set() or net.stopping_now.is_set():
                 raise
         finally:
-            # Closes the category being read, so its `finally` blocks run, and it isn't complete.
-            stream.close()
             site.close()
             job.sum_up()
         job.wait(row)
@@ -953,56 +907,142 @@ class _Refresh:
             self.done.set()
 
 
-def _kept(yielded: Any, category: str, *, newest_first: bool, time: Range, run_async: RunAsync,
-          saved: Callable[[], bool | None] | None) -> Generator[Post, None, bool]:
-    """The posts a route or category yielded, its `category` set, that `--time` keeps; see the module.
+class _Kept:
+    """The posts a route or category yielded that `--time` keeps, each with its `category` set.
 
-    Its return value, read with `yield from`, is True when the method's posts ran out by
-    themselves, and False after a `newest_first` early stop.
-
-    Args:
-        yielded: what the method returned: a generator, an async generator, a coroutine giving
-            an iterable (a route's own posts), or any iterable of posts.
-        category: the category's name, "" for a route's own posts.
-        newest_first: whether 5 posts in a row older than `time.since` end it.
-        time: `--time`.
-        run_async: runs one step of an async generator, or a coroutine, on the source's loop.
-        saved: asked after each post the caller has handled whether it was all saved already; 5 in
-            a row end the method (`sync`'s saved-run stop). It answers None for a post with no file
-            to save, which neither counts nor breaks the run. None never stops at saved posts.
+    `ran_out` is True once the method's posts ran out by themselves, and stays False after a
+    `newest_first` early stop (5 posts in a row older than `--time`'s since) or a close.
     """
-    if inspect.iscoroutine(yielded):
-        yielded = run_async(yielded)
-    stream = _steps(yielded, run_async)
-    older = already = 0
+
+    def __init__(self, yielded: Any, category: str, *, newest_first: bool, time: Range,
+                 run_async: RunAsync):
+        if inspect.iscoroutine(yielded):
+            yielded = run_async(yielded)
+        self.category, self.newest_first, self.time = category, newest_first, time
+        self.ran_out = False
+        self._steps = _steps(yielded, run_async)
+
+    def __iter__(self) -> Iterator[Post]:
+        """Each kept post, its category set; ends after 5 posts in a row older than `--time`."""
+        older = 0
+        try:
+            for post in self._steps:
+                if not isinstance(post, Post):
+                    name = type(post).__name__
+                    raise TypeError(f"{self.category or 'a route'} yielded {name}, not a Post")
+                if self.category:
+                    post = post.filed(self.category)
+                posted = day(post.date)
+                if posted in self.time:
+                    older = 0
+                    yield post
+                    continue
+                since = self.time.since
+                if self.newest_first and since and posted and posted < since:
+                    older += 1
+                    if older >= OLDER_IN_A_ROW:
+                        return
+            self.ran_out = True
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """Close the method's generator, so its `finally` blocks run; a second call does nothing."""
+        self._steps.close()
+
+
+class Outcome(Enum):
+    """What `Job.queue` did with one post."""
+
+    # At least one file was queued.
+    QUEUED = "queued"
+    # Every file was saved already: toward `sync`'s saved-run stop.
+    SAVED = "saved"
+    # No file to save, or only files queued earlier in this run (they may fail): counts neither way.
+    EMPTY = "empty"
+    # Ctrl-C stopped it before every file was queued.
+    STOPPED = "stopped"
+
+
+class Ended(Enum):
+    """How one listing ended."""
+
+    # Its posts ran out by themselves: the category is complete.
+    RAN_OUT = "ran out"
+    # An early stop: 5 posts older than `--time`, or 5 saved posts in a row.
+    CUT = "cut"
+    # Ctrl-C: nothing more is listed.
+    STOPPED = "stopped"
+
+
+def _queue_all(job: Job, kept: _Kept, *, stop_at_saved: bool) -> Ended:
+    """Queue each post a listing keeps, until Ctrl-C or, if `stop_at_saved`, 5 saved in a row."""
+    saved_in_a_row = 0
     try:
-        for post in stream:
-            if not isinstance(post, Post):
-                raise TypeError(f"{category or 'a route'} yielded {type(post).__name__}, not a Post")
-            if category:
-                post = post.replace()
-                object.__setattr__(post, "category", category)
-            posted = day(post.date)
-            if posted in time:
-                older = 0
-                yield post
-                if saved is not None:
-                    caught_up = saved()
-                    if caught_up is not None:
-                        already = already + 1 if caught_up else 0
-                    if already >= SAVED_IN_A_ROW:
-                        log.info("{category}: {count} saved posts in a row, caught up", category=category,
-                                 count=already)
-                        return False
-                continue
-            if newest_first and time.since is not None and posted is not None and posted < time.since:
-                older += 1
-                if older >= OLDER_IN_A_ROW:
-                    return False
-        return True
+        for post in kept:
+            outcome = Outcome.STOPPED if net.stopping.is_set() else job.queue(post)
+            if outcome is Outcome.STOPPED:
+                return Ended.STOPPED
+            if outcome is not Outcome.EMPTY:
+                saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
+            if stop_at_saved and saved_in_a_row >= SAVED_IN_A_ROW:
+                log.info("{category}: {count} saved posts in a row, caught up",
+                         category=kept.category, count=saved_in_a_row)
+                return Ended.CUT
     finally:
-        # Closed however this ends (an early stop, an error, the job stopping): its `finally` blocks run.
-        stream.close()
+        kept.close()
+    return Ended.RAN_OUT if kept.ran_out else Ended.CUT
+
+
+def _read(job: Job, run: SourceRun, site: Site, target: Target, *, listed: Collection[str],
+          resumes: dict[str, Resume], complete: list[str]) -> None:
+    """List the target's route and wanted categories into the job, each from its saved cursor.
+
+    A `newest_first` category in `listed` stops after 5 saved posts in a row. One with a cursor an
+    interrupted run saved lists from it to the end, then from the newest down to 5 saved posts in
+    a row. Each category that ran out goes into `complete`; each category's `Resume` into `resumes`.
+    """
+    options, run_async = run.settings.options, run.run_async
+    time = Range(options.since, options.until)
+    route = next(route for route in run.source.routes if route.kind == target.kind)
+    categories = wanted(type(run.source), route, options)
+    if route.categories and not categories:
+        return
+    context = _context(run.source, route, site, target, run_async)
+    if not route.categories:
+        log.debug("{target}: list {route}", target=str(target), route=route.kind)
+        own = _Kept(context, "", newest_first=False, time=time, run_async=run_async)
+        _queue_all(job, own, stop_at_saved=False)
+        return
+    cursors = saved_settings.cursors(run.settings.home, target)
+    for category in categories:
+        # A phase mark for the run log, so a reader finds which listing a line belongs to.
+        log.debug("{target}: list {category}", target=str(target), category=category.name)
+        start = cursors.get(category.name) if category.newest_first else None
+        resume = resumes[category.name] = Resume(start, label=f"{target}: {category.name}")
+        if start:
+            log.info("{target}: {category}: going on where an interrupted run stopped",
+                     target=str(target), category=category.name)
+        method = getattr(run.source, category.attribute)
+        kept = _Kept(method(site, context), category.name, newest_first=category.newest_first,
+                     time=time, run_async=run_async)
+        stop_at_saved = category.newest_first and category.name in listed and not start
+        with listing(resume):
+            ended = _queue_all(job, kept, stop_at_saved=stop_at_saved)
+        if ended is Ended.STOPPED:
+            return
+        if ended is Ended.RAN_OUT:
+            complete.append(category.name)
+        if ended is Ended.RAN_OUT and start and not resume.refused:
+            # The newest posts came after the interrupted run began: read down to where it started,
+            # which 5 saved posts in a row mark.
+            log.debug("{target}: list {category} from the newest", target=str(target),
+                      category=category.name)
+            kept = _Kept(method(site, context), category.name, newest_first=True, time=time,
+                         run_async=run_async)
+            with listing(Resume()):
+                if _queue_all(job, kept, stop_at_saved=True) is Ended.STOPPED:
+                    return
 
 
 def _listed(home: Path, target: Target) -> dict[str, str]:

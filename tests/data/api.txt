@@ -71,6 +71,7 @@ flnd.source.Post(id: str | int, files: Sequence[File] | Callable[[], Iterable[Fi
 flnd.source.Post.category: field -> str
 flnd.source.Post.date: field -> DateLike
 flnd.source.Post.fields: field -> Mapping[str, Any]
+flnd.source.Post.filed(category: str) -> Post
 flnd.source.Post.files: field -> tuple[File, ...] | Callable[[], Iterable[File]]
 flnd.source.Post.headers: field -> Mapping[str, str] | None
 flnd.source.Post.id: field -> str
