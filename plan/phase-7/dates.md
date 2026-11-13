@@ -1,6 +1,6 @@
 # dates
 
-Phase 7, steps 3 and 4. Every source lists each item once, and every file has a date (user,
+Phase 7, steps 4 and 5. Every source lists each item once, and every file has a date (user,
 2026-11-13: for every source, not Facebook only). Seen first in a live Facebook run on 2026-11-13.
 
 ## What happens today
@@ -23,7 +23,7 @@ Phase 7, steps 3 and 4. Every source lists each item once, and every file has a 
 
 ## 1. One listing memory, in the job
 
-Step 3. The job already dedupes by key and owns the history, which a source can't read, so the
+Step 4. The job already dedupes by key and owns the history, which a source can't read, so the
 memory lives there, for every source:
 - **Each key once per target**, across results and categories, as today; and **one key → date
   map**, filled from the listing and from history rows, so a date any category or earlier run
@@ -38,7 +38,7 @@ memory lives there, for every source:
 
 ## 2. Every file dated
 
-Step 4, decided by the user on 2026-11-13. For a post still undated when its category ends:
+Step 5, decided by the user on 2026-11-13. For a post still undated when its category ends:
 1. **The source's `date` hook**, when it has one: `date(site, post) -> DateLike`, one paced
    request for that item's own info. Facebook's reads `facebook.com/photo/?fbid=<id>` through the
    page's API (`site.fetch(…, in_page=True)`) for its `created_time`: 100 undated photos add

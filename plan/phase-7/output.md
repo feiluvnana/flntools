@@ -1,27 +1,29 @@
 # output
 
-Phase 7, steps 0 and 6. How a run looks: by default, a few live status lines; with `-v`, the same
+Phase 7, steps 0 and 9. How a run looks: by default, a few live status lines; with `-v`, the same
 status lines and every line of progress and log as well (user, 2026-11-13).
 
 ## Built in step 0
 
 ### Columns
 
-`shared.theme.draw_progress` draws a bar with a total in fixed columns, the label last, so every
-name starts at one column whatever its length:
+`shared.theme.draw_progress` draws every progress line the same way: glyph, 20 bar cells, the
+label, then the count and caption, one space apart (user, 2026-11-13: the size last, no wide gap):
 
 ```
-✓ ━━━━━━━━━━━━━━━━━━━━           45.4 KB posts/2026-11-11_122168984774665018.jpg
-✓ ━━━━━━━━━━━━━━━━━━━━            2.2 MB videos/2026-11-09_2964864390550364.mp4
-• ━━━━━━━━━━──────────    7.3 MB/14.6 MB videos/2026-08-20_2125341001354648.mp4
-✗ ━━━━━━──────────────    1.1 MB/3.9 MB videos/2026-09-24_1418040356948308.mp4 timed out
+✓ ━━━━━━━━━━━━━━━━━━━━ posts/2026-11-11_122168984774665018.jpg 45.4 KB
+✓ ━━━━━━━━━━━━━━━━━━━━ videos/2026-11-09_2964864390550364.mp4 2.2 MB
+• ━━━━━━━━━━────────── videos/2026-08-20_2125341001354648.mp4 7.3 MB/14.6 MB
+• ⠋                    posts/2026-09-30_example_12.jpg 12.0 KB
+✗ ━━━━━━────────────── videos/2026-09-24_1418040356948308.mp4 1.1 MB/3.9 MB timed out
 ```
 
-- Glyph, 20 bar cells, the count right-aligned in 17 cells (`COUNT_CELLS`: `999.9 MB/999.9 MB`),
-  then the label and caption. A longer line is cut at its end by the live area.
+- The bars and the names start at one column on every line; the size follows its name.
 - A line that ended at ok shows its total alone; a failed one keeps `count/total`, so how far it
   got stays on screen.
-- A spinner (no total) keeps its label first: `• scroll posts ⠋ 12`.
+- **A download whose size the server didn't send** (no `Content-Length`) has no total: its
+  spinner sits in the bar's column while it runs, and it ends with full cells like any other, so
+  no line is left without a bar.
 
 ### Skips
 
@@ -29,13 +31,13 @@ name starts at one column whatever its length:
   `· skip posts/122168984888665018.jpg: already saved as posts/2026-11-11_122168984888665018.jpg`.
 - At info, each category says once how many it skipped:
   `• fbk:example.page: photos: 131 files already saved`.
-- `flnd download -v` (`--verbose`) shows debug lines, and so will `flnd sync -v` from step 6
+- `flnd download -v` (`--verbose`) shows debug lines, and so will `flnd sync -v` from step 9
   (user, 2026-11-13: same rule as `download`). `-v` is how a run is shown, not how a target is
   downloaded, so `sync` still changes no setting.
 
 ## Status lines
 
-Step 6. Today every finished file prints a line, so a run of 500 files is 500 lines of scrollback,
+Step 9. Today every finished file prints a line, so a run of 500 files is 500 lines of scrollback,
 and what is happening right now (how many running, shrinking, failing) can't be seen.
 
 ### Without `-v`
@@ -54,7 +56,7 @@ leaves its line in the scrollback as its summary. Nothing is printed per file.
   saved, linked ([links](links.md)), skipped, failed, then the bytes saved and the time taken.
 - **The second line**, only while something runs: downloading and shrinking ([shrink](shrink.md)), and a rate-limit or block wait as its countdown (`waiting 4m 10s: Facebook says
   you've been temporarily blocked`).
-- **Colors** follow what needs the eye: downloading cyan, shrinking magenta, saved green, linked
+- **Colors** follow what needs the eye, muted except where it matters: downloading cyan, shrinking magenta, saved green, linked
   blue, skipped and zero counts dim grey, failed red, the bytes and time dim. A count is drawn in
   its color only when above zero.
 - **Warnings and errors still print in full** above the live area: a file that failed, with why;
@@ -79,6 +81,35 @@ The **same status lines**, and every line of progress and log as well:
 These are the lines every run's log file holds anyway, `-v` or not ([layout](layout.md#run-logs)).
 
 Sizes are dim and names in normal weight, so the names stand out.
+
+### Colors and motion
+
+The user said on 2026-11-13 that the screen is **too white and hard to look at, especially under
+`-v`**: every log line needs a sensible color and behaviour, and running rows may animate. Rules:
+- **Less white.** Plain text is the exception, kept for what a person must read: a file's name,
+  a warning's or error's message. Everything else is toned down:
+  - **debug lines** (`-v`) are faint grey, glyph and all, so the detail sits behind the status;
+  - **info lines** are muted, with only their subject in normal weight (the target, the category);
+  - **a path** draws its folder dim and its file name normal; **sizes, counts and times** dim;
+  - **the target** (`fbk:example.page`) bold, **the category** in its own muted accent.
+- **Levels keep their meaning**: ok green, warn yellow, error red, each painting its glyph and its
+  subject; the message's detail after a colon is dimmer than its head.
+- **Skips** (`↷`) and links (`⛓`) dim grey and blue: seen, not read.
+- **Calm, not flashy** (user, 2026-11-13: "nice aesthetic, but don't be too flashy"). Motion
+  only where something is running, and only one kind at a time on a line:
+  - a running bar's filled cells carry a soft **gradient** (two neighbouring shades of the accent
+    in 24-bit colour, a short 256-colour ramp otherwise) that drifts slowly along them;
+  - the spinner steps through the accent's shades;
+  - a waiting row (rate limit, block) is steady yellow, with its countdown; no pulsing;
+  - counts don't animate; they change as they change.
+  A row that ends stops moving and keeps one flat colour (green bar at ok, red at error), so the
+  scrollback is still. No blinking, no bold colour blocks, no emoji.
+- **Cheap and safe**: the animation runs on the live area's one drawing thread at its frame rate
+  (Phase 6 [ui](../phase-6/ui.md)), only for rows on screen; `NO_COLOR`, `TERM=dumb`, a pipe or a
+  file get no colour and no motion; 8-colour terminals get flat colours; the run log is plain text.
+- **In `shared`**: the palette gains the roles above (`faint`, `muted`, `accent`, `size`, `path`…)
+  and a gradient drawer in `theme`, so flnd names roles, never colours. Each role keeps an ASCII
+  and no-colour form, and `tests/test_theme.py` pins each depth.
 
 ### How it is built
 

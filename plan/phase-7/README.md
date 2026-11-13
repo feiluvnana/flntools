@@ -13,6 +13,11 @@ metadata and a log of each run.
 | Facebook's feed lists one photo twice, dated and undated, so files get either name | [dates](dates.md#1-one-listing-memory-in-the-job): one listing memory in the job, for every source |
 | some photos have no date | [dates](dates.md#2-every-file-dated): each source's `date` hook, then an estimate; `sync` dates saved files |
 | `--image`, `--video`, `--audio` ask for formats and levels most people don't want to choose | [shrink](shrink.md): one `--shrink` flag, a balanced compress in each file's own format |
+| downloads should be very fast, the downloader as strong as IDM | [speed](speed.md): dynamic segmentation, stall detection, adaptive connections, HTTP/2, 8 files at once, sources side by side, lower listing floors |
+| bugs found by a review: `sync` can't restore lost files, a failed carousel file never retried, X marks failed listings complete | [fixes](fixes.md): five bugs, each with a test that fails first |
+| `sync` decodes the whole library every run; encodes that can't win; one back-off for site and CDN | [speed](speed.md#3-less-work-around-the-downloads) |
+| `shared` makes flnd think: rebuilt fetches, side channels for headers, error text matched, no way to stop a download | [shared](shared.md): `shared` as a black box |
+| files flnd never gets (X's older tweets, a second CDN host) | [fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), from gallery-dl |
 | flnd's code could be leaner | [lean](lean.md): proposals from two audits, about 425 lines |
 | a file found in two tabs (reels and videos, photos and posts) is in only one folder | [links](links.md) |
 | `.flnd/` mixes media and stores, and a run leaves no record to audit |  [layout](layout.md): `.flnd/media/`, `.flnd/metadata/`, `.flnd/log/` with every run's log |
@@ -25,18 +30,26 @@ Each step ends with `check` green and is committed on its own.
    lines, `download -v`. **Built** (`9df3e36`).
 1. [layout](layout.md): `media/`, `metadata/` and `log/`, and a log of every run at debug. **Built**, with lean's E9.
 2. [shrink](shrink.md): `--shrink` replaces `--image`, `--video` and `--audio`. **Built**.
-3. [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
+3. [fixes](fixes.md): five bugs from the 2026-11-13 review.
+4. [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
    source: each key once, one key → date map, undated posts held until their category ends.
-4. [dates › every file dated](dates.md#2-every-file-dated): a source's `date` hook, then an
+5. [dates › every file dated](dates.md#2-every-file-dated): a source's `date` hook, then an
    estimate; `sync` dates files saved without a date.
-5. [links](links.md): a file found again in another tab's folder is linked there.
-6. [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
+6. [links](links.md): a file found again in another tab's folder is linked there.
+7. [shared](shared.md): `shared` as a black box: `http.fetch` used, `download` and `goto` return
+   their headers, downloads stoppable, errors caught by name, private imports gone.
+8. [speed](speed.md): the downloader after IDM and MDM, more at once, less work around the
+   downloads, and lower listing floors.
+9. [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
    line under them.
 
 The layout comes first, since every later step writes paths and history rows, and the run log
 records what the later steps add. `--shrink` comes next, since the new `metadata/` means no old
-setting needs reading. Step 6 builds on step 5's counts (linked files are counted), and steps 3–4
-change what it counts as skipped.
+setting needs reading. The fixes come before the steps that build on the job and `sync`.
+`shared` comes before speed, whose downloader builds on `download`'s new return and `stop`. Step 9
+builds on step 6's counts (linked files are counted) and step 8's speeds, and steps 4–5 change
+what it counts as skipped. Step 9 also gives every line its colour
+and the running rows their motion ([output](output.md#colors-and-motion)).
 
 ## Decisions
 
@@ -60,6 +73,15 @@ All decided by the user on 2026-11-13:
 11. **`--shrink` replaces `--image`, `--video` and `--audio`**: a balanced compress of every
     photo, video and audio file, in its own format, saved for the target ([shrink](shrink.md)).
 12. **[lean](lean.md)'s three calls, as recommended**: tik's direct API path deleted, one retry layer (E1), one run grouped by source (E5).
+13. **Very fast downloads** ([speed](speed.md)): the downloader learns from IDM, 8 files at once,
+    sources side by side, and listing floors ins 0.5 s, twt 0.2 s, fbk 0.8 s.
+14. **Every log line gets a sensible colour; running rows animate** ([output](output.md#colors-and-motion)).
+15. **The bugs and the performance findings of the 2026-11-13 reviews are fixed** ([fixes](fixes.md), [speed](speed.md#3-less-work-around-the-downloads)); `sync` trusts unchanged files and fully checks changed ones plus a rolling 1/30 of the rest.
+16. **`shared` is a black box**: flnd doesn't think for it ([shared](shared.md)).
+17. **The screen is pleasant, not flashy**: muted colours, one soft motion per running line, a still scrollback ([output](output.md#colors-and-motion)).
+18. **What gallery-dl and misterdownloadmanager do better is taken** where it fits ([fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), [speed](speed.md)).
+19. **`shared`'s public API is judged by usefulness**: unused is not dead, and only aliases go ([shared](shared.md)); `media`'s API stays whole.
+20. **A part resumes without a validator** after a 64-byte overlap check ([speed](speed.md#4-listing-pace)); **an interrupted listing restarts from its cursor**; **story music, quoted tweets' media and card images** are saved with their posts ([fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl)).
 
 3 and 7 reverse Phase 6 [simplify §3](../phase-6/simplify.md#3-no-history-migrations)'s "no
 rename when the real date is found": the user's later decision.

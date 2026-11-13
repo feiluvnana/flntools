@@ -1,6 +1,6 @@
 # links
 
-Phase 7, step 5. A file found in two tabs is saved once, by its key, and skipped in the second, so
+Phase 7, step 6. A file found in two tabs is saved once, by its key, and skipped in the second, so
 it is missing from that tab's folder: a reel is in `videos/` but not `reels/`, a photo in `posts/`
 but not `photos/`. The user asked on 2026-11-13 for a symlink in the second folder.
 

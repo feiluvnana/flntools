@@ -6,7 +6,8 @@ flntools is flnd, a media downloader, and `shared`, the toolkit it is built on. 
 
 - **`shared` is flnd's toolkit, not a general library product.** flnd is its only user, since loi and tlg became flnd sources. The package boundary stays, because it keeps the engine and the sources clean. Nothing is added for imaginary outside users.
 - **Each module is small, with one obvious way to use it.** If the standard library already does the job, the module doesn't exist.
-- **No size ceiling.** The user removed `shared`'s ceiling (about 5,000 lines of code) on 2026-11-12. A module is judged by how good and useful its API is, not by its line count. Earlier phase files still mention the ceiling, as history.
+- **No size ceiling.** The user removed `shared`'s ceiling (about 5,000 lines of code) on 2026-11-12. A module is judged by how good and useful its API is, not by its line count, so Rule 3's line counts below are history. Earlier phase files still mention the ceiling, as history.
+- **Useful, not used.** A public name in `shared` stays while it is useful, whether or not flnd calls it (user, 2026-11-13); only aliases and second spellings go.
 
 ## Rules
 
@@ -111,10 +112,13 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 0. [output › columns and skips](phase-7/output.md#built-in-step-0): progress lines with the name last, skips summed per category, `download -v`. **Built** (`9df3e36`).
 1. [layout](phase-7/layout.md): `.flnd/media/`, `.flnd/metadata/` and `.flnd/log/`, with a log of every run to audit later.
 2. [shrink](phase-7/shrink.md): `--shrink` replaces `--image`, `--video` and `--audio`: a balanced compress in each file's own format.
-3. [dates › one listing memory](phase-7/dates.md#1-one-listing-memory-in-the-job): each item listed once, under its dated name, in every source.
-4. [dates › every file dated](phase-7/dates.md#2-every-file-dated): a source's `date` hook, then an estimate; `sync` dates saved files.
-5. [links](phase-7/links.md): a file found in a second tab is symlinked there.
-6. [output › status lines](phase-7/output.md#status-lines): live status lines by default; `-v` adds every line.
+3. [fixes](phase-7/fixes.md): five bugs from a review, among them `sync` unable to restore lost files and X marking failed listings complete.
+4. [dates › one listing memory](phase-7/dates.md#1-one-listing-memory-in-the-job): each item listed once, under its dated name, in every source.
+5. [dates › every file dated](phase-7/dates.md#2-every-file-dated): a source's `date` hook, then an estimate; `sync` dates saved files.
+6. [links](phase-7/links.md): a file found in a second tab is symlinked there.
+7. [shared](phase-7/shared.md): `shared` as a black box: flnd stops rebuilding, side-channelling and string-matching around it.
+8. [speed](phase-7/speed.md): the downloader after IDM (bounded pieces, stall detection, adaptive connections, HTTP/2 for small files), 8 files at once, sources side by side, `sync` without a full decode, encodes that can't win skipped, lower listing floors.
+9. [output › status lines](phase-7/output.md#status-lines): live status lines by default; `-v` adds every line.
    And [lean](phase-7/lean.md): proposals to make flnd about 425 lines leaner, built with the step that touches each file.
 
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
