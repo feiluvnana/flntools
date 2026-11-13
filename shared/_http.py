@@ -53,6 +53,7 @@ import http.cookiejar
 import io
 import json as jsonlib
 import os
+import re
 import secrets
 import threading
 import time
@@ -1118,9 +1119,11 @@ def _claimed(dest: Path) -> Iterator[bool]:
 
 def _resumable(dest: Path) -> _State | None:
     """The newest part an earlier call left for `dest`, read from its sidecar; broken leftovers are deleted, or None."""
-    prefix, suffix = f".{dest.name}.", f".part{INFO_SUFFIX}"
+    # Exactly `shared.atomic`'s `.<name>.<8 hex digits>.part` and the sidecar's suffix: a prefix
+    # alone would let `a.rar` adopt `.a.rar.001.<hex>.part`, a sibling's part, and delete it.
+    own = re.compile(re.escape(f".{dest.name}.") + r"[0-9a-f]{8}" + re.escape(f".part{INFO_SUFFIX}"))
     try:
-        names = [name for name in os.listdir(dest.parent) if name.startswith(prefix) and name.endswith(suffix)]
+        names = [name for name in os.listdir(dest.parent) if own.fullmatch(name)]
     except OSError:  # no folder, or one that can't be read: nothing to resume
         return None
     infos = sorted((dest.parent / name for name in names), key=_modified, reverse=True)

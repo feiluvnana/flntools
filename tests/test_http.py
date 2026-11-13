@@ -704,6 +704,22 @@ class ResumeTest(DownloadCase):
         self.assertEqual(self.cdn.ranges_asked(), [f"bytes={kept}-"])
         self.assertEqual(self.leftovers(), [])
 
+    def test_a_file_never_adopts_a_siblings_part(self):
+        """fixes #5: `a.rar` and `a.rar.001` in one folder each keep their own part."""
+        def interrupt(done: int, total: int | None) -> None:
+            if done >= 4096:
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.download(dest=self.tmp / "a.rar.001", progress=interrupt)
+        sibling = self.leftovers()
+        self.assertEqual(len(sibling), 2)
+        self.cdn.requests.clear()
+        self.assertEqual(self.download(dest=self.tmp / "a.rar").read_bytes(), DATA)
+        # A fresh download, not a resume of the sibling's bytes, which are still there.
+        self.assertEqual(self.cdn.ranges_asked(), [None])
+        self.assertEqual(self.leftovers(), sibling)
+
     def test_a_refusal_keeps_a_resumable_part(self):
         self.cdn.script = [self.cdn.cut_at(3000), lambda request: httpx.Response(403)]
         with self.assertRaises(http.RefusedError):
