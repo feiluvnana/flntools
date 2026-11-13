@@ -263,6 +263,8 @@ def place(source: Source, post: Post, files: Sequence[File], *, category: Catego
     for a one-file post and `_<num>` otherwise, `extension` (".jpg": from the file's `name`, else
     its URL when that names a photo, video or audio extension, else "" and the content decides),
     and, for the key only, `path`. A formatted key that comes out empty is the file's `path`.
+    A name the site built as the `filename` format would, with or without the day, is built
+    again with the post's day now; any other name the site gave is kept.
     """
     folder, filename, key = (_format(source, category, name) for name in ("folder", "filename", "key"))
     date = day(post.date)
@@ -271,15 +273,25 @@ def place(source: Source, post: Post, files: Sequence[File], *, category: Catego
         extension, kind = _extension(file)
         values = {**post.fields, "id": post.id, "date": date, "category": post.category, "num": num,
                   "count": len(files), "index": "" if len(files) == 1 else f"_{num}", "extension": extension}
-        if file.name is not None:
-            name = fmt.filename(file.name)
+        formatted = fill(filename, values) or fmt.filename(post.id)
+        if file.name is None:
+            name = formatted + extension
+        elif file.content is None and PurePosixPath(file.name).stem in _stems(filename, values):
+            # The site built the format's own name, perhaps without the day the listing memory
+            # found since: built again with it, keeping the site's extension.
+            name = formatted + PurePosixPath(file.name).suffix
         else:
-            name = (fill(filename, values) or fmt.filename(post.id)) + extension
+            name = fmt.filename(file.name)
         path = "/".join(part for part in (fill(folder, values), name) if part)
         placed.append(Placed(post, file, num, path, fill(key, {**values, "path": path}, safe=False) or path, kind,
                              values))
     return placed
 
+
+
+def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
+    """The names the `filename` format gives a file, with its day and without it."""
+    return {fill(filename, values), fill(filename, {**values, "date": None})} - {""}
 
 class Ledger:
     """What one target's listing has seen: the files queued, the skips, and the history it reads.

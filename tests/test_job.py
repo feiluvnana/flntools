@@ -832,7 +832,7 @@ class CtrlCTest(JobCase):
         thread.join(10)
         report = outcome["report"]
         self.assertEqual(report.targets[0].error, job.STOPPED)
-        self.assertEqual(self.files("slw"), ["1.7z"])
+        self.assertEqual(self.files("slw"), ["2026-01-01_1.7z"])
         self.assertIn("slw:1_0", self.history())
         # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
         self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
@@ -1088,6 +1088,14 @@ class MemoryTest(JobCase):
             history["mem:B2_0"] = {"path": "/gone.jpg", "size": 1,
                                    "at": "2026-01-03T00:00:00+00:00", "date": "2026-01-03"}
         self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))
+
+    def test_a_name_the_site_built_from_the_format_takes_the_day_found(self):
+        undated = Post("A1", [File(f"{CDN}/a", name="A1.webp")])
+        day = datetime.date(2026, 1, 2)
+        dated = Post("A1", [File(f"{CDN}/a", name="2026-01-02_A1.webp")], date=day)
+        other = Post("B2", [File(f"{CDN}/b", name="cover.jpg")], date=day)
+        files = self.run_feed([undated, dated, other])
+        self.assertEqual(files, ["2026-01-02_A1.webp", "cover.jpg"])
 
     def test_a_second_undated_copy_counts_as_a_skip(self):
         self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")]), Post("A1", [File(f"{CDN}/a.jpg")])])
