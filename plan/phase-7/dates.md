@@ -67,6 +67,13 @@ both have the same bytes. One the site can't date keeps its name, and the next `
 This reverses Phase 6 [simplify §3](../phase-6/simplify.md#3-no-history-migrations)'s "no rename
 when the real date is found", by the user's later decision.
 
+As built (2026-11-13): `Source.date(site, post)` returns None by default. The nearest
+dated neighbour is searched both ways in listing order, the earlier one first on a tie. History
+rows gain `id`, which `sync` asks the hook by. A file is renamed only when the source's
+`filename` starts with `{date}_`; an estimated day in front is replaced. fbk's hook reads the
+first `"created_time"` on `facebook.com/photo/?fbid=<id>`, from the tab: unverified until a live
+check.
+
 ## Tests
 
 Fakes only: one item listed dated and undated, in either order, gives one file with the dated
