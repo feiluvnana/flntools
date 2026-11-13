@@ -119,7 +119,8 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 7. [shared](phase-7/shared.md): `shared` as a black box: flnd stops rebuilding, side-channelling and string-matching around it.
 8. [speed](phase-7/speed.md): the downloader after IDM (bounded pieces, stall detection, adaptive connections, HTTP/2 for small files), 8 files at once, sources side by side, `sync` without a full decode, encodes that can't win skipped, lower listing floors.
 9. [output › status lines](phase-7/output.md#status-lines): live status lines by default; `-v` adds every line.
-   And [lean](phase-7/lean.md): proposals to make flnd about 425 lines leaner, built with the step that touches each file.
+10. [flnd › sites and finding](phase-7/flnd.md#4-sites-site-downloader-finder): `Site`, `Downloader` and `Finder` apart, "site" everywhere, `flnd find`, and the `auth` and `target` command groups. The whole of flnd after Phase 7 is in [flnd](phase-7/flnd.md).
+   And [lean](phase-7/lean.md): every proposal taken (about 515 lines), each built with the step that touches its files.
 
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
 

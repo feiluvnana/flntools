@@ -1,5 +1,8 @@
 # Phase 7: honest listings and a calm screen
 
+**[flnd](flnd.md) is the complete spec of flnd after Phase 7, and holds over the other files
+here where they differ** (user, 2026-11-13); the other files keep each step's detail.
+
 Phase 6 is complete. Phase 7 comes from a live `flnd download` of a Facebook test page on
 2026-11-13, whose log the user read. They asked four things: why files were skipped, why the log
 didn't line up, that every file have its date, and that a run show what it is doing at a glance,
@@ -18,6 +21,8 @@ metadata and a log of each run.
 | `sync` decodes the whole library every run; encodes that can't win; one back-off for site and CDN | [speed](speed.md#3-less-work-around-the-downloads) |
 | `shared` makes flnd think: rebuilt fetches, side channels for headers, error text matched, no way to stop a download | [shared](shared.md): `shared` as a black box |
 | files flnd never gets (X's older tweets, a second CDN host) | [fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), from gallery-dl |
+| flnd only downloads; it should also find things on a site, and the API should say which is which | [flnd](flnd.md#9-finding-710): `Site` (access), `Downloader` (a target in), `Finder` (a query in), one engine below; `flnd find` |
+| the commands are flat; logins and kept targets have no home | [flnd](flnd.md#2-commands): `flnd auth login`/`logout`/`ls`, `flnd target ls`/`forget` |
 | flnd's code could be leaner | [lean](lean.md): proposals from two audits, about 425 lines |
 | a file found in two tabs (reels and videos, photos and posts) is in only one folder | [links](links.md) |
 | `.flnd/` mixes media and stores, and a run leaves no record to audit |  [layout](layout.md): `.flnd/media/`, `.flnd/metadata/`, `.flnd/log/` with every run's log |
@@ -42,6 +47,10 @@ Each step ends with `check` green and is committed on its own.
    downloads, and lower listing floors.
 9. [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
    line under them.
+10. [flnd › sites and finding](flnd.md#4-sites-site-downloader-finder): `Source` splits into `Site`
+    and `Downloader`, `flnd/sources/` becomes `flnd/sites/` ("site" everywhere); the find API
+    (`Finder`, `Query`, `Found`) on the same job, and `flnd find`; the `target` and `auth` command
+    groups; loi's finder first.
 
 The layout comes first, since every later step writes paths and history rows, and the run log
 records what the later steps add. `--shrink` comes next, since the new `metadata/` means no old
@@ -82,6 +91,15 @@ All decided by the user on 2026-11-13:
 18. **What gallery-dl and misterdownloadmanager do better is taken** where it fits ([fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), [speed](speed.md)).
 19. **`shared`'s public API is judged by usefulness**: unused is not dead, and only aliases go ([shared](shared.md)); `media`'s API stays whole.
 20. **A part resumes without a validator** after a 64-byte overlap check ([speed](speed.md#4-listing-pace)); **an interrupted listing restarts from its cursor**; **story music, quoted tweets' media and card images** are saved with their posts ([fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl)).
+21. **[flnd](flnd.md) is the spec**: what flnd is, does and promises after Phase 7.
+22. **Commands in groups**: `flnd auth login`/`logout`/`ls` (was `login`, `logout`) and
+    `flnd target ls`/`forget <targets…> | all`; `target ls` and `auth ls` take nothing.
+23. **Finding**: a `Finder` takes a free query (any words, any `key=value`), yields `Found` things
+    with the targets `download` takes, and saves its files by its own formats on the same job as
+    a `Downloader`; `flnd find <site> [words…] [key=value…]`, with a table, `results.json`, and
+    targets in a pipe.
+24. **"Site", not "source"**: `Site` (access) apart from `Downloader` and `Finder`; `flnd/sites/`,
+    `flnd.site`, `flnd.downloader`, `flnd.finder`, `SITES`, `sites.db`.
 
 3 and 7 reverse Phase 6 [simplify §3](../phase-6/simplify.md#3-no-history-migrations)'s "no
 rename when the real date is found": the user's later decision.
