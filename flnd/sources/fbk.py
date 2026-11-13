@@ -174,8 +174,9 @@ class Facebook(Source):
     name = "Facebook"
     domains = ("facebook.com", "fb.com", "fb.watch")
     needs = ("c_user", "xs")
-    # No known limit, and its block is the harshest (plan/phase-6/pace.md), so it starts slower and learns.
-    pace = 1.5
+    # No published limit: the learned gap doubles on a throttle and is saved, so the first block
+    # teaches it; the floor only keeps a burst slower than the other sites'.
+    pace = 0.8
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"), `album` the
     # album's title when it has one. Each file is named by `post_of`, which spells the extension exactly
     # (the CDN's `stp=dst-<format>`), so `filename` only names a file given without a name.
