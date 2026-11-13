@@ -26,7 +26,7 @@ from flnd import engine as engine_module
 from flnd import Engine, job, site as site_module
 from flnd.common import files, net
 from flnd.session import Options, single_targets
-from flnd.source import FetchError, File, LoginError, Post, Source, Target, target
+from flnd.source import FetchError, File, LoginError, Post, Source, Target, pages, target
 from shared import kv
 
 
@@ -955,6 +955,94 @@ class Uses(Source):
     def helper(self, site):
         load_in_page(site, "https://www.example.com/api")
         yield from ()
+
+
+class ResumeTest(JobCase):
+    """An interrupted listing goes on from its saved cursor, then reads the newest posts."""
+
+    def setUp(self):
+        super().setUp()
+        # Pages by cursor: None is the newest; each page holds its posts and the next page's cursor.
+        self.feed = {None: (["p1", "p2", "p3", "p4", "p5"], "c1"), "c1": (["p6", "p7"], "c2"),
+                     "c2": (["p8", "p9"], None)}
+        self.fetched, self.fail_on, self.refuse = [], None, False
+        test = self
+
+        class Paged(Source):
+            code, name, domains, key = "pgd", "Paged", ("example.com",), "{id}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category(newest_first=True)
+            def posts(self, site, user):
+                def fetch(cursor):
+                    test.fetched.append(cursor)
+                    if cursor is not None and test.refuse:
+                        raise FetchError("stale cursor", status=400)
+                    if test.fail_on is not None and cursor == test.fail_on:
+                        raise FetchError("connection reset")
+                    return test.feed[cursor]
+
+                for ids, _ in pages(fetch, lambda page: page[1]):
+                    for post_id in ids:
+                        yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")],
+                                   date=datetime.date(2026, 1, 1))
+
+        self.engine = Engine(home=self.home, sources={"pgd": Paged})
+
+    def row(self):
+        with kv.open(self.home / files.TARGETS, table="targets") as rows:
+            return rows.get("pgd:example_user", {})
+
+    def interrupted(self):
+        self.fail_on = "c2"
+        self.assertFalse(self.engine.download(["pgd:example_user"]).ok)
+        self.assertEqual(self.row()["cursors"], {"posts": "c2"})
+        self.assertNotIn("complete", self.row())
+        self.fail_on, self.fetched = None, []
+
+    def test_the_next_run_starts_at_the_saved_cursor_then_reads_the_newest(self):
+        self.interrupted()
+        # Two new posts arrived meanwhile, above the ones the first run saved.
+        self.feed[None] = (["n1", "n2"], "c0")
+        self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
+        report = self.engine.download(["pgd:example_user"])
+        self.assertTrue(report.ok)
+        # c2 to the end first, then the newest; the posts the failed run dropped are saved too.
+        self.assertEqual(self.fetched[:3], ["c2", None, "c0"])
+        folder = self.target_dir("pgd", "example_user")
+        saved = sorted(path.stem.split("_")[-1] for path in folder.rglob("*.jpg"))
+        self.assertEqual(saved, ["n1", "n2", *[f"p{number}" for number in range(1, 10)]])
+        self.assertNotIn("cursors", self.row())
+        self.assertIn("posts", self.row()["complete"])
+
+    def test_the_newest_are_read_only_down_to_5_saved_posts_in_a_row(self):
+        self.interrupted()
+        # Every post the failed run listed is saved meanwhile, as a later run would have.
+        self.fail_on = "c2-unused"
+        self.engine.download(["pgd:example_user"])
+        self.feed[None] = (["n1", "n2"], "c0")
+        self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
+        with kv.open(self.home / files.TARGETS, table="targets") as rows:
+            row = dict(rows["pgd:example_user"])
+            row["cursors"] = {"posts": "c2"}
+            rows["pgd:example_user"] = row
+        self.fetched = []
+        self.engine.download(["pgd:example_user"])
+        self.assertEqual(self.fetched, ["c2", None, "c0"])
+
+    def test_a_refused_cursor_is_dropped_and_the_listing_starts_over(self):
+        self.interrupted()
+        self.refuse = True
+        self.feed = {None: (["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"], None)}
+        report = self.engine.download(["pgd:example_user"])
+        self.assertTrue(report.ok)
+        self.assertEqual(self.fetched, ["c2", None])
+        self.assertIn("• pgd:example_user: posts: the cursor an interrupted run saved was refused; "
+                      "listing from the newest", self.lines())
+        self.assertNotIn("cursors", self.row())
 
 
 if __name__ == "__main__":

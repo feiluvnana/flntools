@@ -130,7 +130,8 @@ import datetime
 import inspect
 import re
 import string
-from contextlib import nullcontext
+import threading
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType, MethodType
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Literal, Mapping,
@@ -138,7 +139,7 @@ from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, 
 from urllib.parse import parse_qs, urlsplit
 
 from flnd.common.pace import Pace
-from shared import fmt
+from shared import fmt, log
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -929,17 +930,80 @@ def pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None
         cursor: the next cursor a page gives; None or "" when it is the last.
 
     It stops on an empty cursor and on one seen before, which a site sends at its end or when it
-    loops, so a feed is never read forever.
+    loops, so a feed is never read forever. The first call in a category the job lists starts from
+    the cursor an interrupted run saved, and tells the job the cursor of each page it reads.
     """
+    resume: Resume | None = getattr(_listing, "resume", None)
+    if resume is not None and resume.taken:
+        resume = None
+    if resume is not None:
+        resume.taken = True
+    start = resume.start if resume is not None else None
+    page = _first_page(fetch, start, resume)
     seen: set[str] = set()
-    page = fetch(None)
     while True:
         yield page
         following = cursor(page)
         if not following or following in seen:
             return
         seen.add(following)
+        if resume is not None:
+            # The cursor of the page being fetched and read: a run cut short reads it again, and
+            # the posts it already saved are skipped.
+            resume.cursor = following
         page = fetch(following)
+
+
+class Resume:
+    """One category's listing for `pages`: where it starts, and the cursor of the page it reads.
+
+        with listing(Resume("c42", label="ins:example_user: posts")):
+            ...
+    """
+
+    def __init__(self, start: str | None = None, *, label: str = ""):
+        # The cursor an interrupted run saved; None starts from the newest.
+        self.start = start
+        # Names the listing in the line that says a saved cursor was refused.
+        self.label = label
+        # The cursor of the page being read, for the job to save if the listing is cut short.
+        self.cursor: str | None = start
+        # Whether a `pages` call took this listing already; only the first one resumes.
+        self.taken = False
+        # Whether the site refused `start`, so the listing began again from the newest.
+        self.refused = False
+
+
+@contextmanager
+def listing(resume: Resume | None) -> Iterator[None]:
+    """Make `resume` the listing that `pages` calls on this thread report to, for the block."""
+    previous = getattr(_listing, "resume", None)
+    _listing.resume = resume
+    try:
+        yield
+    finally:
+        _listing.resume = previous
+
+
+def _first_page(fetch: Callable[[str | None], Any], start: str | None,
+                resume: Resume | None) -> Any:
+    """The first page: from `start` if any, else from the newest; a refused `start` is dropped."""
+    if not start or resume is None:
+        return fetch(None)
+    try:
+        return fetch(start)
+    except FetchError as error:
+        # A cursor gone stale (a 4xx) is the site's answer for good; anything else is a failure.
+        if error.status is None or not 400 <= error.status < 500:
+            raise
+    log.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
+             label=resume.label)
+    resume.refused, resume.cursor = True, None
+    return fetch(None)
+
+
+# The listing the job is reading on this thread, which `pages` resumes and reports to.
+_listing = threading.local()
 
 
 class Source:

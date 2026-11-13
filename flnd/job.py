@@ -74,7 +74,8 @@ from flnd.common import files as disk
 from flnd.common import net
 from flnd.common.compress import KINDS, ONE_AT_A_TIME
 from flnd.site import SourceRun, TargetSite
-from flnd.source import Category, FetchError, File, Post, Range, Route, Site, Source, Target, day, fill
+from flnd.source import (Category, FetchError, File, Post, Range, Resume, Route, Site, Source,
+                         Target, day, fill, listing)
 from shared import atomic, fmt, log
 
 if TYPE_CHECKING:
@@ -171,7 +172,8 @@ def wanted(source: type[Source], route: Route, options: Options) -> tuple[Catego
 
 def posts(source: Source, site: Site, target: Target, options: Options, *, run_async: RunAsync,
           ended: Callable[[str], None] | None = None, saved: Callable[[], bool | None] | None = None,
-          listed: Collection[str] = ()) -> Generator[Post, None, None]:
+          listed: Collection[str] = (), cursors: Mapping[str, str] | None = None,
+          resumes: dict[str, Resume] | None = None) -> Generator[Post, None, None]:
     """Every post the target's route and wanted categories yield that `--time` keeps, its `category` set.
 
         for post in posts(source, site, target, options, run_async=run.run_async): ...
@@ -188,6 +190,10 @@ def posts(source: Source, site: Site, target: Target, options: Options, *, run_a
             were already saved; None for a run that doesn't stop at saved posts (`download`).
         listed: the categories whose last listing reached its end (`targets.db`'s `complete`
             record). With `saved`, a `newest_first` one of these ends after 5 saved posts in a row.
+        cursors: the cursors interrupted listings saved, by category. A `newest_first` category
+            with one lists from it to the end, then from the newest down to 5 saved posts in a row.
+        resumes: filled with each category's `Resume`, whose `cursor` the caller saves when the
+            category doesn't end by itself.
 
     Raises:
         Whatever the route or a category raises, such as `FetchError` or `LoginError`.
@@ -211,12 +217,29 @@ def posts(source: Source, site: Site, target: Target, options: Options, *, run_a
     for category in categories:
         # A phase mark for the run log, so a reader finds which listing a line belongs to.
         log.debug("{target}: list {category}", target=str(target), category=category.name)
-        yielded = getattr(source, category.attribute)(site, context)
-        stops = saved if category.newest_first and category.name in listed else None
-        finished = yield from _kept(yielded, category.name, newest_first=category.newest_first, time=time,
-                                    run_async=run_async, saved=stops)
+        start = (cursors or {}).get(category.name) if category.newest_first else None
+        resume = Resume(start, label=f"{target}: {category.name}")
+        if resumes is not None:
+            resumes[category.name] = resume
+        if start:
+            log.info("{target}: {category}: going on where an interrupted run stopped",
+                     target=str(target), category=category.name)
+        stops = saved if category.newest_first and category.name in listed and not start else None
+        method = getattr(source, category.attribute)
+        with listing(resume):
+            finished = yield from _kept(method(site, context), category.name, time=time,
+                                        newest_first=category.newest_first, run_async=run_async,
+                                        saved=stops)
         if finished and ended is not None:
             ended(category.name)
+        if finished and start and not resume.refused:
+            # The newest posts came after the interrupted run began: read down to where it started,
+            # which 5 saved posts in a row mark.
+            log.debug("{target}: list {category} from the newest", target=str(target),
+                      category=category.name)
+            with listing(Resume()):
+                yield from _kept(method(site, context), category.name, newest_first=True, time=time,
+                                 run_async=run_async, saved=saved)
 
 
 def plan(run: SourceRun, target: Target, *, row: Any = None) -> Generator[Placed, None, None]:
@@ -243,13 +266,13 @@ def plan(run: SourceRun, target: Target, *, row: Any = None) -> Generator[Placed
     """
     site = TargetSite(run, target, row=row)
     categories = {category.name: category for route in run.source.routes for category in route.categories}
-    listing = posts(run.source, site, target, run.settings.options, run_async=run.run_async)
+    stream = posts(run.source, site, target, run.settings.options, run_async=run.run_async)
     try:
-        for post in listing:
+        for post in stream:
             files = list(post.files()) if callable(post.files) else list(post.files)
             yield from place(run.source, post, files, category=categories.get(post.category))
     finally:
-        listing.close()
+        stream.close()
         site.close()
 
 
@@ -776,12 +799,14 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     row.slots = job.source.concurrency
     complete: list[str] = []
     listed = _listed(run.settings.home, target) if sync else {}
-    listing = posts(run.source, site, target, run.settings.options, run_async=run.run_async, ended=complete.append,
-                    saved=lambda: job.caught_up, listed=listed)
+    resumes: dict[str, Resume] = {}
+    stream = posts(run.source, site, target, run.settings.options, run_async=run.run_async,
+                   ended=complete.append, saved=lambda: job.caught_up, listed=listed,
+                   cursors=saved_settings.cursors(run.settings.home, target), resumes=resumes)
     error: BaseException | None = None
     try:
         try:
-            for post in listing:
+            for post in stream:
                 # The first Ctrl-C stops listing here (D8); `queue` sees it too, between files.
                 if net.stopping.is_set() or not job.queue(post):
                     break
@@ -792,13 +817,18 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
                 raise
         finally:
             # Closes the category being read, so its `finally` blocks run, and it isn't complete.
-            listing.close()
+            stream.close()
             site.close()
             job.sum_up()
         job.wait(row)
     except BaseException as caught:  # a route or a category failed, or a second Ctrl-C: handled below
         error = caught
     written = job.finish(error)
+    # A category cut short keeps the cursor of the page it was reading, for the next run to go on
+    # from; one that ended by itself has nothing to resume.
+    cursors = {name: None if name in complete else resume.cursor
+               for name, resume in resumes.items()}
+    saved_settings.keep_cursors(run.settings.home, target, cursors)
     if error is not None:
         if not isinstance(error, Exception):
             raise error

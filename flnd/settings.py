@@ -28,6 +28,8 @@ TARGETS_TABLE = "targets"
 SHRINK = "shrink"
 # The row field of the categories that last listed to their end: {category: "YYYY-MM-DD"}.
 COMPLETE = "complete"
+# The row field of the cursors interrupted listings saved, for the next run: {category: cursor}.
+CURSORS = "cursors"
 
 
 def rows(home: Path) -> dict[str, Any]:
@@ -67,7 +69,7 @@ def record(home: Path, chosen: Sequence[tuple[Target, Options]]) -> None:
     Raises:
         OSError: `targets.db` can't be created or written.
 
-    The row's `complete` record is kept: a setting changing doesn't change what was listed.
+    The row's `complete` and `cursors` records are kept: a setting doesn't change what was listed.
     """
     if not chosen:
         return
@@ -75,9 +77,9 @@ def record(home: Path, chosen: Sequence[tuple[Target, Options]]) -> None:
     with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
         for target, options in chosen:
             old = saved.get(key(target))
-            complete = old.get(COMPLETE) if isinstance(old, dict) else None
-            saved[key(target)] = {"kind": target.kind, SHRINK: options.shrink, "at": now,
-                                  **({COMPLETE: complete} if isinstance(complete, dict) and complete else {})}
+            kept = {name: old[name] for name in (COMPLETE, CURSORS)
+                    if isinstance(old, dict) and isinstance(old.get(name), dict) and old[name]}
+            saved[key(target)] = {"kind": target.kind, SHRINK: options.shrink, "at": now, **kept}
 
 
 def complete(home: Path, target: Target, categories: Iterable[str]) -> None:
@@ -104,6 +106,41 @@ def complete(home: Path, target: Target, categories: Iterable[str]) -> None:
         row[COMPLETE] = {**(done if isinstance(done, dict) else {}), **{name: today for name in names}}
         saved[key(target)] = row
 
+
+
+def cursors(home: Path, target: Target) -> dict[str, str]:
+    """The cursors a target's interrupted listings saved, by category; empty when there is none.
+
+    Args:
+        home: flnd's folder; `targets.db` is only read.
+        target: the target whose row is read.
+    """
+    row = rows(home).get(key(target), {})
+    found = row.get(CURSORS) if isinstance(row, dict) else None
+    if not isinstance(found, dict):
+        return {}
+    return {name: value for name, value in found.items() if isinstance(value, str)}
+
+
+def keep_cursors(home: Path, target: Target, changed: Mapping[str, str | None]) -> None:
+    """Save each category's cursor in `changed`, or forget it for None.
+
+    Raises:
+        OSError: `targets.db` can't be written.
+    """
+    if not changed:
+        return
+    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
+        old = saved.get(key(target))
+        row: dict[str, Any] = dict(old) if isinstance(old, dict) else {"kind": target.kind}
+        found = row.get(CURSORS)
+        merged = {**(found if isinstance(found, dict) else {}), **changed}
+        kept = {name: value for name, value in merged.items() if value}
+        if kept:
+            row[CURSORS] = kept
+        else:
+            row.pop(CURSORS, None)
+        saved[key(target)] = row
 
 def announce(target: Target, shrink: bool) -> str:
     """Say when a run of this target shrinks by its saved setting, so it never applies by surprise, and return what was said.

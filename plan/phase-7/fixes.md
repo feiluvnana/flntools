@@ -97,6 +97,13 @@ Phase 6's redesign D7 deferred): a category that stops before its end saves its 
 `targets.db`, and the next run of that target starts from it, then lists the newest posts down to
 where the first run began; a cursor the site refuses is dropped and the listing starts over.
 
+How (user, 2026-11-13): `pages()` tells the job each page's cursor, and a category cut short
+saves the cursor of the page it was reading in `targets.db` (`cursors`). The next run lists from
+that cursor to the end first, then the newest posts down to 5 saved in a row (the saved-run stop,
+forced on even under `download`); a `newest_first` category only, since only its newest posts are
+together. Only a category's first `pages()` call resumes. A cursor the site refuses (a 4xx) is
+dropped with one info line, and the listing starts over. Async sites (tlg) aren't covered.
+
 ### 11. Content gallery-dl gets that flnd leaves out
 
 Decided by the user on 2026-11-13, with no new option (redesign §1): **an Instagram story's
