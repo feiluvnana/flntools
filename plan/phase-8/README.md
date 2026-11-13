@@ -15,6 +15,15 @@ viewer, more finders) are kept in [ideas](ideas.md) for a later phase.
 3. **Both live in a `projects/` folder**: `projects/flnd`, `projects/flndm`.
 4. **No `licenses/` folder.** Done 2026-11-13: removed in `1e90b56` (the deletion was swept into
    that commit) and `ca00e6b` (the bundle, its tests and the `packaging` dev dependency).
+5. **`sync` as a group, opt-in** (the user's design, 2026-11-13):
+   - `sync` does nothing by default; `download --sync` and `find --sync` add targets and queries to it;
+   - `flnd sync` runs what is marked, `flnd sync ls` lists every known target and query with its sync
+     status (a target downloaded without `--sync` is listed with sync off), and `flnd sync toggle
+     <targets…>` marks or unmarks;
+   - it replaces Phase 7's `target` group and the earlier "watches" idea.
+
+The user's words for 1–4 are kept in [the handover](#the-users-words). Everything else in this file
+is a proposal until the user answers the questions at the end.
 
 ## Where Phase 7 leaves the code
 
@@ -144,17 +153,49 @@ measurement (question 5) and keeps them in CI as a budget, as the API snapshot k
   flnd's, and `http`'s downloader becomes flndm's.
 - A size budget per module, and the API snapshot, show every addition in review.
 
+## `sync` as a group: the design
+
+```
+flnd download <targets…> [--sync]              # --sync: also keep these up to date
+flnd find <site> '<query>' [--sync]            # --sync: keep finding, and download what's new
+flnd sync [-v]                                 # update everything marked; nothing else
+flnd sync ls                                   # every known target and query, synced or not
+flnd sync toggle <targets or query ids…>       # flip each one; prints its new state
+```
+
+- **Off by default.** A target downloaded without `--sync` is still known (settings, history) and
+  listed with sync off; `sync` leaves it alone.
+- **`sync ls`** lists targets and queries in one table: kind, the target or `site 'query'`, an id
+  (`q1`, `q2` for queries; a target is its own id), sync on or off, saved settings (`--shrink`),
+  files and size, last sync, each category's listing state. It reads the stores and asks no site.
+- **`sync toggle`** flips each entry and prints its new state. Nothing is deleted: settings,
+  history and cursors stay, so turning an entry on again resumes it.
+- **`flnd sync`** runs the entries marked on: targets (repair, then fetch, as Phase 7's sync does),
+  then queries (the finder runs; results not seen before have their targets downloaded, with sync
+  on, so their new chapters are fetched on later syncs). With nothing marked, it says so and exits 0.
+- **A synced query remembers the result ids it has seen**, so a result is downloaded once. Its first
+  run only remembers, unless `find --sync now`, so a broad query never starts a thousand downloads by
+  surprise; `limit` caps each run.
+- **Stores**: `targets.db` rows gain `sync` and a kind; a query row holds its site, query text,
+  seen ids and last run. A row written before this, with no `sync` field, counts as on, as it was
+  synced then; nothing is rewritten.
+- **`shared.cli`** gains a group's default command (`app.group("sync", default=fn)`), so `flnd
+  sync` and `flnd sync ls` both work; today a group can't also run by itself.
+- With flndm (above), `sync` stays flnd's: it decides what to list and asks flndm for the files.
+
 ## A proposed order
 
 1. **Layout**: `projects/flnd`, a uv workspace, `check` over it. Purely a move, so Haiku does it,
    with the import rule test.
-2. **flndm as a library inside the workspace**: the request and event API, then moving the
+2. **`sync` as a group** ([above](#sync-as-a-group-the-design)), unless question 8 moves its target
+   half into Phase 7's step 10.
+3. **flndm as a library inside the workspace**: the request and event API, then moving the
    downloader, IO and postprocessing out of flnd one piece at a time, with flnd calling it.
    `check` stays green at each move.
-3. **flndm's CLI and the benchmark suite**, with its first targets.
-4. **Hardening `shared`**: faults, fuzzing, typed errors, threads and resources, module by module;
+4. **flndm's CLI and the benchmark suite**, with its first targets.
+5. **Hardening `shared`**: faults, fuzzing, typed errors, threads and resources, module by module;
    then minimal (question 2).
-5. **The daemon or subprocess mode**, only if question 4 asks for it.
+6. **The daemon or subprocess mode**, only if question 4 asks for it.
 
 ## Questions for the user
 
@@ -171,3 +212,29 @@ measurement (question 5) and keeps them in CI as a budget, as the API snapshot k
 6. **Packaging**: one bundle holding both commands, or two bundles? And is flndm published on its
    own (PyPI)?
 7. **Names**: `flndm` for both the package and the command?
+8. **`sync`'s target half in Phase 7**: build `sync ls` and `sync toggle` in Phase 7's step 10
+   instead of `target ls`/`forget`, so `target` is never built only to be removed (proposed), and
+   leave synced queries for Phase 8?
+9. **A synced query's first run**: only remember what it finds (proposed), or download at once?
+10. **ffmpeg's licence**: the bundle ships imageio-ffmpeg's GPL ffmpeg, and since `licenses/` went
+    it carries neither its licence nor a source offer. Distributing `dist/flnd/` needs one of: the
+    licence and source offer shipped beside the binary (outside a `licenses/` folder), an LGPL
+    ffmpeg build, or ffmpeg left out of the bundle and found on the system.
+
+## The user's words
+
+As the user sent them on 2026-11-13 (to the Phase 7 session, which handed them over):
+
+> And add a draft phase 8. Phase 8 will be focused on harden shared so it absolutely robust and
+> minimal, make flndm and flnd separated. flnd. will just be a listing engine to listing download,
+> listing query. flndm. a extreme performance download and io manager. It will accept the request
+> from flnd and execute it in extreme efficiency and optimization. (flnd will invoked flnmd in it
+> flow) make flndm a general download manager, so it can use with everything, not just flnd. flndm
+> and flnd should be in projects folder and remove licenses folder for me.
+
+And on `sync` (to this session):
+
+> sync will default not doing anything (find and download will have the --sync option to add it to
+> sync). Now sync api will have `flnd sync`, `flnd sync ls`, `flnd sync toggle <targets>` (make
+> target being track by sync or not) instead of watch, target api. Moreover, maybe the targets also
+> in the sync listing (but with sync status = 0).
