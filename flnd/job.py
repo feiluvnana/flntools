@@ -416,6 +416,8 @@ class Ledger:
             self._queued.update(dict.fromkeys((dest, key), placed.path))
             todo.append(_Queued(placed, dest, key, estimated=first in self._estimated))
         if todo:
+            # Videos first: the longest downloads start earliest, so the photos fill in around them.
+            todo.sort(key=lambda queued: queued.placed.kind != disk.VIDEO)
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
 

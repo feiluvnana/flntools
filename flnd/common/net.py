@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from pathlib import Path
@@ -182,7 +183,8 @@ def follow(url: str) -> str:
 
 
 def _base_transport() -> httpx.BaseTransport:
-    return httpx.HTTPTransport()
+    """The transport under every client: HTTP/2 for small files, HTTP/1.1 for a split file's pieces."""
+    return http.Transport()
 
 
 def _save_url(client: http.Client, url: str, dest: Path, label: str,
@@ -217,11 +219,18 @@ def _save_dash(client: http.Client, video: str, audio: str, dest: Path, label: s
     # leaves nothing `flnd sync`'s repair doesn't remove; deleted however the merge ends.
     streams = [dest.with_name(f".{dest.name}.{name}.part") for name in ("video", "audio")]
 
+    def fetch(url: str, stream: Path, row: _Row) -> None:
+        client.download(url, stream, headers=headers, parts=split_parts(url), progress=row.follow(),
+                        stop=stopping_now)
+
     def merged(row: _Row) -> Path:
         try:
-            for url, stream in zip((video, audio), streams):
-                client.download(url, stream, headers=headers, parts=split_parts(url),
-                                progress=row.follow(), stop=stopping_now)
+            # Both streams at once, each on its own connections, as a player fetches them; a
+            # stream cut off keeps its resumable part for the next try.
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                started = [pool.submit(fetch, url, stream, row) for url, stream in zip((video, audio), streams)]
+                for running in started:
+                    running.result()
             # The merge is a stream copy by ffmpeg, which `stopping_now` can't reach; it is
             # bounded by ffmpeg's copy timeout (10 min), and the terminal's Ctrl-C reaches
             # ffmpeg too, being in the same process group, which ends it. So a second Ctrl-C

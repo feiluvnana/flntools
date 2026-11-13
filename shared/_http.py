@@ -806,7 +806,7 @@ def _new_client() -> httpx.Client:
 def _has_h2() -> bool:
     """Whether the `h2` package httpx needs for HTTP/2 is installed."""
     try:
-        import h2  # noqa: F401  # pyright: ignore[reportMissingImports]
+        import h2  # noqa: F401
     except ImportError:  # HTTP/1.1 only, which is what httpx sends without it anyway
         return False
     return True
