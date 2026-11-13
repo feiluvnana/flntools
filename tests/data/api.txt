@@ -332,10 +332,11 @@ shared.kv.UnstorableError(shared.kv.Error, TypeError)
 shared.kv.open(path: PathLike, *, table: str = 'default', timeout: float = 5.0) -> Store
 shared.log: Log
 shared.log.Error(shared.Error)
-shared.log.Group(theme: Theme, title: str, parent: Progress | None = None)
-shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress
+shared.log.Group(theme: Theme, title: str, parent: Progress | StatusRow | None = None)
+shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str, wait: bool = False) -> Progress
+shared.log.Group.add_status(status: Status) -> StatusRow
 shared.log.Group.parent: attribute
-shared.log.Progress(label: str, total: float | None, show: Callable[[Any], str], _group: Group)
+shared.log.Progress(label: str, total: float | None, show: Callable[[Any], str], _group: Group, *, wait: bool = False)
 shared.log.Progress.advance(n: float = 1) -> None
 shared.log.Progress.caption: property, settable -> str
 shared.log.Progress.count: property, settable -> float
@@ -346,15 +347,24 @@ shared.log.Progress.label: attribute
 shared.log.Progress.outcome: property -> str | None
 shared.log.Progress.slots: attribute -> int | None
 shared.log.Progress.total: property, settable -> float | None
+shared.log.Progress.wait: attribute
+shared.log.StatusRow(status: Status, _group: Group)
+shared.log.StatusRow.fail() -> None
+shared.log.StatusRow.finish() -> None
+shared.log.StatusRow.finished: property -> bool
+shared.log.StatusRow.outcome: property -> str | None
+shared.log.StatusRow.slots: attribute -> int | None
+shared.log.StatusRow.status: property, settable -> Status
 shared.log.debug(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.error(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.log.event(kind: str, message: str, /, *args: Any, **fields: Any) -> None
 shared.log.group(title: str = '') -> Iterator[Group]
 shared.log.info(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.level: property, settable -> Level
 shared.log.ok(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Iterator[Progress]
+shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str, wait: bool = False) -> Iterator[Progress]
 shared.log.record(path: Path) -> Iterator[None]
-shared.log.under(row: Progress | None) -> Iterator[None]
+shared.log.under(row: Progress | StatusRow | None) -> Iterator[None]
 shared.log.warn(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.media: module
 shared.media.BrokenError(shared.media.Error, shared.BrokenError)
@@ -459,7 +469,7 @@ shared.style.modifiers: field -> frozenset
 shared.style.paint(text: str, depth: str) -> str
 shared.style.strip(text: str) -> str
 shared.theme: Theme
-shared.theme.Bar(label: str, count: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str, tick: int | None = None)
+shared.theme.Bar(label: str, count: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str, tick: int | None = None, wait: bool = False)
 shared.theme.Bar.caption: field -> str
 shared.theme.Bar.count: field -> float
 shared.theme.Bar.finished: field -> bool
@@ -467,6 +477,13 @@ shared.theme.Bar.label: field -> str
 shared.theme.Bar.show: field -> Callable[[Any], str]
 shared.theme.Bar.tick: field -> int | None
 shared.theme.Bar.total: field -> float | None
+shared.theme.Bar.wait: field -> bool
+shared.theme.Count(number: int, word: str, role: str, glyph: str)
+shared.theme.Count.glyph: field -> str
+shared.theme.Count.number: field -> int
+shared.theme.Count.role: field -> str
+shared.theme.Count.word: field -> str
+shared.theme.EVENTS: attribute -> tuple
 shared.theme.Error(shared.Error)
 shared.theme.HelpModel(prog: str, description: str, usage: str, arguments: tuple = (), options: tuple = (), commands: tuple = (), epilog: str = '', error: str = '')
 shared.theme.HelpModel.arguments: field -> tuple
@@ -477,8 +494,9 @@ shared.theme.HelpModel.error: field -> str
 shared.theme.HelpModel.options: field -> tuple
 shared.theme.HelpModel.prog: field -> str
 shared.theme.HelpModel.usage: field -> str
-shared.theme.LogRecord(level: str, message: str, bar: Bar | None = None)
+shared.theme.LogRecord(level: str, message: str, bar: Bar | None = None, kind: str = '')
 shared.theme.LogRecord.bar: field -> Bar | None
+shared.theme.LogRecord.kind: field -> str
 shared.theme.LogRecord.level: field -> str
 shared.theme.LogRecord.message: field -> str
 shared.theme.Namespace(kind: str, defaults: dict, pick: Callable[[Any], Any], *, check: Callable[[Any], Any] = Namespace.<lambda>)
@@ -506,14 +524,30 @@ shared.theme.Screen.readkey() -> str
 shared.theme.Screen.tty: property -> bool
 shared.theme.Screen.width: property -> int
 shared.theme.Screen.write(text: str) -> None
+shared.theme.Status(subject: str, label: str = '', counts: tuple[Count, ...] = (), running: tuple[Count, ...] = (), tail: tuple[str, ...] = (), note: str = '', subject_width: int = 0, label_width: int = 0, outcome: str | None = None, elapsed: float | None = None, tick: int | None = None, width: int = 0)
+shared.theme.Status.counts: field -> tuple[Count, ...]
+shared.theme.Status.elapsed: field -> float | None
+shared.theme.Status.label: field -> str
+shared.theme.Status.label_width: field -> int
+shared.theme.Status.note: field -> str
+shared.theme.Status.outcome: field -> str | None
+shared.theme.Status.running: field -> tuple[Count, ...]
+shared.theme.Status.subject: field -> str
+shared.theme.Status.subject_width: field -> int
+shared.theme.Status.tail: field -> tuple[str, ...]
+shared.theme.Status.tick: field -> int | None
+shared.theme.Status.width: field -> int
 shared.theme.color: property, settable -> ColorDepth
 shared.theme.draw(kind: str, value: Any) -> str
 shared.theme.draw_help(theme: Theme, model: HelpModel) -> str
 shared.theme.draw_log(theme: Theme, record: LogRecord) -> str
 shared.theme.draw_progress(theme: Theme, record: LogRecord) -> str
 shared.theme.draw_prompt(theme: Theme, view: PromptView) -> str
+shared.theme.draw_status(theme: Theme, status: Status) -> str
 shared.theme.drawers: attribute
 shared.theme.glyphs: attribute
+shared.theme.gradient(text: str, *, phase: int = 0) -> str
+shared.theme.motion: property -> bool
 shared.theme.paint(name: str, text: str, *, on: str | None = None) -> str
 shared.theme.palette: attribute
 shared.theme.scope(**changes: Any) -> Iterator[Theme]

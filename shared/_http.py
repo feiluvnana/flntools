@@ -700,7 +700,8 @@ class Client:
                 raise StoppedError(f"{host.name}: stopped")
             return
         try:
-            with log.progress(f"{host.name}: waiting", total=seconds, show=_seconds) as bar:
+            with log.progress(f"{host.name}: waiting", total=seconds, show=_seconds,
+                              wait=True) as bar:
                 end = clock.now() + seconds
                 # One-second steps, so the countdown moves.
                 while (left := end - clock.now()) > 0:

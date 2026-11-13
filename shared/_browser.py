@@ -840,7 +840,7 @@ class Page:
             raise RuntimeError(f"cannot hand off to a person in a headless browser: {message}")
         log.warn(message)
         deadline = None if timeout is None else time.monotonic() + timeout
-        with log.progress(message) as bar:
+        with log.progress(message, wait=True) as bar:
             while not until():
                 if deadline is not None and time.monotonic() >= deadline:
                     bar.fail()

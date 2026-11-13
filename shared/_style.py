@@ -173,8 +173,11 @@ class Chain:
             body = self._paint_ramp(text, depth, static_codes)
         elif static_codes:
             opener = f"\x1b[{';'.join(static_codes)}m"
-            # An inner reset would end this style early, so the style is reopened after it.
-            body = opener + text.replace(RESET, RESET + opener) + RESET
+            # An inner reset would end this style early, so the style is reopened after it,
+            # except after a final one, which already closes the text.
+            inner = text.replace(RESET, RESET + opener)
+            closed = inner.endswith(RESET + opener)
+            body = opener + (inner[:-len(opener)] if closed else inner + RESET)
         else:
             body = text
         if self.href:
