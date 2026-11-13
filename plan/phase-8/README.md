@@ -1,178 +1,173 @@
 # Phase 8: draft
 
-**A draft, not a plan** (user, 2026-11-13). Nothing here is decided; an idea becomes a step when
-the user picks it, after Phase 7 is built. Each idea says why it is worth building, what to build
-on the code Phase 7 leaves, what it costs and risks, and a recommendation. A proposed order closes
-the file.
+**A draft, not a plan** (user, 2026-11-13). Nothing here is decided. It becomes a plan once the
+user answers the questions at the end, after Phase 7 is built. Earlier feature ideas (watches, a
+viewer, more finders) are kept in [ideas](ideas.md) for a later phase.
 
-## Where Phase 7 leaves flnd
+## What the user asked
 
-What Phase 8 builds on, all in [flnd](../phase-7/flnd.md):
-- **Three classes per site**: `Site` (access), `Downloader` (a target in), `Finder` (a Lucene
-  query in, each site's own parameters, OR as merged searches), and **one job** below both.
-- **Stores** in `.flnd/metadata/`: `history.db` (one row per file: path, size, mtime, date, marks),
-  `targets.db` (each target's settings, complete listings, cursors), `sites.db` (each site's
-  state), `secrets.db`.
-- **Commands** `download`, `sync`, `find`, and the `target` and `auth` groups.
-- **A lean, readable core**, with its writing rules enforced.
+1. **Harden `shared`**, so it is absolutely robust and minimal.
+2. **Separate flnd and flndm**:
+   - **flnd** is only a listing engine: listing what to download, and listing a query's results.
+   - **flndm** is a download and IO manager built for extreme performance. It takes requests and
+     carries them out as efficiently as possible. flnd calls flndm as part of its own flow.
+   - **flndm is general**: any program can use it, not only flnd.
+3. **Both live in a `projects/` folder**: `projects/flnd`, `projects/flndm`.
+4. **No `licenses/` folder.** Done 2026-11-13: removed in `1e90b56` (the deletion was swept into
+   that commit) and `ca00e6b` (the bundle, its tests and the `packaging` dev dependency).
 
-The ideas below are ranked by what they give per line of code.
+## Where Phase 7 leaves the code
 
----
+- `shared/`, about 12,400 lines with docstrings: the toolkit both sides use (`http`, `kv`,
+  `atomic`, `media`, `browser`, `log`, `cli`, …). Phase 7 step 7 ([shared](../phase-7/shared.md))
+  makes it a black box with no `shared._` imports.
+- `flnd/`: sites, downloaders, finders, and **one job** that both listing and finding feed. The job
+  names each file, dedupes by key, then hands the file to `net.download` (on `shared.http`) and to
+  the postprocessors (shrink, the date as the modified time, links). It writes the history last.
+- Phase 7 step 8 ([speed](../phase-7/speed.md)) puts the fast downloader in `shared.http`: pieces
+  pulled from a queue, host caps, resume, hash and free-space checks.
 
-## 1. Watches: a query that keeps downloading
+So most of flndm already exists by the end of Phase 7. It sits in `shared.http`, `flnd/common/net.py`
+and the download half of the job. Phase 8 moves it out behind a request API, and leaves flnd
+listing only.
 
-**Why.** Phase 7's `find` answers "what is there?" once. What a reader of a manga site really
-wants is "download what's new in the genres I follow, every day", which today needs a cron job
-piping `find` into `download`. That pipe loses what was already handled, and can't be listed or
-forgotten.
+## Layout after
 
-**What to build.**
 ```
-flnd watch add mht 'genre:(vanilla OR romance) chapters:>5'      # prints its id: w1
-flnd watch ls                                                    # each watch, its query, last run, found
-flnd watch forget w1 | all
-flnd sync                                                        # targets, then each watch
+projects/
+  flnd/                  the listing engine: sites, downloaders, finders, the CLI `flnd`
+    flnd/
+    tests/
+    pyproject.toml
+  flndm/                 the download and IO manager: a library, and the CLI `flndm`
+    flndm/
+    tests/
+    pyproject.toml
+shared/                  the toolkit both use (or projects/shared: question 1)
+plan/  scripts/  AGENTS.md  Makefile  pyproject.toml (a uv workspace over the three)
 ```
-- A watch is a row in `targets.db` (`watch:<id>`): the site, the query text, the time it last ran,
-  and which result ids it has seen.
-- `sync` runs each watch's finder (as `find` does), takes the results not seen before, and
-  **downloads their targets** through the ordinary download path, with their saved settings
-  (`--shrink`). A downloaded target becomes a kept target, so later syncs update its chapters too.
-- First run: only remembers what it finds (no download), unless `watch add --now`, so adding a
-  broad watch never starts a thousand downloads by surprise.
 
-**Depends on**: step 10's finder and query module; `target` group for the shape of its commands.
-**Size**: about 150 lines (engine: 80, cli: 40, tests).
-**Risks**: a broad query downloads a lot; the first-run rule and `limit` cap it.
-**Recommend**: first. It is the natural end of "flnd does more than download", and small.
+- **A uv workspace**: one `uv.lock` and one `.venv`. Each project has its own `pyproject.toml`,
+  dependencies and entry point, and `check` runs over all of them.
+- **flnd depends on flndm and shared; flndm depends on shared only, never on flnd.** A test
+  enforces it, as `tests/test_names.py` enforces the source import rule today.
 
-## 2. Keep a post's fields, then find what you already have
+## flndm: the design to decide
 
-**Why.** A post's title, author, tags and description are used for its file name and then thrown
-away (loi's `info.md` aside). So flnd can't answer "which of my saved manga are tagged X?", and
-`target ls` can only count files.
+### What a request is
 
-**What to build.**
-- **Keep the fields**: each post's `fields` (Phase 7 made their keys the same across sites:
-  `title`, `author`, `category`, `tags`, `url`) go into a new `posts` table in `history.db`, one row
-  per post: site, post id, target, date, fields as JSON, its files' keys. No sidecar files (Phase 6
-  rejected those), no change for downloaders: the job already holds the fields.
-- **A local finder**: `flnd find local '<query>'` runs the same Lucene language over that table:
-  `site:mht tags:vanilla date:[2026-01-01 TO *]`. It is one more `Finder` whose `find` reads SQLite
-  instead of a site, so `query.py`, the table output and `results.json` come for free. Its params:
-  `site`, `target`, `title`, `author`, `tags`, `category`, `date`.
-- `target ls` gains a count of posts and the newest post's date.
+A request says what to fetch and where it goes, nothing about sites:
 
-**Depends on**: step 4 (fields with common keys), step 10 (finder).
-**Size**: about 120 lines; one table, one finder.
-**Risks**: history grows (a row per post, a few hundred bytes); posts saved before this have no
-row until `sync` lists them again.
-**Recommend**: second. It turns the archive into something you can search, at little cost.
+```python
+Request(
+    urls=("https://cdn.example.com/a.mp4", "https://cdn2.example.com/a.mp4"),   # mirrors, best first
+    dest=Path("media/ins/example_user/posts/2026-01-02_C1abc.mp4"),
+    headers={"Referer": "https://example.com/"},                                 # per request; no cookie jar of a site
+    audio=None,                    # a second stream to merge (DASH)
+    size=None, sha256=None,        # what the caller knows, checked when given
+    kind="video",                  # checked as media, or None for any file
+    mtime=None,                    # set once the file is in place
+    key="ins:C1abc_0",             # the caller's id, given back in every event
+    priority=0,
+)
+```
 
-## 3. Finders for every site
+### What comes back
 
-**Why.** Finding is only as useful as the sites it covers. Each finder is small once the API
-exists (mht's is about 60 lines), and the hard part, how each site searches, is site knowledge
-flnd already partly has.
+flndm gives back events, never callbacks into the caller (the writing rules forbid a callback from
+a producer into its consumer): `Started`, `Progress(done, total)`, `Placed(path, size, headers)`,
+`Failed(error)`, `Expired(status)`. `Expired` is a 403 or 410 on every mirror. flnd answers it by
+listing the post again and sending a new request with the same `key`, and flndm resumes the part.
 
-**What to build**, each with its own parameters and fake-JSON tests, and a hand check:
+### How flnd calls it
 
-| Site | Finds | Through | Notes |
-| --- | --- | --- | --- |
-| twt | posts, accounts | `SearchTimeline` (step 3 already pages it) | most value: X's search is rich (`from`, `since`, `min_faves`) and its rate headers are known |
-| ins | accounts; hashtag posts | `topsearch`, the tag page's GraphQL | hashtag pages often need a login; tight budgets |
-| fbk | people, pages, groups | the search page's Comet GraphQL | needs the feed reader (lean S1) |
-| tik | accounts, videos | the browser's search page | browser only, slow |
-| tlg | public channels; your chats | Telethon `contacts.Search`, dialogs | cheap, reliable |
-| loi | posts | its search API | waits for its page shape (Phase 7) |
+1. **In process, as a library (proposed).** `with flndm.Manager(limits) as manager:` then
+   `manager.submit(request)` and `for event in manager.events():`. It costs nothing to call, and
+   one process holds all the state.
+2. **A daemon** that several flnd runs and other programs share, over a local socket. It can keep
+   global host caps and one queue for everything, but it brings a lifecycle, authentication and a
+   protocol to keep stable.
+3. **A subprocess per run** (`flndm serve` on stdin and stdout, JSON lines). It isolates crashes,
+   but each run pays a start-up and the line protocol.
 
-**Size**: 40–100 lines each. **Recommend**: twt and tlg first (cheap, reliable), then ins, fbk, tik.
+The library comes first in every case. A daemon or a subprocess wraps it later if wanted.
 
-## 4. A cheap way to add a site
+### What moves into flndm
 
-**Why.** The user wants more manga sites. Adding one today means reading a large site module to
-copy its shape. Phase 7's readable rules and the `Site`/`Downloader`/`Finder` split make a small
-template possible.
+- From `shared.http`: the downloader (pieces, mirrors, resume, `If-Range`, host caps, back-off for
+  CDNs, HTTP/2 for small files).
+- From `flnd/common/net.py` and the job: the pool, the encode queue, the media check, naming by
+  content, atomic placement, the modified time, the hard link and symlink fallback, the free-space check.
+- **IO**: one writer per disk, preallocation, `fsync` policy, rename onto the final name, and Windows
+  replace retries.
+- **Postprocessing as generic steps**: `shrink` (a `shared.media` call) and `mtime` become flndm
+  steps a request names. Question 3 asks whether shrink belongs there.
+- **Its own CLI**: `flndm get <url>… [-o dest] [-j N]` and `flndm get -i requests.jsonl`, so it is
+  useful without flnd. It is also its first test of being general.
 
-**What to build.**
-- `scripts/dev.py site <code> <domain>` writes `flnd/sites/<code>.py` (a `Site`, a `Downloader`
-  with one route and one category, a `Finder`) and `tests/test_<code>.py` with fake JSON, all
-  passing, so the work starts from green.
-- `tests/example_site.py` is the tutorial, as code that runs (Phase 7 moved it there).
-- `scripts/dev.py try` covers finders: `dev.py try mht 'genre:example'` runs a live find on the
-  saved login and prints the results and the requests, writing nothing.
-- A **site checklist** in the template's docstring: the API or the page, how it pages, dates, ids
-  for keys, login, pace, CDN, a hand check before the first commit.
+### What stays in flnd
 
-**Size**: about 150 lines of scripts and template. **Recommend**: with the next new site, so the
-template is shaped by a real one.
+Sites, downloaders, finders, the listing memory and dates, file names and keys, `history.db` and
+`targets.db`, logins (flnd builds each request's headers), sync's repair decisions, and the CLI
+`flnd`. **flnd opens no file for writing except its stores and run logs**; flndm writes every
+media byte.
 
-## 5. Health of each site
+### "Extreme efficiency": what is measured
 
-**Why.** Sites change without warning; today a broken site is found by a failed `sync`, with a
-user's run as the test. A hand-run check that says *what* broke (an API refused, a field missing, a
-page reshaped) turns a vague failure into a precise fix.
+A benchmark suite runs on a local server, so it is repeatable without the network: 1,000 small
+photos, 20 large videos, a slow host, a host that refuses after N connections, and a cut-off
+connection. It measures throughput, the CPU time and memory per GB, the time to the first byte
+saved, and the overhead against a plain `curl`/aria2c baseline. Phase 8 sets targets from the first
+measurement (question 5) and keeps them in CI as a budget, as the API snapshot keeps names.
 
-**What to build.** `scripts/dev.py health [site…]`: on the test accounts' saved logins, each site's
-downloader lists one known target's first page and fetches one file's headers, and each finder runs
-one query; a table of pass/fail with the reason (status, missing field, timeout). Nothing written,
-no file downloaded whole. Each site declares its probe: a target, a query, the fields it expects.
+## Hardening `shared`
 
-**Size**: about 120 lines. **Risks**: it runs against real sites, so it stays a hand-run developer
-task, never in tests or CI. **Recommend**: after 3, when there are enough finders to break.
+**Robust**: each module proves it survives what can go wrong.
+- **Faults, injected in tests**: a full disk, a read-only folder, a file removed mid-write, a
+  `kill -9` during an atomic write (a child process), a dropped connection at every phase of a
+  response, a slow-loris server, a clock that jumps, two processes writing one `kv` store.
+- **Hostile input, fuzzed** with property-based tests (Hypothesis, a dev dependency): cookie files,
+  HTTP dates and ranges, `Retry-After`, archive member paths (zip slip, symlinks), JSON and HTML
+  parsers, file names on all three platforms.
+- **Every error typed**: each module's exceptions sit under its `Error`, and no bare `OSError` or
+  `ValueError` leaks without a `shared` type around it (a test walks each public function's raises).
+- **Threads**: every public object says whether it is thread-safe. A stress test runs the live area,
+  `kv` and the pool from many threads.
+- **Resources**: no file handle, thread or child process outlives its `with`. Tests check it with
+  the process's open files and threads before and after.
 
-## 6. A local viewer
+**Minimal**: `shared` holds only what flnd or flndm uses, with one spelling each.
+- After the split, each `shared` module is used by flnd, flndm or both. Phase 7's rule ("unused
+  doesn't mean dead; keep shared's API") would keep the rest. Question 2 asks whether Phase 8's
+  "minimal" replaces that rule.
+- Modules only one project uses move into that project: `bundler`, `cli` and `prompt` may become
+  flnd's, and `http`'s downloader becomes flndm's.
+- A size budget per module, and the API snapshot, show every addition in review.
 
-**Why.** Saved manga are folders of images; reading them needs another program, and find results
-are a JSON file. A small viewer would make flnd a reader, not only a downloader.
+## A proposed order
 
-**What to build.** `flnd serve` on `localhost` (stdlib `http.server`, read-only): a page per kept
-target (its categories, posts by date, covers), a reader for a chapter's pages, and a page per find
-query's `results.json` with covers and a "download" link that runs `flnd download` for it.
-
-**Size**: 400+ lines with HTML and tests, the largest idea here. **Risks**: a second interface to
-keep working; a server, even on localhost, needs care (bind to 127.0.0.1 only, no write besides
-"download"). **Recommend**: only if the user wants flnd to be a reader; otherwise leave it out.
-
-## 7. Sites from outside the repository
-
-**Why.** A site could be added without changing flnd itself.
-
-**What to build.** Site modules loaded from `.flnd/sites/`, listed by a `flnd site ls`, held to the
-same import rules.
-
-**Risks**: code from anywhere runs with the user's logins and cookies; a broken outside site looks
-like a flnd bug. **Recommend**: not now; idea 4 makes adding a site inside the repository cheap
-enough.
-
-## 8. Keep the core lean
-
-**Why.** Phase 7 brings `shared` and `flnd` from about 20,700 lines to about 16,000. Without a
-measure, they grow back.
-
-**What to build.** `scripts/dev.py check` prints, after the tests, each module's code lines against
-a budget kept in `tests/data/budget.json`, and the code-to-prose ratio; a module past its budget is
-a warning, past it by 20% a failure, until the budget is raised in a commit that says why.
-
-**Size**: about 60 lines. **Recommend**: right after Phase 7, before any of the above adds code.
-
----
-
-## Proposed order
-
-1. **Keep the core lean (8)**: a measure before anything grows.
-2. **Watches (1)**: the end of "more than downloading".
-3. **Keep fields, find local (2)**.
-4. **Finders: twt, tlg (3)**, then a new manga site with the **site template (4)**.
-5. **Health (5)**, then more finders.
-6. **Viewer (6)** and **outside sites (7)** only on the user's word.
-
-Steps 1–4 are about 600 lines in all, about 4% on top of the lean core.
+1. **Layout**: `projects/flnd`, a uv workspace, `check` over it. Purely a move, so Haiku does it,
+   with the import rule test.
+2. **flndm as a library inside the workspace**: the request and event API, then moving the
+   downloader, IO and postprocessing out of flnd one piece at a time, with flnd calling it.
+   `check` stays green at each move.
+3. **flndm's CLI and the benchmark suite**, with its first targets.
+4. **Hardening `shared`**: faults, fuzzing, typed errors, threads and resources, module by module;
+   then minimal (question 2).
+5. **The daemon or subprocess mode**, only if question 4 asks for it.
 
 ## Questions for the user
 
-1. The order above, or another?
-2. Watches: download on their first run, or remember first (as proposed)?
-3. Which manga or catalogue sites come after mht?
-4. A viewer: is flnd meant to become a reader too?
+1. **`shared`'s place**: stay at the root, move to `projects/shared`, or split between flnd and
+   flndm, so that no shared toolkit is left?
+2. **"Minimal"**: may Phase 8 remove `shared` API that neither project uses? This would reverse
+   Phase 7's rule of 2026-11-13 ("unused doesn't mean dead").
+3. **Shrink and other media steps**: flndm steps a request names (proposed), or flnd's, run after
+   flndm places the file?
+4. **flndm's shape**: a library flnd imports (proposed), a daemon shared by every run and other
+   programs, or a subprocess per run?
+5. **Performance targets**: set from the first benchmark (proposed), or numbers you already have
+   in mind, such as matching aria2c on many small files?
+6. **Packaging**: one bundle holding both commands, or two bundles? And is flndm published on its
+   own (PyPI)?
+7. **Names**: `flndm` for both the package and the command?

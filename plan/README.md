@@ -122,7 +122,7 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 10. [flnd › sites and finding](phase-7/flnd.md#4-sites-site-downloader-finder): `Site`, `Downloader` and `Finder` apart, "site" everywhere, `flnd find`, and the `auth` and `target` command groups. The whole of flnd after Phase 7 is in [flnd](phase-7/flnd.md).
    And [lean](phase-7/lean.md): every proposal taken (about 515 lines), each built with the step that touches its files.
 
-**Phase 8: draft.** Not decided; for after Phase 7 ([draft](phase-8/README.md)). Proposed order: a size budget that keeps the core lean; watches (a saved query `sync` downloads); keeping each post's fields and finding what is already saved; finders for X and Telegram, then a new manga site with a site template; a health check per site. A local viewer and sites from outside the repository only on the user's word.
+**Phase 8: draft.** Not decided; for after Phase 7 ([draft](phase-8/README.md)). The user's focus (2026-11-13): harden `shared` until it is robust and minimal; split flnd (a listing engine for downloads and queries) from flndm (a general, very fast download and IO manager that flnd calls), both under `projects/`. `licenses/` is removed. Open questions at the end of the draft. Earlier feature ideas are kept in [ideas](phase-8/ideas.md).
 
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
 
