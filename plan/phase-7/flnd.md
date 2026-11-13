@@ -744,3 +744,10 @@ its title, authors, genres, chapter count, last update and views, and its cover 
 - **loi's first finder** waits for what loi's search page offers (words, author, category, tags,
   sort), checked by hand on the test account with one example page; whoever builds step 10 asks
   the user for it then.
+- **loi's finder lists several kinds** (user, 2026-11-13): every tag, the posts of one tag,
+  every author, the posts of one author, and so on, all folded into `find`:
+  `flnd find loi 'tags'`, `'tag:"example tag"'`, `'authors'`, `'author:example'`. A listing of
+  tags or authors gives each name with its next query (so it can be piped back into `find`); a
+  listing of posts gives download targets (`loi:5930`). Each kind is one entry in loi's
+  `params`. Waits for the pages by hand: the tag list, a tag's page, the author list, an
+  author's page, and how each pages.
