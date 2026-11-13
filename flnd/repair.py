@@ -15,7 +15,7 @@
 
 Audio is only sniffed here, never decoded: Phase 5 kept every audio file, and a mostly playable
 file is worth more than a download that may no longer exist. Modified times are set by the job's
-`mtime` postprocessor as files are saved, so repair doesn't touch them.
+job as files are saved, so repair doesn't touch them.
 """
 
 from __future__ import annotations

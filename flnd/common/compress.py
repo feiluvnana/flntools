@@ -12,7 +12,7 @@ catches exactly what `media` raises for a file it can't compress (`ValueError`, 
 `RuntimeError`, `TimeoutError`, `ImportError`), warns once per kind of error per run, and leaves
 the original in place. `Compressor` is one run's shrinking on top of it: the encode lock, and the
 kinds this machine turned out unable to compress. `apply` shrinks a target's files already saved,
-when `flnd download --shrink` turns it on. The job shrinks each new download (flnd/post.py).
+when `flnd download --shrink` turns it on. The job shrinks each new download.
 
     fields = Compressor().compress(Path("a.jpg"), "image")
     if fields is not None:

@@ -9,7 +9,7 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
             files = post.files() if lazy, unless its first key is saved
             for num, file: name from the formats; skip if saved or queued   ← `place`
             queue the download ─► net.download                      ← `Job._download`
-            postprocess: compress → mtime                           ← flnd/post.py
+            finish: shrink → modified time → history row
             history row written last
 
 - **Categories.** The route is called once, and only when at least one of its categories is
@@ -59,7 +59,9 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
 from __future__ import annotations
 
 import datetime
+import email.utils
 import inspect
+import os
 import string
 import threading
 from collections import deque
@@ -68,7 +70,6 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Collection, Coroutine, Generator, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from flnd import post as postprocess
 from flnd import settings as saved_settings
 from flnd.common import files as disk
 from flnd.common import net
@@ -85,6 +86,8 @@ if TYPE_CHECKING:
 
 __all__ = ["STOPPED", "Done", "Job", "Placed", "download", "place", "plan", "posts", "wanted"]
 
+# The hour of the day, UTC, a dated file's modified time is set to.
+NOON = 12
 # The history field of a post's first file that holds how many files the post has, when more than one.
 FILES = "files"
 # Posts in a row older than `--time`'s since that end a `newest_first` category (A9 rule 2): more
@@ -144,7 +147,7 @@ class Placed:
 class Done:
     """What one target's job did, for the engine's `TargetReport` and `targets.db`'s `complete` record."""
 
-    # Every file written, where it ended up after its postprocessors, in the order they finished.
+    # Every file written, where it ended up after shrinking, in the order they finished.
     written: tuple[Path, ...]
     # Files and lazy posts skipped as already saved or queued.
     skipped: int
@@ -346,10 +349,10 @@ class Job:
         # line per category, since a feed and a tab that list the same media can skip hundreds.
         self._category: str | None = None
         self._category_skips = 0
-        # Each written file by its history key, at its path after postprocessing (a compressed copy
+        # Each written file by its history key, at its path after shrinking (a compressed copy
         # may have a new name). Download threads and the encode pool's thread both write it, so
         # under the lock. A video counts from its download, as it always did; another file once
-        # its postprocessing is done.
+        # it is finished.
         self._written: dict[str, Path] = {}
         self._writing = threading.Lock()
         # Downloads submitted and not ended (`_pending`) and those started (`_running`), and the
@@ -395,7 +398,7 @@ class Job:
         saved = self._saved_first(post, category) if post.lazy else False
         if saved is not False:
             self._skip()
-            # Queued earlier in this run isn't saved yet, so it counts neither way toward `sync`'s stop (fixes #4).
+            # Queued earlier in this run isn't saved yet: it counts neither way.
             self.caught_up = saved
             log.debug("skip {post}: already saved", post=post.id)
             return True
@@ -416,7 +419,7 @@ class Job:
             if held is not None:
                 self._skip()
                 # Only a file on disk or in the history is caught up; one queued earlier in this run
-                # may still fail, so it counts neither way toward `sync`'s stop (fixes #4).
+                # may still fail, so it counts neither way toward `sync`'s stop.
                 if dest not in self._queued and key not in self._queued:
                     found += 1
                 # The same media is often listed twice under two names (a feed's dated post and a
@@ -476,7 +479,7 @@ class Job:
                 running ones finish.
 
         Returns:
-            Each file written, at its path after postprocessing, after logging each failed one.
+            Each file written, at its path after shrinking, after logging each failed one.
         """
         if error is None:
             self.wait()
@@ -644,7 +647,7 @@ class Job:
             self._ended()
 
     def _download(self, queued: _Queued) -> bool:
-        """Download one file on a pool thread, then postprocess it and write its history row; False when refused."""
+        """Download one file on a pool thread, then finish it; False when it was refused."""
         placed = queued.placed
         received: dict[str, str] = {}
         try:
@@ -671,20 +674,20 @@ class Job:
         count = placed.values.get("count", 1)
         if placed.num == 0 and isinstance(count, int) and count > 1:
             # The first file's row holds the post's file count, so a later run skips the lazy post
-            # only when every one of its files is saved, not just this one (fixes #2).
+            # only when every one of its files is saved, not just this one.
             row[FILES] = count
-        shrink = self.settings.options.shrink and kind in KINDS
-        fields = postprocess.Fields(day=day(placed.post.date), kind=kind, shrink=shrink,
-                                    compressor=self.settings.compressor, last_modified=received.get("last-modified"),
-                                    row=row, values=placed.values)
+        shrink = bool(self.settings.options.shrink and kind in KINDS)
+        # The post's day dates the file; else the server's Last-Modified does.
+        dated = day(placed.post.date) or _served_day(received.get("last-modified"))
+        finished = _Finished(row, kind if shrink else None, dated)
         if shrink and kind in ONE_AT_A_TIME:
             # A video waits for the run's one encode at a time on a pool of its own, so downloads go on.
             # It counts as written now, as its download is done; its encode only moves it.
             with self._writing:
                 self._written[queued.key] = saved
-            self._encoder().submit(self._postprocess, queued.key, saved, fields)
+            self._encoder().submit(self._finish, queued.key, saved, finished)
         else:
-            self._postprocess(queued.key, saved, fields)
+            self._finish(queued.key, saved, finished)
         return True
 
     def _fetch(self, queued: _Queued, file: File, received: dict[str, str]) -> Path | None:
@@ -748,13 +751,20 @@ class Job:
                 refresh = self._refreshes.popleft()
             refresh.run()
 
-    def _postprocess(self, key: str, path: Path, fields: postprocess.Fields) -> None:
-        """Run every postprocessor in order, then write the file's history row: last, so a row means a finished file."""
-        for step in postprocess.ORDER:
-            path = step(path, fields)
+    def _finish(self, key: str, path: Path, finished: _Finished) -> None:
+        """Shrink the file if asked, date it, then write its row: last, so a row means a whole file."""
+        if finished.shrink is not None:
+            # Slow: a photo takes a moment, a video minutes. A file this machine can't compress is
+            # left with no `compressed` field, so a later run with ffmpeg compresses it.
+            found = self.settings.compressor.compress(path, finished.shrink)
+            if found is not None:
+                finished.row.update(found)
+                path = Path(found.get("path", path))
+        if finished.day is not None:
+            _set_mtime(path, finished.day)
         with self._writing:
             self._written[key] = path
-        self.settings.history[key] = fields.row
+        self.settings.history[key] = finished.row
 
     def _sync_fetch(self, fetch: Callable[..., Any]) -> Callable[..., Any]:
         """A `Fetch` function whose coroutine, if it returns one, runs on the source's loop."""
@@ -864,6 +874,43 @@ def causes(error: BaseException) -> str:
         current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
     return " ← ".join(links)
 
+
+
+@dataclass
+class _Finished:
+    """What finishing a downloaded file needs: its row so far, its kind to shrink, its day."""
+
+    row: dict[str, Any]
+    # Its kind when the run shrinks it (`--shrink`), else None.
+    shrink: str | None
+    # The day its modified time is set to; None keeps the download time.
+    day: datetime.date | None
+
+
+def _set_mtime(path: Path, dated: datetime.date) -> None:
+    """Set a file's modified time to noon UTC of its day, the same day from UTC-11 to UTC+11."""
+    noon = datetime.datetime.combine(dated, datetime.time(NOON), tzinfo=datetime.timezone.utc)
+    stamp = noon.timestamp()
+    try:
+        os.utime(path, (stamp, stamp))
+    # The file was just written, so only a disk or permission problem lands here; its date is a
+    # convenience, never a reason to fail the download.
+    except OSError as error:
+        log.debug("{name}: modified time not set: {error}", name=path.name, error=error)
+
+
+def _served_day(value: str | None) -> datetime.date | None:
+    """The UTC day of an HTTP date such as `Last-Modified`; None if missing or unreadable."""
+    if not value:
+        return None
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    # A server's malformed date says nothing about the file; the download day stands.
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return when.astimezone(datetime.timezone.utc).date()
 
 @dataclass
 class _Queued:
