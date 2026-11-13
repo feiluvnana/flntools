@@ -369,9 +369,11 @@ class Job:
             self.sum_up()
             self._category = post.category
         self.caught_up = False
-        if post.lazy and self._saved_first(post, category):
+        saved = self._saved_first(post, category) if post.lazy else False
+        if saved is not False:
             self._skip()
-            self.caught_up = True
+            # Queued earlier in this run isn't saved yet, so it counts neither way toward `sync`'s stop (fixes #4).
+            self.caught_up = saved
             log.debug("skip {post}: already saved", post=post.id)
             return True
         # Step 2: list the files (a lazy post's `files` is called here), then queue each one not saved or queued.
@@ -390,7 +392,10 @@ class Job:
             held = self._held(dest, key)
             if held is not None:
                 self._skip()
-                found += 1
+                # Only a file on disk or in the history is caught up; one queued earlier in this run
+                # may still fail, so it counts neither way toward `sync`'s stop (fixes #4).
+                if dest not in self._queued and key not in self._queued:
+                    found += 1
                 # The same media is often listed twice under two names (a feed's dated post and a
                 # tab's undated photo), so the line names the one that holds it.
                 if held == placed.path:
@@ -477,11 +482,13 @@ class Job:
         with self._writing:
             return tuple(self._written.values())
 
-    def _saved_first(self, post: Post, category: Category | None) -> bool:
+    def _saved_first(self, post: Post, category: Category | None) -> bool | None:
         """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed files.
 
         The first file's history row holds the post's file count (`FILES`), so a post whose later
         file failed is listed again; a row without it (a post of one file) needs only its own key.
+        None when every file is held but one only because it was queued earlier in this run: the
+        post is skipped, and counts neither way toward `sync`'s stop.
         """
         template = _format(self.source, category, "key")
         if not template or _fields(template) & LISTED_FIELDS:
@@ -492,13 +499,14 @@ class Job:
             return False
         row = self.settings.history.get(keys[0])
         count = row.get(FILES) if isinstance(row, dict) else None
-        if not isinstance(count, int) or count < 2:
-            return True
-        if keys[1] == keys[0]:
-            # A key without `num` can't tell the files apart; the first one stands for the post, as before.
-            return True
-        return all(self._held(None, f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}")
-                   is not None for num in range(1, count))
+        checked = [keys[0]]
+        # A key without `num` can't tell the files apart; the first one stands for the post, as before.
+        if isinstance(count, int) and count > 1 and keys[1] != keys[0]:
+            checked += [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}"
+                        for num in range(1, count)]
+            if any(self._held(None, key) is None for key in checked[1:]):
+                return False
+        return None if any(key in self._queued for key in checked) else True
 
     def sum_up(self) -> None:
         """Log how many files the category being listed skipped as already saved, once, if any.

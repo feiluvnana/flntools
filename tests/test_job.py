@@ -442,6 +442,40 @@ class SyncStopTest(JobCase):
         # It stopped early, so the record is the earlier one, still there.
         self.assertIn("posts", self.record())
 
+    def test_files_queued_by_an_earlier_category_are_not_caught_up(self):
+        """fixes #4: a second feed listing the first one's 6 new posts goes on past them."""
+        test = self
+
+        class Two(Source):
+            code, name, domains = "two", "Two", ("example.com",)
+            key = "{id}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category(newest_first=True)
+            def posts(self, site, user):
+                for post_id in test.ids:
+                    yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, 1))
+
+            @user.category(newest_first=True)
+            def media(self, site, user):
+                # The new posts `posts` queued, then one only `media` has, then the saved ones.
+                for post_id in [*test.ids[:6], *test.deeper, *test.ids[6:]]:
+                    test.listed.append(post_id)
+                    yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, 1))
+
+        self.deeper = []
+        engine = Engine(home=self.home, sources={"two": Two})
+        self.assertTrue(engine.download(["two:example_user"]).ok)
+        self.ids = [f"n{number}" for number in range(6)] + self.ids
+        self.deeper = ["m1"]
+        self.listed.clear()
+        report = engine.sync(["two:example_user"])
+        self.assertIn("m1", self.listed)
+        self.assertIn("2026-01-01_m1.jpg", [path.name for path in report.targets[0].written])
+
     def test_posts_with_no_files_or_only_text_neither_count_nor_break_the_saved_run(self):
         """A reply with nothing to save, between saved posts, must not reset the run of 5 (twt replies)."""
         self.assertTrue(self.engine.download(["fed:example_user"]).ok)
