@@ -606,7 +606,8 @@ def post_of(item: Item, part: str, *, album: str | None = None, headers: dict[st
         album: the album's title, which makes it a file of `albums/<title>/`; None for none.
         headers: the request headers its file is fetched with; None for none.
     """
-    extension = "mp4" if item.kind == "video" else image_extension(item.url)
+    first = item.url if isinstance(item.url, str) else item.url[0]
+    extension = "mp4" if item.kind == "video" else image_extension(first)
     date = day(item.date)
     name = f"{date}_{item.id}.{extension}" if date else f"{item.id}.{extension}"
     return Post(item.id, [File(item.url, audio=item.audio, name=name)], date=item.date, headers=headers,
@@ -662,8 +663,9 @@ class Item(NamedTuple):
 
     # The photo's or video's id, which names its file and is its key in the history.
     id: str
-    # The file's URL: a video's merged stream, its progressive or HD file, or the image.
-    url: str
+    # The file's URL: a video's merged stream, its progressive or HD file, or the image; a progressive
+    # video's every address, HD first then SD, as mirrors (fixes #8).
+    url: str | tuple[str, ...]
     # "image" or "video"; a video is saved as an mp4.
     kind: str
     # When it was posted, as the site gives it (Unix seconds); the engine reads it as a UTC day.
@@ -725,11 +727,14 @@ def video_item(node: dict, stamp: Any) -> Item | None:
     if video_id and (streams := dash.best(selector.parse(node).jmespath(MANIFEST).first)):
         return Item(video_id, streams.video, "video", stamp, audio=streams.audio)
     progressive = selector.parse(node).jmespath(PROGRESSIVE).all
-    # The HD file is picked by its quality tag; without one, the first progressive file is the fallback.
+    # The HD file comes first by its quality tag, then the other progressive files, then the node's
+    # own URLs (HD before SD): every one a mirror, tried in order when one refuses (fixes #8).
     hd = [entry for entry in progressive if selector.parse(entry).jmespath("metadata.quality").first == "HD"]
-    url = next((entry.get("progressive_url") for entry in hd + progressive if entry.get("progressive_url")), None)
-    url = url or next((node[key] for key in VIDEO_URLS if node.get(key)), None)
-    return Item(video_id, url, "video", stamp) if video_id and url else None
+    found = [entry.get("progressive_url") for entry in hd + progressive] + [node.get(key) for key in VIDEO_URLS]
+    urls = tuple(dict.fromkeys(url for url in found if isinstance(url, str) and url))
+    if not video_id or not urls:
+        return None
+    return Item(video_id, urls[0] if len(urls) == 1 else urls, "video", stamp)
 
 
 def photo_item(node: dict, stamp: Any) -> Item | None:

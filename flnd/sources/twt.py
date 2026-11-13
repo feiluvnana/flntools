@@ -138,6 +138,8 @@ class Account:
         """The user's id, or None when the API doesn't know them."""
         return self.user["rest_id"] if self.user else None
 
+# The sizes X's media server gives a photo in, best first: `orig` is the upload itself.
+PHOTO_SIZES = ("orig", "4096x4096", "large", "medium")
 
 class Twitter(Source):
     """Twitter / X users and single tweets, from the GraphQL API, with a browser when the API refuses."""
@@ -595,28 +597,28 @@ def tweet_posts(tweet: dict, category: str, user_id: str | None, *, part: str | 
         yield Post(tweet_id, [media_file(url, extension, tweet_id, index, posted)], date=posted, part=folder, n=index)
 
 
-def media_file(url: str, extension: str, tweet_id: str, index: int, posted: datetime | None) -> File:
+def media_file(url: str | tuple[str, ...], extension: str, tweet_id: str, index: int, posted: datetime | None) -> File:
     """A media file, named from its URL's extension; pinned when the URL gives none the name could use.
 
     A URL path with no extension, or one in capitals, would be named from the content (or in
     lowercase) by the engine; the file was always named with `extension`, so then it keeps that.
 
     Args:
-        url: the file's URL, which may carry a `?name=` query.
+        url: the file's URL, which may carry a `?name=` query, or its mirrors, best first.
         extension: the extension to save it with when the URL gives none: "mp4", or "jpg" for a photo.
         tweet_id: the tweet's id, which the file name starts with.
         index: the media's place in the tweet, counted from 0.
         posted: the tweet's time, or None; the date is left out of the name when it is None.
     """
-    suffix = PurePosixPath(urlsplit(url).path).suffix
+    suffix = PurePosixPath(urlsplit(url if isinstance(url, str) else url[0]).path).suffix
     if suffix and suffix == suffix.lower():
         return File(url)
     stem = "_".join(str(part) for part in (day(posted), tweet_id, index) if part is not None)
     return File(url, name=f"{stem}.{extension}")
 
 
-def best_file(media: dict) -> tuple[str, str] | None:
-    """A photo at full size, or a video's highest-bitrate MP4, as `(url, extension)`.
+def best_file(media: dict) -> tuple[str | tuple[str, ...], str] | None:
+    """A photo at full size with its smaller sizes as mirrors, or a video's highest-bitrate MP4, as `(url, extension)`.
 
     Args:
         media: one entry of a tweet's `extended_entities.media`.
@@ -626,8 +628,10 @@ def best_file(media: dict) -> tuple[str, str] | None:
     """
     if media.get("type") == "photo" and media.get("media_url_https"):
         url = media["media_url_https"]
-        # `name=orig` asks the media server for the full-size picture, not its thumbnail size.
-        return f"{url}?name=orig", PurePosixPath(urlsplit(url).path).suffix.lstrip(".") or "jpg"
+        # `name=orig` asks the media server for the full-size picture, not its thumbnail size; the
+        # smaller sizes are mirrors for when it refuses one (fixes #8), tried in this order.
+        sizes = tuple(f"{url}?name={size}" for size in PHOTO_SIZES)
+        return sizes, PurePosixPath(urlsplit(url).path).suffix.lstrip(".") or "jpg"
     variants = selector.parse(media).jmespath("video_info.variants").all
     # Only MP4 variants are kept: the streaming playlists aren't files the engine can save as an MP4.
     mp4s = [variant for variant in variants if variant.get("content_type") == "video/mp4"]

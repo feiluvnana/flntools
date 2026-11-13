@@ -64,6 +64,11 @@ def page(*entries, cursor="next"):
         {"type": "TimelineAddEntries", "entries": added}]}}}}}}
 
 
+def sizes(url):
+    """A photo's URL at each size X gives, best first: its mirrors (fixes #8)."""
+    return tuple(f"{url}?name={size}" for size in ("orig", "4096x4096", "large", "medium"))
+
+
 def pages(*answers):
     """A fixture giving each page in turn, then an empty last page."""
     queue = list(answers)
@@ -224,8 +229,8 @@ class NamesAndKeysTest(unittest.TestCase):
         # The order differs only in the profile, now read after the timelines: it is its own category.
         self.assertEqual(sorted(pairs(saved)), sorted(TODAY))
         self.assertEqual([item.url for item in saved[:3]], [
-            "https://pbs.example/media/p.png?name=orig", "https://video.example/v.mp4",
-            "https://pbs.example/media/a.jpg?name=orig"])
+            sizes("https://pbs.example/media/p.png"), "https://video.example/v.mp4",
+            sizes("https://pbs.example/media/a.jpg")])
         self.assertEqual([item.url for item in saved[-2:]], [
             "https://pbs.example/profile_images/9/me.jpg", "https://pbs.example/profile_banners/42/1683721221/1500x500"])
 

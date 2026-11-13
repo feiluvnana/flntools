@@ -336,13 +336,14 @@ class WalkerTest(unittest.TestCase):
         [item] = media_items({"data": {"node": with_dash(VIDEO, INSTAGRAM)}})
         self.assertEqual((item.url, item.audio), ("https://cdn.example/1080.mp4", "https://cdn.example/a95.mp4"))
         [item] = media_items({"data": {"node": with_dash(VIDEO, "<MPD/>")}})
-        self.assertEqual((item.url, item.audio), ("https://cdn.example/hd.mp4", None))
+        # Every progressive address is a mirror, HD first (fixes #8).
+        self.assertEqual((item.url, item.audio), (("https://cdn.example/hd.mp4", "https://cdn.example/sd.mp4"), None))
 
     def test_photos_and_videos_are_found_once_with_their_dates(self):
         items = list(media_items({"data": {"a": PHOTO, "b": [VIDEO, VIDEO], "c": {"id": "x", "image": {"w": 1}}}}))
         self.assertEqual([(item.id, item.kind, item.date, item.album) for item in items],
                          [("21", "image", STAMP, "Summer: 2026"), ("22", "video", STAMP, None)])
-        self.assertEqual(items[1].url, "https://cdn.example/hd.mp4")
+        self.assertEqual(items[1].url, ("https://cdn.example/hd.mp4", "https://cdn.example/sd.mp4"))
 
     def test_a_videos_thumbnails_are_not_photos(self):
         video = {**VIDEO, "preferred_thumbnail": {"id": "23", "image": {"uri": "https://cdn.example/thumb.jpg"}}}

@@ -51,7 +51,7 @@ import random
 import re
 from collections import deque
 from pathlib import PurePosixPath
-from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple
+from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Sequence
 from urllib.parse import urlsplit
 
 from flnd.source import FetchError, File, Post, Site, Source, day, fill, pages, target
@@ -734,7 +734,7 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
             for idx, img in enumerate(images):
                 url_list = selector.parse(img).jmespath("imageURL.urlList || displayImage.urlList || thumbnail.urlList").all
                 if url_list:
-                    items.append({**common, "url": url_list[0], "kind": "image", "idx": idx + 1})
+                    items.append({**common, "url": mirrors(url_list), "kind": "image", "idx": idx + 1})
         elif video_url := best_video(raw.get("video") or {}):
             items.append({**common, "url": video_url, "kind": "video", "idx": 0})
     return items
@@ -760,8 +760,20 @@ def stamp_of(raw: Dict[str, Any], item_id: str) -> Any:
     return stamp if day(stamp) is not None else None
 
 
-def best_video(video: Dict[str, Any]) -> str | None:
-    """The URL of the video's best file: the largest MP4 of `bitrateInfo`, else `playAddr`.
+def mirrors(urls: Sequence[Any]) -> str | tuple[str, ...]:
+    """Every CDN address TikTok gives for one file, as `File.url` takes them: one URL, or the mirrors in order.
+
+        mirrors(["https://v16.example/a", "https://v19.example/a"])     # both, tried in that order
+
+    TikTok answers 403 for some posts on one CDN host and not on another, so every address is kept
+    and `shared.http.download` tries the next one when one refuses (fixes #8).
+    """
+    found = tuple(dict.fromkeys(str(url) for url in urls if url))
+    return found[0] if len(found) == 1 else found
+
+
+def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
+    """The URL of the video's best file, with its other CDN addresses: the largest MP4 of `bitrateInfo`, else `playAddr`.
 
         url = best_video(item["video"])   # "https://v16-webapp.tiktok.com/…"
 
@@ -780,14 +792,14 @@ def best_video(video: Dict[str, Any]) -> str | None:
     `_is_dash`'s marks stay unconfirmed until a live check.
     """
     # Each candidate is (pixels, bitrate, url): the largest picture wins, and the bitrate breaks a tie.
-    candidates = [(_pixels(entry), entry.get("Bitrate") or 0, urls[0]) for entry in video.get("bitrateInfo") or []
+    candidates = [(_pixels(entry), entry.get("Bitrate") or 0, mirrors(urls)) for entry in video.get("bitrateInfo") or []
                   if isinstance(entry, dict) and not _is_dash(entry)
                   and (urls := selector.parse(entry).jmespath("PlayAddr.UrlList").all)]
     if candidates:
         return max(candidates, key=lambda candidate: candidate[:2])[2]
     address = video.get("playAddr")
     if isinstance(address, dict):
-        address = (address.get("urlList") or [None])[0]
+        address = mirrors(address.get("urlList") or [])
     return address or None
 
 

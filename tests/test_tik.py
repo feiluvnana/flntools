@@ -356,6 +356,12 @@ class TikTokTest(unittest.TestCase):
 
     def test_the_best_video_address(self):
         self.assertEqual(best_video({"playAddr": {"urlList": ["https://v/a.mp4"]}}), "https://v/a.mp4")
+        # Every CDN address is a mirror, in TikTok's order (fixes #8).
+        self.assertEqual(best_video({"bitrateInfo": [{"Bitrate": 9, "PlayAddr": {"UrlList": ["https://v16/a.mp4",
+                                                                                         "https://v19/a.mp4"]}}]}),
+                         ("https://v16/a.mp4", "https://v19/a.mp4"))
+        self.assertEqual(best_video({"playAddr": {"urlList": ["https://v16/a.mp4", "https://v19/a.mp4"]}}),
+                         ("https://v16/a.mp4", "https://v19/a.mp4"))
         self.assertEqual(best_video({"bitrateInfo": [{"Bitrate": 1, "PlayAddr": {"UrlList": ["https://v/low.mp4"]}},
                                                      {"Bitrate": 9, "PlayAddr": {"UrlList": ["https://v/high.mp4"]}}]}),
                          "https://v/high.mp4")
