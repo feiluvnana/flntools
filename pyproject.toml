@@ -15,6 +15,7 @@ dependencies = [
     "python-jsonpath",
     "cryptography>=42",
     "telethon>=1.36",
+    "cryptg>=0.5",
     "qrcode>=7.4",
     "pillow>=11.3",
     "pi-heif>=1.0",
@@ -31,6 +32,8 @@ http = ["httpx>=0.27.0", "parsel>=1.9.0", "python-jsonpath"]
 # Pinned to a minor version: every Playwright release downloads a new browser build.
 browser = ["playwright==1.65.*", "cryptography>=42"]
 media = ["pillow>=11.3", "pi-heif>=1.0", "imageio-ffmpeg>=0.6"]
+# Telethon finds cryptg by itself and decrypts with it, many times faster than in Python.
+telegram = ["telethon>=1.36", "cryptg>=0.5"]
 
 [project.scripts]
 flnd = "flnd.cli:app"
