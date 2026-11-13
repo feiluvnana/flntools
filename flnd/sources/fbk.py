@@ -102,6 +102,9 @@ NOT_MEDIA = {"profile_header_renderer"}
 TIMESTAMPS = ("creation_time", "publish_time", "post_timestamp", "timestamp", "created_time")
 # The Comet GraphQL endpoint's responses carry the feed; any other response is not read.
 FEED = "graphql"
+# A photo page's own day: taken to be the first `created_time` it holds. Unverified until a hand
+# check on a live page; a wrong guess only dates a photo that would otherwise be estimated.
+CREATED_TIME = re.compile(r'"created_time":(\d{9,11})\b')
 # What the page says when Facebook stops a session that went too fast. Seen 2025; gallery-dl stops on it too.
 BLOCKED = "temporarily blocked"
 # What the countdown says while a block or a login wall is waited out.
@@ -188,6 +191,18 @@ class Facebook(Source):
     # `profile.php?id=` and `people/*/<id>` come before the name pattern, which skips `profile.php` and
     # `people` so their own forms, or a refusal, decide. `@name` has its own pattern: the name pattern's
     # custom regex takes no `@`, which `{user}` alone would.
+    def date(self, site: Site, post: Post) -> Any:
+        """A photo's day from its own page, which the page's API sends with its `created_time`.
+
+        Args:
+            site: the target's site; the page is asked from its tab.
+            post: the photo's post, whose id is the photo's `fbid`.
+        """
+        # Asked from the tab, as the page itself does, so it carries the feed's session.
+        page = site.fetch(f"{SITE}/photo/?fbid={post.id}", in_page=True).text
+        found = CREATED_TIME.search(page)
+        return int(found[1]) if found else None
+
     @target("{user}",
             r"facebook.com/profile.php?id={user:\d+}", r"fb.com/profile.php?id={user:\d+}",
             r"facebook.com/people/*/{user:\d+}", r"fb.com/people/*/{user:\d+}",

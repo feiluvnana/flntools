@@ -99,6 +99,11 @@ def repair(history: MutableMapping[str, Any], folder: Path, rows: Sequence[tuple
     for info in folder.rglob(files.PART_INFO_GLOB) if folder.is_dir() else ():
         if not info.with_name(info.name[: -len(files.PART_INFO_SUFFIX)]).is_file():
             info.unlink(missing_ok=True)
+    # A link into another category's folder whose file is gone: removed, and made again by the
+    # next run that lists the file, once the fetch has saved the file again.
+    for link in folder.rglob("*") if folder.is_dir() else ():
+        if link.is_symlink() and not link.exists():
+            link.unlink()
     with log.progress(f"repair {tally.target}", total=len(rows)) as bar:
         for key, row in rows:
             bar.advance()
@@ -152,7 +157,8 @@ def count(history: MutableMapping[str, Any], folder: Path, tally: Tally) -> None
         else:
             log.warn("{target}: {name} is missing; its post may be gone", target=tally.target, name=name)
     tally.missing = len(gone)
-    on_disk = [path for path in folder.rglob("*") if path.is_file()
+    # A link is a view of a file counted already, not a file of its own.
+    on_disk = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()
                and not path.name.startswith(".")] if folder.is_dir() else []
     tally.files, tally.size = len(on_disk), sum(path.stat().st_size for path in on_disk)
 

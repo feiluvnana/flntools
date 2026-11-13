@@ -177,7 +177,7 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
 
     Returns:
         Each file in order, a file queued twice (same path or key) listed once, as the job queues it.
-        Nothing is saved, so every lazy post's files are listed.
+        Nothing is saved, so a lazy post's files are listed unless its first key is queued already.
 
     An `async def` route or category runs on a loop of its own, as on the source's.
     """
@@ -191,6 +191,9 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
     known: set[str] = set()
     try:
         for post in job.posts(instance, site, target, options, run_async=loop.run_until_complete):
+            if post.lazy and _first_key(instance, post, categories.get(post.category)) in known:
+                # The job skips a lazy post whose first file is queued, before listing its files.
+                continue
             listed = list(post.files()) if callable(post.files) else list(post.files)
             for placed in job.place(instance, post, listed, category=categories.get(post.category)):
                 if placed.path in known or placed.key in known:
@@ -200,6 +203,15 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
     finally:
         loop.close()
     return found
+
+
+def _first_key(source: Source, post: Post, category: Any) -> str | None:
+    """A post's first file's key from its fields alone, as the job reads it; None when it needs its files."""
+    template = job._format(source, category, "key")
+    if not template or job._fields(template) & job.LISTED_FIELDS:
+        return None
+    return job.fill(template, {**post.fields, "id": post.id, "category": post.category, "num": 0},
+                    safe=False) or None
 
 
 def _answer(answers: Mapping[str, Answer], url: str, request: dict[str, Any]) -> Any:

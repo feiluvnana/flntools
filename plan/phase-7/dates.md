@@ -36,6 +36,13 @@ memory lives there, for every source:
   (ins stories and highlights, every `profile` category, loi, tlg).
 - ins's `taken` set and tik's `_seen` go, as the job does their work.
 
+As built (2026-11-13): the memory keys each post by its first file's key (a key format that
+needs the listed files, or holds the date, isn't held). History rows gain `date`, the post's day.
+A name the site built exactly as the `filename` format would (with or without the day) is
+rebuilt with the day found; any other name the site gives is kept, so tlg, loi and every
+path-keyed category keep theirs without a list. A second undated copy of a waiting post counts
+as a skip.
+
 ## 2. Every file dated
 
 Step 5, decided by the user on 2026-11-13. For a post still undated when its category ends:
@@ -59,6 +66,13 @@ both have the same bytes. One the site can't date keeps its name, and the next `
 
 This reverses Phase 6 [simplify §3](../phase-6/simplify.md#3-no-history-migrations)'s "no rename
 when the real date is found", by the user's later decision.
+
+As built (2026-11-13): `Source.date(site, post)` returns None by default. The nearest
+dated neighbour is searched both ways in listing order, the earlier one first on a tie. History
+rows gain `id`, which `sync` asks the hook by. A file is renamed only when the source's
+`filename` starts with `{date}_`; an estimated day in front is replaced. fbk's hook reads the
+first `"created_time"` on `facebook.com/photo/?fbid=<id>`, from the tab: unverified until a live
+check.
 
 ## Tests
 

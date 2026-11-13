@@ -267,8 +267,6 @@ class Profile:
         self._started = False
         # The post feed's items waiting for the category that wants them: a playlist's or not.
         self._queues: Dict[str, deque[Dict[str, Any]]] = {"videos": deque(), "playlists": deque()}
-        # The (id, idx) of each post-feed file queued, so a page re-read after a fallback adds nothing twice.
-        self._seen: set[tuple[str, int]] = set()
         self._told = False
 
     @property
@@ -491,9 +489,6 @@ class Profile:
         items = items_of(data)
         self.found["videos"] += len(items)
         for item in items:
-            if (item["id"], item["idx"]) in self._seen:
-                continue
-            self._seen.add((item["id"], item["idx"]))
             self._queues["playlists" if item["playlist"] else "videos"].append(item)
         # Only a watched page can end the feed by `hasMore`; an API page ends it by running out (`StopIteration`).
         if not api and isinstance(data, dict) and "hasMore" in data and not data["hasMore"] and self._posts is not None:

@@ -11,6 +11,7 @@ import os
 import threading
 import time
 import unittest
+from pathlib import Path
 from datetime import date
 from unittest import mock
 
@@ -72,9 +73,9 @@ class CategoriesTest(JobCase):
                                         "exm:profile/avatar_42.jpg"])
         # Today's row format: where it is, its size, and when.
         # The first file of a post of several holds their count (fixes #2).
-        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "files", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "date", "files", "id", "path", "size"])
         self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
-        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "date", "id", "path", "size"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
@@ -235,7 +236,9 @@ class SavedTest(JobCase):
         # Both categories name it `1_0` (their folders differ), so the second is skipped as queued.
         self.assertEqual(len(self.fetched(f"{CDN}/1.jpg")), 1)
         self.assertEqual(sorted(self.history()), ["bth:1_0", "bth:2_0"])
-        self.assertEqual(self.files("bth"), ["posts/1.jpg", "reels/2.jpg"])
+        # The second category's folder holds a link to the first one's file.
+        self.assertEqual(self.files("bth"), ["posts/1.jpg", "reels/1.jpg", "reels/2.jpg"])
+        self.assertTrue((self.target_dir("bth", "example_user") / "reels" / "1.jpg").is_symlink())
         # A later run finds both saved, whichever category lists them.
         self.requests.clear()
         self.assertEqual(self.run_engine(Both, targets=["bth:example_user"]), 0)
@@ -316,8 +319,9 @@ class FilesTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "files", "path", "size"])
-        self.assertEqual(sorted(self.history()["exm:B2def_0"]), ["at", "path", "size"])
+        self.assertEqual(sorted(row), ["at", "date", "files", "id", "path", "size"])
+        self.assertEqual(sorted(self.history()["exm:B2def_0"]),
+                         ["at", "date", "id", "path", "size"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
@@ -810,7 +814,9 @@ class CtrlCTest(JobCase):
                 try:
                     for number in range(1, 100):
                         listed.append(number)
-                        yield Post(str(number), [File(f"{CDN}/{number}.7z", name=f"{number}.7z")])
+                        # Dated, so each post is queued as it is listed, not held for its date.
+                        yield Post(str(number), [File(f"{CDN}/{number}.7z", name=f"{number}.7z")],
+                                   date=datetime.date(2026, 1, 1))
                 finally:
                     closed.set()
 
@@ -830,7 +836,7 @@ class CtrlCTest(JobCase):
         thread.join(10)
         report = outcome["report"]
         self.assertEqual(report.targets[0].error, job.STOPPED)
-        self.assertEqual(self.files("slw"), ["1.7z"])
+        self.assertEqual(self.files("slw"), ["2026-01-01_1.7z"])
         self.assertIn("slw:1_0", self.history())
         # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
         self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
@@ -1010,11 +1016,12 @@ class ResumeTest(JobCase):
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
         report = self.engine.download(["pgd:example_user"])
         self.assertTrue(report.ok)
-        # c2 to the end first, then the newest; the posts the failed run dropped are saved too.
+        # c2 to the end first, then the newest. Which of p1..p7 the failed run saved depends on
+        # which downloads had started, so only the posts this run must save are checked.
         self.assertEqual(self.fetched[:3], ["c2", None, "c0"])
         folder = self.target_dir("pgd", "example_user")
-        saved = sorted(path.stem.split("_")[-1] for path in folder.rglob("*.jpg"))
-        self.assertEqual(saved, ["n1", "n2", *[f"p{number}" for number in range(1, 10)]])
+        saved = {path.stem.split("_")[-1] for path in folder.rglob("*.jpg")}
+        self.assertLessEqual({"n1", "n2", "p8", "p9"}, saved)
         self.assertNotIn("cursors", self.row())
         self.assertIn("posts", self.row()["complete"])
 
@@ -1043,6 +1050,161 @@ class ResumeTest(JobCase):
         self.assertIn("• pgd:example_user: posts: the cursor an interrupted run saved was refused; "
                       "listing from the newest", self.lines())
         self.assertNotIn("cursors", self.row())
+
+
+class MemoryTest(JobCase):
+    """The listing memory: an undated post waits for its category's end, and takes any day found."""
+
+    def run_feed(self, *categories, hook=None):
+        self.run_engine(self.feed(*categories, hook=hook), targets=["mem:example_user"])
+        return self.files("mem")
+
+    def feed(self, *categories, hook=None):
+        class Feed(Source):
+            code, name, domains = "mem", "Memory", ("example.com",)
+            folder, filename, key = "", "{date}_{id}", "{id}_{num}"
+
+            if hook is not None:
+                def date(self, site, post):
+                    return hook(post)
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield from categories[0]
+
+            @user.category
+            def photos(self, site, user):
+                yield from categories[1] if len(categories) > 1 else []
+
+        return Feed
+
+    def test_a_dated_copy_later_in_the_category_names_the_undated_one(self):
+        undated = Post("A1", [File(f"{CDN}/a.jpg")])
+        dated = Post("A1", [File(f"{CDN}/a.jpg")], date=datetime.date(2026, 1, 2))
+        self.assertEqual(self.run_feed([undated, dated]), ["2026-01-02_A1.jpg"])
+
+    def test_an_undated_post_with_no_dated_copy_is_saved_when_its_category_ends(self):
+        self.assertEqual(self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")])]), ["A1.jpg"])
+
+    def test_an_earlier_category_or_run_gives_its_day(self):
+        dated = Post("A1", [File(f"{CDN}/a.jpg")], date=datetime.date(2026, 1, 2))
+        undated = Post("B2", [File(f"{CDN}/b.jpg")])
+        self.run_feed([dated])
+        # B2's day is known from an earlier run's history row for its key.
+        with kv.open(self.home / files.HISTORY, table="downloads") as history:
+            history["mem:B2_0"] = {"path": "/gone.jpg", "size": 1,
+                                   "at": "2026-01-03T00:00:00+00:00", "date": "2026-01-03"}
+        self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))
+
+    def test_a_name_the_site_built_from_the_format_takes_the_day_found(self):
+        undated = Post("A1", [File(f"{CDN}/a", name="A1.webp")])
+        day = datetime.date(2026, 1, 2)
+        dated = Post("A1", [File(f"{CDN}/a", name="2026-01-02_A1.webp")], date=day)
+        other = Post("B2", [File(f"{CDN}/b", name="cover.jpg")], date=day)
+        files = self.run_feed([undated, dated, other])
+        self.assertEqual(files, ["2026-01-02_A1.webp", "cover.jpg"])
+
+    def test_the_sites_date_hook_dates_an_undated_post(self):
+        asked = []
+        files = self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")])],
+                              hook=lambda post: asked.append(post.id) or datetime.date(2026, 1, 4))
+        self.assertEqual((files, asked), (["2026-01-04_A1.jpg"], ["A1"]))
+        self.assertNotIn("estimated", self.history()["mem:A1_0"])
+
+    def test_without_a_hook_the_nearest_dated_neighbour_gives_an_estimated_day(self):
+        posts = [Post("N1", [File(f"{CDN}/n1.jpg")], date=datetime.date(2026, 1, 5)),
+                 Post("U1", [File(f"{CDN}/u1.jpg")]),
+                 Post("N2", [File(f"{CDN}/n2.jpg")], date=datetime.date(2026, 1, 3))]
+        self.assertIn("2026-01-05_U1.jpg", self.run_feed(posts))
+        self.assertIs(self.history()["mem:U1_0"]["estimated"], True)
+
+    def test_a_block_while_dating_estimates_the_rest_without_failing(self):
+        def blocked(post):
+            raise FetchError("HTTP 429", status=429)
+
+        posts = [Post("N1", [File(f"{CDN}/n1.jpg")], date=datetime.date(2026, 1, 5)),
+                 Post("U1", [File(f"{CDN}/u1.jpg")]), Post("U2", [File(f"{CDN}/u2.jpg")])]
+        files = self.run_feed(posts, hook=blocked)
+        self.assertEqual(sorted(files),
+                         ["2026-01-05_N1.jpg", "2026-01-05_U1.jpg", "2026-01-05_U2.jpg"])
+        self.assertEqual(sum("dating stopped" in line for line in self.lines()), 1)
+
+    def test_sync_dates_and_renames_a_file_saved_undated_and_keeps_its_row(self):
+        undated = [Post("A1", [File(f"{CDN}/a.jpg")])]
+        self.assertEqual(self.run_feed(undated), ["A1.jpg"])
+        feed = self.feed(undated, hook=lambda post: datetime.date(2026, 1, 4))
+        Engine(home=self.home, sources={"mem": feed}).sync()
+        self.assertEqual(self.files("mem"), ["2026-01-04_A1.jpg"])
+        row = self.history()["mem:A1_0"]
+        self.assertEqual((Path(row["path"]).name, row["date"], row["id"]),
+                         ("2026-01-04_A1.jpg", "2026-01-04", "A1"))
+
+    def test_a_second_undated_copy_counts_as_a_skip(self):
+        self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")]), Post("A1", [File(f"{CDN}/a.jpg")])])
+        self.assertIn("• mem:example_user: posts: 1 file already saved", self.lines())
+
+
+class LinkTest(JobCase):
+    """A file found in a second category's folder is linked there, not downloaded again."""
+
+    def feed(self, posts, reels):
+        class Tabs(Source):
+            code, name, domains, key = "lnk", "Links", ("example.com",), "{id}_{num}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def videos(self, site, user):
+                yield from posts
+
+            @user.category
+            def reels(self, site, user):
+                yield from reels
+
+        return Tabs
+
+    def clip(self, post_id="V1"):
+        return Post(post_id, [File(f"{CDN}/{post_id}.mp4")], date=datetime.date(2026, 1, 2))
+
+    def test_a_file_in_two_categories_is_saved_once_and_symlinked_relative(self):
+        self.run_engine(self.feed([self.clip()], [self.clip()]), targets=["lnk:example_user"])
+        folder = self.target_dir("lnk", "example_user")
+        link = folder / "reels" / "2026-01-02_V1.mp4"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), os.path.join("..", "videos", "2026-01-02_V1.mp4"))
+        self.assertEqual(link.read_bytes(), (folder / "videos" / "2026-01-02_V1.mp4").read_bytes())
+        self.assertEqual(len(self.fetched(f"{CDN}/V1.mp4")), 1)
+
+    def test_a_second_copy_in_one_category_is_skipped_not_linked(self):
+        self.run_engine(self.feed([self.clip(), self.clip()], []), targets=["lnk:example_user"])
+        self.assertEqual(self.files("lnk"), ["videos/2026-01-02_V1.mp4"])
+
+    def test_a_refused_symlink_falls_back_to_a_hard_link_then_to_one_warning(self):
+        with mock.patch.object(Path, "symlink_to", side_effect=OSError("no symlinks here")):
+            self.run_engine(self.feed([self.clip()], [self.clip()]), targets=["lnk:example_user"])
+        link = self.target_dir("lnk", "example_user") / "reels" / "2026-01-02_V1.mp4"
+        self.assertTrue(link.is_file() and not link.is_symlink())
+        self.assertEqual(link.stat().st_nlink, 2)
+        with mock.patch.object(Path, "symlink_to", side_effect=OSError("no")), \
+                mock.patch.object(os, "link", side_effect=OSError("no links on this volume")):
+            both = [self.clip("V2"), self.clip("V3")]
+            self.run_engine(self.feed(both, both), targets=["lnk:example_user"])
+        self.assertEqual(sum("can't link files" in line for line in self.lines()), 1)
+
+    def test_sync_removes_a_dangling_link_and_the_next_run_makes_it_again(self):
+        feed = self.feed([self.clip()], [self.clip()])
+        self.run_engine(feed, targets=["lnk:example_user"])
+        folder = self.target_dir("lnk", "example_user")
+        (folder / "videos" / "2026-01-02_V1.mp4").unlink()
+        Engine(home=self.home, sources={"lnk": feed}).sync()
+        link = folder / "reels" / "2026-01-02_V1.mp4"
+        self.assertTrue(link.is_symlink() and link.exists())
 
 
 if __name__ == "__main__":

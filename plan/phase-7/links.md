@@ -32,6 +32,13 @@ but not `photos/`. The user asked on 2026-11-13 for a symlink in the second fold
 overlap: Instagram's tagged posts also in posts, X's media tab and posts, TikTok's reposts,
 Facebook's reels and videos, photos and posts.
 
+## As built (2026-11-13)
+
+A file held by one queued this run is linked once the downloads are done, at its final path
+(with its extension, should its content have changed it). `sync`'s repair removes symlinks whose
+file is gone, and doesn't count a link as a file. Not built: moving a hard link's copy back to
+the history path when the original is deleted by hand; the repair downloads it again instead.
+
 ## Tests
 
 A file listed in two categories is downloaded once and symlinked into the second folder,

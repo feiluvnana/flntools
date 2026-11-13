@@ -519,8 +519,6 @@ class Profile:
     highlights: list[tuple[str, str]] = field(default_factory=list)
     # The codes each tab listed, so a post a result repeats is yielded once.
     listed: dict[str, set[str]] = field(default_factory=lambda: {tab: set() for tab in TABS})
-    # The codes any tab yielded, so a reel the posts grid already lists isn't read again.
-    taken: set[str] = field(default_factory=set)
 
     def read_tab(self, site: Site, api: Api, tab: str) -> Iterator[Post]:
         """Read one tab to its end: its embedded first page, then its own pagination request replayed.
@@ -632,9 +630,6 @@ class Profile:
             if not code or code in self.listed[tab]:
                 continue
             self.listed[tab].add(code)
-            if code in self.taken:
-                continue
-            self.taken.add(code)
             if is_complete(media):
                 if post_files(media):
                     yield post_of(media)

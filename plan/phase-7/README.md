@@ -37,11 +37,11 @@ Each step ends with `check` green and is committed on its own.
 1. [layout](layout.md): `media/`, `metadata/` and `log/`, and a log of every run at debug. **Built**, with lean's E9.
 2. [shrink](shrink.md): `--shrink` replaces `--image`, `--video` and `--audio`. **Built**.
 3. [fixes](fixes.md): five bugs from the 2026-11-13 review. **Built**: all eleven, one commit each (619ad17 … 043a478).
-4. [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
+4. **Built** (2f60bcf, 4d3cf40, with R1 853528e and R2 c5f2a8a). [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
    source: each key once, one key → date map, undated posts held until their category ends.
-5. [dates › every file dated](dates.md#2-every-file-dated): a source's `date` hook, then an
+5. **Built** (bb6a112, fbk's hook bec0753). [dates › every file dated](dates.md#2-every-file-dated): a source's `date` hook, then an
    estimate; `sync` dates files saved without a date.
-6. [links](links.md): a file found again in another tab's folder is linked there.
+6. **Built** (see links.md). [links](links.md): a file found again in another tab's folder is linked there.
 7. [shared](shared.md): `shared` as a black box: `http.fetch` used, `download` and `goto` return
    their headers, downloads stoppable, errors caught by name, private imports gone.
 8. [speed](speed.md): the downloader after IDM and MDM, more at once, less work around the
