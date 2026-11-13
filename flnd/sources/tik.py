@@ -431,9 +431,14 @@ class Profile:
         return self._loaded
 
     def _load(self) -> bool:
-        """Load the profile, wait out any captcha it shows and read its own data; False when it didn't load."""
+        """Load the profile, wait out any captcha it shows and read its own data, and return True.
+
+        Raises:
+            FetchError: the profile didn't load. Raised, not returned: `videos` would end as if
+                listed to its end and be recorded complete (fixes #3).
+        """
         if not self.site.goto(self.url):
-            return False
+            raise FetchError("the profile didn't load")
         # The captcha shows a few seconds after the load event, over a page that looks ready.
         self.site.page.raw.wait_for_timeout(SETTLE * 1000)
         self.wait_out_captcha()

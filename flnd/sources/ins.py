@@ -520,7 +520,9 @@ class Profile:
         # Watching starts before the tab loads, so the first page's own request is not missed.
         with watch_responses(site, GRAPHQL, scroll=True) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
-                return
+                # Raised, not returned: a tab that ended here would be recorded complete, and every
+                # later `sync` would stop at its first saved posts (fixes #3).
+                raise FetchError(f"{tab}: the page didn't load")
             # 1. The first page is embedded in the HTML, so it is read before any scrolling.
             for result in embedded_results(site.page.document):
                 yield from self._posts(site, api, result, tab)

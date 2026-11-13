@@ -306,19 +306,32 @@ class TimelineTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("! posts: HTTP 404") and line.endswith("; reading it in the browser")
                             for line in seen.messages), seen.messages)
 
-    def test_no_answer_and_no_json_are_not_refusals(self):
+    def test_no_answer_and_no_json_are_not_refusals_but_cut_the_listing_short(self):
+        # fixes #3: raised, so the category isn't recorded complete; the browser would see the same.
         seen = Seen()
-        with browser({}):
-            collect(Twitter, "twt:someone", options=Options(categories=("posts", "media")), seen=seen,
-                    json={url("UserByScreenName"): USER, url("UserOriginalsTimeline"): FetchError("no answer"),
-                          url("UserMedia"): pages(page())})
+        with browser({}), self.assertRaisesRegex(FetchError, "no answer"):
+            collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
+                    json={url("UserByScreenName"): USER, url("UserOriginalsTimeline"): FetchError("no answer")})
         self.assertEqual(seen.visited, [])
-        self.assertIn("! posts: no answer", seen.messages)
         seen = Seen()
-        collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
-                json={url("UserByScreenName"): USER}, html={url("UserOriginalsTimeline"): "<html>"})
+        with self.assertRaisesRegex(FetchError, "^posts: "):
+            collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
+                    json={url("UserByScreenName"): USER}, html={url("UserOriginalsTimeline"): "<html>"})
         self.assertEqual(seen.visited, [])
-        self.assertTrue(any(line.startswith("! posts: ") for line in seen.messages), seen.messages)
+
+    def test_a_failure_on_page_3_raises_after_two_pages_were_read(self):
+        answers = [page(item(tweet("1", [photo("a")])), cursor="c1"), page(item(tweet("2", [photo("b")])), cursor="c2")]
+
+        def third_fails(address, request):
+            if answers:
+                return answers.pop(0)
+            raise FetchError("connection reset")
+
+        seen = Seen()
+        with self.assertRaisesRegex(FetchError, "connection reset"):
+            collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
+                    json={url("UserByScreenName"): USER, url("UserOriginalsTimeline"): third_fails})
+        self.assertEqual(queries(seen), ["UserByScreenName"] + ["UserOriginalsTimeline"] * 3)
 
     def test_an_unknown_user_is_read_in_the_browser(self):
         seen = Seen()

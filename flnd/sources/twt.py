@@ -335,8 +335,12 @@ class Twitter(Source):
 
         Returns:
             True when the API refused the timeline (an old query id, say) and the browser should
-            take over. A request that got no answer, or no JSON, is not a refusal: the browser
-            would see the same, so it only warns and gives False.
+            take over.
+
+        Raises:
+            FetchError: a request that got no answer, or no JSON. It isn't a refusal, since the
+                browser would see the same, but the listing was cut short: raised, so the category
+                isn't recorded complete and the next `sync` reads past where it stopped (fixes #3).
         """
         seen: set[str] = set()
 
@@ -360,14 +364,12 @@ class Twitter(Source):
         except FetchError as error:
             # Only the answer's status tells a refusal from a connection that failed.
             if error.status is None:
-                site.warn("{category}: {error}", category=timeline.category, error=error)
-                return False
+                raise
             site.warn("{category}: {error}; reading it in the browser", category=timeline.category, error=error)
             return True
-        # A page that isn't JSON: the browser would get the same answer, so this is a warning, not a refusal.
+        # A page that isn't JSON: the browser would get the same answer, so it isn't a refusal either.
         except http.Error as error:
-            site.warn("{category}: {error}", category=timeline.category, error=error)
-            return False
+            raise FetchError(f"{timeline.category}: {error}") from error
         site.info("{category}: {pages} read", category=timeline.category, pages=fmt.count(count, "page"))
         return False
 
