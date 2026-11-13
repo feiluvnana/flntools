@@ -116,6 +116,33 @@ class SiteCase(unittest.TestCase):
         return self.screen.dest.getvalue().splitlines()
 
 
+class ExpiringLoginTest(SiteCase):
+    """fixes #9: a login cookie that expired, or will within a day, is warned of at the run's start."""
+
+    def save(self, **expires):
+        jar = [{"name": name, "value": "secret-value", "domain": ".example.com", "path": "/", "expires": when}
+               for name, when in expires.items()]
+        auth.save(self.home, Example.code, cookies.Jar(jar))
+
+    def test_soon_and_expired_login_cookies_are_named_never_their_value(self):
+        self.save(token=1_000_000 + 3600, other=1_000_000 + 60)
+        with mock.patch.object(site_module, "_now", lambda: 1_000_000):
+            self.open()
+        self.assertEqual(self.lines(), ["! exm: the login cookie token expires in 1h; run flnd login again soon"])
+        self.save(token=999_000)
+        with mock.patch.object(site_module, "_now", lambda: 1_000_000):
+            self.open()
+        self.assertEqual(self.lines()[-1], "! exm: the login cookie token has expired; run flnd login again")
+        self.assertNotIn("secret-value", "\n".join(self.lines()))
+
+    def test_a_login_cookie_far_from_expiry_or_for_the_session_says_nothing(self):
+        for when in (1_000_000 + 30 * 24 * 3600, -1):
+            self.save(token=when)
+            with mock.patch.object(site_module, "_now", lambda: 1_000_000):
+                self.open()
+        self.assertEqual(self.lines(), [])
+
+
 class ProtocolTest(unittest.TestCase):
     def test_fake_site_has_exactly_the_13_members(self):
         def public(kind):

@@ -61,6 +61,11 @@ SOFT_STATUSES = (401, 403, 404)
 # The pacer waits and reads time through these, so tests can replace them.
 _sleep = time.sleep
 _clock = time.monotonic
+# The wall clock a cookie's expiry is compared with; tests replace it.
+_now = time.time
+# How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
+# `flnd sync` warns the run before the one that meets the login wall (fixes #9).
+EXPIRY_WARNING = 24 * 3600
 
 
 @dataclass
@@ -160,6 +165,7 @@ def source_run(settings: Settings, source: Source) -> Iterator[SourceRun]:
     speed `state` saved.
     """
     jar = auth.load(settings.home, source.code)
+    _warn_expiring(source, jar)
     # The pacer's and the client's callbacks reach the run, which is made after both.
     made: list[SourceRun] = []
     pacer = Pacer(source.pace, source.domains, on_wait=lambda seconds: made[0].show_wait(seconds),
@@ -529,6 +535,22 @@ class _PacedPage(Page):
         return super().scroll(within=within, until=until, count=count, idle=idle, wait=wait,
                               pause=max(pause, pacer.scroll_floor), on_step=step)
 
+
+
+def _warn_expiring(source: Source, jar: Any) -> None:
+    """Warn of each login cookie (`source.needs`) that has expired, or will within `EXPIRY_WARNING`, naming it, never its value."""
+    now = _now()
+    for cookie in jar:
+        expires = cookie.get("expires", -1)
+        # -1 (or 0) is a session cookie, which lasts as long as the browser it came from said.
+        if cookie.get("name") not in source.needs or not isinstance(expires, (int, float)) or expires <= 0:
+            continue
+        if expires <= now:
+            log.warn("{code}: the login cookie {name} has expired; run flnd login again", code=source.code,
+                     name=cookie["name"])
+        elif expires - now <= EXPIRY_WARNING:
+            log.warn("{code}: the login cookie {name} expires in {time}; run flnd login again soon",
+                     code=source.code, name=cookie["name"], time=fmt.duration(expires - now))
 
 def _names(cookies: httpx.Cookies) -> Mapping[str, str]:
     """A client's cookies as `{name: value}`; of two with one name on different domains, the last wins."""
