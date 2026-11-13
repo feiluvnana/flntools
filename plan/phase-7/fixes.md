@@ -129,3 +129,6 @@ messages and cookie write-back.
 - #8: a single URL stays a string; several are a tuple of mirrors, best first.
 - #11: the quoted tweet's media are `n` `q0`, `q1`, …; the card's image `card`; the story's music
   `<date>_<id>_music.m4a`.
+- #10: a run that fails drops the downloads it queued but hadn't started. The next run resumes
+  at the page being read when it failed, so a dropped file on an earlier page is only fetched
+  again by a listing that reaches it (a full listing, or a sync of a target with a lost file).

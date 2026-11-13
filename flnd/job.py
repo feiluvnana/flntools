@@ -8,7 +8,7 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
             --time filter; newest_first early stop                  ← `posts`
             files = post.files() if lazy, unless its first key is saved
             for num, file: name from the formats; skip if saved or queued   ← `place`
-            queue the download ─► net.download                      ← `Job._download`
+            queue the download ─► net.download                      ← `Downloads._download`
             finish: shrink → modified time → history row
             history row written last
 
@@ -86,7 +86,8 @@ if TYPE_CHECKING:
 
     from flnd.session import Options
 
-__all__ = ["STOPPED", "Done", "Job", "Placed", "download", "place", "plan", "posts", "wanted"]
+__all__ = ["STOPPED", "Done", "Downloads", "Ledger", "Placed", "download", "place", "plan", "posts",
+           "wanted"]
 
 # The hour of the day, UTC, a dated file's modified time is set to.
 NOON = 12
@@ -278,35 +279,20 @@ def place(source: Source, post: Post, files: Sequence[File], *, category: Catego
     return placed
 
 
-class Job:
-    """One target's downloads: the pool, the encodes, what is queued, and the history rows.
+class Ledger:
+    """What one target's listing has seen: the files queued, the skips, and the history it reads.
 
-        job = Job(run, site, target)
-        job.queue(post)                 # every file of one post, as `download` lists them
-        written = job.finish()
+        outcome, todo = ledger.take(post)
 
-    Args:
-        run: the source's resources for the run.
-        site: the target's `TargetSite`.
-        target: the target.
-
-    `queue` runs on the job's thread; downloads run on the pool's, and video encodes on a pool of
-    their own, one at a time across the run.
+    It runs on the listing's thread only, so it takes no lock.
     """
 
     def __init__(self, run: SourceRun, site: TargetSite, target: Target):
-        """Make the job for one target, with nothing queued and no pool started; the pool starts on the first file."""
-        self.run, self.site, self.target = run, site, target
-        self.source = run.source
-        self.settings = run.settings
+        self.source, self.settings, self.site = run.source, run.settings, site
         self.folder = disk.target_folder(self.settings.home, target)
         self.skipped = 0
-        # Whether the post `queue` last took had every file already saved (none queued), which
-        # `sync`'s saved-run stop counts; None for a post with no file to save (none, or text only),
-        # which neither counts nor breaks the run.
-        self._categories = {category.name: category for route in self.source.routes for category in route.categories}
-        self._pool: worker.Pool | None = None
-        self._encodes: worker.Pool | None = None
+        self._categories = {category.name: category for route in self.source.routes
+                            for category in route.categories}
         # Every path and history key queued so far, each to the name it was queued as, so one file
         # is never written twice and a skip can say which name holds it.
         self._queued: dict[Path | str, str] = {}
@@ -314,45 +300,19 @@ class Job:
         # line per category, since a feed and a tab that list the same media can skip hundreds.
         self._category: str | None = None
         self._category_skips = 0
-        # Each written file by its history key, at its path after shrinking (a compressed copy
-        # may have a new name). Download threads and the encode pool's thread both write it, so
-        # under the lock. A video counts from its download, as it always did; another file once
-        # it is finished.
-        self._written: dict[str, Path] = {}
-        self._writing = threading.Lock()
-        # Downloads submitted and not ended (`_pending`) and those started (`_running`), and the
-        # refreshes download threads ask the job's thread for: download threads and the job's
-        # thread all change them, under `_changed`, which is notified on every change.
-        self._changed = threading.Condition()
-        self._pending = 0
-        self._running = 0
-        # Every download submitted so far, for the target's row, which counts them.
-        self._submitted = 0
-        # The target's progress row, whose caption counts the files and whose `slots` limit how many
-        # running files are drawn under it; None when a caller has none (set by `download`).
-        self.row: Any = None
-        self._counts = ""
-        self._refreshes: deque[_Refresh] = deque()
-        # False once the job stops answering refreshes (`finish` after an error); a refresh
-        # asked for then gets no fresh link, so no download waits for an answer that won't come.
-        self._answering = True
-        # The thread that lists, where a lazy post's `files` may run.
-        self._lister = threading.current_thread()
 
-    def queue(self, post: Post) -> Outcome:
-        """Queue every file of one post that isn't saved or queued yet, listing a lazy post's files only if needed.
+    def take(self, post: Post) -> tuple[Outcome, list[_Queued]]:
+        """Each file of one post not saved or queued yet; a lazy post's files are listed only if needed.
 
         Args:
             post: a post the listing kept, its category set.
 
         Returns:
-            What became of it; `STOPPED` when Ctrl-C stopped it before every file was queued.
+            What became of the post, and the files to submit, each marked queued already.
 
         Raises:
             Whatever a lazy post's `files` raises, such as `FetchError`.
 
-        It waits while the pool holds twice its `concurrency` in downloads, answering the
-        downloads' refresh requests meanwhile.
         """
         # Step 1: a lazy post whose first key is saved is skipped before its files are listed, so its request is saved.
         category = self._categories.get(post.category)
@@ -363,10 +323,11 @@ class Job:
         if skipped is not None:
             self._skip()
             log.debug("skip {post}: already saved", post=post.id)
-            return skipped
+            return skipped, []
         # Step 2: list the files (a lazy post's `files` is called here), then queue each one not saved or queued.
         listed = list(post.files()) if callable(post.files) else list(post.files)
-        found = fresh = 0
+        found = 0
+        todo: list[_Queued] = []
         for placed in place(self.source, post, listed, category=category):
             dest = self.folder.joinpath(*placed.path.split("/"))
             if placed.file.content is not None:
@@ -391,19 +352,122 @@ class Job:
                 else:
                     log.debug("skip {name}: already saved as {held}", name=placed.path, held=held)
                 continue
-            # Waiting for room first keeps the pool from growing without bound while the listing runs ahead.
-            if not self._room():
-                return Outcome.STOPPED
-            fresh += 1
             self._queued.update(dict.fromkeys((dest, key), placed.path))
-            try:
-                self._downloads().submit(self._task, _Queued(placed, dest, key))
-            except BaseException:
-                self._ended()
-                raise
-        if fresh:
-            return Outcome.QUEUED
-        return Outcome.SAVED if found else Outcome.EMPTY
+            todo.append(_Queued(placed, dest, key))
+        if todo:
+            return Outcome.QUEUED, todo
+        return (Outcome.SAVED if found else Outcome.EMPTY), []
+
+    def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
+        """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed files.
+
+        The first file's history row holds the post's file count (`FILES`), so a post whose later
+        file failed is listed again; a row without it (a post of one file) needs only its own key.
+        `SAVED` when they are, `EMPTY` when one is only queued earlier in this run (it may still
+        fail, so it counts neither way), None when the post must be listed.
+        """
+        template = _format(self.source, category, "key")
+        if not template or _fields(template) & LISTED_FIELDS:
+            return None
+        values = {**post.fields, "id": post.id, "date": day(post.date), "category": post.category}
+        keys = [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}" for num in range(2)]
+        if keys[0] == f"{self.source.code}:" or self._held(None, keys[0]) is None:
+            return None
+        row = self.settings.history.get(keys[0])
+        count = row.get(FILES) if isinstance(row, dict) else None
+        checked = [keys[0]]
+        # A key without `num` can't tell the files apart; the first one stands for the post, as before.
+        if isinstance(count, int) and count > 1 and keys[1] != keys[0]:
+            checked += [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}"
+                        for num in range(1, count)]
+            if any(self._held(None, key) is None for key in checked[1:]):
+                return None
+        return Outcome.EMPTY if any(key in self._queued for key in checked) else Outcome.SAVED
+
+    def sum_up(self) -> None:
+        """Log how many files the category being listed skipped as already saved, once, if any.
+
+            ledger.sum_up()     # • ins:example_user: posts: 12 files already saved
+
+        `queue` calls it when a post of another category comes, and `download` once the listing ends.
+        """
+        if self._category_skips:
+            files = fmt.count(self._category_skips, "file")
+            if self._category:
+                self.site.info("{category}: {files} already saved", category=self._category, files=files)
+            else:
+                self.site.info("{files} already saved", files=files)
+        self._category_skips = 0
+
+    def _skip(self) -> None:
+        """Count one skipped file, for the target's total and its category's line."""
+        self.skipped += 1
+        self._category_skips += 1
+
+    def _held(self, dest: Path | None, key: str) -> str | None:
+        """The name that already holds a file: queued this run, at `dest` and not empty, or where its history row says; None when it is new."""
+        for known in (dest, key):
+            if known is not None and known in self._queued:
+                return self._queued[known]
+        if dest is not None and dest.is_file() and dest.stat().st_size > 0:
+            return self._name(dest)
+        row = self.settings.history.get(key)
+        found = Path(row.get("path", "")) if isinstance(row, dict) and row.get("path") else None
+        return self._name(found) if found is not None and found.is_file() else None
+
+    def _name(self, path: Path) -> str:
+        """A saved file's name as a log line shows it: from the target's folder, or whole when it is elsewhere."""
+        return path.relative_to(self.folder).as_posix() if path.is_relative_to(self.folder) else str(path)
+
+
+class Downloads:
+    """One target's downloads: the pool, the encodes, the refresh requests, and the history rows.
+
+        downloads.submit(queued)
+        written = downloads.finish()
+
+    `submit` runs on the listing's thread; downloads run on the pool's, and video encodes on a
+    pool of their own, one at a time across the run.
+    """
+
+    def __init__(self, run: SourceRun, target: Target, row: Any):
+        """Make one target's downloads, with no pool started; the pool starts on the first file."""
+        self.run, self.target, self.row = run, target, row
+        self.source, self.settings = run.source, run.settings
+        self._pool: worker.Pool | None = None
+        self._encodes: worker.Pool | None = None
+        # Each written file by its history key, at its path after shrinking (a compressed copy
+        # may have a new name). Download threads and the encode pool's thread both write it, so
+        # under the lock. A video counts from its download; another file once it is finished.
+        self._written: dict[str, Path] = {}
+        self._writing = threading.Lock()
+        # Downloads submitted and not ended (`_pending`) and those started (`_running`), and the
+        # refreshes download threads ask the listing's thread for: they all change them, under
+        # `_changed`, which is notified on every change.
+        self._changed = threading.Condition()
+        self._pending = 0
+        self._running = 0
+        # Every download submitted so far, for the target's row, which counts them.
+        self._submitted = 0
+        self._counts = ""
+        self._refreshes: deque[_Refresh] = deque()
+        # False once it stops answering refreshes (`finish` after an error); a refresh asked for
+        # then gets no fresh link, so no download waits for an answer that won't come.
+        self._answering = True
+        # The thread that lists, where a lazy post's `files` may run.
+        self._lister = threading.current_thread()
+
+    def submit(self, queued: _Queued) -> bool:
+        """Start one file's download once the pool has room; False when Ctrl-C stopped the wait."""
+        # Waiting for room keeps the pool from growing without bound while the listing runs ahead.
+        if not self._room():
+            return False
+        try:
+            self._downloads().submit(self._task, queued)
+        except BaseException:
+            self._ended()
+            raise
+        return True
 
     def wait(self, row: Any = None) -> None:
         """Wait until every download submitted has ended, answering their refresh requests meanwhile.
@@ -468,67 +532,6 @@ class Job:
                         log.debug("{file}: {chain}", file=item, chain=causes(result.error))
         with self._writing:
             return tuple(self._written.values())
-
-    def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
-        """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed files.
-
-        The first file's history row holds the post's file count (`FILES`), so a post whose later
-        file failed is listed again; a row without it (a post of one file) needs only its own key.
-        `SAVED` when they are, `EMPTY` when one is only queued earlier in this run (it may still
-        fail, so it counts neither way), None when the post must be listed.
-        """
-        template = _format(self.source, category, "key")
-        if not template or _fields(template) & LISTED_FIELDS:
-            return None
-        values = {**post.fields, "id": post.id, "date": day(post.date), "category": post.category}
-        keys = [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}" for num in range(2)]
-        if keys[0] == f"{self.source.code}:" or self._held(None, keys[0]) is None:
-            return None
-        row = self.settings.history.get(keys[0])
-        count = row.get(FILES) if isinstance(row, dict) else None
-        checked = [keys[0]]
-        # A key without `num` can't tell the files apart; the first one stands for the post, as before.
-        if isinstance(count, int) and count > 1 and keys[1] != keys[0]:
-            checked += [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}"
-                        for num in range(1, count)]
-            if any(self._held(None, key) is None for key in checked[1:]):
-                return None
-        return Outcome.EMPTY if any(key in self._queued for key in checked) else Outcome.SAVED
-
-    def sum_up(self) -> None:
-        """Log how many files the category being listed skipped as already saved, once, if any.
-
-            job.sum_up()        # • ins:example_user: posts: 12 files already saved
-
-        `queue` calls it when a post of another category comes, and `download` once the listing ends.
-        """
-        if self._category_skips:
-            files = fmt.count(self._category_skips, "file")
-            if self._category:
-                self.site.info("{category}: {files} already saved", category=self._category, files=files)
-            else:
-                self.site.info("{files} already saved", files=files)
-        self._category_skips = 0
-
-    def _skip(self) -> None:
-        """Count one skipped file, for the target's total and its category's line."""
-        self.skipped += 1
-        self._category_skips += 1
-
-    def _held(self, dest: Path | None, key: str) -> str | None:
-        """The name that already holds a file: queued this run, at `dest` and not empty, or where its history row says; None when it is new."""
-        for known in (dest, key):
-            if known is not None and known in self._queued:
-                return self._queued[known]
-        if dest is not None and dest.is_file() and dest.stat().st_size > 0:
-            return self._name(dest)
-        row = self.settings.history.get(key)
-        found = Path(row.get("path", "")) if isinstance(row, dict) and row.get("path") else None
-        return self._name(found) if found is not None and found.is_file() else None
-
-    def _name(self, path: Path) -> str:
-        """A saved file's name as a log line shows it: from the target's folder, or whole when it is elsewhere."""
-        return path.relative_to(self.folder).as_posix() if path.is_relative_to(self.folder) else str(path)
 
     def _downloads(self) -> worker.Pool:
         """The target's download pool, made on the first file: the source's `concurrency` at once."""
@@ -736,6 +739,7 @@ class Job:
         return call
 
 
+
 def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) -> Done:
     """Download one target of a ported source, ending its row at ok or error, and say what it did.
 
@@ -764,10 +768,10 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     """
     # One site and one job for the target: the site holds its browser and pacing, the job its downloads.
     site = TargetSite(run, target, row=row)
-    job = Job(run, site, target)
-    job.row = row
+    ledger, downloads = Ledger(run, site, target), Downloads(run, target, row)
+    work = _Work(ledger, downloads)
     # A target's row shows its running files, as many as the source downloads at once.
-    row.slots = job.source.concurrency
+    row.slots = run.source.concurrency
     complete: list[str] = []
     listed = _listed(run.settings.home, target) if sync else {}
     resumes: dict[str, Resume] = {}
@@ -775,7 +779,7 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     try:
         try:
             # The first Ctrl-C stops listing between posts (D8); `queue` sees it too, between files.
-            _read(job, run, site, target, listed=listed, resumes=resumes, complete=complete)
+            _read(work, run, site, target, listed=listed, resumes=resumes, complete=complete)
         except KeyboardInterrupt:
             # The first Ctrl-C ends a rate-limit or pacing wait at once, raising this; that is
             # the graceful stop, not a failure. A second one is.
@@ -783,11 +787,11 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
                 raise
         finally:
             site.close()
-            job.sum_up()
-        job.wait(row)
+            ledger.sum_up()
+        downloads.wait(row)
     except BaseException as caught:  # a route or a category failed, or a second Ctrl-C: handled below
         error = caught
-    written = job.finish(error)
+    written = downloads.finish(error)
     # A category cut short keeps the cursor of the page it was reading, for the next run to go on
     # from; one that ended by itself has nothing to resume.
     cursors = {name: None if name in complete else resume.cursor
@@ -799,15 +803,15 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
         log.error("{target}: {error}", target=str(target), error=error)
         log.debug("{target}: {chain}", target=str(target), chain=causes(error))
         row.fail()
-        return Done(written, job.skipped, str(error), tuple(complete))
+        return Done(written, ledger.skipped, str(error), tuple(complete))
     if net.stopping.is_set():
         row.caption = "stopped"
         row.fail()
-        return Done(written, job.skipped, STOPPED, tuple(complete))
+        return Done(written, ledger.skipped, STOPPED, tuple(complete))
     row.finish()
     log.debug("{target}: {written} written, {skipped} skipped; complete: {complete}", target=str(target),
-              written=len(written), skipped=job.skipped, complete=", ".join(complete) or "none")
-    return Done(written, job.skipped, None, tuple(complete))
+              written=len(written), skipped=ledger.skipped, complete=", ".join(complete) or "none")
+    return Done(written, ledger.skipped, None, tuple(complete))
 
 
 def causes(error: BaseException) -> str:
@@ -952,7 +956,7 @@ class _Kept:
 
 
 class Outcome(Enum):
-    """What `Job.queue` did with one post."""
+    """What became of one post the listing kept."""
 
     # At least one file was queued.
     QUEUED = "queued"
@@ -975,12 +979,28 @@ class Ended(Enum):
     STOPPED = "stopped"
 
 
-def _queue_all(job: Job, kept: _Kept, *, stop_at_saved: bool) -> Ended:
+
+@dataclass(frozen=True)
+class _Work:
+    """One target's ledger and downloads, which each post the listing keeps goes through."""
+
+    ledger: Ledger
+    downloads: Downloads
+
+    def queue(self, post: Post) -> Outcome:
+        """Take one post into the ledger and submit each file it gives; `STOPPED` on Ctrl-C."""
+        outcome, todo = self.ledger.take(post)
+        for queued in todo:
+            if not self.downloads.submit(queued):
+                return Outcome.STOPPED
+        return outcome
+
+def _queue_all(work: _Work, kept: _Kept, *, stop_at_saved: bool) -> Ended:
     """Queue each post a listing keeps, until Ctrl-C or, if `stop_at_saved`, 5 saved in a row."""
     saved_in_a_row = 0
     try:
         for post in kept:
-            outcome = Outcome.STOPPED if net.stopping.is_set() else job.queue(post)
+            outcome = Outcome.STOPPED if net.stopping.is_set() else work.queue(post)
             if outcome is Outcome.STOPPED:
                 return Ended.STOPPED
             if outcome is not Outcome.EMPTY:
@@ -994,7 +1014,7 @@ def _queue_all(job: Job, kept: _Kept, *, stop_at_saved: bool) -> Ended:
     return Ended.RAN_OUT if kept.ran_out else Ended.CUT
 
 
-def _read(job: Job, run: SourceRun, site: Site, target: Target, *, listed: Collection[str],
+def _read(work: _Work, run: SourceRun, site: Site, target: Target, *, listed: Collection[str],
           resumes: dict[str, Resume], complete: list[str]) -> None:
     """List the target's route and wanted categories into the job, each from its saved cursor.
 
@@ -1012,7 +1032,7 @@ def _read(job: Job, run: SourceRun, site: Site, target: Target, *, listed: Colle
     if not route.categories:
         log.debug("{target}: list {route}", target=str(target), route=route.kind)
         own = _Kept(context, "", newest_first=False, time=time, run_async=run_async)
-        _queue_all(job, own, stop_at_saved=False)
+        _queue_all(work, own, stop_at_saved=False)
         return
     cursors = saved_settings.cursors(run.settings.home, target)
     for category in categories:
@@ -1028,7 +1048,7 @@ def _read(job: Job, run: SourceRun, site: Site, target: Target, *, listed: Colle
                      time=time, run_async=run_async)
         stop_at_saved = category.newest_first and category.name in listed and not start
         with listing(resume):
-            ended = _queue_all(job, kept, stop_at_saved=stop_at_saved)
+            ended = _queue_all(work, kept, stop_at_saved=stop_at_saved)
         if ended is Ended.STOPPED:
             return
         if ended is Ended.RAN_OUT:
@@ -1041,7 +1061,7 @@ def _read(job: Job, run: SourceRun, site: Site, target: Target, *, listed: Colle
             kept = _Kept(method(site, context), category.name, newest_first=True, time=time,
                          run_async=run_async)
             with listing(Resume()):
-                if _queue_all(job, kept, stop_at_saved=True) is Ended.STOPPED:
+                if _queue_all(work, kept, stop_at_saved=True) is Ended.STOPPED:
                     return
 
 
