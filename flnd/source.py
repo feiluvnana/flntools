@@ -33,7 +33,7 @@ requests are paced and signed, its login cookies are sent, and its `prepare` run
 of that. `needs` names cookies that prove a login, and `requires_login` makes a missing one an
 error. `pace` is `http.Pace(floor, budgets)` or a number of seconds between requests (0.5 by
 default). `folder`, `filename` and `key` are formats, described below. `concurrency` is how many
-files download at once (4). The browser fields are `stealth` and `user_agent`. `routes`, `forms`,
+files of one target download at once (8). The browser fields are `stealth` and `user_agent`. `routes`, `forms`,
 `categories` and `single_kinds` are not written: they are collected from the routes when the class
 is created, and a `categories` field is refused.
 
@@ -1060,8 +1060,9 @@ class Source:
     # For this source's HTTP requests only; the browser always keeps its own.
     user_agent: ClassVar[str | None] = None
     stealth: ClassVar[bool] = True
-    # Files downloading at once.
-    concurrency: ClassVar[int] = 4
+    # Files of one target downloading at once: CDNs are built for many, and the host's own
+    # connection limit in `shared.http` still holds.
+    concurrency: ClassVar[int] = 8
     # `unsupported`, compiled when the class is created.
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()
 

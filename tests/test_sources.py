@@ -52,8 +52,9 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TikTok.user_agent, TIKTOK_UA)
         self.assertIsNone(Instagram.user_agent)
         for source in SOURCES.values():
-            methods = ("browser", "qr", "phone") if source is Telegram else ("browser", "file")
-            self.assertEqual((source.concurrency, source.login_methods), (4, methods))
+            telegram = source is Telegram
+            methods = ("browser", "qr", "phone") if telegram else ("browser", "file")
+            self.assertEqual((source.concurrency, source.login_methods), (3 if telegram else 8, methods))
 
     def test_listing_floors(self):
         floors = {"ins": 0.5, "twt": 0.2, "fbk": 0.8, "tik": 1.0, "loi": 0.5}

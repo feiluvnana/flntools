@@ -71,6 +71,9 @@ class Telegram(Source):
     folder = "{chat}/{category}"
     # The chat's id and the message's id: a message id repeats from chat to chat, and the key is a history row's.
     key = "{chat_id}:{id}"
+    # Every download shares one MTProto client and its flood waits: more at once only meets the
+    # flood limit sooner (Telethon's FAQ).
+    concurrency = 3
 
     # `resolve` below reads the target's text, since no pattern can say a chat title or a `t.me/c/<n>`
     # link; the route has no pattern of its own, only the form help shows.
