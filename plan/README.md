@@ -107,6 +107,16 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 12. [ui](phase-6/ui.md): download rows that no longer blink, a prompt cursor where the text goes, and log lines in their level's color.
 13. [comments](phase-6/comments.md): a docstring for every module, class and function, *why* comments at every non-obvious rule, and the redesign's docs.
 
+**Phase 7: honest listings and a calm screen.** From a live Facebook run the user read on 2026-11-13 ([overview](phase-7/README.md)). Built in this order:
+0. [output › columns and skips](phase-7/output.md#built-in-step-0): progress lines with the name last, skips summed per category, `download -v`. **Built** (`9df3e36`).
+1. [layout](phase-7/layout.md): `.flnd/media/`, `.flnd/metadata/` and `.flnd/log/`, with a log of every run to audit later.
+2. [shrink](phase-7/shrink.md): `--shrink` replaces `--image`, `--video` and `--audio`: a balanced compress in each file's own format.
+3. [dates › one listing memory](phase-7/dates.md#1-one-listing-memory-in-the-job): each item listed once, under its dated name, in every source.
+4. [dates › every file dated](phase-7/dates.md#2-every-file-dated): a source's `date` hook, then an estimate; `sync` dates saved files.
+5. [links](phase-7/links.md): a file found in a second tab is symlinked there.
+6. [output › status lines](phase-7/output.md#status-lines): live status lines by default; `-v` adds every line.
+   And [lean](phase-7/lean.md): proposals to make flnd about 425 lines leaner, built with the step that touches each file.
+
 **Deferred.** These are not built until something real needs them: `log.track`; the runtime `type=` checks with TypedDict support; strict pyright and the `TypeVarTuple` overloads; `worker`'s `rate`, `setup` and `task`; HMAC; writing RAR.
 
 ## Conventions
