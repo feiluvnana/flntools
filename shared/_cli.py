@@ -77,6 +77,8 @@ class App:
         self.parent: App | None = None
         self.children: dict[str, Command | App] = {}
         self.handler: Command | None = None
+        # What a group runs when no command word follows its name; None shows its help.
+        self.default: Command | None = None
 
     def command(self, target: Callable | str | None = None, /) -> Any:
         """Register a command: `@app.command` or `@app.command("name")`.
@@ -100,7 +102,7 @@ class App:
             return register(target)
         return lambda fn: register(fn, target)
 
-    def group(self, name: str, *, description: str = "") -> App:
+    def group(self, name: str, *, description: str = "", default: Callable | None = None) -> App:
         """Add a group of commands under `name`, and return it to register its commands on.
 
             auth = app.group("auth", description="Cookie files for a source.")
@@ -108,15 +110,22 @@ class App:
             @auth.command
             def show(source: str) -> int: ...            # app auth show <source>
 
+            sync = app.group("sync", default=sync_all)   # app sync [targets…] runs sync_all
+            sync.command(ls)                             # app sync ls
+
         Args:
             name: the word that selects the group on the command line.
             description: the group's help text; its first line is its row in the parent's help.
+            default: the handler run when the word after `name` isn't one of the group's commands,
+                given every word that follows; None shows the group's help instead.
 
         Raises:
             ValueError: this app already has a command or group called `name`, or has its own handler.
         """
         child = App(name, description=description)
         child.parent = self
+        if default is not None:
+            child.default = Command(default, name)
         self._add(name, child)
         return child
 
@@ -231,6 +240,9 @@ class App:
                 break
             if app.handler is not None:
                 return app.handler, path, tokens
+            # A command word wins over the default: `sync ls` is the command, `sync x` the default's.
+            if app.default is not None and (not tokens or tokens[0] not in app.children):
+                return app.default, path, tokens
             if not tokens:
                 raise _HelpRequested(app._help_model(path))
             child = app.children.get(tokens[0])
@@ -248,6 +260,10 @@ class App:
         if self.handler is not None:
             return self.handler.help_model(path, self)
         commands = tuple((name, child.row_text()) for name, child in self.children.items())
+        if self.default is not None:
+            # The default's own help, with the group's commands under it and either in the usage.
+            model = self.default.help_model(path, self)
+            return model._replace(usage=f"{model.usage} | {' '.join(path)} [command]", commands=commands)
         options = self._root_options() if self.parent is None else ()
         usage = " ".join(path) + (" [options]" if options else "") + " [command]"
         # Options are listed only when there is more than -h, the same rule as [options].
@@ -259,7 +275,9 @@ class App:
 
     def row_text(self) -> str:
         """The row this group shows in its parent's command list: its description's first line, or its name."""
-        return _first_line(self.description) or self.name
+        if self.description or self.default is None:
+            return _first_line(self.description) or self.name
+        return self.default.row_text()
 
 class Command:
     """One handler function and the parameters read from its signature."""

@@ -206,9 +206,10 @@ shared.cli: module
 shared.cli.App(name: str, *, version: str | None = None, description: str = '', epilog: str = '')
 shared.cli.App.children: attribute -> dict[str, Command | App]
 shared.cli.App.command(target: Callable | str | None = None, /) -> Any
+shared.cli.App.default: attribute -> Command | None
 shared.cli.App.description: attribute
 shared.cli.App.epilog: attribute
-shared.cli.App.group(name: str, *, description: str = '') -> App
+shared.cli.App.group(name: str, *, description: str = '', default: Callable | None = None) -> App
 shared.cli.App.handler: attribute -> Command | None
 shared.cli.App.help(*path: str) -> str
 shared.cli.App.name: attribute
