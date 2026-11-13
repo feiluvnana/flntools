@@ -1,8 +1,19 @@
-# Phase 8: draft
+# Phase 8: fix bugs, speed up, simplify
 
-**A draft, not a plan** (user, 2026-11-13). Nothing here is decided. It becomes a plan once the
-user answers the questions at the end, after Phase 7 is built. Earlier feature ideas (watches, a
-viewer, more finders) are kept in [ideas](ideas.md) for a later phase.
+**Status: on hold** (user, 2026-11-13: "phase 8 is on hold, only plan, no work"). Plan only; nothing
+here is built until the user resumes it.
+
+**A design** (2026-11-13). Beyond the [decided](#decided-user-2026-11-13) section, the
+[questions](#questions-for-the-user) and the [added items](#added-defaults-adopted) take the
+defaults chosen without asking; the user may reverse any. Earlier feature ideas (a viewer, more
+query routes) are kept in [ideas](ideas.md) for a later phase.
+
+**The direction changed the same day.** The user withdrew the flnd/flndm split and the
+`projects/` folder, kept every `shared` module and feature, and set Phase 8 to **fix bugs, improve
+performance and simplify the API**, with `shared` designed for any future tool (see
+[decided](#decided-user-2026-11-13)). The earlier design of a separate download manager is gone;
+what still applies without it (stopping, resume, limits, status, logging, the tagging pass) is in
+[flnd](flnd.md).
 
 ## What the user asked
 
@@ -22,213 +33,94 @@ viewer, more finders) are kept in [ideas](ideas.md) for a later phase.
      <targets…>` marks or unmarks;
    - it replaces Phase 7's `target` group and the earlier "watches" idea.
 
-The user's words for 1–4 are kept in [the handover](#the-users-words). Everything else in this file
-is a proposal until the user answers the questions at the end.
+The user's words for 1–4 are kept in [the handover](#the-users-words). The questions at the end
+take their defaults.
+
+Items 2 and 3 were withdrawn by the user later on 2026-11-13, and item 1 became: fix bugs,
+improve performance and simplify the API, removing nothing ([decided](#decided-user-2026-11-13)).
+
+## The parts
+
+| File | What it holds |
+| --- | --- |
+| [bugs](bugs.md) | 67 bugs found and reproduced in `shared` and flnd, each with a file:line, a failure, a fix and its test |
+| [speed](speed.md) | each module's hot paths, what is slow and why, the change, the target |
+| [api](api.md) | a simpler `shared` for any caller, module by module: before and after, flnd's call sites, the snapshot; the new names from flnd's generic machinery |
+| [flnd](flnd.md) | flnd's engine made smaller and plainer; the tagging pass; how flnd stops, resumes, limits, shows and logs |
+| [shared](shared.md) | `shared` as a general toolkit, and proving it robust: typed errors, faults, fuzzing, threads, leaks, a size budget |
+| [tests](tests.md) | a failing test per bug, the fault and leak harnesses, fuzzing, stress, counts that stand in for speed |
+| [bench](bench.md) | the benchmark suite with no network, its baselines and how targets are kept |
+| [sync](sync.md) | synced queries: built in Phase 7 step 10; the Phase 8 follow-ups for them |
 
 ## Where Phase 7 leaves the code
 
-- `shared/`, about 12,400 lines with docstrings: the toolkit both sides use (`http`, `kv`,
-  `atomic`, `media`, `browser`, `log`, `cli`, …). Phase 7 step 7 ([shared](../phase-7/shared.md))
-  makes it a black box with no `shared._` imports.
-- `flnd/`: sites, downloaders, finders, and **one job** that both listing and finding feed. The job
-  names each file, dedupes by key, then hands the file to `net.download` (on `shared.http`) and to
-  the postprocessors (shrink, the date as the modified time, links). It writes the history last.
-- Phase 7 step 8 ([speed](../phase-7/speed.md)) puts the fast downloader in `shared.http`: pieces
-  pulled from a queue, host caps, resume, hash and free-space checks.
+- `shared/`, about 14,300 lines with docstrings, 18 modules, 445 lines of public names in the API
+  snapshot (at `af6eef3`). Phase 7 made it a black box (step 7), put the fast downloader in it
+  (step 8) and added status rows, palette roles and event lines to `log` and `theme` (step 9).
+- `flnd/`: about 7,200 lines on the engine side (sites aside). Step 9 added status lines; steps
+  10–12 add the `Site`/`Downloader` split with query routes and the `sync` and `auth` groups, the
+  mht site, and the docs diet.
 
-So most of flndm already exists by the end of Phase 7. It sits in `shared.http`, `flnd/common/net.py`
-and the download half of the job. Phase 8 moves it out behind a request API, and leaves flnd
-listing only.
+## Phase 8 in numbers
 
-## Layout after
-
-```
-projects/
-  flnd/                  the listing engine: sites, downloaders, finders, the CLI `flnd`
-    flnd/
-    tests/
-    pyproject.toml
-  flndm/                 the download and IO manager: a library, and the CLI `flndm`
-    flndm/
-    tests/
-    pyproject.toml
-shared/                  the toolkit both use (or projects/shared: question 1)
-plan/  scripts/  AGENTS.md  Makefile  pyproject.toml (a uv workspace over the three)
-```
-
-- **A uv workspace**: one `uv.lock` and one `.venv`. Each project has its own `pyproject.toml`,
-  dependencies and entry point, and `check` runs over all of them.
-- **flnd depends on flndm and shared; flndm depends on shared only, never on flnd.** A test
-  enforces it, as `tests/test_names.py` enforces the source import rule today.
-
-## flndm: the design to decide
-
-### What a request is
-
-A request says what to fetch and where it goes, nothing about sites:
-
-```python
-Request(
-    urls=("https://cdn.example.com/a.mp4", "https://cdn2.example.com/a.mp4"),   # mirrors, best first
-    dest=Path("media/ins/example_user/posts/2026-01-02_C1abc.mp4"),
-    headers={"Referer": "https://example.com/"},                                 # per request; no cookie jar of a site
-    audio=None,                    # a second stream to merge (DASH)
-    size=None, sha256=None,        # what the caller knows, checked when given
-    kind="video",                  # checked as media, or None for any file
-    mtime=None,                    # set once the file is in place
-    key="ins:C1abc_0",             # the caller's id, given back in every event
-    priority=0,
-)
-```
-
-### What comes back
-
-flndm gives back events, never callbacks into the caller (the writing rules forbid a callback from
-a producer into its consumer): `Started`, `Progress(done, total)`, `Placed(path, size, headers)`,
-`Failed(error)`, `Expired(status)`. `Expired` is a 403 or 410 on every mirror. flnd answers it by
-listing the post again and sending a new request with the same `key`, and flndm resumes the part.
-
-### How flnd calls it
-
-**As a library** (user, 2026-11-13). The other two shapes are kept below as history.
-
-1. **In process, as a library.** `with flndm.Manager(limits) as manager:` then
-   `manager.submit(request)` and `for event in manager.events():`. It costs nothing to call, and
-   one process holds all the state.
-2. **A daemon** that several flnd runs and other programs share, over a local socket. It can keep
-   global host caps and one queue for everything, but it brings a lifecycle, authentication and a
-   protocol to keep stable.
-3. **A subprocess per run** (`flndm serve` on stdin and stdout, JSON lines). It isolates crashes,
-   but each run pays a start-up and the line protocol.
-
-The library comes first in every case. A daemon or a subprocess wraps it later if wanted.
-
-### What moves into flndm
-
-- From `shared.http`: the downloader (pieces, mirrors, resume, `If-Range`, host caps, back-off for
-  CDNs, HTTP/2 for small files).
-- From `flnd/common/net.py` and the job: the pool, the encode queue, the media check, naming by
-  content, atomic placement, the modified time, the hard link and symlink fallback, the free-space check.
-- **IO**: one writer per disk, preallocation, `fsync` policy, rename onto the final name, and Windows
-  replace retries.
-- **Postprocessing as generic steps**: `shrink` (a `shared.media` call) and `mtime` become flndm
-  steps a request names. Question 3 asks whether shrink belongs there.
-- **Its own CLI**: `flndm get <url>… [-o dest] [-j N]` and `flndm get -i requests.jsonl`, so it is
-  useful without flnd. It is also its first test of being general.
-
-### What stays in flnd
-
-Sites, downloaders, finders, the listing memory and dates, file names and keys, `history.db` and
-`targets.db`, logins (flnd builds each request's headers), sync's repair decisions, and the CLI
-`flnd`. **flnd opens no file for writing except its stores and run logs**; flndm writes every
-media byte.
-
-### "Extreme efficiency": what is measured
-
-A benchmark suite runs on a local server, so it is repeatable without the network: 1,000 small
-photos, 20 large videos, a slow host, a host that refuses after N connections, and a cut-off
-connection. It measures throughput, the CPU time and memory per GB, the time to the first byte
-saved, and the overhead against a plain `curl`/aria2c baseline. Phase 8 sets targets from the first
-measurement (question 5) and keeps them in CI as a budget, as the API snapshot keeps names.
-
-## Hardening `shared`
-
-**Robust**: each module proves it survives what can go wrong.
-- **Faults, injected in tests**: a full disk, a read-only folder, a file removed mid-write, a
-  `kill -9` during an atomic write (a child process), a dropped connection at every phase of a
-  response, a slow-loris server, a clock that jumps, two processes writing one `kv` store.
-- **Hostile input, fuzzed** with property-based tests (Hypothesis, a dev dependency): cookie files,
-  HTTP dates and ranges, `Retry-After`, archive member paths (zip slip, symlinks), JSON and HTML
-  parsers, file names on all three platforms.
-- **Every error typed**: each module's exceptions sit under its `Error`, and no bare `OSError` or
-  `ValueError` leaks without a `shared` type around it (a test walks each public function's raises).
-- **Threads**: every public object says whether it is thread-safe. A stress test runs the live area,
-  `kv` and the pool from many threads.
-- **Resources**: no file handle, thread or child process outlives its `with`. Tests check it with
-  the process's open files and threads before and after.
-
-**Minimal**: `shared` holds only what flnd or flndm uses, with one spelling each.
-- After the split, each `shared` module is used by flnd, flndm or both. Phase 7's rule ("unused
-  doesn't mean dead; keep shared's API") would keep the rest. Question 2 asks whether Phase 8's
-  "minimal" replaces that rule.
-- Modules only one project uses move into that project: `bundler`, `cli` and `prompt` may become
-  flnd's, and `http`'s downloader becomes flndm's.
-- A size budget per module, and the API snapshot, show every addition in review.
-
-**Absorbing what feels bloated** (user, 2026-11-13): hardening `shared` starts by finding where
-flnd (and flndm, once it exists) builds generic machinery itself, so that `shared` takes that case
-over behind a **simple outer API** and the caller shrinks to a call. Robust framework, minimal
-features: `shared` grows only where it makes a caller simple, and loses what no caller uses.
-
-*How it is found.* A pass over flnd tags every function as **site knowledge** (how a site answers),
-**listing logic** (targets, categories, queries, names, keys, dates, sync), or **generic machinery**
-(pacing, pools, retries, watching responses, stores, files). Site knowledge and listing logic stay
-in flnd. Generic machinery moves to `shared` when both hold:
-1. the move turns the caller's code into one or two calls with sensible defaults; and
-2. it serves two callers, or removes at least 30 lines from the one it serves.
-
-Anything else stays where it is, however generic it looks.
-
-*Candidates already seen* (Phase 7's audits of the code; each to be measured again after Phase 7):
-
-| flnd builds today | `shared` would offer | What the caller loses |
+| | Now | After |
 | --- | --- | --- |
-| ~~a `Pacer` and a `Backoff` per site~~ | `http.Client(pace=…)` | **built in Phase 7, step 7** (user, 2026-11-13) |
-| a bounded download pool with room-waiting, pending counts, a condition and a refresh queue (`job.py`'s `_room`, `_pending`, `_running`, `_refreshes`) | `worker.Pool(…, bound=n)` whose `submit` waits for room and honours a `stop` event | about half of `Job`'s threading state |
-| JSON from a page's responses, scrolling until a request can be replayed, then replaying it page by page (`sites/common/watch.py`, `replay.py`, ins and fbk feed readers) | `browser.Page.responses(match)`, an iterator of JSON bodies, and `Page.replay(request, cursor=…)` | the site-agnostic half of `watch`, `replay` and both feed readers |
-| a site's cookies copied into flnd's own client before each fetch (`site.py`'s `net.cookie_jar(...)`) | one cookie jar shared live by a `Browser` and an `http.Client` | the copying, and cookies going stale between them |
-| "remember this refusal for a day" in a site's state (ins's `_refused`/`_refuse`), a lookup cache for a day (finders) | `kv.Store.get(key, max_age=…)` / `set(key, value, ttl=…)` | hand-rolled timestamps and comparisons |
-| leftover `.part` files found and removed by `repair` | `atomic.sweep(folder)`, removing what `atomic` itself leaves behind | repair's own part patterns |
-| ~~`_sleep`, `_clock`, `_random` seams~~ | `shared.clock` | **built in Phase 7, step 7** (user, 2026-11-13) |
-| ~~a status row per target~~ | `log.status(…)` | **built in Phase 7, step 9** |
+| bugs | 67 shown: 6 high, 29 medium, 32 low ([bugs](bugs.md)) | each fixed with its test |
+| the worst slow paths | piece stalls 4.1× slower on cold connections; animated WebP opens in 340 ms; re-dating 1 s per target; `kv.clear` quadratic ([speed](speed.md)) | within 10%; < 3 ms; < 5 ms; < 2 ms |
+| `shared`'s public API | 445 snapshot lines; calls with up to 13 options; two ways to do several things | about 425 lines; no call over 5 options; one way each; nothing removed ([api](api.md)) |
+| flnd's engine side | 7,237 lines | about 650 fewer: 230 by plain edits, 420 moved into `shared` as general tools ([flnd](flnd.md)) |
+| errors escaping as builtins | about 15 found; 104 builtin raises unchecked | 0 world errors as builtins, enforced by a scan ([shared](shared.md#2-every-error-typed)) |
 
-What stays in flnd, however generic it looks: the name and key formats (`fill`), `day()`'s reading
-of a site's dates, the listing memory, sync's decisions, the query language's planning. They are
-listing logic, and moving them would make `shared` know about listing.
+## Order
 
-## `sync` as a group: the design
+Each step ends with `check` green; one logical change per commit; a module's API change is one
+commit with its tests, flnd's call sites and the snapshot (AGENTS.md). **Haiku** marks a
+mechanical commit for a low-cost subagent (AGENTS.md › Models).
 
-```
-flnd download <targets…> [--sync]              # --sync: also keep these up to date
-flnd find <site> '<query>' [--sync]            # --sync: keep finding, and download what's new
-flnd sync [-v]                                 # update everything marked; nothing else
-flnd sync ls                                   # every known target and query, synced or not
-flnd sync toggle <targets or query ids…>       # flip each one; prints its new state
-```
+0. **Phase 7 finished** (step 9 built; steps 10–12 to go).
+1. **The six high bugs**, one commit each, test first: F1 (with F2, one fix), H1, L1, M1, M2, M3.
+2. **The bench suite** and its first run on the code as it is: the starting numbers.
+3. **The tagging pass** on Phase 7's code (a doc commit to
+   [flnd §2](flnd.md#2-generic-machinery-into-shared)), then `cli.stopping()` with flnd's engine
+   on it.
+4. **Module by module through `shared`**, in this order: `http` (with download and pace), `kv`,
+   `atomic`, `log` and `theme`, `media`, `worker`, `browser`, `cookies`, `selector`, `cli`,
+   `prompt`, `fmt`, `style`, `crypto`, `clock`, `archive`, `bundler`. For each:
+   1. its medium and low bugs, one commit each, test first;
+   2. its API change, with any flnd machinery moving into it (renames and call-site updates by
+      **Haiku**);
+   3. its speed changes, each run through `bench --check`.
+5. **flnd**: its remaining bugs (F3–F11), then [flnd §1](flnd.md#1-module-by-module)'s low-risk
+   edits per module, then the medium ones.
+6. **Hardening** ([shared §9](shared.md#9-order)): typed errors, faults, fuzzing, threads, leaks,
+   the size budget.
+7. **Synced queries**: none; built in Phase 7 step 10 ([sync](sync.md)).
+8. **Docs**: README and AGENTS.md for the new names.
 
-- **Off by default.** A target downloaded without `--sync` is still known (settings, history) and
-  listed with sync off; `sync` leaves it alone.
-- **`sync ls`** lists targets and queries in one table: kind, the target or `site 'query'`, an id
-  (`q1`, `q2` for queries; a target is its own id), sync on or off, saved settings (`--shrink`),
-  files and size, last sync, each category's listing state. It reads the stores and asks no site.
-- **`sync toggle`** flips each entry and prints its new state. Nothing is deleted: settings,
-  history and cursors stay, so turning an entry on again resumes it.
-- **`flnd sync`** runs the entries marked on: targets (repair, then fetch, as Phase 7's sync does),
-  then queries (the finder runs; results not seen before have their targets downloaded, with sync
-  on, so their new chapters are fetched on later syncs). With nothing marked, it says so and exits 0.
-- **A synced query remembers the result ids it has seen**, so a result is downloaded once. Its first
-  run only remembers, unless `find --sync now`, so a broad query never starts a thousand downloads by
-  surprise; `limit` caps each run.
-- **Stores**: `targets.db` rows gain `sync` and a kind; a query row holds its site, query text,
-  seen ids and last run. A row written before this, with no `sync` field, counts as on, as it was
-  synced then; nothing is rewritten.
-- **`shared.cli`** gains a group's default command (`app.group("sync", default=fn)`), so `flnd
-  sync` and `flnd sync ls` both work; today a group can't also run by itself.
-- With flndm (above), `sync` stays flnd's: it decides what to list and asks flndm for the files.
+Bugs come first because they are cheap and some lose data (F1, F4). The bench runs before any
+speed change so every change is measured against today. Hardening comes after the API changes so
+no time goes into code about to change.
 
-## A proposed order
+## Added: defaults adopted
 
-1. **Layout**: `projects/flnd`, a uv workspace, `check` over it. Purely a move, so Haiku does it,
-   with the import rule test.
-2. **Synced queries** ([above](#sync-as-a-group-the-design)): `find --sync`; the target half is built
-   in Phase 7's step 10.
-3. **flndm as a library inside the workspace**: the request and event API, then moving the
-   downloader, IO and postprocessing out of flnd one piece at a time, with flnd calling it.
-   `check` stays green at each move.
-4. **flndm's CLI and the benchmark suite**, with its first targets.
-5. **Hardening `shared`**: first the pass that absorbs flnd's generic machinery behind simple calls
-   (above); then faults, fuzzing, typed errors, threads and resources, module by module; then
-   minimal, removing what neither project uses.
+Each item is a **default adopted; the user may reverse** it (chosen without asking, 2026-11-13).
+
+| # | Added | Where |
+| --- | --- | --- |
+| A1 | **Bugs first**, each with a failing test before its fix | [bugs](bugs.md), [tests §1](tests.md#1-a-test-per-bug-first) |
+| A2 | **Eight general tools in `shared`** from flnd's machinery: `cli.stopping()`, `browser.Page.responses`, `http.Client.cookies`, `log.Row.part()`, `worker.Pool.run_on_owner`, `worker.Loop`, `atomic.sweep` and `atomic.lock`, `media.verify` | [api](api.md#the-new-names-from-the-tagging-pass), [flnd §2](flnd.md#2-generic-machinery-into-shared) |
+| A3 | **Renames to general, plain names**: `archive.pack`/`unpack`/`entries`, `crypto.digest`, `worker.map` and `worker.Pool(…)`, `log.Row`, `cli.main`, `media.extract_audio`, `prompt.choose_many` | [api](api.md) |
+| A4 | **Records for long option lists**: public `media.Encoding` and `LEVELS`, `browser.Launch` with `attach`, `browser.Scroll` | [api](api.md) |
+| A5 | **Iterators, not callbacks**: `browser`'s `on_response`/`on_request` become `responses()`/`requests()` | [api › browser](api.md#browser) |
+| A6 | **The part sidecar gets a version** | [flnd §4](flnd.md#4-resume-and-the-part-format) |
+| A7 | **A lock per target folder** between runs | [flnd §4](flnd.md#4-resume-and-the-part-format) |
+| A8 | **The logging boundary**: `shared` writes debug only, but for waits it imposes and misuse it sees | [flnd §7](flnd.md#7-logging-boundaries) |
+| A9 | **Typed errors by a scan** and `raises.txt`, which may only shrink | [shared §2](shared.md#2-every-error-typed) |
+| A10 | **`threads.txt`**, stress tests, the leak check, fault helpers | [shared §5–6](shared.md#5-threads), [tests](tests.md) |
+| A11 | **A size budget** per module, set from Phase 8's result | [shared §7](shared.md#7-a-size-budget-per-module-added) |
+| A12 | **Counts in `check`** that stand in for speed | [tests §6](tests.md#6-counts-that-stand-in-for-speed) |
+| A13 | **The bench suite**: ratios against same-run baselines, bounds in process, `bench --check` before hot-path commits | [bench](bench.md) |
+| A14 | **`shared`'s tests import no flnd**, checked by `test_layers` | [tests §2](tests.md#2-shared-stands-alone) |
 
 ## Decided (user, 2026-11-13)
 
@@ -237,21 +129,94 @@ flnd sync toggle <targets or query ids…>       # flip each one; prints its new
   from Phase 8 on.
 - **flndm is a library** flnd imports; no daemon or subprocess mode for now.
 - **`sync`'s target half moves into Phase 7's step 10** (`flnd sync`, `sync ls`, `sync toggle`,
-  `download --sync`); Phase 8 adds synced queries (`find --sync`).
+  `download --sync`); Phase 8 adds synced queries (`find --sync`). (superseded: see **Query
+  targets, not find** below)
 - **No licence files**: flnd is the user's private tool, never distributed, so the bundled GPL
   ffmpeg needs no licence or source offer.
+- **Query targets, not find** (user, 2026-11-13): "So should only have download. Now download can
+  choose a query target. Remove finder and call it a day." and "delete finder, make everything
+  downloader, downloader can have multiple kind of target". Synced queries moved to Phase 7 step 10,
+  so [sync](sync.md) keeps only Phase 8's follow-ups.
+
+Changed by the user later on 2026-11-13, replacing what the bullets above say where they differ:
+
+- **No flndm, no `projects/` folder, no workspace.** One flnd and one `shared`; the layout stays as
+  it is. "I dont think I want to separate into flndm or make project folder anymore." This
+  withdraws the earlier "flndm is a library" decision and items 2 and 3 of what the user asked.
+- **No `shared` module is removed, and none of its features**: `archive`, `media`'s verbs,
+  `worker`'s options and the rest stay. "I dont think remove archive,... is ok, but maybe just fix
+  bug, improve performance and simplify the api of shared." This **reverses** the earlier
+  "Minimal `shared`: Phase 8 may remove `shared` API neither flnd nor flndm uses".
+- **Phase 8 is: fix bugs, improve performance, simplify the API**, with every module in `shared`
+  and flnd made as small and plain as it can be while keeping what it does. "But simplify all
+  module to bare minimal."
+- **`shared` serves future tools, not only flnd**: its API is designed for a general caller, no flnd
+  idea leaks into it, and its tests and docs stand without flnd. "shared exists because in future,
+  maybe other module need it, not just flnd. So keep that in my for any design decision."
+- **No questions; defaults are chosen**: "Dont ask me anything, fully automated." Each open
+  question and added item takes its recommendation as the default.
+- **Phase 8 is on hold**: "Just finish phase 7, phase 8 is on hold, only plan, no work."
 
 ## Questions for the user
 
-1. **`shared`'s place**: stay at the root, move to `projects/shared`, or split between flnd and
-   flndm, so that no shared toolkit is left?
-2. **Shrink and other media steps**: flndm steps a request names (proposed), or flnd's, run after
-   flndm places the file?
-3. **Performance targets**: set from the first benchmark (proposed), or numbers you already have
-   in mind, such as matching aria2c on many small files?
-4. **Packaging**: one bundle holding both commands, or two? (Private use: no publishing.)
-5. **Names**: `flndm` for both the package and the command?
-6. **A synced query's first run**: only remember what it finds (proposed), or download at once?
+The user said not to ask (2026-11-13), so each recommendation is now the chosen default, which the
+user may reverse. The earlier draft's questions on `shared`'s place, shrink in flndm, packaging and
+the name `flndm` no longer apply.
+
+1. **Order**: bugs first, then `shared` module by module, then flnd, hardening?
+   **Default (chosen without asking, 2026-11-13):** yes, as [above](#order). Cheap fixes that stop
+   data loss come before anything that reshapes code.
+2. **History paths**: the spec says an entry's path is relative to `media/`; the code stores it as
+   given (relative to the working folder, or absolute), so moving `.flnd/` breaks entries.
+   **Default (chosen without asking, 2026-11-13):** write new entries relative to `media/` and read
+   both forms, with no rewrite of old entries (the no-migration rule).
+3. **Code for pre-Phase-5 data**: moving `.flnd/cookies/` files into the vault (45 lines) and
+   `_unrecorded` for folders without a history (13 lines).
+   **Default (chosen without asking, 2026-11-13):** remove both: Phase 7's layout step already left
+   old `.flnd/` folders behind.
+4. **Two runs on one target** (a scheduled `sync` during a `download`):
+   **Default (chosen without asking, 2026-11-13):** the second run says another run holds the target
+   and goes on with the next, and repair skips a held folder; the alternative, waiting, can hang a
+   cron job behind a long download.
+5. **`kv` writes with `synchronous=NORMAL`**: 4× faster writes; WAL keeps the store whole, and a
+   power cut may lose the last commits (a history entry lost means one file downloaded again).
+   **Default (chosen without asking, 2026-11-13):** yes.
+6. **Re-dating memory**: a file still undated after asking is asked again only after 30 days,
+   instead of every sync (up to 27 minutes of paced requests a sync for 2,000 files).
+   **Default (chosen without asking, 2026-11-13):** yes.
+7. **`media`'s size cap**: the docs say the longer side; the code and its tests cap the shorter (as
+   "1080p" does).
+   **Default (chosen without asking, 2026-11-13):** keep the code, fix the docs, so a level means
+   what video people expect; a panorama keeps its length.
+8. **`media.compress(codec=None)`** keeps the source's codec when the format can write it, instead
+   of the container's default (H.264).
+   **Default (chosen without asking, 2026-11-13):** yes: "compress in its own format" then means its
+   own codec too, for any caller, and flnd's `OWN_CODECS` table goes.
+9. **A loopback server for download benchmarks**, while unit tests stay on `MockTransport`.
+   **Default (chosen without asking, 2026-11-13):** allow it for `dev.py bench` only, on
+   `127.0.0.1`, never in `check`.
+10. **The renames** (A3): `archive.zip`/`unzip`/`ls` → `pack`/`unpack`/`entries`, the five hashes →
+    `crypto.digest`, `as_ordered` → `worker.map`, `Progress` → `Row`, `cli.run` → `cli.main`.
+    **Default (chosen without asking, 2026-11-13):** take them, one commit per module, no alias
+    left: each old name either shadows a builtin, means two things, or isn't what callers call it.
+
+## Risks
+
+- **A bug fix that changes behaviour a user relies on**: F1's fix makes `--time` runs list from
+  the newest again; each fix's test states the new behaviour, and the run log records it.
+- **API renames across `shared` and flnd at once**: one commit per module, with the snapshot diff
+  as the review and the full `check`; no aliases.
+- **Moving flnd machinery into `shared`** could bake in flnd's assumptions; each new name gets
+  `shared`-only tests with generic examples before flnd moves onto it.
+- **Speed changes that are slower elsewhere**: every hot-path commit runs the whole bench.
+- **Phase 7 still being built on `main`**: Phase 8 starts after step 12; the audit's line numbers
+  are redone then.
+
+## Left out
+
+The flnd/flndm split, `projects/` and a workspace (withdrawn); removing any `shared` module or
+feature (reversed); a journal or persistent queue; per-run speed caps; a per-disk limit (unless a
+hand run shows 15%); the features in [ideas](ideas.md).
 
 ## The user's words
 
@@ -270,3 +235,12 @@ And on `sync` (to this session):
 > sync). Now sync api will have `flnd sync`, `flnd sync ls`, `flnd sync toggle <targets>` (make
 > target being track by sync or not) instead of watch, target api. Moreover, maybe the targets also
 > in the sync listing (but with sync status = 0).
+
+Later the same day, on the direction (to this session, through the coordinator):
+
+> I dont think I want to separate into flndm or make project folder anymore. But simplify all
+> module to bare minimal. I dont think remove archive,... is ok, but maybe just fix bug, improve
+> performance and simplify the api of shared.
+
+> shared exists because in future, maybe other module need it, not just flnd. So keep that in my
+> for any design decision.
