@@ -626,7 +626,7 @@ class ApiTest(EngineCase):
     def test_text_and_values_are_read_alike(self):
         runs = []
 
-        def run(engine, chosen):
+        def run(engine, chosen, tallies=()):
             runs.extend(options for _, options in chosen)
             return [TargetReport(target, (), 0) for target, _ in chosen]
 
@@ -691,7 +691,7 @@ class ApiTest(EngineCase):
         self.assertFalse((self.home / files.METADATA).exists())
         # Without --from the same link downloads whole.
         runs = []
-        def run(engine, chosen):
+        def run(engine, chosen, tallies=()):
             runs.extend(options for _, options in chosen)
             return [TargetReport(target, (), 0) for target, _ in chosen]
 

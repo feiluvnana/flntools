@@ -502,7 +502,8 @@ class Ledger:
                 continue
             _set_mtime(path, found)
             fresh = {name: value for name, value in row.items() if name != ESTIMATED}
-            self.settings.history[key] = {**fresh, "path": str(path), DATE: found.isoformat()}
+            self.settings.history[key] = {**fresh, "path": str(path), DATE: found.isoformat(),
+                                          **disk.stamp(path)}
             dated += 1
         if dated:
             self.site.info("{files} dated", files=fmt.count(dated, "saved file"))
@@ -963,6 +964,8 @@ class Downloads:
                 path = Path(found.get("path", path))
         if finished.day is not None:
             _set_mtime(path, finished.day)
+        # Stamped once the file is final, so `sync` trusts it while it stays so.
+        finished.row.update(disk.stamp(path))
         with self._writing:
             self._written[key] = path
         self.settings.history[key] = finished.row

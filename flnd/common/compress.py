@@ -185,7 +185,7 @@ def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], c
             kind = files.kind_of(row["path"])
             fields = compressor.compress(Path(row["path"]), kind) if kind is not None else None
             if fields is not None:
-                history[key] = {**row, **fields}
+                history[key] = {**row, **fields, **files.stamp(Path(fields["path"]))}
     return len(todo)
 
 

@@ -36,7 +36,7 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from types import CodeType
-from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
@@ -213,29 +213,30 @@ class Engine:
             ValueError: a target can't be read (`TargetError`), before anything starts.
             OSError: the history or `targets.db` can't be opened or written.
 
-        It changes no setting and takes each source's default categories. For each target, in
-        order: leftover `.part` files are removed and files that are missing, empty or broken are
-        forgotten (broken ones deleted, which can't be undone); then what is new or was lost is
-        downloaded with the target's saved settings; then one line per target and the totals are
-        logged. The history is read once per sync (fixes #12). The fetch makes network requests
-        and can take hours.
+        It changes no setting and takes each source's default categories. For each target, on its
+        source's worker while other sources list: leftover `.part` files are removed and files
+        that are missing, empty or broken are forgotten (broken ones deleted, which can't be
+        undone); then what is new or was lost is downloaded with the target's saved settings.
+        Then one line per target and the totals are logged. The history is read once per sync.
+        The fetch makes network requests and can take hours.
         """
         with self._logged("sync", targets=targets):
             chosen = self._plan(self._resolved(targets))
             # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
             settings.record(self.home, chosen)
             shown = [settings.announce(target, options.shrink) for target, options in chosen]
-            tallies = self._repair(chosen)
+            folders = [files.target_folder(self.home, target) for target, _ in chosen]
+            with self._history() as history:
+                index = repair.index(history, folders)
+            tallies = [repair.Tally(str(target), folder, index[folder])
+                       for (target, _), folder in zip(chosen, folders)]
             log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
-            # A target with a lost or broken file lists to the end, so a file deeper than the
-            # saved-run stop is reached and saved again; the others stop at saved posts.
-            chosen = [(target, replace(options, stop_at_saved=not (tally.lost or tally.broken)))
-                      for (target, options), tally in zip(chosen, tallies)]
-            reports = self._run(chosen)
+            chosen = [(target, replace(options, stop_at_saved=True)) for target, options in chosen]
+            reports = self._run(chosen, tallies=tallies)
             _end_if_stopped()
             with self._history() as history:
-                for (target, _), tally in zip(chosen, tallies):
-                    repair.count(history, files.target_folder(self.home, target), tally)
+                for tally in tallies:
+                    repair.count(history, tally)
             repair.summary(tallies)
             report = Report(tuple(replace(report, repaired=tally.repaired, missing=tally.missing,
                                           settings=text)
@@ -428,17 +429,6 @@ class Engine:
                     except TargetError as error:
                         log.warn("{folder}: not synced: {error}", folder=f"{code}/{folder.name}", error=error)
 
-    def _repair(self, chosen: Sequence[tuple[Target, Options]]) -> list[repair.Tally]:
-        """Repair each target's folder before its fetch, and give each one's tally."""
-        tallies = [repair.Tally(str(target)) for target, _ in chosen]
-        folders = [files.target_folder(self.home, target) for target, _ in chosen]
-        with self._history() as history:
-            index = repair.index(history, folders)
-            for tally, folder in zip(tallies, folders):
-                log.debug("{target}: repair", target=tally.target)
-                repair.repair(history, folder, index[folder], tally)
-        return tallies
-
     def _apply(self, targets: Sequence[Target], chosen: Mapping[Target, Options]) -> None:
         """Shrink the files already saved of each target `download --shrink` turns it on for, then save its setting.
 
@@ -459,10 +449,14 @@ class Engine:
                 # be finished, since the next `download --shrink` would see no change.
                 settings.record(self.home, [(target, chosen[target])])
 
-    def _run(self, chosen: Sequence[tuple[Target, Options]]) -> list[TargetReport]:
+    def _run(self, chosen: Sequence[tuple[Target, Options]], *,
+             tallies: Sequence[repair.Tally] = ()) -> list[TargetReport]:
         """Download each target with its own options, and give each one's report in order.
 
             [report] = engine._run([(Target("ins", "user", "example_user"), Options())])
+
+        `tallies`, one per target for `sync`, repairs each target's folder just before its
+        listing; a target that lost a file then lists to its end.
 
         One source's targets run one after another, each source on a worker of its own, so
         different sites download side by side and none sees more requests than alone. When a
@@ -488,7 +482,8 @@ class Engine:
                 log.group("download") as rows:
             run_settings = Settings(home=self.home, history=history, targets=saved)
             work = [(self.sources[code](),
-                     [(number, *chosen[number], rows.add(str(chosen[number][0])))
+                     [_Planned(number, *chosen[number], rows.add(str(chosen[number][0])),
+                               tallies[number] if tallies else None)
                       for number in numbers])
                     for code, numbers in groups.items()]
             for result in worker.as_completed(partial(_run_site, run_settings, reports), work,
@@ -739,12 +734,20 @@ def _follow(url: str) -> str:
         raise TargetError(f"can't follow {url}: {error}") from None
 
 
-# Each target of a source's group: its place in the run, the target, its options and its row.
-Planned = tuple[int, Target, Options, Any]
+@dataclass(frozen=True)
+class _Planned:
+    """One target of a source's group: its place in the run, its options, its row and its repair."""
+
+    number: int
+    target: Target
+    options: Options
+    row: Any
+    # `sync` only: the tally its folder's repair fills, just before its listing.
+    tally: repair.Tally | None
 
 
 def _run_site(run_settings: Settings, reports: dict[int, TargetReport],
-              work: tuple[Source, list[Planned]]) -> None:
+              work: tuple[Source, list[_Planned]]) -> None:
     """Run one source's targets, one after another, on one worker, filling `reports` as each ends.
 
     A target that ends is in `reports` even when a later one stops the whole group, so its report
@@ -754,30 +757,45 @@ def _run_site(run_settings: Settings, reports: dict[int, TargetReport],
     with source_run(run_settings, source) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not source.logged_in(account) and source.requires_login:
-            for number, target, _, row in group:
-                log.error("{target}: not logged in; run flnd login", target=str(target))
-                row.fail()
-                reports[number] = TargetReport(target, (), 0, error="not logged in; run flnd login")
+            for planned in group:
+                log.error("{target}: not logged in; run flnd login", target=str(planned.target))
+                planned.row.fail()
+                reports[planned.number] = TargetReport(planned.target, (), 0,
+                                                       error="not logged in; run flnd login")
             return
         if not source.logged_in(account):
             log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
         with _written_back(run), _connected(run, account):
-            for number, target, options, row in group:
-                reports[number] = job.download(run, target, row, options)
+            for planned in group:
+                options = _repaired(run_settings.history, planned)
+                reports[planned.number] = job.download(run, planned.target, planned.row, options)
 
 
-def _fail_unreached(work: tuple[Source, list[Planned]], error: BaseException | None,
+def _repaired(history: MutableMapping[str, Any], planned: _Planned) -> Options:
+    """Repair a target's folder right before its listing under `sync`, and give its options."""
+    tally = planned.tally
+    if tally is None or net.stopping.is_set():
+        return planned.options
+    log.debug("{target}: repair", target=tally.target)
+    with log.under(planned.row):
+        repair.repair(history, tally)
+    # A target with a lost or broken file lists to the end, so a file deeper than the saved-run
+    # stop is reached and saved again; the others stop at saved posts.
+    return replace(planned.options, stop_at_saved=planned.options.stop_at_saved and not tally.lost)
+
+
+def _fail_unreached(work: tuple[Source, list[_Planned]], error: BaseException | None,
                     reports: dict[int, TargetReport]) -> None:
     """Fail each target of a group that stopped before or between its targets."""
     source, group = work
     log.error("{source}: {error}", source=source.code, error=error)
-    for number, target, _, row in group:
+    for planned in group:
         # An ended row keeps its end; any other would end at ok when `log.group` closes.
-        if not row.finished:
-            row.caption = str(error)
-            row.fail()
-        if number not in reports:
-            reports[number] = TargetReport(target, (), 0, error=str(error))
+        if not planned.row.finished:
+            planned.row.caption = str(error)
+            planned.row.fail()
+        if planned.number not in reports:
+            reports[planned.number] = TargetReport(planned.target, (), 0, error=str(error))
 
 
 @contextmanager

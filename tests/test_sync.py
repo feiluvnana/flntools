@@ -39,7 +39,7 @@ class Site:
 
 def recorded(record):
     """An `Engine._run` that only calls `record(chosen)`, and reports each target done, empty."""
-    def run(engine, chosen):
+    def run(engine, chosen, tallies=()):
         record(chosen)
         return [TargetReport(target, (), 0) for target, _ in chosen]
 
@@ -251,6 +251,55 @@ class RepairTest(SyncCase):
         self.assertGreater((folder / "a.jpg").stat().st_size, 0)
         self.assertEqual((line.repaired, line.missing), (3, 0))
 
+    def test_unchanged_files_are_trusted_and_changed_ones_and_a_rolling_share_are_checked(self):
+        import os
+
+        from shared import media
+
+        self.download()
+        folder = self.folder()
+        # The same bytes, a second later: only the modified time tells it changed.
+        changed = folder / "b.jpg"
+        later = changed.stat().st_mtime_ns + 1_000_000_000
+        os.utime(changed, ns=(later, later))
+        opened = []
+        real_open = media.open
+
+        def spying(path, *args, **options):
+            opened.append(Path(path).name)
+            return real_open(path, *args, **options)
+
+        with mock.patch("shared.media.open", spying):
+            self.sync()
+            # b.jpg changed; of the two trusted, one (a thirtieth, rounded up) is due.
+            self.assertEqual(len(opened), 2)
+            self.assertIn("b.jpg", opened)
+            first = set(opened)
+            opened.clear()
+            self.sync()
+        # Every file is trusted now, and the one checked longest ago (never) is due.
+        self.assertEqual(opened, sorted({"a.jpg", "b.jpg", "c.jpg"} - first))
+
+    def test_each_target_is_repaired_on_its_source_worker_just_before_its_listing(self):
+        from flnd import job, repair
+
+        self.download(texts=("aaa:a", "aaa:b"))
+        steps = []
+        real_repair, real_download = repair.repair, job.download
+
+        def repairing(history, tally):
+            steps.append(f"repair {tally.target}")
+            return real_repair(history, tally)
+
+        def downloading(run, target, row, options):
+            steps.append(f"list {target}")
+            return real_download(run, target, row, options)
+
+        with mock.patch.object(repair, "repair", repairing), \
+                mock.patch.object(job, "download", downloading):
+            self.sync()
+        self.assertEqual(steps, ["repair aaa:a", "list aaa:a", "repair aaa:b", "list aaa:b"])
+
     def test_a_recent_resumable_part_is_kept_for_the_fetch_and_every_other_leftover_goes(self):
         """B6: sync's fetch resumes a download's part, so repair keeps it while it is recent, with its `.part.json`."""
         import os
@@ -268,7 +317,7 @@ class RepairTest(SyncCase):
             path.write_bytes(b"x")
         old = time.time() - (files.RESUMABLE_DAYS + 1) * 24 * 3600
         os.utime(made[".b.jpg.22222222.part"], (old, old))
-        repair.repair({}, folder, [], repair.Tally("aaa:example_user"))
+        repair.repair({}, repair.Tally("aaa:example_user", folder))
         self.assertEqual(sorted(path.name for path in folder.iterdir()),
                          [".a.jpg.11111111.part", ".a.jpg.11111111.part.json"])
 

@@ -67,11 +67,12 @@ class CategoriesTest(JobCase):
         rows = self.history()
         self.assertEqual(sorted(rows), ["exm:A1_0", "exm:B2def_0", "exm:C1abc_0", "exm:C1abc_1",
                                         "exm:profile/avatar_42.jpg"])
-        # Today's row format: where it is, its size, and when.
+        # Today's row format: where it is, its size and modified time, and when.
         # The first file of a post of several holds their count (fixes #2).
-        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "date", "files", "id", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_0"]),
+                         ["at", "date", "files", "id", "mtime", "path", "size"])
         self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
-        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "date", "id", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "date", "id", "mtime", "path", "size"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
@@ -315,9 +316,9 @@ class FilesTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "date", "files", "id", "path", "size"])
+        self.assertEqual(sorted(row), ["at", "date", "files", "id", "mtime", "path", "size"])
         self.assertEqual(sorted(self.history()["exm:B2def_0"]),
-                         ["at", "date", "id", "path", "size"])
+                         ["at", "date", "id", "mtime", "path", "size"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))

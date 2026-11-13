@@ -57,6 +57,9 @@ IMAGE, VIDEO, AUDIO = "image", "video", "audio"
 SNIFF = "sniff"
 # How an error names each kind.
 NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
+# The history fields of a finished file's size and modified time (ns), which `flnd sync` trusts
+# while the file still has them.
+SIZE, MTIME = "size", "mtime"
 
 
 def part_info(part: Path) -> Path:
@@ -71,6 +74,23 @@ def resumable(part: Path) -> bool:
     except OSError:  # gone already, or unreadable: nothing to resume
         return False
     return part_info(part).is_file() and age < RESUMABLE_DAYS * 24 * 3600
+
+
+def stamp(path: Path) -> dict[str, int]:
+    """A finished file's size and modified time (ns), as its history row keeps them."""
+    found = path.stat()
+    return {SIZE: found.st_size, MTIME: found.st_mtime_ns}
+
+
+def unchanged(path: Path, row: dict) -> bool:
+    """Whether a file still has the size and modified time its history row keeps.
+
+    Args:
+        path: the saved file, which must exist.
+        row: its history row; one saved before rows kept these never matches.
+    """
+    found = path.stat()
+    return row.get(SIZE) == found.st_size and row.get(MTIME) == found.st_mtime_ns
 
 
 class NotMediaError(ValueError):
