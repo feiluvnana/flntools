@@ -1,5 +1,7 @@
 # comments
 
+**Replaced on 2026-11-13** by Phase 7's [readable](../phase-7/readable.md#the-writing-rules), by the user's decision: its verbose rules (complete `Args:` lists, a comment at every caught exception, heading comments, the complete-`Args:` lint) no longer hold. It stays as history.
+
 Phase 6, step 9, and a rule for every step before it. The user asked on 2026-11-12 for much more extensive comments across the whole project. The code has grown faster than its explanations, so a reader has to work rules out from the code itself.
 
 ## Where it stands

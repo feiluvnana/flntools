@@ -23,6 +23,7 @@ metadata and a log of each run.
 | files flnd never gets (X's older tweets, a second CDN host) | [fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), from gallery-dl |
 | flnd only downloads; it should also find things on a site, and the API should say which is which | [flnd](flnd.md#9-finding-710): `Site` (access), `Downloader` (a target in), `Finder` (a query in), one engine below; `flnd find` |
 | the commands are flat; logins and kept targets have no home | [flnd](flnd.md#2-commands): `flnd auth login`/`logout`/`ls`, `flnd target ls`/`forget` |
+| the code is hard to follow: more prose than code, plan ids in comments, thin layers, callbacks, names that don't fit | [readable](readable.md): new writing rules, eleven refactors, a final docs diet, `shared` and `flnd` both |
 | flnd's code could be leaner | [lean](lean.md): proposals from two audits, about 425 lines |
 | a file found in two tabs (reels and videos, photos and posts) is in only one folder | [links](links.md) |
 | `.flnd/` mixes media and stores, and a run leaves no record to audit |  [layout](layout.md): `.flnd/media/`, `.flnd/metadata/`, `.flnd/log/` with every run's log |
@@ -51,6 +52,10 @@ Each step ends with `check` green and is committed on its own.
     and `Downloader`, `flnd/sources/` becomes `flnd/sites/` ("site" everywhere); the find API
     (`Finder`, `Query`, `Found`) on the same job, and `flnd find`; the `target` and `auth` command
     groups; loi's finder first.
+11. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` site, its downloader and finder.
+12. [readable](readable.md): the docs diet and no plan or history in code, over `shared` and
+    `flnd`, with the enforcement switched on. Its writing rules hold from now, and its refactors
+    land in the steps that touch their files.
 
 The layout comes first, since every later step writes paths and history rows, and the run log
 records what the later steps add. `--shrink` comes next, since the new `metadata/` means no old
@@ -100,6 +105,10 @@ All decided by the user on 2026-11-13:
     targets in a pipe.
 24. **"Site", not "source"**: `Site` (access) apart from `Downloader` and `Finder`; `flnd/sites/`,
     `flnd.site`, `flnd.downloader`, `flnd.finder`, `SITES`, `sites.db`.
+25. **The code reads easily, and `shared` and `flnd` stay lean**: the writing rules of
+    [readable](readable.md) replace Phase 6's comments.md and hold from now; its refactors R1–R11
+    land in the steps that touch their files, R3's `browser = True` included; step 12 does the docs
+    diet. mimihentai (`mht`) is step 11 ([flnd](flnd.md#17-mimihentai-mht-711)).
 
 3 and 7 reverse Phase 6 [simplify §3](../phase-6/simplify.md#3-no-history-migrations)'s "no
 rename when the real date is found": the user's later decision.

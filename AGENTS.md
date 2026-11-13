@@ -53,11 +53,17 @@ All commits must strictly follow this message format:
   - one word means one thing: `dest`, `timeout`, `progress(done, total)`, `label`, `level`.
 - One spelling: no aliases or deprecated names. `shared` has one user, flnd, which is changed in the same commit.
 - Every module's errors share a `<module>.Error` base, under `shared.UnsafeError`, `BrokenError` or `RefusedError` where they fit.
-- `tests/test_names.py` enforces these rules. Its allowlist may only shrink.
+- `tests/test_names.py` enforces these rules, and the writing rules a machine can check. Its allowlist may only shrink.
 
-## Docs and comments
-- Every module, public class and public function has a docstring to plan/phase-6/comments.md: one plain sentence, a short example, then `Args:`, `Returns:` and `Raises:`.
-- Comments explain why, at every magic value, site quirk, lock, caught exception and platform branch. A comment never restates the next line.
+## Writing (plan/phase-7/readable.md, user 2026-11-13)
+- Code a reader can follow top to bottom; more code than prose in every file. `shared` and `flnd` both stay lean.
+- A docstring is one sentence. An example only on a public entry point. `Args:`, `Returns:`, `Raises:` only where the name and type don't say it (`flnd/cli.py` keeps `Args:`: `shared.cli` reads help from them). About 10 lines at most; a module docstring at most 15.
+- A comment says why: a site quirk, a magic value, a lock, a platform branch, a non-obvious choice. Never what the next line does; never a plan id, a `.md` file, an issue number, a phase or "as before" (history goes in the commit message, a regression guard in a test name).
+- Each fact once: a Protocol and its implementation aren't both documented.
+- Lines of at most 100 characters; functions of about 30 code lines and 3 levels of nesting at most. No one-caller helper unless its name explains something.
+- No chained ternaries; no `bool | None` for three states (an `Enum`); no callback from a producer into its consumer; no writing to a frozen object. Five or more options become a record.
+- A module is named for what it holds, never renamed on import; one word, one meaning across modules. A module reads: docstring, imports, constants, main entry point, helpers in call order.
+- Plain over clever: declare what code would otherwise guess (a downloader that opens a browser says `browser = True`).
 
 ## Plans
 - The plan is in `plan/`. In Phase 6, `plan/phase-6/redesign.md` wins over every other Phase 6 file, and `simplify.md` wins over the rest.
