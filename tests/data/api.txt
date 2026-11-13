@@ -281,12 +281,25 @@ shared.fmt.size(n: int) -> str
 shared.fmt.url(text: str) -> str
 shared.http: module
 shared.http.ChangedError(shared.http.Error, shared.BrokenError)
+shared.http.Client(raw: httpx.Client | None = None, *, pace: Pace | None = None, speeds: Mapping[str, float] | None = None, stop: threading.Event | None = None)
+shared.http.Client.close() -> None
+shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None) -> Download
+shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
+shared.http.Client.pace: attribute -> Pace | None
+shared.http.Client.raw: attribute -> httpx.Client
+shared.http.Client.speeds: property -> dict[str, float]
+shared.http.Client.stop: attribute -> threading.Event | None
 shared.http.Download(path: Path, url: str, headers: Mapping[str, str] = <factory>)
 shared.http.Download.headers: field -> Mapping[str, str]
 shared.http.Download.path: field -> Path
 shared.http.Download.url: field -> str
 shared.http.Error(shared.Error)
 shared.http.IncompleteError(shared.http.Error, shared.BrokenError)
+shared.http.Pace(floor: float = 0.0, budgets: Mapping[str, tuple[int, float]] = <factory>, domains: tuple[str, ...] = ())
+shared.http.Pace.budgets: field -> Mapping[str, tuple[int, float]]
+shared.http.Pace.domains: field -> tuple[str, ...]
+shared.http.Pace.floor: field -> float
+shared.http.Pace.paces(host: str) -> bool
 shared.http.RateLimitedError(shared.http.Error)
 shared.http.RateLimitedError.retry_after: attribute
 shared.http.RateLimitedError.status: attribute

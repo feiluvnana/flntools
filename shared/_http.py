@@ -68,6 +68,7 @@ from shared import _atomic as atomic
 from shared import _clock as clock
 from shared import _fmt as fmt
 from shared._log import log
+from shared._pace import Host, Pace
 
 try:
     import httpx
@@ -78,8 +79,8 @@ if TYPE_CHECKING:  # `selector` loads on the first `html`, so a JSON-only script
     from shared._selector import Selection
 
 __all__ = [
-    "ChangedError", "Download", "Error", "IncompleteError", "RateLimitedError", "RefusedError", "Response",
-    "ServerError", "StoppedError", "download", "fetch",
+    "ChangedError", "Client", "Download", "Error", "IncompleteError", "Pace", "RateLimitedError", "RefusedError",
+    "Response", "ServerError", "StoppedError", "download", "fetch",
 ]
 
 PathLike = Union[str, "os.PathLike[str]"]
@@ -118,6 +119,8 @@ DOWNLOAD_EXTENSION = "shared.http.download"
 INFO_SUFFIX = ".json"
 # The name of a file `download` saves into a folder when its URL's path names none.
 FALLBACK_NAME = "download"
+# A client's wait this long, in seconds, or longer is drawn as a countdown row, so a slow run explains itself.
+SHOWN_WAIT = 15.0
 # How often, in seconds, a download waiting for a host slot or reading a stalled body looks at its
 # `stop` event: short enough that a stop takes effect within a second.
 STOP_POLL = 0.25
@@ -484,6 +487,152 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
     raise AssertionError("unreachable: the last mirror returns or raises")
 
 
+class Client:
+    """One run's HTTP client: `fetch` and `download` that keep each host's pace and wait out its 429s.
+
+        pace = http.Pace(0.5, {"/graphql": (275, 600)}, domains=("example.com",))
+        with http.Client(pace=pace) as client:
+            page = client.fetch("https://example.com/graphql/query")   # paced; a 429 is waited out
+            client.download("https://cdn.example.com/v.mp4", "videos/")
+
+    Each host has its own learned speed, budgets, rate-header hold and back-off, so a CDN's 429
+    never slows the site's own requests. A wait of 15 s or more is drawn as a countdown row. It
+    may be used from many threads at once.
+
+    Args:
+        raw: the `httpx.Client` requests go through, with the caller's cookies, headers and
+            signing, which the caller closes; None makes one like `fetch`'s own, closed by `close`.
+        pace: the floor and budgets for the hosts it names; None paces no host, though rate
+            headers and 429s are still honoured.
+        speeds: learned speeds by host, as an earlier run's `speeds` gave them.
+        stop: an event that ends every wait, and every download, with `StoppedError`.
+    """
+
+    def __init__(self, raw: httpx.Client | None = None, *, pace: Pace | None = None,
+                 speeds: Mapping[str, float] | None = None, stop: threading.Event | None = None):
+        self.raw: httpx.Client = raw if raw is not None else _new_client()
+        self.pace: Pace | None = pace
+        self.stop: threading.Event | None = stop
+        self._owned = raw is None
+        self._speeds = dict(speeds or {})
+        self._hosts: dict[str, Host] = {}
+        # Two threads asking for a new host at once must get the same one.
+        self._hosts_lock = threading.Lock()
+
+    def __enter__(self) -> Client:
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    @property
+    def speeds(self) -> dict[str, float]:
+        """Each host's learned speed, from 1 (no throttle seen) to 8, to start the next run from."""
+        with self._hosts_lock:
+            return {name: host.speed for name, host in self._hosts.items()}
+
+    def close(self) -> None:
+        """Close the httpx client when this client made it."""
+        if self._owned:
+            self.raw.close()
+
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: Literal[False] = ..., attempts: int = ..., timeout: float = ...) -> Response: ...
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: bool, attempts: int = ..., timeout: float = ...) -> Response | None: ...
+    def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
+              params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
+              soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None:
+        """`http.fetch` on this client, after the host's turn, waiting out a 429 as long as it takes.
+
+            page = client.fetch("https://example.com/items", params={"page": 2})
+
+        Raises:
+            StoppedError: `stop` was set during a wait.
+            RefusedError, ServerError, Error: as `http.fetch` raises them.
+        """
+        host = self._host(url)
+        while True:
+            self._wait(host, host.turn(url))
+            try:
+                response = fetch(url, method=method, client=self.raw, headers=headers, params=params,
+                                 data=data, json=json, soft=soft, attempts=attempts, timeout=timeout)
+            except RateLimitedError as error:
+                self._throttled(host, error.retry_after)
+                continue
+            except RefusedError as error:
+                if error.response is not None:
+                    host.record(error.response.headers)
+                raise
+            if response is not None:
+                host.record(response.headers)
+            host.clean()
+            return response
+
+    def download(self, url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None,
+                 size: int | None = None, parts: Literal["auto"] | int = "auto", resume: bool = True,
+                 attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
+                 progress: Callable[[int, int | None], Any] | None = None,
+                 label: str | None = None) -> Download:
+        """`http.download` on this client, after the host's turn, resuming after each 429 is waited out.
+
+            client.download("https://cdn.example.com/v.mp4", "videos/", progress=bar.update)
+
+        Raises:
+            StoppedError: `stop` was set.
+            RefusedError, ServerError, IncompleteError, ChangedError, Error: as `http.download` raises them.
+        """
+        first = url if isinstance(url, str) else next(iter(url), "")
+        host = self._host(first)
+        while True:
+            self._wait(host, host.turn(first))
+            try:
+                saved = download(url, dest, client=self.raw, headers=headers, size=size, parts=parts,
+                                 resume=resume, attempts=attempts, timeout=timeout, check=check,
+                                 progress=progress, label=label, stop=self.stop)
+            except RateLimitedError as error:
+                self._throttled(host, error.retry_after)
+                continue
+            host.record(saved.headers)
+            host.clean()
+            return saved
+
+    def _host(self, url: str) -> Host:
+        """The pace of `url`'s host, made on first use with the speed an earlier run learned."""
+        name = (httpx.URL(url).host or "").lower()
+        with self._hosts_lock:
+            if name not in self._hosts:
+                self._hosts[name] = Host(name, self.pace, speed=self._speeds.get(name, 1.0))
+            return self._hosts[name]
+
+    def _throttled(self, host: Host, retry_after: float | None) -> None:
+        """Count a 429 on `host`, and say how long it holds; the next turn waits it out."""
+        seconds = host.throttled(retry_after)
+        if seconds is not None:
+            log.warn("{host}: rate limited; waiting {time} (attempt {n})", host=host.name,
+                     time=fmt.duration(round(seconds)), n=host.strikes)
+
+    def _wait(self, host: Host, seconds: float) -> None:
+        """Wait `seconds` for `host`'s turn, as a countdown row when it is long; `stop` ends it."""
+        if seconds <= 0:
+            return
+        if seconds < SHOWN_WAIT:
+            if clock.sleep(seconds, stop=self.stop):
+                raise StoppedError(f"{host.name}: stopped")
+            return
+        with log.progress(f"{host.name}: waiting", total=seconds, show=_seconds) as bar:
+            end = clock.now() + seconds
+            # One-second steps, so the countdown moves.
+            while (left := end - clock.now()) > 0:
+                bar.count = seconds - left
+                if clock.sleep(min(1.0, left), stop=self.stop):
+                    raise StoppedError(f"{host.name}: stopped")
+
+
 class _Headers(Mapping[str, str]):
     """A read-only header mapping with lowercase names, looked up in any case."""
 
@@ -518,11 +667,21 @@ def _client() -> httpx.Client:
     global _default
     with _client_lock:
         if _default is None:
-            # A jar whose policy allows no domain keeps no cookie, so a cookie one caller's fetch
-            # is sent never rides along on another caller's request to the same site.
-            refuse_all = http.cookiejar.DefaultCookiePolicy(allowed_domains=[])
-            _default = httpx.Client(follow_redirects=True, cookies=http.cookiejar.CookieJar(refuse_all))
+            _default = _new_client()
         return _default
+
+
+def _new_client() -> httpx.Client:
+    """A client that follows redirects and keeps no cookies between calls."""
+    # A jar whose policy allows no domain keeps no cookie, so a cookie one caller's fetch is sent
+    # never rides along on another caller's request to the same site.
+    refuse_all = http.cookiejar.DefaultCookiePolicy(allowed_domains=[])
+    return httpx.Client(follow_redirects=True, cookies=http.cookiejar.CookieJar(refuse_all))
+
+
+def _seconds(value: float) -> str:
+    """A countdown row's count and total, such as "1m 30s"."""
+    return fmt.duration(round(value))
 
 
 def _slot(url: httpx.URL) -> threading.BoundedSemaphore:
