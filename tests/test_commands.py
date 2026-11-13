@@ -20,7 +20,7 @@ from flnd import sources
 from flnd.common import auth, files
 from flnd.session import Options
 from flnd.source import Source
-from shared import cookies, kv, theme
+from shared import cookies, kv, log, theme
 from shared._theme import Screen
 
 NETSCAPE = (
@@ -294,6 +294,15 @@ class SyncCommandTest(RunsCase):
                                                 Target("twt", "user", "example_handle"): Options()})
         self.run_app("sync", "twt:example_handle")
         self.assertEqual(self.synced[1], [(Target("twt", "user", "example_handle"), Options())])
+
+    def test_sync_v_shows_every_line_and_changes_no_setting(self):
+        self.addCleanup(setattr, log, "level", log.level)
+        self.run_app("download", "ins:example_user", "--shrink")
+        self.assertEqual(log.level, "info")
+        self.assertEqual(self.run_app("sync", "-v")[0], 0)
+        self.assertEqual(log.level, "debug")
+        self.assertEqual(dict(self.synced[0]),
+                         {Target("ins", "user", "example_user"): Options(shrink=True)})
 
     def test_sync_takes_no_options(self):
         self.run_app("download", "ins:example_user")

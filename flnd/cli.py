@@ -93,9 +93,10 @@ def download(
             leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
         shrink: compress each photo, video and audio file to a balanced quality in its own format,
             replacing it when smaller, metadata (GPS too) stripped; off stops it.
-        verbose: also show the details, such as each file skipped as already saved and the name that holds it.
+        verbose: also show every file as it runs and ends, and each skip, link and shrink,
+            under the status lines.
     """
-    # Debug lines, such as each skipped file, are shown only when asked for.
+    # The files' rows and the debug lines, such as each skipped file, are shown only when asked for.
     if verbose:
         log.level = "debug"
     try:
@@ -113,7 +114,11 @@ def download(
 
 
 @app.command
-def sync(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)]) -> int:
+def sync(
+    targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)],
+    *,
+    verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
+) -> int:
     """Bring downloaded targets up to date: repair broken or missing files, fetch new posts, and sum up.
 
     Each target runs with its saved --shrink and each source's default
@@ -121,7 +126,12 @@ def sync(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)]) -> int:
 
     Args:
         targets: only these targets, as in flnd download; every one downloaded so far without them.
+        verbose: also show every file as it runs and ends, and each skip, link and shrink,
+            under the status lines.
     """
+    # -v is how the run is shown, not how a target is synced, so it changes no setting.
+    if verbose:
+        log.level = "debug"
     try:
         # The engine logs each target's line and the totals, which only it can count (the folder's files and size).
         # As for download, only ValueError is a usage error; the rest propagates.

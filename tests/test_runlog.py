@@ -68,10 +68,16 @@ class RunLogTest(RunLogCase):
         self.assertRegex(lines[0], r"^· flnd \S+ download: targets=\['aaa:example_user'\]$")
         self.assertIn("· resolve aaa:example_user: aaa:example_user (user)", lines)
         self.assertIn("· aaa:example_user: list posts", lines)
-        self.assertIn("· skip a.jpg: already saved", lines)
+        self.assertIn("↷ a.jpg", lines)
+        # The status line's counts, once, as its category ended; the screen shows the same line.
+        status = [line for line in lines if line.startswith("✓ aaa:example_user posts ")]
+        self.assertEqual(len(status), 1)
+        self.assertIn("1 found", status[0])
+        self.assertIn("1 skipped", status[0])
+        self.assertIn(status[0], self.lines())
         self.assertIn("· aaa:example_user: 0 written, 1 skipped; complete: posts", lines)
         self.assertEqual(lines[-1], "· totals: 0 written, 1 skipped, 0 of 1 failed; exit 0")
-        self.assertFalse(any(line.startswith("·") for line in self.lines()))
+        self.assertFalse(any(line.startswith(("·", "↷")) for line in self.lines()))
 
     def test_a_failed_target_logs_its_causes_and_exit_1(self):
         def broken(*_):

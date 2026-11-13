@@ -479,18 +479,28 @@ class Engine:
         # only once they have all ended: one assignment per key needs no lock.
         reports: dict[int, TargetReport] = {}
         with self._history() as history, self._targets() as saved, _stop_waits_on_ctrl_c(), \
-                log.group("download") as rows:
+                log.group() as rows:
             run_settings = Settings(home=self.home, history=history, targets=saved)
+            board = job.Board(rows, subject_width=max((len(str(target)) for target, _ in chosen),
+                                                      default=0),
+                              label_width=self._label_width(chosen))
             work = [(self.sources[code](),
-                     [_Planned(number, *chosen[number], rows.add(str(chosen[number][0])),
-                               tallies[number] if tallies else None)
+                     [_Planned(number, *chosen[number], tallies[number] if tallies else None)
                       for number in numbers])
                     for code, numbers in groups.items()]
-            for result in worker.as_completed(partial(_run_site, run_settings, reports), work,
-                                              concurrency=max(len(work), 1)):
+            for result in worker.as_completed(partial(_run_site, run_settings, board, reports),
+                                              work, concurrency=max(len(work), 1)):
                 if not result.ok:
-                    _fail_unreached(result.item, result.error, reports)
+                    _fail_unreached(result.item, result.error, reports, board)
         return [reports[number] for number in range(len(chosen))]
+
+    def _label_width(self, chosen: Sequence[tuple[Target, Options]]) -> int:
+        """The widest status-line label of these targets: a category's name or a route's kind."""
+        labels = [target.kind for target, _ in chosen]
+        for code in {target.source for target, _ in chosen}:
+            labels += [category.name for route in self.sources[code].routes
+                       for category in route.categories]
+        return max(map(len, labels), default=0)
 
     def _history(self) -> kv.Store:
         """The download history, opened for a `with` block."""
@@ -736,17 +746,16 @@ def _follow(url: str) -> str:
 
 @dataclass(frozen=True)
 class _Planned:
-    """One target of a source's group: its place in the run, its options, its row and its repair."""
+    """One target of a source's group: its place in the run, its options and its repair."""
 
     number: int
     target: Target
     options: Options
-    row: Any
     # `sync` only: the tally its folder's repair fills, just before its listing.
     tally: repair.Tally | None
 
 
-def _run_site(run_settings: Settings, reports: dict[int, TargetReport],
+def _run_site(run_settings: Settings, board: job.Board, reports: dict[int, TargetReport],
               work: tuple[Source, list[_Planned]]) -> None:
     """Run one source's targets, one after another, on one worker, filling `reports` as each ends.
 
@@ -759,7 +768,6 @@ def _run_site(run_settings: Settings, reports: dict[int, TargetReport],
         if not source.logged_in(account) and source.requires_login:
             for planned in group:
                 log.error("{target}: not logged in; run flnd login", target=str(planned.target))
-                planned.row.fail()
                 reports[planned.number] = TargetReport(planned.target, (), 0,
                                                        error="not logged in; run flnd login")
             return
@@ -768,7 +776,7 @@ def _run_site(run_settings: Settings, reports: dict[int, TargetReport],
         with _written_back(run), _connected(run, account):
             for planned in group:
                 options = _repaired(run_settings.history, planned)
-                reports[planned.number] = job.download(run, planned.target, planned.row, options)
+                reports[planned.number] = job.download(run, planned.target, board, options)
 
 
 def _repaired(history: MutableMapping[str, Any], planned: _Planned) -> Options:
@@ -777,23 +785,20 @@ def _repaired(history: MutableMapping[str, Any], planned: _Planned) -> Options:
     if tally is None or net.stopping.is_set():
         return planned.options
     log.debug("{target}: repair", target=tally.target)
-    with log.under(planned.row):
-        repair.repair(history, tally)
+    repair.repair(history, tally)
     # A target with a lost or broken file lists to the end, so a file deeper than the saved-run
     # stop is reached and saved again; the others stop at saved posts.
     return replace(planned.options, stop_at_saved=planned.options.stop_at_saved and not tally.lost)
 
 
 def _fail_unreached(work: tuple[Source, list[_Planned]], error: BaseException | None,
-                    reports: dict[int, TargetReport]) -> None:
+                    reports: dict[int, TargetReport], board: job.Board) -> None:
     """Fail each target of a group that stopped before or between its targets."""
     source, group = work
     log.error("{source}: {error}", source=source.code, error=error)
     for planned in group:
-        # An ended row keeps its end; any other would end at ok when `log.group` closes.
-        if not planned.row.finished:
-            planned.row.caption = str(error)
-            planned.row.fail()
+        # An ended line keeps its end; any other would end at ok when `log.group` closes.
+        board.end(planned.target, failed=True)
         if planned.number not in reports:
             reports[planned.number] = TargetReport(planned.target, (), 0, error=str(error))
 

@@ -7,6 +7,7 @@ a CDN that blocks on events, and the run on a thread of its own). No network, no
 """
 
 import datetime
+import io
 import os
 import threading
 import time
@@ -20,7 +21,7 @@ import httpx
 from example_source import API, CDN, FIXTURES, Example
 from fakes import FakeSite, collect
 from test_commands import FlndCase
-from test_engine import EngineCase, compressing
+from test_engine import EngineCase, compressing, make_source
 
 from flnd import cli as flnd_cli
 from flnd import engine as engine_module
@@ -28,7 +29,8 @@ from flnd import Engine, job, site as site_module
 from flnd.common import files, net
 from flnd.session import Options, single_targets
 from flnd.source import FetchError, File, LoginError, Post, Source, Target, pages, target
-from shared import kv
+from shared import clock, kv, log, theme
+from shared._theme import Screen
 
 
 class JobCase(EngineCase):
@@ -208,9 +210,10 @@ class SavedTest(JobCase):
                 yield Post("1", [File(f"{CDN}/1.jpg")])
 
         self.assertEqual(self.run_engine(Twice, targets=["twc:example_user"]), 1)
-        # The second queueing is skipped quietly; the info level sums each category once.
-        self.assertIn("• twc:example_user: posts: 1 file already saved", self.lines())
-        self.assertFalse(any("skip" in line for line in self.lines()), self.lines())
+        # The second queueing is skipped quietly; the category's status line counts it.
+        self.assertTrue(any(line.startswith("✓ twc:example_user posts ") and "1 skipped" in line
+                            for line in self.lines()), self.lines())
+        self.assertFalse(any(line.startswith("↷") for line in self.lines()), self.lines())
 
     def test_a_file_in_two_categories_is_downloaded_once(self):
         class Both(Source):
@@ -627,9 +630,14 @@ class FailureTest(JobCase):
         self.assertEqual([target.value for target in report.failed], ["gone", "locked", "cut", "expired"])
         lines = self.lines()
         for line in ("✗ err:gone: HTTP 404 for https://example.com/gone", "✗ err:locked: err: run flnd login err",
-                     "✗ err:cut: HTTP 500 for https://example.com/cut", "✗ err:expired: err: the saved login expired",
-                     "✓ err:good", "✓ err:last"):
+                     "✗ err:cut: HTTP 500 for https://example.com/cut",
+                     "✗ err:expired: err: the saved login expired"):
             self.assertIn(line, lines)
+        # Each target that listed has its status line, and the good ones saved their file.
+        for start in ("✗ err:cut ", "✓ err:good ", "✓ err:last "):
+            self.assertTrue(any(line.startswith(start) for line in lines), start)
+        self.assertTrue(any(line.startswith("✓ err:good ") and "1 saved" in line
+                            for line in lines))
         self.assertEqual(self.files("err", "good"), ["good.jpg"])
 
 
@@ -761,12 +769,12 @@ class CtrlCTest(JobCase):
         super().setUp()
         for event in (net.stopping, net.stopping_now):
             self.addCleanup(event.clear)
-        self.rows = []
+        self.boards = []
         real = job.download
 
-        def spy(run, target, row, options):
-            self.rows.append(row)
-            return real(run, target, row, options)
+        def spy(run, target, board, options):
+            self.boards.append((board, target))
+            return real(run, target, board, options)
 
         patcher = mock.patch.object(job, "download", spy)
         patcher.start()
@@ -828,7 +836,8 @@ class CtrlCTest(JobCase):
         self.until(lambda: started.is_set() and len(listed) == 3)
         net.stopping.set()
         self.until(closed.is_set)
-        self.until(lambda: self.rows and self.rows[0].caption == "stopping: 1 file finishing (Ctrl-C again to stop now)")
+        finishing = "stopping: 1 file finishing (Ctrl-C again to stop now)"
+        self.until(lambda: self.boards and self.note(*self.boards[0]) == finishing)
         release.set()
         thread.join(10)
         report = outcome["report"]
@@ -838,7 +847,12 @@ class CtrlCTest(JobCase):
         # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
         self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
         self.assertEqual(listed, [1, 2, 3])
-        self.assertIn("✗ slw:example_user stopped", self.lines())
+        self.assertIn("✗ slw:example_user: stopped", self.lines())
+
+    def note(self, board, target):
+        """The note under the target's posts line, or None before it opens."""
+        row = board.row(target, "posts")
+        return None if row is None else row.status.note
 
     def test_the_second_ctrl_c_stops_now_and_keeps_the_part(self):
         sent, gate = threading.Event(), threading.Event()
@@ -1142,7 +1156,8 @@ class MemoryTest(JobCase):
 
     def test_a_second_undated_copy_counts_as_a_skip(self):
         self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")]), Post("A1", [File(f"{CDN}/a.jpg")])])
-        self.assertIn("• mem:example_user: posts: 1 file already saved", self.lines())
+        self.assertTrue(any(line.startswith("✓ mem:example_user posts ") and "1 skipped" in line
+                            for line in self.lines()), self.lines())
 
 
 class LinkTest(JobCase):
@@ -1202,6 +1217,86 @@ class LinkTest(JobCase):
         Engine(home=self.home, sources={"lnk": feed}).sync()
         link = folder / "reels" / "2026-01-02_V1.mp4"
         self.assertTrue(link.is_symlink() and link.exists())
+
+
+class BoardTest(unittest.TestCase):
+    """The run's status lines: one per target and category, ended once listed and done."""
+
+    def setUp(self):
+        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=200, tty=False,
+                             interactive=False)
+        self.enterContext(theme.scope(screen=self.screen, color="none", unicode=True))
+        self.enterContext(clock.use(clock.Fake()))
+        self.target = Target("aaa", "user", "example_user")
+
+    def lines(self):
+        return self.screen.dest.getvalue().splitlines()
+
+    def test_a_line_ends_once_listed_and_nothing_is_pending(self):
+        with log.group() as rows:
+            board = job.Board(rows, subject_width=18, label_width=6)
+            board.start(self.target, "posts", slots=4)
+            board.count(self.target, "posts", found=2, queued=2)
+            board.count(self.target, "posts", queued=-2, downloading=2)
+            board.listed(self.target, "posts")
+            board.count(self.target, "posts", downloading=-1, saved=1, bytes=2048)
+            self.assertEqual(self.lines(), [])
+            board.count(self.target, "posts", downloading=-1, failed=1)
+            self.assertEqual(self.lines(), [
+                "✓ aaa:example_user   posts     2 found    1 saved    0 linked    0 skipped"
+                "    1 failed 2.0 KB 0s"])
+            self.assertTrue(board.row(self.target, "posts").finished)
+
+    def test_totals_and_ending_a_target(self):
+        other = Target("aaa", "user", "example_creator")
+        with log.group() as rows:
+            board = job.Board(rows)
+            board.count(self.target, "posts", found=1, skipped=1)
+            board.count(self.target, "reels", found=3, skipped=2, linked=1)
+            board.count(other, "posts", found=5, skipped=5)
+            self.assertEqual((board.totals(self.target).found, board.totals(self.target).skipped),
+                             (4, 3))
+            board.end(self.target, failed=True)
+            self.assertEqual([line[:2] for line in self.lines()], ["✗ ", "✗ "])
+            self.assertFalse(board.row(other, "posts").finished)
+        self.assertEqual(len(self.lines()), 3)
+
+    def test_a_link_waiting_for_its_file_keeps_the_line_open(self):
+        with log.group() as rows:
+            board = job.Board(rows)
+            board.count(self.target, "reels", found=1, skipped=1, later=1)
+            board.listed(self.target, "reels")
+            self.assertFalse(board.row(self.target, "reels").finished)
+            board.count(self.target, "reels", later=-1, linked=1)
+            self.assertTrue(board.row(self.target, "reels").finished)
+        self.assertIn("1 linked", self.lines()[0])
+
+
+class VerboseTest(EngineCase):
+    """Without -v only the status lines; with it, every file's line and each skip as well."""
+
+    def setUp(self):
+        super().setUp()
+        previous = log.level
+        self.addCleanup(setattr, log, "level", previous)
+        self.source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg"),
+                                                File(f"{CDN}/b.jpg", name="b.jpg")])
+
+    def test_at_info_a_run_prints_its_status_lines_only(self):
+        self.run_engine(self.source, targets=["aaa:example_user"])
+        self.assertEqual(len(self.lines()), 1)
+        self.assertRegex(self.lines()[0], r"^✓ aaa:example_user posts +2 found +2 saved .* 0s$")
+
+    def test_under_v_each_file_and_skip_is_written_too(self):
+        log.level = "debug"
+        self.run_engine(self.source, targets=["aaa:example_user"])
+        self.assertIn("✓ " + "━" * 20 + " a.jpg 6.0 B", self.lines())
+        self.screen.dest.truncate(0)
+        self.screen.dest.seek(0)
+        self.run_engine(self.source, targets=["aaa:example_user"])
+        self.assertIn("↷ a.jpg", self.lines())
+        self.assertTrue(any(line.startswith("✓ aaa:example_user posts ") and "2 skipped" in line
+                            for line in self.lines()))
 
 
 if __name__ == "__main__":

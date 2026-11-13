@@ -50,7 +50,7 @@ in the folder you run it from.
 ```bash
 flnd download <targets...> [--from CATEGORIES] [--time SINCE,UNTIL]
               [--shrink [off]] [-v]
-flnd sync [targets...]
+flnd sync [targets...] [-v]
 flnd login
 flnd logout <sources...> | all
 ```
@@ -62,9 +62,12 @@ python -m flnd download <targets...>
 ```
 
 Files go to `.flnd/media/`, and the browser window is visible while a source runs.
-A file already saved, even under another name (a feed's dated post and a tab's undated photo of
-the same media), is not downloaded again; each category says how many it skipped, and `-v` lists
-each skipped file with the name that holds it.
+A run shows one live status line per target and category: how many files were found, are
+downloading or shrinking, and were saved, linked, skipped or failed, with the bytes saved and the
+time taken. A category that ends leaves its line as its summary; warnings and errors print in full
+above. `-v` also shows each file as it runs and ends, and each skip (with the name that holds it),
+link and shrink. A file already saved, even under another name (a feed's dated post and a tab's
+undated photo of the same media), is not downloaded again.
 flnd uses the `HTTPS_PROXY` and `ALL_PROXY` environment variables (httpx reads them).
 
 ### Target Format
@@ -182,7 +185,7 @@ flnd sync                                             # every target downloaded 
 flnd sync ins:example_user tik:example_creator        # only these
 ```
 
-`flnd sync` takes no options and changes nothing about how a target is downloaded: each target runs
+`flnd sync` takes only `-v` and changes nothing about how a target is downloaded: each target runs
 with its saved `--shrink`, and each source's default categories. To change a
 setting, run `flnd download` with it. Folders downloaded before flnd saved settings are synced
 without any. For each target:
