@@ -1,5 +1,7 @@
 # cli
 
+**2026-11-13:** `--classify` and `Media.labels` were removed by the user ([classify](classify.md)); what this file says of them no longer holds.
+
 Phase 6, step 3, with [session](session.md). flnd has five commands and 23 options, many of them pairs that only make sense together (`--compress-image` with `--format-image`) or that most runs never need. The user decided the shape below on 2026-11-12: four commands, and `download` with six options (`--classify` added later the same day).
 
 ## Commands

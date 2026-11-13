@@ -94,7 +94,7 @@ def opt(*flags: str, help: str | None = None, metavar: str | None = None, choice
         type: Callable[[str], Any] | None = None, stdin: bool = False, const: Any = None) -> Opt:
     """An option's spellings and settings. A long flag such as "--from" replaces the parameter's own name.
 
-        def download(*, classify: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None): ...
+        def show(*, color: Annotated[Optional[str], cli.opt(choices=("always", "never"), const="always")] = None): ...
 
     Args:
         flags: its spellings, such as "-f" and "--from"; none keeps `--<name>`.
@@ -104,9 +104,9 @@ def opt(*flags: str, help: str | None = None, metavar: str | None = None, choice
         type: turns the option's word into the value; None reads it from the annotation.
         stdin: whether the option reads a piped stdin when the command line gives nothing else.
         const: makes the value optional, and needs `choices`: the option takes the next word
-            only when that word is one of `choices` (`--classify off`), and otherwise gets
-            `const` and leaves the next word to what follows (`--classify ins:a` is the option
-            and then a positional). `--classify=off` always takes its word. None means a word
+            only when that word is one of `choices` (`--color never`), and otherwise gets
+            `const` and leaves the next word to what follows (`--color a.txt` is the option
+            and then a positional). `--color=never` always takes its word. None means a word
             is required.
 
     Raises:
@@ -325,11 +325,11 @@ class Param:
 def spell_consts(params: list[Param], tokens: list[str]) -> list[str]:
     """The command line with each optional-value option given alone written as `--flag=<const>`.
 
-        spell_consts(params, ["--classify", "ins:a"])      # ["--classify=on", "ins:a"]
-        spell_consts(params, ["--classify", "off", "ins:a"])  # unchanged
+        spell_consts(params, ["--color", "a.txt"])            # ["--color=always", "a.txt"]
+        spell_consts(params, ["--color", "never", "a.txt"])   # unchanged
 
-    argparse's `nargs="?"` takes whatever word follows, so `--classify ins:a` would read the
-    target as the option's value. Here the next word is the value only when it is one of the
+    argparse's `nargs="?"` takes whatever word follows, so `--color a.txt` would read the
+    positional as the option's value. Here the next word is the value only when it is one of the
     option's choices, spelled as the command line writes them; anything after `--` is left alone.
 
     Args:

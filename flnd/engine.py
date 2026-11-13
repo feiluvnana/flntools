@@ -37,9 +37,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from flnd import job, repair, settings
-from flnd.common import auth, compress, files, labels, net
+from flnd.common import auth, compress, files, net
 from flnd.common.compress import KINDS, Choice, Compressor
-from flnd.common.labels import Labeller
 from flnd.session import Options, Settings, single_targets, unknown_categories
 from flnd.site import LoginSite, SourceRun, TargetSite, source_run
 from flnd.source import LoginError, Range, Source, Target, TargetError
@@ -164,7 +163,7 @@ class Engine:
 
     def download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None,
                  time: Range | str = Range(), image: Choice | str | None = None, video: Choice | str | None = None,
-                 audio: Choice | str | None = None, classify: bool | str | None = None) -> Report:
+                 audio: Choice | str | None = None) -> Report:
         """Download each target, with its saved settings and the ones given on top, and say what was done.
 
             report = engine.download(["ins:example_user"], categories="reels,tagged", time="2026-01-01,",
@@ -180,16 +179,13 @@ class Engine:
                 or None to keep the target's saved setting.
             video: `--video`, as `image`.
             audio: `--audio`, as `image`.
-            classify: `--classify`: True (or "on") labels each photo and video and links it into
-                the target's `labels/<label>/`, the files already saved included; "off" (or
-                False) turns it off and deletes `labels/`; None keeps the saved setting.
 
         Returns:
             One `TargetReport` per target, in the order given, each with the saved settings it used.
 
         Raises:
             ValueError: an option's text can't be read, `--from` names no category of these
-                targets' sources or is given for a single post, `classify` is none of the above, or a target
+                targets' sources or is given for a single post, or a target
                 can't be read (`TargetError`); each message is what the CLI shows as a usage error.
                 Raised before any file is read or written, and before any request but a short link's.
             OSError: `targets.db` or the history can't be read or written.
@@ -200,15 +196,11 @@ class Engine:
         half one setting and half another; that is slow, and replaces originals with their
         smaller copies. It is saved only once that is done, so an apply cut short (Ctrl-C, a
         crash, a full disk) is finished by the next download with the same option. Targets
-        whose settings then differ run apart, one group after another. `classify` given on labels
-        the saved files that have no labels yet, even when it was on already, so files an earlier
-        run couldn't label (no model then) are labelled now; the first time in a process that may
-        ask to install ONNX Runtime and to download the model, in a terminal.
+        whose settings then differ run apart, one group after another.
         """
         # Read every option before anything starts, in the CLI's order, so the first bad one is the error.
         span = Range.parse(time) if isinstance(time, str) else time
         given = _given(image=image, video=video, audio=audio)
-        switch = _switch(classify)
         resolved = [target if isinstance(target, Target) else self.resolve([target])[0] for target in targets]
         names = self._categories(categories, resolved)
         options = Options(categories=names, since=span.since, until=span.until)
@@ -220,31 +212,17 @@ class Engine:
         for target in resolved:
             row = rows.get(settings.key(target), {})
             saved = settings.choices(row)
-            on = settings.classify(row) if switch is None else switch
             shown.append(settings.announce(target, {name: choice for name, choice in saved.items()
-                                                    if name not in given}, classify=on and switch is None))
-            chosen.append((target, replace(_with(options, {**saved, **given}), classify=on)))
+                                                    if name not in given}))
+            chosen.append((target, _with(options, {**saved, **given})))
             changes += [(target, name, choice) for name, choice in given.items()
                         if choice is not None and choice != saved.get(name)]
-        if switch is False:
-            # `labels/` holds second names of the files; a file whose only copy is there goes back
-            # first, so this loses none. The rows keep their labels.
-            views = [folder for folder in (files.target_folder(self.home, target) for target in resolved)
-                     if (folder / labels.VIEWS).exists()]
-            if views:
-                with self._history() as history:
-                    index = repair.index(history, views)
-                    for folder in views:
-                        labels.remove(folder, index[folder])
-        # The model's questions come now, before any work, as Chromium's does. A no keeps the saved
-        # setting (it is this run that goes without), so the next run asks again.
-        ready = _offer_labels(chosen)
-        changed = {target for target, _, _ in changes} | (set(resolved) if switch and ready else set())
+        changed = {target for target, _, _ in changes}
         settings.record(self.home, [(target, options) for target, options in chosen if target not in changed],
                         given=given)
         if changed:
-            self._apply(changes, dict(chosen), given, labelled=resolved if switch else (), ready=ready)
-        reports = self._fetch(_for_run(chosen, ready))
+            self._apply(changes, dict(chosen), given)
+        reports = self._fetch(chosen)
         return Report(tuple(replace(report, settings=text) for report, text in zip(reports, shown)))
 
     def sync(self, targets: Sequence[Target | str] = ()) -> Report:
@@ -267,9 +245,7 @@ class Engine:
         It changes no setting and takes each source's default categories. For each target, in
         order: leftover `.part` files are removed and files that are missing, empty or broken are
         forgotten (broken ones deleted, which can't be undone); then what is new or was lost is
-        downloaded with the target's saved settings; then, with `--classify` saved, its `labels/`
-        links are rebuilt from the history (missing ones made, ones whose file is gone removed;
-        files already saved aren't classified again); then one line per target and the totals are
+        downloaded with the target's saved settings; then one line per target and the totals are
         logged. The history is read once per sync (fixes #12). The fetch makes network requests
         and can take hours.
         """
@@ -277,30 +253,17 @@ class Engine:
         chosen = self._plan(resolved)
         # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
         settings.record(self.home, chosen)
-        shown = [settings.announce(target, {name: getattr(options, name) for name in settings.SAVED},
-                                   classify=options.classify)
+        shown = [settings.announce(target, {name: getattr(options, name) for name in settings.SAVED})
                  for target, options in chosen]
         tallies = [repair.Tally(str(target)) for target, _ in chosen]
         folders = [files.target_folder(self.home, target) for target, _ in chosen]
-        views = [folder for (_, options), folder in zip(chosen, folders) if options.classify]
-        ready = _offer_labels(chosen)
         with self._history() as history:
             index = repair.index(history, folders)
-            for folder in views:
-                # A file deleted by hand whose only copy is now its link in `labels/` goes back first,
-                # so repair doesn't count it lost and the fetch doesn't download it again.
-                labels.restore(folder, index[folder])
             for tally, folder in zip(tallies, folders):
                 repair.repair(history, folder, index[folder], tally)
         log.info("Storage: {path}", path=(self.home / "downloads").resolve())
-        reports = self._fetch(_for_run(chosen, ready), sync=True)
+        reports = self._fetch(chosen, sync=True)
         with self._history() as history:
-            # `labels/` is rebuilt, never trusted: links a deleted file left go, and missing ones
-            # come back. It needs no model, so it runs even when classifying is off for this run.
-            if views:
-                rows, labeller = repair.index(history, views), Labeller()
-                for folder in views:
-                    labels.rebuild(folder, rows[folder], labeller)
             for tally, folder in zip(tallies, folders):
                 repair.count(history, folder, tally)
         repair.summary(tallies)
@@ -429,8 +392,7 @@ class Engine:
             targets = [Target(code, row["kind"], value) for key, row in rows.items()
                        for code, value in [key.split(":", 1)] if code in self.sources]
             targets += list(self._unrecorded(targets))
-        return [(target, replace(_with(Options(), settings.choices(rows.get(settings.key(target), {}))),
-                                 classify=settings.classify(rows.get(settings.key(target), {}))))
+        return [(target, _with(Options(), settings.choices(rows.get(settings.key(target), {}))))
                 for target in targets]
 
     def _unrecorded(self, known: Sequence[Target]) -> Iterator[Target]:
@@ -446,28 +408,19 @@ class Engine:
                         log.warn("{folder}: not synced: {error}", folder=f"{code}/{folder.name}", error=error)
 
     def _apply(self, changes: Sequence[tuple[Target, str, Choice]], chosen: Mapping[Target, Options],
-               given: Iterable[str], *, labelled: Sequence[Target] = (), ready: bool = True) -> None:
+               given: Iterable[str]) -> None:
         """Bring each changed target's files already saved to its new settings, then save its settings.
 
         Args:
             changes: (target, `settings.SAVED` name, new choice) for each compress setting `download` changes.
             chosen: each target's options, saved settings and given ones together, as `record` takes them.
             given: the `SAVED` names given, for `record`.
-            labelled: the targets `--classify` was given for: their saved files without labels are
-                labelled, and their views rebuilt.
-            ready: whether `Media.labels` is ready (`_offer_labels`); without it, nothing is
-                labelled and the views are only rebuilt.
-
-        Compressing comes first, so the labels and links are of the files kept. A target with
-        `--classify` saved has its views rebuilt after a compress too: a file compressed into a
-        new format has a new name, and the old name's link would hold the original.
 
         Raises:
             OSError: the history or `targets.db` can't be written.
         """
-        folders = {target: files.target_folder(self.home, target)
-                   for target in [*(target for target, _, _ in changes), *labelled]}
-        compressor, labeller = Compressor(), Labeller()
+        folders = {target: files.target_folder(self.home, target) for target, _, _ in changes}
+        compressor = Compressor()
         with self._history() as history:
             index = repair.index(history, list(folders.values()))
             for target in folders:
@@ -475,13 +428,6 @@ class Engine:
                     if changed == target:
                         kind = next(kind for kind, spec in KINDS.items() if spec.option == name)
                         compress.apply(history, index[folders[target]], kind, choice, compressor, label=str(target))
-                if chosen[target].classify:
-                    # The rows again, as the compress above may have moved files and rewritten them.
-                    rows = [(key, history[key]) for key, _ in index[folders[target]] if key in history]
-                    if ready:
-                        labels.apply(history, rows, folders[target], labeller, label=str(target))
-                    else:
-                        labels.rebuild(folders[target], rows, labeller)
                 # Saved only now that every file has it: saved before, an apply cut short would never be
                 # finished, since the next download with the same option would see no change.
                 settings.record(self.home, [(target, chosen[target])], given=given)
@@ -583,19 +529,6 @@ def _given(**values: Choice | str | None) -> dict[str, Choice | None]:
             continue
         given[kind] = Choice.parse(value, kind=kind) if isinstance(value, str) else value
     return given
-
-
-def _switch(classify: bool | str | None) -> bool | None:
-    """`--classify` as given: True for on, False for off, None for not given.
-
-    Raises:
-        ValueError: anything else, with what it takes.
-    """
-    if classify is None or isinstance(classify, bool):
-        return classify
-    if classify in ("on", "off"):
-        return classify == "on"
-    raise ValueError(f"--classify takes on or off, not {classify!r}")
 
 
 def _with(options: Options, choices: Mapping[str, Choice | None]) -> Options:
@@ -779,33 +712,6 @@ def _names_browser(function: Any, source: type[Source]) -> bool:
                 if module == home or module.startswith("flnd.sources.common"):
                     follow(found)
     return False
-
-
-def _offer_labels(chosen: Sequence[tuple[Target, Options]]) -> bool:
-    """Ask, once and before any work, what `--classify` needs; whether the run can classify.
-
-    When a target runs with `--classify` (given, or saved), `media.prepare_labels` asks in a
-    terminal to install the extra and to download the model when either is missing, with the live
-    rows held, and loads the model. A no, no terminal or a failure warns once: the run then
-    downloads without classifying, and its targets keep their saved setting. The job's own
-    `Labeller` stops with a warning too, should the model fail later: a safety net only.
-    """
-    if not any(options.classify for _, options in chosen):
-        return True
-    from shared import media
-
-    try:
-        media.prepare_labels()
-    # The extra or the model missing and not got: the same for every file, so said once here.
-    except (ImportError, RuntimeError) as error:
-        log.warn("classify is off for this run: {error}", error=error)
-        return False
-    return True
-
-
-def _for_run(chosen: Sequence[tuple[Target, Options]], ready: bool) -> list[tuple[Target, Options]]:
-    """`chosen` as the fetch runs it: `--classify` off for every target when `Media.labels` isn't ready."""
-    return list(chosen) if ready else [(target, replace(options, classify=False)) for target, options in chosen]
 
 
 def _offer_browser() -> None:

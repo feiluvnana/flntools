@@ -6,7 +6,7 @@ flnd.Choice.parse(text: str, *, kind: str) -> Choice | None
 flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
 flnd.Engine.LoginError(flnd.source.Error)
 flnd.Engine.cookie_logins: property -> tuple[str, ...]
-flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), image: Choice | str | None = None, video: Choice | str | None = None, audio: Choice | str | None = None, classify: bool | str | None = None) -> Report
+flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), image: Choice | str | None = None, video: Choice | str | None = None, audio: Choice | str | None = None) -> Report
 flnd.Engine.home: attribute
 flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
 flnd.Engine.logins: property -> dict[str, str]
@@ -332,7 +332,6 @@ shared.media.Info.tags: field -> dict[str, str]
 shared.media.Info.video: field -> str | None
 shared.media.Info.width: field -> int | None
 shared.media.KindError(shared.media.Error, ValueError)
-shared.media.LABELS: tuple
 shared.media.Media()
 shared.media.Media.audio(*, bitrate: int | None = None, format: str | None = None) -> Media
 shared.media.Media.check() -> Media
@@ -349,7 +348,6 @@ shared.media.Media.frames(*, dest: PathLike, every: float | None = None, at: Seq
 shared.media.Media.height: property -> int | None
 shared.media.Media.info: property -> Info
 shared.media.Media.kind: property -> str
-shared.media.Media.labels(*, top: int = 3, threshold: float = 0.25, choices: Sequence[str] = ('selfie', 'portrait', 'group', 'food', 'pet', 'animal', 'nature', 'city', 'travel', 'screenshot', 'document', 'meme', 'art', 'fashion', 'sport', 'car', 'nsfw')) -> list[tuple[str, float]]
 shared.media.Media.location: property -> tuple[float, float] | None
 shared.media.Media.merge(*others: Media | PathLike, audio: Media | PathLike | None = None, format: str | None = None, fps: float | None = None, duration: float | None = None, progress: Progress | None = None) -> Media
 shared.media.Media.resize(*, width: int | None = None, height: int | None = None) -> Media
@@ -361,7 +359,6 @@ shared.media.Media.width: property -> int | None
 shared.media.UnsafeError(shared.media.Error, shared.UnsafeError)
 shared.media.kind(name: str) -> str | None
 shared.media.open(path: PathLike) -> Media
-shared.media.prepare_labels() -> None
 shared.media.sniff(path: PathLike) -> str | None
 shared.prompt: module
 shared.prompt.Error(shared.Error)

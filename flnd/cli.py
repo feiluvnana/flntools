@@ -4,7 +4,6 @@ Usage:
   flnd download ins:example_user https://x.com/example_handle --from reels,media --time 2026-01-01,
   cat list.txt | flnd download
   flnd download ins:example_user --video h265,low --image webp,mid
-  flnd download ins:example_user --classify
   flnd sync
   flnd login
   flnd logout ins tik
@@ -63,7 +62,6 @@ Examples:
   flnd download fbk:example.page --from profile,stories
   flnd download https://x.com/example_handle/status/1790000000000000000
   flnd download ins:example_user --image webp,mid --video h265,low
-  flnd download ins:example_user --classify
   flnd download twt:example_handle --time 2026-01-01,2026-06-30
   cat list.txt | flnd download
   flnd sync
@@ -77,8 +75,6 @@ app = cli.App("flnd", version=__version__, description=describe(), epilog=epilog
 # off. Passed to the engine as text, which `Choice.parse` reads, so "off" can be told from "not
 # given" and an error can name what each part takes.
 MediaChoice = Annotated[Optional[str], cli.opt(metavar="FORMAT,LEVEL")]
-# --classify alone is on, and --classify off turns it off: the value is optional, and passed on as text.
-OnOff = Annotated[Optional[str], cli.opt(metavar="off", choices=("on", "off"), const="on")]
 
 
 @app.command
@@ -90,13 +86,11 @@ def download(
     image: MediaChoice = None,
     video: MediaChoice = None,
     audio: MediaChoice = None,
-    classify: OnOff = None,
 ) -> int:
     """Download each target.
 
-    --image, --video, --audio and --classify are saved for each target and used by every later
-    download and sync of it; giving one again changes it, for the files already saved too, and off
-    turns it off.
+    --image, --video and --audio are saved for each target and used by every later download and
+    sync of it; giving one again changes it, for the files already saved too, and off turns it off.
 
     Args:
         targets: source:value pairs or URLs; read one per line from stdin when none are given.
@@ -109,16 +103,13 @@ def download(
         video: compress each video the same way: a container (mp4, mkv, webm, …), a codec (h264,
             h265, vp9) or container:codec, and a level. h265 is smaller, but many browsers can't play it.
         audio: compress each audio file the same way: mp3, m4a, aac, opus, ogg or flac, and a level.
-        classify: group each photo and video by what it shows (food, pet, selfie, …) as links in
-            labels/<label>/, never renaming a file; off removes labels/. The model (about 150 MB)
-            is downloaded on first use, after asking.
     """
     try:
         # Every value is checked before anything starts, so a usage error never follows any work.
         # Only ValueError is a usage error: the engine raises it for a bad option or target, with the
         # text to show. Anything else is a bug or a failed run, and propagates to report it.
         report = Engine(home=HOME).download(targets, categories=categories, time=Range() if time is None else time,
-                                            image=image, video=video, audio=audio, classify=classify)
+                                            image=image, video=video, audio=audio)
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
     log.ok("Complete. {files}", files=fmt.count(report.files, "file"))
@@ -131,9 +122,8 @@ def download(
 def sync(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)]) -> int:
     """Bring downloaded targets up to date: repair broken or missing files, fetch new posts, and sum up.
 
-    Each target runs with its saved --image, --video, --audio and --classify and each source's
-    default categories; sync changes no setting. To change one, run flnd download with it. With
-    --classify, the labels/ links are rebuilt: missing ones made, ones whose file is gone removed.
+    Each target runs with its saved --image, --video and --audio and each source's default
+    categories; sync changes no setting. To change one, run flnd download with it.
 
     Args:
         targets: only these targets, as in flnd download; every one downloaded so far without them.

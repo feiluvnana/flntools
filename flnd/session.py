@@ -1,4 +1,4 @@
-"""The options of one run, and the settings every source shares: what `--from`, `--time`, compression and `--classify` ask.
+"""The options of one run, and the settings every source shares: what `--from`, `--time` and compression ask.
 
 `Options` is what a run downloads and how it compresses it; `Settings` is what the run shares across
 its sources (flnd's folder, the options, the history and the compressor). The engine reads both, the
@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
 from flnd.common.compress import Choice, Compressor
-from flnd.common.labels import Labeller
 from flnd.source import Source, Target
 
 # `--from all` takes every category of every source.
@@ -37,8 +36,6 @@ class Options:
     image: Choice | None = None
     video: Choice | None = None
     audio: Choice | None = None
-    # `--classify`: label each new photo and video, and link it into `labels/<label>/`.
-    classify: bool = False
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
@@ -102,5 +99,3 @@ class Settings:
     interactive: bool = False
     # One for the whole run, so videos encode one at a time across sources and each error warns once.
     compressor: Compressor = field(default_factory=Compressor)
-    # One for the whole run too, so a missing model or a disk without links warns once.
-    labeller: Labeller = field(default_factory=Labeller)

@@ -1,5 +1,7 @@
 # classify
 
+**Removed 2026-11-13** (user): `--classify`, `Media.labels`, `media.prepare_labels`, `media.LABELS`, `shared/_classify.py`, `flnd/common/labels.py` and the `classify` extra are gone. This file is kept as the record of what was built in `9a3f720`.
+
 Phase 6, step 7, after [scripts](scripts.md) and [dates](dates.md). The user asked on 2026-11-12 for a classifier: `media.classify(path)` tells what kind of photo or video a file is, using a small but accurate model, and flnd groups the files by category in link folders, without renaming them.
 
 ```python

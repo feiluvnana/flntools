@@ -1,15 +1,15 @@
-"""Each target's saved settings in `.flnd/targets.db`: `--image`, `--video`, `--audio` and `--classify`, and its complete categories.
+"""Each target's saved settings in `.flnd/targets.db`: `--image`, `--video` and `--audio`, and its complete categories.
 
 A row is keyed `<code>:<value>` and holds the target's kind (so `flnd sync` can rebuild it without
 resolving it again), each saved compress setting as the command line writes it ("webp,mid") or
-null when it is off, `classify` as true or false, the time it was recorded, and `complete`: each category whose listing last reached its end
-by itself, with the day it did (plan/phase-6/redesign.md, A9 rule 3; `sync` stops at saved posts
+null when it is off, the time it was recorded, and `complete`: each category whose listing last
+reached its end by itself, with the day it did (plan/phase-6/redesign.md, A9 rule 3; `sync` stops at saved posts
 only with that record). `--from` and `--time` describe one run, so they are never
 saved. `Engine.download` and `Engine.sync` decide what to save; this module only reads and writes.
 
     saved = settings.choices(settings.rows(home).get(settings.key(target), {}))
-    settings.record(home, [(target, Options(image=Choice("webp", "mid"), classify=True))], given={"image"})
-    shown = settings.announce(target, saved, classify=True)   # "--image webp,mid --classify (saved)"
+    settings.record(home, [(target, Options(image=Choice("webp", "mid")))], given={"image"})
+    shown = settings.announce(target, saved)    # "--image webp,mid (saved)"
 
 A Phase 5 row (`compress_image: "balanced"`, `format_image: "webp"`) is read as today's
 `image: "webp,mid"`, and its `categories`, `unpack`, `zip`, `since` and `until` are dropped when
@@ -31,8 +31,6 @@ from shared import kv, log
 TARGETS_FILE, TARGETS_TABLE = "targets.db", "targets"
 # What is saved per target: --image, --video and --audio, each an `Options` field and a `targets.db` field.
 SAVED = tuple(kind.option for kind in KINDS.values())
-# --classify, saved beside them as true or false: the `Options` field and the `targets.db` field.
-CLASSIFY = "classify"
 # The row field of the categories that last listed to their end: {category: "YYYY-MM-DD"}.
 COMPLETE = "complete"
 
@@ -77,16 +75,8 @@ def choices(row: Mapping[str, Any]) -> dict[str, Choice | None]:
     return found
 
 
-def classify(row: Mapping[str, Any]) -> bool:
-    """Whether a `targets.db` row has `--classify` on; False for a row without it, as every one before it was.
-
-        settings.classify({"image": "webp,mid", "classify": True})     # True
-    """
-    return row.get(CLASSIFY) is True
-
-
 def record(home: Path, chosen: Sequence[tuple[Target, Options]], *, given: Iterable[str] = ()) -> None:
-    """Save each target's `--image`, `--video`, `--audio` and `--classify` in `targets.db`, replacing its row in today's form.
+    """Save each target's `--image`, `--video` and `--audio` in `targets.db`, replacing its row in today's form.
 
         settings.record(Path(".flnd"), [(target, Options(image=Choice("webp", "mid")))])
 
@@ -119,7 +109,6 @@ def record(home: Path, chosen: Sequence[tuple[Target, Options]], *, given: Itera
                     values[name] = old[name]
                 else:
                     values[name] = choice and str(choice)
-            values[CLASSIFY] = options.classify
             complete = old.get(COMPLETE)
             saved[key(target)] = {"kind": target.kind, **values, "at": now,
                                   **({COMPLETE: complete} if isinstance(complete, dict) and complete else {})}
@@ -150,7 +139,7 @@ def complete(home: Path, target: Target, categories: Iterable[str]) -> None:
         saved[key(target)] = row
 
 
-def announce(target: Target, saved: Mapping[str, Choice | None], *, classify: bool = False) -> str:
+def announce(target: Target, saved: Mapping[str, Choice | None]) -> str:
     """Say which saved settings a run of this target uses, so they never apply by surprise, and return what was said.
 
         settings.announce(target, {"image": Choice("webp", "mid")})   # logs and returns "--image webp,mid (saved)"
@@ -158,13 +147,11 @@ def announce(target: Target, saved: Mapping[str, Choice | None], *, classify: bo
     Args:
         target: the target, named at the start of the line.
         saved: the saved compress settings this run uses, by `SAVED` name; None ones are left out.
-        classify: whether the run uses a saved `--classify`, shown last.
 
     Returns:
         The settings as the line shows them, "" (and nothing logged) when none is used.
     """
-    used = " ".join([*(f"--{name} {choice}" for name, choice in saved.items() if choice is not None),
-                     *(["--classify"] if classify else [])])
+    used = " ".join(f"--{name} {choice}" for name, choice in saved.items() if choice is not None)
     if not used:
         return ""
     log.info("{target}: {options} (saved)", target=str(target), options=used)

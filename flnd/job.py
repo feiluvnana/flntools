@@ -9,7 +9,7 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
             files = post.files() if lazy, unless its first key is saved
             for num, file: name from the formats; skip if saved or queued   ← `place`
             queue the download ─► net.download                      ← `Job._download`
-            postprocess: compress → classify → mtime                ← flnd/post.py
+            postprocess: compress → mtime                           ← flnd/post.py
             history row written last
 
 - **Categories.** The route is called once, and only when at least one of its categories is
@@ -573,8 +573,7 @@ class Job:
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
         fields = postprocess.Fields(day=day(placed.post.date), kind=kind, choice=choice_of(self.settings.options, kind),
                                     compressor=self.settings.compressor, last_modified=received.get("last-modified"),
-                                    row=row, values=placed.values, folder=self.folder,
-                                    labeller=self.settings.labeller if self.settings.options.classify else None)
+                                    row=row, values=placed.values)
         if fields.choice is not None and kind is not None and KINDS[kind].one_at_a_time:
             # A video waits for the run's one encode at a time on a pool of its own, so downloads go on.
             # It counts as written now, as its download is done; its encode only moves it.

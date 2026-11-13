@@ -89,12 +89,12 @@ def load_dev() -> types.ModuleType:
     return module
 
 
-def runtime_distributions(name: str, extras: tuple[str, ...] = ()) -> dict[str, metadata.Distribution]:
-    """Every installed distribution `name` with `extras` needs at run time on this machine, by normalized name."""
+def runtime_distributions(name: str) -> dict[str, metadata.Distribution]:
+    """Every installed distribution `name` needs at run time on this machine, by normalized name."""
     from packaging.requirements import Requirement
 
     found: dict[str, metadata.Distribution] = {}
-    queue = [(name, extras)]
+    queue = [(name, ())]
     while queue:
         current, extras = queue.pop()
         key = re.sub(r"[-_.]+", "-", current).lower()
@@ -148,8 +148,7 @@ class LicensesTest(unittest.TestCase):
 
     def test_every_bundled_package_has_its_licence(self):
         try:
-            # The bundle carries the `classify` extra, as it can't install it into itself.
-            needed = runtime_distributions("flntools", ("classify",))
+            needed = runtime_distributions("flntools")
         except (ImportError, metadata.PackageNotFoundError):
             self.skipTest("flntools isn't installed with packaging, so its dependencies can't be listed")
         missing = [f"{key} (its licence is in its .dist-info folder)"

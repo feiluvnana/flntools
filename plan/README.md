@@ -40,7 +40,7 @@ from shared import archive, crypto, cookies, kv, selector, browser, worker, bund
 | `browser` | [phase-4](phase-4/browser.md) | `_browser.py` | Playwright | `browser` |
 | `worker` | [phase-4](phase-4/worker.md) | `_worker.py` | `concurrent.futures`, `asyncio` | — |
 | `bundler` | [phase-4](phase-4/packaging.md#bundler) | `_bundler.py` | PyInstaller | `bundler` |
-| `media` | [phase-5](phase-5/media.md), [ffmpeg](phase-5/ffmpeg.md), [classify](phase-6/classify.md) | `_media.py`, `_ffmpeg.py`, `_pillow.py`, `_media_image.py`, `_media_video.py`, `_media_audio.py`; `_classify.py` from Phase 6 | Pillow, pi-heif, the ffmpeg program (imageio-ffmpeg); ONNX Runtime for `classify` | `media`; `classify` |
+| `media` | [phase-5](phase-5/media.md), [ffmpeg](phase-5/ffmpeg.md) | `_media.py`, `_ffmpeg.py`, `_pillow.py`, `_media_image.py`, `_media_video.py`, `_media_audio.py` | Pillow, pi-heif, the ffmpeg program (imageio-ffmpeg) | `media` |
 
 Removed in Phase 4 (`http` came back in Phase 6, as a module of its own):
 - **`path`:** `pathlib` covers it, and `safename` became `fmt.filename`.
@@ -103,7 +103,7 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 8. [downloads](phase-6/redesign.md#b6-what-flnd-takes-from-download-managers-idm) that resume, split, keep 6 connections per host and refresh expired links.
 9. [ins](phase-6/ins.md) and [flows](phase-6/flows.md): API first for every source, with what gallery-dl does.
 10. [gallery-dl's other lessons](phase-6/redesign.md#b5-what-flnd-takes-from-gallery-dl): `sync` stopping at saved posts, cookie write-back, a `try` dev task.
-11. [classify](phase-6/classify.md): `--classify`, on `Media.labels`.
+11. ~~[classify](phase-6/classify.md): `--classify`, on `Media.labels`.~~ Removed 2026-11-13.
 12. [ui](phase-6/ui.md): download rows that no longer blink, a prompt cursor where the text goes, and log lines in their level's color.
 13. [comments](phase-6/comments.md): a docstring for every module, class and function, *why* comments at every non-obvious rule, and the redesign's docs.
 
@@ -183,7 +183,6 @@ selector = ["parsel>=1.9.0", "python-jsonpath"]
 http = ["httpx>=0.27.0", "parsel>=1.9.0", "python-jsonpath"]     # httpx for `fetch`; selector's packages for Response.html
 browser = ["playwright==1.65.*", "cryptography>=42"]             # a minor pin: each release downloads a new browser
 media = ["pillow>=11.3", "pi-heif>=1.0", "imageio-ffmpeg>=0.6"]   # Pillow and HEIC for photos; the ffmpeg binary
-classify = ["onnxruntime>=1.20", "numpy>=2"]                     # Media.labels; offered for install the first time it is needed
 
 [dependency-groups]
 dev = ["pyright[nodejs]==1.1.414", "typing_extensions>=4.12", "packaging"]
@@ -193,7 +192,7 @@ dist = ["pyinstaller>=6"]                                        # only the `dis
 default-groups = ["dev"]
 ```
 
-flnd's own dependencies are `httpx`, `playwright==1.65.*`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pillow`, `pi-heif` and `imageio-ffmpeg`, because flnd always needs them (`qrcode` draws tlg's QR login, and `imageio-ffmpeg` brings ffmpeg). `pyzipper` and `py7zr` are not among them, since flnd saves archives as the site sends them; they stay in the `archive` extra for `shared` alone. The `classify` extra (ONNX Runtime and NumPy) is optional, and the first use of `--classify` offers to install it ([step 11](phase-6/classify.md)). The dev group adds `pyright[nodejs]` (with its own Node.js), `typing_extensions` and `packaging` (for the licence test). `uv.lock` pins every version.
+flnd's own dependencies are `httpx`, `playwright==1.65.*`, `parsel`, `python-jsonpath`, `cryptography`, `telethon`, `qrcode`, `pillow`, `pi-heif` and `imageio-ffmpeg`, because flnd always needs them (`qrcode` draws tlg's QR login, and `imageio-ffmpeg` brings ffmpeg). `pyzipper` and `py7zr` are not among them, since flnd saves archives as the site sends them; they stay in the `archive` extra for `shared` alone. The dev group adds `pyright[nodejs]` (with its own Node.js), `typing_extensions` and `packaging` (for the licence test). `uv.lock` pins every version.
 
 ## Makefile
 

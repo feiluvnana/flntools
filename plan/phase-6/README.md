@@ -25,7 +25,7 @@ Phase 6 makes flntools quicker to set up, the same on every OS, smaller to read,
 | adopt gallery-dl's architecture | [architecture](architecture.md): a source yields `Post`, `File` and `Queue` items with metadata; one job filters, names files from format strings, checks the history, downloads, and runs the postprocessors (compress, classify, mtime) |
 | optimize the flows from what gallery-dl has learned | [flows](flows.md): TikTok's best non-watermarked file, TikTok's list APIs direct first, X's 50-per-page timelines with its full feature flags, Instagram's `product_type` grid rule and headers, browser-like header order for every direct call, and `/accounts/suspended/` as a hard stop |
 | simplify everywhere, and no download limit | [simplify](simplify.md): no limit; one item type; one back-off and one learned speed; no history migrations; one retry layer and one atomic writer; fewer modules. **It wins where another file disagrees**, and holds the final numbers |
-| a classifier for photos and videos | [classify](classify.md): `media.classify(path)`, a small CLIP-style model on ONNX Runtime, downloaded on first use; `--classify` groups files in `labels/<label>/` hard-link folders, never renaming them |
+| ~~a classifier for photos and videos~~ (removed 2026-11-13) | [classify](classify.md): `media.classify(path)`, a small CLIP-style model on ONNX Runtime, downloaded on first use; `--classify` groups files in `labels/<label>/` hard-link folders, never renaming them |
 | the code needs more comments | [comments](comments.md): a docstring standard for every module, class and function, and more *why* comments at every rule a reader has to work out |
 
 The audit also found 15 bugs, and the gallery-dl comparison a 16th, among them corrupted downloads on Windows, failed targets shown as ok with exit status 0, and Twitter's login sent to its CDNs. They are in [fixes](fixes.md).
@@ -43,7 +43,7 @@ Each step ends with `check` green and is committed on its own. The [redesign](re
 8. [redesign › downloads](redesign.md#b6-what-flnd-takes-from-download-managers-idm): `http.download` with resume and split downloads, 6 connections per host, expired links refreshed, graceful Ctrl-C.
 9. [ins](ins.md) and [flows](flows.md): tagged and reposts through the API, then API first for ins, fbk, tik and twt, with what gallery-dl does, and live runs of the test accounts. Built on the redesign's `site.fetch(…, in_page=True)` and `pages()`.
 10. [redesign › the rest of gallery-dl's lessons](redesign.md#b5-what-flnd-takes-from-gallery-dl): `sync` stopping at saved posts, cookie write-back, `scripts/dev.py try`.
-11. [classify](classify.md): `--classify`, with the classifier as `Media.labels` ([redesign](redesign.md#media-a-fluent-media-object)) rather than `media.classify`.
+11. ~~[classify](classify.md): `--classify`, with the classifier as `Media.labels`.~~ Built (`9a3f720`), then **removed 2026-11-13** by the user: no `--classify`, no `Media.labels`, no `classify` extra.
 12. [ui](ui.md): the live area (no blinking, and cheap: only changed rows drawn, by one thread, only when something changed), the prompt cursor, and whole-line log colors.
 13. [comments](comments.md) and the redesign's docs: every file brought to the docstring and comment standard; `flnd/source.py`'s "writing a source"; plan/README.md's Naming section replaced by the [conventions](redesign.md#2-api-conventions).
 
@@ -73,4 +73,5 @@ The redesign's own decisions, some still open, are in [redesign › Decisions](r
 6. ~~Is `classify` required or an extra?~~ **Decided 2026-11-12: an extra**, which `media.classify` offers to install the first time it's used, as Chrome's Chromium and the model are ([classify](classify.md#flnd)).
 
 Still to check while building, not decisions: the live checks in [ins](ins.md#live-checks) and [source](source.md#tests).
+8. ~~Keep `--classify` and `Media.labels`?~~ **Decided 2026-11-13: no.** Both are removed, with `shared/_classify.py`, `flnd/common/labels.py`, the `classify` extra and its licences; `cli.opt(const=)` stays in `shared`.
 7. ~~Keep encrypting secrets?~~ **Decided 2026-11-12: keep it.** `vault` stays, merged with `login` into `flnd/auth.py` ([simplify](simplify.md#decision)).

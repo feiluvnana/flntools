@@ -258,28 +258,6 @@ class MediaOptionsTest(RunsCase):
         self.run_app("download", "ins:example_user")
         self.assertEqual(self.runs[4][2], Options())
 
-    @mock.patch("shared.media.prepare_labels")
-    @mock.patch("flnd.common.labels.apply", return_value=0)
-    def test_classify_alone_is_on_and_off_turns_it_off(self, apply, prepare):
-        # `--classify` takes an optional word: on or off, else it is on and the next word a target.
-        code, _, out = self.run_app("download", "ins:example_user", "--classify")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[0][2], Options(classify=True))
-        self.run_app("download", "ins:example_user")
-        self.assertEqual(self.runs[1][2], Options(classify=True))
-        self.assertIn("• ins:example_user: --classify (saved)", self.run_app("download", "ins:example_user")[2])
-        self.run_app("download", "ins:example_user", "--classify", "off")
-        self.assertEqual(self.runs[3][2], Options())
-        # Before the target too: `--classify` takes the next word only when it is on or off.
-        self.run_app("download", "--classify", "ins:example_user")
-        self.assertEqual(self.runs[4][2], Options(classify=True))
-        self.run_app("download", "--classify", "off", "ins:example_user")
-        self.assertEqual(self.runs[5][2], Options())
-        code, _, out = self.run_app("download", "ins:example_user", "--classify=maybe")
-        self.assertEqual(code, 2)
-        self.assertIn("invalid choice: 'maybe'", out)
-        self.assertIn("  --classify [off]  ", self.run_app("download", "--help")[1])
-
     def test_from_and_time_are_not_saved(self):
         self.run_app("download", "ins:example_user", "--from", "reels", "--time", "2026-01-01,")
         self.run_app("download", "ins:example_user")

@@ -211,22 +211,23 @@ class ParameterTest(CliCase):
         self.assertEqual(self.run_app(app, "--categories", "a")[0], 2)
 
     def test_an_optional_value_takes_const_when_given_alone(self):
-        # flnd's `--classify` and `--classify off`.
+        # `--color` alone is `always`; `--color never` turns it off.
         def fn(targets: Annotated[list[str], cli.arg(nargs="+")], *,
-               classify: Annotated[Optional[str], cli.opt(metavar="off", choices=("on", "off"), const="on")] = None): ...
+               color: Annotated[Optional[str], cli.opt(metavar="never", choices=("always", "never"),
+                                                        const="always")] = None): ...
         # The next word is the option's only when it is one of its choices; otherwise a positional.
-        for tokens, classify in ((("--classify", "ins:x"), "on"), (("ins:x", "--classify"), "on"),
-                                 (("--classify", "off", "ins:x"), "off"), (("ins:x", "--classify", "off"), "off"),
-                                 (("--classify", "on", "ins:x"), "on"), (("--classify=off", "ins:x"), "off")):
+        for tokens, color in ((("--color", "a.txt"), "always"), (("a.txt", "--color"), "always"),
+                              (("--color", "never", "a.txt"), "never"), (("a.txt", "--color", "never"), "never"),
+                              (("--color", "always", "a.txt"), "always"), (("--color=never", "a.txt"), "never")):
             with self.subTest(tokens=tokens):
-                self.assertEqual(self.parsed(fn, *tokens), {"targets": ["ins:x"], "classify": classify})
-        self.assertEqual(self.parsed(fn, "--classify", "a", "b"), {"targets": ["a", "b"], "classify": "on"})
-        self.assertIsNone(self.parsed(fn, "a")["classify"])
+                self.assertEqual(self.parsed(fn, *tokens), {"targets": ["a.txt"], "color": color})
+        self.assertEqual(self.parsed(fn, "--color", "a", "b"), {"targets": ["a", "b"], "color": "always"})
+        self.assertIsNone(self.parsed(fn, "a")["color"])
         with self.assertRaisesRegex(TypeError, "const= needs choices="):
-            cli.opt(const="on")
+            cli.opt(const="always")
         app = single(fn)
-        self.assertIn("  --classify [off]", app.help())
-        self.assertIn("invalid choice: 'maybe'", self.run_app(app, "a", "--classify=maybe")[2])
+        self.assertIn("  --color [never]", app.help())
+        self.assertIn("invalid choice: 'maybe'", self.run_app(app, "a", "--color=maybe")[2])
 
     def test_custom_type(self):
         def even(text):

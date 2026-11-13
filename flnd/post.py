@@ -9,10 +9,7 @@ flnd's options decide what each one does.
 1. `compress`: `--image`, `--video` and `--audio`, through `Compressor` (flnd/common/compress.py),
    whose rules are unchanged: replaced only when smaller, videos one at a time across the run,
    and a machine that can't compress a kind stops trying it.
-2. `classify`: `--classify`, through the run's `Labeller` (flnd/common/labels.py): the file's labels
-   go in its history row, and it is linked into `labels/<label>/` beside its own folder. It never
-   renames or moves a file, and reads it after compressing, so it labels what is kept.
-3. `mtime`: the file's modified time becomes its post's day at noon UTC, so sorting by date in
+2. `mtime`: the file's modified time becomes its post's day at noon UTC, so sorting by date in
    any file manager sorts by when it was posted (plan/phase-6/dates.md).
 
     for step in post.ORDER:
@@ -33,9 +30,8 @@ from shared import log
 
 if TYPE_CHECKING:
     from flnd.common.compress import Choice, Compressor
-    from flnd.common.labels import Labeller
 
-__all__ = ["ORDER", "Fields", "Postprocessor", "classify", "compress", "mtime"]
+__all__ = ["ORDER", "Fields", "Postprocessor", "compress", "mtime"]
 
 # The hour of the day a dated file's modified time is set to, in UTC: noon, so the day reads the
 # same in every time zone from UTC-11 to UTC+11.
@@ -63,10 +59,6 @@ class Fields:
     row: dict[str, Any] = field(default_factory=dict)
     # The file's format fields (`id`, `date`, `category`, `num`, … and the post's own).
     values: Mapping[str, Any] = field(default_factory=dict)
-    # The run's one `Labeller` when `--classify` is on; None classifies nothing.
-    labeller: Labeller | None = None
-    # The target's folder, which holds `labels/`; None classifies nothing.
-    folder: Path | None = None
 
 
 # One step: `(path, fields) -> path`, the path the file has once the step is done.
@@ -99,34 +91,6 @@ def compress(path: Path, fields: Fields) -> Path:
     return Path(found.get("path", path))
 
 
-def classify(path: Path, fields: Fields) -> Path:
-    """Label a photo or video for `--classify`, record its labels, and link it into `labels/<label>/`.
-
-        classify(Path("posts/a.jpg"), fields)       # row["labels"] = ["food"]; labels/food/a.jpg
-
-    Args:
-        path: the file, after compressing; it is never moved or renamed.
-        fields: its kind, the run's `labeller` and the target's `folder`; the label names go in
-            `row` as `labels`.
-
-    Returns:
-        `path`, unchanged.
-
-    The first file of a process loads the model, which may ask to download it, then each photo
-    takes about 20 ms on the caller's thread. A file that can't be labelled, or a run whose
-    classifying stopped (no extra, no model), keeps no `labels` field, so a later
-    `download --classify` labels it.
-    """
-    if fields.labeller is None or fields.folder is None or fields.kind not in ("image", "video"):
-        return path
-    names = fields.labeller.labels(path)
-    if names is None:
-        return path
-    fields.row["labels"] = names
-    fields.labeller.link(path, fields.folder, names)
-    return path
-
-
 def mtime(path: Path, fields: Fields) -> Path:
     """Set the file's modified time to its post's day, else to the server's `Last-Modified`, at noon UTC.
 
@@ -155,9 +119,9 @@ def mtime(path: Path, fields: Fields) -> Path:
     return path
 
 
-# The postprocessors, in the order every file goes through them: `classify` reads what `compress`
-# kept, and `mtime` comes last, so a hard link (the same file) gets the post's date too.
-ORDER: tuple[Postprocessor, ...] = (compress, classify, mtime)
+# The postprocessors, in the order every file goes through them: `mtime` comes last, so the file
+# `compress` kept gets the post's date.
+ORDER: tuple[Postprocessor, ...] = (compress, mtime)
 
 
 def _served_day(value: str | None) -> datetime.date | None:

@@ -1,5 +1,7 @@
 # redesign
 
+**2026-11-13:** `--classify` and `Media.labels` were removed by the user ([classify](classify.md)); what this file says of them no longer holds.
+
 Phase 6, steps 4–8, 10 and 13 ([order](README.md#order)). This was the Phase 7 proposal, written 2026-11-12. The user merged it into Phase 6 that day, so there is no Phase 7. **This file wins over every other Phase 6 file, [simplify](simplify.md) included.** The other files still hold what this one doesn't change: pace, the cli, ins and flows, classify, ui and comments. The choices still open are in [Decisions](#decisions), each with a recommendation; ask the user before building a step that needs one.
 
 The redesign makes flntools pleasant to write against, at all three of its layers:
