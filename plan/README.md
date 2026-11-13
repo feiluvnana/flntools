@@ -119,7 +119,7 @@ Each phase ends with flnd working and `make check` green. Each plan file is self
 7. [shared](phase-7/shared.md): `shared` as a black box: flnd stops rebuilding, side-channelling and string-matching around it.
 8. [speed](phase-7/speed.md): the downloader after IDM (bounded pieces, stall detection, adaptive connections, HTTP/2 for small files), 8 files at once, sources side by side, `sync` without a full decode, encodes that can't win skipped, lower listing floors.
 9. [output › status lines](phase-7/output.md#status-lines): live status lines by default; `-v` adds every line.
-10. [flnd › sites and finding](phase-7/flnd.md#4-sites-site-downloader-finder): `Site`, `Downloader` and `Finder` apart, "site" everywhere, `flnd find`, and the `auth` and `target` command groups. The whole of flnd after Phase 7 is in [flnd](phase-7/flnd.md).
+10. [flnd › sites and finding](phase-7/flnd.md#4-sites-site-downloader-finder): `Site`, `Downloader` and `Finder` apart, "site" everywhere, `flnd find`, and the `auth` and `sync` command groups (`sync` opt-in, with `download --sync`). The whole of flnd after Phase 7 is in [flnd](phase-7/flnd.md).
    And [lean](phase-7/lean.md): every proposal taken (about 515 lines), each built with the step that touches its files.
 
 **Phase 8: draft.** Not decided; for after Phase 7 ([draft](phase-8/README.md)). The user's focus: harden `shared` (robust and minimal); split **flnd** (a listing engine: listing downloads and queries) from **flndm** (a general, extremely fast download and IO manager flnd calls); both under `projects/`; `sync` as an opt-in group (`--sync`, `sync ls`, `sync toggle`); no `licenses/` folder (done). Earlier ideas wait in [ideas](phase-8/ideas.md).

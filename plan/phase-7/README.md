@@ -22,7 +22,7 @@ metadata and a log of each run.
 | `shared` makes flnd think: rebuilt fetches, side channels for headers, error text matched, no way to stop a download | [shared](shared.md): `shared` as a black box |
 | files flnd never gets (X's older tweets, a second CDN host) | [fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), from gallery-dl |
 | flnd only downloads; it should also find things on a site, and the API should say which is which | [flnd](flnd.md#9-finding-710): `Site` (access), `Downloader` (a target in), `Finder` (a query in), one engine below; `flnd find` |
-| the commands are flat; logins and kept targets have no home | [flnd](flnd.md#2-commands): `flnd auth login`/`logout`/`ls`, `flnd target ls`/`forget` |
+| the commands are flat; logins and kept targets have no home | [flnd](flnd.md#2-commands): `flnd auth login`/`logout`/`ls`, `flnd sync`/`sync ls`/`sync toggle` with `download --sync` |
 | the code is hard to follow: more prose than code, plan ids in comments, thin layers, callbacks, names that don't fit | [readable](readable.md): new writing rules, eleven refactors, a final docs diet, `shared` and `flnd` both |
 | flnd's code could be leaner | [lean](lean.md): proposals from two audits, about 425 lines |
 | a file found in two tabs (reels and videos, photos and posts) is in only one folder | [links](links.md) |
@@ -50,8 +50,8 @@ Each step ends with `check` green and is committed on its own.
    line under them.
 10. [flnd › sites and finding](flnd.md#4-sites-site-downloader-finder): `Source` splits into `Site`
     and `Downloader`, `flnd/sources/` becomes `flnd/sites/` ("site" everywhere); the find API
-    (`Finder`, `Query`, `Found`) on the same job, and `flnd find`; the `target` and `auth` command
-    groups; loi's finder first.
+    (`Finder`, `Query`, `Found`) on the same job, and `flnd find`; the `sync` and `auth` command
+    groups (`sync` opt-in: `download --sync`, `sync ls`, `sync toggle`); loi's finder first.
 11. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` site, its downloader and finder.
 12. [readable](readable.md): the docs diet and no plan or history in code, over `shared` and
     `flnd`, with the enforcement switched on. Its writing rules hold from now, and its refactors
@@ -97,8 +97,10 @@ All decided by the user on 2026-11-13:
 19. **`shared`'s public API is judged by usefulness**: unused is not dead, and only aliases go ([shared](shared.md)); `media`'s API stays whole.
 20. **A part resumes without a validator** after a 64-byte overlap check ([speed](speed.md#4-listing-pace)); **an interrupted listing restarts from its cursor**; **story music, quoted tweets' media and card images** are saved with their posts ([fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl)).
 21. **[flnd](flnd.md) is the spec**: what flnd is, does and promises after Phase 7.
-22. **Commands in groups**: `flnd auth login`/`logout`/`ls` (was `login`, `logout`) and
-    `flnd target ls`/`forget <targets…> | all`; `target ls` and `auth ls` take nothing.
+22. **Commands in groups**: `flnd auth login`/`logout`/`ls` (was `login`, `logout`), and **`sync`
+    as an opt-in group** (user, 2026-11-13, replacing the `target` group): `download --sync` marks
+    targets, `flnd sync` updates only those, `sync ls` lists every known target with its sync
+    status, `sync toggle` flips it; old rows count as synced. `sync ls` and `auth ls` take nothing.
 23. **Finding**: a `Finder` takes a free query (any words, any `key=value`), yields `Found` things
     with the targets `download` takes, and saves its files by its own formats on the same job as
     a `Downloader`; `flnd find <site> [words…] [key=value…]`, with a table, `results.json`, and

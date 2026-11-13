@@ -90,7 +90,9 @@ listing the post again and sending a new request with the same `key`, and flndm 
 
 ### How flnd calls it
 
-1. **In process, as a library (proposed).** `with flndm.Manager(limits) as manager:` then
+**As a library** (user, 2026-11-13). The other two shapes are kept below as history.
+
+1. **In process, as a library.** `with flndm.Manager(limits) as manager:` then
    `manager.submit(request)` and `for event in manager.events():`. It costs nothing to call, and
    one process holds all the state.
 2. **A daemon** that several flnd runs and other programs share, over a local socket. It can keep
@@ -187,39 +189,37 @@ flnd sync toggle <targets or query ids…>       # flip each one; prints its new
 
 1. **Layout**: `projects/flnd`, a uv workspace, `check` over it. Purely a move, so Haiku does it,
    with the import rule test.
-2. **`sync` as a group** ([above](#sync-as-a-group-the-design)), unless question 8 moves its target
-   half into Phase 7's step 10.
+2. **Synced queries** ([above](#sync-as-a-group-the-design)): `find --sync`; the target half is built
+   in Phase 7's step 10.
 3. **flndm as a library inside the workspace**: the request and event API, then moving the
    downloader, IO and postprocessing out of flnd one piece at a time, with flnd calling it.
    `check` stays green at each move.
 4. **flndm's CLI and the benchmark suite**, with its first targets.
 5. **Hardening `shared`**: faults, fuzzing, typed errors, threads and resources, module by module;
    then minimal (question 2).
-6. **The daemon or subprocess mode**, only if question 4 asks for it.
+
+## Decided (user, 2026-11-13)
+
+- **Minimal `shared`**: Phase 8 may remove `shared` API neither flnd nor flndm uses. `shared` is
+  **robust as a framework, with minimal features**. This replaces Phase 7's "unused is not dead"
+  from Phase 8 on.
+- **flndm is a library** flnd imports; no daemon or subprocess mode for now.
+- **`sync`'s target half moves into Phase 7's step 10** (`flnd sync`, `sync ls`, `sync toggle`,
+  `download --sync`); Phase 8 adds synced queries (`find --sync`).
+- **No licence files**: flnd is the user's private tool, never distributed, so the bundled GPL
+  ffmpeg needs no licence or source offer.
 
 ## Questions for the user
 
 1. **`shared`'s place**: stay at the root, move to `projects/shared`, or split between flnd and
    flndm, so that no shared toolkit is left?
-2. **"Minimal"**: may Phase 8 remove `shared` API that neither project uses? This would reverse
-   Phase 7's rule of 2026-11-13 ("unused doesn't mean dead").
-3. **Shrink and other media steps**: flndm steps a request names (proposed), or flnd's, run after
+2. **Shrink and other media steps**: flndm steps a request names (proposed), or flnd's, run after
    flndm places the file?
-4. **flndm's shape**: a library flnd imports (proposed), a daemon shared by every run and other
-   programs, or a subprocess per run?
-5. **Performance targets**: set from the first benchmark (proposed), or numbers you already have
+3. **Performance targets**: set from the first benchmark (proposed), or numbers you already have
    in mind, such as matching aria2c on many small files?
-6. **Packaging**: one bundle holding both commands, or two bundles? And is flndm published on its
-   own (PyPI)?
-7. **Names**: `flndm` for both the package and the command?
-8. **`sync`'s target half in Phase 7**: build `sync ls` and `sync toggle` in Phase 7's step 10
-   instead of `target ls`/`forget`, so `target` is never built only to be removed (proposed), and
-   leave synced queries for Phase 8?
-9. **A synced query's first run**: only remember what it finds (proposed), or download at once?
-10. **ffmpeg's licence**: the bundle ships imageio-ffmpeg's GPL ffmpeg, and since `licenses/` went
-    it carries neither its licence nor a source offer. Distributing `dist/flnd/` needs one of: the
-    licence and source offer shipped beside the binary (outside a `licenses/` folder), an LGPL
-    ffmpeg build, or ffmpeg left out of the bundle and found on the system.
+4. **Packaging**: one bundle holding both commands, or two? (Private use: no publishing.)
+5. **Names**: `flndm` for both the package and the command?
+6. **A synced query's first run**: only remember what it finds (proposed), or download at once?
 
 ## The user's words
 

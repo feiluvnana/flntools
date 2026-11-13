@@ -39,18 +39,18 @@ about how they're done.
 ## 2. Commands
 
 ```
-flnd download <targets…> [--from CATEGORIES] [--time SINCE,UNTIL] [--shrink [off]] [-v]
-flnd sync [targets…] [-v]
+flnd download <targets…> [--from CATEGORIES] [--time SINCE,UNTIL] [--shrink [off]] [--sync] [-v]
+flnd sync [-v]                                                           [7.10]
+flnd sync ls                                                             [7.10]
+flnd sync toggle <targets…>                                              [7.10]
 flnd find <site> '<query>' [--time SINCE,UNTIL] [-v]                    [7.10]
-flnd target ls                                                           [7.10]
-flnd target forget <targets…> | all                                      [7.10]
 flnd auth login                                                          [7.10]
 flnd auth logout <sites…> | all                                          [7.10]
 flnd auth ls                                                             [7.10]
 ```
 
-Two groups keep the top level to the everyday commands (user, 2026-11-13): `target` for the
-targets flnd keeps, `auth` for logins. `flnd login` and `flnd logout` move into `auth`, with no
+Two groups keep the top level to the everyday commands (user, 2026-11-13): `sync` for what flnd
+keeps up to date, `auth` for logins. `flnd login` and `flnd logout` move into `auth`, with no
 alias left behind (one spelling).
 
 `python -m flnd` is the same program. `flnd --help` and `flnd <command> --help` list every option
@@ -66,20 +66,38 @@ Downloads each target: every category of it, or those `--from` names.
 | `--from CATEGORIES` | The categories to take, as a comma list or repeated: `--from reels,tagged`. Without it, every category. Refused with a single post's link, which is downloaded whole. Not saved. |
 | `--time SINCE,UNTIL` | Only posts dated from one day to another, both included: `2026-01-01,2026-06-30`; a side left empty (or `*`, quoted) has no limit. An undated post is kept. Not saved. |
 | `--shrink`, `--shrink off` | Compress each photo, video and audio file to a balanced quality in its own format, keeping the result only when smaller; **saved for the target** and used by every later `download` and `sync` of it ([shrink](shrink.md)). |
+| `--sync` | Also keep these targets up to date: `flnd sync` updates them from now on [7.10]. Without it, a target is downloaded and known (`sync ls` lists it, sync off) but not synced. |
 | `-v`, `--verbose` | The status lines, and every line of progress and log as well (§11). |
 
 A `download` that turns `--shrink` on shrinks the target's files already saved too, so a folder
 is never half shrunk. The run's first line names a target's saved settings:
 `ins:example_user: --shrink (saved)`.
 
-### `sync`
+### `sync`, `sync ls` and `sync toggle` [7.10]
 
-Brings every target downloaded so far up to date, or only the targets given. It has one option,
-`-v`, and **changes no setting**: to change how a target is downloaded, run `download` with the
-option. For each target, in order (§7):
-1. **repair**: files missing, empty, broken or undated are fixed;
-2. **fetch**: posts new since the last run, with the target's saved settings and every category;
-3. a one-line summary per target, then the totals.
+A command group for what flnd keeps up to date (user, 2026-11-13), replacing the `target` group
+this spec had before. **Nothing is synced unless asked**: `download --sync` marks its targets.
+`shared.cli` gains a group's default command, so `flnd sync` runs by itself and `flnd sync ls` is
+its subcommand.
+
+- **`flnd sync`** updates every target marked to sync, and nothing else. It has one option, `-v`,
+  and **changes no setting**: to change how a target is downloaded, run `download` with the
+  option. For each target, in order (§7):
+  1. **repair**: files missing, empty, broken or undated are fixed;
+  2. **fetch**: posts new since the last run, with the target's saved settings and every category;
+  3. a one-line summary per target, then the totals.
+  With nothing marked, it says so and exits 0.
+- **`flnd sync ls`** takes nothing and lists **every target flnd knows**, synced or not: sync on or
+  off, its saved settings (`--shrink`), files and size on disk, last sync, and per category whether
+  its listing is complete, interrupted (a saved cursor) or never finished. It reads `metadata/` and
+  the folder sizes, and asks no site.
+- **`flnd sync toggle <targets…>`** flips each target between synced and not, and prints its new
+  state. **Nothing is deleted**: settings, history and cursors stay, so turning a target on again
+  resumes it where it was.
+- **Stores**: a `targets.db` row gains `sync`. A row written before this, with no `sync` field,
+  counts as **on**, as it was synced then; nothing is rewritten. A new target downloaded without
+  `--sync` is off, and the run says once: `not synced; add --sync to keep it up to date`.
+- Synced **queries** (`find --sync`) are Phase 8's ([draft](../phase-8/README.md)).
 
 ### `find` [7.10]
 
@@ -106,21 +124,6 @@ flnd find mht --help                                             # mht's paramet
 - **In a pipe**: one target per line, so `download` reads them from stdin.
 - Its files go in history like any download's, so the same query run again saves only new ones;
   it writes no setting, counts no quota, and isn't part of `sync`.
-
-### `target ls` and `target forget` [7.10]
-
-A command group for the targets flnd keeps (user, 2026-11-13), built on `shared.cli`'s groups
-(`App.group`); `flnd target --help` lists its commands.
-
-- **`flnd target ls`** takes nothing, as `auth ls` (user, 2026-11-13), and prints every target
-  downloaded so far, one row each: its saved settings (`--shrink`), files and size on disk, last
-  sync, and per category whether its listing is complete, interrupted (a saved cursor) or never
-  finished. It reads `metadata/` and the folder sizes, and asks no site.
-- **`flnd target forget <targets…>`** or **`flnd target forget all`** stops keeping targets, as
-  `auth logout` takes sites or `all`: their saved settings, listing records and cursors go, so
-  `sync` no longer touches them. **Their files and history rows stay**, so a later `download`
-  skips what is saved. It names each target it forgot, and one it didn't know; with no target it
-  refuses and lists the ones it keeps.
 
 ### `auth login`, `auth logout` and `auth ls` [7.10]
 
@@ -676,7 +679,7 @@ filters beyond `--from` and `--time`; zip or exec postprocessors; metadata sidec
 | 7 | `shared` as a black box | |
 | 8 | speed | |
 | 9 | status lines, colour and motion | |
-| **10** | **sites split cleanly: `Source` becomes `Site` + `Downloader`, `flnd/sources/` becomes `flnd/sites/`; then the find API (`Finder`, `Param`, `Query`, `Found`, `flnd/find.py`) with Lucene queries parsed by luqum (`flnd/query.py`), `flnd find`; `flnd target ls`/`forget`; `flnd auth login`/`logout`/`ls`; loi's finder first** | new |
+| **10** | **sites split cleanly: `Source` becomes `Site` + `Downloader`, `flnd/sources/` becomes `flnd/sites/`; then the find API (`Finder`, `Param`, `Query`, `Found`, `flnd/find.py`) with Lucene queries parsed by luqum (`flnd/query.py`), `flnd find`; the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's finder first** | new |
 | **11** | **mimihentai (`mht`)**: its `Site`, `Downloader` (a manga's chapters) and `Finder` (its advanced search), per §17 | new |
 
 Finding comes last: it builds on the black-box `shared` (7), the status/table output (9) and the
