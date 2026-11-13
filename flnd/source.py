@@ -1196,6 +1196,17 @@ class Source:
         """
         return nullcontext()
 
+    def date(self, site: Site, post: Post, /) -> DateLike:
+        """The day of a post its listing left undated, from its own page; None if the site can't.
+
+        The engine asks it once per undated post as its category ends, and each `sync` asks it for
+        files saved undated or with an estimated day. A source overrides it with one paced request.
+
+        Raises:
+            FetchError: the item can't be read; a 401, 403 or 429 stops asking for the run.
+        """
+        return None
+
     def logged_in(self, site: Site, /) -> bool:
         """Whether a login is stored: by default, one of `needs` is among the saved cookies.
 

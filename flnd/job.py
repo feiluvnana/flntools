@@ -60,8 +60,10 @@ from __future__ import annotations
 
 import datetime
 import email.utils
+import filecmp
 import inspect
 import os
+import re
 import string
 import threading
 from collections import deque
@@ -77,8 +79,8 @@ from flnd.common import files as disk
 from flnd.common import net
 from flnd.common.compress import KINDS, ONE_AT_A_TIME
 from flnd.site import SourceRun, TargetSite
-from flnd.source import (Category, FetchError, File, Post, Range, Resume, Route, Site, Source,
-                         Target, day, fill, listing)
+from flnd.source import (Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site,
+                         Source, Target, day, fill, listing)
 from shared import atomic, fmt, log
 
 if TYPE_CHECKING:
@@ -89,8 +91,13 @@ if TYPE_CHECKING:
 __all__ = ["STOPPED", "Done", "Downloads", "Ledger", "Placed", "download", "place", "plan", "posts",
            "wanted"]
 
-# The history field of a file's post's day, `YYYY-MM-DD`, when the listing gave one.
-DATE = "date"
+# The history fields of a file's post: its id, its day (`YYYY-MM-DD`), and whether that day is
+# the nearest dated neighbour's estimate.
+ID, DATE, ESTIMATED = "id", "date", "estimated"
+# The statuses that refuse the whole site, which stop asking the `date` hook for the run.
+BLOCKS = frozenset({401, 403, 429})
+# The day a dated file's name starts with, as the formats write it.
+LEADING_DAY = re.compile(r"\d{4}-\d\d-\d\d_")
 # The hour of the day, UTC, a dated file's modified time is set to.
 NOON = 12
 # The history field of a post's first file that holds how many files the post has, when more than one.
@@ -319,6 +326,13 @@ class Ledger:
         # gave; and the undated posts waiting for their category to end, by that key.
         self._dates: dict[str, datetime.date] = {}
         self._waiting: dict[str, Post] = {}
+        # Each keyed post of the category being listed, in order, with its day if it gave one: the
+        # neighbours an undated post's estimated day comes from.
+        self._order: list[tuple[str, datetime.date | None]] = []
+        # The first keys whose day is a neighbour's estimate, which the history row marks.
+        self._estimated: set[str] = set()
+        # False once the site's `date` hook was refused (a block): the rest are estimated.
+        self._asking = type(self.source).date is not Source.date
 
     def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
         """Each file of one post not saved or queued yet; a lazy post's files are listed only if needed.
@@ -340,6 +354,7 @@ class Ledger:
         if post.category != self._category:
             self.sum_up()
             self._category = post.category
+        first = self._first_key(post, category)
         dated = self._dated(post, category, hold=hold)
         if dated is None:
             return Outcome.EMPTY, []
@@ -378,7 +393,7 @@ class Ledger:
                     log.debug("skip {name}: already saved as {held}", name=placed.path, held=held)
                 continue
             self._queued.update(dict.fromkeys((dest, key), placed.path))
-            todo.append(_Queued(placed, dest, key))
+            todo.append(_Queued(placed, dest, key, estimated=first in self._estimated))
         if todo:
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
@@ -390,8 +405,81 @@ class Ledger:
         the history and every copy listed so far have had their say.
         """
         waiting, self._waiting = self._waiting, {}
-        return [post.replace(date=self._dates[key]) if key in self._dates else post
-                for key, post in waiting.items()]
+        released = []
+        for key, post in waiting.items():
+            found = self._dates.get(key) or self._ask(post)
+            if found is None:
+                found = self._neighbour(key)
+                if found is not None:
+                    self._estimated.add(key)
+            released.append(post if found is None else post.replace(date=found))
+        self._order = []
+        return released
+
+    def redate(self) -> int:
+        """Date each saved file of the target with no day or an estimated one, by the site's hook.
+
+        The file is renamed to its dated name, and its row and modified time updated. When the
+        dated name is taken by the same bytes, the undated copy is deleted; by other bytes, both
+        stay as they are. A file the site can't date is asked again by the next `sync`.
+
+        Returns:
+            How many files were dated.
+        """
+        if not self._asking:
+            return 0
+        dated = 0
+        history = self.settings.history
+        undated = [(key, row) for key, row in list(history.items()) if self._undated(row)]
+        for key, row in undated:
+            found = self._ask(Post(row[ID]))
+            if found is None:
+                continue
+            estimated = bool(row.get(ESTIMATED))
+            path = _redated(Path(row["path"]), found, self.source.filename, estimated=estimated)
+            if path is None:
+                continue
+            _set_mtime(path, found)
+            fresh = {name: value for name, value in row.items() if name != ESTIMATED}
+            self.settings.history[key] = {**fresh, "path": str(path), DATE: found.isoformat()}
+            dated += 1
+        if dated:
+            self.site.info("{files} dated", files=fmt.count(dated, "saved file"))
+        return dated
+
+    def _undated(self, row: Any) -> bool:
+        """Whether a history row is one of the target's files, saved undated or estimated."""
+        if not isinstance(row, dict) or not isinstance(row.get(ID), str):
+            return False
+        in_folder = Path(row.get("path", "")).is_relative_to(self.folder)
+        return in_folder and (DATE not in row or bool(row.get(ESTIMATED)))
+
+    def _ask(self, post: Post) -> datetime.date | None:
+        """The day the site's `date` hook gives a post, or None; a block stops asking."""
+        if not self._asking:
+            return None
+        try:
+            return day(self.source.date(self.site, post))
+        except (FetchError, LoginError) as error:
+            # A refusal of the whole site, not of this item: asking on would only be refused again.
+            if isinstance(error, LoginError) or error.status in BLOCKS:
+                self._asking = False
+                self.site.warn("dating stopped: {error}; the rest are estimated", error=error)
+            else:
+                log.debug("{post}: not dated: {error}", post=post.id, error=error)
+            return None
+
+    def _neighbour(self, key: str) -> datetime.date | None:
+        """The day of the nearest dated post in listing order, the one before first on a tie."""
+        keys = [listed for listed, _ in self._order]
+        if key not in keys:
+            return None
+        at = keys.index(key)
+        for distance in range(1, len(self._order)):
+            for index in (at - distance, at + distance):
+                if 0 <= index < len(self._order) and self._order[index][1] is not None:
+                    return self._order[index][1]
+        return None
 
     def _dated(self, post: Post, category: Category | None, *, hold: bool) -> Post | None:
         """`post` with the day the memory knows, the memory told of its own; None while it waits.
@@ -402,6 +490,8 @@ class Ledger:
         if key is None:
             return post
         known = day(post.date)
+        if hold:
+            self._order.append((key, known))
         if known is not None:
             self._dates[key] = known
             # A dated copy replaces an undated one held meanwhile.
@@ -708,9 +798,13 @@ class Downloads:
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
         posted = day(placed.post.date)
+        # The post's id and day: the listing memory gives the day to a later undated copy, and
+        # `sync` asks the site's `date` hook by the id for a file saved undated or estimated.
+        row[ID] = placed.post.id
         if posted is not None:
-            # The post's day, which the listing memory gives a later undated copy of it.
             row[DATE] = posted.isoformat()
+        if queued.estimated:
+            row[ESTIMATED] = True
         count = placed.values.get("count", 1)
         if placed.num == 0 and isinstance(count, int) and count > 1:
             # The first file's row holds the post's file count, so a later run skips the lazy post
@@ -854,6 +948,8 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     error: BaseException | None = None
     try:
         try:
+            if sync:
+                ledger.redate()
             # The first Ctrl-C stops listing between posts (D8); `queue` sees it too, between files.
             _read(work, run, site, target, listed=listed, resumes=resumes, complete=complete)
         except KeyboardInterrupt:
@@ -921,6 +1017,31 @@ class _Finished:
     day: datetime.date | None
 
 
+def _redated(path: Path, found: datetime.date, filename: str, *, estimated: bool) -> Path | None:
+    """Rename a saved file to its name with `found` as its day; None if other bytes hold that name.
+
+    A format that starts with the day (`{date}_…`) puts it in front, replacing an estimated one;
+    any other name keeps its name, and only its row and modified time change.
+    """
+    name = path.name
+    leading = LEADING_DAY.match(name)
+    if estimated and leading:
+        name = name[leading.end():]
+    if filename.startswith("{date}_") and not LEADING_DAY.match(name):
+        name = f"{found.isoformat()}_{name}"
+    target = path.with_name(name)
+    if target == path or not path.exists():
+        return path if path.exists() else None
+    if target.exists():
+        # The dated copy was saved too, before the day was known: the same bytes keep the dated one.
+        if not filecmp.cmp(path, target, shallow=False):
+            return None
+        path.unlink()
+        return target
+    path.rename(target)
+    return target
+
+
 def _row_day(row: Any) -> datetime.date | None:
     """The post's day a history row recorded, or None."""
     value = row.get(DATE) if isinstance(row, dict) else None
@@ -963,6 +1084,8 @@ class _Queued:
     placed: Placed
     dest: Path
     key: str
+    # Whether its post's day is the nearest dated neighbour's, which `sync` asks the site again for.
+    estimated: bool = False
     # The refusal of its first link, once its lazy post was asked for a fresh one: once per file.
     refreshed: FetchError | None = None
 

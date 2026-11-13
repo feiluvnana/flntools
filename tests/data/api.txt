@@ -108,6 +108,7 @@ flnd.source.Source.browser_args: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.concurrency: attribute -> ClassVar[int]
 flnd.source.Source.connect(site: Site, /) -> Any
+flnd.source.Source.date(site: Site, post: Post, /) -> DateLike
 flnd.source.Source.filename: attribute -> ClassVar[str]
 flnd.source.Source.folder: attribute -> ClassVar[str]
 flnd.source.Source.forms: attribute -> ClassVar[tuple[str, ...]]

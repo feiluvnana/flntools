@@ -11,6 +11,7 @@ import os
 import threading
 import time
 import unittest
+from pathlib import Path
 from datetime import date
 from unittest import mock
 
@@ -72,9 +73,9 @@ class CategoriesTest(JobCase):
                                         "exm:profile/avatar_42.jpg"])
         # Today's row format: where it is, its size, and when.
         # The first file of a post of several holds their count (fixes #2).
-        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "date", "files", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "date", "files", "id", "path", "size"])
         self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
-        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "date", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "date", "id", "path", "size"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
@@ -316,8 +317,9 @@ class FilesTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "date", "files", "path", "size"])
-        self.assertEqual(sorted(self.history()["exm:B2def_0"]), ["at", "date", "path", "size"])
+        self.assertEqual(sorted(row), ["at", "date", "files", "id", "path", "size"])
+        self.assertEqual(sorted(self.history()["exm:B2def_0"]),
+                         ["at", "date", "id", "path", "size"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
@@ -1051,10 +1053,18 @@ class ResumeTest(JobCase):
 class MemoryTest(JobCase):
     """The listing memory: an undated post waits for its category's end, and takes any day found."""
 
-    def run_feed(self, *categories):
+    def run_feed(self, *categories, hook=None):
+        self.run_engine(self.feed(*categories, hook=hook), targets=["mem:example_user"])
+        return self.files("mem")
+
+    def feed(self, *categories, hook=None):
         class Feed(Source):
             code, name, domains = "mem", "Memory", ("example.com",)
             folder, filename, key = "", "{date}_{id}", "{id}_{num}"
+
+            if hook is not None:
+                def date(self, site, post):
+                    return hook(post)
 
             @target("{user}")
             def user(self, site, user):
@@ -1068,8 +1078,7 @@ class MemoryTest(JobCase):
             def photos(self, site, user):
                 yield from categories[1] if len(categories) > 1 else []
 
-        self.run_engine(Feed, targets=["mem:example_user"])
-        return self.files("mem")
+        return Feed
 
     def test_a_dated_copy_later_in_the_category_names_the_undated_one(self):
         undated = Post("A1", [File(f"{CDN}/a.jpg")])
@@ -1096,6 +1105,41 @@ class MemoryTest(JobCase):
         other = Post("B2", [File(f"{CDN}/b", name="cover.jpg")], date=day)
         files = self.run_feed([undated, dated, other])
         self.assertEqual(files, ["2026-01-02_A1.webp", "cover.jpg"])
+
+    def test_the_sites_date_hook_dates_an_undated_post(self):
+        asked = []
+        files = self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")])],
+                              hook=lambda post: asked.append(post.id) or datetime.date(2026, 1, 4))
+        self.assertEqual((files, asked), (["2026-01-04_A1.jpg"], ["A1"]))
+        self.assertNotIn("estimated", self.history()["mem:A1_0"])
+
+    def test_without_a_hook_the_nearest_dated_neighbour_gives_an_estimated_day(self):
+        posts = [Post("N1", [File(f"{CDN}/n1.jpg")], date=datetime.date(2026, 1, 5)),
+                 Post("U1", [File(f"{CDN}/u1.jpg")]),
+                 Post("N2", [File(f"{CDN}/n2.jpg")], date=datetime.date(2026, 1, 3))]
+        self.assertIn("2026-01-05_U1.jpg", self.run_feed(posts))
+        self.assertIs(self.history()["mem:U1_0"]["estimated"], True)
+
+    def test_a_block_while_dating_estimates_the_rest_without_failing(self):
+        def blocked(post):
+            raise FetchError("HTTP 429", status=429)
+
+        posts = [Post("N1", [File(f"{CDN}/n1.jpg")], date=datetime.date(2026, 1, 5)),
+                 Post("U1", [File(f"{CDN}/u1.jpg")]), Post("U2", [File(f"{CDN}/u2.jpg")])]
+        files = self.run_feed(posts, hook=blocked)
+        self.assertEqual(sorted(files),
+                         ["2026-01-05_N1.jpg", "2026-01-05_U1.jpg", "2026-01-05_U2.jpg"])
+        self.assertEqual(sum("dating stopped" in line for line in self.lines()), 1)
+
+    def test_sync_dates_and_renames_a_file_saved_undated_and_keeps_its_row(self):
+        undated = [Post("A1", [File(f"{CDN}/a.jpg")])]
+        self.assertEqual(self.run_feed(undated), ["A1.jpg"])
+        feed = self.feed(undated, hook=lambda post: datetime.date(2026, 1, 4))
+        Engine(home=self.home, sources={"mem": feed}).sync()
+        self.assertEqual(self.files("mem"), ["2026-01-04_A1.jpg"])
+        row = self.history()["mem:A1_0"]
+        self.assertEqual((Path(row["path"]).name, row["date"], row["id"]),
+                         ("2026-01-04_A1.jpg", "2026-01-04", "A1"))
 
     def test_a_second_undated_copy_counts_as_a_skip(self):
         self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")]), Post("A1", [File(f"{CDN}/a.jpg")])])
