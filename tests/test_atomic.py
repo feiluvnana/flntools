@@ -183,7 +183,7 @@ ALLOWED = {
     ("_archive.py", "_Output.__init__"): "one entry unpacked into `unzip`'s hidden staging folder, which is "
                                          "renamed into place only once every entry is written",
     ("_media_video.py", "_concat_copy"): "ffmpeg's concat list, in a temporary folder deleted with it",
-    ("_http.py", "_open_part"): "a download's resumable `.part`, which must outlive a failed call to be resumed; "
+    ("_download.py", "_open_part"): "a download's resumable `.part`, which must outlive a failed call to be resumed; "
                                 "it is renamed onto the file through `atomic.writing` once whole and checked",
     ("_log.py", "Log.record"): "a run's log, appended to line by line and flushed, so a killed run keeps every "
                                "line written so far; it is never a file another reader waits on whole",
