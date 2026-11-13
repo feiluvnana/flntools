@@ -155,6 +155,37 @@ measurement (question 5) and keeps them in CI as a budget, as the API snapshot k
   flnd's, and `http`'s downloader becomes flndm's.
 - A size budget per module, and the API snapshot, show every addition in review.
 
+**Absorbing what feels bloated** (user, 2026-11-13): hardening `shared` starts by finding where
+flnd (and flndm, once it exists) builds generic machinery itself, so that `shared` takes that case
+over behind a **simple outer API** and the caller shrinks to a call. Robust framework, minimal
+features: `shared` grows only where it makes a caller simple, and loses what no caller uses.
+
+*How it is found.* A pass over flnd tags every function as **site knowledge** (how a site answers),
+**listing logic** (targets, categories, queries, names, keys, dates, sync), or **generic machinery**
+(pacing, pools, retries, watching responses, stores, files). Site knowledge and listing logic stay
+in flnd. Generic machinery moves to `shared` when both hold:
+1. the move turns the caller's code into one or two calls with sensible defaults; and
+2. it serves two callers, or removes at least 30 lines from the one it serves.
+
+Anything else stays where it is, however generic it looks.
+
+*Candidates already seen* (Phase 7's audits of the code; each to be measured again after Phase 7):
+
+| flnd builds today | `shared` would offer | What the caller loses |
+| --- | --- | --- |
+| a `Pacer` and a `Backoff` per site, wired through `made[0]` lambdas, reading rate headers and budgets (`pace.py`, `net.py`, `site.py`) | `http.Client(pace=Pace(floor, budgets))`: rate headers, budgets, a learned gap and 429 back-off per host, inside the client | the pace wiring, `Transport`, `patiently`, `retrying` |
+| a bounded download pool with room-waiting, pending counts, a condition and a refresh queue (`job.py`'s `_room`, `_pending`, `_running`, `_refreshes`) | `worker.Pool(…, bound=n)` whose `submit` waits for room and honours a `stop` event | about half of `Job`'s threading state |
+| JSON from a page's responses, scrolling until a request can be replayed, then replaying it page by page (`sites/common/watch.py`, `replay.py`, ins and fbk feed readers) | `browser.Page.responses(match)`, an iterator of JSON bodies, and `Page.replay(request, cursor=…)` | the site-agnostic half of `watch`, `replay` and both feed readers |
+| a site's cookies copied into flnd's own client before each fetch (`site.py`'s `net.cookie_jar(...)`) | one cookie jar shared live by a `Browser` and an `http.Client` | the copying, and cookies going stale between them |
+| "remember this refusal for a day" in a site's state (ins's `_refused`/`_refuse`), a lookup cache for a day (finders) | `kv.Store.get(key, max_age=…)` / `set(key, value, ttl=…)` | hand-rolled timestamps and comparisons |
+| leftover `.part` files found and removed by `repair` | `atomic.sweep(folder)`, removing what `atomic` itself leaves behind | repair's own part patterns |
+| `_sleep`, `_clock`, `_random` seams faked in three modules for tests | one injectable clock for `shared` (`shared.clock`), used by `http`, `worker` and `log` | three sets of seams |
+| a status row per target with counts redrawn from many threads (Phase 7's output step) | `log.status(label, fields=…)`, a row whose counts any thread may bump | the count bookkeeping around the row |
+
+What stays in flnd, however generic it looks: the name and key formats (`fill`), `day()`'s reading
+of a site's dates, the listing memory, sync's decisions, the query language's planning. They are
+listing logic, and moving them would make `shared` know about listing.
+
 ## `sync` as a group: the design
 
 ```
@@ -195,8 +226,9 @@ flnd sync toggle <targets or query ids…>       # flip each one; prints its new
    downloader, IO and postprocessing out of flnd one piece at a time, with flnd calling it.
    `check` stays green at each move.
 4. **flndm's CLI and the benchmark suite**, with its first targets.
-5. **Hardening `shared`**: faults, fuzzing, typed errors, threads and resources, module by module;
-   then minimal (question 2).
+5. **Hardening `shared`**: first the pass that absorbs flnd's generic machinery behind simple calls
+   (above); then faults, fuzzing, typed errors, threads and resources, module by module; then
+   minimal, removing what neither project uses.
 
 ## Decided (user, 2026-11-13)
 
