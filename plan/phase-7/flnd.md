@@ -703,9 +703,19 @@ API on the same host** that needs no login. Read from its scripts and a few anon
 | lookups | `/api/genres` (296), `/api/authors/search`, `/api/characters/search`, `/api/parodies/search` | names → ids |
 | images | `https://moe-cdn.net/<x>/<file>.webp` | no referer needed; `Accept-Ranges`, `ETag`, `Last-Modified`; about 140 KB a page |
 
-To check by hand before it is built: whether a manga with more than 100 chapters pages them by
-cursor; what `chapters` means (an exact count or a minimum); whether `character` takes ids or
-names; the rate Cloudflare tolerates.
+Checked on 2026-11-13, against the public API and the site's own search code:
+- **Chapters aren't paged**: `/api/manga/{id}/chapters` returns every chapter whatever `limit`
+  says (131 for a 131-chapter manga, with `limit=100`, `page=2` or `offset=100` alike).
+- **`chapters` does nothing**: the advanced search ignores it in every form tried (`1`, `5`,
+  `1-5`, `10-`), alone or with a genre. The finder filters by `chapter_count` itself, which each
+  result carries, rather than send it.
+- **`character` takes names**, free text joined by commas, as the site's form sends them; no
+  lookup to ids.
+- **`advanced-search` only with a structured filter** (author, character, parody, genre); a query
+  of words alone goes to `/api/manga/search?q=`. Both page by `cursor` with `cursor_res=true`
+  (24 items a page, `{items, next_cursor, total}`).
+- **Rate**: about 20 requests at one a second drew no refusal; the ceiling wasn't probed. The
+  0.5 s floor, learned upward, stays.
 
 ### Download
 
