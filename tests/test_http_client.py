@@ -220,7 +220,8 @@ class DownloadTest(ClientCase):
         stop = threading.Event()
         stop.set()
         with self.assertRaises(http.StoppedError):
-            self.client(stop=threading.Event()).download(f"{CDN}/v.mp4", folder + "/", stop=stop)
+            self.client(stop=threading.Event()).download(f"{CDN}/v.mp4", folder + "/",
+                                                         transfer=http.Transfer(stop=stop))
 
 
 if __name__ == "__main__":

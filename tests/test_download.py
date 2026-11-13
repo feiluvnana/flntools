@@ -149,7 +149,7 @@ class DownloadCase(unittest.TestCase):
                  dest: str | Path | None = None, **options) -> Path:
         with client(self.cdn.handler) as fake:
             dest = dest if dest is not None else self.tmp / "v.mp4"
-            return http.download(url, dest, client=fake, **options).path
+            return http.download(url, dest, transfer=http.Transfer(client=fake, **options)).path
 
     def leftovers(self) -> list[str]:
         return sorted(path.name for path in self.tmp.iterdir() if path.name.startswith("."))
@@ -275,8 +275,9 @@ class DownloadTest(DownloadCase):
 
         self.cdn.script = [refused] * 3
         with self.assertRaises(http.Error) as raised, client(self.cdn.handler) as fake:
+            transfer = http.Transfer(client=fake, headers={"Cookie": "sid=supersecret"})
             http.download("https://cdn.example/v.mp4?token=abcdef", self.tmp / "v.mp4",
-                          client=fake, headers={"Cookie": "sid=supersecret"})
+                          transfer=transfer)
         self.assertNotIn("supersecret", str(raised.exception))
         self.assertNotIn("abcdef", str(raised.exception))
 
@@ -589,7 +590,8 @@ class PiecesTest(DownloadCase):
         results: dict[int, bytes] = {}
         with client(handler) as fake:
             def work(number: int) -> None:
-                saved = http.download(url, self.tmp / f"{number}.mp4", client=fake)
+                saved = http.download(url, self.tmp / f"{number}.mp4",
+                                      transfer=http.Transfer(client=fake))
                 results[number] = saved.path.read_bytes()
 
             threads = [threading.Thread(target=work, args=(number,)) for number in range(4)]
@@ -709,7 +711,7 @@ class GateTest(unittest.TestCase):
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         url = "https://busy.cdn.example/v.mp4"
         with client(handler) as fake:
-            saved = http.download(url, tmp / "v.mp4", client=fake)
+            saved = http.download(url, tmp / "v.mp4", transfer=http.Transfer(client=fake))
         self.assertEqual(saved.path.read_bytes(), DATA)
         gate = download._gate(url)
         self.assertIsNotNone(gate.cap)
@@ -867,7 +869,8 @@ class TransportTest(unittest.TestCase):
             setattr(self.transport, attribute, httpx.MockTransport(handler))
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with httpx.Client(transport=self.transport) as raw:
-            saved = http.download("https://cdn.example/v.mp4", tmp, client=raw)
+            saved = http.download("https://cdn.example/v.mp4", tmp,
+                                  transfer=http.Transfer(client=raw))
         self.assertEqual(saved.path.read_bytes(), DATA)
         self.assertEqual(versions, ["2"] + ["1.1"] * 9)
 
@@ -875,8 +878,8 @@ class TransportTest(unittest.TestCase):
 class DownloadRecordTest(DownloadCase):
     def test_a_download_gives_its_path_url_and_headers(self):
         with client(self.cdn.handler) as fake:
-            saved = http.download("https://cdn.example/v.mp4?sig=x", self.tmp, client=fake,
-                                  parts=1)
+            saved = http.download("https://cdn.example/v.mp4?sig=x", self.tmp,
+                                  transfer=http.Transfer(client=fake, parts=1))
         self.assertEqual(saved.path, self.tmp / "v.mp4")
         self.assertEqual(saved.url, "https://cdn.example/v.mp4?sig=x")
         self.assertEqual(saved.headers["ETag"], '"v1"')
@@ -885,7 +888,8 @@ class DownloadRecordTest(DownloadCase):
     def test_a_resumed_download_gives_the_resuming_responses_headers(self):
         self.cdn.script = [self.cdn.cut_at(3000)]
         with client(self.cdn.handler) as fake:
-            saved = http.download("https://cdn.example/v.mp4", self.tmp / "v.mp4", client=fake)
+            saved = http.download("https://cdn.example/v.mp4", self.tmp / "v.mp4",
+                                  transfer=http.Transfer(client=fake))
         self.assertEqual(saved.headers["content-range"], f"bytes 3000-{len(DATA) - 1}/{len(DATA)}")
 
 

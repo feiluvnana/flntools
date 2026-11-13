@@ -47,9 +47,11 @@ def trim(info: Info, part: Path, extension: str, *, start: float, end: float | N
         return
     # `-ss` before the input seeks to the keyframe at or before `start`; a re-encode then drops the frames before it.
     window = ["-ss", f"{start:g}", *(["-t", f"{end - start:g}"] if end is not None else [])]
-    args, copied = _media.output(extension, video=info.video, audio=info.audio, quality=90, speed="slow",
-                                 codec=_default_codec(extension) if exact and info.video else None,
-                                 created=info.tags.get("creation_time"))
+    encoding = _media.Encoding(
+        video=info.video, audio=info.audio, speed="slow",
+        codec=_default_codec(extension) if exact and info.video else None,
+        created=info.tags.get("creation_time"))
+    args, copied = _media.output(extension, encoding)
     command = ["-n", *window, *_ffmpeg.source(info.path), *args, _ffmpeg.target(part)]
     if copied:
         _ffmpeg.run(command, name=info.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
@@ -245,8 +247,9 @@ def _slideshow(infos: list[Info], part: Path, extension: str, rate: float, track
         _pillow.save_animation(list(pictures), [round(1000 / rate)] * len(infos), part,
                                _media.ANIMATIONS[extension], quality=90)
         return
-    args, _ = _media.output(extension, video="rawvideo", audio=track.audio if track else None, quality=90,
-                            codec=_default_codec(extension), maps=("0:v:0", "1:a:0"))
+    encoding = _media.Encoding(video="rawvideo", audio=track.audio if track else None,
+                               codec=_default_codec(extension), maps=("0:v:0", "1:a:0"))
+    args, _ = _media.output(extension, encoding)
     inputs = [*_media.raw_input(width, height, rate), *(_ffmpeg.source(track.path) if track else [])]
     _ffmpeg.encode(["-n", *inputs, *args, *(["-shortest"] if track else []), _ffmpeg.target(part)],
                    name=part.name, duration=len(infos) / rate, progress=progress,
@@ -285,9 +288,11 @@ def _join(infos: list[Info], part: Path, extension: str, track: Info | None, pro
                          else f"anullsrc=r=48000:cl=stereo,atrim=duration={info.duration or 0:g}[a{index}]")
     pads = "".join(f"[v{index}]" + (f"[a{index}]" if sound else "") for index in range(len(infos)))
     graph.append(f"{pads}concat=n={len(infos)}:v=1:a={int(sound)}[v]" + ("[a]" if sound else ""))
-    args, _ = _media.output(extension, video="filtered", audio="filtered" if sound or track else None, quality=90,
-                            codec=_default_codec(extension), copy=False, simple=False,
-                            maps=("[v]", "[a]" if sound else f"{len(infos)}:a:0"))
+    encoding = _media.Encoding(
+        video="filtered", audio="filtered" if sound or track else None,
+        codec=_default_codec(extension), copy=False, simple=False,
+        maps=("[v]", "[a]" if sound else f"{len(infos)}:a:0"))
+    args, _ = _media.output(extension, encoding)
     inputs = [arg for info in [*infos, *([track] if track else [])] for arg in _ffmpeg.source(info.path)]
     _ffmpeg.encode(["-n", *inputs, "-filter_complex", ";".join(graph), *args, *(["-shortest"] if track else []),
                     _ffmpeg.target(part)], name=part.name, duration=sum(info.duration or 0 for info in infos),

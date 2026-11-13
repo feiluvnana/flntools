@@ -18,7 +18,7 @@ import httpx
 from media_samples import needs_ffmpeg, needs_pillow, sample
 
 from flnd.common import net, paths
-from flnd.source import FetchError
+from flnd.source import FetchError, File
 from shared import clock, http, media, theme
 from shared._theme import Screen
 
@@ -151,13 +151,15 @@ class BackoffTest(NetCase):
         self.addCleanup(net.stopping.clear)
         with self.client(httpx.Response(429), httpx.Response(200)) as client, \
                 self.assertRaises(KeyboardInterrupt):
-            net.download(client, "https://cdn.example/a.jpg", self.tmp / "a.jpg", label="a.jpg")
+            net.download(client, File("https://cdn.example/a.jpg"),
+                         self.tmp / "a.jpg", label="a.jpg")
         self.assertEqual(self.sleeps, [])
 
 
 class DownloadTest(NetCase):
-    def download(self, client, source, name="a.jpg", **options):
-        return net.download(client, source, self.tmp / "posts" / name, label=f"posts/{name}", **options)
+    def download(self, client, source, name="a.jpg", *, size=None, audio=None, **options):
+        return net.download(client, File(source, size=size, audio=audio),
+                            self.tmp / "posts" / name, label=f"posts/{name}", **options)
 
     def test_atomic_with_a_bar_and_mode_0644(self):
         with self.client(httpx.Response(200, content=b"x" * 1536)) as client:
@@ -339,8 +341,9 @@ def chunked(data):
 
 @needs_pillow
 class MediaDownloadTest(NetCase):
-    def download(self, client, source, name="a.jpg", **options):
-        return net.download(client, source, self.tmp / "posts" / name, label=f"posts/{name}", **options)
+    def download(self, client, source, name="a.jpg", *, size=None, audio=None, **options):
+        return net.download(client, File(source, size=size, audio=audio),
+                            self.tmp / "posts" / name, label=f"posts/{name}", **options)
 
     def names(self):
         return sorted(path.name for path in (self.tmp / "posts").iterdir())
@@ -441,8 +444,8 @@ class DashDownloadTest(NetCase):
         return super().client(httpx.Response(500))
 
     def merged(self, client, name="r.mp4"):
-        return net.download(client, self.VIDEO, self.tmp / "reels" / name, label=f"reels/{name}",
-                            kind="video", audio=self.AUDIO)
+        return net.download(client, File(self.VIDEO, audio=self.AUDIO),
+                            self.tmp / "reels" / name, label=f"reels/{name}", kind="video")
 
     def test_video_and_audio_are_merged_and_both_parts_deleted(self):
         with self.client() as client:
@@ -479,8 +482,8 @@ class DashDownloadTest(NetCase):
         self.addCleanup(net.stopping_now.clear)
         real = http.Client.download
 
-        def transfer(client, url, dest, **options):
-            saved = real(client, url, dest, **options)
+        def transfer(client, url, dest, *, transfer=None):
+            saved = real(client, url, dest, transfer=transfer)
             if url == self.AUDIO:
                 net.stopping_now.set()
             return saved

@@ -1079,14 +1079,17 @@ class Downloads:
         """
         placed = queued.placed
         headers = placed.post.headers
-        source = self._sync_fetch(file.url) if callable(file.url) else file.url
-        if source is None:
+        if file.url is None:
             # Only a text file has no URL, and it is written by `queue`, never downloaded.
             return None
+        if callable(file.url):
+            source = self._sync_fetch(file.url)
+            if source is None:
+                return None
+            file = File(source, audio=file.audio, name=file.name, size=file.size)
         try:
-            return net.download(self.run.files, source, queued.dest, label=placed.path,
-                                headers=headers, size=file.size, kind=placed.kind, audio=file.audio,
-                                received=received)
+            return net.download(self.run.files, file, queued.dest, label=placed.path,
+                                headers=headers, kind=placed.kind, received=received)
         except FetchError as error:
             if error.status not in EXPIRED or not callable(placed.post.files) or queued.refreshed:
                 raise

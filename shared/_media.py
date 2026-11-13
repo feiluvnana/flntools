@@ -977,10 +977,12 @@ def transcode(info: Info, part: Path, extension: str, *, quality: int, codec: st
     else:
         inputs, feed = _inputs(info)
         # An animation reaches ffmpeg as GIF or raw frames, which no container should hold as they are.
-        out, copied = output(extension, video=info.video or ("rawvideo" if info.kind == "image" else None),
-                             audio=info.audio, quality=quality, codec=codec, fps=fps, source_fps=info.fps,
-                             resolution=resolution, speed=speed, audio_bitrate=audio_bitrate, strip=strip,
-                             copy=copy and info.kind != "image", created=info.tags.get("creation_time"))
+        encoding = Encoding(
+            video=info.video or ("rawvideo" if info.kind == "image" else None),
+            audio=info.audio, quality=quality, codec=codec, fps=fps, source_fps=info.fps,
+            resolution=resolution, speed=speed, audio_bitrate=audio_bitrate, strip=strip,
+            copy=copy and info.kind != "image", created=info.tags.get("creation_time"))
+        out, copied = output(extension, encoding)
         command = ["-n", *inputs, *out, _ffmpeg.target(part)]
         if copied:
             _ffmpeg.run(command, name=info.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
@@ -988,32 +990,55 @@ def transcode(info: Info, part: Path, extension: str, *, quality: int, codec: st
             _ffmpeg.encode(command, name=info.path.name, duration=info.duration, progress=progress, feed=feed)
 
 
-def output(extension: str, *, video: str | None, audio: str | None, quality: int, codec: str | None = None,
-           fps: float | None = None, source_fps: float | None = None, resolution: int | None = None,
-           speed: str = "medium", audio_bitrate: int | None = None, strip: bool = False, copy: bool = True,
-           created: str | None = None, maps: tuple[str, str] = ("0:v:0", "0:a:0?"),
-           simple: bool = True) -> tuple[list[str], bool]:
+@dataclass(frozen=True)
+class Encoding:
+    """Stream, quality, filter and metadata options for `output`."""
+
+    video: str | None
+    audio: str | None
+    quality: int = 90
+    codec: str | None = None
+    fps: float | None = None
+    source_fps: float | None = None
+    resolution: int | None = None
+    speed: str = "medium"
+    audio_bitrate: int | None = None
+    strip: bool = False
+    copy: bool = True
+    created: str | None = None
+    maps: tuple[str, str] = ("0:v:0", "0:a:0?")
+    simple: bool = True
+
+
+def output(extension: str, encoding: Encoding) -> tuple[list[str], bool]:
     """ffmpeg's output options for `extension`, and whether every stream is copied.
 
-    `simple=False` leaves out `-vf`, for video that comes out of a `-filter_complex` graph.
+    `encoding.simple=False` leaves out `-vf`, for video from a `-filter_complex` graph.
     """
     box = CONTAINERS[extension]
-    video = video if box.video else None
-    args = [*(["-map", maps[0]] if video else []), *(["-map", maps[1]] if audio else [])]
-    copy_video = copy and not (codec or resolution or fps) and holds(box.video_holds, video)
-    copy_audio = copy and not audio_bitrate and holds(box.audio_holds, audio)
+    video = encoding.video if box.video else None
+    args = [*(["-map", encoding.maps[0]] if video else []),
+            *(["-map", encoding.maps[1]] if encoding.audio else [])]
+    copy_video = (encoding.copy and not (encoding.codec or encoding.resolution or encoding.fps)
+                  and holds(box.video_holds, video))
+    copy_audio = (encoding.copy and not encoding.audio_bitrate
+                  and holds(box.audio_holds, encoding.audio))
     if video:
-        filters = ["-vf", _filters(resolution, fps, source_fps)] if simple else []
-        args += ["-c:v", "copy"] if copy_video else [*filters, *_video_codec(extension, codec, quality, speed)]
-    if audio:
-        args += ["-c:a", "copy"] if copy_audio else _audio_codec(box.audio, audio_bitrate)
-    if strip:
-        args += ["-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact",
-                 "-flags:a", "+bitexact", "-metadata:s", "encoder="]
-    elif created:
+        filters = (["-vf", _filters(encoding.resolution, encoding.fps, encoding.source_fps)]
+                   if encoding.simple else [])
+        codec_args = _video_codec(extension, encoding.codec, encoding.quality, encoding.speed)
+        args += ["-c:v", "copy"] if copy_video else [*filters, *codec_args]
+    if encoding.audio:
+        args += (["-c:a", "copy"] if copy_audio
+                 else _audio_codec(box.audio, encoding.audio_bitrate))
+    if encoding.strip:
+        args += ["-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact",
+                 "-flags:v", "+bitexact", "-flags:a", "+bitexact", "-metadata:s", "encoder="]
+    elif encoding.created:
         # ffmpeg drops creation_time when it copies metadata, so it is written back explicitly.
-        args += ["-metadata", f"creation_time={created}"]
-    return [*args, *muxer(extension)], (copy_video or not video) and (copy_audio or not audio)
+        args += ["-metadata", f"creation_time={encoding.created}"]
+    copied = (copy_video or not video) and (copy_audio or not encoding.audio)
+    return [*args, *muxer(extension)], copied
 
 
 def muxer(extension: str) -> list[str]:

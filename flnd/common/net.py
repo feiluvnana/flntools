@@ -17,14 +17,15 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, MutableMapping, Sequence, TypeVar, Union
+from typing import (Any, Callable, Iterable, Iterator, Literal, Mapping, MutableMapping, Sequence,
+                    TypeVar)
 from urllib.parse import urlsplit
 
 import httpx
 
 from flnd.common import paths
 from flnd.common.paths import NotMediaError
-from flnd.source import FetchError, Fetch
+from flnd.source import Fetch, FetchError, File
 from shared import atomic, clock, fmt, http, log
 
 # Tries for one `fetch` function of a file, or one DASH merge, before its error is raised, 1 s,
@@ -50,9 +51,6 @@ SPLIT_HOSTS: frozenset[str] = frozenset({
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
 
 T = TypeVar("T")
-# A file to save: a URL, mirror URLs tried in order, or `fetch(dest, progress)` (`flnd.source.Fetch`)
-# for media without a URL.
-Download = Union[str, Sequence[str], Fetch]
 
 
 # Set by the first Ctrl-C: every thread waiting out a rate limit stops at once, and the job stops
@@ -91,72 +89,33 @@ def cookie_jar(jar: Iterable[dict]) -> httpx.Cookies:
     return cookies
 
 
-def download(client: http.Client, source: Download, dest: Path, *, label: str,
-             headers: Mapping[str, str] | None = None, size: int | None = None,
-             kind: str | None = None, audio: str | None = None,
+def download(client: http.Client, file: File, dest: Path, *, label: str,
+             headers: Mapping[str, str] | None = None, kind: str | None = None,
              received: MutableMapping[str, str] | None = None) -> Path:
-    """Save one file under a progress bar, resuming what an earlier try left, and return the path written.
+    """Save one `File` under a progress bar, resuming an earlier try, and return the path written.
 
-        net.download(run.files, ["https://a.example/f.7z", "https://b.example/f.7z"], Path("f.7z"),
-                     label="f.7z")
-
-    Args:
-        client: the source's files client, which sends its cookies, signs its requests and
-            waits out each 429.
-        source: a URL, mirror URLs tried in order, or a `fetch(dest, progress)` function that
-            writes the file to `dest` and reports `progress(done, total)` in bytes.
-        dest: where the file goes; with `kind`, its extension may change to match the content.
-        label: the file's name on its progress bar and in log lines, such as "posts/a.jpg".
-        headers: extra headers for each URL request, such as a Referer; None sends only the client's.
-        size: the file's size in bytes when the source knows it: the bar's total until the server
-            says, and the size checked when it sends none; None when unknown, and then a file
-            with a `kind` is decoded to check it, unless the server sent its length.
-        kind: "image", "video" or "audio" (`paths.kind_of`) to check the file is media and name it
-            by its content; None saves any file (an archive, a document) as it comes, under `dest`'s
-            name. `paths.SNIFF` lets the content decide: `dest` has no extension yet, and media gets
-            the one its content calls for and is checked as media, while anything else keeps `dest`.
-        audio: the URL of a separate audio stream (DASH), downloaded after the video and merged
-            into `dest` with it; None when the video has its own sound.
-        received: filled with the headers of the response the file came from (lowercase names),
-            such as its `last-modified`, for a URL mirror; None keeps none.
-
-    Returns:
-        The path written, which differs from `dest` when `kind` renamed it.
-
-    Raises:
-        FetchError: the last mirror refused the file (a 4xx other than 429), with its `status`,
-            so the job can refresh an expired link (a 403 or 410); a resumable part is kept.
-        NotMediaError: with `kind`, the last mirror sent a web page or JSON, such as a login wall.
-        media.UnsafeError: with `kind`, media refused the last mirror's file, such as a decompression bomb.
-        media.BrokenError: with `kind`, the last mirror's file still failed `Media.check` after three tries.
-        http.IncompleteError: the last mirror's body still ended early after three tries.
-        http.Error: the last mirror's connection still failed after three tries.
-        KeyboardInterrupt: Ctrl-C during a wait, or a second one (`stopping_now`) during the
-            transfer, which keeps a resumable part.
-        Exception: whatever the last mirror's `fetch` function raised after three tries.
+        net.download(run.files, File(["https://a.example/f.7z", "https://b.example/f.7z"]),
+                     Path("f.7z"), label="f.7z")
 
     Each mirror gets three attempts, each resuming where the last stopped, and a 429 is waited
     out on the same mirror without costing one. A failed mirror is logged with why, and the next
-    one tried; only the last mirror's error reaches the caller. The file appears under its name
-    only once complete and checked. A resumable part (from a server that sends an `ETag` or a
-    `Last-Modified`) and its `.part.json` are kept through any failure, a Ctrl-C or a crash, and
-    the next call for the same `dest` resumes them, even with a fresh URL; any other part is
-    deleted. This makes network requests and can take minutes.
+    one tried; only the last mirror's error reaches the caller.
     """
     from shared import media
 
-    mirrors: list[str | Fetch] = [source] if isinstance(source, str) or callable(source) else list(source)
-    # Each mirror in order: a failure is logged and the next one tried, and only the last one's error reaches the caller.
+    if file.url is None:
+        raise ValueError("download needs a URL or a fetch function")
+    mirrors: list[str | Fetch] = (
+        [file.url] if isinstance(file.url, str) or callable(file.url) else list(file.url))
     for number, mirror in enumerate(mirrors, start=1):
         try:
             if callable(mirror):
-                # A web page or a refused file is the same answer on every try, so it fails at once.
-                save = partial(_save_fetch, mirror, dest, label, size, kind)
+                save = partial(_save_fetch, mirror, dest, label, file.size, kind)
                 final = (NotMediaError, media.UnsafeError)
                 return _again(save, retryable=(Exception,), final=final)
-            if audio is not None:
-                return _save_dash(client, mirror, audio, dest, label, headers)
-            return _save_url(client, mirror, dest, label, headers, size, kind, received)
+            if file.audio is not None:
+                return _save_dash(client, mirror, file.audio, dest, label, headers)
+            return _save_url(client, mirror, dest, label, headers, file.size, kind, received)
         except http.StoppedError:
             raise KeyboardInterrupt from None
         except http.RefusedError as error:
@@ -165,8 +124,6 @@ def download(client: http.Client, source: Download, dest: Path, *, label: str,
                 raise refused from None
             reason: BaseException = refused
         except Exception as error:
-            # Any error of a mirror that isn't the last is worth trying the next mirror for; the last
-            # one's error is the caller's, which records the file as failed.
             if number == len(mirrors):
                 raise
             reason = error
@@ -202,9 +159,10 @@ def _save_url(client: http.Client, url: str, dest: Path, label: str,
         return _sniffed(part, dest, known) if kind == paths.SNIFF else _as_media(part, dest, kind or "", known)
 
     with _Row(label) as row, _recording(seen):
-        saved = client.download(url, dest, headers=headers, size=size, parts=split_parts(url),
-                                check=check if kind is not None else None, progress=row.follow(),
-                                stop=stopping_now)
+        transfer = http.Transfer(
+            headers=headers, size=size, parts=split_parts(url),
+            check=check if kind is not None else None, progress=row.follow(), stop=stopping_now)
+        saved = client.download(url, dest, transfer=transfer)
     if received is not None:
         received.update((name.lower(), value) for name, value in saved.headers.items())
     return saved.path
@@ -220,8 +178,9 @@ def _save_dash(client: http.Client, video: str, audio: str, dest: Path, label: s
     streams = [dest.with_name(f".{dest.name}.{name}.part") for name in ("video", "audio")]
 
     def fetch(url: str, stream: Path, row: _Row) -> None:
-        client.download(url, stream, headers=headers, parts=split_parts(url), progress=row.follow(),
-                        stop=stopping_now)
+        transfer = http.Transfer(headers=headers, parts=split_parts(url),
+                                 progress=row.follow(), stop=stopping_now)
+        client.download(url, stream, transfer=transfer)
 
     def merged(row: _Row) -> Path:
         try:

@@ -329,7 +329,7 @@ shared.http.Client(raw: httpx.Client | None = None, *, pace: Pace | None = None,
 shared.http.Client.back_off(url: str, *, reason: str = 'rate limited', retry_after: float | None = None) -> None
 shared.http.Client.call(url: str, send: Callable[[], A], *, attempts: int = 1) -> A
 shared.http.Client.close() -> None
-shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None, stop: threading.Event | None = None) -> Download
+shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, transfer: Transfer | None = None) -> Download
 shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0, redirects: bool | None = None) -> Response | None
 shared.http.Client.pace: attribute -> Pace | None
 shared.http.Client.raw: attribute -> httpx.Client
@@ -367,10 +367,22 @@ shared.http.ServerError(shared.http.Error)
 shared.http.ServerError.status: attribute
 shared.http.SpaceError(shared.http.Error)
 shared.http.StoppedError(shared.http.Error)
+shared.http.Transfer(client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None, stop: threading.Event | None = None)
+shared.http.Transfer.attempts: field -> int
+shared.http.Transfer.check: field -> Callable[[Path], Any] | None
+shared.http.Transfer.client: field -> httpx.Client | None
+shared.http.Transfer.headers: field -> Mapping[str, str] | None
+shared.http.Transfer.label: field -> str | None
+shared.http.Transfer.parts: field -> Literal['auto'] | int
+shared.http.Transfer.progress: field -> Callable[[int, int | None], Any] | None
+shared.http.Transfer.resume: field -> bool
+shared.http.Transfer.size: field -> int | None
+shared.http.Transfer.stop: field -> threading.Event | None
+shared.http.Transfer.timeout: field -> float
 shared.http.Transport(**options: Any)
 shared.http.Transport.close() -> None
 shared.http.Transport.handle_request(request: httpx.Request) -> httpx.Response
-shared.http.download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None, stop: threading.Event | None = None) -> Download
+shared.http.download(url: str | Sequence[str], dest: PathLike, *, transfer: Transfer | None = None) -> Download
 shared.http.fetch(url: str, *, method: str = 'GET', client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0, redirects: bool | None = None) -> Response | None
 shared.kv: module
 shared.kv.ClosedError(shared.kv.Error, RuntimeError)

@@ -22,7 +22,7 @@ from flnd import site as site_module
 from flnd.common import auth, net, paths
 from flnd.options import Options, RunShared
 from flnd.site import STATE_KEY, TargetSite, source_run
-from flnd.source import FetchError, Site, Target
+from flnd.source import FetchError, File, Site, Target
 from flnd.sources.common.relay import meta_results
 from flnd.sources.common.watch import watch_responses
 from shared import clock, cookies, http, kv, theme
@@ -237,7 +237,7 @@ class BackOffTest(SiteCase):
                    httpx.Response(200, content=b"x")]
         self.serve = lambda request: answers.pop(0)
         run, _ = self.open()
-        net.download(run.files, f"{CDN}/a.7z", self.home / "a.7z", label="a.7z")
+        net.download(run.files, File(f"{CDN}/a.7z"), self.home / "a.7z", label="a.7z")
         self.assertEqual(run.speed, 1.0)
         self.assertIn("! exm: rate limited; waiting 5.0s (attempt 1)", self.lines())
 

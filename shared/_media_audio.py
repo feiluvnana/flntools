@@ -21,8 +21,9 @@ def extract(info: _media.Info, part: Path, extension: str, *, bitrate: int | Non
     Otherwise it is encoded at `bitrate`, or the format's default (MP3 192 kb/s, AAC 160, Opus 128).
     Tags are kept.
     """
-    out, copied = _media.output(extension, video=None, audio=info.audio, quality=90, audio_bitrate=bitrate,
-                                created=info.tags.get("creation_time"))
+    encoding = _media.Encoding(video=None, audio=info.audio, audio_bitrate=bitrate,
+                               created=info.tags.get("creation_time"))
+    out, copied = _media.output(extension, encoding)
     command = ["-n", *_ffmpeg.source(info.path), *out, _ffmpeg.target(part)]
     if copied:
         _ffmpeg.run(command, name=info.path.name, timeout=_ffmpeg.COPY_TIMEOUT)

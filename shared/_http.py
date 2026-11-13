@@ -33,8 +33,9 @@ the next call for the same `dest`, asks only for the rest. A file of 4 MB or mor
 2–4 MB pieces on up to 8 connections (`shared._download` holds how).
 
     http.download("https://cdn.example/v.mp4", "videos/")               # videos/v.mp4
-    http.download([mirror_a, mirror_b], "f.7z", client=client, progress=bar.update,
-                  check=lambda path: media.open(path).check())
+    http.download([mirror_a, mirror_b], "f.7z",
+                  transfer=http.Transfer(client=client, progress=bar.update,
+                                         check=lambda path: media.open(path).check()))
 
 No message or log line here holds a cookie or an `Authorization` value: messages name the method,
 the URL without its query, and the status, and any text from httpx is scrubbed of the request's
@@ -52,7 +53,7 @@ import http.cookiejar
 import json as jsonlib
 import os
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import (TYPE_CHECKING, Any, Callable, Iterator, Literal, Mapping, Sequence, TypeVar,
@@ -75,7 +76,7 @@ if TYPE_CHECKING:  # `selector` loads on the first `html`, so a JSON-only script
 __all__ = [
     "ChangedError", "Client", "CorruptError", "Download", "Error", "IncompleteError", "Pace",
     "RateLimitedError", "RefusedError", "Response", "ServerError", "SpaceError", "StoppedError",
-    "Transport", "download", "fetch",
+    "Transfer", "Transport", "download", "fetch",
 ]
 
 PathLike = Union[str, "os.PathLike[str]"]
@@ -389,17 +390,31 @@ def fetch(url: str, *, method: str = "GET", client: httpx.Client | None = None,
         attempt += 1
 
 
-def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client | None = None,
-             headers: Mapping[str, str] | None = None, size: int | None = None,
-             parts: Literal["auto"] | int = "auto", resume: bool = True, attempts: int = 3,
-             timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
-             progress: Callable[[int, int | None], Any] | None = None, label: str | None = None,
-             stop: threading.Event | None = None) -> Download:
+@dataclass(frozen=True)
+class Transfer:
+    """Options for `download`: client, headers, size, splitting, resume, retries and callbacks."""
+
+    client: httpx.Client | None = None
+    headers: Mapping[str, str] | None = None
+    size: int | None = None
+    parts: Literal["auto"] | int = "auto"
+    resume: bool = True
+    attempts: int = 3
+    timeout: float = 30.0
+    check: Callable[[Path], Any] | None = None
+    progress: Callable[[int, int | None], Any] | None = None
+    label: str | None = None
+    stop: threading.Event | None = None
+
+
+def download(url: str | Sequence[str], dest: PathLike, *,
+             transfer: Transfer | None = None) -> Download:
     """Save one file from the web, resuming and splitting where the server allows, as a `Download`.
 
         http.download("https://cdn.example/v.mp4", "videos/")                # videos/v.mp4
-        http.download([mirror_a, mirror_b], "f.7z", client=client, progress=bar.update,
-                      check=lambda path: media.open(path).check())
+        http.download([mirror_a, mirror_b], "f.7z",
+                      transfer=http.Transfer(client=client, progress=bar.update,
+                                             check=lambda path: media.open(path).check()))
 
     Args:
         url: the file's URL, or mirror URLs tried in order: a mirror that fails for any reason
@@ -407,40 +422,7 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
         dest: the file to write, replaced if it exists; or a folder (one that exists, or a path
             ending in "/"), and the name is then the URL's last path part, made safe by
             `fmt.filename`. Missing folders are made.
-        client: an `httpx.Client` the caller owns, with its cookies, headers, signing and
-            pacing; None uses this module's client, which follows redirects and sends no cookies.
-            Every request carries the `"shared.http.download"` extension, so the client's
-            transport can tell a download's requests from others.
-        headers: headers for every request, over the client's own, such as a `Referer`.
-        size: the file's size in bytes when the caller knows it: the progress total until the
-            server says, and the size checked when the server sends no length. None when unknown.
-        parts: "auto" fetches a file of 4 MB or more in 2–4 MB pieces on up to 8 connections;
-            1 sends one plain request; a number n uses up to n connections (at most 8) on any
-            file over one piece. Only a file whose server takes ranges and sends a validator and
-            a length is split, and only on its host's free connections.
-        resume: True keeps a resumable part and its `.part.json` through any failure, Ctrl-C
-            included, and resumes an earlier call's part for the same `dest`, whatever its URL
-            was then: with `If-Range` when the server sent a strong `ETag` or a `Last-Modified`,
-            else once the part's last 64 bytes, fetched again, match. False starts afresh each
-            time and leaves no part behind.
-        attempts: how many tries in all for a dead connection, a 5xx, a body cut short, a
-            digest that doesn't match, or a `check` that raises `shared.BrokenError`, at least 1;
-            each try resumes where the last stopped. The first retry is at once, then 1 s, 2 s,
-            4 s, … up to 30 s.
-        timeout: seconds each request may wait to connect, and between bytes read.
-        check: called with the complete part's path before it is renamed onto `dest`, such as
-            a media check; raising `shared.BrokenError` (a damaged file) costs an attempt and
-            downloads it again from the start, and any other exception is raised at once. When
-            it returns a `Path`, the part is renamed onto that path instead of `dest`, in the one
-            rename (a file named by its content: `a.jpg` holding a PNG saved as `a.png`); the
-            path must be in `dest`'s folder. None checks only the size.
-        progress: called as `progress(done, total)` in bytes as the file arrives, `total` None
-            while unknown; never from two threads at once. What it raises stops the download
-            and is raised, keeping a resumable part, so a Ctrl-C there can stop it.
-        label: the text of a progress row this function draws itself, such as the file's name;
-            None draws none.
-        stop: an event that stops the download within a second when set, between two chunks, in
-            a wait for a slot or a retry, or by closing a stalled read; a resumable part is kept.
+        transfer: options for the transfer (`Transfer`); None uses its defaults.
 
     Raises:
         RateLimitedError: a 429, at once and never slept on, with the `Retry-After` seconds; a
@@ -454,29 +436,35 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
         SpaceError: a file of 4 MB or more that the disk can't hold, before a byte is written.
         Error: the last mirror's connection failed on every attempt, or a request couldn't be
             sent (an invalid URL, too many redirects).
-        StoppedError: `stop` was set.
+        StoppedError: `transfer.stop` was set.
         ValueError: no URL, `attempts` below 1, or `parts` neither "auto" nor a number from 1.
         Whatever `check` or `progress` raised.
-
-    It may be called from many threads at once. A host's downloads share 4 connections, one
-    more each time that raised its throughput, up to 8; a split file's extra connections take
-    free ones only. Two calls for one `dest` in this process never share a part; two processes
-    might, so don't.
     """
     # The downloader loads on the first download, so a script that only fetches never reads it.
     from shared import _download
 
+    config = transfer or Transfer()
     mirrors = [url] if isinstance(url, str) else list(url)
     if not mirrors:
         raise ValueError("download needs a URL")
-    if attempts < 1:
-        raise ValueError(f"attempts must be at least 1, not {attempts}")
+    if config.attempts < 1:
+        raise ValueError(f"attempts must be at least 1, not {config.attempts}")
+    parts = config.parts
     if parts != "auto" and (isinstance(parts, bool) or not isinstance(parts, int) or parts < 1):
         raise ValueError(f'parts must be "auto" or a number from 1, not {parts!r}')
     options = _download.Options(
-        client if client is not None else _client(), headers=dict(headers or {}), size=size,
-        parts=min(parts, MAX_PARTS) if isinstance(parts, int) else parts, resume=resume,
-        attempts=attempts, timeout=timeout, check=check, progress=progress, label=label, stop=stop)
+        config.client if config.client is not None else _client(),
+        headers=dict(config.headers or {}),
+        size=config.size,
+        parts=min(parts, MAX_PARTS) if isinstance(parts, int) else parts,
+        resume=config.resume,
+        attempts=config.attempts,
+        timeout=config.timeout,
+        check=config.check,
+        progress=config.progress,
+        label=config.label,
+        stop=config.stop,
+    )
     return _download.run(mirrors, dest, options)
 
 
@@ -561,30 +549,27 @@ class Client:
                                             redirects=redirects))
 
     def download(self, url: str | Sequence[str], dest: PathLike, *,
-                 headers: Mapping[str, str] | None = None, size: int | None = None,
-                 parts: Literal["auto"] | int = "auto", resume: bool = True, attempts: int = 3,
-                 timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
-                 progress: Callable[[int, int | None], Any] | None = None,
-                 label: str | None = None, stop: threading.Event | None = None) -> Download:
+                 transfer: Transfer | None = None) -> Download:
         """`http.download` on this client, after the host's turn, resuming after each 429.
 
-            client.download("https://cdn.example.com/v.mp4", "videos/", progress=bar.update)
+            client.download("https://cdn.example.com/v.mp4", "videos/",
+                            transfer=http.Transfer(progress=bar.update))
 
-        `stop` stops this transfer, keeping its part; None uses the client's own `stop`, which
-        still ends the waits before it. A 429's `Retry-After` is waited out up to 5 minutes.
+        `transfer.stop` stops this transfer, keeping its part; None uses the client's own `stop`,
+        which still ends the waits before it. A 429's `Retry-After` is waited out up to 5 minutes.
 
         Raises:
             StoppedError: `stop` was set.
             RefusedError, ServerError, IncompleteError, ChangedError, Error: as `http.download`.
         """
         first = url if isinstance(url, str) else next(iter(url), "")
-        halt = stop if stop is not None else self.stop
+        config = transfer or Transfer()
+        halt = config.stop if config.stop is not None else self.stop
+        bound = replace(config, client=self.raw, stop=halt)
 
         def send() -> Download:
             try:
-                return download(url, dest, client=self.raw, headers=headers, size=size,
-                                parts=parts, resume=resume, attempts=attempts, timeout=timeout,
-                                check=check, progress=progress, label=label, stop=halt)
+                return download(url, dest, transfer=bound)
             except RateLimitedError as error:
                 if error.retry_after is None or error.retry_after <= MAX_RETRY_AFTER:
                     raise
