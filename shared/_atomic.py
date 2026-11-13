@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Union
 
 import shared
+from shared import _clock as clock
 
 __all__ = ["Error", "write", "writing"]
 
@@ -38,6 +39,10 @@ PathLike = Union[str, "os.PathLike[str]"]
 # Windows opens files in text mode unless told otherwise, which would turn "\n" into "\r\n";
 # other systems have no such flag and no such translation, hence the 0.
 BINARY = getattr(os, "O_BINARY", 0)
+# On Windows an antivirus or a thumbnail scanner may hold `dest` open for a moment, and the rename
+# fails with PermissionError meanwhile: it is tried again, every 0.05 s, for about a second.
+WINDOWS = os.name == "nt"
+REPLACE_TRIES, REPLACE_PAUSE = 20, 0.05
 
 
 class Error(shared.Error):
@@ -83,9 +88,21 @@ def writing(dest: PathLike, *, replace: bool = False) -> Iterator[Path]:
     try:
         yield part
         if part.exists():
-            os.replace(part, dest)
+            _replace(part, dest)
     finally:
         part.unlink(missing_ok=True)
+
+
+def _replace(part: Path, dest: Path) -> None:
+    """`os.replace(part, dest)`, tried again for about a second while Windows says the file is in use."""
+    for attempt in range(1, REPLACE_TRIES + 1):
+        try:
+            os.replace(part, dest)
+            return
+        except PermissionError:
+            if not WINDOWS or attempt == REPLACE_TRIES:
+                raise
+            clock.sleep(REPLACE_PAUSE)
 
 
 def write(dest: PathLike, data: bytes, *, mode: int = 0o666) -> None:

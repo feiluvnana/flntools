@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 import shared
-from shared import atomic
+from shared import _atomic, atomic, clock
 
 
 class AtomicCase(unittest.TestCase):
@@ -76,6 +76,44 @@ class WritingTest(AtomicCase):
                 with atomic.writing(self.dest) as part:
                     part.write_text("new")
         self.assertEqual(self.names(), [])
+
+
+class WindowsLockTest(AtomicCase):
+    """A scanner holding `dest` on Windows: `os.replace` fails a few times, then goes through."""
+
+    def held(self, times):
+        real, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append(target)
+            if len(calls) <= times:
+                raise PermissionError(13, "The process cannot access the file", str(target))
+            real(source, target)
+
+        return mock.patch.object(_atomic.os, "replace", replace), calls
+
+    def test_on_windows_the_replace_is_tried_again_while_the_file_is_held(self):
+        patch, calls = self.held(3)
+        with patch, mock.patch.object(_atomic, "WINDOWS", True), clock.use(clock.Fake()) as fake:
+            atomic.write(self.dest, b"new")
+        self.assertEqual((self.dest.read_bytes(), len(calls)), (b"new", 4))
+        self.assertEqual(fake.slept, [0.05] * 3)
+
+    def test_after_about_a_second_the_error_is_raised_and_dest_kept(self):
+        self.dest.write_bytes(b"old")
+        patch, calls = self.held(100)
+        with patch, mock.patch.object(_atomic, "WINDOWS", True), clock.use(clock.Fake()) as fake, \
+                self.assertRaises(PermissionError):
+            atomic.write(self.dest, b"new")
+        self.assertEqual((self.dest.read_bytes(), len(calls)), (b"old", 20))
+        self.assertAlmostEqual(sum(fake.slept), 0.95)
+        self.assertEqual(self.names(), ["a.txt"])
+
+    def test_elsewhere_a_refused_replace_is_raised_at_once(self):
+        patch, calls = self.held(1)
+        with patch, mock.patch.object(_atomic, "WINDOWS", False), self.assertRaises(PermissionError):
+            atomic.write(self.dest, b"new")
+        self.assertEqual(len(calls), 1)
 
 
 class WriteTest(AtomicCase):
