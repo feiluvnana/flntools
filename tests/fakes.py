@@ -20,8 +20,7 @@ from flnd import job
 from flnd.engine import resolve
 from flnd.session import Options
 from flnd.source import FetchError, File, Post, Range, Source, Target
-from shared import clock, http
-from shared._browser import Page
+from shared import browser, clock, http
 
 
 
@@ -127,11 +126,11 @@ class FakeSite:
         return until()
 
     @property
-    def page(self) -> Page:
+    def page(self) -> browser.Page:
         url = self._seen.visited[-1] if self._seen.visited else "about:blank"
         self._raw_page.content.return_value = self._pages.get(url, "")
         self._raw_page.url = url
-        return Page(self._raw_page, mock.MagicMock())
+        return browser.Page(self._raw_page, mock.MagicMock())
 
     def info(self, message: str, **fields: Any) -> None:
         self._seen.messages.append(message.format(**fields))

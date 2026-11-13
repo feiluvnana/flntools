@@ -44,11 +44,9 @@ from flnd.common import auth, files, net
 from flnd.common.pace import SHOWN_WAIT, Pacer
 from flnd.source import FetchError, Range, Source, Target
 from shared import browser, fmt, http, kv, log, prompt, theme
-from shared._browser import Page
 
 if TYPE_CHECKING:
-    from shared._browser import Browser
-    from shared._cookies import Jar
+    from shared import cookies
 
     from flnd.session import Settings
 
@@ -84,7 +82,7 @@ class SourceRun:
     # What the run shares across sources: flnd's folder, the options, the history, the compressor.
     settings: Settings
     # The login's cookies.
-    jar: Jar
+    jar: cookies.Jar
     # The source's client: its cookies, signing, retries and 429 waits.
     http: httpx.Client
     # Pauses the source after a rate limit, however long it takes.
@@ -209,7 +207,7 @@ class TargetSite:
         self.target = target
         self._run = run
         self._source = run.source
-        self._browser: Browser | None = None
+        self._browser: browser.Browser | None = None
         self._page: _PacedPage | None = None
         # The headers of the tab's last main document, read by `goto` for a 429's Retry-After.
         self._document: dict[str, str] | None = None
@@ -325,7 +323,7 @@ class TargetSite:
         return self.page.handoff(until=until, message=message, timeout=timeout)
 
     @property
-    def page(self) -> Page:
+    def page(self) -> browser.Page:
         """The target's tab, opened (with the browser, on first use) blank; see `Site.page`."""
         if self._page is None:
             if self._browser is None:
@@ -447,7 +445,7 @@ class TargetSite:
         if self._page is not None and request.is_navigation_request() and request.frame == self._page.raw.main_frame:
             self._document = {str(name).lower(): value for name, value in dict(response.headers).items()}
 
-    def _connect(self) -> Browser:
+    def _connect(self) -> browser.Browser:
         """The target's browser, with the source's settings and the login's cookies."""
         source = self._source
         # Visible (open's default), so a person can solve a captcha in it; no locale or timezone, so
@@ -507,14 +505,14 @@ class LoginSite:
         log.info("{code}: " + message, code=self._run.source.code, **fields)
 
 
-class _PacedPage(Page):
+class _PacedPage(browser.Page):
     """The target's tab: a `Page` whose `scroll` keeps the source's pace.
 
     The pause between two scrolls is at least the pacer's scroll floor (0.3 s times its learned
     speed), and each scroll counts as a clean one, so 50 in a row ease a slowed-down source back.
     """
 
-    def __init__(self, raw: Any, owner: Browser, *, pacer: Pacer | None):
+    def __init__(self, raw: Any, owner: browser.Browser, *, pacer: Pacer | None):
         super().__init__(raw, owner)
         self._pacer = pacer
 

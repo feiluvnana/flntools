@@ -146,8 +146,7 @@ if TYPE_CHECKING:
 
     import httpx
 
-    from shared import http
-    from shared._browser import Page
+    from shared import browser, http
 
 __all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Login", "LoginError", "Pace", "Post",
            "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill", "pages", "target"]
@@ -841,7 +840,7 @@ class Site(Protocol):
         ...
 
     @property
-    def page(self) -> Page:
+    def page(self) -> browser.Page:
         """The target's tab, a `shared.browser.Page`, opened (blank) on first use; its scrolling keeps the source's pace."""
         ...
 

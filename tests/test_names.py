@@ -9,10 +9,13 @@ a new breach fails `test_no_new_breach`, and a fixed one still listed fails `tes
 so the list can only shrink.
 """
 
+import ast
 import inspect
 import re
+import sys
 import typing
 import unittest
+from pathlib import Path
 from typing import Any
 
 from test_packaging import load_dev
@@ -149,7 +152,8 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
 
     An error re-exported under another module's name (`flnd.TargetError` is `flnd.source.TargetError`,
     which `flnd`'s API lists) belongs to the module that defines it: it is a breach only when no
-    module listing it has an `Error` it is under.
+    module listing it has an `Error` it is under. A library's own error passed through by name
+    (`browser.RawError` is Playwright's) is the library's, not the module's.
     """
     found: set[str] = set()
     by_name = {entry.name: entry for entry in names}
@@ -157,7 +161,7 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
     errors: dict[str, list[Any]] = {}
     homes: dict[int, set[str]] = {}
     for entry in names:
-        if entry.kind == "error":
+        if entry.kind == "error" and not from_a_library(entry.obj):
             errors.setdefault(module_of(entry.name, names), []).append(entry)
             homes.setdefault(id(entry.obj), set()).add(module_of(entry.name, names))
 
@@ -178,6 +182,26 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
     return found
 
 
+def private_imports(source: str) -> list[str]:
+    """Each `shared._x` module a file imports: `import shared._x`, `from shared._x import …` or `from shared import _x`."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found += [alias.name for alias in node.names if alias.name.startswith("shared._")]
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            if node.module.startswith("shared._"):
+                found.append(node.module)
+            elif node.module == "shared":
+                found += [f"shared.{alias.name}" for alias in node.names if alias.name.startswith("_")]
+    return found
+
+
+def from_a_library(error: type) -> bool:
+    """Whether an error class is an installed library's, not this project's or a test's."""
+    file = getattr(sys.modules.get(error.__module__), "__file__", None) or ""
+    return "site-packages" in Path(file).parts
+
+
 class NamesTest(unittest.TestCase):
     def test_no_new_breach(self):
         allowed = {breach for group in ALLOWED.values() for breach in group}
@@ -194,6 +218,27 @@ class NamesTest(unittest.TestCase):
             for breach in group:
                 found = module_of(breach.split(":", 1)[0])
                 self.assertTrue(found == module or found.startswith(f"{module}."), breach)
+
+
+class LibraryErrorTest(unittest.TestCase):
+    def test_a_librarys_error_is_not_a_modules_own(self):
+        from playwright.sync_api import Error
+
+        self.assertTrue(from_a_library(Error))
+        self.assertFalse(from_a_library(dev.ApiName))
+        self.assertFalse(from_a_library(LibraryErrorTest))
+
+
+class PrivateImportTest(unittest.TestCase):
+    def test_nothing_outside_shared_imports_a_private_shared_module(self):
+        for path in sorted([*(dev.ROOT / "flnd").rglob("*.py"), *(dev.ROOT / "scripts").rglob("*.py")]):
+            with self.subTest(str(path.relative_to(dev.ROOT))):
+                self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
+
+    def test_every_spelling_of_a_private_import_is_found(self):
+        source = "import shared._http\nfrom shared._browser import Page\nfrom shared import _kv, log\n"
+        self.assertEqual(private_imports(source), ["shared._http", "shared._browser", "shared._kv"])
+        self.assertEqual(private_imports("from shared import browser\nimport shared\n"), [])
 
 
 class ChecksTest(unittest.TestCase):

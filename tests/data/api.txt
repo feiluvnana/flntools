@@ -97,7 +97,7 @@ flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, s
 flnd.source.Site.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
 flnd.source.Site.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 flnd.source.Site.info(message: str, **fields: Any) -> None
-flnd.source.Site.page: property -> Page
+flnd.source.Site.page: property -> browser.Page
 flnd.source.Site.secrets: property -> MutableMapping[str, str]
 flnd.source.Site.state: property -> MutableMapping[str, Any]
 flnd.source.Site.target: property -> Target
@@ -177,6 +177,7 @@ shared.browser.Browser.open(url: str | None = None, *, idle: bool = False, timeo
 shared.browser.Browser.pages: property -> list[Page]
 shared.browser.Browser.raw: attribute
 shared.browser.Error(shared.Error)
+shared.browser.Match: Union
 shared.browser.MissingError(shared.browser.Error, shared.MissingError)
 shared.browser.Page(raw: RawPage, browser: Browser)
 shared.browser.Page.browser: attribute
@@ -192,6 +193,7 @@ shared.browser.Page.scroll(*, within: str | Locator | None = None, until: Callab
 shared.browser.Page.title: property -> str
 shared.browser.Page.url: property -> str
 shared.browser.Page.wait(css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None, idle: bool = False, timeout: float = 30.0) -> None
+shared.browser.RawError(Exception)
 shared.browser.Subscription(stop: Callable[[], None])
 shared.browser.Subscription.stop() -> None
 shared.browser.WaitError(shared.browser.Error)

@@ -33,6 +33,7 @@ download Chromium, which is behind a lock.
 from __future__ import annotations
 
 import base64
+import functools
 import json as jsonlib  # `json` is also `Page.fetch`'s keyword, as in `http.fetch`
 import os
 import re
@@ -58,7 +59,8 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
-__all__ = ["Browser", "Error", "MissingError", "Page", "Subscription", "WaitError", "check", "open"]
+__all__ = ["Browser", "Error", "Match", "MissingError", "Page", "RawError", "Subscription", "WaitError", "check",
+           "open"]
 
 # Switches that hide the automation Chrome would otherwise show: AutomationControlled is the blink
 # feature that sets `navigator.webdriver`, and infobars is the "controlled by automated software" bar.
@@ -121,17 +123,13 @@ SKIP_IN_PROFILE = shutil.ignore_patterns("Cache", "Code Cache", "GPUCache", "Ser
 Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
 
 
-# Parts of the messages Playwright fails a read with when the page navigates under it.
-NAVIGATING = ("Execution context was destroyed", "page is navigating")
-
-
-class _NeverRaised(Exception):
-    """Stands for Playwright's error classes until `open` imports them, so nothing is caught by mistake."""
-
-
-# open sets these to Playwright's error classes, so importing this module never loads Playwright.
-PlaywrightError: type[Exception] = Exception
-PlaywrightTimeout: type[Exception] = _NeverRaised
+# What Playwright says when what a call read is gone: the page navigated under an evaluation, or
+# Chrome freed a response body (Network.getResponseBody) once its page moved on, seen 2026-11-13.
+GONE = ("Execution context was destroyed", "page is navigating",
+        "No resource with given identifier found")
+# Playwright's own error class, which `except browser.RawError` catches; the module's `__getattr__`
+# resolves it on first use, so importing this module never loads Playwright.
+RawError: type[Exception]
 # Seconds between two checks for a scroll's progress: short next to a page's load, cheap for the page.
 POLL = 0.05
 # Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
@@ -145,6 +143,41 @@ _chromium_offer = threading.Lock()
 
 class Error(shared.Error):
     """The base of every error `shared.browser` raises."""
+
+
+class _NeverRaised(Exception):
+    """Stands for Playwright's error classes where Playwright isn't installed, so nothing matches."""
+
+
+def __getattr__(name: str) -> Any:
+    if name == "RawError":
+        return _raw_error()
+    raise AttributeError(f"module 'shared.browser' has no attribute {name!r}")
+
+
+@functools.cache
+def _raw_error() -> type[Exception]:
+    """Playwright's `Error`, imported once; a class nothing raises where Playwright isn't installed."""
+    try:
+        from playwright.sync_api import Error
+    except ImportError:  # no `browser` extra: no Playwright call can have raised
+        return _NeverRaised
+    return Error
+
+
+@functools.cache
+def _raw_timeout() -> type[Exception]:
+    """Playwright's `TimeoutError`, imported once, as `_raw_error`."""
+    try:
+        from playwright.sync_api import TimeoutError
+    except ImportError:  # no `browser` extra: no Playwright call can have raised
+        return _NeverRaised
+    return TimeoutError
+
+
+def _gone(error: BaseException) -> bool:
+    """Whether a Playwright error says what was read is gone: the page navigated, or a body was freed."""
+    return any(text in str(error) for text in GONE)
 
 
 class MissingError(Error, shared.MissingError):
@@ -394,7 +427,7 @@ class Browser:
                 self.raw.add_cookies([{**cookie, "path": cookie.get("path") or "/"}])  # type: ignore[list-item]
             # Playwright's Error is what a cookie it won't take (no domain, a bad expiry) raises;
             # anything else is a real failure and goes on up.
-            except PlaywrightError as error:
+            except _raw_error() as error:
                 log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
                          error=_without(_first_line(error), str(cookie.get("value", ""))))
 
@@ -499,7 +532,7 @@ class Page:
         try:
             response = self.raw.goto(url, wait_until="networkidle" if idle else "load", timeout=timeout * 1000)
         # Playwright's Error covers DNS failures, aborted requests and timeouts: each means "not loaded".
-        except PlaywrightError as error:
+        except _raw_error() as error:
             log.warn("could not open {url}: {error}", url=url, error=_first_line(error))
             return None
         return response.status if response is not None else None
@@ -544,7 +577,7 @@ class Page:
                 what = "the network to go quiet" if idle else "the page to load"
                 self.raw.wait_for_load_state("networkidle" if idle else "load", timeout=left())
         # Only Playwright's TimeoutError is "too slow"; any other error (a closed tab) goes on up as it is.
-        except PlaywrightTimeout:
+        except _raw_timeout():
             raise WaitError(f"waited {timeout:g} s for {what}") from None
 
     def on_response(self, match: Match, handler: Callable[[Any, Response], Any], *,
@@ -679,7 +712,7 @@ class Page:
         try:
             result = self.raw.evaluate(IN_PAGE_FETCH, request)
         # A tab that navigated, closed or crashed meanwhile: the page is gone, not the request refused.
-        except PlaywrightError as error:
+        except _raw_error() as error:
             raise Error(_without_values(f"{method} {_http._where(url)}: the page couldn't send it: "
                                         f"{_first_line(error)}", sent)) from None
         where = f"{method} {_http._where(result['resolved'])}"
@@ -842,8 +875,8 @@ class Page:
         for attempt in range(tries):
             try:
                 return read()
-            except PlaywrightError as error:
-                if not any(text in str(error) for text in NAVIGATING):
+            except _raw_error() as error:
+                if not _gone(error):
                     raise
                 if attempt + 1 == tries:
                     log.warn("could not {what}, the page kept navigating: {error}", what=what,
@@ -852,7 +885,7 @@ class Page:
                 try:
                     # Up to 10 s for the navigation to finish, in milliseconds.
                     self.raw.wait_for_load_state("load", timeout=10000)
-                except PlaywrightError:
+                except _raw_error():
                     # Still moving, or closed; the next read decides.
                     pass
         return fallback
@@ -886,7 +919,7 @@ class Page:
             # A short timeout: the element was there a moment ago, so one that is gone now won't come back.
             box = target.bounding_box(timeout=1000)
         # Only Playwright's TimeoutError means "gone"; it is reported as the element missing, below.
-        except PlaywrightTimeout:
+        except _raw_timeout():
             box = None
         if box is None:
             raise Error("scroll(within=…) found no visible element to scroll")
@@ -933,13 +966,11 @@ class Page:
 
 
 def _start_playwright() -> Playwright:
-    """Start Playwright's driver, and point `PlaywrightError` and `PlaywrightTimeout` at its error classes."""
-    global PlaywrightError, PlaywrightTimeout
+    """Start Playwright's driver."""
     try:
-        from playwright.sync_api import Error, TimeoutError, sync_playwright
+        from playwright.sync_api import sync_playwright
     except ImportError:
         raise ImportError("shared.browser needs playwright: pip install 'flntools[browser]'") from None
-    PlaywrightError, PlaywrightTimeout = Error, TimeoutError
     return sync_playwright().start()
 
 
@@ -1100,10 +1131,6 @@ def _without_values(text: str, headers: Mapping[str, str]) -> str:
     return text
 
 
-# What Chrome answers for a response body it has already freed (Network.getResponseBody), seen 2026-11-13.
-GONE_BODY = "No resource with given identifier found"
-
-
 def _first_line(error: BaseException) -> str:
     return (str(error).splitlines() or [""])[0]
 
@@ -1124,12 +1151,12 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
     try:
         body = response.text()
     # A body Playwright can't read is skipped, so one odd response doesn't stop the handler's other calls.
-    except PlaywrightError as error:
+    except _raw_error() as error:
         # Chrome frees a page's response bodies when the page moves on (a source going from one tab
         # to the next), and a listener runs only when Playwright next pumps its events, often after
         # that: the body is gone, and it belonged to the page being left. That is expected, so it
         # is skipped without a line; any other unreadable body is still worth a debug line.
-        if GONE_BODY not in str(error):
+        if not _gone(error):
             log.debug("on_response: no body for {url}: {error}", url=fmt.url(response.url), error=_first_line(error))
         return []
     pieces = [line for line in body.splitlines() if line.strip()] if lines else [body]

@@ -557,9 +557,9 @@ class OpenTest(BrowserCase):
             self.assertEqual(response.status, 200)
 
     def test_args_are_added(self):
-        error = browser.PlaywrightError("stop here")
+        error = browser.RawError("stop here")
         with mock.patch("playwright.sync_api._generated.BrowserType.launch", side_effect=error) as launch:
-            with self.assertRaises(browser.PlaywrightError):
+            with self.assertRaises(browser.RawError):
                 browser.open(headless=True, args=["--no-sandbox"])
         self.assertEqual(launch.call_args.kwargs["args"], [*browser.LAUNCH_ARGS, "--no-sandbox"])
 
@@ -742,7 +742,7 @@ class PageTest(PageCase):
                     self.page.wait(**options, timeout=0.2)
                 self.assertEqual(str(caught.exception), f"waited 0.2 s for {what}")
                 self.assertIsInstance(caught.exception, browser.Error)
-                self.assertNotIsInstance(caught.exception, browser.PlaywrightError)
+                self.assertNotIsInstance(caught.exception, browser.RawError)
                 self.assertLess(time.monotonic() - started, 3)
 
     def test_wait_timeout_is_for_every_condition_together(self):
@@ -868,7 +868,7 @@ class FakeContext:
     def add_cookies(self, cookies):
         for cookie in cookies:
             if "domain" not in cookie:
-                raise browser.PlaywrightError(f"Invalid cookie {cookie}")
+                raise browser.RawError(f"Invalid cookie {cookie}")
             self.stored.append(cookie)
 
     def cookies(self):
@@ -917,20 +917,38 @@ class PageContextTest(unittest.TestCase):
                 self.assertEqual(closed, [1])
 
 
+class RawErrorTest(unittest.TestCase):
+    def test_raw_error_is_playwrights_before_any_browser_opens_and_stays_the_same(self):
+        from playwright.sync_api import Error
+
+        code = ("from shared import browser\n"
+                "try:\n    raise __import__('playwright.sync_api').sync_api.Error('x')\n"
+                "except browser.RawError:\n    print('caught')")
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.stdout.strip(), "caught", done.stderr)
+        self.assertIs(browser.RawError, Error)
+        self.assertIs(browser.RawError, browser.RawError)
+
+    def test_gone_matches_a_navigation_and_a_freed_body_only(self):
+        self.assertTrue(browser._gone(Exception("Execution context was destroyed, most likely")))
+        self.assertTrue(browser._gone(Exception("No resource with given identifier found")))
+        self.assertFalse(browser._gone(Exception("Target closed")))
+
+
 class GoneBodyTest(BrowserCase):
     def response(self, error):
         return SimpleNamespace(url="https://site.test/api/graphql", text=mock.Mock(side_effect=error))
 
     def test_a_body_freed_after_the_page_moved_on_is_skipped_without_a_line(self):
         log.level = "debug"
-        error = browser.PlaywrightError("Response.text: Protocol error (Network.getResponseBody): "
+        error = browser.RawError("Response.text: Protocol error (Network.getResponseBody): "
                                         "No resource with given identifier found")
         self.assertEqual(browser._json_bodies(self.response(error), False), [])
         self.assertEqual(self.lines(), [])
 
     def test_another_unreadable_body_is_a_debug_line(self):
         log.level = "debug"
-        self.assertEqual(browser._json_bodies(self.response(browser.PlaywrightError("Target closed")), False), [])
+        self.assertEqual(browser._json_bodies(self.response(browser.RawError("Target closed")), False), [])
         self.assertEqual(self.lines(), ["· on_response: no body for https://site.test/api/graphql: Target closed"])
 
 
@@ -1069,7 +1087,7 @@ class NavigationRaceTest(BrowserCase):
     """Reads that evaluate in the page survive "Execution context was destroyed" once or twice."""
 
     def page(self, failures):
-        errors = [browser.PlaywrightError("Page.content: Execution context was destroyed, most likely "
+        errors = [browser.RawError("Page.content: Execution context was destroyed, most likely "
                                           "because of a navigation")] * failures
         loads = []
 
@@ -1093,9 +1111,9 @@ class NavigationRaceTest(BrowserCase):
         self.assertTrue(any("kept navigating" in line for line in self.lines()))
 
     def test_another_error_is_not_swallowed(self):
-        raw = SimpleNamespace(content=mock.Mock(side_effect=browser.PlaywrightError("Target closed")))
+        raw = SimpleNamespace(content=mock.Mock(side_effect=browser.RawError("Target closed")))
         page = browser.Page(raw, SimpleNamespace(_headless=True))  # type: ignore[arg-type]
-        with self.assertRaises(browser.PlaywrightError):
+        with self.assertRaises(browser.RawError):
             page.document
 
 

@@ -309,9 +309,7 @@ class FakeChrome:
 
 class ReadTelegramWebTest(unittest.TestCase):
     def read(self, tab):
-        # `browser.open` sets PlaywrightError when it starts the driver; the fake open does not.
-        with mock.patch("shared._browser.open", lambda **options: FakeChrome(tab)), \
-                mock.patch("shared._browser.PlaywrightError", PlaywrightError):
+        with mock.patch("shared._browser.open", lambda **options: FakeChrome(tab)):
             return read_telegram_web()
 
     def test_the_storage_of_a_tab_that_reached_telegram_web(self):

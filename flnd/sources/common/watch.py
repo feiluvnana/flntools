@@ -28,7 +28,6 @@ from shared import browser
 
 if TYPE_CHECKING:
     from flnd.source import Site
-    from shared._browser import Match
 
 __all__ = ["Responses", "watch_responses"]
 
@@ -47,7 +46,7 @@ class Responses:
         lines: read each body as newline-delimited JSON (Facebook's), one item per line.
     """
 
-    def __init__(self, site: Site, match: Match, *, scroll: bool = False, lines: bool = False):
+    def __init__(self, site: Site, match: browser.Match, *, scroll: bool = False, lines: bool = False):
         self._site = site
         self._scroll = scroll
         # (data, Playwright response) pairs, oldest first; the handler runs inside Playwright's waits,
@@ -111,7 +110,7 @@ class Responses:
             yield data
 
 
-def watch_responses(site: Site, match: Match, *, scroll: bool = False, lines: bool = False) -> Responses:
+def watch_responses(site: Site, match: browser.Match, *, scroll: bool = False, lines: bool = False) -> Responses:
     """Watch the target's tab for JSON responses whose URL matches, from now on; see the module.
 
         responses = watch_responses(site, "graphql", scroll=True)

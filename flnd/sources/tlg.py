@@ -425,9 +425,8 @@ def read_telegram_web() -> dict[str, str]:
                                  "or try a QR code instead")
             try:
                 return page.raw.evaluate("Object.assign({}, localStorage)")
-            # Playwright's Error is what evaluate raises when the tab navigated away or closed meanwhile;
-            # `browser.PlaywrightError` is that class, which sources may not import, and is set once open has run.
-            except browser.PlaywrightError as error:
+            # What evaluate raises when the tab navigated away or closed meanwhile.
+            except browser.RawError as error:
                 raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None
     except (OSError, RuntimeError, ValueError) as error:
         raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None

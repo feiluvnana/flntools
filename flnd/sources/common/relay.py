@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     from flnd.source import Site
-    from shared._selector import Selection
+    from shared import selector
 
 __all__ = ["embedded_results", "meta_results"]
 
@@ -41,7 +41,7 @@ def meta_results(site: Site, url: str) -> list[Any]:
     return embedded_results(site.page.document)
 
 
-def embedded_results(page: Selection) -> list[Any]:
+def embedded_results(page: selector.Selection) -> list[Any]:
     """Every GraphQL result embedded in a page, each shaped like a response: `{"data": {…}}`."""
     found = []
     for text in page.css(SCRIPTS).all:
