@@ -4,7 +4,7 @@ Pacing, retries and 429 back-offs are `shared.http.Client`'s (flnd/site.py makes
 the httpx client here only carries the source's cookies, user agent and signing. A file's transfer
 is `Client.download`'s (resume, ranges, the per-host limit, its own three attempts, a 429 waited
 out). What stays here is flnd's own: mirrors tried in order and logged, the media check
-(`files.checked`) and naming a file by its content, the DASH audio merge, and a source's `fetch`
+(`paths.checked`) and naming a file by its content, the DASH audio merge, and a source's `fetch`
 function. `download` resumes every file and splits a big one into ranges only on the CDNs in
 `SPLIT_HOSTS`.
 """
@@ -22,8 +22,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from flnd.common import files
-from flnd.common.files import NotMediaError
+from flnd.common import paths
+from flnd.common.paths import NotMediaError
 from flnd.source import FetchError, Fetch
 from shared import atomic, clock, fmt, http, log
 
@@ -111,9 +111,9 @@ def download(client: http.Client, source: Download, dest: Path, *, label: str,
         size: the file's size in bytes when the source knows it: the bar's total until the server
             says, and the size checked when it sends none; None when unknown, and then a file
             with a `kind` is decoded to check it, unless the server sent its length.
-        kind: "image", "video" or "audio" (`files.kind_of`) to check the file is media and name it
+        kind: "image", "video" or "audio" (`paths.kind_of`) to check the file is media and name it
             by its content; None saves any file (an archive, a document) as it comes, under `dest`'s
-            name. `files.SNIFF` lets the content decide: `dest` has no extension yet, and media gets
+            name. `paths.SNIFF` lets the content decide: `dest` has no extension yet, and media gets
             the one its content calls for and is checked as media, while anything else keeps `dest`.
         audio: the URL of a separate audio stream (DASH), downloaded after the video and merged
             into `dest` with it; None when the video has its own sound.
@@ -199,7 +199,7 @@ def _save_url(client: http.Client, url: str, dest: Path, label: str,
         known = "content-length" in seen or size is not None
         # The name its content calls for, which `http.download` renames the part onto in one
         # step: a crash never leaves `a.jpg` holding a PNG, which the job would take as saved.
-        return _sniffed(part, dest, known) if kind == files.SNIFF else _as_media(part, dest, kind or "", known)
+        return _sniffed(part, dest, known) if kind == paths.SNIFF else _as_media(part, dest, kind or "", known)
 
     with _Row(label) as row, _recording(seen):
         saved = client.download(url, dest, headers=headers, size=size, parts=split_parts(url),
@@ -311,7 +311,7 @@ def _save_fetch(fetch: Fetch, dest: Path, label: str, size: int | None, kind: st
             row.start(size)
             fetch(part, row.stoppable)
             known = size is not None
-            if kind == files.SNIFF:
+            if kind == paths.SNIFF:
                 final = _sniffed(part, dest, known)
             else:
                 final = dest if kind is None else _as_media(part, dest, kind, known)
@@ -325,9 +325,9 @@ def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
     """Where a downloaded photo or video goes, named by its content; a web page or a broken file raises.
 
     A file whose size matched Content-Length (`known`) is only sniffed: decoding it would cost
-    time and catch nothing the size didn't. See `files.checked` for what raises.
+    time and catch nothing the size didn't. See `paths.checked` for what raises.
     """
-    extension = files.checked(part, kind, decode=not known)
+    extension = paths.checked(part, kind, decode=not known)
     if extension is None or same_extension(extension, dest.suffix):
         return dest
     return dest.with_suffix(extension)
@@ -343,14 +343,14 @@ def _sniffed(part: Path, dest: Path, known: bool) -> Path:
     from shared import media
 
     extension = media.sniff(part)
-    if extension in files.PAGES:
+    if extension in paths.PAGES:
         raise NotMediaError("got a web page instead of a file")
     # `kind_of` reads a name's extension, and ".mp4" alone is a name without one.
-    kind = files.kind_of(f"file{extension}") if extension else None
+    kind = paths.kind_of(f"file{extension}") if extension else None
     if extension is None or kind is None:
         # An archive, a document, or nothing `media` knows: kept as it came.
         return dest
-    files.checked(part, kind, decode=not known)
+    paths.checked(part, kind, decode=not known)
     return dest.with_name(dest.name + extension)
 
 

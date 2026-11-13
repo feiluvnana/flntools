@@ -9,7 +9,9 @@ made-up source on example.com; the short-link HEAD request is a fake `follow`. N
 import dataclasses
 import datetime
 import importlib
+import inspect
 import unittest
+from types import CodeType
 from unittest import mock
 
 from example_source import FIXTURES, Example as RoutedExample
@@ -501,6 +503,82 @@ class PagesTest(unittest.TestCase):
         self.assertEqual(fetch.call_count, 3)
         self.assertEqual([page["n"] for page in pages(lambda cursor: {"n": 1, "next": ""}, lambda page: page["next"])],
                          [1])
+
+
+BROWSER_NAMES = frozenset({"page", "goto", "handoff", "in_page", "watch_responses", "meta_results",
+                           "on_response", "on_request", "scroll", "browser"})
+
+
+def _names_browser(function, source):
+    """Whether `function`, or what it calls in the source's module or `flnd.sources.common`, names a browser member."""
+    home = source.__module__
+    seen = set()
+    stack = []
+
+    def follow(found):
+        if not inspect.isfunction(found):
+            return
+        stack.append((found.__code__, found.__globals__))
+        for cell in found.__closure__ or ():
+            try:
+                inner = cell.cell_contents
+            except ValueError:
+                continue
+            if inspect.isfunction(inner):
+                stack.append((inner.__code__, inner.__globals__))
+
+    follow(function)
+    while stack:
+        code, scope = stack.pop()
+        if code in seen:
+            continue
+        seen.add(code)
+        keywords = {name for constant in code.co_consts if isinstance(constant, tuple)
+                    for name in constant if isinstance(name, str)}
+        if BROWSER_NAMES & (set(code.co_names) | keywords):
+            return True
+        stack += [(constant, scope) for constant in code.co_consts if isinstance(constant, CodeType)]
+        for name in code.co_names:
+            for found in (scope.get(name), getattr(source, name, None)):
+                module = getattr(found, "__module__", None) or ""
+                if module == home or module.startswith("flnd.sources.common"):
+                    follow(found)
+    return False
+
+
+def _source_uses_browser(source):
+    functions = [route.function for route in source.routes]
+    functions += [getattr(source, category.name)
+                  for route in source.routes for category in route.categories]
+    return any(_names_browser(function, source) for function in functions)
+
+
+class BrowserDeclarationTest(unittest.TestCase):
+    def test_every_source_that_names_a_browser_member_declares_browser_true(self):
+        for code, source in SOURCES.items():
+            with self.subTest(source=code):
+                self.assertEqual(source.browser, _source_uses_browser(source))
+
+    def test_a_helper_a_category_calls_is_found_by_the_check(self):
+        def load_in_page(site, url):
+            return site.fetch(url, in_page=True)
+
+        class Uses(Source):
+            code, name, domains = "use", "Uses", ("example.com",)
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield from self.helper(site)
+
+            def helper(self, site):
+                load_in_page(site, "https://www.example.com/api")
+                yield from ()
+
+        self.assertTrue(_source_uses_browser(Uses))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from unittest import mock
 from media_samples import needs_pillow
 from test_engine import EngineCase, FakeMedia, compressing
 
-from flnd.common import compress, files
+from flnd.common import compress, paths
 from flnd.common.compress import KINDS, LEVEL, ONE_AT_A_TIME, Compressor, compress_file
 
 
@@ -124,11 +124,11 @@ class RealPhotoTest(EngineCase):
 
 class TableTest(unittest.TestCase):
     def test_photos_videos_and_audio_are_the_kinds(self):
-        self.assertEqual(KINDS, (files.IMAGE, files.VIDEO, files.AUDIO))
+        self.assertEqual(KINDS, (paths.IMAGE, paths.VIDEO, paths.AUDIO))
 
     def test_only_videos_take_turns(self):
         # One x264 encode already uses every core.
-        self.assertEqual(ONE_AT_A_TIME, frozenset({files.VIDEO}))
+        self.assertEqual(ONE_AT_A_TIME, frozenset({paths.VIDEO}))
 
     def test_the_level_is_a_media_level(self):
         from shared import _media
@@ -184,7 +184,7 @@ class CompressorTest(EngineCase):
 
         compressor = Compressor()
         with compressing(compress):
-            results = [compressor.compress(folder / name, files.kind_of(name)) for name in ("a.jpg", "b.jpg", "c.mp4")]
+            results = [compressor.compress(folder / name, paths.kind_of(name)) for name in ("a.jpg", "b.jpg", "c.mp4")]
         self.assertEqual(calls, ["a.jpg", "c.mp4"])
         self.assertEqual((results[0], results[1], results[2]["compressed"]), (None, None, "none"))
         self.assertEqual(compressor.off, {"image"})
@@ -273,7 +273,7 @@ class ApplyTest(EngineCase):
         self.assertGreater(peaks["image"], 1)
         self.assertEqual(peaks["video"], 1)
         for name in names:
-            self.assertTrue(files.unchanged(folder / name, history[f"exm:{name}"]), name)
+            self.assertTrue(paths.unchanged(folder / name, history[f"exm:{name}"]), name)
 
 
 if __name__ == "__main__":

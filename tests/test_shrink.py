@@ -16,7 +16,7 @@ from media_samples import fresh, needs_ffmpeg, needs_pillow, run, PICTURE
 from test_engine import CDN, EngineCase, make_source
 
 from flnd import Engine
-from flnd.common import compress, files
+from flnd.common import compress, paths
 from flnd.source import File
 from shared import kv, media
 
@@ -83,11 +83,11 @@ class ShrinkCase(EngineCase):
         return Engine(home=self.home, sources={"aaa": self.source})
 
     def row(self):
-        with kv.open(self.home / files.TARGETS, table="targets") as targets:
+        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
             return targets["aaa:example_user"]
 
     def history(self):
-        with kv.open(self.home / files.HISTORY, table="downloads") as rows:
+        with kv.open(self.home / paths.HISTORY, table="downloads") as rows:
             return {key: row for key, row in rows.items()}
 
 
@@ -152,14 +152,14 @@ class RealMediaTest(unittest.TestCase):
     @needs_pillow
     def test_a_jpeg_stays_a_jpeg(self):
         path = fresh("big.jpg")
-        fields = compress.compress_file(path, files.IMAGE, set())
+        fields = compress.compress_file(path, paths.IMAGE, set())
         self.assertEqual(Path(fields["path"]), path)
         self.assertEqual(media.sniff(path), ".jpg")
 
     @needs_ffmpeg("libx264")
     def test_an_mp4_stays_an_mp4(self):
         path = fresh("big.mp4")
-        fields = compress.compress_file(path, files.VIDEO, set())
+        fields = compress.compress_file(path, paths.VIDEO, set())
         self.assertEqual(Path(fields["path"]).suffix, ".mp4")
         self.assertEqual(media.open(Path(fields["path"])).info.video, "h264")
 
@@ -168,7 +168,7 @@ class RealMediaTest(unittest.TestCase):
         path = fresh("big.mp4").with_name("h265.mp4")
         run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=2", "-c:v", "libx265", "-crf", "5",
             "-tag:v", "hvc1", str(path))
-        fields = compress.compress_file(path, files.VIDEO, set())
+        fields = compress.compress_file(path, paths.VIDEO, set())
         self.assertEqual(Path(fields["path"]).suffix, ".mp4")
         self.assertEqual(media.open(Path(fields["path"])).info.video, "hevc")
 
@@ -178,13 +178,13 @@ class RealMediaTest(unittest.TestCase):
         heavy = fresh("big.mp4").with_name("heavy.mp4")
         run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=10", "-c:v", "mpeg4",
             "-q:v", "2", str(heavy))
-        fields = compress.compress_file(heavy, files.VIDEO, set())
+        fields = compress.compress_file(heavy, paths.VIDEO, set())
         self.assertEqual(fields["compressed"], compress.LEVEL)
         lean = fresh("big.mp4").with_name("lean.mp4")
         run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=10", "-c:v", "libx264",
             "-crf", "45", str(lean))
         before = lean.read_bytes()
-        self.assertEqual(compress.compress_file(lean, files.VIDEO, set())["compressed"], "none")
+        self.assertEqual(compress.compress_file(lean, paths.VIDEO, set())["compressed"], "none")
         self.assertEqual(lean.read_bytes(), before)
 
 

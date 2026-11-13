@@ -1,4 +1,4 @@
-"""`Engine.sync` and the saved target settings (flnd/settings.py, flnd/repair.py): the plan, the
+"""`Engine.sync` and the saved target settings (flnd/targets.py, flnd/repair.py): the plan, the
 records, `Engine.download`'s use of them, repair, the fetch and the summary.
 
 Each test runs on a temporary `.flnd` with test sources on `httpx.MockTransport` (see `EngineCase`),
@@ -18,8 +18,8 @@ from media_samples import needs_pillow
 from test_engine import CDN, EngineCase, FakeMedia, compressing, history, make_source, noise
 
 from flnd import Engine, Range, TargetReport
-from flnd.common import files
-from flnd.session import Options
+from flnd.common import paths
+from flnd.options import Options
 from flnd.source import File, Post, Source, Target, target
 from shared import kv
 
@@ -71,7 +71,7 @@ class SyncCase(EngineCase):
         return self.engine()._plan(list(targets))
 
     def saved(self):
-        with kv.open(self.home / files.TARGETS, table="targets") as targets:
+        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
             return dict(targets.items())
 
     def folder(self):
@@ -121,20 +121,20 @@ class SettingsTest(SyncCase):
 
     def test_every_recorded_target_and_unrecorded_folders(self):
         self.download(shrink=True)
-        (self.home / files.MEDIA / "aaa" / "older").mkdir(parents=True)
-        (self.home / files.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
+        (self.home / paths.MEDIA / "aaa" / "older").mkdir(parents=True)
+        (self.home / paths.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
         chosen = dict(self.plan())
         self.assertEqual(chosen[Target("aaa", "user", "older")], Options())
         # A folder of a source flnd doesn't have, or a file beside the folders, isn't a target.
-        (self.home / files.MEDIA / "zzz" / "b").mkdir(parents=True)
-        (self.home / files.MEDIA / "aaa" / "a.zip").write_bytes(b"")
+        (self.home / paths.MEDIA / "zzz" / "b").mkdir(parents=True)
+        (self.home / paths.MEDIA / "aaa" / "a.zip").write_bytes(b"")
         self.assertEqual(len(self.plan()), 2)
         self.sync()
         self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
 
     def test_planning_creates_no_file(self):
         self.assertEqual(self.plan(), [])
-        self.assertFalse((self.home / files.TARGETS).exists())
+        self.assertFalse((self.home / paths.TARGETS).exists())
 
 
 class DownloadAppliesTest(SyncCase):
@@ -174,7 +174,7 @@ class DownloadAppliesTest(SyncCase):
 
     def test_a_file_already_compressed_with_the_new_setting_is_left(self):
         self.download()
-        with kv.open(self.home / files.HISTORY, table="downloads") as rows:
+        with kv.open(self.home / paths.HISTORY, table="downloads") as rows:
             rows["aaa:a.jpg"] = {**rows["aaa:a.jpg"], "compressed": "mid"}
             # Another level is compressed again.
             rows["aaa:b.jpg"] = {**rows["aaa:b.jpg"], "compressed": "low"}
@@ -309,16 +309,16 @@ class RepairTest(SyncCase):
         import time
 
         from flnd import repair
-        from flnd.common import files
+        from flnd.common import paths
 
-        folder = self.home / files.MEDIA / "aaa" / "example_user"
+        folder = self.home / paths.MEDIA / "aaa" / "example_user"
         folder.mkdir(parents=True)
         made = {name: folder / name for name in (".a.jpg.11111111.part", ".a.jpg.11111111.part.json",
                                                   ".b.jpg.22222222.part", ".b.jpg.22222222.part.json",
                                                   ".c.jpg.33333333.part", ".d.jpg.44444444.part.json")}
         for path in made.values():
             path.write_bytes(b"x")
-        old = time.time() - (files.RESUMABLE_DAYS + 1) * 24 * 3600
+        old = time.time() - (paths.RESUMABLE_DAYS + 1) * 24 * 3600
         os.utime(made[".b.jpg.22222222.part"], (old, old))
         repair.repair({}, repair.Tally("aaa:example_user", folder))
         self.assertEqual(sorted(path.name for path in folder.iterdir()),
@@ -404,7 +404,7 @@ class FetchTest(SyncCase):
             return None
 
         self.download()
-        with kv.open(self.home / files.TARGETS, table="targets") as targets:
+        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
             targets["aaa:a"] = {**targets["aaa:a"], "shrink": True}
         self.site.files["d.jpg"] = noise("JPEG")
         self.site.serve()

@@ -45,7 +45,7 @@ DEFAULT_PYTHON = "3.14"
 
 # The modules the API snapshot lists, each through its `__all__`: the toolkit, the module sources
 # are written against, and the engine API (`flnd`'s own `__all__`, redesign B1).
-API_MODULES = ("shared", "flnd.source", "flnd")
+API_MODULES = ("shared", "flnd.source", "flnd.query", "flnd")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.

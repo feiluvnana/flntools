@@ -515,6 +515,7 @@ class TikTok(Source):
     domains = ("tiktok.com",)
     needs = ("sessionid", "sid_tt")
     user_agent = TIKTOK_UA
+    browser = True
     # No known limit; a captcha is its signal, which doubles the gap (plan/phase-6/pace.md).
     pace = 1.0
     # What a post's files are named and keyed by, as they always were: `<date>_<id>` for a video and

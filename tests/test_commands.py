@@ -17,8 +17,8 @@ from test_engine import make_source
 from flnd import Engine, Target, TargetReport
 from flnd import cli as flnd_cli
 from flnd import sources
-from flnd.common import auth, files
-from flnd.session import Options
+from flnd.common import auth, paths
+from flnd.options import Options
 from flnd.source import Source
 from shared import cookies, kv, log, theme
 from shared._theme import Screen
@@ -86,7 +86,7 @@ class FlndCase(unittest.TestCase):
 
 
 class RunsCase(FlndCase):
-    """`Engine._run` is replaced: each call goes in `runs`, with its first target's options; 3 files."""
+    """`Engine._run` is replaced: each call goes in `runs`, with its first target's options; 3 paths."""
 
     def setUp(self):
         super().setUp()
@@ -114,7 +114,7 @@ class DownloadTest(RunsCase):
         self.assertEqual(options, Options(categories=("reels", "media", "tagged"), since=date(2026, 1, 1),
                                           until=date(2026, 6, 30)))
         self.assertEqual(engine.home, Path(".flnd"))
-        storage = (Path(self.tmp.name) / ".flnd" / files.MEDIA).resolve()
+        storage = (Path(self.tmp.name) / ".flnd" / paths.MEDIA).resolve()
         self.assertEqual(out.splitlines(), [f"• Storage: {storage}", "✓ Complete. 3 files"])
 
     def test_defaults(self):
@@ -162,8 +162,8 @@ class DownloadTest(RunsCase):
             self.assertEqual(code, 2, target)
             self.assertIn(message, out)
         self.assertEqual(self.runs, [])
-        self.assertFalse((Path(".flnd") / files.MEDIA).exists())
-        self.assertFalse((Path(".flnd") / files.METADATA).exists())
+        self.assertFalse((Path(".flnd") / paths.MEDIA).exists())
+        self.assertFalse((Path(".flnd") / paths.METADATA).exists())
 
     def test_bad_options(self):
         message = ("✗ no source here has 'reels': use all, or tik: videos, stories, playlists, reposts, liked, "
@@ -233,7 +233,7 @@ class TimeTest(RunsCase):
                 self.assertEqual(code, 2)
                 self.assertIn(message, out)
         self.assertEqual(self.runs, [])
-        self.assertFalse((Path(".flnd") / files.TARGETS).exists())
+        self.assertFalse((Path(".flnd") / paths.TARGETS).exists())
 
 
 class ShrinkOptionTest(RunsCase):
@@ -241,7 +241,7 @@ class ShrinkOptionTest(RunsCase):
         code, _, out = self.run_app("download", "ins:example_user", "--shrink")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.runs[0][2], Options(shrink=True))
-        with kv.open(Path(".flnd") / files.TARGETS, table="targets") as targets:
+        with kv.open(Path(".flnd") / paths.TARGETS, table="targets") as targets:
             row = targets["ins:example_user"]
         self.assertEqual((row["kind"], row["shrink"]), ("user", True))
 
@@ -267,7 +267,7 @@ class ShrinkOptionTest(RunsCase):
             self.assertEqual(code, 2, args)
             self.assertIn("✗ unrecognized arguments", out)
         self.assertEqual(self.runs, [])
-        self.assertFalse((Path(".flnd") / files.TARGETS).exists())
+        self.assertFalse((Path(".flnd") / paths.TARGETS).exists())
 
 
 class SyncCommandTest(RunsCase):
@@ -395,7 +395,7 @@ class LoginFileTest(LoginCase):
         # Sealed in the vault, whose key is as private as the plain cookie files were; nothing else is written.
         self.assertEqual(sorted(path.name for path in Path(".flnd").rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
         if os.name != "nt":
-            self.assertEqual(stat.S_IMODE((Path(".flnd") / files.KEY).stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((Path(".flnd") / paths.KEY).stat().st_mode), 0o600)
 
     def test_json_export_and_old_json_removed(self):
         Path(".flnd/cookies").mkdir(parents=True)

@@ -18,7 +18,7 @@ from urllib.parse import parse_qsl, urlencode
 from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
-from flnd.session import Options
+from flnd.options import Options
 from flnd.source import FetchError, Post, Target, TargetError
 from flnd.sources.fbk import Facebook, image_extension, media_items
 from shared import browser

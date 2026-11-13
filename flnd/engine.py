@@ -4,7 +4,7 @@
 `download` and `sync` run them and return a `Report`, `login` and `logout` keep the logins. Every
 decision a command makes is here, where a test reaches it without a terminal: reading the options'
 text (`Range.parse`), refusing `--from` for a single post, each target's saved
-settings (flnd/settings.py) and applying a changed one to the files already saved, `sync`'s repair
+settings (flnd/targets.py) and applying a changed one to the files already saved, `sync`'s repair
 and tally (flnd/repair.py). flnd/cli.py only parses, asks `login`'s questions and prints.
 
 How a run goes: targets are grouped by source only; each source gets one worker and its HTTP
@@ -25,7 +25,6 @@ line and row, the totals and the exit status. Logs older than `LOG_DAYS` are del
 
 from __future__ import annotations
 
-import inspect
 import itertools
 import signal
 import threading
@@ -35,17 +34,17 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from types import CodeType
 from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
 
-from flnd import job, repair, settings
+import flnd.targets
+from flnd import job, repair
 from flnd.job import TargetReport
-from flnd.common import auth, compress, files, net
+from flnd.common import auth, compress, net, paths
 from flnd.common.compress import Compressor
-from flnd.session import Options, Settings, single_targets, unknown_categories
+from flnd.options import Options, RunShared, single_targets, unknown_categories
 from flnd.site import LoginSite, SourceRun, TargetSite, source_run
 from flnd.source import Range, Source, Target, TargetError
 from flnd.sources import SOURCES
@@ -60,12 +59,6 @@ ACCOUNT = "account"
 LOG_DAYS = 30
 # What `logout` takes for every source.
 ALL = "all"
-
-# What in a source's code means it can drive a browser: the `Site` members and helpers that open
-# or use a page (`Site.page`, `goto`, `handoff`, `fetch(in_page=True)`, `watch_responses`,
-# `meta_results`, `scroll`), and the `Page` methods that listen to responses or requests.
-BROWSER_NAMES = frozenset({"page", "goto", "handoff", "in_page", "watch_responses", "meta_results",
-                           "on_response", "on_request", "scroll", "browser"})
 
 
 @dataclass(frozen=True)
@@ -110,7 +103,7 @@ class Engine:
         """Make an engine; nothing is read or started until a method is called.
 
         Args:
-            home: flnd's folder, which holds the downloads, the history, the logins and the saved settings.
+            home: flnd's folder, which holds the downloads, the history, the logins and the saved targets.
             sources: the sources by code; tests give their own.
 
         A run has no download limit: it ends when the sources have nothing more, or on Ctrl-C.
@@ -174,19 +167,19 @@ class Engine:
             resolved = self._resolved(targets)
             names = self._categories(categories, resolved)
             options = Options(categories=names, since=span.since, until=span.until)
-            log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
-            rows = settings.rows(self.home)
+            log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
+            rows = flnd.targets.rows(self.home)
             chosen: list[tuple[Target, Options]] = []
             shown: list[str] = []
             turned_on: list[Target] = []
             for target in resolved:
-                saved = settings.shrink(rows.get(settings.key(target), {}))
-                shown.append(settings.announce(target, saved) if shrink is None else "")
+                saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
+                shown.append(flnd.targets.announce(target, saved) if shrink is None else "")
                 given = saved if shrink is None else shrink
                 chosen.append((target, replace(options, shrink=given)))
                 if shrink and not saved:
                     turned_on.append(target)
-            settings.record(self.home, [pair for pair in chosen if pair[0] not in turned_on])
+            flnd.targets.record(self.home, [pair for pair in chosen if pair[0] not in turned_on])
             if turned_on:
                 self._apply(turned_on, dict(chosen))
             reports = self._run(chosen)
@@ -216,21 +209,21 @@ class Engine:
         It changes no setting and takes each source's default categories. For each target, on its
         source's worker while other sources list: leftover `.part` files are removed and files
         that are missing, empty or broken are forgotten (broken ones deleted, which can't be
-        undone); then what is new or was lost is downloaded with the target's saved settings.
+        undone); then what is new or was lost is downloaded with the target's saved targets.
         Then one line per target and the totals are logged. The history is read once per sync.
         The fetch makes network requests and can take hours.
         """
         with self._logged("sync", targets=targets):
             chosen = self._plan(self._resolved(targets))
             # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
-            settings.record(self.home, chosen)
-            shown = [settings.announce(target, options.shrink) for target, options in chosen]
-            folders = [files.target_folder(self.home, target) for target, _ in chosen]
+            flnd.targets.record(self.home, chosen)
+            shown = [flnd.targets.announce(target, options.shrink) for target, options in chosen]
+            folders = [paths.target_folder(self.home, target) for target, _ in chosen]
             with self._history() as history:
                 index = repair.index(history, folders)
             tallies = [repair.Tally(str(target), folder, index[folder])
                        for (target, _), folder in zip(chosen, folders)]
-            log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
+            log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
             chosen = [(target, replace(options, stop_at_saved=True)) for target, options in chosen]
             reports = self._run(chosen, tallies=tallies)
             _end_if_stopped()
@@ -277,7 +270,7 @@ class Engine:
             raise ValueError(f"{code} logs in by {', '.join(source.login_methods)}, not {method!r}")
         if code not in self.cookie_logins:
             # A source with its own login (tlg) asks its own questions, through an asking `Login`.
-            with source_run(Settings(home=self.home, history={}, interactive=True), source) as run:
+            with source_run(RunShared(home=self.home, history={}, interactive=True), source) as run:
                 source.login(LoginSite(run), method)
             return ""
         if method == "file":
@@ -366,7 +359,7 @@ class Engine:
         """
         from flnd import __version__
 
-        folder = self.home / files.LOGS
+        folder = self.home / paths.LOGS
         _prune(folder)
         stem = f"{datetime.now():%Y-%m-%d_%H%M%S}_{command}"
         # Two runs started in one second each get a log of their own: the second is `…_download-2.log`.
@@ -410,17 +403,17 @@ class Engine:
             targets: only these; when empty, every recorded target and every unrecorded folder
                 under `media/<code>/`, in that order.
         """
-        rows = settings.rows(self.home)
+        rows = flnd.targets.rows(self.home)
         if not targets:
             targets = [Target(code, row["kind"], value) for key, row in rows.items()
                        for code, value in [key.split(":", 1)] if code in self.sources]
             targets += list(self._unrecorded(targets))
-        return [(target, Options(shrink=settings.shrink(rows.get(settings.key(target), {})))) for target in targets]
+        return [(target, Options(shrink=flnd.targets.shrink(rows.get(flnd.targets.key(target), {})))) for target in targets]
 
     def _unrecorded(self, known: Sequence[Target]) -> Iterator[Target]:
-        """Folders under `media/<code>/` no row names: downloaded before Phase 5 recorded settings."""
-        seen = {files.target_folder(self.home, target) for target in known}
-        media = self.home / files.MEDIA
+        """Folders under `media/<code>/` no row names: downloaded before Phase 5 recorded targets."""
+        seen = {paths.target_folder(self.home, target) for target in known}
+        media = self.home / paths.MEDIA
         for code in self.sources:
             for folder in sorted((media / code).iterdir()) if (media / code).is_dir() else ():
                 if folder.is_dir() and folder not in seen:
@@ -439,7 +432,7 @@ class Engine:
         Raises:
             OSError: the history or `targets.db` can't be written.
         """
-        folders = {target: files.target_folder(self.home, target) for target in targets}
+        folders = {target: paths.target_folder(self.home, target) for target in targets}
         compressor = Compressor()
         with self._history() as history:
             index = repair.index(history, list(folders.values()))
@@ -447,7 +440,7 @@ class Engine:
                 compress.apply(history, index[folder], compressor, label=str(target))
                 # Saved only now that every file is shrunk: saved before, a shrink cut short would never
                 # be finished, since the next `download --shrink` would see no change.
-                settings.record(self.home, [(target, chosen[target])])
+                flnd.targets.record(self.home, [(target, chosen[target])])
 
     def _run(self, chosen: Sequence[tuple[Target, Options]], *,
              tallies: Sequence[repair.Tally] = ()) -> list[TargetReport]:
@@ -469,8 +462,7 @@ class Engine:
         finish, no target starts, and each one not done ends as stopped (`job.STOPPED`); this
         then returns with `net.stopping` still set. The second raises `KeyboardInterrupt`.
         """
-        if any(needs_browser(self.sources[target.source], target, options)
-               for target, options in chosen):
+        if any(needs_browser(self.sources[target.source]) for target, _ in chosen):
             _offer_browser()
         groups: dict[str, list[int]] = {}
         for number, (target, _) in enumerate(chosen):
@@ -480,7 +472,7 @@ class Engine:
         reports: dict[int, TargetReport] = {}
         with self._history() as history, self._targets() as saved, _stop_waits_on_ctrl_c(), \
                 log.group() as rows:
-            run_settings = Settings(home=self.home, history=history, targets=saved)
+            run_settings = RunShared(home=self.home, history=history, targets=saved)
             board = job.Board(rows, subject_width=max((len(str(target)) for target, _ in chosen),
                                                       default=0),
                               label_width=self._label_width(chosen))
@@ -504,11 +496,11 @@ class Engine:
 
     def _history(self) -> kv.Store:
         """The download history, opened for a `with` block."""
-        return kv.open(self.home / files.HISTORY, table=HISTORY_TABLE)
+        return kv.open(self.home / paths.HISTORY, table=HISTORY_TABLE)
 
     def _targets(self) -> kv.Store:
         """`targets.db`, opened once for a run's `with` block."""
-        return kv.open(self.home / files.TARGETS, table=settings.TARGETS_TABLE)
+        return kv.open(self.home / paths.TARGETS, table=flnd.targets.TARGETS_TABLE)
 
 
 def _end_if_stopped() -> None:
@@ -647,72 +639,9 @@ def _stop_waits_on_ctrl_c() -> Iterator[None]:
         signal.signal(signal.SIGINT, previous)
 
 
-def needs_browser(source: type[Source], target: Target, options: Options) -> bool:
-    """Whether downloading `target` can open a browser, read from the code it would run.
-
-        needs_browser(Instagram, Target("ins", "user", "example_user"), Options())     # True
-
-    Args:
-        source: the target's source.
-        target: the target; its kind names its route.
-        options: the run's options, whose `--from` decides which categories run.
-
-    The code read is the route and its wanted categories, and every function and method they name
-    that lives in the source's module or in `flnd.sources.common`, followed as far as it goes. It
-    needs a browser when any of them names one of `BROWSER_NAMES`. So no `Source` field says it, and
-    it can't drift from the code: a source that calls `site.goto` asks, and one that only calls
-    `site.fetch` doesn't. It reads names, not what runs, so a branch never taken still counts: it
-    may ask once when no page ends up opening.
-    """
-    route = next((route for route in source.routes if route.kind == target.kind), None)
-    if route is None:
-        return False
-    starts: list[Any] = [route.function]
-    if route.categories:
-        categories = job.wanted(source, route, options)
-        starts = [route.function, *(getattr(source, category.name) for category in categories)] \
-            if categories else []
-    return any(_names_browser(function, source) for function in starts)
-
-
-def _names_browser(function: Any, source: type[Source]) -> bool:
-    """Whether `function`, or what it calls in the source's module or `flnd.sources.common`, names a browser member."""
-    home = source.__module__
-    seen: set[CodeType] = set()
-    stack: list[tuple[CodeType, dict[str, Any]]] = []
-
-    def follow(found: Any) -> None:
-        # A function, and the functions it closes over (a method made by a factory calls those).
-        if not inspect.isfunction(found):
-            return
-        stack.append((found.__code__, found.__globals__))
-        for cell in found.__closure__ or ():
-            try:
-                inner = cell.cell_contents
-            # A cell not filled yet (a name assigned after the function was made) holds nothing to read.
-            except ValueError:
-                continue
-            if inspect.isfunction(inner):
-                stack.append((inner.__code__, inner.__globals__))
-
-    follow(function)
-    while stack:
-        code, scope = stack.pop()
-        if code in seen:
-            continue
-        seen.add(code)
-        # Names are globals and attributes (`site.goto`); a keyword argument (`in_page=`) is a constant.
-        keywords = {name for constant in code.co_consts if isinstance(constant, tuple)
-                    for name in constant if isinstance(name, str)}
-        if BROWSER_NAMES & (set(code.co_names) | keywords):
-            return True
-        stack += [(constant, scope) for constant in code.co_consts if isinstance(constant, CodeType)]
-        for name in code.co_names:
-            for found in (scope.get(name), getattr(source, name, None)):
-                module = getattr(found, "__module__", None) or ""
-                if module == home or module.startswith("flnd.sources.common"):
-                    follow(found)
-    return False
+def needs_browser(source: type[Source]) -> bool:
+    """Whether downloading from `source` can open a browser, as declared by `source.browser`."""
+    return source.browser
 
 
 def _offer_browser() -> None:
@@ -755,7 +684,7 @@ class _Planned:
     tally: repair.Tally | None
 
 
-def _run_site(run_settings: Settings, board: job.Board, reports: dict[int, TargetReport],
+def _run_site(run_settings: RunShared, board: job.Board, reports: dict[int, TargetReport],
               work: tuple[Source, list[_Planned]]) -> None:
     """Run one source's targets, one after another, on one worker, filling `reports` as each ends.
 

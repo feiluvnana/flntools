@@ -1,6 +1,6 @@
 """Each target's options, and the settings every source of a run shares.
 
-`Options` is what one target's run downloads and how it compresses it; `Settings` is what the run
+`Options` is what one target's run downloads and how it compresses it; `RunShared` is what the run
 shares across its sources (flnd's folder, the history, `targets.db` and the compressor). The engine
 reads both, the job and the sources' sites through them, and `Engine.download` checks `--from` with
 the helpers here.
@@ -84,7 +84,7 @@ def single_targets(targets: Sequence[Target], sources: Mapping[str, type[Source]
 
 
 @dataclass
-class Settings:
+class RunShared:
     """What all sources of a run share: flnd's folder, the history, `targets.db`, compressing."""
 
     # flnd's folder, where the downloads, history, logins and settings are kept.

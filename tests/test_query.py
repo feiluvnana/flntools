@@ -1,4 +1,4 @@
-"""`flnd.query` and the kinds of `flnd.finder`: parsing, checks, the OR split, limits and lookups.
+"""`flnd.query`: parameter kinds, parsing, checks, the OR split, limits and lookups.
 
 The params are an example site's, shaped like a manga reader's; lookups are plain functions that
 count their calls. Nothing touches the network.
@@ -7,8 +7,8 @@ count their calls. Nothing touches the network.
 import datetime
 import unittest
 
-from flnd.finder import Choice, Date, Name, Number, Param, Query, QueryError, Term, Text
-from flnd.query import MAX_SEARCHES, plan
+from flnd.query import (Choice, Date, MAX_SEARCHES, Name, Number, Param, Query, QueryError, Term,
+                        Text, plan)
 from flnd.source import Range
 
 GENRES = [("Vanilla", "1"), ("Romance", "2"), ("Example", "3"), ("Đam mỹ", "4")]

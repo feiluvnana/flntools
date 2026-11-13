@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import json as jsonlib
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping, MutableMapping, overload
+from typing import Any, Callable, Mapping, MutableMapping
 from unittest import mock
 
 from flnd import job
 from flnd.engine import resolve
-from flnd.session import Options
+from flnd.options import Options
 from flnd.source import FetchError, File, Post, Range, Source, Target
 from shared import browser, http
 
@@ -80,17 +80,20 @@ class FakeSite:
     def time(self) -> Range:
         return Range(self._options.since, self._options.until)
 
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: Literal[False] = ..., in_page: bool = ..., **request: Any) -> http.Response: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: Literal[True], in_page: bool = ..., **request: Any) -> http.Response | None: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: bool, in_page: bool = ..., **request: Any) -> http.Response | None: ...
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              soft: bool = False, in_page: bool = False, **request: Any) -> http.Response | None:
+              in_page: bool = False, **request: Any) -> http.Response:
+        response = self._fetch(url, method=method, headers=headers, soft=False, in_page=in_page,
+                               request=request)
+        assert response is not None
+        return response
+
+    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
+                  in_page: bool = False, **request: Any) -> http.Response | None:
+        return self._fetch(url, method=method, headers=headers, soft=True, in_page=in_page,
+                           request=request)
+
+    def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None, soft: bool,
+               in_page: bool, request: dict[str, Any]) -> http.Response | None:
         self._seen.requests.append((method, url, {"headers": dict(headers or {}), "in_page": in_page, **request}))
         base = url.split("?")[0]
         if base in self._json:
@@ -179,7 +182,7 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
     try:
         for post in job.posts(instance, site, target, options, run_async=loop.run_until_complete):
             if post.lazy and _first_key(instance, post, categories.get(post.category)) in known:
-                # The job skips a lazy post whose first file is queued, before listing its files.
+                # The job skips a lazy post whose first file is queued, before listing its paths.
                 continue
             listed = list(post.files()) if callable(post.files) else list(post.files)
             for placed in job.place(instance, post, listed, category=categories.get(post.category)):
@@ -193,7 +196,7 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
 
 
 def _first_key(source: Source, post: Post, category: Any) -> str | None:
-    """A post's first file's key from its fields alone, as the job reads it; None when it needs its files."""
+    """A post's first file's key from its fields alone, as the job reads it; None when it needs its paths."""
     template = job._format(source, category, "key")
     if not template or job._fields(template) & job.LISTED_FIELDS:
         return None

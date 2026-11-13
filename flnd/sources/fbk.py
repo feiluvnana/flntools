@@ -174,6 +174,7 @@ class Facebook(Source):
     name = "Facebook"
     domains = ("facebook.com", "fb.com", "fb.watch")
     needs = ("c_user", "xs")
+    browser = True
     # No published limit: the learned gap doubles on a throttle and is saved, so the first block
     # teaches it; the floor only keeps a burst slower than the other sites'.
     pace = 0.8

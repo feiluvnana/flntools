@@ -206,8 +206,8 @@ def group_mirrors(links: dict) -> list[tuple[str, list[str]]]:
 
 def _json(site: Site, url: str) -> Any:
     """A URL's JSON, or None when the site refuses this login (401, 403 or 404)."""
-    # `soft` returns None for a refusal instead of raising, so the caller can warn about the login rather than fail.
-    response = site.fetch(url, soft=True)
+    # `try_fetch` returns None for a refusal instead of raising, so the caller can warn about the login rather than fail.
+    response = site.try_fetch(url)
     return None if response is None else response.json
 
 

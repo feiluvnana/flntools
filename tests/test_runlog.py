@@ -16,7 +16,7 @@ import httpx
 from test_engine import CDN, EngineCase, make_source
 
 from flnd import Engine
-from flnd.common import files
+from flnd.common import paths
 from flnd.source import File
 from shared import log
 
@@ -26,7 +26,7 @@ class RunLogCase(EngineCase):
         return Engine(home=self.home, sources={source.code: source for source in sources})
 
     def logs(self):
-        return sorted((self.home / files.LOGS).glob("*.log"))
+        return sorted((self.home / paths.LOGS).glob("*.log"))
 
     def logged(self):
         """The one run log's lines, without their times."""
@@ -120,7 +120,7 @@ class RunLogTest(RunLogCase):
         self.assertNotIn("cookie-secret-value", text)
 
     def test_logs_older_than_30_days_are_deleted_as_a_run_starts(self):
-        folder = self.home / files.LOGS
+        folder = self.home / paths.LOGS
         folder.mkdir(parents=True)
         old, recent = folder / "2026-01-01_000000_download.log", folder / "2026-11-01_000000_sync.log"
         for path in (old, recent):
@@ -135,7 +135,7 @@ class RunLogTest(RunLogCase):
     def test_login_and_logout_write_no_log(self):
         self.log_in("aaa", sessionid="x")
         self.engine(make_source("aaa")).logout(["aaa"])
-        self.assertFalse((self.home / files.LOGS).exists())
+        self.assertFalse((self.home / paths.LOGS).exists())
 
 
 if __name__ == "__main__":

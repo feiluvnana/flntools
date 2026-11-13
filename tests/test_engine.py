@@ -26,9 +26,9 @@ from media_samples import needs_pillow
 
 from flnd import engine as engine_module
 from flnd import job
-from flnd.common import auth, files, net
+from flnd.common import auth, net, paths
 from flnd import Engine, LoginError, Range, Report, Target, TargetReport
-from flnd.session import Options
+from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
 from shared import clock, cookies, http, kv, media, theme
@@ -205,7 +205,7 @@ class EngineCase(unittest.TestCase):
         return self.screen.dest.getvalue().splitlines()
 
     def target_dir(self, code, name):
-        return self.home / files.MEDIA / code / name
+        return self.home / paths.MEDIA / code / name
 
 
 class GroupsTest(EngineCase):
@@ -247,7 +247,7 @@ class GroupsTest(EngineCase):
         with mock.patch.object(job, "download", download), mock.patch.object(kv, "open", opening):
             reports = engine._run(chosen)
         self.assertEqual(sorted(seen), [("a", True), ("b", False), ("c", False)])
-        self.assertEqual(opened.count(files.TARGETS.name), 1)
+        self.assertEqual(opened.count(paths.TARGETS.name), 1)
         self.assertEqual([report.target for report in reports], [target for target, _ in chosen])
 
     def test_rows_end_at_ok_or_error_and_the_run_goes_on(self):
@@ -378,7 +378,7 @@ class HttpTest(EngineCase):
         results = []
 
         def run(site):
-            results.append(site.fetch("https://api.aaa.example/gone", soft=True))
+            results.append(site.try_fetch("https://api.aaa.example/gone"))
             for url in ("https://api.aaa.example/gone", "https://api.aaa.example/html"):
                 try:
                     site.fetch(url).json
@@ -453,7 +453,7 @@ class CtrlCTest(unittest.TestCase):
 
 
 def history(home):
-    with kv.open(home / files.HISTORY, table="downloads") as rows:
+    with kv.open(home / paths.HISTORY, table="downloads") as rows:
         return dict(rows.items())
 
 
@@ -569,7 +569,7 @@ class ApiTest(EngineCase):
         return Engine(home=self.home, sources={source.code: source for source in sources})
 
     def saved(self):
-        with kv.open(self.home / files.TARGETS, table="targets") as targets:
+        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
             return dict(targets.items())
 
     def test_flnd_exports_exactly_the_engine_api(self):
@@ -672,8 +672,8 @@ class ApiTest(EngineCase):
             self.assertTrue(str(caught.exception).startswith(message), caught.exception)
         with self.assertRaisesRegex(ValueError, "unknown source 'zzz'"):
             engine.download(["zzz:a"])
-        self.assertFalse((self.home / files.MEDIA).exists())
-        self.assertFalse((self.home / files.METADATA).exists())
+        self.assertFalse((self.home / paths.MEDIA).exists())
+        self.assertFalse((self.home / paths.METADATA).exists())
 
     def test_from_with_a_post_link_is_refused_before_any_request(self):
         from flnd.sources import SOURCES
@@ -687,8 +687,8 @@ class ApiTest(EngineCase):
             with self.subTest(targets=targets), self.assertRaisesRegex(ValueError, f"^{message}$"):
                 engine.download(targets, categories="all")
         self.assertEqual(self.requests, [])
-        self.assertFalse((self.home / files.MEDIA).exists())
-        self.assertFalse((self.home / files.METADATA).exists())
+        self.assertFalse((self.home / paths.MEDIA).exists())
+        self.assertFalse((self.home / paths.METADATA).exists())
         # Without --from the same link downloads whole.
         runs = []
         def run(engine, chosen, tallies=()):

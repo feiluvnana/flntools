@@ -20,7 +20,7 @@ import httpx
 from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
-from flnd.session import Options
+from flnd.options import Options
 from flnd.source import FetchError, LoginError, Target, TargetError, day
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.common.replay import Replay
@@ -160,7 +160,7 @@ class MediaTest(unittest.TestCase):
             with self.subTest(product_type=product_type):
                 self.assertFalse(is_complete({**feed("P", **image("https://cdn.example/p.jpg")),
                                               "product_type": product_type}))
-        # No date, a thumbnail (more than 10% under the original width), or a video without its files.
+        # No date, a thumbnail (more than 10% under the original width), or a video without its paths.
         self.assertFalse(is_complete({**feed("P", **image("https://cdn.example/p.jpg")), "taken_at": None}))
         self.assertFalse(is_complete(feed("P", **{**image("https://cdn.example/p.jpg"), "original_width": 1080})))
         self.assertTrue(full_size({**image("https://cdn.example/p.jpg", width=980), "original_width": 1080}))
@@ -465,7 +465,7 @@ class ProfileTest(unittest.TestCase):
             listed = list(instance.reels(site, instance.user(site, "someone")))
         self.assertEqual([(post.id, post.lazy, day(post.date)) for post in listed],
                          [("R1", True, date(2023, 11, 15)), ("R2", True, date(2023, 11, 15)), ("GONE", True, None)])
-        # Nothing is asked before the engine wants a post's files.
+        # Nothing is asked before the engine wants a post's paths.
         self.assertEqual(site._seen.requests, [])
 
     def test_tagged_posts_come_from_the_media_api_and_a_post_without_a_pk_from_its_page(self):
@@ -593,7 +593,7 @@ def replay_site(*, answers=None, watch_tail=()):
         watch_tail: responses scrolling brings after page 2, which only a fallback reads.
 
     Returns:
-        A namespace with the `seen` record, the replayed requests and the `saved` files.
+        A namespace with the `seen` record, the replayed requests and the `saved` paths.
     """
     page_1 = grid(feed("P1", **image("https://cdn.example/p1.jpg")), more="c1")
     page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="c2")

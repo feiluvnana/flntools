@@ -26,8 +26,8 @@ from test_engine import EngineCase, compressing, make_source
 from flnd import cli as flnd_cli
 from flnd import engine as engine_module
 from flnd import Engine, job, site as site_module
-from flnd.common import files, net
-from flnd.session import Options, single_targets
+from flnd.common import net, paths
+from flnd.options import Options, single_targets
 from flnd.source import FetchError, File, LoginError, Post, Source, Target, pages, target
 from shared import clock, kv, log, theme
 from shared._theme import Screen
@@ -49,7 +49,7 @@ class JobCase(EngineCase):
         return respond
 
     def history(self):
-        with kv.open(self.home / files.HISTORY, table="downloads") as history:
+        with kv.open(self.home / paths.HISTORY, table="downloads") as history:
             return dict(history.items())
 
     def fetched(self, url):
@@ -425,11 +425,11 @@ class SyncStopTest(JobCase):
         self.engine = Engine(home=self.home, sources={"fed": Feed})
 
     def record(self):
-        with kv.open(self.home / files.TARGETS, table="targets") as rows:
+        with kv.open(self.home / paths.TARGETS, table="targets") as rows:
             return rows.get("fed:example_user", {}).get("complete")
 
     def forget_record(self):
-        with kv.open(self.home / files.TARGETS, table="targets") as rows:
+        with kv.open(self.home / paths.TARGETS, table="targets") as rows:
             row = dict(rows["fed:example_user"])
             row.pop("complete")
             rows["fed:example_user"] = row
@@ -497,7 +497,7 @@ class SyncStopTest(JobCase):
         # Remove two saved files in the middle: the 4 saved ones before it never reach 5, then a new one resets.
         for name in ("p2", "p3"):
             next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
-        with kv.open(self.home / files.HISTORY, table="downloads") as history:
+        with kv.open(self.home / paths.HISTORY, table="downloads") as history:
             for name in ("p2", "p3"):
                 del history[f"fed:{name}"]
         self.listed.clear()
@@ -921,6 +921,7 @@ class BrowserUpFrontTest(JobCase):
     def test_a_ported_source_that_loads_pages_asks_once_before_any_request(self):
         class Paged(Source):
             code, name, domains = "pgd", "Paged", ("example.com",)
+            browser = True
 
             @target("{user}")
             def user(self, site, user):
@@ -938,40 +939,12 @@ class BrowserUpFrontTest(JobCase):
         with mock.patch.object(site_module.TargetSite, "goto", return_value=False):
             self.run_engine(Paged, targets=["pgd:example_user", "pgd:example_creator"])
         self.assertEqual(self.asked, [0])
-        # Without the category that loads a page, the same source asks nothing.
-        self.run_engine(Paged, targets=["pgd:example_user"], options=Options(categories=("posts",)))
-        self.assertEqual(self.asked, [0])
-
-    def test_a_helper_the_category_calls_counts(self):
-        self.assertTrue(engine_module.needs_browser(Uses, Target("use", "user", "example_user"), Options()))
 
     def test_the_six_sources(self):
         from flnd.sources import SOURCES
 
-        needs = {code: engine_module.needs_browser(source, Target(code, "user", "x"), Options())
-                 for code, source in SOURCES.items()}
+        needs = {code: engine_module.needs_browser(source) for code, source in SOURCES.items()}
         self.assertEqual(needs, {"tik": True, "fbk": True, "ins": True, "twt": True, "loi": False, "tlg": False})
-
-
-def load_in_page(site, url):
-    """A module-level helper, as sources have, that sends a request from the page."""
-    return site.fetch(url, in_page=True)
-
-
-class Uses(Source):
-    code, name, domains = "use", "Uses", ("example.com",)
-
-    @target("{user}")
-    def user(self, site, user):
-        return user
-
-    @user.category
-    def posts(self, site, user):
-        yield from self.helper(site)
-
-    def helper(self, site):
-        load_in_page(site, "https://www.example.com/api")
-        yield from ()
 
 
 class ResumeTest(JobCase):
@@ -1010,7 +983,7 @@ class ResumeTest(JobCase):
         self.engine = Engine(home=self.home, sources={"pgd": Paged})
 
     def row(self):
-        with kv.open(self.home / files.TARGETS, table="targets") as rows:
+        with kv.open(self.home / paths.TARGETS, table="targets") as rows:
             return rows.get("pgd:example_user", {})
 
     def interrupted(self):
@@ -1043,7 +1016,7 @@ class ResumeTest(JobCase):
         self.engine.download(["pgd:example_user"])
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
-        with kv.open(self.home / files.TARGETS, table="targets") as rows:
+        with kv.open(self.home / paths.TARGETS, table="targets") as rows:
             row = dict(rows["pgd:example_user"])
             row["cursors"] = {"posts": "c2"}
             rows["pgd:example_user"] = row
@@ -1106,7 +1079,7 @@ class MemoryTest(JobCase):
         undated = Post("B2", [File(f"{CDN}/b.jpg")])
         self.run_feed([dated])
         # B2's day is known from an earlier run's history row for its key.
-        with kv.open(self.home / files.HISTORY, table="downloads") as history:
+        with kv.open(self.home / paths.HISTORY, table="downloads") as history:
             history["mem:B2_0"] = {"path": "/gone.jpg", "size": 1,
                                    "at": "2026-01-03T00:00:00+00:00", "date": "2026-01-03"}
         self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))

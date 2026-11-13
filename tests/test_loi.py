@@ -14,7 +14,7 @@ from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
 from flnd.common import auth
-from flnd.session import Options
+from flnd.options import Options
 from flnd.source import FetchError, Target, TargetError
 from flnd.sources.loi import API, SITE_IV, SITE_KEY, Loibus, decode_token, decrypt_field, sign_request
 from shared import cookies, crypto

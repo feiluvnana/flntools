@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, MutableMapping, Sequence
 
-from flnd.common import files
+from flnd.common import paths
 from shared import fmt, log, worker
 
 # Full checks at once: Pillow releases the GIL while it decodes, and ffmpeg runs in a process.
@@ -102,7 +102,7 @@ def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
         if not path.is_file():
             tally.lost[key] = path.name
         else:
-            (trusted if files.unchanged(path, row) else changed).append((key, row))
+            (trusted if paths.unchanged(path, row) else changed).append((key, row))
     # Checked longest ago first; a row never checked has no day, and sorts first.
     trusted.sort(key=lambda item: str(item[1].get(CHECKED, "")))
     due = changed + trusted[:math.ceil(len(trusted) / ROLLING)]
@@ -120,7 +120,7 @@ def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
                 tally.lost[key] = path.name
                 tally.broken.add(key)
             else:
-                history[key] = {**row, **files.stamp(path), CHECKED: today}
+                history[key] = {**row, **paths.stamp(path), CHECKED: today}
 
 
 def _remove_leftovers(folder: Path) -> None:
@@ -131,12 +131,12 @@ def _remove_leftovers(folder: Path) -> None:
     # downloading into the folder yet. A resumable download's part (one with its `.part.json`) is
     # kept while it is recent, since the fetch that follows resumes it; its sidecar goes with it,
     # and a sidecar alone goes too.
-    for stale in sorted(folder.rglob(files.PART_GLOB)):
-        if not files.resumable(stale):
+    for stale in sorted(folder.rglob(paths.PART_GLOB)):
+        if not paths.resumable(stale):
             stale.unlink(missing_ok=True)
-            files.part_info(stale).unlink(missing_ok=True)
-    for info in folder.rglob(files.PART_INFO_GLOB):
-        if not info.with_name(info.name[: -len(files.PART_INFO_SUFFIX)]).is_file():
+            paths.part_info(stale).unlink(missing_ok=True)
+    for info in folder.rglob(paths.PART_INFO_GLOB):
+        if not info.with_name(info.name[: -len(paths.PART_INFO_SUFFIX)]).is_file():
             info.unlink(missing_ok=True)
     # A link into another category's folder whose file is gone: made again by the next run that
     # lists the file, once the fetch has saved the file again.
@@ -150,7 +150,7 @@ def _broken(item: tuple[str, dict]) -> bool:
     from shared import media
 
     path = Path(item[1]["path"])
-    kind = files.kind_of(path.name)
+    kind = paths.kind_of(path.name)
     # An empty file of any kind is a download that never got its bytes.
     if path.stat().st_size == 0:
         return True
@@ -160,12 +160,12 @@ def _broken(item: tuple[str, dict]) -> bool:
     # only sniffed for a web page or JSON: a mostly playable file is worth more than a download
     # that may no longer exist.
     try:
-        files.checked(path, kind, decode=kind != files.AUDIO)
-    except (files.NotMediaError, media.BrokenError):
+        paths.checked(path, kind, decode=kind != paths.AUDIO)
+    except (paths.NotMediaError, media.BrokenError):
         return True
     except media.UnsafeError as error:
         # A file media refuses to open (a decompression bomb) isn't known to be broken, so it is
-        # kept. Files that can't be checked here (no ffmpeg) are kept by `files.checked` itself.
+        # kept. Files that can't be checked here (no ffmpeg) are kept by `paths.checked` itself.
         log.debug("{name}: not checked: {error}", name=path.name, error=error)
     return False
 

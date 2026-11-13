@@ -19,8 +19,8 @@ from example_source import API, CDN, Example
 from fakes import FakeSite
 
 from flnd import site as site_module
-from flnd.common import auth, files, net
-from flnd.session import Options, Settings
+from flnd.common import auth, net, paths
+from flnd.options import Options, RunShared
 from flnd.site import STATE_KEY, TargetSite, source_run
 from flnd.source import FetchError, Site, Target
 from flnd.sources.common.relay import meta_results
@@ -102,9 +102,9 @@ class SiteCase(unittest.TestCase):
     def open(self, source=Example, *, state=None):
         """A `TargetSite` for `exm:example_user` on a run closed at the end of the test."""
         if state:
-            with kv.open(self.home / files.SOURCE_STATE, table=source.code) as store:
+            with kv.open(self.home / paths.SOURCE_STATE, table=source.code) as store:
                 store.update(state)
-        opened = source_run(Settings(home=self.home, history={}), source())
+        opened = source_run(RunShared(home=self.home, history={}), source())
         run = opened.__enter__()
         self.addCleanup(opened.__exit__, None, None, None)
         return run, TargetSite(run, Target(source.code, "user", "example_user"))
@@ -139,12 +139,12 @@ class ExpiringLoginTest(SiteCase):
 
 
 class ProtocolTest(unittest.TestCase):
-    def test_fake_site_has_exactly_the_13_members(self):
+    def test_fake_site_has_exactly_the_14_members(self):
         def public(kind):
             return {name for name in dir(kind) if not name.startswith("_")}
 
         members = {name for name in vars(Site) if not name.startswith("_")}
-        self.assertEqual(len(members), 13)
+        self.assertEqual(len(members), 14)
         fake = FakeSite(Target("exm", "user", "example_user"))
         self.assertEqual(public(fake), members)
         self.assertEqual(public(TargetSite) | {"target", "time"}, members | {"close"})
@@ -208,7 +208,7 @@ class PaceTest(SiteCase):
         self.assertEqual(run.speed, 4.0)
         site.back_off("throttled")
         run.close()
-        with kv.open(self.home / files.SOURCE_STATE, table="exm") as store:
+        with kv.open(self.home / paths.SOURCE_STATE, table="exm") as store:
             self.assertEqual(store[STATE_KEY], 8.0)
 
     def test_a_long_wait_is_a_countdown_row_naming_the_source(self):
@@ -248,7 +248,7 @@ class FetchTest(SiteCase):
         response = site.fetch(f"{API}/users/example_user", params={"count": 5})
         self.assertIsInstance(response, http.Response)
         self.assertEqual(response.json, {"path": "/users/example_user"})
-        self.assertIsNone(site.fetch(f"{API}/missing", soft=True))
+        self.assertIsNone(site.try_fetch(f"{API}/missing"))
         with self.assertRaises(FetchError) as caught:
             site.fetch(f"{API}/private")
         self.assertEqual(caught.exception.status, 403)

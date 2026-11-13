@@ -166,6 +166,7 @@ class Twitter(Source):
     # X's `x-rate-limit-*` headers stop flnd exactly at the limit, so the floor only spaces a burst.
     pace = 0.2
     user_agent = CHROME
+    browser = True
     # This browser never hid navigator.webdriver, so stealth stays off.
     stealth = False
     # A post is one photo or video of a tweet, so a file is `<date>_<tweet id>_<n>` whatever the tweet's
@@ -339,7 +340,7 @@ class Twitter(Source):
             if not refused:
                 return
             account.browser = True
-        yield from self.browser(site, account, timeline)
+        yield from self.read_browser(site, account, timeline)
 
     def api(self, site: Site, user_id: str, timeline: Timeline, *,
             name: str | None = None) -> Generator[Post, None, bool]:
@@ -434,7 +435,7 @@ class Twitter(Source):
             site.info("{category}: {pages} past the timeline's cap", category=timeline.category,
                       pages=fmt.count(pages_read, "search page"))
 
-    def browser(self, site: Site, account: Account, timeline: Timeline) -> Iterator[Post]:
+    def read_browser(self, site: Site, account: Account, timeline: Timeline) -> Iterator[Post]:
         """Scroll one timeline's tab to its end, reading the same GraphQL responses the API gives.
 
         Args:

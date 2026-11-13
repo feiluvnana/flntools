@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 # A source's own login (tlg) raises it too, so it lives in base; `auth.LoginError` is the same class.
-from flnd.common import files
+from flnd.common import paths
 from flnd.source import LoginError
 from shared import cookies, crypto, fmt, kv, log
 
@@ -171,7 +171,7 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
     A failure to save is warned of, without a value, and never fails the run.
     """
     fresh = list(current)
-    if not fresh or not (home / files.SECRETS).is_file():
+    if not fresh or not (home / paths.SECRETS).is_file():
         return []
     try:
         saved = load(home, code).raw
@@ -213,7 +213,7 @@ def load(home: Path, code: str) -> cookies.Jar:
             it was copied from another slot, or sealed with another key.
     """
     _move(home, code)
-    if not (home / files.SECRETS).is_file():
+    if not (home / paths.SECRETS).is_file():
         return cookies.Jar()
     with secrets(home, code) as vault:
         text = vault.get(COOKIES)
@@ -252,7 +252,7 @@ def logout(home: Path, code: str) -> bool:
     """
     removed = logged_in(home, code) or api_key_saved(home, code)
     # Opening the database would create it, so a home that has none is left without one.
-    if (home / files.SECRETS).is_file():
+    if (home / paths.SECRETS).is_file():
         with secrets(home, code) as saved:
             saved.clear()
     for path in _cookie_files(home, code):
@@ -265,7 +265,7 @@ def logout(home: Path, code: str) -> bool:
 
 def _secret_names(home: Path, code: str) -> set[str]:
     """The names of the source's stored secrets, without creating `secrets.db` or the key file."""
-    if not (home / files.SECRETS).is_file():
+    if not (home / paths.SECRETS).is_file():
         return set()
     with secrets(home, code) as saved:
         return set(saved)
@@ -352,7 +352,7 @@ class Vault(MutableMapping[str, str]):
     def __init__(self, home: Path, code: str):
         self._home = home
         self._code = code
-        self._db = kv.open(home / files.SECRETS, table=TABLE)
+        self._db = kv.open(home / paths.SECRETS, table=TABLE)
         self._key: bytes | None = None
 
     def __getitem__(self, name: str) -> str:
@@ -414,7 +414,7 @@ def key(home: Path) -> bytes:
     When two runs create the key at once, the first one to create the file wins and the other
     reads its key: both end with the same one. No temporary file is written.
     """
-    path = home / files.KEY
+    path = home / paths.KEY
     # A short key may be another run's that is still being written, so it is read again until
     # `KEY_WAIT` has passed; only then is it damaged (a run that died while writing it).
     deadline = time.monotonic() + KEY_WAIT
@@ -450,7 +450,7 @@ def _create_key(path: Path) -> bytes | None:
     # O_EXCL makes "first creator wins" without a hard link: `os.link`, used before 2026-11, is
     # refused with a plain OSError on FAT, exFAT and some network drives, so logging in to tlg
     # failed there. O_BINARY (Windows only, 0 elsewhere) keeps the C runtime from turning a
-    # 0x0A byte of the key into 0x0D 0x0A. Mode 0600: the key is as private as the cookie files.
+    # 0x0A byte of the key into 0x0D 0x0A. Mode 0600: the key is as private as the cookie paths.
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     try:
         handle = os.open(path, flags, 0o600)

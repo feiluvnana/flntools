@@ -15,7 +15,7 @@ from fakes import Seen, collect
 from test_engine import EngineCase
 
 from flnd.common import auth
-from flnd.session import Options
+from flnd.options import Options
 from flnd.source import FetchError, Target, TargetError
 from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page, tweet_posts
 from shared import cookies

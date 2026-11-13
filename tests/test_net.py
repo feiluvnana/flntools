@@ -17,7 +17,7 @@ import httpx
 
 from media_samples import needs_ffmpeg, needs_pillow, sample
 
-from flnd.common import files, net
+from flnd.common import net, paths
 from flnd.source import FetchError
 from shared import clock, http, media, theme
 from shared._theme import Screen
@@ -286,7 +286,7 @@ class DownloadTest(NetCase):
 
     def test_a_fetch_function_that_gets_a_web_page_is_called_once(self):
         """Fix 9: a fetch function retries every Exception, so `final` is what stops a login wall costing three tries."""
-        for error in (files.NotMediaError("got a web page instead of a photo"), media.UnsafeError("too many pixels")):
+        for error in (paths.NotMediaError("got a web page instead of a photo"), media.UnsafeError("too many pixels")):
             with self.subTest(error=type(error).__name__):
                 fetch = mock.Mock(side_effect=error)
                 with self.client(httpx.Response(200)) as client, self.assertRaises(type(error)):
@@ -472,7 +472,7 @@ class DashDownloadTest(NetCase):
         with self.client() as client, mock.patch.object(os, "replace", spy):
             self.merged(client)
         self.assertTrue(moved)
-        self.assertEqual([name for name in moved if not fnmatch.fnmatch(name, files.PART_GLOB)], [])
+        self.assertEqual([name for name in moved if not fnmatch.fnmatch(name, paths.PART_GLOB)], [])
 
     def test_a_second_ctrl_c_before_the_merge_stops_it(self):
         """The merge is ffmpeg's and can't see `stopping_now`, so a second Ctrl-C after the streams stops before it."""

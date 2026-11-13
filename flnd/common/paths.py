@@ -13,9 +13,9 @@ files whole with `atomic.write`.
 `checked` is the one media validation, used by `net` for each download and by `sync` for each
 file it repairs, so both sniff the same way and treat the same errors as "not checkable here".
 
-    extension = files.checked(folder / "a.jpg", "image")    # ".webp" when it holds a WebP
-    files.target_folder(Path(".flnd"), target)              # .flnd/media/ins/example_user
-    Path(".flnd") / files.HISTORY                           # .flnd/metadata/history.db
+    extension = paths.checked(folder / "a.jpg", "image")    # ".webp" when it holds a WebP
+    paths.target_folder(Path(".flnd"), target)              # .flnd/media/ins/example_user
+    Path(".flnd") / paths.HISTORY                           # .flnd/metadata/history.db
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ class NotMediaError(ValueError):
 def kind_of(name: str) -> str | None:
     """What a saved file is by its name: `IMAGE`, `VIDEO` or `AUDIO`; None for anything else, such as an archive.
 
-        files.kind_of("posts/a.heic")     # "image"
+        paths.kind_of("posts/a.heic")     # "image"
 
     Args:
         name: a file name or path; only its extension is read, through `media.kind`, the one table.
@@ -113,7 +113,7 @@ def kind_of(name: str) -> str | None:
 def target_folder(home: Path, target: Target) -> Path:
     """A target's folder: `<home>/media/<code>/<value>`, its value made a safe file name.
 
-        files.target_folder(Path(".flnd"), Target("ins", "user", "example_user"))   # .flnd/media/ins/example_user
+        paths.target_folder(Path(".flnd"), Target("ins", "user", "example_user"))   # .flnd/media/ins/example_user
 
     Args:
         home: flnd's folder, `.flnd`.
@@ -125,7 +125,7 @@ def target_folder(home: Path, target: Target) -> Path:
 def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
     """The extension a photo, video or audio file's content calls for, once it is known not to be a web page or broken.
 
-        extension = files.checked(Path("posts/a.jpg"), "image")    # ".webp" when it holds a WebP
+        extension = paths.checked(Path("posts/a.jpg"), "image")    # ".webp" when it holds a WebP
 
     Args:
         path: the file to check; it is never changed.

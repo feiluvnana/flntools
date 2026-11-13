@@ -129,6 +129,7 @@ class Instagram(Source):
     name = "Instagram"
     domains = ("instagram.com",)
     needs = ("sessionid",)
+    browser = True
     # Instaloader's measured budgets set the ceiling; the floor only spaces a burst while a window
     # still has room.
     pace = http.Pace(0.5, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})

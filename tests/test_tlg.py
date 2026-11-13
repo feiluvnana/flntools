@@ -29,7 +29,7 @@ from test_engine import EngineCase, make_source
 
 from flnd.common import auth, net
 from flnd.engine import Engine
-from flnd.session import Options
+from flnd.options import Options
 from flnd.source import LoginError, Target, TargetError
 from flnd.sources import SOURCES
 from flnd.sources import tlg

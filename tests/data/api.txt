@@ -34,6 +34,50 @@ flnd.TargetReport.settings: field -> str
 flnd.TargetReport.skipped: field -> int
 flnd.TargetReport.target: field -> Target
 flnd.TargetReport.written: field -> tuple[Path, ...]
+flnd.query: module
+flnd.query.Choice(*choices: str)
+flnd.query.Choice.choices: attribute
+flnd.query.Choice.noun: attribute
+flnd.query.Choice.parse(text: str) -> Value
+flnd.query.Date()
+flnd.query.Date.noun: attribute -> str
+flnd.query.Date.parse(text: str) -> Value
+flnd.query.Error(Exception)
+flnd.query.Kind()
+flnd.query.Kind.noun: attribute -> str
+flnd.query.Kind.parse(text: str) -> Value
+flnd.query.Lookup: _CallableGenericAlias
+flnd.query.MAX_SEARCHES: int
+flnd.query.Name()
+flnd.query.Name.noun: attribute -> str
+flnd.query.Name.parse(text: str) -> Value
+flnd.query.Number()
+flnd.query.Number.noun: attribute -> str
+flnd.query.Number.parse(text: str) -> Value
+flnd.query.Param(kind: Kind | type[Kind], help: str, any_of: bool = False, negate: bool = False, compare: bool = True, lookup: Lookup | None = None)
+flnd.query.Param.any_of: field -> bool
+flnd.query.Param.compare: field -> bool
+flnd.query.Param.help: field -> str
+flnd.query.Param.kind: field -> Kind | type[Kind]
+flnd.query.Param.lookup: field -> Lookup | None
+flnd.query.Param.negate: field -> bool
+flnd.query.Param.reader: property -> Kind
+flnd.query.Query(text: str = '', terms: tuple[Term, ...] = (), time: Range | None = None)
+flnd.query.Query.terms: field -> tuple[Term, ...]
+flnd.query.Query.text: field -> str
+flnd.query.Query.time: field -> Range | None
+flnd.query.QueryError(flnd.query.Error, ValueError)
+flnd.query.Term(param: str, values: tuple[Value, ...] = (), negated: bool = False, low: int | datetime.date | None = None, high: int | datetime.date | None = None)
+flnd.query.Term.high: field -> int | datetime.date | None
+flnd.query.Term.low: field -> int | datetime.date | None
+flnd.query.Term.negated: field -> bool
+flnd.query.Term.param: field -> str
+flnd.query.Term.values: field -> tuple[Value, ...]
+flnd.query.Text()
+flnd.query.Text.noun: attribute -> str
+flnd.query.Text.parse(text: str) -> Value
+flnd.query.Value: Union
+flnd.query.plan(text: str, params: Mapping[str, Param], *, site: Any = None, cache: MutableMapping[str, str] | None = None, time: Range | None = None) -> list[Query]
 flnd.source: module
 flnd.source.Category(function: Callable[..., Any], *, newest_first: bool = False, folder: str | None = None, key: str | None = None)
 flnd.source.Category.folder: attribute
@@ -86,7 +130,7 @@ flnd.source.Site(*args, **kwargs)
 flnd.source.Site.back_off(reason: str, *, retry_after: float | None = None) -> None
 flnd.source.Site.client: property -> Any
 flnd.source.Site.cookies: property -> Mapping[str, str]
-flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, soft: bool = False, in_page: bool = False, **request: Any) -> http.Response | None
+flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, in_page: bool = False, **request: Any) -> http.Response
 flnd.source.Site.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
 flnd.source.Site.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 flnd.source.Site.info(message: str, **fields: Any) -> None
@@ -95,8 +139,10 @@ flnd.source.Site.secrets: property -> MutableMapping[str, str]
 flnd.source.Site.state: property -> MutableMapping[str, Any]
 flnd.source.Site.target: property -> Target
 flnd.source.Site.time: property -> Range
+flnd.source.Site.try_fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, in_page: bool = False, **request: Any) -> http.Response | None
 flnd.source.Site.warn(message: str, **fields: Any) -> None
 flnd.source.Source()
+flnd.source.Source.browser: attribute -> ClassVar[bool]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.concurrency: attribute -> ClassVar[int]
 flnd.source.Source.connect(site: Site, /) -> Any

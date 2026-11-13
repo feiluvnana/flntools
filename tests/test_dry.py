@@ -15,14 +15,14 @@ from test_job import JobCase
 
 from flnd import dry, job
 from flnd import site as site_module
-from flnd.common import files
-from flnd.session import Options, Settings
+from flnd.common import paths
+from flnd.options import Options, RunShared
 from flnd.source import File, Post, Range, Source, Target, target
 
 
 class PlanTest(JobCase):
     def planned(self, options=Options()):
-        with site_module.source_run(Settings(home=self.home, history={}), Example()) as run:
+        with site_module.source_run(RunShared(home=self.home, history={}), Example()) as run:
             return list(job.plan(run, Target("exm", "user", "example_user"), options))
 
     def test_plan_yields_what_a_download_would_save_and_writes_nothing(self):
@@ -30,11 +30,11 @@ class PlanTest(JobCase):
         self.assertEqual([item.path for item in placed],
                          [saved.path for saved in collect(Example, "exm:example_user", json=FIXTURES)])
         self.assertEqual(len(placed), 5)
-        # No download, no folder, no history, no settings: the CDN is never asked, nothing is on disk.
+        # No download, no folder, no history, no settings: the CDN is never asked, nothing is on paths.
         self.assertFalse([request for request in self.requests if str(request.url).startswith(CDN)])
         # Only the learned speed (`sources.db`) is kept, as any run of the source does.
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["sources.db"])
-        self.assertFalse((self.home / files.MEDIA).exists())
+        self.assertFalse((self.home / paths.MEDIA).exists())
 
     def test_plan_does_not_skip_saved_files_and_follows_from(self):
         self.run_engine(Example, targets=["exm:example_user"])
@@ -60,7 +60,7 @@ class PlanTest(JobCase):
                 finally:
                     finished.append(True)
 
-        with site_module.source_run(Settings(home=self.home, history={}), Feed()) as run:
+        with site_module.source_run(RunShared(home=self.home, history={}), Feed()) as run:
             listing = job.plan(run, Target("fed", "user", "example_user"), Options())
             next(listing)
             listing.close()

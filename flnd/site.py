@@ -34,20 +34,19 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import (TYPE_CHECKING, Any, Callable, Coroutine, Iterator, Literal, Mapping,
-                    MutableMapping, TypeVar, overload)
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterator, Mapping, MutableMapping, TypeVar
 from urllib.parse import urlencode
 
 import httpx
 
-from flnd.common import auth, files, net
+from flnd.common import auth, net, paths
 from flnd.source import FetchError, Range, Source, Target
 from shared import browser, clock, fmt, http, kv, log, prompt, theme
 
 if TYPE_CHECKING:
     from shared import cookies
 
-    from flnd.session import Settings
+    from flnd.options import RunShared
 
 __all__ = ["LoginSite", "SourceRun", "TargetSite", "source_run"]
 
@@ -78,7 +77,7 @@ class SourceRun:
     # The source, as one instance for the whole run.
     source: Source
     # What the run shares across sources: flnd's folder, the history, targets.db, the compressor.
-    settings: Settings
+    settings: RunShared
     # The login's cookies.
     jar: cookies.Jar
     # The source's own requests, in its pace; `web.raw` holds the cookies the site sets.
@@ -97,7 +96,7 @@ class SourceRun:
     def state(self) -> kv.Store:
         """The source's `kv` table in `.flnd/metadata/sources.db`, opened on first use."""
         if self._state is None:
-            self._state = kv.open(self.settings.home / files.SOURCE_STATE, table=self.source.code)
+            self._state = kv.open(self.settings.home / paths.SOURCE_STATE, table=self.source.code)
         return self._state
 
     @property
@@ -143,13 +142,13 @@ class SourceRun:
 
 
 @contextmanager
-def source_run(settings: Settings, source: Source) -> Iterator[SourceRun]:
+def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     """Open one source's resources for a run, and close them however the block ends.
 
         with source_run(settings, Instagram()) as run: ...
 
     Args:
-        settings: the run's shared settings.
+        settings: the run's shared targets.
         source: the source, one instance for the run.
     """
     jar = auth.load(settings.home, source.code)
@@ -165,7 +164,7 @@ def source_run(settings: Settings, source: Source) -> Iterator[SourceRun]:
                 request.headers.update(signed.headers)
 
     raw = net.client(user_agent=source.user_agent, jar=jar, sign=sign)
-    state = kv.open(settings.home / files.SOURCE_STATE, table=source.code)
+    state = kv.open(settings.home / paths.SOURCE_STATE, table=source.code)
     saved = state.get(STATE_KEY)
     speeds = {source.code: float(saved)} if isinstance(saved, (int, float)) else {}
     # The files' client labels every host with the source's code, so its messages name the site.
@@ -206,42 +205,32 @@ class TargetSite:
 
     @property
     def cookies(self) -> Mapping[str, str]:
-        """The login's cookies as a read-only `{name: value}`."""
+        """See `flnd.source.Site.cookies`."""
         return MappingProxyType({cookie["name"]: cookie["value"] for cookie in self._run.jar})
 
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: Literal[False] = ..., in_page: bool = ..., **request: Any) -> http.Response: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: Literal[True], in_page: bool = ..., **request: Any) -> http.Response | None: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: bool, in_page: bool = ..., **request: Any) -> http.Response | None: ...
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              soft: bool = False, in_page: bool = False, **request: Any) -> http.Response | None:
-        """Make one request, paced and retried, and return its `http.Response`; see `Site.fetch`.
+              in_page: bool = False, **request: Any) -> http.Response:
+        """Make one request, paced and retried.
 
-            data = site.fetch("https://x.com/i/api/graphql/…", params={"variables": "…"}).json
-
-        Args:
-            url: the URL to request.
-            method: the HTTP method.
-            headers: headers on top of the client's for this request; None adds none.
-            soft: True returns None for a 401, 403 or 404.
-            in_page: send it from the target's tab with `Page.fetch`, which takes `data`, `json`,
-                `params` and `timeout`.
-            **request: `params`, `data`, `json`, `timeout` and `follow_redirects`.
-
-        Returns:
-            The response; None only with `soft`.
-
-        Raises:
-            FetchError: no response after the retries, a 4xx other than 429 (with its `status` and
-                `response`), or with `in_page`, a request the page couldn't send.
-            TypeError: an option it doesn't take.
-            KeyboardInterrupt: Ctrl-C during a wait.
+        See `flnd.source.Site.fetch`.
         """
+        response = self._fetch(url, method=method, headers=headers, soft=False, in_page=in_page,
+                               request=request)
+        assert response is not None
+        return response
+
+    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
+                  in_page: bool = False, **request: Any) -> http.Response | None:
+        """Like `fetch`, returning None for a 401, 403 or 404.
+
+        See `flnd.source.Site.try_fetch`.
+        """
+        return self._fetch(url, method=method, headers=headers, soft=True, in_page=in_page,
+                           request=request)
+
+    def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None, soft: bool,
+               in_page: bool, request: dict[str, Any]) -> http.Response | None:
+        """Send one request via `Page.fetch` or `http.Client.fetch`, paced and retried."""
         if in_page:
             return self._fetch_in_page(url, method, headers, soft, request)
         if self._browser is not None:
@@ -258,24 +247,9 @@ class TargetSite:
                                        redirects=redirects, attempts=ATTEMPTS, **options)
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
-        """Load `url` in the target's tab, paced; see `Site.goto`.
+        """Load `url` in the target's tab, paced.
 
-            if not site.goto("https://www.instagram.com/example_user/"):
-                return
-
-        Args:
-            url: the page to load.
-            idle: also wait until the network has been quiet, not only for the `load` event.
-            timeout: seconds before the load counts as failed.
-
-        Returns:
-            True when it loaded with a status under 400. False when it didn't load (which
-            `Page.goto` logs) or answered 400 or more (which is warned of here). A 429 is never
-            returned: it is waited out, for the page's `Retry-After`, and the page loaded again,
-            as long as it takes.
-
-        Raises:
-            KeyboardInterrupt: Ctrl-C during a wait.
+        See `flnd.source.Site.goto`.
         """
         page = self.page
         with _stoppable():
@@ -288,18 +262,15 @@ class TargetSite:
         return True
 
     def handoff(self, *, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool:
-        """`Page.handoff` on the target's tab, for a captcha only a person can solve; False on timeout.
+        """Wait for a person to complete a step in the browser tab.
 
-        Args:
-            until: True once the step is done, polled every second.
-            message: what the person should do, shown with a spinner.
-            timeout: seconds before giving up; None waits as long as it takes.
+        See `flnd.source.Site.handoff`.
         """
         return self.page.handoff(until=until, message=message, timeout=timeout)
 
     @property
     def page(self) -> browser.Page:
-        """The target's tab, opened (with the browser, on first use) blank; see `Site.page`."""
+        """See `flnd.source.Site.page`."""
         if self._page is None:
             if self._browser is None:
                 self._browser = self._connect()
@@ -309,47 +280,38 @@ class TargetSite:
 
     @property
     def client(self) -> Any:
-        """What the source's `connect` gave, such as an SDK client; None without one."""
+        """See `flnd.source.Site.client`."""
         return self._run.client
 
     @property
     def state(self) -> MutableMapping[str, Any]:
-        """A `kv` table for this source, kept between runs in `.flnd/metadata/sources.db`."""
+        """See `flnd.source.Site.state`."""
         return self._run.state
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """This source's secrets, encrypted in `.flnd/metadata/secrets.db`."""
+        """See `flnd.source.Site.secrets`."""
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:
-        """A `log.info` line naming the target: `site.info("{n} stories", n=3)`.
+        """Log an info line naming the target.
 
-        Args:
-            message: the text, with `{name}` fields filled in from `fields`.
-            **fields: the values the message's fields take.
+        See `flnd.source.Site.info`.
         """
         # The target's name is put in front of the message as a field, so its text can't break the format.
         log.info("{target}: " + message, target=str(self.target), **fields)
 
     def warn(self, message: str, **fields: Any) -> None:
-        """A `log.warn` line naming the target, like `info`.
+        """Log a warning line naming the target.
 
-        Args:
-            message: the text, with `{name}` fields filled in from `fields`.
-            **fields: the values the message's fields take.
+        See `flnd.source.Site.warn`.
         """
         log.warn("{target}: " + message, target=str(self.target), **fields)
 
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
-        """Count one rate limit and wait it out; see `Site.back_off`.
+        """Count one rate limit and wait it out.
 
-        Args:
-            reason: what the site did, shown with the countdown.
-            retry_after: the seconds the site asked for; None takes the back-off's next step.
-
-        A second call during a wait waits with it and adds nothing; each counted one doubles
-        the learned speed. Ctrl-C ends the wait with `KeyboardInterrupt`.
+        See `flnd.source.Site.back_off`.
         """
         with _stoppable():
             self._run.web.back_off(self._home, reason=reason, retry_after=retry_after)

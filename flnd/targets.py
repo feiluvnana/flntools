@@ -7,9 +7,9 @@ category whose listing last reached its end by itself, with the day it did
 and `--time` describe one run, so they are never saved. `Engine.download` and `Engine.sync` decide
 what to save; this module only reads and writes.
 
-    saved = settings.shrink(settings.rows(home).get(settings.key(target), {}))
-    settings.record(home, [(target, Options(shrink=True))])
-    shown = settings.announce(target, saved)    # "--shrink (saved)"
+    saved = targets.shrink(targets.rows(home).get(targets.key(target), {}))
+    targets.record(home, [(target, Options(shrink=True))])
+    shown = targets.announce(target, saved)    # "--shrink (saved)"
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
-from flnd.common import files
-from flnd.session import Options
+from flnd.common import paths
+from flnd.options import Options
 from flnd.source import Target
 from shared import kv, log
 
@@ -35,11 +35,11 @@ CURSORS = "cursors"
 def rows(home: Path) -> dict[str, Any]:
     """Every `targets.db` row by its `<code>:<value>` key; empty, without creating the file, when there is none.
 
-        row = settings.rows(Path(".flnd")).get("ins:example_user", {})
+        row = targets.rows(Path(".flnd")).get("ins:example_user", {})
     """
-    if not (home / files.TARGETS).is_file():
+    if not (home / paths.TARGETS).is_file():
         return {}
-    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
+    with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         return dict(saved.items())
 
 
@@ -51,7 +51,7 @@ def key(target: Target) -> str:
 def shrink(row: Mapping[str, Any]) -> bool:
     """Whether a `targets.db` row saved `--shrink` on; False for a row without it, or {} for a target with none.
 
-        settings.shrink({"shrink": True})      # True
+        targets.shrink({"shrink": True})      # True
     """
     return row.get(SHRINK) is True
 
@@ -59,7 +59,7 @@ def shrink(row: Mapping[str, Any]) -> bool:
 def record(home: Path, chosen: Sequence[tuple[Target, Options]]) -> None:
     """Save each target's `--shrink` in `targets.db`, replacing its row in today's form.
 
-        settings.record(Path(".flnd"), [(target, Options(shrink=True))])
+        targets.record(Path(".flnd"), [(target, Options(shrink=True))])
 
     Args:
         home: flnd's folder, `.flnd`, which holds `targets.db`; the file is created when missing.
@@ -74,7 +74,7 @@ def record(home: Path, chosen: Sequence[tuple[Target, Options]]) -> None:
     if not chosen:
         return
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
+    with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         for target, options in chosen:
             old = saved.get(key(target))
             kept = {name: old[name] for name in (COMPLETE, CURSORS)
@@ -149,7 +149,7 @@ def keep_cursors(saved: MutableMapping[str, Any], target: Target,
 def announce(target: Target, shrink: bool) -> str:
     """Say when a run of this target shrinks by its saved setting, so it never applies by surprise, and return what was said.
 
-        settings.announce(target, True)   # logs "ins:example_user: --shrink (saved)" and returns "--shrink (saved)"
+        targets.announce(target, True)   # logs "ins:example_user: --shrink (saved)" and returns "--shrink (saved)"
 
     Args:
         target: the target, named at the start of the line.

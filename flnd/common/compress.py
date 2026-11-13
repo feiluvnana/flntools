@@ -29,7 +29,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, MutableMapping
 
-from flnd.common import files
+from flnd.common import paths
 from shared import log, worker
 
 if TYPE_CHECKING:
@@ -39,9 +39,9 @@ if TYPE_CHECKING:
 # row's `compressed` records it.
 LEVEL = "mid"
 # The kinds of saved file `--shrink` compresses; any other file, such as an archive, is kept as sent.
-KINDS = (files.IMAGE, files.VIDEO, files.AUDIO)
+KINDS = (paths.IMAGE, paths.VIDEO, paths.AUDIO)
 # The kinds whose encodes wait for the run's lock, one at a time, on a pool of their own.
-ONE_AT_A_TIME = frozenset({files.VIDEO})
+ONE_AT_A_TIME = frozenset({paths.VIDEO})
 # Saved photos and audio `apply` shrinks at once: Pillow releases the GIL while it encodes, and
 # ffmpeg runs in a process of its own.
 AT_ONCE = 8
@@ -145,9 +145,9 @@ def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[s
     try:
         # `with` drops the compressed copy's temporary file whenever it isn't saved, an error included.
         with media.open(path) as original:
-            codec = OWN_CODECS.get(original.info.video or "") if kind == files.VIDEO else None
+            codec = OWN_CODECS.get(original.info.video or "") if kind == paths.VIDEO else None
             saved: Path | None = None
-            if kind == files.VIDEO and not _can_win(original, codec):
+            if kind == paths.VIDEO and not _can_win(original, codec):
                 log.info("{name}: an encode wouldn't save enough; kept as it is", name=path.name)
             else:
                 out = original.compress(LEVEL, codec=codec)
@@ -219,12 +219,12 @@ def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], c
 
     A file is replaced only when the result is smaller. It is slow and can't be undone.
     """
-    todo = [(key, row) for key, row in rows if files.kind_of(row["path"]) in KINDS
+    todo = [(key, row) for key, row in rows if paths.kind_of(row["path"]) in KINDS
             and row.get("compressed") != LEVEL and Path(row["path"]).is_file()]
     if not todo:
         return 0
     # Videos last: they take turns on the run's lock, so a pool thread holding one only waits.
-    todo.sort(key=lambda item: files.kind_of(item[1]["path"]) in ONE_AT_A_TIME)
+    todo.sort(key=lambda item: paths.kind_of(item[1]["path"]) in ONE_AT_A_TIME)
     with log.progress(f"--shrink {label}", total=len(todo)) as bar:
         for result in worker.as_completed(partial(_shrink, history, compressor), todo,
                                           concurrency=AT_ONCE):
@@ -238,7 +238,7 @@ def _shrink(history: MutableMapping[str, Any], compressor: Compressor,
             item: tuple[str, dict]) -> None:
     """Shrink one saved file and write its history row, on a pool thread."""
     key, row = item
-    kind = files.kind_of(row["path"])
+    kind = paths.kind_of(row["path"])
     fields = compressor.compress(Path(row["path"]), kind) if kind is not None else None
     if fields is None:
         return
@@ -246,7 +246,7 @@ def _shrink(history: MutableMapping[str, Any], compressor: Compressor,
     # Written here, not by the caller: after a Ctrl-C the pool lets running files finish, and a
     # file shrunk without its row would be shrunk a second time, losing quality again. Stamped
     # as it now is, so `sync` trusts the smaller file.
-    history[key] = {**row, **fields, **(files.stamp(path) if path.is_file() else {})}
+    history[key] = {**row, **fields, **(paths.stamp(path) if path.is_file() else {})}
 
 
 def _warn(warned: set[type[Exception]], error: Exception, path: Path) -> None:

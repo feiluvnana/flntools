@@ -78,11 +78,11 @@ from typing import (TYPE_CHECKING, Any, Callable, Collection, Coroutine, Generat
                     Mapping, Sequence)
 from urllib.parse import urlsplit
 
-from flnd import settings as saved_settings
-from flnd.common import files as disk
+from flnd import targets
+from flnd.common import paths
 from flnd.common import net
 from flnd.common.compress import KINDS, ONE_AT_A_TIME
-from flnd.session import Options
+from flnd.options import Options
 from flnd.site import SourceRun, TargetSite
 from flnd.source import (Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site,
                          Source, Target, day, fill, listing)
@@ -152,7 +152,7 @@ class Placed:
     path: str
     # Its history key without the source's code: the `key` format, or `path` when that is empty.
     key: str
-    # What `net.download` checks it as: "image", "video" or "audio", `files.SNIFF` for content to
+    # What `net.download` checks it as: "image", "video" or "audio", `paths.SNIFF` for content to
     # decide, or None for any file kept as it is (an archive); None too for a text file.
     kind: str | None
     # The format fields it was named from.
@@ -358,7 +358,7 @@ class _Line:
     counts: Counts
     row: Any = None
     listed: bool = False
-    # A note under its counts while it runs, such as a stop's finishing files.
+    # A note under its counts while it runs, such as a stop's finishing paths.
     note: str = ""
 
 
@@ -372,7 +372,7 @@ def wanted(source: type[Source], route: Route, options: Options) -> tuple[Catego
         route: one of its routes.
         options: the run's options.
     """
-    from flnd.session import selected
+    from flnd.options import selected
 
     names = selected(options, source)
     return tuple(category for category in route.categories if category.name in names)
@@ -507,7 +507,7 @@ class Ledger:
         """Make the ledger of one target, with nothing queued, skipped or remembered yet."""
         self.source, self.settings, self.site = run.source, run.settings, site
         self.target, self.board = target, board
-        self.folder = disk.target_folder(self.settings.home, target)
+        self.folder = paths.target_folder(self.settings.home, target)
         self._categories = {category.name: category for route in self.source.routes
                             for category in route.categories}
         # Every path and history key queued so far, each to the name it was queued as, so one file
@@ -584,7 +584,7 @@ class Ledger:
             todo.append(_Queued(placed, dest, key, estimated=first in self._estimated))
         if todo:
             # Videos first: the longest downloads start earliest, so the photos fill in around them.
-            todo.sort(key=lambda queued: queued.placed.kind != disk.VIDEO)
+            todo.sort(key=lambda queued: queued.placed.kind != paths.VIDEO)
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
 
@@ -689,7 +689,7 @@ class Ledger:
             _set_mtime(path, found)
             fresh = {name: value for name, value in row.items() if name != ESTIMATED}
             self.settings.history[key] = {**fresh, "path": str(path), DATE: found.isoformat(),
-                                          **disk.stamp(path)}
+                                          **paths.stamp(path)}
             dated += 1
         if dated:
             self.site.info("{files} dated", files=fmt.count(dated, "saved file"))
@@ -769,7 +769,7 @@ class Ledger:
         return f"{self.source.code}:{key}" if key else None
 
     def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
-        """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed files.
+        """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed paths.
 
         The first file's history row holds the post's file count (`FILES`), so a post whose later
         file failed is listed again; a row without it (a post of one file) needs only its own key.
@@ -1029,7 +1029,7 @@ class Downloads:
         """Write a downloaded file's history row, after shrinking it if asked."""
         placed = queued.placed
         # The kind comes from the name the file got, which the content may have changed (`_as_media`).
-        kind = disk.kind_of(saved.name)
+        kind = paths.kind_of(saved.name)
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
         posted = day(placed.post.date)
@@ -1132,7 +1132,7 @@ class Downloads:
             if finished.day is not None:
                 _set_mtime(path, finished.day)
             # Stamped once the file is final, so `sync` trusts it while it stays so.
-            finished.row.update(disk.stamp(path))
+            finished.row.update(paths.stamp(path))
             with self._writing:
                 self._written[queued.key] = path
             self.settings.history[queued.key] = finished.row
@@ -1178,7 +1178,7 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
         target: the target, as `Engine.resolve` gives it.
         board: the run's status lines; the target's end at ok, or at error when the route or a
             category raised.
-        options: what to take from the target and what to do with its files.
+        options: what to take from the target and what to do with its paths.
 
     Returns:
         The files written, how many were skipped, and the error that failed the target if one
@@ -1202,14 +1202,14 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     work = _Work(ledger, downloads)
     complete: list[str] = []
     saved = run.settings.targets
-    listed = saved_settings.listed(saved, target) if options.stop_at_saved else {}
+    listed = targets.listed(saved, target) if options.stop_at_saved else {}
     resumes: dict[str, Resume] = {}
     error: BaseException | None = None
     try:
         try:
             if options.stop_at_saved:
                 ledger.redate()
-            # The first Ctrl-C stops listing between posts (D8); `queue` sees it too, between files.
+            # The first Ctrl-C stops listing between posts (D8); `queue` sees it too, between paths.
             _read(work, run, site, target, options, listed=listed, resumes=resumes,
                   complete=complete)
         except KeyboardInterrupt:
@@ -1228,8 +1228,8 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     # from; one that ended by itself has nothing to resume.
     cursors = {name: None if name in complete else resume.cursor
                for name, resume in resumes.items()}
-    saved_settings.keep_cursors(saved, target, cursors)
-    saved_settings.complete(saved, target, complete)
+    targets.keep_cursors(saved, target, cursors)
+    targets.complete(saved, target, complete)
     report = TargetReport(target, written, board.totals(target).skipped)
     return _ended(board, report, error, complete=", ".join(complete) or "none")
 
@@ -1528,7 +1528,7 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
         if _queue_all(work, own, stop_at_saved=False) is not Ended.STOPPED:
             board.listed(target, "")
         return
-    cursors = saved_settings.cursors(run.settings.targets, target)
+    cursors = targets.cursors(run.settings.targets, target)
     for category in categories:
         # A phase mark for the run log, so a reader finds which listing a line belongs to.
         log.debug("{target}: list {category}", target=str(target), category=category.name)
@@ -1588,17 +1588,17 @@ def _extension(file: File) -> tuple[str, str | None]:
         return PurePosixPath(file.name or "").suffix, None
     if file.name is not None:
         extension = PurePosixPath(file.name).suffix
-        return extension, disk.kind_of(file.name)
+        return extension, paths.kind_of(file.name)
     url = file.url if isinstance(file.url, str) else file.url[0] if isinstance(file.url, tuple) else ""
     extension = PurePosixPath(urlsplit(url).path).suffix.lower() if url else ""
     # `kind_of` reads a name's extension, and ".jpg" alone is a name without one.
-    kind = disk.kind_of(f"file{extension}") if extension else None
-    if file.audio is not None and kind != disk.VIDEO:
+    kind = paths.kind_of(f"file{extension}") if extension else None
+    if file.audio is not None and kind != paths.VIDEO:
         # A DASH video whose URL names no video extension: merged, it is an MP4.
-        return DASH_EXTENSION, disk.VIDEO
+        return DASH_EXTENSION, paths.VIDEO
     if kind is None:
         # Neither its name nor its URL says what it is: its content decides, extension and all.
-        return "", disk.SNIFF
+        return "", paths.SNIFF
     return extension, kind
 
 

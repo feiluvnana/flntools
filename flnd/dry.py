@@ -19,7 +19,7 @@ from typing import Iterable, Iterator, Mapping, Sequence
 
 from flnd import job
 from flnd.engine import ACCOUNT, Engine, _connected, _offer_browser, needs_browser
-from flnd.session import Options, Settings, single_targets, unknown_categories
+from flnd.options import Options, RunShared, single_targets, unknown_categories
 from flnd.site import TargetSite, source_run
 from flnd.source import File, Range, Source, Target
 from flnd.sources import SOURCES
@@ -55,10 +55,10 @@ def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None
         raise ValueError(problem)
     span = Range.parse(time) if isinstance(time, str) else time
     options = Options(categories=names, since=span.since, until=span.until)
-    if needs_browser(source, target, options):
+    if needs_browser(source):
         _offer_browser()
     # Never the real history: a file already saved still shows, and nothing is recorded.
-    settings = Settings(home=home, history={})
+    settings = RunShared(home=home, history={})
     with source_run(settings, source()) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not run.source.logged_in(account) and run.source.requires_login:
@@ -68,7 +68,7 @@ def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None
 
 
 def tree(placed: Iterable[job.Placed]) -> Iterator[str]:
-    """The files as a tree, one line each as they come: the category, then each post, then its files.
+    """The files as a tree, one line each as they come: the category, then each post, then its paths.
 
         ins:example_user
           reels

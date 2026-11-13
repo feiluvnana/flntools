@@ -80,9 +80,9 @@ folder or file segment is made a safe file name, so a title with `../` can't lea
 is never a path, so it is kept as written.
 
 The `Site` handle. Every route and category receives one `Site` for its target. Its `fetch(url, *,
-method, headers, soft, in_page, **request)` makes one paced, retried request and returns its
-response, with `.json` and `.text`; it raises `FetchError`, whose `status` and `response` say why,
-and `soft=True` returns None for a 401, 403 or 404 instead. `goto(url)` loads a page in `site.page`,
+method, headers, in_page, **request)` makes one paced, retried request and returns its response,
+with `.json` and `.text`; it raises `FetchError`, whose `status` and `response` say why, and
+`try_fetch` returns None for a 401, 403 or 404 instead. `goto(url)` loads a page in `site.page`,
 and `handoff` waits for a person (a captcha). `target`, `cookies` (read-only), `time`, `client`,
 `state` and `secrets` are what the target, its login and its source keep, and `info` and `warn` log
 a line naming the target. The engine waits out every rate limit, so a source never sleeps or retries
@@ -133,7 +133,7 @@ import threading
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType, MethodType
-from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Literal, Mapping,
+from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Mapping,
                     MutableMapping, Protocol, Sequence, Union, overload)
 from urllib.parse import parse_qs, urlsplit
 
@@ -746,7 +746,7 @@ def _side(text: str) -> datetime.date | None:
 
 
 class Site(Protocol):
-    """The handle every route and category acts through, for one target: 13 members.
+    """The handle every route and category acts through, for one target.
 
         data = site.fetch(f"{API}/users/{user}", params={"count": 50}).json
         if site.goto(f"https://www.example.com/{user}/"):
@@ -773,38 +773,32 @@ class Site(Protocol):
         """`--time`, for a source that can ask its server for a range (tlg's `offset_date`); the engine filters anyway."""
         ...
 
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: Literal[False] = ..., in_page: bool = ..., **request: Any) -> http.Response: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: Literal[True], in_page: bool = ..., **request: Any) -> http.Response | None: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              soft: bool, in_page: bool = ..., **request: Any) -> http.Response | None: ...
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              soft: bool = False, in_page: bool = False, **request: Any) -> http.Response | None:
+              in_page: bool = False, **request: Any) -> http.Response:
         """Make one request, paced and retried, and return its `http.Response`.
 
             items = site.fetch(API, params={"cursor": cursor}).json
-            profile = site.fetch(f"{API}/users/{user}", soft=True)      # None for a 401, 403 or 404
 
         Args:
             url: the URL to request.
             method: the HTTP method.
             headers: headers on top of the source's for this request; None adds none.
-            soft: True returns None for a 401, 403 or 404 instead of raising.
             in_page: send it from the open page itself, with its cookies and TLS fingerprint
                 (`Page.fetch`), for an API the site checks that way.
             **request: `params`, `data`, `json`, `timeout` and `follow_redirects`, as httpx
                 takes them; with `in_page`, all but `follow_redirects`.
 
-        Returns:
-            The response; None only with `soft`.
-
         Raises:
             FetchError: no response after the retries, or a 4xx other than 429 (with `status`, and
                 `response` to read the site's reason from).
+        """
+        ...
+
+    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
+                  in_page: bool = False, **request: Any) -> http.Response | None:
+        """Like `fetch`, returning None for a 401, 403 or 404 instead of raising `FetchError`.
+
+            profile = site.try_fetch(f"{API}/users/{user}")
         """
         ...
 
@@ -1059,6 +1053,7 @@ class Source:
     key: ClassVar[str] = "{id}_{num}"
     # For this source's HTTP requests only; the browser always keeps its own.
     user_agent: ClassVar[str | None] = None
+    browser: ClassVar[bool] = False
     stealth: ClassVar[bool] = True
     # Files of one target downloading at once: CDNs are built for many, and the host's own
     # connection limit in `shared.http` still holds.
