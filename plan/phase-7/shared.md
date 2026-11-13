@@ -51,3 +51,19 @@ the headers, and `goto` the document's; a stopped download returns within a seco
 part; a source catches `browser.RawError` before any browser opens; a missing ffmpeg raises
 `MissingError`; a `show=` that raises leaves the next group drawing; a `shared._` import in flnd
 fails `test_names`; a full-width row on an 80-column screen is cut at 79.
+
+## As built (2026-11-13)
+
+- Row 1 is built as `http.Client(pace=http.Pace(...))` (R4) rather than `http.fetch(before=)`:
+  signing is an httpx request hook on the source's own domains. `Pace.label` groups a site's
+  hosts under its code, so messages and the saved speed name the site.
+- flnd holds two clients per site: `web` (the site's requests, `goto` and in-page fetches, one
+  429 back-off) and `files` (downloads, its own back-off): a CDN 429 no longer pauses the
+  listing. The CDN back-off is one per site, named by its code, not one per CDN host.
+- One retry layer: a site request tries 4 times (waits 1, 2, 4 s); a 5xx's Retry-After isn't read.
+- Gone from flnd: `Pacer`, `net.Backoff`, `Transport`, `Source.wait`, `Source.pause` (targets run
+  back to back), `viewport`, `browser_args`, `Category(name=, filename=)`, `File(headers=)`.
+- Waits of 15 s or more show as a countdown row named by the site. Scrolls keep the 0.3 s floor
+  but no longer ease a slowed site back.
+- Still there: net's `_seen`/`_recording`, since the media check needs `Content-Length` before
+  `http.download` returns. New: `http.StoppedError`, `cookies.MissingError`.

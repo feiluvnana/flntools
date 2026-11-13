@@ -42,7 +42,7 @@ Each step ends with `check` green and is committed on its own.
 5. **Built** (bb6a112, fbk's hook bec0753). [dates › every file dated](dates.md#2-every-file-dated): a source's `date` hook, then an
    estimate; `sync` dates files saved without a date.
 6. **Built** (see links.md). [links](links.md): a file found again in another tab's folder is linked there.
-7. [shared](shared.md): `shared` as a black box: `http.fetch` used, `download` and `goto` return
+7. **Built** (shared d159407, flnd 1ae2ce4, 813bb73). [shared](shared.md): `shared` as a black box: `http.fetch` used, `download` and `goto` return
    their headers, downloads stoppable, errors caught by name, private imports gone.
 8. [speed](speed.md): the downloader after IDM and MDM, more at once, less work around the
    downloads, and lower listing floors.
