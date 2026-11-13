@@ -36,7 +36,7 @@ Each step ends with `check` green and is committed on its own.
    lines, `download -v`. **Built** (`9df3e36`).
 1. [layout](layout.md): `media/`, `metadata/` and `log/`, and a log of every run at debug. **Built**, with lean's E9.
 2. [shrink](shrink.md): `--shrink` replaces `--image`, `--video` and `--audio`. **Built**.
-3. [fixes](fixes.md): five bugs from the 2026-11-13 review.
+3. [fixes](fixes.md): five bugs from the 2026-11-13 review. **Built**: all eleven, one commit each (619ad17 … 043a478).
 4. [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
    source: each key once, one key → date map, undated posts held until their category ends.
 5. [dates › every file dated](dates.md#2-every-file-dated): a source's `date` hook, then an

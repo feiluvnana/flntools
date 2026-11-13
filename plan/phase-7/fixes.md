@@ -1,6 +1,6 @@
 # fixes
 
-Phase 7, step 3. A read-only bug hunt of `flnd` and `shared` on 2026-11-13, each finding traced
+Phase 7, step 3, **built** 2026-11-13. A read-only bug hunt of `flnd` and `shared` on 2026-11-13, each finding traced
 through the code at 699116a and checked again by hand; none is covered by a test today. Each fix
 comes with a test that fails first, as Phase 6's [fixes](../phase-6/fixes.md) did.
 
@@ -117,3 +117,15 @@ Split and resumed ranges, `If-Range`, the 206 checks, preallocated parts, host s
 threads and the live area's drawing thread; the job's pending counts and the pool's stop; both
 Ctrl-C presses; path safety in names (`..` becomes `untitled`) and UTC in `day()`; secrets in
 messages and cookie write-back.
+
+## As built (2026-11-13)
+
+- #3: twt's timeline API raises; Instagram's tab pages and TikTok's profile load raise too when
+  they don't load, failing the target instead of a silent end. Only twt's case has a test; the
+  two browser cases need the browser fakes.
+- #6: the one URL scrubber is `shared.fmt.url`.
+- #7: the `SearchTimeline` query id is gallery-dl's, unverified; a stale one is refreshed from
+  x.com's script. To check by hand on a live run.
+- #8: a single URL stays a string; several are a tuple of mirrors, best first.
+- #11: the quoted tweet's media are `n` `q0`, `q1`, …; the card's image `card`; the story's music
+  `<date>_<id>_music.m4a`.
