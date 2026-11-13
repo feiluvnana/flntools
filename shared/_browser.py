@@ -43,7 +43,9 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Sequence, Union, overload
 
 import shared
@@ -59,8 +61,8 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
-__all__ = ["Browser", "Error", "Match", "MissingError", "Page", "RawError", "Subscription", "WaitError", "check",
-           "open"]
+__all__ = ["Browser", "Error", "Match", "MissingError", "Page", "RawError", "Subscription", "Visit", "WaitError",
+           "check", "open"]
 
 # Switches that hide the automation Chrome would otherwise show: AutomationControlled is the blink
 # feature that sets `navigator.webdriver`, and infobars is the "controlled by automated software" bar.
@@ -350,6 +352,20 @@ def _copy_profile(name: str) -> Path:
     return copy
 
 
+@dataclass(frozen=True)
+class Visit:
+    """Where `Page.goto` landed: the main document's status, its URL after redirects, and its headers."""
+
+    status: int
+    url: str
+    # Read-only, with lowercase names, as Playwright gives them.
+    headers: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "headers", MappingProxyType(
+            {str(name).lower(): value for name, value in self.headers.items()}))
+
+
 class Browser:
     """A running browser: open tabs in it, and read or add its cookies. `raw` is Playwright's `BrowserContext`.
 
@@ -512,11 +528,11 @@ class Page:
         self.browser = browser
         self._responses_seen = 0
 
-    def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> int | None:
-        """Go to `url`, and return the HTTP status of its main response.
+    def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> Visit | None:
+        """Go to `url`, and return its main document's status, final URL and headers as a `Visit`.
 
-            status = tab.goto("https://example.com/", idle=True)
-            if status is None or status >= 400: ...
+            visit = tab.goto("https://example.com/", idle=True)
+            if visit is None or visit.status >= 400: ...
 
         Args:
             url: the address to load in this tab.
@@ -524,10 +540,9 @@ class Page:
             timeout: seconds before the navigation counts as failed.
 
         Returns:
-            The main response's status, such as 200 or 429, so a caller can tell a rate limit or an
-            error page from a real load. None when it didn't load (a navigation error, which is
-            logged, not raised), and also when no response came: Playwright reports none for a
-            move within the same document, such as a new `#fragment`.
+            None when it didn't load (a navigation error, which is logged, not raised), and also
+            when no response came: Playwright reports none for a move within the same document,
+            such as a new `#fragment`.
         """
         try:
             response = self.raw.goto(url, wait_until="networkidle" if idle else "load", timeout=timeout * 1000)
@@ -535,7 +550,9 @@ class Page:
         except _raw_error() as error:
             log.warn("could not open {url}: {error}", url=url, error=_first_line(error))
             return None
-        return response.status if response is not None else None
+        if response is None:
+            return None
+        return Visit(response.status, response.url, dict(response.headers))
 
     def wait(self, css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None,
              idle: bool = False, timeout: float = 30.0) -> None:

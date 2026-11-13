@@ -51,7 +51,7 @@ class FakeRaw:
         request = SimpleNamespace(is_navigation_request=lambda: True, frame=self.main_frame)
         for listener in self.listeners:
             listener(SimpleNamespace(request=request, headers=self.headers.get(status, {})))
-        return SimpleNamespace(status=status)
+        return SimpleNamespace(status=status, url=url, headers=self.headers.get(status, {}))
 
 
 class FakeBrowser:

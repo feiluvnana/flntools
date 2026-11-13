@@ -662,8 +662,12 @@ class PageTest(PageCase):
             self.page.raw.evaluate("path => fetch(path).then(response => response.text())", path)
 
     def test_goto_returns_the_status(self):
-        self.assertEqual(self.page.goto("https://site.test/other", idle=True), 200)
-        self.assertEqual(self.page.goto("https://site.test/missing"), 404)
+        visit = self.page.goto("https://site.test/other", idle=True)
+        assert visit is not None
+        self.assertEqual((visit.status, visit.url), (200, "https://site.test/other"))
+        self.assertIn("text/html", visit.headers["content-type"])
+        missing = self.page.goto("https://site.test/missing")
+        self.assertEqual(None if missing is None else missing.status, 404)
         self.assertIsNone(self.page.goto("https://bad.test/"))
         self.assertEqual(len(self.lines()), 1)
 

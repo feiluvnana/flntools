@@ -296,7 +296,8 @@ class TargetSite:
         while True:
             self._before(url)
             self._document = None
-            status = page.goto(url, idle=idle, timeout=timeout)
+            visit = page.goto(url, idle=idle, timeout=timeout)
+            status = None if visit is None else visit.status
             # A page load doesn't go through the client's transport, so its 429 is counted here, and the
             # page's own headers stand in for a response for the pacer and the Retry-After.
             if self._document is not None:

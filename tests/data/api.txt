@@ -184,7 +184,7 @@ shared.browser.Page.browser: attribute
 shared.browser.Page.close() -> None
 shared.browser.Page.document: property -> Selection
 shared.browser.Page.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, data: Any = None, json: Any = None, soft: bool = False, timeout: float = 30.0) -> http.Response | None
-shared.browser.Page.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> int | None
+shared.browser.Page.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> Visit | None
 shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, poll: float = 1.0, timeout: float | None = None) -> bool
 shared.browser.Page.on_request(match: Match, handler: Callable[[Request], Any]) -> Subscription
 shared.browser.Page.on_response(match: Match, handler: Callable[[Any, Response], Any], *, lines: bool = False) -> Subscription
@@ -196,6 +196,10 @@ shared.browser.Page.wait(css: str | None = None, *, url: str | re.Pattern[str] |
 shared.browser.RawError(Exception)
 shared.browser.Subscription(stop: Callable[[], None])
 shared.browser.Subscription.stop() -> None
+shared.browser.Visit(status: int, url: str, headers: Mapping[str, str])
+shared.browser.Visit.headers: field -> Mapping[str, str]
+shared.browser.Visit.status: field -> int
+shared.browser.Visit.url: field -> str
 shared.browser.WaitError(shared.browser.Error)
 shared.browser.check() -> None
 shared.browser.open(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = False, viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser
