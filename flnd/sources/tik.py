@@ -77,9 +77,6 @@ CAPTCHA_TIMEOUT = 60.0
 # The profile's data, server-rendered into the page.
 PAGE_DATA = "__UNIVERSAL_DATA_FOR_REHYDRATION__"
 USER = '"__DEFAULT_SCOPE__"."webapp.user-detail".userInfo'
-# A Unix time before 1973 is a placeholder (0, a small number), not a post's time: the post is then
-# dated from its id instead.
-FIRST_UNIX_TIME = 100000000
 SITE = "https://www.tiktok.com"
 # The web client's fixed parameters, which its list APIs answer without a signature (gallery-dl's,
 # read 2026-11-12; to be confirmed by a live run). `device_id` is added per page, `cursor` and the
@@ -738,7 +735,7 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
     return items
 
 
-def stamp_of(raw: Dict[str, Any], item_id: str) -> int | float | None:
+def stamp_of(raw: Dict[str, Any], item_id: str) -> Any:
     """The post's Unix time from createTime, or else from the id's upper 32 bits; None when neither is one.
 
     The engine turns it into a day, in UTC (`day`), as twt and tlg do: a local day would name the
@@ -749,14 +746,13 @@ def stamp_of(raw: Dict[str, Any], item_id: str) -> int | float | None:
         item_id: the item's id, which `stamp_of` reads a time from when `createTime` is missing.
     """
     create_time = raw.get("createTime") or raw.get("create_time")
-    # Some responses send the time as a string of digits, which is read as a number.
-    if isinstance(create_time, str) and create_time.isdigit():
-        create_time = int(create_time)
-    if isinstance(create_time, (int, float)) and create_time > FIRST_UNIX_TIME:
+    # A number or a string of digits; a placeholder (0, a small number) isn't a date to `day`, and
+    # the post is then dated from its id instead.
+    if day(create_time) is not None:
         return create_time
     # An id is a Snowflake: the Unix time in seconds is above the lowest 32 bits.
-    stamp = int(item_id) >> 32 if item_id.isdigit() else 0
-    return stamp if stamp > FIRST_UNIX_TIME else None
+    stamp = int(item_id) >> 32 if item_id.isdigit() else None
+    return stamp if day(stamp) is not None else None
 
 
 def best_video(video: Dict[str, Any]) -> str | None:

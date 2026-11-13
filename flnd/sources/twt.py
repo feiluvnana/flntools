@@ -146,16 +146,8 @@ class Twitter(Source):
     name = "Twitter/X"
     domains = ("x.com", "twitter.com")
     # Paths on the site that are pages of it, not profiles. `x.com/i` also covers `x.com/i/*`, except the tweet links `post` reads (more literal segments win).
-    unsupported = {
-        "x.com/home": "that's not a profile", "twitter.com/home": "that's not a profile",
-        "x.com/explore": "that's not a profile", "twitter.com/explore": "that's not a profile",
-        "x.com/search": "that's not a profile", "twitter.com/search": "that's not a profile",
-        "x.com/settings": "that's not a profile", "twitter.com/settings": "that's not a profile",
-        "x.com/notifications": "that's not a profile", "twitter.com/notifications": "that's not a profile",
-        "x.com/messages": "that's not a profile", "twitter.com/messages": "that's not a profile",
-        "x.com/hashtag": "that's not a profile", "twitter.com/hashtag": "that's not a profile",
-        "x.com/i": "that's not a profile", "twitter.com/i": "that's not a profile",
-    }
+    unsupported = {f"{host}/{path}": "that's not a profile" for host in ("x.com", "twitter.com")
+                   for path in ("home", "explore", "search", "settings", "notifications", "messages", "hashtag", "i")}
     needs = ("auth_token",)
     user_agent = CHROME
     # This browser never hid navigator.webdriver, so stealth stays off.

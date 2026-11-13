@@ -110,17 +110,8 @@ CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-
 LONGEST_CODE = 11
 # The statuses Instagram refuses flnd's own client with, when it wants the browser's: then the tab sends it.
 REFUSED_DIRECT = frozenset({400, 401, 403})
-
-
-def is_graphql(url: str) -> bool:
-    """Whether a response is a GraphQL call, the kind that carries a profile tab's or a post's data.
-
-        if is_graphql(response.url):
-
-    Args:
-        url: the response's URL.
-    """
-    return "graphql" in url
+# What a GraphQL call's URL holds: the responses that carry a profile tab's or a post's data.
+GRAPHQL = "graphql"
 
 
 class Instagram(Source):
@@ -527,7 +518,7 @@ class Profile:
         replay = cursor = None
         ended = False
         # Watching starts before the tab loads, so the first page's own request is not missed.
-        with watch_responses(site, is_graphql, scroll=True) as responses:
+        with watch_responses(site, GRAPHQL, scroll=True) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
                 return
             # 1. The first page is embedded in the HTML, so it is read before any scrolling.
@@ -557,7 +548,7 @@ class Profile:
             # 4. A refused replay: scrolling reads the rest, and the posts already read are skipped by their codes.
             if refused:
                 # The tab is still where the scroll left it: scrolling on reads the rest, repeats skipped.
-                with watch_responses(site, is_graphql, scroll=True) as responses:
+                with watch_responses(site, GRAPHQL, scroll=True) as responses:
                     for result in responses:
                         if throttled(result):
                             site.back_off("Instagram asked to wait a few minutes")
@@ -573,7 +564,7 @@ class Profile:
         """
         if self.described:
             return
-        with watch_responses(site, is_graphql) as responses:
+        with watch_responses(site, GRAPHQL) as responses:
             if load(site, f"{SITE}/{self.user}/"):
                 for result in embedded_results(site.page.document):
                     self.note(result)

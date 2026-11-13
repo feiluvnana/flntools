@@ -102,8 +102,6 @@ NOT_MEDIA = {"profile_header_renderer"}
 TIMESTAMPS = ("creation_time", "publish_time", "post_timestamp", "timestamp", "created_time")
 # The Comet GraphQL endpoint's responses carry the feed; any other response is not read.
 FEED = "graphql"
-# A Unix stamp below this is a counter, not a date (it would be 1973), so the node has no date.
-FIRST_STAMP = 100_000_000
 # What the page says when Facebook stops a session that went too fast. Seen 2025; gallery-dl stops on it too.
 BLOCKED = "temporarily blocked"
 # What the countdown says while a block or a login wall is waited out.
@@ -759,14 +757,12 @@ def photo_item(node: dict, stamp: Any) -> Item | None:
 
 
 def posted_on(node: dict) -> Any:
-    """A node's own Unix stamp, from the first of its timestamp fields that holds one; None when it has none."""
-    for key in TIMESTAMPS:
-        stamp = node.get(key)
-        if isinstance(stamp, str) and stamp.isdigit():
-            stamp = int(stamp)
-        if isinstance(stamp, (int, float)) and stamp > FIRST_STAMP:
-            return stamp
-    return None
+    """A node's own stamp, from the first of its timestamp fields that `day` reads as a date; None when it has none.
+
+    A counter or a placeholder (0, a small number) in a timestamp field isn't a date, and `day`
+    refuses it, so the node keeps its nearest dated parent's.
+    """
+    return next((node[key] for key in TIMESTAMPS if day(node.get(key)) is not None), None)
 
 
 def image_extension(url: str) -> str:
