@@ -127,7 +127,7 @@ def _wal(connection: sqlite3.Connection, timeout: float) -> None:
     first run, each opening `sources.db`) saw "database is locked" at once. So it is tried again,
     briefly, until `timeout`; any other error, or one still locked then, is raised.
     """
-    # Real time, not `clock`: the wait is for another connection's lock, which a fake clock can't hurry.
+    # Real time, not `clock`: the wait is for another connection's lock, which no fake can hurry.
     deadline = time.monotonic() + timeout
     while True:
         try:

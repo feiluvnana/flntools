@@ -183,7 +183,7 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
 
 
 def private_imports(source: str) -> list[str]:
-    """Each `shared._x` module a file imports: `import shared._x`, `from shared._x import …` or `from shared import _x`."""
+    """Each `shared._x` module a file imports, in any of the three spellings of an import."""
     found = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -192,7 +192,8 @@ def private_imports(source: str) -> list[str]:
             if node.module.startswith("shared._"):
                 found.append(node.module)
             elif node.module == "shared":
-                found += [f"shared.{alias.name}" for alias in node.names if alias.name.startswith("_")]
+                found += [f"shared.{alias.name}" for alias in node.names
+                          if alias.name.startswith("_")]
     return found
 
 
@@ -231,12 +232,14 @@ class LibraryErrorTest(unittest.TestCase):
 
 class PrivateImportTest(unittest.TestCase):
     def test_nothing_outside_shared_imports_a_private_shared_module(self):
-        for path in sorted([*(dev.ROOT / "flnd").rglob("*.py"), *(dev.ROOT / "scripts").rglob("*.py")]):
+        paths = [*(dev.ROOT / "flnd").rglob("*.py"), *(dev.ROOT / "scripts").rglob("*.py")]
+        for path in sorted(paths):
             with self.subTest(str(path.relative_to(dev.ROOT))):
                 self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
 
     def test_every_spelling_of_a_private_import_is_found(self):
-        source = "import shared._http\nfrom shared._browser import Page\nfrom shared import _kv, log\n"
+        source = ("import shared._http\nfrom shared._browser import Page\n"
+                  "from shared import _kv, log\n")
         self.assertEqual(private_imports(source), ["shared._http", "shared._browser", "shared._kv"])
         self.assertEqual(private_imports("from shared import browser\nimport shared\n"), [])
 

@@ -94,8 +94,8 @@ def encoders() -> frozenset[str]:
 def need(encoder: str) -> str:
     """`encoder`, or a `media.MissingError` when this ffmpeg was built without it."""
     if encoder not in encoders():
-        raise _media.MissingError(f"this ffmpeg has no {encoder} encoder; install a full ffmpeg build, "
-                           "or pip install 'flntools[media]' for one")
+        raise _media.MissingError(f"this ffmpeg has no {encoder} encoder; install a full ffmpeg "
+                                  "build, or pip install 'flntools[media]' for one")
     return encoder
 
 

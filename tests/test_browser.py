@@ -371,7 +371,7 @@ class ChromeOnlyTest(BrowserCase):
         self.assertEqual(self.playwright.stop.call_count, 2)
 
     def test_without_a_terminal_it_raises_naming_chrome(self):
-        with self.assertRaisesRegex(browser.MissingError, "^flnd needs Google Chrome: install it from"):
+        with self.assertRaisesRegex(browser.MissingError, "^flnd needs Google Chrome: install it"):
             browser.open()
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertNotIn(browser.CHROMIUM_QUESTION, self.screen.dest.getvalue())
@@ -401,14 +401,15 @@ class ChromeOnlyTest(BrowserCase):
     def test_a_failed_download(self):
         self.terminal("y")
         with mock.patch.object(browser.subprocess, "Popen", return_value=FakeInstaller("Error: ENOSPC\n", 1)), \
-                self.assertRaisesRegex(browser.MissingError, "installer exited with 1: Error: ENOSPC"):
+                self.assertRaisesRegex(browser.MissingError, "exited with 1: Error: ENOSPC"):
             browser.open()
         self.assertEqual(self.launched, [])
         self.assertIn("✗ " + "─" * 20 + " Downloading Chromium " + "0/100", self.screen.dest.getvalue())
 
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []
-        failure = browser.MissingError("Chromium was not downloaded: Playwright's installer exited with 1: Error: ENOSPC")
+        failure = browser.MissingError("Chromium was not downloaded: Playwright's installer exited "
+                                       "with 1: Error: ENOSPC")
         with mock.patch.object(browser.prompt, "confirm", lambda *args, **options: asked.append(args) or True), \
                 mock.patch.object(browser, "_install_chromium", side_effect=failure) as install:
             for _ in range(2):
@@ -928,7 +929,8 @@ class RawErrorTest(unittest.TestCase):
         code = ("from shared import browser\n"
                 "try:\n    raise __import__('playwright.sync_api').sync_api.Error('x')\n"
                 "except browser.RawError:\n    print('caught')")
-        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                              timeout=60)
         self.assertEqual(done.stdout.strip(), "caught", done.stderr)
         self.assertIs(browser.RawError, Error)
         self.assertIs(browser.RawError, browser.RawError)
@@ -952,7 +954,8 @@ class GoneBodyTest(BrowserCase):
 
     def test_another_unreadable_body_is_a_debug_line(self):
         log.level = "debug"
-        self.assertEqual(browser._json_bodies(self.response(browser.RawError("Target closed")), False), [])
+        closed = self.response(browser.RawError("Target closed"))
+        self.assertEqual(browser._json_bodies(closed, False), [])
         self.assertEqual(self.lines(), ["· on_response: no body for https://site.test/api/graphql: Target closed"])
 
 

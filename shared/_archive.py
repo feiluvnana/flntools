@@ -44,8 +44,8 @@ import shared
 from shared import _atomic
 from shared import _fmt as fmt
 
-__all__ = ["BombError", "BrokenError", "ConflictError", "Entry", "Error", "Limits", "MissingError", "PasswordError",
-           "UnsafeError", "ls", "unzip", "zip"]
+__all__ = ["BombError", "BrokenError", "ConflictError", "Entry", "Error", "Limits", "MissingError",
+           "PasswordError", "UnsafeError", "ls", "unzip", "zip"]
 
 if TYPE_CHECKING:
     Extract = Callable[[list["_Entry"], Callable[["_Entry"], "_Output"]], None]

@@ -53,8 +53,8 @@ if TYPE_CHECKING:
 
     from typing_extensions import Self
 
-__all__ = ["BrokenError", "Error", "Info", "KindError", "Media", "MissingError", "StalledError", "UnsafeError",
-           "kind", "open", "sniff"]
+__all__ = ["BrokenError", "Error", "Info", "KindError", "Media", "MissingError", "StalledError",
+           "UnsafeError", "kind", "open", "sniff"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 Progress = Callable[..., Any]

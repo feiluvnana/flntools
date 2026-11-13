@@ -240,7 +240,7 @@ class App:
                 break
             if app.handler is not None:
                 return app.handler, path, tokens
-            # A command word wins over the default: `sync ls` is the command, `sync x` the default's.
+            # A command word wins over the default: `sync ls` is a command, `sync x` the default's.
             if app.default is not None and (not tokens or tokens[0] not in app.children):
                 return app.default, path, tokens
             if not tokens:
@@ -263,7 +263,8 @@ class App:
         if self.default is not None:
             # The default's own help, with the group's commands under it and either in the usage.
             model = self.default.help_model(path, self)
-            return model._replace(usage=f"{model.usage} | {' '.join(path)} [command]", commands=commands)
+            usage = f"{model.usage} | {' '.join(path)} [command]"
+            return model._replace(usage=usage, commands=commands)
         options = self._root_options() if self.parent is None else ()
         usage = " ".join(path) + (" [options]" if options else "") + " [command]"
         # Options are listed only when there is more than -h, the same rule as [options].

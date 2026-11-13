@@ -111,7 +111,8 @@ class WindowsLockTest(AtomicCase):
 
     def test_elsewhere_a_refused_replace_is_raised_at_once(self):
         patch, calls = self.held(1)
-        with patch, mock.patch.object(_atomic, "WINDOWS", False), self.assertRaises(PermissionError):
+        with patch, mock.patch.object(_atomic, "WINDOWS", False), \
+                self.assertRaises(PermissionError):
             atomic.write(self.dest, b"new")
         self.assertEqual(len(calls), 1)
 

@@ -41,7 +41,7 @@ class Pace:
 
     # The least seconds between two requests to one host at 1x; jitter adds up to 40% on top.
     floor: float = 0.0
-    # A URL part -> (requests, per seconds): at most that many requests whose URL holds it in any window.
+    # A URL part -> (requests, per seconds): at most that many requests with it in any window.
     budgets: Mapping[str, tuple[int, float]] = field(default_factory=dict)
     # The hosts the floor and budgets apply to, with their subdomains; empty means every host.
     domains: tuple[str, ...] = ()
@@ -49,11 +49,12 @@ class Pace:
     def paces(self, host: str) -> bool:
         """Whether the floor and budgets apply to `host`."""
         domains = [domain.lower().lstrip(".") for domain in self.domains]
-        return not domains or any(host == domain or host.endswith("." + domain) for domain in domains)
+        return not domains or any(host == domain or host.endswith("." + domain)
+                                  for domain in domains)
 
 
 class Host:
-    """One host's pace during a run: its learned speed, budget windows, header block and back-off."""
+    """One host's pace in a run: its learned speed, budget windows, header hold and back-off."""
 
     def __init__(self, name: str, pace: Pace | None, *, speed: float = 1.0):
         self.name = name
@@ -84,7 +85,7 @@ class Host:
                 requests, per = self.budgets[key]
                 window = self._windows[key]
                 if len(window) >= requests:
-                    # The oldest of the last `requests` must leave the window, with the margin, first.
+                    # The oldest of the last `requests` must leave the window, margin and all.
                     ready = max(ready, window[-requests] + per * (1 + MARGIN))
             start = max(now, ready)
             self._last = start
@@ -96,7 +97,7 @@ class Host:
             return start - now
 
     def record(self, headers: Mapping[str, str]) -> None:
-        """Read a response's rate headers: with 5 or fewer left, hold the host until the reset plus 1 s."""
+        """Read a response's rate headers: with 5 or fewer left, hold the host till the reset."""
         for prefix in ("x-rate-limit-", "x-ratelimit-"):
             try:
                 remaining = int(headers[prefix + "remaining"])
@@ -111,7 +112,7 @@ class Host:
             return
 
     def throttled(self, retry_after: float | None) -> float | None:
-        """Count a 429, doubling the speed and holding the host; the seconds held, or None if already held."""
+        """Count a 429: double the speed and hold the host; the seconds held, or None if held."""
         with self._lock:
             now = clock.now()
             # Requests running together see the same 429: that is one wait, not one each.
@@ -129,7 +130,7 @@ class Host:
             return seconds
 
     def clean(self) -> None:
-        """Count a request that went through: the next 429 starts again at 30 s, and 50 ease the speed."""
+        """Count a request that went through: a 429 waits 30 s again, and 50 ease the speed."""
         with self._lock:
             self.strikes = 0
             self._clean += 1

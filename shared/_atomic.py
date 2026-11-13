@@ -94,7 +94,7 @@ def writing(dest: PathLike, *, replace: bool = False) -> Iterator[Path]:
 
 
 def _replace(part: Path, dest: Path) -> None:
-    """`os.replace(part, dest)`, tried again for about a second while Windows says the file is in use."""
+    """`os.replace(part, dest)`, tried again for about a second while Windows says it's in use."""
     for attempt in range(1, REPLACE_TRIES + 1):
         try:
             os.replace(part, dest)

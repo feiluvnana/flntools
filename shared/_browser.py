@@ -61,8 +61,8 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
-__all__ = ["Browser", "Error", "Match", "MissingError", "Page", "RawError", "Subscription", "Visit", "WaitError",
-           "check", "open"]
+__all__ = ["Browser", "Error", "Match", "MissingError", "Page", "RawError", "Subscription", "Visit",
+           "WaitError", "check", "open"]
 
 # Switches that hide the automation Chrome would otherwise show: AutomationControlled is the blink
 # feature that sets `navigator.webdriver`, and infobars is the "controlled by automated software" bar.
@@ -148,7 +148,7 @@ class Error(shared.Error):
 
 
 class _NeverRaised(Exception):
-    """Stands for Playwright's error classes where Playwright isn't installed, so nothing matches."""
+    """Stands for Playwright's error classes where Playwright isn't installed: nothing matches."""
 
 
 def __getattr__(name: str) -> Any:
@@ -159,7 +159,7 @@ def __getattr__(name: str) -> Any:
 
 @functools.cache
 def _raw_error() -> type[Exception]:
-    """Playwright's `Error`, imported once; a class nothing raises where Playwright isn't installed."""
+    """Playwright's `Error`, imported once; a class nothing raises without Playwright."""
     try:
         from playwright.sync_api import Error
     except ImportError:  # no `browser` extra: no Playwright call can have raised
@@ -178,7 +178,7 @@ def _raw_timeout() -> type[Exception]:
 
 
 def _gone(error: BaseException) -> bool:
-    """Whether a Playwright error says what was read is gone: the page navigated, or a body was freed."""
+    """Whether a Playwright error says what it read is gone: the page moved, or a body was freed."""
     return any(text in str(error) for text in GONE)
 
 
@@ -354,7 +354,7 @@ def _copy_profile(name: str) -> Path:
 
 @dataclass(frozen=True)
 class Visit:
-    """Where `Page.goto` landed: the main document's status, its URL after redirects, and its headers."""
+    """Where `Page.goto` landed: the document's status, its URL after redirects, and its headers."""
 
     status: int
     url: str

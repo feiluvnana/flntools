@@ -32,7 +32,7 @@ class Error(shared.Error):
 
 
 class Clock:
-    """The real clock: monotonic seconds, the wall clock, sleeps that a stop event can end, and jitter."""
+    """The real clock: monotonic seconds, the wall clock, sleeps a stop can end, and jitter."""
 
     def __init__(self) -> None:
         self.random: Random = Random()

@@ -344,7 +344,8 @@ class StructureTest(CliCase):
         app = cli.App("tool")
         ran = []
 
-        def sync_all(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)], *, fast: bool = False) -> int:
+        def sync_all(targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)], *,
+                     fast: bool = False) -> int:
             """Sync every target.
 
             Args:
@@ -366,7 +367,8 @@ class StructureTest(CliCase):
         self.assertEqual(self.run_app(app, "sync", "ins:example_user", "--fast")[0], 3)
         self.assertEqual(self.run_app(app, "sync", "--fast")[0], 3)
         self.assertEqual(self.run_app(app, "sync", "ls")[0], 4)
-        self.assertEqual(ran, [("sync", [], False), ("sync", ["ins:example_user"], True), ("sync", [], True), ("ls",)])
+        self.assertEqual(ran, [("sync", [], False), ("sync", ["ins:example_user"], True),
+                               ("sync", [], True), ("ls",)])
         self.assertEqual(self.run_app(app, "sync", "ls", "extra")[0], 2)
 
     def test_a_group_defaults_help_shows_its_options_and_the_groups_commands(self):

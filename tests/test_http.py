@@ -482,7 +482,7 @@ class Cdn:
 
 
 class StallingBody(httpx.SyncByteStream):
-    """A body that sends one chunk, then hangs until the response is closed, as a stalled CDN does."""
+    """A body that sends one chunk, then hangs until the response is closed, as a stalled CDN."""
 
     def __init__(self, data: bytes):
         self.data, self.released = data, threading.Event()
@@ -507,7 +507,8 @@ class DownloadCase(HttpTestCase):
     def download(self, url: str | list[str] = "https://cdn.example/v.mp4", dest: str | Path | None = None,
                  **options):
         with client(self.cdn.handler) as fake:
-            return http.download(url, dest if dest is not None else self.tmp / "v.mp4", client=fake, **options).path
+            dest = dest if dest is not None else self.tmp / "v.mp4"
+            return http.download(url, dest, client=fake, **options).path
 
     def leftovers(self) -> list[str]:
         return sorted(path.name for path in self.tmp.iterdir() if path.name.startswith("."))
@@ -990,7 +991,8 @@ class StopTest(DownloadCase):
 
     def test_a_stalled_read_is_stopped_within_a_second(self):
         stop = threading.Event()
-        self.cdn.script = [lambda request: httpx.Response(200, headers={"ETag": '"v1"', "Content-Length": str(len(DATA))},
+        headers = {"ETag": '"v1"', "Content-Length": str(len(DATA))}
+        self.cdn.script = [lambda request: httpx.Response(200, headers=headers,
                                                           stream=StallingBody(DATA))]
         threading.Timer(0.2, stop.set).start()
         started = time.monotonic()

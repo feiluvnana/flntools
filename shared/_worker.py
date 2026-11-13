@@ -54,7 +54,8 @@ from shared._log import Progress, log
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-__all__ = ["Error", "Pool", "Result", "StalledError", "TaskError", "as_completed", "as_ordered", "pool"]
+__all__ = ["Error", "Pool", "Result", "StalledError", "TaskError", "as_completed", "as_ordered",
+           "pool"]
 
 # The longest wait between two tries, which caps the exponential backoff at one minute.
 MAX_RETRY_WAIT = 60.0
@@ -157,9 +158,9 @@ def as_ordered(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any
             concurrency: how many tasks run at once. None: `min(32, CPUs + 4)` threads, or one process
                 per CPU with `processes=True`.
             retries: how many more tries a failed task gets, after waits of 1, 2, 4… s (at most 60 s).
-            timeout: seconds before one try fails with `StalledError`; None waits forever. A coroutine
-                or a process really stops; a thread can't be stopped, so it runs on in the background
-                and its result is thrown away.
+            timeout: seconds before one try fails with `StalledError`; None waits forever. A
+                coroutine or a process really stops; a thread can't be stopped, so it runs on in
+                the background and its result is thrown away.
             label: the text of a progress row of finished tasks, drawn with `shared.log`; None draws none.
             progress: a callback `progress(done, total)`, called after each task finishes with how many
                 have and how many there are: the input's length, or the number read so far when the
@@ -614,7 +615,9 @@ class _Run:
                 return Result(job.item, self._counted_attempt(job), None, attempt, job.position)
             except Exception as error:
                 # After Ctrl-C a pending retry is cancelled too: waiting a minute to retry is not "finishing".
-                if attempt > self.retries or clock.sleep(_retry_wait(attempt), stop=self.stop_requested):
+                stopped = attempt <= self.retries and clock.sleep(_retry_wait(attempt),
+                                                                   stop=self.stop_requested)
+                if attempt > self.retries or stopped:
                     return Result(job.item, None, error, attempt, job.position)
 
     def _counted_attempt(self, job: _Job) -> Any:

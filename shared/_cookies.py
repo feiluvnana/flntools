@@ -96,7 +96,7 @@ class Error(shared.Error, ValueError):
 
 
 class MissingError(Error, shared.MissingError):
-    """Reading this browser's cookies needs what only the browser has: Chromium's keys on Windows."""
+    """Reading these cookies needs what only the browser has: Chromium's keys on Windows."""
 
 
 class UnsafeError(Error, shared.UnsafeError):

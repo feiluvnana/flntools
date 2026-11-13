@@ -694,7 +694,7 @@ class LiveArea:
             self.thread.start()
 
     def _run(self) -> None:
-        """The drawing thread: draw until the last group closes; an error stops it until a group opens."""
+        """The drawing thread: draw until the last group closes; an error stops it till the next."""
         try:
             self._draw_while_open()
         except Exception as error:

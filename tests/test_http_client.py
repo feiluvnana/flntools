@@ -23,7 +23,8 @@ PACE = http.Pace(1.0, {"/graphql": (2, 10.0)}, domains=("example.com",))
 class ClientCase(unittest.TestCase):
     def setUp(self) -> None:
         self.fake = self.enterContext(clock.use(clock.Fake()))
-        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=80, tty=False, interactive=False)
+        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=80, tty=False,
+                             interactive=False)
         self.enterContext(theme.scope(screen=self.screen, color="none", unicode=True))
         self.answers: list[httpx.Response] = []
         self.sent: list[tuple[float, str]] = []
@@ -64,7 +65,8 @@ class PaceTest(ClientCase):
         self.assertAlmostEqual(self.gaps()[2], 0.0)
 
     def test_rate_headers_near_zero_hold_the_host_until_the_reset(self):
-        self.answers = [httpx.Response(200, headers={"x-rate-limit-remaining": "2", "x-rate-limit-reset": "20"})]
+        headers = {"x-rate-limit-remaining": "2", "x-rate-limit-reset": "20"}
+        self.answers = [httpx.Response(200, headers=headers)]
         client = self.client()
         client.fetch(f"{SITE}/a")
         client.fetch(f"{SITE}/b")
@@ -72,7 +74,8 @@ class PaceTest(ClientCase):
 
     def test_a_unix_reset_counts_from_the_wall_clock(self):
         reset = str(int(clock.wall() + 30))
-        self.answers = [httpx.Response(200, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": reset})]
+        headers = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": reset}
+        self.answers = [httpx.Response(200, headers=headers)]
         client = self.client()
         client.fetch(f"{SITE}/a")
         client.fetch(f"{SITE}/b")
@@ -87,7 +90,8 @@ class BackOffTest(ClientCase):
         self.assertEqual((page.status, len(self.sent)), (200, 2))
         self.assertAlmostEqual(self.gaps()[0], 7.0)
         self.assertEqual(client.speeds, {"www.example.com": 2.0})
-        self.assertIn("! www.example.com: rate limited; waiting 7.0s (attempt 1)", self.screen.dest.getvalue())
+        self.assertIn("! www.example.com: rate limited; waiting 7.0s (attempt 1)",
+                      self.screen.dest.getvalue())
 
     def test_without_retry_after_the_waits_double_from_30_seconds(self):
         self.answers = [httpx.Response(429), httpx.Response(429)]
@@ -119,7 +123,8 @@ class BackOffTest(ClientCase):
             self.client(stop=stop).fetch(f"{SITE}/items")
 
     def test_a_refusal_is_raised_and_its_rate_headers_read(self):
-        self.answers = [httpx.Response(403, headers={"x-rate-limit-remaining": "0", "x-rate-limit-reset": "5"})]
+        headers = {"x-rate-limit-remaining": "0", "x-rate-limit-reset": "5"}
+        self.answers = [httpx.Response(403, headers=headers)]
         client = self.client()
         with self.assertRaises(http.RefusedError):
             client.fetch(f"{SITE}/a")

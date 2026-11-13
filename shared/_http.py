@@ -79,8 +79,8 @@ if TYPE_CHECKING:  # `selector` loads on the first `html`, so a JSON-only script
     from shared._selector import Selection
 
 __all__ = [
-    "ChangedError", "Client", "Download", "Error", "IncompleteError", "Pace", "RateLimitedError", "RefusedError",
-    "Response", "ServerError", "StoppedError", "download", "fetch",
+    "ChangedError", "Client", "Download", "Error", "IncompleteError", "Pace", "RateLimitedError",
+    "RefusedError", "Response", "ServerError", "StoppedError", "download", "fetch",
 ]
 
 PathLike = Union[str, "os.PathLike[str]"]
@@ -119,7 +119,7 @@ DOWNLOAD_EXTENSION = "shared.http.download"
 INFO_SUFFIX = ".json"
 # The name of a file `download` saves into a folder when its URL's path names none.
 FALLBACK_NAME = "download"
-# A client's wait this long, in seconds, or longer is drawn as a countdown row, so a slow run explains itself.
+# A client's wait of this many seconds or more is a countdown row: a slow run explains itself.
 SHOWN_WAIT = 15.0
 # How often, in seconds, a download waiting for a host slot or reading a stalled body looks at its
 # `stop` event: short enough that a stop takes effect within a second.
@@ -176,7 +176,7 @@ class ServerError(Error):
 
 
 class StoppedError(Error):
-    """A download stopped because its caller set `stop`; a resumable part is kept for the next call."""
+    """A download stopped because its caller set `stop`; a resumable part is kept for later."""
 
 
 class IncompleteError(Error, shared.BrokenError):
@@ -390,7 +390,7 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
              timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
              progress: Callable[[int, int | None], Any] | None = None, label: str | None = None,
              stop: threading.Event | None = None) -> Download:
-    """Save one file from the web, resuming and splitting where the server allows, and return a `Download`.
+    """Save one file from the web, resuming and splitting where the server allows, as a `Download`.
 
         http.download("https://cdn.example/v.mp4", "videos/")                # videos/v.mp4
         http.download([mirror_a, mirror_b], "f.7z", client=client, progress=bar.update,
@@ -488,7 +488,7 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
 
 
 class Client:
-    """One run's HTTP client: `fetch` and `download` that keep each host's pace and wait out its 429s.
+    """One run's HTTP client: `fetch` and `download` keeping each host's pace and waiting out 429s.
 
         pace = http.Pace(0.5, {"/graphql": (275, 600)}, domains=("example.com",))
         with http.Client(pace=pace) as client:
@@ -539,7 +539,8 @@ class Client:
     @overload
     def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
               params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
-              soft: Literal[False] = ..., attempts: int = ..., timeout: float = ...) -> Response: ...
+              soft: Literal[False] = ..., attempts: int = ...,
+              timeout: float = ...) -> Response: ...
     @overload
     def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
               params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
@@ -547,7 +548,7 @@ class Client:
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
               params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
               soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None:
-        """`http.fetch` on this client, after the host's turn, waiting out a 429 as long as it takes.
+        """`http.fetch` on this client, after the host's turn, waiting out each 429.
 
             page = client.fetch("https://example.com/items", params={"page": 2})
 
@@ -559,8 +560,9 @@ class Client:
         while True:
             self._wait(host, host.turn(url))
             try:
-                response = fetch(url, method=method, client=self.raw, headers=headers, params=params,
-                                 data=data, json=json, soft=soft, attempts=attempts, timeout=timeout)
+                response = fetch(url, method=method, client=self.raw, headers=headers,
+                                 params=params, data=data, json=json, soft=soft,
+                                 attempts=attempts, timeout=timeout)
             except RateLimitedError as error:
                 self._throttled(host, error.retry_after)
                 continue
@@ -573,27 +575,28 @@ class Client:
             host.clean()
             return response
 
-    def download(self, url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None,
-                 size: int | None = None, parts: Literal["auto"] | int = "auto", resume: bool = True,
-                 attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
+    def download(self, url: str | Sequence[str], dest: PathLike, *,
+                 headers: Mapping[str, str] | None = None, size: int | None = None,
+                 parts: Literal["auto"] | int = "auto", resume: bool = True, attempts: int = 3,
+                 timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
                  progress: Callable[[int, int | None], Any] | None = None,
                  label: str | None = None) -> Download:
-        """`http.download` on this client, after the host's turn, resuming after each 429 is waited out.
+        """`http.download` on this client, after the host's turn, resuming after each 429.
 
             client.download("https://cdn.example.com/v.mp4", "videos/", progress=bar.update)
 
         Raises:
             StoppedError: `stop` was set.
-            RefusedError, ServerError, IncompleteError, ChangedError, Error: as `http.download` raises them.
+            RefusedError, ServerError, IncompleteError, ChangedError, Error: as `http.download`.
         """
         first = url if isinstance(url, str) else next(iter(url), "")
         host = self._host(first)
         while True:
             self._wait(host, host.turn(first))
             try:
-                saved = download(url, dest, client=self.raw, headers=headers, size=size, parts=parts,
-                                 resume=resume, attempts=attempts, timeout=timeout, check=check,
-                                 progress=progress, label=label, stop=self.stop)
+                saved = download(url, dest, client=self.raw, headers=headers, size=size,
+                                 parts=parts, resume=resume, attempts=attempts, timeout=timeout,
+                                 check=check, progress=progress, label=label, stop=self.stop)
             except RateLimitedError as error:
                 self._throttled(host, error.retry_after)
                 continue
@@ -853,7 +856,7 @@ class _Stopped(Exception):
 
 
 class _Streams:
-    """One `download`'s stop: its open responses, closed as soon as `stop` is set, so a stalled read ends."""
+    """A download's stop: its open responses, closed once `stop` is set, so a stalled read ends."""
 
     def __init__(self, stop: threading.Event | None):
         self.stop = stop
@@ -907,7 +910,8 @@ class _Streams:
                 with self.lock:
                     responses = list(self.responses)
                 for response in responses:
-                    with suppress(Exception):  # closing from another thread may race the reader's own close
+                    # Closing from another thread may race the reader's own close.
+                    with suppress(Exception):
                         response.close()
                 return
 
@@ -1048,14 +1052,14 @@ class _Transfer:
         """Fetch what the part still lacks: the whole file on a fresh start, or each unfinished range."""
         if self.state is None:
             stream = self._open(None)
-            self.final_url, self.response_headers = str(stream.response.url), stream.response.headers
+            self._started(stream)
             self._start(stream, split=not self.single)
         else:
             first = next((segment for segment in self.state.segments if not segment.finished), None)
             if first is None:
                 return
             stream = self._open(first)
-            self.final_url, self.response_headers = str(stream.response.url), stream.response.headers
+            self._started(stream)
             if stream.response.status_code == 200:
                 # A 200 to a range: the file changed (`If-Range` didn't match) or the server
                 # ignores ranges. Either way the body is the whole file, so the part restarts on it.
@@ -1075,6 +1079,10 @@ class _Transfer:
             self._release()
             raise
         self._fill_all(first, stream)
+
+    def _started(self, stream: _Stream) -> None:
+        """Keep the URL and headers of the response the transfer starts from, for the `Download`."""
+        self.final_url, self.response_headers = str(stream.response.url), stream.response.headers
 
     def _start(self, stream: _Stream, *, split: bool) -> None:
         """A new part for a whole-file response, split into ranges when the server and the host's free slots allow."""
@@ -1222,7 +1230,7 @@ class _Transfer:
             stream.close()
 
     def _chunks(self, stream: _Stream) -> Iterator[bytes]:
-        """The body's bytes as they arrive, until the caller's `stop`, which ends even a stalled read."""
+        """The body's bytes as they arrive, until `stop`, which ends a stalled read too."""
         try:
             for chunk in stream.response.iter_bytes():
                 self.streams.check(self.url)
