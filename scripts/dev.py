@@ -43,9 +43,6 @@ ROOT = Path(__file__).resolve().parent.parent
 # The Python setup builds .venv with when neither --python nor PYTHON says otherwise; releases also check 3.11.
 DEFAULT_PYTHON = "3.14"
 
-FFMPEG_SOURCE_HEADER = ("ffmpeg-source\n"
-                        "The ffmpeg program in this bundle, as it reports itself. The source offer is in ffmpeg.txt.\n")
-
 # The modules the API snapshot lists, each through its `__all__`: the toolkit, the module sources
 # are written against, and the engine API (`flnd`'s own `__all__`, redesign B1).
 API_MODULES = ("shared", "flnd.source", "flnd")
@@ -144,28 +141,12 @@ def api(python: str, args: list[str]) -> None:
 
 
 def dist(python: str, args: list[str]) -> None:
-    """Build the one-folder bundle `dist/flnd/` and add `licenses/ffmpeg-source.txt` to it."""
+    """Build the one-folder bundle `dist/flnd/`."""
     # PyInstaller lives in the `dist` group, which `setup` leaves out; `uv run` below keeps it installed.
     run(["uv", "sync", "--python", python, "--group", "dist"])
     # This script runs outside the project environment, so the build runs inside it, through uv.
-    build = "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', data=('licenses',), dest='dist')"
+    build = "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', dest='dist')"
     run(["uv", "run", "--python", python, "--group", "dist", "python", "-c", build])
-    # utf-8 on every OS: a shell's `>` on Windows would write the console's code page instead.
-    (ROOT / "dist" / "flnd" / "licenses" / "ffmpeg-source.txt").write_text(ffmpeg_source(python), encoding="utf-8")
-
-
-def ffmpeg_source(python: str = DEFAULT_PYTHON) -> str:
-    """The text of `ffmpeg-source.txt`: the bundled ffmpeg's `-version` output, for the GPL source offer.
-
-        Path("ffmpeg-source.txt").write_text(ffmpeg_source(), encoding="utf-8")
-
-    Args:
-        python: the Python version `uv run` uses to find imageio-ffmpeg's binary in the project environment.
-    """
-    find = "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
-    ffmpeg = run(["uv", "run", "--python", python, "python", "-c", find], capture_output=True).stdout.strip()
-    version = run([ffmpeg, "-hide_banner", "-version"], capture_output=True).stdout
-    return f"{FFMPEG_SOURCE_HEADER}\n{version}\n"
 
 
 class ApiName(NamedTuple):

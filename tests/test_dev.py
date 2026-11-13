@@ -75,25 +75,16 @@ class TasksTest(unittest.TestCase):
         with mock.patch.object(dev.subprocess, "run", side_effect=subprocess.CalledProcessError(1, ["uv"])):
             self.assertEqual(dev.main(["try", "ins:example_user"]), 1)
 
-    def test_dist_writes_ffmpeg_source_in_utf8(self):
+    def test_dist_builds_the_bundle_through_uv(self):
         def run(command, **kwargs):
-            if command[-1].startswith("import imageio_ffmpeg"):
-                return finished(command, stdout="/bin/ffmpeg\n")
-            return finished(command, stdout="ffmpeg version 7.1 © the FFmpeg developers\n")
+            return finished(command)
 
-        with tempfile.TemporaryDirectory() as root, mock.patch.object(dev, "ROOT", Path(root)), \
-                mock.patch.object(dev.subprocess, "run", side_effect=run) as fake, \
+        with mock.patch.object(dev.subprocess, "run", side_effect=run) as fake, \
                 mock.patch.dict(dev.os.environ, {"PYTHON": ""}):
-            licenses = Path(root) / "dist" / "flnd" / "licenses"
-            licenses.mkdir(parents=True)  # what the real bundler.build leaves behind
             self.assertEqual(dev.main(["dist"]), 0)
-            text = (licenses / "ffmpeg-source.txt").read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("ffmpeg-source\n"))
-        self.assertIn("ffmpeg version 7.1 © the FFmpeg developers", text)
         commands = [call.args[0] for call in fake.call_args_list]
         self.assertEqual(commands[0], ["uv", "sync", "--python", "3.14", "--group", "dist"])
-        self.assertIn("bundler.build('flnd/__main__.py', name='flnd', data=('licenses',), dest='dist')", commands[1][-1])
-        self.assertEqual(commands[-1], ["/bin/ffmpeg", "-hide_banner", "-version"])
+        self.assertIn("bundler.build('flnd/__main__.py', name='flnd', dest='dist')", commands[1][-1])
         # Every command is a list of arguments, never a shell string.
         self.assertTrue(all(call.kwargs.get("shell") is None for call in fake.call_args_list))
 

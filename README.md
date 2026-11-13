@@ -39,9 +39,7 @@ make setup
 make dist            # dist/flnd/flnd (flnd.exe on Windows), for the OS you build on
 ```
 
-Copy the whole `dist/flnd/` folder; it holds `flnd`, `_internal/` and `licenses/`, the third-party licences.
-The bundle includes ffmpeg, a GPL program: `licenses/ffmpeg.txt` has its licence and the offer of its
-source, and `licenses/ffmpeg-source.txt` the exact build.
+Copy the whole `dist/flnd/` folder; it holds `flnd` and `_internal/`.
 It uses Google Chrome too, or offers the same Chromium download. The bundled `flnd` still writes `.flnd/`
 in the folder you run it from.
 

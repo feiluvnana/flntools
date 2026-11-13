@@ -169,17 +169,15 @@ class RealBuildTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split(), ["image", "mpeg4"])
 
-    def test_a_built_flnd_ships_ffmpeg_and_its_licences(self):
-        # What `make dist` builds: flnd with licenses/, whose bundled ffmpeg runs from inside it.
+    def test_a_built_flnd_ships_ffmpeg(self):
+        # What `make dist` builds: flnd, whose bundled ffmpeg runs from inside it.
         with tempfile.TemporaryDirectory() as folder:
-            built = bundler.build(ROOT / "flnd" / "__main__.py", name="flnd", dest=Path(folder) / "dist",
-                                  data=(ROOT / "licenses",))
+            built = bundler.build(ROOT / "flnd" / "__main__.py", name="flnd", dest=Path(folder) / "dist")
             program = built / ("flnd.exe" if sys.platform == "win32" else "flnd")
             result = subprocess.run([str(program), "sync"], capture_output=True, text=True,
                                     timeout=120, cwd=folder)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("total", result.stdout + result.stderr)
-            self.assertTrue((built / "licenses" / "ffmpeg.txt").is_file())
             binaries = list(built.rglob("ffmpeg-*-v*"))
             self.assertTrue(binaries and os.access(binaries[0], os.X_OK), binaries)
 

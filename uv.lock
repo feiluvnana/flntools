@@ -454,7 +454,6 @@ selector = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "packaging" },
     { name = "pyright", extra = ["nodejs"] },
     { name = "typing-extensions" },
 ]
@@ -491,7 +490,6 @@ provides-extras = ["archive", "selector", "http", "browser", "media"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "packaging" },
     { name = "pyright", extras = ["nodejs"], specifier = "==1.1.414" },
     { name = "typing-extensions", specifier = ">=4.12" },
 ]
