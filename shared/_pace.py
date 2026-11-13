@@ -1,8 +1,8 @@
 """How long `http.Client` waits before each request to a host: as little as the host tolerates.
 
-The client keeps one `Host` per host. A request waits for the latest of: the host's rate headers
-once 5 or fewer requests are left until their reset; each budget's sliding window; the learned
-gap (the floor times the learned speed, plus up to 40% jitter); and a 429's back-off (its
+The client keeps one `Host` per host, or one for all the hosts a labelled `Pace` names. A
+request waits for the latest of: the host's rate headers once 5 or fewer requests are left until
+their reset; each budget's sliding window; the learned gap (the floor times the learned speed, plus up to 40% jitter); and a 429's back-off (its
 `Retry-After`, else 30 s doubling to 15 min). The learned speed runs from 1x to 8x: each 429
 doubles it, and every 50 clean requests bring it 20% back toward 1x. Private: callers use `http`.
 """
@@ -45,6 +45,9 @@ class Pace:
     budgets: Mapping[str, tuple[int, float]] = field(default_factory=dict)
     # The hosts the floor and budgets apply to, with their subdomains; empty means every host.
     domains: tuple[str, ...] = ()
+    # A name those hosts go by together: they share one learned speed, budget windows and
+    # back-off, and messages and `Client.speeds` use the name. Empty keeps each host apart.
+    label: str = ""
 
     def paces(self, host: str) -> bool:
         """Whether the floor and budgets apply to `host`."""
@@ -57,12 +60,14 @@ class Host:
     """One host's pace in a run: its learned speed, budget windows, header hold and back-off."""
 
     def __init__(self, name: str, pace: Pace | None, *, speed: float = 1.0):
+        """Start `name`'s pace (a host's, or the label its hosts share) under `pace`, None for none."""
         self.name = name
-        paced = pace is not None and pace.paces(name)
-        self.floor = pace.floor if pace is not None and paced else 0.0
-        self.budgets = dict(pace.budgets) if pace is not None and paced else {}
+        self.floor = pace.floor if pace is not None else 0.0
+        self.budgets = dict(pace.budgets) if pace is not None else {}
         self.speed = min(max(speed, 1.0), SLOWEST)
         self.strikes = 0
+        # Whether a thread is drawing this host's countdown, so others waiting with it draw none.
+        self.showing = False
         self._last: float | None = None
         # Until when a rate header or a back-off holds every request, on the monotonic clock.
         self._blocked_until = 0.0
@@ -95,6 +100,11 @@ class Host:
                 while len(window) > self.budgets[key][0]:
                     window.popleft()
             return start - now
+
+    def held(self) -> float:
+        """The seconds a rate header or a back-off still holds every request, without taking a turn."""
+        with self._lock:
+            return max(0.0, self._blocked_until - clock.now())
 
     def record(self, headers: Mapping[str, str]) -> None:
         """Read a response's rate headers: with 5 or fewer left, hold the host till the reset."""

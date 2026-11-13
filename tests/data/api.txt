@@ -277,9 +277,11 @@ shared.fmt.url(text: str) -> str
 shared.http: module
 shared.http.ChangedError(shared.http.Error, shared.BrokenError)
 shared.http.Client(raw: httpx.Client | None = None, *, pace: Pace | None = None, speeds: Mapping[str, float] | None = None, stop: threading.Event | None = None)
+shared.http.Client.back_off(url: str, *, reason: str = 'rate limited', retry_after: float | None = None) -> None
+shared.http.Client.call(url: str, send: Callable[[], A], *, attempts: int = 1) -> A
 shared.http.Client.close() -> None
-shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None) -> Download
-shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
+shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None, stop: threading.Event | None = None) -> Download
+shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0, redirects: bool | None = None) -> Response | None
 shared.http.Client.pace: attribute -> Pace | None
 shared.http.Client.raw: attribute -> httpx.Client
 shared.http.Client.speeds: property -> dict[str, float]
@@ -290,10 +292,11 @@ shared.http.Download.path: field -> Path
 shared.http.Download.url: field -> str
 shared.http.Error(shared.Error)
 shared.http.IncompleteError(shared.http.Error, shared.BrokenError)
-shared.http.Pace(floor: float = 0.0, budgets: Mapping[str, tuple[int, float]] = <factory>, domains: tuple[str, ...] = ())
+shared.http.Pace(floor: float = 0.0, budgets: Mapping[str, tuple[int, float]] = <factory>, domains: tuple[str, ...] = (), label: str = '')
 shared.http.Pace.budgets: field -> Mapping[str, tuple[int, float]]
 shared.http.Pace.domains: field -> tuple[str, ...]
 shared.http.Pace.floor: field -> float
+shared.http.Pace.label: field -> str
 shared.http.Pace.paces(host: str) -> bool
 shared.http.RateLimitedError(shared.http.Error)
 shared.http.RateLimitedError.retry_after: attribute
@@ -314,7 +317,7 @@ shared.http.ServerError(shared.http.Error)
 shared.http.ServerError.status: attribute
 shared.http.StoppedError(shared.http.Error)
 shared.http.download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None, stop: threading.Event | None = None) -> Download
-shared.http.fetch(url: str, *, method: str = 'GET', client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
+shared.http.fetch(url: str, *, method: str = 'GET', client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0, redirects: bool | None = None) -> Response | None
 shared.kv: module
 shared.kv.ClosedError(shared.kv.Error, RuntimeError)
 shared.kv.Error(shared.Error)
