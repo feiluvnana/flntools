@@ -40,7 +40,7 @@ All commits must strictly follow this message format:
 ## Layout
 - `shared/` is the toolkit. Every file starts with `_`, and `shared/__init__.py` is the only public surface.
 - `flnd/` keeps its entry points and engine modules at the top level: `cli`, `engine`, `source` (what sources import), `site`, `job`, `post`, `settings`, `repair` and `session` (options).
-- `flnd/common/` holds the engine side's helpers (`auth`, `compress`, `files`, `net`, `pace`, `target`).
+- `flnd/common/` holds the engine side's helpers (`auth`, `compress`, `files`, `net`).
 - `flnd/sources/` holds one module per site. `flnd/sources/common/` holds what sources share (`dash`, `relay`, …).
 - A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib (plan/phase-6/redesign.md, B4).
 

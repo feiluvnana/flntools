@@ -52,9 +52,9 @@ if TYPE_CHECKING:
 __all__ = ["LoginSite", "SourceRun", "TargetSite", "source_run"]
 
 T = TypeVar("T")
-# Tries in all for a request a tab sends: a 5xx or a request it couldn't send may go through next
-# time, as `http.fetch` tries the client's.
-ATTEMPTS = 3
+# Tries in all for a site request, sent by the client or by the tab: a 5xx or a request that
+# couldn't be sent may go through next time, after 1, 2 and 4 s.
+ATTEMPTS = 4
 # The key of the learned speed in a source's `state`.
 STATE_KEY = "pace.speed"
 # The least seconds between two scrolls at 1x, which the learned speed scales.
@@ -260,7 +260,7 @@ class TargetSite:
                             f"not {', '.join(sorted(unknown))}")
         with _fetch_errors():
             return self._run.web.fetch(url, method=method, headers=headers, soft=soft,
-                                       redirects=redirects, **options)
+                                       redirects=redirects, attempts=ATTEMPTS, **options)
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         """Load `url` in the target's tab, paced; see `Site.goto`.
