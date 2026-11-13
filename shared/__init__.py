@@ -46,6 +46,10 @@ class RefusedError(Error):
     """A remote end or a person said no: an HTTP 4xx, a wrong password."""
 
 
+class MissingError(Error, RuntimeError):
+    """A program, an extra or a browser this machine lacks: ffmpeg, unrar, Chrome."""
+
+
 from shared import _cli as cli
 from shared import _clock as clock
 from shared import _fmt as fmt
@@ -73,7 +77,7 @@ LAZY_MODULES = (
 )
 
 __all__ = [
-    "Error", "UnsafeError", "BrokenError", "RefusedError",
+    "Error", "UnsafeError", "BrokenError", "RefusedError", "MissingError",
     "cli", "clock", "fmt", "log", "prompt", "style", "theme",
     "archive", "atomic", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
 ]

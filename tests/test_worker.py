@@ -294,7 +294,7 @@ class ProcessesTest(WorkerCase):
         # One process: the second task could only run once the first try had really stopped.
         self.assertLess(time.monotonic() - started, LONG / 2)
         errors = {result.item: type(result.error) for result in results}
-        self.assertEqual(errors, {LONG: TimeoutError, 0: type(None)})
+        self.assertEqual(errors, {LONG: worker.StalledError, 0: type(None)})
 
 
 class AsyncTest(WorkerCase):
@@ -323,7 +323,7 @@ class AsyncTest(WorkerCase):
 
         with self.assertRaises(worker.TaskError) as caught:
             worker.as_ordered(stuck, [1], timeout=0.05)
-        self.assertIsInstance(caught.exception.results[0].error, TimeoutError)
+        self.assertIsInstance(caught.exception.results[0].error, worker.StalledError)
         self.assertTrue(cancelled.wait(LONG))
 
 

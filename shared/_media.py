@@ -53,7 +53,8 @@ if TYPE_CHECKING:
 
     from typing_extensions import Self
 
-__all__ = ["BrokenError", "Error", "Info", "KindError", "Media", "UnsafeError", "kind", "open", "sniff"]
+__all__ = ["BrokenError", "Error", "Info", "KindError", "Media", "MissingError", "StalledError", "UnsafeError",
+           "kind", "open", "sniff"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 Progress = Callable[..., Any]
@@ -69,6 +70,14 @@ class BrokenError(Error, shared.BrokenError):
 
 class UnsafeError(Error, shared.UnsafeError):
     """The file is a format media refuses to open, or a decompression bomb."""
+
+
+class MissingError(Error, shared.MissingError):
+    """No usable ffmpeg, or one built without the encoder a call needs."""
+
+
+class StalledError(Error, TimeoutError):
+    """ffmpeg ran past its time limit, or made no progress for a minute, and was killed."""
 
 
 class KindError(Error, ValueError):
@@ -207,8 +216,8 @@ def open(path: PathLike) -> Media:
         UnsafeError: a format media refuses (PostScript, PDF, WMF, a playlist), or a decompression bomb.
         FileNotFoundError: there's no file at `path`.
         ImportError: a photo, and Pillow isn't installed.
-        RuntimeError: a video or audio file, and no ffmpeg 4.4 or later is found.
-        TimeoutError: ffmpeg took longer than 30 s to read the file's header.
+        MissingError: a video or audio file, and no ffmpeg 4.4 or later is found.
+        StalledError: ffmpeg took longer than 30 s to read the file's header.
 
     A photo's header and EXIF are read by Pillow, without decoding pixels (an animated WebP's frames
     are decoded once, for their delays); a video or audio file is one short ffmpeg run. Safe to call
@@ -372,8 +381,8 @@ class Media:
 
         Raises:
             BrokenError: the file is truncated or corrupt.
-            RuntimeError: a video or audio file, and no usable ffmpeg.
-            TimeoutError: ffmpeg took longer than 10 minutes.
+            MissingError: a video or audio file, and no usable ffmpeg.
+            StalledError: ffmpeg took longer than 10 minutes.
 
         A photo is fully decoded. A video or audio file has every packet read without decoding,
         which catches what a cut-off download leaves behind, but not damage inside frames.
@@ -458,7 +467,7 @@ class Media:
         Raises:
             KindError: `format` is of another kind, such as "mp4" for a photo.
             ValueError: an unknown level or codec, a setting out of range, or a codec the format can't hold.
-            BrokenError, RuntimeError, TimeoutError: the file can't be decoded, there's no usable
+            BrokenError, MissingError, StalledError: the file can't be decoded, there's no usable
                 ffmpeg or encoder, or ffmpeg stalled for 60 s.
 
         Videos are written as 8-bit yuv420p, so HDR is lost. A video encode uses every core and can
@@ -948,8 +957,8 @@ def transcode(info: Info, part: Path, extension: str, *, quality: int, codec: st
 
     Raises:
         BrokenError: a photo can't be decoded, or ffmpeg fails on the file.
-        RuntimeError: ffmpeg or the encoder isn't available.
-        TimeoutError: a stream copy runs past 10 minutes, or an encode makes no progress for 60 s.
+        MissingError: ffmpeg or the encoder isn't available.
+        StalledError: a stream copy runs past 10 minutes, or an encode makes no progress for 60 s.
 
     Runs on the caller's thread and blocks until ffmpeg or Pillow finishes; a video encode can take minutes.
     """
@@ -1120,7 +1129,7 @@ def decoded(info: Info, graph: str, width: int, height: int) -> Iterator[Any]:
 
     Raises:
         BrokenError: ffmpeg fails on the file; raised after the last frame, once iteration ends.
-        TimeoutError: ffmpeg makes no progress for 60 s.
+        StalledError: ffmpeg makes no progress for 60 s.
     """
     Image = _pillow.load()
     command = [*_ffmpeg.source(info.path), "-map", "0:v:0", "-vf", f"{graph},scale={width}:{height},setsar=1",

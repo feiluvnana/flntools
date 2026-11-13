@@ -141,6 +141,7 @@ flnd.source.target(*patterns: str, shown: str | None = None) -> Callable[[Callab
 shared: module
 shared.BrokenError(shared.Error, ValueError)
 shared.Error(Exception)
+shared.MissingError(shared.Error, RuntimeError)
 shared.RefusedError(shared.Error)
 shared.UnsafeError(shared.Error, ValueError)
 shared.archive: module
@@ -156,6 +157,7 @@ shared.archive.Limits(size: int = 20000000000, ratio: float = 200, files: int = 
 shared.archive.Limits.files: field -> int
 shared.archive.Limits.ratio: field -> float
 shared.archive.Limits.size: field -> int
+shared.archive.MissingError(shared.archive.Error, shared.MissingError)
 shared.archive.PasswordError(shared.archive.Error, shared.RefusedError, ValueError)
 shared.archive.UnsafeError(shared.archive.Error, shared.UnsafeError)
 shared.archive.ls(path: PathLike, *, password: str | None = None, limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Entry]
@@ -175,6 +177,7 @@ shared.browser.Browser.open(url: str | None = None, *, idle: bool = False, timeo
 shared.browser.Browser.pages: property -> list[Page]
 shared.browser.Browser.raw: attribute
 shared.browser.Error(shared.Error)
+shared.browser.MissingError(shared.browser.Error, shared.MissingError)
 shared.browser.Page(raw: RawPage, browser: Browser)
 shared.browser.Page.browser: attribute
 shared.browser.Page.close() -> None
@@ -247,6 +250,7 @@ shared.cookies.Jar.merge(other: Jar | Iterable[Cookie]) -> Jar
 shared.cookies.Jar.names: property -> list[str]
 shared.cookies.Jar.raw: property -> list[Cookie]
 shared.cookies.Jar.save(dest: PathLike) -> Path
+shared.cookies.MissingError(shared.cookies.Error, shared.MissingError)
 shared.cookies.UnsafeError(shared.cookies.Error, shared.UnsafeError)
 shared.cookies.from_browser(browser: str = 'chrome', *, profile: str | None = None) -> Jar
 shared.cookies.load(path: PathLike) -> Jar
@@ -376,6 +380,8 @@ shared.media.Media.size: property -> int
 shared.media.Media.tags: property -> dict[str, str]
 shared.media.Media.trim(*, start: float = 0.0, end: float | None = None, exact: bool = True) -> Media
 shared.media.Media.width: property -> int | None
+shared.media.MissingError(shared.media.Error, shared.MissingError)
+shared.media.StalledError(shared.media.Error, TimeoutError)
 shared.media.UnsafeError(shared.media.Error, shared.UnsafeError)
 shared.media.kind(name: str) -> str | None
 shared.media.open(path: PathLike) -> Media
@@ -505,6 +511,7 @@ shared.worker.Result.error: field -> BaseException | None
 shared.worker.Result.item: field -> Any
 shared.worker.Result.ok: property -> bool
 shared.worker.Result.value: field -> R | None
+shared.worker.StalledError(shared.worker.Error, TimeoutError)
 shared.worker.TaskError(shared.worker.Error)
 shared.worker.TaskError.results: attribute
 shared.worker.as_completed(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]

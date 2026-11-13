@@ -64,12 +64,13 @@ def found() -> tuple[str, tuple[int, int] | None]:
         pass
     path = path or shutil.which("ffmpeg")
     if not path:
-        raise RuntimeError(NO_FFMPEG)
+        raise _media.MissingError(NO_FFMPEG)
     text = subprocess.run([path, "-hide_banner", "-version"], capture_output=True, text=True, timeout=PROBE_TIMEOUT,
                           env=_env()).stdout
     # A git or other build that prints no version number is accepted: its `None` skips the check.
     if (version := parse_version(text)) and version < MIN_VERSION:
-        raise RuntimeError(f"ffmpeg {'.'.join(map(str, version))} is too old; shared.media needs 4.4 or later")
+        raise _media.MissingError(f"ffmpeg {'.'.join(map(str, version))} is too old; "
+                                  "shared.media needs 4.4 or later")
     return path, version
 
 
@@ -91,9 +92,9 @@ def encoders() -> frozenset[str]:
 
 
 def need(encoder: str) -> str:
-    """`encoder`, or a RuntimeError when this ffmpeg was built without it."""
+    """`encoder`, or a `media.MissingError` when this ffmpeg was built without it."""
     if encoder not in encoders():
-        raise RuntimeError(f"this ffmpeg has no {encoder} encoder; install a full ffmpeg build, "
+        raise _media.MissingError(f"this ffmpeg has no {encoder} encoder; install a full ffmpeg build, "
                            "or pip install 'flntools[media]' for one")
     return encoder
 
@@ -139,7 +140,7 @@ def run(args: list[str], *, name: str, timeout: float, level: str = "error") -> 
     try:
         done = subprocess.run(command, capture_output=True, timeout=timeout, env=_env())
     except subprocess.TimeoutExpired:
-        raise TimeoutError(f"{name}: ffmpeg took longer than {timeout:.0f} s") from None
+        raise _media.StalledError(f"{name}: ffmpeg took longer than {timeout:.0f} s") from None
     stderr = done.stderr.decode("utf-8", "replace")
     if done.returncode:
         raise failure(name, stderr)
@@ -158,7 +159,7 @@ def encode(args: list[str], *, name: str, duration: float | None, progress: Call
         feed: raw frames written to ffmpeg's stdin, for an input that isn't a file; None for none.
 
     Raises:
-        TimeoutError: ffmpeg made no progress for `STALL` seconds, and was killed.
+        StalledError: ffmpeg made no progress for `STALL` seconds, and was killed.
         UnsafeError, RuntimeError, BrokenError: ffmpeg failed, as `failure` sorts it.
 
     Blocks the calling thread until the encode ends; `progress` runs on that thread.
@@ -186,7 +187,7 @@ def frames_out(args: list[str], *, name: str, size: int, feed: Iterable[bytes] |
         Each whole frame, as `size` bytes, in order.
 
     Raises:
-        TimeoutError: ffmpeg made no progress for `STALL` seconds. A failed run raises after the
+        StalledError: ffmpeg made no progress for `STALL` seconds. A failed run raises after the
             last frame, once the generator is exhausted.
     """
     with _started(args, name=name, feed=feed) as (out, kick):
@@ -225,7 +226,7 @@ def _started(args: list[str], *, name: str, feed: Iterable[bytes] | None) -> Ite
                 process.wait()
             quiet.set()
         if stalled.is_set():
-            raise TimeoutError(f"{name}: ffmpeg made no progress for {STALL:.0f} s")
+            raise _media.StalledError(f"{name}: ffmpeg made no progress for {STALL:.0f} s")
         if process.returncode:
             errors.seek(0)
             raise failure(name, errors.read().decode("utf-8", "replace"))
@@ -299,7 +300,7 @@ def probe(path: Path, *, format: str | None) -> _media.Info:
         The file's `Info`, with the video or audio fields that ffmpeg's summary named.
 
     Raises:
-        TimeoutError: ffmpeg took longer than `PROBE_TIMEOUT` to open the file.
+        StalledError: ffmpeg took longer than `PROBE_TIMEOUT` to open the file.
         UnsafeError, RuntimeError, BrokenError: ffmpeg refused or failed to read it, or it has no
             video or audio stream.
     """
@@ -309,7 +310,8 @@ def probe(path: Path, *, format: str | None) -> _media.Info:
     try:
         done = subprocess.run(command, capture_output=True, timeout=PROBE_TIMEOUT, env=_env())
     except subprocess.TimeoutExpired:
-        raise TimeoutError(f"{path.name}: ffmpeg took longer than {PROBE_TIMEOUT:.0f} s to open it") from None
+        raise _media.StalledError(f"{path.name}: ffmpeg took longer than {PROBE_TIMEOUT:.0f} s "
+                                  "to open it") from None
     stderr = done.stderr.decode("utf-8", "replace")
     if done.returncode:
         raise failure(path.name, stderr)

@@ -58,7 +58,7 @@ import shared
 from shared import _atomic
 from shared._log import log
 
-__all__ = ["Error", "Jar", "UnsafeError", "from_browser", "load", "profiles"]
+__all__ = ["Error", "Jar", "MissingError", "UnsafeError", "from_browser", "load", "profiles"]
 
 Cookie = dict[str, Any]
 PathLike = Union[str, Path]
@@ -93,6 +93,10 @@ _HOST_HASH_SIZE = 32
 # cookie file or a value that won't decrypt as a ValueError.
 class Error(shared.Error, ValueError):
     """A cookie file is broken, a cookie can't be written or read, or a browser's value can't be decrypted."""
+
+
+class MissingError(Error, shared.MissingError):
+    """Reading this browser's cookies needs what only the browser has: Chromium's keys on Windows."""
 
 
 class UnsafeError(Error, shared.UnsafeError):
@@ -285,7 +289,7 @@ def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
     Raises:
         ValueError: `browser` isn't one of those.
         FileNotFoundError: there is no such profile, or it has no cookie database.
-        RuntimeError: a Chromium-family browser on Windows (see below).
+        MissingError: a Chromium-family browser on Windows (see below).
         Error: the OS refused the key (a denied Keychain prompt), or not one encrypted value can
             be decrypted (a wrong key); the message names a cookie, never its value.
         ImportError: a Chromium-family browser without `cryptography`.
@@ -310,7 +314,7 @@ def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
         raise ValueError(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
     if _PLATFORM == "win32":
         # Chrome 127 and later use app-bound encryption, which only Chrome itself can undo.
-        raise RuntimeError(
+        raise MissingError(
             f"can't read {browser} cookies on Windows: use browser.open(cdp=…), then b.cookies"
         )
     return Jar(_load_chromium(browser, profile or "Default"))

@@ -54,7 +54,7 @@ from shared._log import Progress, log
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-__all__ = ["Error", "Pool", "Result", "TaskError", "as_completed", "as_ordered", "pool"]
+__all__ = ["Error", "Pool", "Result", "StalledError", "TaskError", "as_completed", "as_ordered", "pool"]
 
 # The longest wait between two tries, which caps the exponential backoff at one minute.
 MAX_RETRY_WAIT = 60.0
@@ -97,6 +97,10 @@ class Result(Generic[R]):
 
 class Error(shared.Error):
     """The base of every error `shared.worker` raises."""
+
+
+class StalledError(Error, TimeoutError):
+    """One try of a task ran past the pool's `timeout`."""
 
 
 class TaskError(Error):
@@ -153,7 +157,7 @@ def as_ordered(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any
             concurrency: how many tasks run at once. None: `min(32, CPUs + 4)` threads, or one process
                 per CPU with `processes=True`.
             retries: how many more tries a failed task gets, after waits of 1, 2, 4… s (at most 60 s).
-            timeout: seconds before one try fails with `TimeoutError`; None waits forever. A coroutine
+            timeout: seconds before one try fails with `StalledError`; None waits forever. A coroutine
                 or a process really stops; a thread can't be stopped, so it runs on in the background
                 and its result is thrown away.
             label: the text of a progress row of finished tasks, drawn with `shared.log`; None draws none.
@@ -625,7 +629,7 @@ class _Run:
                 self.changed.notify_all()
 
     def _attempt(self, job: _Job) -> Any:
-        """One try of one task. Past `timeout` it raises `TimeoutError`."""
+        """One try of one task. Past `timeout` it raises `StalledError`."""
         future: concurrent.futures.Future[Any]
         if self.executor is not None:
             future = self.executor.submit(_call_in_child, job.fn, job.args, self.timeout)
@@ -643,7 +647,7 @@ class _Run:
             # Cancelling stops a coroutine. Python can't stop a thread, so a timed-out thread runs on
             # in the background and its result is thrown away. A process stops itself: see _call_in_child.
             future.cancel()
-            raise TimeoutError(f"took longer than {self.timeout}s") from None
+            raise StalledError(f"took longer than {self.timeout}s") from None
 
 
 def _check_picklable(fn: Callable[..., Any]) -> None:
@@ -683,7 +687,7 @@ def _call_in_child(fn: Callable[..., Any], args: tuple[Any, ...], timeout: float
         return fn(*args)
 
     def give_up(signal_number: int, frame: Any) -> None:
-        raise TimeoutError(f"took longer than {timeout}s")
+        raise StalledError(f"took longer than {timeout}s")
 
     signal.signal(signal.SIGALRM, give_up)
     signal.setitimer(signal.ITIMER_REAL, timeout)

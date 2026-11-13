@@ -371,7 +371,7 @@ class ChromeOnlyTest(BrowserCase):
         self.assertEqual(self.playwright.stop.call_count, 2)
 
     def test_without_a_terminal_it_raises_naming_chrome(self):
-        with self.assertRaisesRegex(RuntimeError, "^flnd needs Google Chrome: install it from"):
+        with self.assertRaisesRegex(browser.MissingError, "^flnd needs Google Chrome: install it from"):
             browser.open()
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertNotIn(browser.CHROMIUM_QUESTION, self.screen.dest.getvalue())
@@ -401,18 +401,18 @@ class ChromeOnlyTest(BrowserCase):
     def test_a_failed_download(self):
         self.terminal("y")
         with mock.patch.object(browser.subprocess, "Popen", return_value=FakeInstaller("Error: ENOSPC\n", 1)), \
-                self.assertRaisesRegex(RuntimeError, "installer exited with 1: Error: ENOSPC"):
+                self.assertRaisesRegex(browser.MissingError, "installer exited with 1: Error: ENOSPC"):
             browser.open()
         self.assertEqual(self.launched, [])
         self.assertIn("✗ " + "─" * 20 + " Downloading Chromium " + "0/100", self.screen.dest.getvalue())
 
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []
-        failure = RuntimeError("Chromium was not downloaded: Playwright's installer exited with 1: Error: ENOSPC")
+        failure = browser.MissingError("Chromium was not downloaded: Playwright's installer exited with 1: Error: ENOSPC")
         with mock.patch.object(browser.prompt, "confirm", lambda *args, **options: asked.append(args) or True), \
                 mock.patch.object(browser, "_install_chromium", side_effect=failure) as install:
             for _ in range(2):
-                with self.assertRaises(RuntimeError) as caught:
+                with self.assertRaises(browser.MissingError) as caught:
                     browser.open()
                 self.assertIs(caught.exception, failure)
         self.assertEqual((len(asked), install.call_count, self.launched), (1, 1, []))

@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
-__all__ = ["Browser", "Error", "Page", "Subscription", "WaitError", "check", "open"]
+__all__ = ["Browser", "Error", "MissingError", "Page", "Subscription", "WaitError", "check", "open"]
 
 # Switches that hide the automation Chrome would otherwise show: AutomationControlled is the blink
 # feature that sets `navigator.webdriver`, and infobars is the "controlled by automated software" bar.
@@ -137,7 +137,7 @@ POLL = 0.05
 # Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
 _chromium_declined = False
 # The error the Chromium download failed with, raised again without asking for the rest of the process.
-_chromium_failed: RuntimeError | None = None
+_chromium_failed: MissingError | None = None
 # Each source's session opens its browser on its own thread, so two can find Chromium missing at
 # once: the check, the question and the download are one step, or both would ask and both download.
 _chromium_offer = threading.Lock()
@@ -145,6 +145,10 @@ _chromium_offer = threading.Lock()
 
 class Error(shared.Error):
     """The base of every error `shared.browser` raises."""
+
+
+class MissingError(Error, shared.MissingError):
+    """Neither Google Chrome nor a downloaded Chromium, and the download was declined or failed."""
 
 
 class WaitError(Error):
@@ -193,7 +197,7 @@ def open(*, profile: str | Path | None = None, cdp: str | None = None, headless:
             or `stealth=False`, which only apply to a browser launched here; or an empty `profile`.
         FileNotFoundError: no installed Chrome profile has the name `profile`.
         ImportError: Playwright isn't installed (the `browser` extra).
-        RuntimeError: Google Chrome isn't installed and the Chromium download was declined, wasn't
+        MissingError: Google Chrome isn't installed and the Chromium download was declined, wasn't
             possible to ask (no terminal), or failed.
 
     It launches Google Chrome, installed the usual way, through Playwright's `chrome` channel:
@@ -250,7 +254,7 @@ def check() -> None:
     browser never stops midway to ask.
 
     Raises:
-        RuntimeError: Chrome isn't installed and the Chromium download was declined, wasn't
+        MissingError: Chrome isn't installed and the Chromium download was declined, wasn't
             possible without a terminal, or failed. `open` then raises the same, without asking.
         ImportError: Playwright isn't installed (the `browser` extra), when Chrome is missing.
 
@@ -971,8 +975,8 @@ def _channel(playwright: Playwright) -> str:
     """The channel `open` launches: `chrome` when Google Chrome is installed, `chromium` otherwise.
 
     Without Chrome or a downloaded Chromium, it asks to download Chromium, and raises
-    `RuntimeError(NEEDS_CHROME)` on no or without a terminal. A failed download raises its
-    `RuntimeError`, and the same one again, without asking, for the rest of the process.
+    `MissingError(NEEDS_CHROME)` on no or without a terminal. A failed download raises its
+    `MissingError`, and the same one again, without asking, for the rest of the process.
     """
     global _chromium_declined, _chromium_failed
     if _chrome_installed():
@@ -993,10 +997,10 @@ def _channel(playwright: Playwright) -> str:
         # a run that opens a browser once per source asks only once.
         if _chromium_declined or not prompt.confirm(CHROMIUM_QUESTION, default=False):
             _chromium_declined = True
-            raise RuntimeError(NEEDS_CHROME)
+            raise MissingError(NEEDS_CHROME)
         try:
             _install_chromium()
-        except RuntimeError as error:
+        except MissingError as error:
             # A failed download (no space, no network) would most likely fail again, after asking again.
             _chromium_failed = error
             raise
@@ -1020,7 +1024,7 @@ def _install_chromium() -> None:
     new headless mode (the `chromium` channel), so the shell would never be used.
 
     Raises:
-        RuntimeError: the installer failed, with its last line of output.
+        MissingError: the installer failed, with its last line of output.
     """
     # A bundled flnd has no `python -m playwright`, so this runs the driver Playwright ships, as that command does.
     from playwright._impl._driver import compute_driver_executable, get_driver_env
@@ -1038,7 +1042,7 @@ def _install_chromium() -> None:
                     bar.count = int(found[1])
         if installer.returncode:
             last = next((line for line in reversed(lines) if line), "no output")
-            raise RuntimeError(f"Chromium was not downloaded: Playwright's installer exited with "
+            raise MissingError(f"Chromium was not downloaded: Playwright's installer exited with "
                                f"{installer.returncode}: {last}")
 
 

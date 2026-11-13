@@ -635,17 +635,17 @@ class FakeFfmpegTest(unittest.TestCase):
     def test_stall_kills_ffmpeg(self):
         self.fake("echo out_time_us=1000; sleep 30")
         part = self.folder / ".x.part"
-        with mock.patch.object(_ffmpeg, "STALL", 0.5), self.assertRaises(TimeoutError):
+        with mock.patch.object(_ffmpeg, "STALL", 0.5), self.assertRaises(media.StalledError):
             _ffmpeg.encode(["-i", "x", str(part)], name="x.mp4", duration=1.0, progress=None)
 
     def test_missing_encoder(self):
         self.fake("exit 1", encoders=" A....D aac  AAC")
-        with self.assertRaisesRegex(RuntimeError, "no libx264 encoder"):
+        with self.assertRaisesRegex(media.MissingError, "no libx264 encoder"):
             _ffmpeg.need("libx264")
 
     def test_too_old(self):
         self.fake("exit 1", version="4.2.7")
-        with self.assertRaisesRegex(RuntimeError, "4.2 is too old"):
+        with self.assertRaisesRegex(media.MissingError, "4.2 is too old"):
             _ffmpeg.exe()
 
     def test_imageio_ffmpeg_honours_its_variable(self):

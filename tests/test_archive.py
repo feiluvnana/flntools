@@ -463,7 +463,7 @@ class ErrorTest(ArchiveCase):
     def test_rar_without_unrar(self):
         (self.root / "a.rar").write_bytes(b"Rar!\x1a\x07\x01\x00" + bytes(40))
         with mock.patch("shutil.which", return_value=None):
-            with self.assertRaisesRegex(RuntimeError, "unrar"):
+            with self.assertRaisesRegex(archive.MissingError, "unrar"):
                 archive.unzip(self.root / "a.rar", self.out)
         self.assertFalse(self.out.exists())
 

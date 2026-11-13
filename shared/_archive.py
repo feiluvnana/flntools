@@ -44,8 +44,8 @@ import shared
 from shared import _atomic
 from shared import _fmt as fmt
 
-__all__ = ["BombError", "BrokenError", "ConflictError", "Entry", "Error", "Limits", "PasswordError", "UnsafeError",
-           "ls", "unzip", "zip"]
+__all__ = ["BombError", "BrokenError", "ConflictError", "Entry", "Error", "Limits", "MissingError", "PasswordError",
+           "UnsafeError", "ls", "unzip", "zip"]
 
 if TYPE_CHECKING:
     Extract = Callable[[list["_Entry"], Callable[["_Entry"], "_Output"]], None]
@@ -114,6 +114,10 @@ class PasswordError(Error, shared.RefusedError, ValueError):
     """The archive needs a password, or the one given is wrong."""
 
 
+class MissingError(Error, shared.MissingError):
+    """Reading or writing needs what this machine lacks: `unrar`, or .zst before Python 3.14."""
+
+
 @dataclass(frozen=True)
 class Entry:
     """One file or folder an archive holds, as `ls` lists it.
@@ -166,7 +170,7 @@ def zip(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str
 
     Raises:
         ValueError: `dest` has no known archive extension, a password for tar, or `split` below 1.
-        RuntimeError: `dest` is a .zst file before Python 3.14.
+        MissingError: `dest` is a .zst file before Python 3.14.
         ImportError: a password, or 7z, needs the `archive` extra, which isn't installed.
         FileNotFoundError: a source doesn't exist.
     """
@@ -226,7 +230,7 @@ def ls(path: PathLike, *, password: str | None = None, limits: Limits = Limits()
             encrypted gets a wrong one. A zip's index isn't encrypted, so a wrong password for a
             zip shows only when `unzip` reads its contents.
         BrokenError: the file is no archive this reads, or its index is damaged.
-        RuntimeError: a .zst file before Python 3.14, or a RAR without the `unrar` program.
+        MissingError: a .zst file before Python 3.14, or a RAR without the `unrar` program.
 
     Reads the whole archive for tar, whose index is spread through it, and copies a split
     archive's parts into one temporary file.
@@ -306,7 +310,7 @@ def _write_format(dest: Path, password: str | None) -> str:
     if kind is None:
         raise ValueError(f"unknown archive type {dest.name!r}: use one of {', '.join(WRITE_FORMATS)}")
     if kind == "zst" and sys.version_info < (3, 14):
-        raise RuntimeError(f"cannot write {dest.name}: {NO_ZSTD}")
+        raise MissingError(f"cannot write {dest.name}: {NO_ZSTD}")
     if password is not None and kind not in ("zip", "7z"):
         raise ValueError(f"tar has no password: use .zip or .7z for {dest.name}")
     return kind
@@ -444,7 +448,7 @@ def _open(path: Path, parts: list[Path], password: str | None,
     # Step 2: otherwise it is a compressed file, and a tar when its contents say so, or a single file.
     compression = next((name for magic, name in COMPRESSION_MAGIC.items() if head.startswith(magic)), None)
     if compression == "zst" and sys.version_info < (3, 14):
-        raise RuntimeError(f"cannot read {parts[0].name}: {NO_ZSTD}")
+        raise MissingError(f"cannot read {parts[0].name}: {NO_ZSTD}")
     if _is_tar(path, compression):
         return _read_tar(path, limits.files)
     if compression is not None:
@@ -614,11 +618,11 @@ def _read_rar(path: Path, password: str | None) -> Opened:
     """Open a RAR through the `unrar` program: list it, then extract each file by running it again.
 
     Raises:
-        RuntimeError: the `unrar` program is not installed.
+        MissingError: the `unrar` program is not installed.
     """
     unrar = shutil.which("unrar")
     if unrar is None:
-        raise RuntimeError(NO_UNRAR)
+        raise MissingError(NO_UNRAR)
     # unrar's -p- says "no password": it never prompts, so a missing password fails instead of waiting.
     password_switch = "-p-" if password is None else f"-p{password}"
     # "lt" lists the archive in technical form, and -c- leaves out the archive comment.
