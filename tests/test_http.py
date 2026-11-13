@@ -1,7 +1,7 @@
 """Tests for `shared.http`: `fetch`'s statuses, retries, per-host limit and secrets, `Response`, and `download`.
 
 The network is faked with `httpx.MockTransport` on a client each test makes, and the retry wait
-with a fake `_sleep`, so nothing here opens a socket or sleeps, apart from the per-host tests,
+with a fake `clock`, so nothing here opens a socket or sleeps, apart from the per-host tests,
 whose transports sleep briefly so that requests overlap. `download`'s CDN (`Cdn`) honours
 `Range` and `If-Range` and can cut a body short, for resume, restart and split downloads; its
 files go to a temporary folder.
@@ -24,7 +24,7 @@ import httpx
 import shared
 from shared import _http as http
 from shared import _selector as selector
-from shared import theme
+from shared import clock, theme
 from shared._theme import Screen
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -35,22 +35,9 @@ def client(handler: Handler, **options) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler), **options)
 
 
-class FakeSleep:
-    """Stands in for `_http._sleep`, recording each wait instead of sleeping."""
-
-    def __init__(self) -> None:
-        self.waits: list[float] = []
-
-    def __call__(self, seconds: float) -> None:
-        self.waits.append(seconds)
-
-
 class HttpTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        self.sleep = FakeSleep()
-        patcher = mock.patch.object(http, "_sleep", self.sleep)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.clock = self.enterContext(clock.use(clock.Fake()))
 
 
 class FetchTest(HttpTestCase):
@@ -124,12 +111,12 @@ class FetchTest(HttpTestCase):
                 http.fetch("https://example.com/", client=fake, soft=True)
         self.assertEqual(raised.exception.retry_after, 12.0)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(self.sleep.waits, [])
+        self.assertEqual(self.clock.slept, [])
         # Kept apart from refusals, so a caller catching those doesn't swallow a rate limit.
         self.assertNotIsInstance(raised.exception, shared.RefusedError)
 
     def test_429_retry_after_as_a_date_or_missing(self):
-        later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(time.time() + 60))
+        later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(clock.wall() + 60))
         for header, low, high in (({"Retry-After": later}, 55.0, 61.0), ({}, None, None)):
             with self.subTest(header=header), client(lambda request, h=header: httpx.Response(429, headers=h)) as fake:
                 with self.assertRaises(http.RateLimitedError) as raised:
@@ -154,7 +141,7 @@ class RetryTest(HttpTestCase):
         with client(lambda request: httpx.Response(next(statuses))) as fake:
             page = http.fetch("https://example.com/", client=fake)
         self.assertEqual(page.status, 200)
-        self.assertEqual(self.sleep.waits, [1.0, 2.0])
+        self.assertEqual(self.clock.slept, [1.0, 2.0])
 
     def test_5xx_on_every_attempt_raises_server_error(self):
         calls = []
@@ -167,7 +154,7 @@ class RetryTest(HttpTestCase):
             with self.assertRaises(http.ServerError) as raised:
                 http.fetch("https://example.com/", client=fake, attempts=4)
         self.assertEqual((raised.exception.status, len(calls)), (502, 4))
-        self.assertEqual(self.sleep.waits, [1.0, 2.0, 4.0])
+        self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0])
 
     def test_retries_connection_errors_up_to_attempts(self):
         calls = []
@@ -180,7 +167,7 @@ class RetryTest(HttpTestCase):
             with self.assertRaises(http.Error) as raised:
                 http.fetch("https://example.com/", client=fake, attempts=3)
         self.assertEqual(len(calls), 3)
-        self.assertEqual(len(self.sleep.waits), 2)
+        self.assertEqual(len(self.clock.slept), 2)
         self.assertIn("ConnectError", str(raised.exception))
         self.assertIsInstance(raised.exception.__cause__, httpx.ConnectError)
 
@@ -188,13 +175,13 @@ class RetryTest(HttpTestCase):
         with client(lambda request: httpx.Response(500)) as fake:
             with self.assertRaises(http.ServerError):
                 http.fetch("https://example.com/", client=fake, attempts=1)
-        self.assertEqual(self.sleep.waits, [])
+        self.assertEqual(self.clock.slept, [])
 
     def test_waits_stop_growing_at_the_cap(self):
         with client(lambda request: httpx.Response(500)) as fake:
             with self.assertRaises(http.ServerError):
                 http.fetch("https://example.com/", client=fake, attempts=7)
-        self.assertEqual(self.sleep.waits, [1.0, 2.0, 4.0, 8.0, 8.0, 8.0])
+        self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0, 8.0, 8.0])
 
     def test_4xx_is_not_retried(self):
         calls = []
@@ -555,17 +542,17 @@ class DownloadTest(DownloadCase):
         with self.assertRaises(http.RateLimitedError) as raised:
             self.download(["https://a.example/v.mp4", "https://b.example/v.mp4"])
         self.assertEqual(raised.exception.retry_after, 7.0)
-        self.assertEqual(self.sleep.waits, [])
+        self.assertEqual(self.clock.slept, [])
         self.assertEqual(len(self.cdn.requests), 1)
 
     def test_a_5xx_is_retried_and_then_raised(self):
         self.cdn.script = [lambda request: httpx.Response(503)]
         self.assertEqual(self.download().read_bytes(), DATA)
-        self.assertEqual(self.sleep.waits, [1.0])
+        self.assertEqual(self.clock.slept, [1.0])
         self.cdn.script = [lambda request: httpx.Response(503)] * 3
         with self.assertRaises(http.ServerError):
             self.download()
-        self.assertEqual(self.sleep.waits, [1.0, 1.0, 2.0])
+        self.assertEqual(self.clock.slept, [1.0, 1.0, 2.0])
 
     def test_the_size_check(self):
         """Without a length from the server, the caller's `size` is what's checked; a short body costs every attempt."""
@@ -758,7 +745,7 @@ class FixesTest(DownloadCase):
         self.cdn.script = [self.cdn.cut_at(3000), lambda request: httpx.Response(429, headers={"Retry-After": "3"})]
         with self.assertRaises(http.RateLimitedError):
             self.download()
-        self.assertEqual(self.sleep.waits, [1.0])  # the wait after the cut, none for the 429
+        self.assertEqual(self.clock.slept, [1.0])  # the wait after the cut, none for the 429
         self.assertEqual(len(self.leftovers()), 2)
         self.cdn.requests.clear()
         self.assertEqual(self.download().read_bytes(), DATA)
@@ -773,7 +760,7 @@ class FixesTest(DownloadCase):
         self.cdn.script = [limited] * 4
         with self.assertRaises(http.RateLimitedError):
             self.download(parts=4)
-        self.assertEqual(self.sleep.waits, [])
+        self.assertEqual(self.clock.slept, [])
         self.assertEqual(len(self.leftovers()), 2)
         self.cdn.requests.clear()
         self.assertEqual(self.download(parts=4).read_bytes(), DATA)

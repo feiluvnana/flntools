@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Union
 
 import shared
+from shared import _clock as clock
 
 __all__ = ["ClosedError", "Error", "Store", "UnstorableError", "open"]
 
@@ -126,6 +127,7 @@ def _wal(connection: sqlite3.Connection, timeout: float) -> None:
     first run, each opening `sources.db`) saw "database is locked" at once. So it is tried again,
     briefly, until `timeout`; any other error, or one still locked then, is raised.
     """
+    # Real time, not `clock`: the wait is for another connection's lock, which a fake clock can't hurry.
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -155,7 +157,7 @@ class Store(MutableMapping[str, Any]):
         self._closed = False
         # Each `Store` sweeps its own table, so a table nobody opens keeps its expired rows,
         # which read as missing anyway.
-        self._execute("DELETE FROM kv WHERE tbl = ? AND expires <= ?", (table, _now()))
+        self._execute("DELETE FROM kv WHERE tbl = ? AND expires <= ?", (table, clock.wall()))
 
     def __getitem__(self, key: str) -> Any:
         text = self._read(key)
@@ -223,7 +225,7 @@ class Store(MutableMapping[str, Any]):
         except (TypeError, ValueError) as error:
             # TypeError for a type json can't write, ValueError for a circular value or NaN rules.
             raise UnstorableError(f"kv values must be JSON: {error}") from None
-        expires = None if ttl is None else _now() + ttl
+        expires = None if ttl is None else clock.wall() + ttl
         self._execute("INSERT OR REPLACE INTO kv (tbl, key, value, expires) VALUES (?, ?, ?, ?)",
                       (self._table, key, text, expires))
 
@@ -299,7 +301,7 @@ class Store(MutableMapping[str, Any]):
         """The WHERE clause, and its parameters, for this table's live keys that start with `prefix`."""
         # A range on the primary key uses the index, where LIKE would scan every row.
         where = f"tbl = ? AND key >= ? AND {LIVE}"
-        parameters: tuple[Any, ...] = (self._table, prefix, _now())
+        parameters: tuple[Any, ...] = (self._table, prefix, clock.wall())
         upper = _after_prefix(prefix)
         if upper is not None:
             where += " AND key < ?"
@@ -313,7 +315,7 @@ class Store(MutableMapping[str, Any]):
             if not rows:
                 return None
             text, expires = rows[0]
-            if expires is not None and expires <= _now():
+            if expires is not None and expires <= clock.wall():
                 self._execute("DELETE FROM kv WHERE tbl = ? AND key = ?", (self._table, key))
                 return None
             return text
@@ -362,11 +364,6 @@ class _Keys(KeysView[str]):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({list(self)!r})"
-
-
-def _now() -> float:
-    """The current time; tests replace it to expire keys without waiting."""
-    return time.time()
 
 
 def _after_prefix(prefix: str) -> str | None:

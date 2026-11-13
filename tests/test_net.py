@@ -16,7 +16,8 @@ from media_samples import needs_ffmpeg, needs_pillow, sample
 
 from flnd.common import files, net
 from flnd.source import FetchError
-from shared import _http, media, theme
+from fakes import SleepClock
+from shared import _http, clock, media, theme
 from shared._theme import Screen
 
 
@@ -44,9 +45,7 @@ class NetCase(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         # `http.download`'s waits between its own attempts.
-        patcher = mock.patch.object(_http, "_sleep", self.sleep)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.enterContext(clock.use(SleepClock(self.sleep)))
         # No jitter, so the waits are exact.
         patcher = mock.patch.object(net._random, "uniform", lambda low, high: 1.0)
         patcher.start()

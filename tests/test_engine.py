@@ -30,7 +30,8 @@ from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.session import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
-from shared import cookies, http, kv, media, theme
+from fakes import SleepClock
+from shared import clock, cookies, http, kv, media, theme
 from shared._theme import Screen
 
 CDN = "https://cdn.example"
@@ -172,13 +173,13 @@ class EngineCase(unittest.TestCase):
             mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve)),
             mock.patch.object(net, "_sleep", self.sleep),
             mock.patch.object(net, "_clock", lambda: self.now),
-            # `http.download`'s waits between its own attempts.
-            mock.patch.object(http, "_sleep", self.sleep),
             mock.patch.object(engine_module, "_sleep", self.pauses.append),
         ]
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
+        # `http.download`'s waits between its own attempts.
+        self.enterContext(clock.use(SleepClock(self.sleep)))
 
     def sleep(self, seconds):
         self.now += seconds

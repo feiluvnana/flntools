@@ -17,7 +17,7 @@ import unittest
 from io import StringIO
 from unittest import mock
 
-from shared import theme, worker
+from shared import clock, theme, worker
 from shared import _worker
 from shared._theme import Screen
 
@@ -348,10 +348,7 @@ class TimeoutTest(WorkerCase):
 class RetryTest(WorkerCase):
     def setUp(self):
         super().setUp()
-        self.waits = []
-        patcher = mock.patch.object(_worker, "_sleep", lambda seconds, stop: self.waits.append(seconds))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.waits = self.enterContext(clock.use(clock.Fake())).slept
 
     def test_waits_double_with_jitter_up_to_a_minute(self):
         (result,) = list(worker.as_completed(lambda _: 1 / 0, [0], retries=9))
@@ -394,9 +391,10 @@ class CtrlCTest(WorkerCase):
         running, retrying, release = threading.Event(), threading.Event(), threading.Event()
         ran = []
 
-        def wait_to_retry(seconds, stop_requested):
-            retrying.set()
-            return stop_requested.wait(LONG)
+        class WaitToRetry(clock.Clock):
+            def sleep(self, seconds, *, stop=None):
+                retrying.set()
+                return stop is not None and stop.wait(LONG)
 
         def slow():
             running.set()
@@ -407,7 +405,7 @@ class CtrlCTest(WorkerCase):
             ran.append("fail")
             raise OSError("down")
 
-        with mock.patch.object(_worker, "_sleep", wait_to_retry), self.assertRaises(KeyboardInterrupt):
+        with clock.use(WaitToRetry()), self.assertRaises(KeyboardInterrupt):
             with worker.pool(concurrency=2, retries=5) as pool:
                 pool.submit(slow)
                 pool.submit(fail)

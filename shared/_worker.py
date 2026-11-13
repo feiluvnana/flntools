@@ -39,7 +39,6 @@ import concurrent.futures
 import inspect
 import os
 import pickle
-import random
 import signal
 import threading
 import time
@@ -49,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Generic, Iterable, Iterator, NamedTuple, TypedDict, TypeVar, overload
 
 import shared
+from shared import _clock as clock
 from shared._log import Progress, log
 
 if TYPE_CHECKING:
@@ -478,6 +478,7 @@ class _Run:
 
     def wait(self, ready: Callable[[], bool], timeout: float | None = None) -> bool:
         """Wait until `ready()` holds, or `timeout` seconds pass. Ctrl-C here stops the run."""
+        # Real time, not `clock`: the deadline bounds a real condition wait.
         deadline = None if timeout is None else time.monotonic() + timeout
         try:
             with self.changed:
@@ -609,7 +610,7 @@ class _Run:
                 return Result(job.item, self._counted_attempt(job), None, attempt, job.position)
             except Exception as error:
                 # After Ctrl-C a pending retry is cancelled too: waiting a minute to retry is not "finishing".
-                if attempt > self.retries or _sleep(_retry_wait(attempt), self.stop_requested):
+                if attempt > self.retries or clock.sleep(_retry_wait(attempt), stop=self.stop_requested):
                     return Result(job.item, None, error, attempt, job.position)
 
     def _counted_attempt(self, job: _Job) -> Any:
@@ -702,12 +703,7 @@ def _call_into(future: concurrent.futures.Future[Any], fn: Callable[..., Any], a
 def _retry_wait(attempt: int) -> float:
     """The seconds to wait before the next try: 1, 2, 4… with jitter, capped at MAX_RETRY_WAIT."""
     # Jitter keeps tasks that failed together from all retrying at the same moment.
-    return min(MAX_RETRY_WAIT, 2 ** (attempt - 1) * random.uniform(0.75, 1.25))
-
-
-def _sleep(seconds: float, stop_requested: threading.Event) -> bool:
-    """Wait between tries. True when a stop was requested first. Tests replace it."""
-    return stop_requested.wait(seconds)
+    return min(MAX_RETRY_WAIT, 2 ** (attempt - 1) * clock.random().uniform(0.75, 1.25))
 
 
 def _stop_processes(executor: concurrent.futures.ProcessPoolExecutor, force: bool) -> None:

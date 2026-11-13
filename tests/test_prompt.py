@@ -26,7 +26,7 @@ except ImportError:
 
 from unittest.mock import patch
 
-from shared import log, prompt, theme
+from shared import clock, log, prompt, theme
 from shared._log import live_area
 from shared._screen import Paste, paste_text
 from shared._theme import Screen
@@ -567,11 +567,11 @@ class LiveAreaTest(PromptCase):
     def test_prompt_while_bar_is_open_on_tty(self):
         self.screen._tty = True
         self.keys("enter")
-        now = [100.0]
+        fake = clock.Fake(start=100.0)
         live_area(self.screen).threaded = False
-        with patch("shared._log.clock", lambda: now[0]), log.progress("run", total=2) as bar:
+        with clock.use(fake), log.progress("run", total=2) as bar:
             bar.advance()
-            now[0] += 1  # old enough to be drawn
+            fake.advance(1)  # old enough to be drawn
             live_area(self.screen).tick()
             self.assertIs(prompt.confirm("Go?", default=True), True)
         output = self.screen.dest.getvalue()

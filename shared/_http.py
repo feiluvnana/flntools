@@ -56,7 +56,6 @@ import os
 import re
 import secrets
 import threading
-import time
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +65,7 @@ from urllib.parse import unquote, urlsplit
 
 import shared
 from shared import _atomic as atomic
+from shared import _clock as clock
 from shared import _fmt as fmt
 from shared._log import log
 
@@ -118,10 +118,6 @@ DOWNLOAD_EXTENSION = "shared.http.download"
 INFO_SUFFIX = ".json"
 # The name of a file `download` saves into a folder when its URL's path names none.
 FALLBACK_NAME = "download"
-
-# Waits sleep through this, so tests can replace it.
-_sleep: Callable[[float], None] = time.sleep
-
 
 class Error(shared.Error):
     """The base of every error `shared.http` raises; also what a failed connection raises."""
@@ -354,7 +350,7 @@ def fetch(url: str, *, method: str = "GET", client: httpx.Client | None = None,
         seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
         log.debug("retry {n} of {url} in {seconds:g} s: {reason}", n=attempt, url=_where(request.url),
                   seconds=seconds, reason=_scrub(reason, request))
-        _sleep(seconds)
+        clock.sleep(seconds)
         attempt += 1
 
 
@@ -548,7 +544,7 @@ def _retry_after(value: str | None) -> float | None:
         when = email.utils.parsedate_to_datetime(value)
     except (TypeError, ValueError):  # neither form: treated as no header, as browsers do
         return None
-    return max(0.0, when.timestamp() - time.time())
+    return max(0.0, when.timestamp() - clock.wall())
 
 
 def _where(url: httpx.URL | str) -> str:
@@ -777,7 +773,7 @@ class _Transfer:
             seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
             log.debug("retry {n} of {url} in {seconds:g} s: {reason}", n=attempt, url=_where(self.url),
                       seconds=seconds, reason=failure)
-            _sleep(seconds)
+            clock.sleep(seconds)
             attempt += 1
         state = self.state
         assert state is not None

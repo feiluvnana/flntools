@@ -47,6 +47,7 @@ class RefusedError(Error):
 
 
 from shared import _cli as cli
+from shared import _clock as clock
 from shared import _fmt as fmt
 from shared import _prompt as prompt
 from shared._log import log
@@ -73,7 +74,7 @@ LAZY_MODULES = (
 
 __all__ = [
     "Error", "UnsafeError", "BrokenError", "RefusedError",
-    "cli", "fmt", "log", "prompt", "style", "theme",
+    "cli", "clock", "fmt", "log", "prompt", "style", "theme",
     "archive", "atomic", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
 ]
 

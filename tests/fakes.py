@@ -20,8 +20,22 @@ from flnd import job
 from flnd.engine import resolve
 from flnd.session import Options
 from flnd.source import FetchError, File, Post, Range, Source, Target
-from shared import http
+from shared import clock, http
 from shared._browser import Page
+
+
+
+class SleepClock(clock.Clock):
+    """The real clock whose sleeps go to a test's own `sleep`, which moves the test's time."""
+
+    def __init__(self, sleep: Callable[[float], Any]):
+        super().__init__()
+        self._sleep = sleep
+
+    def sleep(self, seconds: float, *, stop: Any = None) -> bool:
+        self._sleep(seconds)
+        return False
+
 
 # A fixture: data for a URL, a FetchError to raise, or a function of (url, request) giving either.
 Answer = Any

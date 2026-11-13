@@ -35,7 +35,6 @@ from __future__ import annotations
 import base64
 import json as jsonlib  # `json` is also `Page.fetch`'s keyword, as in `http.fetch`
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -47,6 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Sequence, Union, overload
 
 import shared
+from shared import _clock as clock
 from shared import _fmt as fmt
 from shared import _prompt as prompt
 from shared._cookies import Jar
@@ -132,10 +132,6 @@ class _NeverRaised(Exception):
 # open sets these to Playwright's error classes, so importing this module never loads Playwright.
 PlaywrightError: type[Exception] = Exception
 PlaywrightTimeout: type[Exception] = _NeverRaised
-# Every random choice in scrolling comes from here, so a test can seed it.
-_random = random.Random()
-# Scrolling reads the time here, and waits on Playwright's clock, so a test can fake both.
-_clock = time.monotonic
 # Seconds between two checks for a scroll's progress: short next to a page's load, cheap for the page.
 POLL = 0.05
 # Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
@@ -735,7 +731,7 @@ class Page:
         quiet_since: float | None = None                # when the scrolls with no progress at the end began
         scrolls = 0
         while until is None or not until():
-            started = _clock()
+            started = clock.now()
             self._move(target)
             scrolls += 1
             # Away from the end there is nothing to wait for: feeds load more only when their end
@@ -746,7 +742,7 @@ class Page:
             elif quiet_since is None:
                 longest = wait
             else:
-                longest = min(wait, quiet_since + idle - _clock())
+                longest = min(wait, quiet_since + idle - clock.now())
             previous, marker = marker, self._wait_for_progress(target, marker, count, longest)
             self._pause(pause)
             if on_step is not None:
@@ -756,7 +752,7 @@ class Page:
                 continue
             if quiet_since is None:
                 quiet_since = started
-            if _clock() - quiet_since >= idle:
+            if clock.now() - quiet_since >= idle:
                 break
             self._jiggle(target, pause)
         return scrolls
@@ -870,10 +866,10 @@ class Page:
     def _wait_for_progress(self, target: Locator | None, before: tuple[int, ...], count: Callable[[], int] | None,
                            longest: float) -> tuple[int, int, int]:
         """Poll every `POLL` seconds until one of `before` rose or `longest` seconds pass; return the new marker."""
-        deadline = _clock() + longest
+        deadline = clock.now() + longest
         while True:
             marker = self._progress_marker(target, count)
-            if any(now > then for now, then in zip(marker, before)) or _clock() >= deadline:
+            if any(now > then for now, then in zip(marker, before)) or clock.now() >= deadline:
                 return marker
             self.raw.wait_for_timeout(POLL * 1000)
 
@@ -900,26 +896,28 @@ class Page:
     def _move(self, target: Locator | None) -> None:
         """One scroll: the mouse over the area, the wheel down most of its height, and sometimes a little back up."""
         left, top, width, height = self._area(target)
+        jitter = clock.random()
         # The mouse lands somewhere in the middle of the area, never on one pixel each time.
-        self.raw.mouse.move(left + width * _random.uniform(0.25, 0.75), top + height * _random.uniform(0.3, 0.7),
-                            steps=_random.randint(2, 6))
-        self._wheel(height * _random.uniform(0.6, 0.9))
-        # One scroll in eight goes a little back up; the odds are a design choice, not measured from any site.
-        if _random.random() < 1 / 8:
-            self._wheel(-height * _random.uniform(0.1, 0.25))
+        self.raw.mouse.move(left + width * jitter.uniform(0.25, 0.75),
+                            top + height * jitter.uniform(0.3, 0.7), steps=jitter.randint(2, 6))
+        self._wheel(height * jitter.uniform(0.6, 0.9))
+        # One scroll in eight goes a little back up; the odds are a design choice, not measured.
+        if jitter.random() < 1 / 8:
+            self._wheel(-height * jitter.uniform(0.1, 0.25))
 
     def _wheel(self, distance: float) -> None:
         """Turn the wheel by `distance` pixels in three to six uneven steps, with a pause between them."""
         # Uneven steps and pauses, so the wheel doesn't tick at one fixed rate.
-        weights = [_random.uniform(0.5, 1.5) for _ in range(_random.randint(3, 6))]
+        jitter = clock.random()
+        weights = [jitter.uniform(0.5, 1.5) for _ in range(jitter.randint(3, 6))]
         total = sum(weights)
         for weight in weights:
             self.raw.mouse.wheel(0, distance * weight / total)
-            self.raw.wait_for_timeout(_random.uniform(20, 60))
+            self.raw.wait_for_timeout(jitter.uniform(20, 60))
 
     def _pause(self, floor: float) -> None:
         # Jitter only adds: a floor is the least a site is given, so it is never cut short.
-        self.raw.wait_for_timeout(floor * _random.uniform(1.0, 1.4) * 1000)
+        self.raw.wait_for_timeout(floor * clock.random().uniform(1.0, 1.4) * 1000)
 
     def _jiggle(self, target: Locator | None, floor: float) -> None:
         # Most feeds load the next page when their end comes back into view, so up a screen and down

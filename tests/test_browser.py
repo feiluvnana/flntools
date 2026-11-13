@@ -25,7 +25,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from shared import cookies, http, log, theme
+from shared import clock, cookies, http, log, theme
 from shared import _browser as browser
 from shared._theme import Screen
 
@@ -769,7 +769,7 @@ class PageTest(PageCase):
 class ScrollTest(PageCase):
     def setUp(self):
         super().setUp()
-        browser._random.seed(7)
+        self.enterContext(clock.use(seeded(7)))
 
     def load(self, cap=40, jiggle=False):
         self.page.goto(f"https://site.test/feed?cap={cap}&jiggle={int(jiggle)}")
@@ -845,7 +845,7 @@ class ScrollTest(PageCase):
     def test_seeded_run_is_repeatable(self):
         runs = []
         for _ in range(2):
-            browser._random.seed(42)
+            clock.random().seed(42)
             self.load(cap=5)
             self.page.scroll(idle=100, until=upto(4), wait=0.02, pause=0.01)
             runs.append(self.wheels())
@@ -946,6 +946,13 @@ class SubscriptionTest(unittest.TestCase):
         self.assertEqual(stops, [1, 2])
 
 
+def seeded(seed):
+    """The real clock with a seeded random source, so a scroll's jitter repeats."""
+    real = clock.Clock()
+    real.random.seed(seed)
+    return real
+
+
 class FakeRawPage:
     def wait_for_timeout(self, ms):
         time.sleep(ms / 1000)
@@ -958,7 +965,7 @@ class FakeFeed:
     """
 
     def __init__(self, *, after=0.1, grows=10**9, bottom=True):
-        self.now = 0.0
+        self.clock = clock.Fake(seed=5)
         self.after, self.grows, self.bottom = after, grows, bottom
         self.height = 1000
         self.due = []                                    # when the next pages arrive
@@ -983,8 +990,12 @@ class FakeFeed:
             return [800, 900]
         raise AssertionError(f"unexpected script {expression!r}")
 
+    @property
+    def now(self):
+        return self.clock.now()
+
     def wait_for_timeout(self, ms):
-        self.now += ms / 1000
+        self.clock.advance(ms / 1000)
 
 
 class ScrollTimingTest(BrowserCase):
@@ -992,10 +1003,7 @@ class ScrollTimingTest(BrowserCase):
 
     def feed(self, **options):
         feed = FakeFeed(**options)
-        clock = mock.patch.object(browser, "_clock", lambda: feed.now)
-        clock.start()
-        self.addCleanup(clock.stop)
-        browser._random.seed(5)
+        self.enterContext(clock.use(feed.clock))
         page = browser.Page(feed, SimpleNamespace(_headless=True))  # type: ignore[arg-type]
         # The fake page's scroll stands in for the mouse and the wheel, which would advance the clock.
         move = mock.patch.object(page, "_move", lambda target: feed.scroll(None))

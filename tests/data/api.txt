@@ -218,6 +218,26 @@ shared.cli.UsageError.usage: attribute -> str
 shared.cli.arg(help: str | None = None, *, metavar: str | None = None, nargs: str | None = None, choices: Any = None, type: Callable[[str], Any] | None = None, stdin: bool = True) -> Arg
 shared.cli.opt(*flags: str, help: str | None = None, metavar: str | None = None, choices: Any = None, type: Callable[[str], Any] | None = None, stdin: bool = False, const: Any = None) -> Opt
 shared.cli.run(fn: Callable) -> typing.NoReturn
+shared.clock: module
+shared.clock.Clock()
+shared.clock.Clock.now() -> float
+shared.clock.Clock.random: attribute -> Random
+shared.clock.Clock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
+shared.clock.Clock.wall() -> float
+shared.clock.Error(shared.Error)
+shared.clock.Fake(*, start: float = 0.0, seed: int = 0)
+shared.clock.Fake.advance(seconds: float) -> None
+shared.clock.Fake.now() -> float
+shared.clock.Fake.random: attribute
+shared.clock.Fake.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
+shared.clock.Fake.slept: attribute -> list[float]
+shared.clock.Fake.time: attribute -> float
+shared.clock.Fake.wall() -> float
+shared.clock.now() -> float
+shared.clock.random() -> Random
+shared.clock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
+shared.clock.use(replacement: C) -> Iterator[C]
+shared.clock.wall() -> float
 shared.cookies: module
 shared.cookies.Error(shared.Error, ValueError)
 shared.cookies.Jar(cookies: Iterable[Cookie] = ())

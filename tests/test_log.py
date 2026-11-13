@@ -29,7 +29,7 @@ try:
 except ImportError:
     HAS_PTY = False
 
-from shared import fmt, log, prompt, style, theme
+from shared import clock, fmt, log, prompt, style, theme
 from shared._log import live_area
 from shared._theme import Screen
 
@@ -66,7 +66,7 @@ def visible_screen(output: str) -> list[str]:
 class LogCase(unittest.TestCase):
     """Log lines and rows on a fake screen over StringIO, with a fake clock and no drawing thread.
 
-    A test on a terminal moves `self.now` with `tick` and has the live area draw one frame, so
+    A test on a terminal moves `self.clock` with `tick` and has the live area draw one frame, so
     rows that need 0.5 s to appear and frames 0.1 s apart cost no time. `DrawingThreadTest` is
     the one that runs the real thread on the real clock.
     """
@@ -80,17 +80,15 @@ class LogCase(unittest.TestCase):
         self.scope = theme.scope(screen=self.screen, color="none", unicode=True)
         self.scope.__enter__()
         self.previous_level = log.level
-        self.now = 100.0
+        self.clock = clock.Fake(start=100.0)
         if self.fake_clock:
-            clock = patch("shared._log.clock", lambda: self.now)
-            clock.start()
-            self.addCleanup(clock.stop)
+            self.enterContext(clock.use(self.clock))
         self.area = live_area(self.screen)
         self.area.threaded = False
 
     def tick(self, seconds: float = 0.0) -> None:
         """Move the fake clock on and draw one frame."""
-        self.now += seconds
+        self.clock.advance(seconds)
         self.area.tick()
 
     def tearDown(self):
@@ -499,7 +497,7 @@ class FrameTest(LogCase):
             original(text)
 
         with log.progress("c", total=100) as bar:
-            self.now += 0.6
+            self.clock.advance(0.6)
             self.screen.write = slow
             bar.advance(50)
             self.tick()

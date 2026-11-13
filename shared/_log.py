@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Literal
 
 import shared
+from shared import _clock as clock
 from shared import _theme
 from shared._screen import SYNC_BEGIN, SYNC_END, hide_cursor, show_cursor
 from shared._style import strip
@@ -59,8 +60,6 @@ REDRAW_INTERVAL = 0.1
 # A row is drawn once it has run this long, in seconds: a file that finishes sooner writes only its
 # final line, so a burst of small photos shows no rows coming and going.
 SHOW_AFTER = 0.5
-# The clock rows and frames are timed with; tests replace it to run seconds in no time.
-clock = time.monotonic
 # A URL's query string and fragment in a recorded line: a CDN's signed URL is a credential while it
 # lasts, so a log file keeps only the scheme, host and path. It stops at whitespace and quotes.
 QUERY = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s?#'\"<>]*)[?#][^\s'\"<>]*", re.IGNORECASE)
@@ -357,7 +356,7 @@ class Progress:
         self._outcome: str | None = None
         # Guards `_count` and `_outcome` against two threads; it is this row's own, never the screen's.
         self._lock = threading.Lock()
-        self._created = clock()
+        self._created = clock.now()
         # Whether the row has been drawn: a row that ends before it is old enough never is.
         self._seen = False
         # What the row's last drawn line showed, so an unchanged row is neither rendered nor cut again.
@@ -677,7 +676,7 @@ class LiveArea:
             if self.skip:
                 self.skip = False
                 return
-            now = clock()
+            now = clock.now()
             # Cleared before the rows are read, so a change made while drawing marks the next frame.
             self.dirty = False
             self.wake.clear()
@@ -701,7 +700,7 @@ class LiveArea:
                     return
                 # Rows that only the clock changes (a spinner, a row about to be old enough) need a
                 # wake-up of their own; with none, the thread sleeps until a change marks it.
-                now = clock()
+                now = clock.now()
                 timeout = REDRAW_INTERVAL if any(
                     bar._waiting(now) for group in self.groups for bar in group._bars) else None
             self.wake.wait(timeout)

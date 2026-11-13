@@ -21,13 +21,13 @@ import os
 import re
 import sys
 import textwrap
-import time
 import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterator, Literal, NamedTuple
 
 import shared
+from shared import _clock as clock
 from shared._screen import Screen, isatty
 from shared._style import ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, Chain, style
 
@@ -545,7 +545,7 @@ def _bar_cells(theme: Theme, bar: Bar) -> str:
         if bar.finished:
             return ""
         frames = theme.glyphs.spin
-        return frames[(int(time.monotonic() * 10) if bar.tick is None else bar.tick) % len(frames)]
+        return frames[(int(clock.now() * 10) if bar.tick is None else bar.tick) % len(frames)]
     done = max(bar.count, 0)
     # A total of zero or less would divide by zero, so it draws as full.
     filled = BAR_CELLS if bar.total <= 0 else round(BAR_CELLS * min(done, bar.total) / bar.total)

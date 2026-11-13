@@ -1,6 +1,6 @@
 """`shared.kv`: the mapping protocol, JSON values, expiry, prefixes, tables, threads and old files.
 
-The clock is faked by patching `shared._kv._now`; every database is a real sqlite file in a
+The clock is faked with `clock.Fake`; every database is a real sqlite file in a
 temporary folder.
 """
 
@@ -13,9 +13,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from shared import kv
+from shared import clock, kv
 
-START = 1_000_000.0
+
+
+def at(seconds: float):
+    """A fake clock `seconds` past its start, in use until the block ends."""
+    fake = clock.Fake()
+    fake.advance(seconds)
+    return clock.use(fake)
 
 
 class StoreCase(unittest.TestCase):
@@ -103,13 +109,13 @@ class ValueTest(StoreCase):
 
 class ExpiryTest(StoreCase):
     def test_ttl_expires_with_the_clock(self):
-        with mock.patch("shared._kv._now", return_value=START):
+        with at(0):
             self.db.set("loi:quota", 3, ttl=1)
             self.db.set("forever", 1)
             self.assertEqual(self.db["loi:quota"], 3)
-        with mock.patch("shared._kv._now", return_value=START + 0.5):
+        with at(0.5):
             self.assertIn("loi:quota", self.db)
-        with mock.patch("shared._kv._now", return_value=START + 1):
+        with at(1):
             self.assertEqual(len(self.db), 1)
             self.assertEqual(list(self.db.keys()), ["forever"])
             self.assertNotIn("loi:quota", self.db)
@@ -118,26 +124,26 @@ class ExpiryTest(StoreCase):
         self.assertEqual(self._stored_keys(), ["forever"])
 
     def test_get_returns_default_once_expired(self):
-        with mock.patch("shared._kv._now", return_value=START):
+        with at(0):
             self.db.set("k", "v", ttl=10)
-        with mock.patch("shared._kv._now", return_value=START + 11):
+        with at(11):
             self.assertEqual(self.db.get("k", default="gone"), "gone")
             with self.assertRaises(KeyError):
                 del self.db["k"]
 
     def test_setting_again_clears_the_ttl(self):
-        with mock.patch("shared._kv._now", return_value=START):
+        with at(0):
             self.db.set("k", 1, ttl=1)
             self.db["k"] = 2
-        with mock.patch("shared._kv._now", return_value=START + 100):
+        with at(100):
             self.assertEqual(self.db["k"], 2)
 
     def test_open_sweeps_expired_rows(self):
-        with mock.patch("shared._kv._now", return_value=START):
+        with at(0):
             self.db.set("old", 1, ttl=1)
             self.db.set("new", 1, ttl=100)
         self.db.close()
-        with mock.patch("shared._kv._now", return_value=START + 50):
+        with at(50):
             self.db = kv.open(self.file)
         self.assertEqual(self._stored_keys(), ["new"])
 
@@ -212,9 +218,9 @@ class TableTest(StoreCase):
         self.assertEqual(downloads.table("default")["k"], "default")
 
     def test_table_sweeps_its_expired_keys(self):
-        with mock.patch("shared._kv._now", return_value=START):
+        with at(0):
             self.db.table("other").set("old", 1, ttl=1)
-        with mock.patch("shared._kv._now", return_value=START + 2):
+        with at(2):
             self.db.table("other")
         self.assertEqual(self.db.raw.execute("SELECT COUNT(*) FROM kv").fetchone()[0], 0)
 
