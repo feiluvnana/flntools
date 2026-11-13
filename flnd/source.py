@@ -33,9 +33,7 @@ requests are paced and signed, its login cookies are sent, and its `prepare` run
 of that. `needs` names cookies that prove a login, and `requires_login` makes a missing one an
 error. `pace` is `Pace(floor, budgets)` or a number of seconds between requests (0.5 by default).
 `folder`, `filename` and `key` are formats, described below. `concurrency` is how many files download
-at once (4), `pause` the seconds between two targets (5), and `wait` the seconds before a retry (1.0),
-or a function of the error and the attempt. The browser fields are `viewport`, `browser_args`,
-`stealth` and `user_agent`. `routes`, `forms`, `categories` and `single_kinds` are not written: they
+at once (4). The browser fields are `stealth` and `user_agent`. `routes`, `forms`, `categories` and `single_kinds` are not written: they
 are collected from the routes when the class is created, and a `categories` field is refused.
 
 Routes. A route is a method marked `@target(*patterns, shown=None)`. Its name is the target's kind,
@@ -324,22 +322,19 @@ class Category:
             `async def` generator.
         newest_first: whether it yields posts newest first, so the engine may stop early on
             `--time`. A wrong True silently loses posts, so it is set only where the site's order is known.
-        name: the category's name, as `--from` and help write it; None is the method's name.
         folder: a format for this category's files' folders instead of the source's, for a category
             whose files were always filed another way; None keeps the source's.
-        filename: a format for this category's file names instead of the source's, such as
-            `avatar_{id}`; None keeps the source's.
         key: a format for this category's history keys instead of the source's, such as "" for a
             category whose files were never keyed (a profile picture keyed by its path); None keeps it.
     """
 
-    def __init__(self, function: Callable[..., Any], *, newest_first: bool = False, name: str | None = None,
-                 folder: str | None = None, filename: str | None = None, key: str | None = None):
+    def __init__(self, function: Callable[..., Any], *, newest_first: bool = False,
+                 folder: str | None = None, key: str | None = None):
         self.function = function
-        self.attribute = function.__name__
-        self.name = name or function.__name__
+        # The method's name: what `--from` and help write, and the attribute the engine calls.
+        self.name = function.__name__
         self.newest_first = newest_first
-        self.folder, self.filename, self.key = folder, filename, key
+        self.folder, self.key = folder, key
         parameters = list(inspect.signature(function).parameters)
         if len(parameters) != 3:
             raise TypeError(f"category {self.name}: take (self, site, context), not ({', '.join(parameters)})")
@@ -397,18 +392,17 @@ class Route:
     @overload
     def category(self, function: Callable[..., Any], /) -> Callable[..., Any]: ...
     @overload
-    def category(self, /, *, newest_first: bool = False, name: str | None = None, folder: str | None = None,
-                 filename: str | None = None, key: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
+    def category(self, /, *, newest_first: bool = False, folder: str | None = None,
+                 key: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
     def category(self, function: Callable[..., Any] | None = None, /, *, newest_first: bool = False,
-                 name: str | None = None, folder: str | None = None, filename: str | None = None,
-                 key: str | None = None) -> Any:
+                 folder: str | None = None, key: str | None = None) -> Any:
         """Mark a method as one of this route's categories, with or without options.
 
             @user.category
             def stories(self, site, account): ...
 
-            @user.category(newest_first=True, name="reels")
-            def reel_grid(self, site, account): ...
+            @user.category(newest_first=True)
+            def reels(self, site, account): ...
 
         The `@property` / `@x.setter` idiom: the route in the class body registers the category,
         and the method is returned unchanged, so it stays an ordinary method tests can call.
@@ -416,9 +410,7 @@ class Route:
         Args:
             function: the method, when the decorator is used bare (`@user.category`).
             newest_first: whether the category yields posts newest first; see `Category`.
-            name: its name for `--from`, when it isn't the method's.
             folder: its folders' format instead of the source's; see `Category`.
-            filename: its file names' format instead of the source's; see `Category`.
             key: its history keys' format instead of the source's; see `Category`.
 
         Returns:
@@ -429,7 +421,7 @@ class Route:
                 a category of that name.
         """
         def register(method: Callable[..., Any]) -> Callable[..., Any]:
-            made = Category(method, newest_first=newest_first, name=name, folder=folder, filename=filename, key=key)
+            made = Category(method, newest_first=newest_first, folder=folder, key=key)
             if any(known.name == made.name for known in self._categories):
                 raise TypeError(f"route {self.kind}: category {made.name!r} is declared twice")
             self._categories.append(made)
@@ -507,7 +499,6 @@ class File:
             for media without a URL (tlg's).
         audio: the URL of a separate audio stream (DASH), merged into the video; None when the
             video has its own sound. A file with `audio` is a video.
-        headers: headers for downloading it, such as a CDN Referer; None takes its post's.
         name: the file's name as the site already gives it, extension included, which the
             formats must not change (loi's archives, tlg's documents). None names it by the
             source's `filename` format.
@@ -521,8 +512,6 @@ class File:
     url: str | tuple[str, ...] | Fetch | None
     # A DASH video's separate audio stream, or None.
     audio: str | None
-    # Headers for this file's download, or None for its post's.
-    headers: Mapping[str, str] | None
     # The name as the site gives it, or None for the formats' name.
     name: str | None
     # The size in bytes, or None.
@@ -531,14 +520,14 @@ class File:
     content: str | None
 
     def __init__(self, url: str | Sequence[str] | Fetch, *, audio: str | None = None,
-                 headers: Mapping[str, str] | None = None, name: str | None = None, size: int | None = None):
+                 name: str | None = None, size: int | None = None):
         if isinstance(url, str) or callable(url):
             sources: Any = url
         elif isinstance(url, Sequence) and url and all(isinstance(mirror, str) for mirror in url):
             sources = tuple(url)
         else:
             raise TypeError(f"File takes a URL, mirror URLs or a fetch function, not {url!r}")
-        _assign(self, url=sources, audio=audio, headers=_frozen(headers), name=name, size=size, content=None)
+        _assign(self, url=sources, audio=audio, name=name, size=size, content=None)
 
     @classmethod
     def text(cls, name: str, text: str) -> File:
@@ -553,7 +542,7 @@ class File:
         It has no history row, so it is written again each time its post is downloaded.
         """
         made = cls.__new__(cls)
-        _assign(made, url=None, audio=None, headers=None, name=name, size=None, content=text)
+        _assign(made, url=None, audio=None, name=name, size=None, content=text)
         return made
 
 
@@ -572,7 +561,7 @@ class Post:
             that passes `--time` and isn't saved yet, so a post's own request costs nothing once saved.
         date: when it was posted, in any form `day()` reads (a date, a datetime, Unix seconds or
             milliseconds, a digit or ISO string); None for an undated post, which `--time` always keeps.
-        headers: headers for each of its files that has none, such as one CDN Referer.
+        headers: headers for downloading each of its files, such as a CDN Referer.
         **fields: the site's own fields for the formats, such as `album`, `title` or `author`.
 
     Raises:
@@ -586,7 +575,7 @@ class Post:
     files: tuple[File, ...] | Callable[[], Iterable[File]]
     # The date as given, read by `day()`.
     date: DateLike
-    # Headers for each file without its own, or None.
+    # Headers for downloading its files, or None.
     headers: Mapping[str, str] | None
     # The site's fields for the formats, read-only.
     fields: Mapping[str, Any]
@@ -1069,12 +1058,9 @@ class Source:
     key: ClassVar[str] = "{id}_{num}"
     # For this source's HTTP requests only; the browser always keeps its own.
     user_agent: ClassVar[str | None] = None
-    viewport: ClassVar[tuple[int, int]] = (1280, 900)
-    browser_args: ClassVar[tuple[str, ...]] = ()
     stealth: ClassVar[bool] = True
-    # Files downloading at once, and seconds between two targets (with ±40% jitter).
+    # Files downloading at once.
     concurrency: ClassVar[int] = 4
-    pause: ClassVar[float] = 5.0
     wait: ClassVar[Wait] = 1.0
     # `unsupported`, compiled when the class is created.
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()

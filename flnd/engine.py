@@ -9,9 +9,9 @@ and tally (flnd/repair.py), and grouping targets by their settings. flnd/cli.py 
 asks `login`'s questions and prints.
 
 How a run goes: targets are grouped by source; each source gets one worker, one HTTP client,
-back-off and pacer, and runs its targets one after another through the job (flnd/job.py), with a
-person's pause between them, while different sources run at the same time. It never asks a
-question, except `shared.browser`'s one, to download Chromium, before any work starts.
+back-off and pacer, and runs its targets one after another through the job (flnd/job.py), while
+different sources run at the same time. It never asks a question, except `shared.browser`'s
+one, to download Chromium, before any work starts.
 
 Every `download` and `sync` writes a log of its own, `.flnd/log/<date>_<time>_<command>.log`, at
 debug whatever the screen shows (plan/phase-7/layout.md): its start, each target's phases, every
@@ -66,9 +66,6 @@ ALL = "all"
 # `meta_results`, `scroll`), and the `Page` methods that listen to responses or requests.
 BROWSER_NAMES = frozenset({"page", "goto", "handoff", "in_page", "watch_responses", "meta_results",
                            "on_response", "on_request", "scroll", "browser"})
-
-# Pauses between targets read time through this, so tests can replace it.
-_sleep = time.sleep
 
 Row = Any
 
@@ -130,9 +127,8 @@ class Engine:
         report = engine.download(["tik:example_creator"], categories="videos")
         engine.login("ins", "browser", browser="chrome")
 
-    Targets of one source run one after another, with a pause between them; different sources
-    run at the same time. `download` and `sync` never ask questions; a source's own `login` asks
-    through its `Login`.
+    Targets of one source run one after another; different sources run at the same time.
+    `download` and `sync` never ask questions; a source's own `login` asks through its `Login`.
     """
 
     def __init__(self, *, home: Path = Path(".flnd"), sources: Mapping[str, type[Source]] = SOURCES):
@@ -726,7 +722,7 @@ def needs_browser(source: type[Source], target: Target, options: Options) -> boo
     starts: list[Any] = [route.function]
     if route.categories:
         categories = job.wanted(source, route, options)
-        starts = [route.function, *(getattr(source, category.attribute) for category in categories)] \
+        starts = [route.function, *(getattr(source, category.name) for category in categories)] \
             if categories else []
     return any(_names_browser(function, source) for function in starts)
 
@@ -853,7 +849,7 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
 
 def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done,
                  stop: frozenset[Target] = frozenset()) -> None:
-    """Each target of one source through the job, with a person's pause between them.
+    """Each target of one source through the job, one after another.
 
     Args:
         run: the source's resources for the run.
@@ -861,10 +857,7 @@ def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done
         done: filled with each target's report as it ends, keyed by its place.
         stop: the targets that stop at saved posts, passed on to the job as `sync`; see `job.download`.
     """
-    for index, (number, target, row) in enumerate(rows):
-        if index and not net.stopping.is_set():
-            # Back-to-back targets are what a script looks like, so a person's pause comes between them.
-            _sleep(net.jittered(run.source.pause))
+    for number, target, row in rows:
         if net.stopping.is_set():
             # After the first Ctrl-C no target starts; the ones left are stopped, not failed by a site.
             row.caption = "stopped"

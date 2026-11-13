@@ -332,10 +332,6 @@ class ExitStatusTest(FlndCase):
                                                     "bbb": make_source("bbb", run, connect=connect)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        # No person's pause between targets: these sources make no request.
-        pauses = mock.patch("flnd.engine._sleep", lambda seconds: None)
-        pauses.start()
-        self.addCleanup(pauses.stop)
 
     def test_download_exits_1_when_a_target_failed(self):
         code, _, out = self.run_app("download", "aaa:bad", "aaa:good")

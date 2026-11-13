@@ -66,11 +66,12 @@ class Example(Source):
             yield Post(album["id"], lambda album=album: album_files(site, album["id"]), album=album["title"],
                        headers=CDN_HEADERS)
 
-    @user.category(folder="profile", filename="avatar_{id}", key="")
+    @user.category(folder="profile", key="")
     def profile(self, site: Site, profile: dict) -> Iterator[Post]:
         """The profile picture, named and keyed as before step 6: `profile/avatar_<id>.jpg`."""
         if profile.get("picture"):
-            yield Post(profile["id"], [File(profile["picture"], headers=CDN_HEADERS)])
+            picture = File(profile["picture"], name=f"avatar_{profile['id']}.jpg")
+            yield Post(profile["id"], [picture], headers=CDN_HEADERS)
 
     def prepare(self, request, cookies):
         """The login's token as a Bearer header, on the source's own domains only."""

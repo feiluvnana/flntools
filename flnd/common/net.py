@@ -456,11 +456,6 @@ def follow(url: str) -> str:
         return str(http.head(url).url)
 
 
-def jittered(seconds: float) -> float:
-    """`seconds` give or take 40%, so pauses never repeat exactly."""
-    return seconds * _random.uniform(0.6, 1.4)
-
-
 def _seconds(value: float) -> str:
     return fmt.duration(round(value))
 

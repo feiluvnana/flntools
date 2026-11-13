@@ -346,18 +346,18 @@ class CategoriesTest(unittest.TestCase):
                          ["posts", "albums", "profile"])
         self.assertEqual(RoutedExample.single_kinds, ("post",))
 
-    def test_options_and_a_name_that_is_not_the_methods(self):
+    def test_options_and_the_name_from_the_method(self):
         class Named(Source):
             code, name, domains = "nmd", "Named", ("example.com",)
 
             @target("{user}")
             def user(self, site, user): ...
 
-            @user.category(newest_first=True, name="reels")
-            def reel_grid(self, site, profile): ...
+            @user.category(newest_first=True)
+            def reels(self, site, profile): ...
 
         category, = Named.routes[0].categories
-        self.assertEqual((category.name, category.attribute, category.newest_first), ("reels", "reel_grid", True))
+        self.assertEqual((category.name, category.newest_first), ("reels", True))
         self.assertEqual(Named.categories, ("reels",))
 
     def test_the_decorator_returns_the_method_unchanged(self):
@@ -387,7 +387,7 @@ class CategoriesTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "declared twice"):
             route.category(lambda self, site, profile: None)
         with self.assertRaisesRegex(TypeError, r"take \(self, site, context\)"):
-            route.category(name="other")(lambda self, profile: None)
+            route.category(key="")(lambda self, profile: None)
 
 
 class PostTest(unittest.TestCase):

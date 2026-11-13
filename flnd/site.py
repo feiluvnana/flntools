@@ -452,7 +452,7 @@ class TargetSite:
         # Visible (open's default), so a person can solve a captcha in it; no locale or timezone, so
         # the browser keeps the computer's own, which match where the connection comes from. The
         # engine asked about downloading Chromium before the run started, when Chrome was missing.
-        opened = browser.open(viewport=source.viewport, args=source.browser_args, stealth=source.stealth)
+        opened = browser.open(stealth=source.stealth)
         opened.add_cookies(self._run.jar)
         return opened
 

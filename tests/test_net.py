@@ -220,11 +220,6 @@ class BackoffTest(NetCase):
             backoff.wait_turn()
         self.assertEqual(self.sleeps, [])
 
-    def test_pause_jitter_is_40_percent(self):
-        for pick, expected in ((min, 6.0), (max, 14.0)):
-            with mock.patch.object(net._random, "uniform", pick):
-                self.assertAlmostEqual(net.jittered(10.0), expected)
-
 
 class DownloadTest(NetCase):
     def download(self, http, source, name="a.jpg", **options):

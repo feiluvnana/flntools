@@ -52,7 +52,7 @@ class RegistryTest(unittest.TestCase):
         self.assertIsNone(Instagram.user_agent)
         for source in SOURCES.values():
             methods = ("browser", "qr", "phone") if source is Telegram else ("browser", "file")
-            self.assertEqual((source.concurrency, source.pause, source.login_methods), (4, 5.0, methods))
+            self.assertEqual((source.concurrency, source.login_methods), (4, methods))
 
     def test_categories_and_single_post_kinds(self):
         # Without --from a target gets every category; a single post's kind has none.

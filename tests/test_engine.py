@@ -167,13 +167,11 @@ class EngineCase(unittest.TestCase):
         self.home = Path(folder.name) / ".flnd"
         self.requests = []
         self.routes = {}
-        self.pauses = []
         self.now = 0.0
         patches = [
             mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve)),
             mock.patch.object(net, "_sleep", self.sleep),
             mock.patch.object(net, "_clock", lambda: self.now),
-            mock.patch.object(engine_module, "_sleep", self.pauses.append),
         ]
         for patcher in patches:
             patcher.start()
@@ -232,9 +230,6 @@ class GroupsTest(EngineCase):
         self.run_engine(first, second, targets=["aaa:1", "aaa:2", "bbb:1", "aaa:3", "bbb:2"])
         self.assertEqual((peaks["aaa"], peaks["bbb"]), (1, 1))
         self.assertGreater(peaks["all"], 1)
-        # A pause before every target of a source but its first: two for aaa, one for bbb.
-        self.assertEqual(len(self.pauses), 3)
-        self.assertTrue(all(3.0 <= pause <= 7.0 for pause in self.pauses), self.pauses)
 
     def test_rows_end_at_ok_or_error_and_the_run_goes_on(self):
         def run(site):

@@ -204,7 +204,7 @@ def posts(source: Source, site: Site, target: Target, options: Options, *,
         yield from _Kept(context, "", newest_first=False, time=time, run_async=run_async)
         return
     for category in categories:
-        method = getattr(source, category.attribute)
+        method = getattr(source, category.name)
         yield from _Kept(method(site, context), category.name, newest_first=category.newest_first,
                          time=time, run_async=run_async)
 
@@ -888,7 +888,7 @@ class Downloads:
                 post whose files were listed, not a function).
         """
         placed = queued.placed
-        headers = file.headers if file.headers is not None else placed.post.headers
+        headers = placed.post.headers
         source = self._sync_fetch(file.url) if callable(file.url) else file.url
         if source is None:
             # Only a text file has no URL, and it is written by `queue`, never downloaded.
@@ -1321,7 +1321,7 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, *, listed: Co
         if start:
             log.info("{target}: {category}: going on where an interrupted run stopped",
                      target=str(target), category=category.name)
-        method = getattr(run.source, category.attribute)
+        method = getattr(run.source, category.name)
         kept = _Kept(method(site, context), category.name, newest_first=category.newest_first,
                      time=time, run_async=run_async)
         stop_at_saved = category.newest_first and category.name in listed and not start
@@ -1398,7 +1398,7 @@ def _fields(template: str) -> set[str]:
 
 def _format(source: Source, category: Category | None, name: str) -> str:
     """The `folder`, `filename` or `key` format for a category's files: its own when it gives one, else the source's."""
-    own = getattr(category, name) if category is not None else None
+    own = getattr(category, name, None)
     return own if own is not None else getattr(source, name)
 
 

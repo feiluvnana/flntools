@@ -296,8 +296,6 @@ class FetchTest(SiteCase):
 
     def test_the_browser_opens_with_the_engines_settings_and_cookies_and_closes_with_the_target(self):
         class Wide(Example):
-            viewport = (800, 600)
-            browser_args = ("--no-sandbox",)
             stealth = False
 
         opened = []
@@ -317,18 +315,18 @@ class FetchTest(SiteCase):
             self.assertTrue(site.goto(PAGE))
             [browser] = opened
             # Visible (open's default, so no headless=), with the computer's own language and timezone.
-            self.assertEqual(browser.options, {"viewport": (800, 600), "args": ("--no-sandbox",), "stealth": False})
+            self.assertEqual(browser.options, {"stealth": False})
             self.assertEqual([cookie["name"] for cookie in browser.added], ["token"])
             self.assertFalse(browser.closed)
             site.close()
         self.assertTrue(browser.closed)
 
-    def test_the_default_browser_is_stealthy_with_the_standard_viewport(self):
+    def test_the_default_browser_is_stealthy(self):
         seen = []
         with mock.patch("shared._browser.open", lambda **options: seen.append(options) or FakeBrowser(self.raw)):
             _, site = self.open()
             site.goto(PAGE)
-        self.assertEqual(seen, [{"viewport": (1280, 900), "args": (), "stealth": True}])
+        self.assertEqual(seen, [{"stealth": True}])
 
     def test_close_closes_the_browser(self):
         _, site = self.open()

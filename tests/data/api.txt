@@ -35,9 +35,7 @@ flnd.TargetReport.skipped: field -> int
 flnd.TargetReport.target: field -> Target
 flnd.TargetReport.written: field -> tuple[Path, ...]
 flnd.source: module
-flnd.source.Category(function: Callable[..., Any], *, newest_first: bool = False, name: str | None = None, folder: str | None = None, filename: str | None = None, key: str | None = None)
-flnd.source.Category.attribute: attribute
-flnd.source.Category.filename: attribute
+flnd.source.Category(function: Callable[..., Any], *, newest_first: bool = False, folder: str | None = None, key: str | None = None)
 flnd.source.Category.folder: attribute
 flnd.source.Category.function: attribute
 flnd.source.Category.key: attribute
@@ -49,10 +47,9 @@ flnd.source.Fetch: _CallableGenericAlias
 flnd.source.FetchError(flnd.source.Error)
 flnd.source.FetchError.response: attribute
 flnd.source.FetchError.status: attribute
-flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, headers: Mapping[str, str] | None = None, name: str | None = None, size: int | None = None)
+flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, name: str | None = None, size: int | None = None)
 flnd.source.File.audio: field -> str | None
 flnd.source.File.content: field -> str | None
-flnd.source.File.headers: field -> Mapping[str, str] | None
 flnd.source.File.name: field -> str | None
 flnd.source.File.size: field -> int | None
 flnd.source.File.text(name: str, text: str) -> File
@@ -83,7 +80,7 @@ flnd.source.Range.since: field -> datetime.date | None
 flnd.source.Range.until: field -> datetime.date | None
 flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None)
 flnd.source.Route.categories: property -> tuple[Category, ...]
-flnd.source.Route.category(function: Callable[..., Any] | None = None, /, *, newest_first: bool = False, name: str | None = None, folder: str | None = None, filename: str | None = None, key: str | None = None) -> Any
+flnd.source.Route.category(function: Callable[..., Any] | None = None, /, *, newest_first: bool = False, folder: str | None = None, key: str | None = None) -> Any
 flnd.source.Route.forms(code: str) -> list[str]
 flnd.source.Route.function: attribute
 flnd.source.Route.kind: attribute
@@ -104,7 +101,6 @@ flnd.source.Site.target: property -> Target
 flnd.source.Site.time: property -> Range
 flnd.source.Site.warn(message: str, **fields: Any) -> None
 flnd.source.Source()
-flnd.source.Source.browser_args: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.concurrency: attribute -> ClassVar[int]
 flnd.source.Source.connect(site: Site, /) -> Any
@@ -118,7 +114,6 @@ flnd.source.Source.login(login: Login, method: str, /) -> None
 flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.needs: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.pace: attribute -> ClassVar[Pace | float]
-flnd.source.Source.pause: attribute -> ClassVar[float]
 flnd.source.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
 flnd.source.Source.requires_login: attribute -> ClassVar[bool]
 flnd.source.Source.resolve(text: str) -> Target
@@ -127,7 +122,6 @@ flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.stealth: attribute -> ClassVar[bool]
 flnd.source.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
 flnd.source.Source.user_agent: attribute -> ClassVar[str | None]
-flnd.source.Source.viewport: attribute -> ClassVar[tuple[int, int]]
 flnd.source.Source.wait: attribute -> ClassVar[Wait]
 flnd.source.Target(source: str, kind: str, value: str)
 flnd.source.Target.kind: field -> str
