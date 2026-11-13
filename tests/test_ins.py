@@ -480,7 +480,6 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(api_urls(seen), [f"{API}/media/{PK[code]}/info/" for code in ("CAR", "R1", "NOFILE", "R2")])
         self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/someone/reels/", f"{SITE}/p/GONE/"])
         self.assertIn("! post GONE: its page holds no post; skipped", seen.messages)
-        self.assertIn("reels: 3 posts listed", seen.messages)
 
     def test_a_lazy_post_outside_time_makes_no_request(self):
         seen = Seen()
@@ -627,7 +626,6 @@ class ReplayTest(unittest.TestCase):
         form = dict(parse_qsl(options["data"]))
         self.assertEqual((form["doc_id"], form["fb_dtsg"]), ("7950326061742207", "token"))
         self.assertEqual(json.loads(form["variables"]), {"after": "c2", "before": None, "first": 12, "id": "42"})
-        self.assertIn("posts: 3 posts listed", site.seen.messages)
 
     def test_a_throttled_replay_waits_and_asks_the_same_page_again(self):
         site = replay_site(answers=[THROTTLE, FetchError("HTTP 400", status=400, response=http.Response(

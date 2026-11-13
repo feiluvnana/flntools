@@ -282,7 +282,6 @@ class Facebook(Source):
             site.info("{tab}: this profile has no such tab", tab=tab.category)
             return
         listed: dict[str, str] = {}
-        found = 0
         with watch_responses(site, FEED, scroll=True, lines=True) as responses:
             results = read_page(site, f"{profile.url}/{path}")
             if results is None:
@@ -290,10 +289,7 @@ class Facebook(Source):
             for result in chain(results, responses):
                 if isinstance(result, dict):
                     listed.update(album_links(result))
-                for post in media_posts(result, tab.category, owner=profile.owner):
-                    found += 1
-                    yield post
-        site.info("{tab}: {files} found", tab=tab.category, files=fmt.count(found, "file"))
+                yield from media_posts(result, tab.category, owner=profile.owner)
         # Each album is opened after the tab is read: its tiles are known once the tab has scrolled to its end.
         for url, title in listed.items():
             with watch_responses(site, FEED, scroll=True, lines=True) as responses:
@@ -436,12 +432,8 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
     if path is None:
         site.info("{tab}: this profile has no such tab", tab=tab.category)
         return
-    found = [0]
-
     def posts(result: Any, owner: str | None) -> Iterator[Post]:
-        for post in media_posts(result, tab.category, owner=owner):
-            found[0] += 1
-            yield post
+        return media_posts(result, tab.category, owner=owner)
 
     replay: Replay | None = None
     cursor: str | None = None
@@ -484,7 +476,6 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
             with watch_responses(site, FEED, scroll=True, lines=True) as responses:
                 for result in responses:
                     yield from posts(result, profile.owner)
-    site.info("{tab}: {files} found", tab=tab.category, files=fmt.count(found[0], "file"))
 
 
 def replayed(site: Site, replay: Replay, cursor: str,

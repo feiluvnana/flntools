@@ -445,17 +445,13 @@ class Twitter(Source):
         """
         # A number is opened by its id under `/i/user/`; a screen name is opened under its own path.
         profile = f"https://x.com/i/user/{account.handle}" if account.handle.isdigit() else f"https://x.com/{account.handle}"
-        found = 0
         # Watching starts before `goto`, so nothing of the first load is missed.
         with watch_responses(site, f"/{timeline.query}", scroll=True) as responses:
             if site.goto(profile + timeline.tab):
                 for data in responses:
                     tweets, _ = read_timeline_page(data)
-                    found += len(tweets)
                     for tweet in tweets:
                         yield from tweet_posts(tweet, timeline.category, account.id)
-        site.info("{category}: {tweets} read in the browser", category=timeline.category,
-                  tweets=fmt.count(found, "tweet"))
 
 
 class Graph:

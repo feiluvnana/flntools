@@ -408,7 +408,6 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(saved[0].post.headers, {"Referer": f"{SITE}/"})
         self.assertEqual([s.file.audio for s in saved], [None] * 6)
         self.assertIn("tagged: this profile has no such tab", seen.messages)
-        self.assertIn("photos: 1 file found", seen.messages)
 
     def test_dash_videos_are_saved_with_their_audio(self):
         story = {"data": {"bucket": {"unified_stories_with_notes": {"edges": [{"node": {
@@ -541,7 +540,6 @@ class ReplayTest(unittest.TestCase):
                                               "x-fb-friendly-name": "ProfileCometTimelineFeedRefetchQuery"})
         form = dict(parse_qsl(options["data"]))
         self.assertEqual((form["doc_id"], form["fb_dtsg"], form["lsd"]), ("9001", "dtsg", "lsd"))
-        self.assertIn("posts: 4 files found", run.seen.messages)
 
     def test_a_connection_with_no_next_page_scrolled_first_is_not_the_end_of_the_tab(self):
         """2026-11, live: the profile's Tiles feed answers first with `has_next_page` false; the posts come after it."""

@@ -574,7 +574,6 @@ class Profile:
                             site.back_off("Instagram asked to wait a few minutes")
                             continue
                         yield from self._posts(site, api, result, tab)
-        site.info("{tab}: {posts} listed", tab=tab, posts=fmt.count(len(self.listed[tab]), "post"))
 
     def describe(self, site: Site) -> None:
         """Load the profile's own page for its id, picture and highlights, unless a tab's results gave them.
