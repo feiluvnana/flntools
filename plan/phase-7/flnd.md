@@ -41,7 +41,7 @@ about how they're done.
 ```
 flnd download <targets…> [--from CATEGORIES] [--time SINCE,UNTIL] [--shrink [off]] [-v]
 flnd sync [targets…] [-v]
-flnd find <site> [words…] [key=value…] [--time SINCE,UNTIL] [-v]        [7.10]
+flnd find <site> '<query>' [--time SINCE,UNTIL] [-v]                    [7.10]
 flnd target ls                                                           [7.10]
 flnd target forget <targets…> | all                                      [7.10]
 flnd auth login                                                          [7.10]
@@ -83,20 +83,23 @@ option. For each target, in order (§7):
 
 ### `find` [7.10]
 
-Takes a query instead of a target: any words and filters its site's finder understands, and finds
-things (users, pages, manga, posts), each with the target `download` takes. It saves what its
+Takes a query instead of a target, written in Lucene's query syntax with the parameters that site's
+finder declares, and finds things (users, pages, manga, posts), each with the target `download`
+takes. It saves what its
 finder says to save for each result (a picture, a cover), the way `download` saves files, and
 lists the results (§9). It is for finding; a found thing's own content is `download`'s job.
 
 ```
-flnd find fbk example words kind=pages                  # pages named like that: a table, pictures, results.json
-flnd find loi author=example_creator --time 2026-01-01,
-flnd find mng genre=action | flnd download              # in a pipe: one target per line
-flnd find --help                                        # every site's finder and its filters
+flnd find fbk 'example words kind:page'                          # a table, pictures, results.json
+flnd find mht 'genre:(vanilla OR romance) -genre:example chapters:>5'
+flnd find mht 'author:"example creator"' | flnd download         # in a pipe: one target per line
+flnd find mht --help                                             # mht's parameters, with their help
 ```
 
-- **The query is free**: any words, then any `key=value` filters; what they mean is the finder's
-  to say. A filter its finder doesn't list is refused before any request, naming the ones it takes.
+- **The query** is one argument, in Lucene's syntax (§9): words, `"phrases"`, `param:value`,
+  `-param:value`, `AND`/`OR`/`NOT`, `( )`, ranges and comparisons. Each site declares its own
+  parameters; one it doesn't declare, or a value of the wrong kind, is refused before any request,
+  with where in the query and what that site takes.
 - **On a terminal**: a table of the main fields. **Saved**: each result's files, named by the
   finder's formats (by default under `media/<site>/find/<query>/`), and `results.json` with every
   field and target (§10).
@@ -152,6 +155,7 @@ as patterns (`@target`), and `flnd --help` lists them, generated from those patt
 | X | `twt` | a profile; a post link | posts, media, highlights, reposts, replies, profile |
 | Telegram | `tlg` | a chat: `@username`, title or id | photo, video, file |
 | LOIBUS | `loi` | a post id or link | photo, archive |
+| mimihentai | `mht` [7.11] | a manga id or link; a chapter link | chapters, cover |
 
 - **A single post's link** (`instagram.com/p/…`, `x.com/…/status/…`, a TikTok video) downloads
   that post whole, into its profile's folder; `--from` is refused with it.
@@ -184,7 +188,7 @@ in `flnd/sites/common/` (`replay` feed reading, `relay`, `dash`, `watch`).
 | --- | --- |
 | `flnd.site` | `Site`, `FetchError`, `LoginError`, `Page`, `pages` |
 | `flnd.downloader` | `Downloader`, `target`, `Post`, `File`, `Range`, `day`, `fill` |
-| `flnd.finder` | `Finder`, `Query`, `Found`, `QueryError` (and `File`, `Range` from `flnd.downloader`) |
+| `flnd.finder` | `Finder`, `Param`, the kinds (`Text`, `Name`, `Number`, `Date`, `Choice`), `Query`, `Term`, `Found`, `QueryError` (and `File`, `Range` from `flnd.downloader`) |
 
 A site module imports only these, `flnd.sites.common`, `shared` and the standard library.
 `flnd/sites/__init__.py` collects `SITES`, `DOWNLOADERS` and `FINDERS` by code. Today's `Source`
@@ -263,6 +267,7 @@ Its own class, one method, a free query; §9 has the whole of it.
 | twt | X's GraphQL timelines, then `SearchTimeline` past their cap [7.3] | `created_at` | X's rate headers; floor 0.2 s [7.8]; quoted tweets' media and card images saved [7.3] |
 | tlg | Telethon | the message's date | resumes, several connections a big file, `cryptg` [7.8] |
 | loi | its signed JSON API | the post's date | archives count against the day's VIP quota, so only `download --from archive` asks for them |
+| mht [7.11] | its public JSON API: `/api/manga/{id}`, `/api/manga/{id}/chapters`, `/api/chapters/{id}` | a chapter's `created_at` | no login needed; floor 0.5 s, learned; a finder over its advanced search (§17) |
 
 ---
 
@@ -409,26 +414,35 @@ That input is the whole difference: below it, both run on **the same engine** (t
 finder decides how its files are saved exactly as a downloader does.
 
 ```python
-# flnd/sites/fbk.py: one site module; its helpers serve every class in it
-class Facebook(Site): ...                       # the access (§4)
-class FacebookDownloader(Downloader): ...       # a target in: a user, everything of theirs
+# flnd/sites/mht.py: one site module; its helpers serve every class in it
+class Mimi(Site): ...                           # the access (§4)
+class MimiDownloader(Downloader): ...           # a target in: a manga, all its chapters
 
-class FacebookFinder(Finder):                   # a query in: users, pages, groups that match it
-    site = Facebook
-    filters = {"kind": "people, pages or groups", "city": "a city's name"}
+class MimiFinder(Finder):                       # a query in: manga that match it
+    site = Mimi
+    params = {                                  # this site's own find parameters
+        "title":     Param(Text, "words in the title (bare words mean this too)"),
+        "genre":     Param(Name, "a genre", any_of=False, negate=True, lookup=genres),
+        "author":    Param(Name, "an author", lookup=authors),
+        "character": Param(Name, "a character", lookup=characters),
+        "parody":    Param(Name, "the work it parodies", lookup=parodies),
+        "chapters":  Param(Number, "how many chapters", compare=False),
+    }
     folder, filename, key = "find/{query}", "{title}_{id}", "{id}"
 
     def find(self, site, query: Query) -> Iterator[Found]:
-        """Profiles and pages whose name matches the words, as Facebook's own search ranks them."""
-        for item in search_results(site, query.text, kind=query.filters.get("kind", "people")):
-            yield Found(item["id"], title=item["name"], target=f"fbk:{item['id']}",
-                        kind=item["kind"], followers=item.get("followers"),
-                        files=[File(item["picture"], name="picture")])
+        """Manga by title words, genres, authors, characters, parody and chapter count."""
+        for item in advanced_search(site, query):           # query.terms → the site's parameters
+            yield Found(item["id"], title=item["title"], target=f"mht:{item['id']}",
+                        author=[a["name"] for a in item["authors"]],
+                        genre=[g["name"] for g in item["genres"]],
+                        chapters=item["chapter_count"], date=item["last_updated"],
+                        files=[File(item["cover_url"], name="cover")])
 ```
 
 | | `Downloader` | `Finder` |
 | --- | --- | --- |
-| **takes** | a **target**, matched by `@target` patterns | a **`Query`**: `text` (any words), `filters` (any `key=value`), `time` |
+| **takes** | a **target**, matched by `@target` patterns | a **query** in Lucene's syntax, over **its own declared `params`** |
 | **shape** | routes, then categories, with a context between them | **one method**, `find(site, query)` |
 | **yields** | `Post(id, files, date=, **fields)` | `Found(id, title=, target=None, files=(), date=None, **fields)` |
 | **saves** | its `folder`, `filename`, `key` formats | its own `folder`, `filename`, `key` formats (default `find/{query}`, `{title}_{id}`, `{id}`) |
@@ -436,12 +450,45 @@ class FacebookFinder(Finder):                   # a query in: users, pages, grou
 | **on top** | listing memory, dates, links, `--shrink`, `sync`, `targets.db` | a table of results, `results.json`, targets in a pipe |
 | **command** | `download`, `sync` | `find` |
 
-- **A query is free.** `flnd find fbk example words kind=pages` gives the finder
-  `Query(text="example words", filters={"kind": "pages"}, time=Range())`. What words and filters
-  mean, and how they map to the site's search, is the finder's. `filters` lists the keys it takes,
-  for `flnd find --help` and to refuse an unknown key before any request; a value it can't use
-  raises `QueryError("kind takes people, pages or groups")`, shown as a usage error. An empty query
-  is the site's default listing, when the finder has one.
+### The query language: Lucene's, parsed by luqum
+
+flnd invents neither a syntax nor a parser (user, 2026-11-13). A query is written in **Lucene's
+query syntax** (what Elasticsearch, Kibana and many search boxes take) and parsed by
+**[luqum](https://github.com/jurismarches/luqum)** (1.0.0, Apache-2.0, needs only `ply`; checked
+on Python 3.14 on 2026-11-13):
+
+| Lucene | Means |
+| --- | --- |
+| `example words`, `"a phrase"` | free text: the site's own search, or its `title` param |
+| `param:value`, `param:"two words"` | a parameter |
+| `param:(a OR b)`, `param:(a AND b)` | any of, all of |
+| `-param:value`, `NOT param:value` | not |
+| `a OR b`, `a AND b`, `( … )` | combine; side by side means AND |
+| `param:[3 TO 8]`, `param:[3 TO *]`, `param:>5`, `param:<=10` | ranges and comparisons |
+| `param:[2026-01-01 TO 2026-06-30]` | dates |
+
+- **Each site declares its own parameters** (user, 2026-11-13), as `params` on its `Finder`: a
+  name, a kind (`Text`, `Name`, `Number`, `Date`, `Choice(...)`), a one-line help, and what the
+  site can do with it (`any_of`, `negate`, `compare`), and for a name the site knows by id, a
+  `lookup` that turns names into ids. Nothing is shared between sites but the syntax: Facebook's
+  `kind`, mimihentai's `genre`, X's `from` are each that site's own. `flnd find <site> --help`
+  lists them; `sort` and `limit` are parameters too, where a site declares them.
+- **`flnd/query.py`** is the only place that touches luqum: it parses the query (luqum's own
+  error, with its position, is the usage error), walks the tree with luqum's `TreeVisitor`, checks
+  every field against the site's `params` (unknown name, wrong kind, a shape the site can't do:
+  `genre:(a OR b)` on a site without `any_of`), turns names into ids through the lookups, and
+  hands the finder a plain **`Query`**: `text` (the free words), `terms` (each `Term(param,
+  values, negated, low, high)`), and `time` (`--time`). A finder never sees luqum's tree.
+- **What the site can't do is refused, not guessed**: an `OR` across two parameters, a comparison
+  on a parameter declared `compare=False`, or a negation the site can't send stops with a message
+  naming the part and what that site takes. No query is silently widened or narrowed.
+- **Lookups** (a genre's or an author's id by name) are asked once per run and kept in
+  `sites.db` for a day; names match ignoring case and accents; a name that matches several stops
+  with the candidates.
+- luqum builds its parsing tables on first import and `ply` prints warnings then; `flnd/query.py`
+  builds them quietly (ply's error log silenced) and once per run. luqum goes in `pyproject.toml`'s
+  dependencies, and its Apache-2.0 licence in `licenses/`.
+
 - **`Found`** is one result: its `id` (for its key), a `title`, the `target` that `download` takes
   (None for a thing that can't be downloaded), its `files` (a cover, a picture, a thumbnail, or more
   when the finder wants them: `File`, as in §4), a `date` when it has one (for `--time` and the
@@ -612,10 +659,65 @@ filters beyond `--from` and `--time`; zip or exec postprocessors; metadata sidec
 | 7 | `shared` as a black box | |
 | 8 | speed | |
 | 9 | status lines, colour and motion | |
-| **10** | **sites split cleanly: `Source` becomes `Site` + `Downloader`, `flnd/sources/` becomes `flnd/sites/`; then the find API (`Finder`, `Query`, `Found`, `flnd/find.py`), `flnd find`; `flnd target ls`/`forget`; `flnd auth login`/`logout`/`ls`; loi's finder first** | new |
+| **10** | **sites split cleanly: `Source` becomes `Site` + `Downloader`, `flnd/sources/` becomes `flnd/sites/`; then the find API (`Finder`, `Param`, `Query`, `Found`, `flnd/find.py`) with Lucene queries parsed by luqum (`flnd/query.py`), `flnd find`; `flnd target ls`/`forget`; `flnd auth login`/`logout`/`ls`; loi's finder first** | new |
+| **11** | **mimihentai (`mht`)**: its `Site`, `Downloader` (a manga's chapters) and `Finder` (its advanced search), per §17 | new |
 
 Finding comes last: it builds on the black-box `shared` (7), the status/table output (9) and the
 listing memory's common fields (4). Its first finders wait for the user's example pages.
+
+## 17. mimihentai (`mht`) [7.11]
+
+A Vietnamese manga site, mimihentai.moe: a Nuxt front end on Cloudflare, over a **public JSON
+API on the same host** that needs no login. Read from its scripts and a few anonymous requests on
+2026-11-13 (structure only).
+
+### Its API
+
+| What | Call | Gives |
+| --- | --- | --- |
+| a manga | `GET /api/manga/{id}` | `title`, `cover_url`, `description`, `authors[{id,name}]`, `genres[{id,name}]`, `alt_names`, `chapter_count`, `last_updated`, `view`, `follows` |
+| its chapters | `GET /api/manga/{id}/chapters?limit=100` | `[{id, title, order, created_at, manga_id}]` |
+| a chapter | `GET /api/chapters/{id}` | `info{id, title, order, created_at, manga_id}`, `pages[{image_url}]`, `prev`, `next` |
+| advanced search | `GET /api/manga/advanced-search` | params `title`, `author` (ids, comma), `character`, `parody`, `genre` (ids, comma, all of), `exclude_genre` (ids), `chapters`; paged by `cursor` + `cursor_res=true` → `{items, next_cursor, total}` |
+| simple search | `GET /api/manga/search?q=` | the same items |
+| lookups | `/api/genres` (296), `/api/authors/search`, `/api/characters/search`, `/api/parodies/search` | names → ids |
+| images | `https://moe-cdn.net/<x>/<file>.webp` | no referer needed; `Accept-Ranges`, `ETag`, `Last-Modified`; about 140 KB a page |
+
+To check by hand before it is built: whether a manga with more than 100 chapters pages them by
+cursor; what `chapters` means (an exact count or a minimum); whether `character` takes ids or
+names; the rate Cloudflare tolerates.
+
+### Download
+
+```
+flnd download mht:70982
+flnd download https://mimihentai.moe/manga/70982
+flnd download https://mimihentai.moe/manga/70982/chapter/<chapter_id>      # that chapter only
+flnd download mht:70982 --from chapters --time 2026-01-01,
+```
+
+- **Targets**: a manga by id or link; a chapter's link downloads that chapter.
+- **Categories**: `chapters`, each chapter a lazy post dated by its `created_at`, whose pages are
+  asked for only when it isn't saved; `cover`, the manga's cover, once. A `sync` costs one request
+  per manga and one per new chapter.
+- **Layout**: `media/mht/<id>/chapters/<order:03> <chapter title>/001.webp …`, and
+  `media/mht/<id>/cover/cover.webp`; keyed by chapter id and page number, so a renamed chapter is
+  never downloaded again.
+
+### Find
+
+```
+flnd find mht 'example words'                                   # title words; the simple search
+flnd find mht 'genre:(vanilla AND romance) -genre:example'      # all of, and excluded
+flnd find mht 'author:"example creator" chapters:1'
+flnd find mht 'parody:example character:example' | flnd download
+```
+
+Its `params` are `title`, `genre` (all of, negatable, by name through `/api/genres`), `author`,
+`character`, `parody` (by name through their search APIs) and `chapters`. Bare words alone use the
+simple search; anything else, the advanced one. Each result is a `Found` with `target=mht:<id>`,
+its title, authors, genres, chapter count, last update and views, and its cover saved under
+`media/mht/find/<query>/` with `results.json`.
 
 ## Still to settle while building
 
