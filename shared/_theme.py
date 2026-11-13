@@ -353,9 +353,12 @@ def draw_progress(theme: Theme, record: LogRecord) -> str:
         ✓ ━━━━━━━━━━━━━━━━━━━━ posts/a.jpg 45.4 KB
         • ━━━━━━━━━━────────── videos/b.mp4 7.3 MB/14.6 MB
         • ⠋                    posts/c.jpg 12.0 KB
+        • scroll posts ⠋
 
-    Every line starts the same way, so the labels of many lines start at one column, and the count
-    follows its label with one space, so no line has a wide gap. A bar with no total
+    Every line with a bar starts the same way, so the labels of many lines start at one column,
+    and the count follows its label with one space, so no line has a wide gap. A row with no total
+    that has counted nothing (a target's row, a scroll) has no bar to draw: it stays one short line,
+    its spinner after its label. A bar with no total
     (a download whose size the server didn't send) draws its spinner in the cells' column while it
     runs, and full cells once it ends at ok, as a bar with a total does. A line that ended at ok
     shows its total alone (the count, when there was no total), and a failed one keeps
@@ -372,6 +375,9 @@ def draw_progress(theme: Theme, record: LogRecord) -> str:
     assert bar is not None
     level = "error" if record.level == "error" else "ok" if bar.finished else "info"
     glyph = theme.paint(level, getattr(theme.glyphs, LOG_GLYPHS[level]))
+    if bar.total is None and bar.count <= 0:
+        # Nothing counted and nothing to count toward: a bar's columns would only be empty space.
+        return " ".join(part for part in (glyph, bar.label, _bar_cells(theme, bar), bar.caption) if part)
     if bar.total is not None:
         cells = _bar_cells(theme, bar)
         count = bar.show(bar.total) if level == "ok" else _count(bar)

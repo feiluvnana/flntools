@@ -1103,11 +1103,11 @@ class HandoffTest(BrowserCase):
         ready = time.monotonic() + 0.1
         self.assertTrue(self.page.handoff(until=lambda: time.monotonic() >= ready, message="Solve the captcha",
                                           poll=0.02))
-        self.assertEqual(self.lines(), ["! Solve the captcha", "✓ " + "━" * 20 + " Solve the captcha"])
+        self.assertEqual(self.lines(), ["! Solve the captcha", "✓ Solve the captcha"])
 
     def test_timeout(self):
         self.assertFalse(self.page.handoff(until=lambda: False, message="Log in", poll=0.02, timeout=0.1))
-        self.assertEqual(self.lines(), ["! Log in", "✗ " + "─" * 20 + " Log in"])
+        self.assertEqual(self.lines(), ["! Log in", "✗ Log in"])
 
 
 # Every byte value, so a body that went through text anywhere would come back changed.

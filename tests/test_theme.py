@@ -151,11 +151,11 @@ class DrawerTest(unittest.TestCase):
 
     def test_spinner_rows_collapse(self):
         draw = lambda bar, level="info": self.theme.draw("progress", LogRecord(level, "", bar))  # noqa: E731
-        # A spinner's frame sits in the 20-cell bar column, padded with spaces, so the label stays in one column.
-        self.assertRegex(draw(Bar("scroll posts", 0, None, "", False)), r"^• [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] {19} scroll posts$")
+        # Nothing counted: one short line, the spinner after the label. Counted: the frame sits in the bar column.
+        self.assertRegex(draw(Bar("scroll posts", 0, None, "", False)), r"^• scroll posts [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$")
         self.assertRegex(draw(Bar("scroll posts", 12, None, "", False)), r"^• [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] {19} scroll posts 12$")
         self.assertEqual(draw(Bar("scroll posts", 12, None, "", True), "ok"), "✓ " + "━" * 20 + " scroll posts 12")
-        self.assertEqual(draw(Bar("scroll posts", 0, None, "", True), "ok"), "✓ " + "━" * 20 + " scroll posts")
+        self.assertEqual(draw(Bar("scroll posts", 0, None, "", True), "ok"), "✓ scroll posts")
 
     def test_help(self):
         model = HelpModel("tool", "Does things.", "tool [options] name",

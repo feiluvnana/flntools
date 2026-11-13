@@ -265,8 +265,8 @@ class PipeProgressTest(LogCase):
         self.assertEqual(self.lines(), [
             "✗ download",
             "✗ " + "━" * 2 + "─" * 18 + " ins:ada " + "1/12" + " reel 3",
-            "✓ " + "━" * 20 + " twt:bob",
-            "✗ " + "─" * 20 + " fbk:cy",
+            "✓ twt:bob",
+            "✗ fbk:cy",
         ])
 
     def test_group_clean_exit(self):
@@ -347,7 +347,7 @@ class TtyProgressTest(LogCase):
             first = self.output()
             self.tick(0.25)
             self.assertNotEqual(self.output(), first)
-        self.assertEqual(visible_screen(self.output()), ["✓ " + "━" * 20 + " wait"])
+        self.assertEqual(visible_screen(self.output()), ["✓ wait"])
 
 
 class FrameTest(LogCase):
@@ -522,7 +522,7 @@ class FrameTest(LogCase):
             self.tick(0.6)
             empty = "─" * 20
             self.assertEqual(visible_screen(self.output()), [
-                "• download", "• ⠦" + " " * 20 + "ins:example_user", "  • " + empty + " a.jpg " + "0/2",
+                "• download", "• ins:example_user ⠦", "  • " + empty + " a.jpg " + "0/2",
                 "  • " + empty + " b.jpg " + "0/2",
             ])
             target.caption = "3 files · 3 running · 0 queued"
@@ -537,7 +537,7 @@ class FrameTest(LogCase):
         self.screen._tty = False
         with log.progress("a"):
             self.assertIsNone(self.area.thread)
-        self.assertEqual(self.lines(), ["• idle", "✓ " + "━" * 20 + " a"])
+        self.assertEqual(self.lines(), ["• idle", "✓ a"])
 
 
 class DrawingThreadTest(LogCase):
@@ -557,7 +557,7 @@ class DrawingThreadTest(LogCase):
             self.assertIsNotNone(self.area.thread)
             self.assertGreaterEqual(self.area.frames, 3)
             self.assertEqual(visible_screen(self.output())[0][:1], "•")
-        self.assertEqual(visible_screen(self.output()), ["✓ " + "━" * 20 + " wait"])
+        self.assertEqual(visible_screen(self.output()), ["✓ wait"])
         for _ in range(20):
             if self.area.thread is None:
                 break
@@ -599,7 +599,7 @@ class QuietPipeTest(LogCase):
     def test_quiet_writes_only_bars_that_end_at_error(self):
         log.level = "quiet"
         self.run_bars()
-        self.assertEqual(self.lines(), ["✗ " + "─" * 20 + " bad " + "0/2", "✗ " + "─" * 20 + " b", "✗ upload", "✗ " + "─" * 20 + " c"])
+        self.assertEqual(self.lines(), ["✗ " + "─" * 20 + " bad " + "0/2", "✗ b", "✗ upload", "✗ c"])
 
     def test_other_levels_write_every_bar(self):
         log.level = "error"
@@ -623,7 +623,7 @@ class QuietTtyTest(QuietPipeTest):
     def test_quiet_writes_only_bars_that_end_at_error(self):
         log.level = "quiet"
         self.run_bars()
-        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " bad " + "0/2", "✗ " + "─" * 20 + " b", "✗ upload", "✗ " + "─" * 20 + " c"])
+        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " bad " + "0/2", "✗ b", "✗ upload", "✗ c"])
 
 
 class ThreadTest(LogCase):
