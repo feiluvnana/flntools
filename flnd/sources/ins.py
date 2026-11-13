@@ -112,6 +112,10 @@ LONGEST_CODE = 11
 REFUSED_DIRECT = frozenset({400, 401, 403})
 # What a GraphQL call's URL holds: the responses that carry a profile tab's or a post's data.
 GRAPHQL = "graphql"
+# Where a story's music is, in the two shapes Instagram sends it (as gallery-dl reads it): a music
+# sticker's asset, or the story's own music metadata.
+STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_url || "
+               "music_metadata.music_info.music_asset_info.progressive_download_url")
 
 
 class Instagram(Source):
@@ -790,6 +794,7 @@ def reel_posts(site: Site, stories: list[dict], folder: str) -> Iterator[Post]:
     """One post for each story of a reel, from the reels API or a story page; one line says how many.
 
     A story is dated by its `taken_at` only, never by its `pk`, whose small numbers would give 2011.
+    A story's music is a second file of its post, `<date>_<id>_music.m4a` (fixes #11).
 
     Args:
         site: the target's site.
@@ -805,8 +810,20 @@ def reel_posts(site: Site, stories: list[dict], folder: str) -> Iterator[Post]:
         story_id = str(story.get("pk") or story.get("id", "")).split("_")[0]
         # The key is the path, so the extension in the name has to be the one the file is saved with.
         name = file_name(day(story.get("taken_at")), story_id, extension)
-        yield Post(story_id, [File(source, audio=audio, name=name)], date=story.get("taken_at"), headers=CDN_HEADERS)
+        files = [File(source, audio=audio, name=name)]
+        if music := story_music(story):
+            files.append(File(music, name=file_name(day(story.get("taken_at")), f"{story_id}_music", "m4a")))
+        yield Post(story_id, files, date=story.get("taken_at"), headers=CDN_HEADERS)
     site.info("{folder}: {stories}", folder=folder, stories=fmt.count(len(stories), "story", plural="stories"))
+
+
+def story_music(story: dict) -> str | None:
+    """The URL of a story's music, an M4A Instagram serves whole; None when it has none.
+
+    Args:
+        story: one story's JSON, from the reels API or a story page.
+    """
+    return selector.parse(story).jmespath(STORY_MUSIC).first
 
 
 def file_name(taken: Any, stem: str, extension: str) -> str:

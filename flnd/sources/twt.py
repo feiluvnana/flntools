@@ -138,6 +138,9 @@ class Account:
         """The user's id, or None when the API doesn't know them."""
         return self.user["rest_id"] if self.user else None
 
+# A card's image fields, best first: the full-size picture, then the smaller previews.
+CARD_IMAGES = ("photo_image_full_size_original", "summary_photo_image_original", "player_image_original",
+               "thumbnail_image_original", "photo_image_full_size_large", "summary_photo_image_large")
 # The sizes X's media server gives a photo in, best first: `orig` is the upload itself.
 PHOTO_SIZES = ("orig", "4096x4096", "large", "medium")
 
@@ -567,6 +570,8 @@ def tweet_posts(tweet: dict, category: str, user_id: str | None, *, part: str | 
 
     Each post has the tweet's id, its date, and `n`, the media's place in the tweet: it counts a
     media with no file (a GIF without MP4 variants) too, so a name never moves when one appears.
+    A quoted tweet's media come with the quoting tweet, as `n` `q0`, `q1`, …, and a card's image as
+    `card` (fixes #11): files of the post they belong to, keyed apart from its own.
     """
     tweet = unwrap(tweet)
     legacy = tweet.get("legacy") or {}
@@ -585,7 +590,13 @@ def tweet_posts(tweet: dict, category: str, user_id: str | None, *, part: str | 
         return
     tweet_id, created_at = tweet_id_of(tweet), legacy.get("created_at")
     posted = datetime.strptime(created_at, CREATED_AT) if created_at else None
-    for index, media in enumerate(selector.parse(legacy).jmespath("extended_entities.media").all):
+    quoted = selector.parse(tweet).jmespath("quoted_status_result.result").first
+    quoted_media = selector.parse(unwrap(quoted).get("legacy") or {}).jmespath("extended_entities.media").all \
+        if isinstance(quoted, dict) else []
+    found_media = [(index, media) for index, media in
+                   enumerate(selector.parse(legacy).jmespath("extended_entities.media").all)]
+    found_media += [(f"q{index}", media) for index, media in enumerate(quoted_media)]
+    for index, media in found_media:
         found = best_file(media)
         if found is None:
             continue
@@ -595,9 +606,26 @@ def tweet_posts(tweet: dict, category: str, user_id: str | None, *, part: str | 
         else:
             folder = part
         yield Post(tweet_id, [media_file(url, extension, tweet_id, index, posted)], date=posted, part=folder, n=index)
+    card = card_image(tweet)
+    if card is not None:
+        folder = part if part is not None else ("images" if category == "media" else category)
+        yield Post(tweet_id, [media_file(card, "jpg", tweet_id, "card", posted)], date=posted, part=folder, n="card")
 
 
-def media_file(url: str | tuple[str, ...], extension: str, tweet_id: str, index: int, posted: datetime | None) -> File:
+def card_image(tweet: dict) -> str | None:
+    """A tweet's card image (a link's preview picture), at its largest; None when it has no card or no image.
+
+    Args:
+        tweet: the tweet, unwrapped.
+    """
+    values = selector.parse(tweet).jmespath("card.legacy.binding_values").all
+    images = {entry.get("key"): selector.parse(entry).jmespath("value.image_value.url").first
+              for entry in values if isinstance(entry, dict)}
+    return next((images[key] for key in CARD_IMAGES if images.get(key)), None)
+
+
+def media_file(url: str | tuple[str, ...], extension: str, tweet_id: str, index: int | str,
+               posted: datetime | None) -> File:
     """A media file, named from its URL's extension; pinned when the URL gives none the name could use.
 
     A URL path with no extension, or one in capitals, would be named from the content (or in
@@ -607,7 +635,7 @@ def media_file(url: str | tuple[str, ...], extension: str, tweet_id: str, index:
         url: the file's URL, which may carry a `?name=` query, or its mirrors, best first.
         extension: the extension to save it with when the URL gives none: "mp4", or "jpg" for a photo.
         tweet_id: the tweet's id, which the file name starts with.
-        index: the media's place in the tweet, counted from 0.
+        index: the media's place in the tweet, counted from 0; `q<n>` for a quoted tweet's, `card` for its card.
         posted: the tweet's time, or None; the date is left out of the name when it is None.
     """
     suffix = PurePosixPath(urlsplit(url if isinstance(url, str) else url[0]).path).suffix

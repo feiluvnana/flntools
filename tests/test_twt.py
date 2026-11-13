@@ -18,7 +18,7 @@ from flnd import site as site_module
 from flnd.common import auth
 from flnd.session import Options
 from flnd.source import FetchError, Target, TargetError
-from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page
+from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page, tweet_posts
 from shared import cookies
 
 API = "https://x.com/i/api/graphql/"
@@ -248,6 +248,28 @@ class NamesAndKeysTest(unittest.TestCase):
             saved = collect(Twitter, "twt:someone", options=Options(categories=("posts", "media")), json={
                 url("UserByScreenName"): USER, url("UserOriginalsTimeline"): FetchError("HTTP 404", status=404)})
         self.assertEqual(pairs(saved), [(f"images/{DAY}_333_0.jpg", "333_0")])
+
+
+class QuotedAndCardTest(unittest.TestCase):
+    """fixes #11: a quoted tweet's media and a card's image are files of the quoting post, keyed apart."""
+
+    def test_quoted_media_and_the_card_image_come_with_the_post(self):
+        quoting = tweet("1", [photo("own")])
+        quoting["quoted_status_result"] = {"result": tweet("2", [photo("quoted"), video("clip")], author="7")}
+        quoting["card"] = {"legacy": {"binding_values": [
+            {"key": "thumbnail_image_original", "value": {"image_value": {"url": "https://pbs.example/card_img/t"}}},
+            {"key": "photo_image_full_size_original",
+             "value": {"image_value": {"url": "https://pbs.example/card_img/full?format=jpg&name=orig"}}}]}}
+        posts = list(tweet_posts(quoting, "posts", USER_ID))
+        self.assertEqual([(post.id, post.fields["n"]) for post in posts], [("1", 0), ("1", "q0"), ("1", "q1"), ("1", "card")])
+        self.assertEqual(posts[1].files[0].url, sizes("https://pbs.example/media/quoted.jpg"))
+        self.assertEqual(posts[2].files[0].url, "https://video.example/clip.mp4")
+        card = posts[3].files[0]
+        self.assertEqual((card.url, card.name), ("https://pbs.example/card_img/full?format=jpg&name=orig",
+                                                 "2026-11-09_1_card.jpg"))
+
+    def test_a_tweet_without_a_quote_or_card_has_only_its_own(self):
+        self.assertEqual([post.fields["n"] for post in tweet_posts(tweet("1", [photo("a")]), "posts", USER_ID)], [0])
 
 
 class TimelineTest(unittest.TestCase):

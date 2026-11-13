@@ -25,7 +25,7 @@ from flnd.source import FetchError, LoginError, Target, TargetError, day
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.common.replay import Replay
 from flnd.sources.ins import (APP_ID, Instagram, best_file, files_of, full_size, is_complete, pk_of_code, pk_stamp,
-                              post_files, tab_media)
+                              post_files, reel_posts, tab_media)
 from shared import http, selector
 
 SITE = "https://www.instagram.com"
@@ -375,6 +375,27 @@ OLD_PROFILE = [
     ("tagged/2023-11-15_T1_1.jpg", "T1_1"),
 ]
 OLD_SINGLE = [("2023-11-15_SINGLE_0.jpg", "SINGLE_0"), ("2023-11-15_SINGLE_1.mp4", "SINGLE_1")]
+
+
+class StoryMusicTest(unittest.TestCase):
+    """fixes #11: a story's music is saved beside it, as a second file of its post."""
+
+    def story(self, **extra):
+        return {"pk": "31", "taken_at": 1767312000, "image_versions2": {"candidates": [
+            {"url": "https://cdn.example/s.jpg", "width": 1080, "height": 1920}]}, **extra}
+
+    def test_both_shapes_of_music_become_an_m4a_beside_the_story(self):
+        sticker = {"story_music_stickers": [{"music_asset_info": {"progressive_download_url": "https://cdn.example/m1"}}]}
+        metadata = {"music_metadata": {"music_info": {"music_asset_info": {
+            "progressive_download_url": "https://cdn.example/m2"}}}}
+        for extra, url in ((sticker, "https://cdn.example/m1"), (metadata, "https://cdn.example/m2")):
+            [post] = reel_posts(FakeSite(Target("ins", "user", "someone")), [self.story(**extra)], "stories")
+            self.assertEqual([(file.url, file.name) for file in post.files],
+                             [("https://cdn.example/s.jpg", "2026-01-02_31.jpg"), (url, "2026-01-02_31_music.m4a")])
+
+    def test_a_story_without_music_has_one_file(self):
+        [post] = reel_posts(FakeSite(Target("ins", "user", "someone")), [self.story()], "stories")
+        self.assertEqual(len(post.files), 1)
 
 
 class NamesAndKeysTest(unittest.TestCase):
