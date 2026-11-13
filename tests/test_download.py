@@ -823,6 +823,55 @@ class SpaceTest(DownloadCase):
         self.assertNotEqual(download._filesystem(self.tmp), "")
 
 
+class TransportTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+        self.transport = http.Transport()
+        self.addCleanup(self.transport.close)
+        self.transport._http1 = httpx.MockTransport(self.answer("1.1"))
+        self.transport._http2 = httpx.MockTransport(self.answer("2"))
+
+    def answer(self, version: str) -> Callable[[httpx.Request], httpx.Response]:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.sent.append((version, request.url.host))
+            return httpx.Response(200, content=b"ok")
+        return handler
+
+    def test_pieces_go_over_http_1_1_and_the_rest_over_http_2(self):
+        with httpx.Client(transport=self.transport) as raw:
+            raw.get("https://cdn.example/a.jpg")
+            raw.get("https://cdn.example/v.mp4", extensions={http.PIECE_EXTENSION: True})
+        self.assertEqual(self.sent, [("2", "cdn.example"), ("1.1", "cdn.example")])
+
+    def test_a_host_whose_http_2_fails_falls_back_for_good(self):
+        def broken(request: httpx.Request) -> httpx.Response:
+            raise httpx.RemoteProtocolError("GOAWAY")
+
+        self.transport._http2 = httpx.MockTransport(broken)
+        with httpx.Client(transport=self.transport) as raw:
+            self.assertEqual(raw.get("https://bad.example/a.jpg").content, b"ok")
+            raw.get("https://bad.example/b.jpg")
+        self.assertEqual(self.sent, [("1.1", "bad.example"), ("1.1", "bad.example")])
+        self.assertEqual(self.transport._fallen, {"bad.example"})
+
+    def test_a_split_download_sends_its_first_request_over_http_2_and_its_pieces_over_1_1(self):
+        small(self)
+        self.enterContext(clock.use(clock.Fake()))
+        self.enterContext(mock.patch.object(download, "_gates", {}))
+        cdn = Cdn()
+        versions: list[str] = []
+        for version, attribute in (("1.1", "_http1"), ("2", "_http2")):
+            def handler(request: httpx.Request, version=version) -> httpx.Response:
+                versions.append(version)
+                return cdn.handler(request)
+            setattr(self.transport, attribute, httpx.MockTransport(handler))
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        with httpx.Client(transport=self.transport) as raw:
+            saved = http.download("https://cdn.example/v.mp4", tmp, client=raw)
+        self.assertEqual(saved.path.read_bytes(), DATA)
+        self.assertEqual(versions, ["2"] + ["1.1"] * 9)
+
+
 class DownloadRecordTest(DownloadCase):
     def test_a_download_gives_its_path_url_and_headers(self):
         with client(self.cdn.handler) as fake:

@@ -75,7 +75,7 @@ if TYPE_CHECKING:  # `selector` loads on the first `html`, so a JSON-only script
 __all__ = [
     "ChangedError", "Client", "CorruptError", "Download", "Error", "IncompleteError", "Pace",
     "RateLimitedError", "RefusedError", "Response", "ServerError", "SpaceError", "StoppedError",
-    "download", "fetch",
+    "Transport", "download", "fetch",
 ]
 
 PathLike = Union[str, "os.PathLike[str]"]
@@ -103,10 +103,13 @@ MAX_WAIT = 8.0
 # The request extension every request of `download` carries, so a caller's transport can tell a
 # download's requests from others; flnd's sends them once, since `download` retries on its own.
 DOWNLOAD_EXTENSION = "shared.http.download"
-# The request extension a split file's pieces carry, so a transport can tell them apart.
+# The request extension a split file's pieces carry, which `Transport` sends over HTTP/1.1:
+# HTTP/2 would put every piece on one TCP connection, sharing one congestion window.
 PIECE_EXTENSION = "shared.http.piece"
 # The most connections `parts` may ask for on one file.
 MAX_PARTS = 8
+# Idle connections `Transport` keeps open for reuse: 8 per host across a run's few CDNs.
+KEEP_ALIVE = 64
 # A client's wait of this many seconds or more is a countdown row: a slow run explains itself.
 SHOWN_WAIT = 15.0
 
@@ -698,6 +701,50 @@ class Client:
                 host.showing = False
 
 
+class Transport(httpx.BaseTransport):
+    """An httpx transport that sends a split file's pieces over HTTP/1.1 and the rest over HTTP/2.
+
+        raw = httpx.Client(transport=http.Transport(), follow_redirects=True)
+
+    Photos and small files then share one HTTP/2 connection per host instead of a handshake
+    each, while a split file's pieces get a TCP connection each. A host whose HTTP/2 fails is
+    sent HTTP/1.1 for the rest of the transport's life. Without the `h2` package everything goes
+    over HTTP/1.1. It may be used from many threads at once.
+
+    Args:
+        options: what `httpx.HTTPTransport` takes, such as `retries` or `verify`, for both.
+    """
+
+    def __init__(self, **options: Any):
+        options.setdefault("limits", httpx.Limits(max_keepalive_connections=KEEP_ALIVE))
+        self._http1: httpx.BaseTransport = httpx.HTTPTransport(**options)
+        self._http2: httpx.BaseTransport | None = (httpx.HTTPTransport(http2=True, **options)
+                                                   if _has_h2() else None)
+        # Hosts whose HTTP/2 failed; any thread may add one.
+        self._fallen: set[str] = set()
+        self._lock = threading.Lock()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        """Send `request` over HTTP/2 unless it is a piece or its host fell back."""
+        host = request.url.host
+        if self._http2 is None or request.extensions.get(PIECE_EXTENSION) or host in self._fallen:
+            return self._http1.handle_request(request)
+        try:
+            return self._http2.handle_request(request)
+        except (httpx.RemoteProtocolError, httpx.LocalProtocolError) as error:
+            with self._lock:
+                self._fallen.add(host)
+            log.debug("{host}: HTTP/2 failed ({error}); HTTP/1.1 from now on", host=host,
+                      error=type(error).__name__)
+            return self._http1.handle_request(request)
+
+    def close(self) -> None:
+        """Close both transports' connections."""
+        self._http1.close()
+        if self._http2 is not None:
+            self._http2.close()
+
+
 class _Headers(Mapping[str, str]):
     """A read-only header mapping with lowercase names, looked up in any case."""
 
@@ -741,7 +788,17 @@ def _new_client() -> httpx.Client:
     # A jar whose policy allows no domain keeps no cookie, so a cookie one caller's fetch is sent
     # never rides along on another caller's request to the same site.
     refuse_all = http.cookiejar.DefaultCookiePolicy(allowed_domains=[])
-    return httpx.Client(follow_redirects=True, cookies=http.cookiejar.CookieJar(refuse_all))
+    return httpx.Client(follow_redirects=True, cookies=http.cookiejar.CookieJar(refuse_all),
+                        transport=Transport())
+
+
+def _has_h2() -> bool:
+    """Whether the `h2` package httpx needs for HTTP/2 is installed."""
+    try:
+        import h2  # noqa: F401  # pyright: ignore[reportMissingImports]
+    except ImportError:  # HTTP/1.1 only, which is what httpx sends without it anyway
+        return False
+    return True
 
 
 def _seconds(value: float) -> str:
