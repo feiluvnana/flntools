@@ -13,8 +13,8 @@ Written and approved by the user on 2026-11-13. Examples use example handles onl
 ## 1. What flnd is
 
 flnd saves what people post on six sites (Instagram, Facebook, TikTok, X, Telegram, LOIBUS) to
-your disk, **fast, complete and dated**, and keeps it up to date. It also **finds** things on a
-site (by genre, author, search) and hands them to the downloader **[7.10]**.
+your disk, **fast, complete and dated**, and keeps it up to date. It also **downloads what a query
+matches** on a site (by genre, author, search): a query is a target, such as `mht?genre:example` **[7.10]**.
 
 It is a command-line program in Python, built on `shared`, flntools' own toolkit. `shared` is a
 black box: flnd asks it for a fetch, a download, a browser page, a progress row, and doesn't think
@@ -43,7 +43,6 @@ flnd download <targets…> [--from CATEGORIES] [--time SINCE,UNTIL] [--shrink [o
 flnd sync [-v]                                                           [7.10]
 flnd sync ls                                                             [7.10]
 flnd sync toggle <targets…>                                              [7.10]
-flnd find <site> '<query>' [--time SINCE,UNTIL] [-v]                    [7.10]
 flnd auth login                                                          [7.10]
 flnd auth logout <sites…> | all                                          [7.10]
 flnd auth ls                                                             [7.10]
@@ -62,12 +61,24 @@ Downloads each target: every category of it, or those `--from` names.
 
 | Option | Meaning |
 | --- | --- |
-| `<targets…>` | `site:value` pairs or URLs (§3). With none, read from stdin, one per line; blank lines and `#` comments skipped. |
+| `<targets…>` | `site:value` pairs, URLs or query targets (§3). With none, read from stdin, one per line; blank lines and `#` comments skipped. |
 | `--from CATEGORIES` | The categories to take, as a comma list or repeated: `--from reels,tagged`. Without it, every category. Refused with a single post's link, which is downloaded whole. Not saved. |
 | `--time SINCE,UNTIL` | Only posts dated from one day to another, both included: `2026-01-01,2026-06-30`; a side left empty (or `*`, quoted) has no limit. An undated post is kept. Not saved. |
 | `--shrink`, `--shrink off` | Compress each photo, video and audio file to a balanced quality in its own format, keeping the result only when smaller; **saved for the target** and used by every later `download` and `sync` of it ([shrink](shrink.md)). |
 | `--sync` | Also keep these targets up to date: `flnd sync` updates them from now on [7.10]. Without it, a target is downloaded and known (`sync ls` lists it, sync off) but not synced. |
+| `--limit N` | Caps how many results a query target downloads [7.10]. |
+| `--dry` | Lists the targets it would download, and downloads none [7.10]. |
 | `-v`, `--verbose` | The status lines, and every line of progress and log as well (§11). |
+
+A query target is one token, `<site>?<query>`, in Lucene's syntax (§9). It works anywhere a target does:
+
+```
+flnd download 'mht?genre:(vanilla OR romance) -genre:example chapters:>5'
+flnd download 'mht?author:"example creator"' --limit 20
+flnd download --dry 'mht?example words'
+```
+
+`flnd download --help` lists each site's query parameters.
 
 A `download` that turns `--shrink` on shrinks the target's files already saved too, so a folder
 is never half shrunk. The run's first line names a target's saved settings:
@@ -97,33 +108,7 @@ its subcommand.
 - **Stores**: a `targets.db` row gains `sync`. A row written before this, with no `sync` field,
   counts as **on**, as it was synced then; nothing is rewritten. A new target downloaded without
   `--sync` is off, and the run says once: `not synced; add --sync to keep it up to date`.
-- Synced **queries** (`find --sync`) are Phase 8's ([draft](../phase-8/README.md)).
-
-### `find` [7.10]
-
-Takes a query instead of a target, written in Lucene's query syntax with the parameters that site's
-finder declares, and finds things (users, pages, manga, posts), each with the target `download`
-takes. It saves what its
-finder says to save for each result (a picture, a cover), the way `download` saves files, and
-lists the results (§9). It is for finding; a found thing's own content is `download`'s job.
-
-```
-flnd find fbk 'example words kind:page'                          # a table, pictures, results.json
-flnd find mht 'genre:(vanilla OR romance) -genre:example chapters:>5'
-flnd find mht 'author:"example creator"' | flnd download         # in a pipe: one target per line
-flnd find mht --help                                             # mht's parameters, with their help
-```
-
-- **The query** is one argument, in Lucene's syntax (§9): words, `"phrases"`, `param:value`,
-  `-param:value`, `AND`/`OR`/`NOT`, `( )`, ranges and comparisons. Each site declares its own
-  parameters; one it doesn't declare, or a value of the wrong kind, is refused before any request,
-  with where in the query and what that site takes.
-- **On a terminal**: a table of the main fields. **Saved**: each result's files, named by the
-  finder's formats (by default under `media/<site>/find/<query>/`), and `results.json` with every
-  field and target (§10).
-- **In a pipe**: one target per line, so `download` reads them from stdin.
-- Its files go in history like any download's, so the same query run again saves only new ones;
-  it writes no setting, counts no quota, and isn't part of `sync`.
+- A synced **query** is `download --sync '<site>?<query>'`, built in Phase 7 step 10.
 
 ### `auth login`, `auth logout` and `auth ls` [7.10]
 
@@ -146,7 +131,7 @@ mistake prints the help's error line and exits 2.
 
 ## 3. Targets
 
-A target is `<site>:<value>` or a URL, where `<site>` is the site's code; `ins:example_user`, `ins:@example_user` and
+A target is `<site>:<value>`, a URL, or a query `<site>?<query>` (§9), where `<site>` is the site's code; `ins:example_user`, `ins:@example_user` and
 `https://www.instagram.com/example_user/` are the same target. Each downloader declares its forms
 as patterns (`@target`), and `flnd --help` lists them, generated from those patterns.
 
@@ -160,6 +145,7 @@ as patterns (`@target`), and `flnd --help` lists them, generated from those patt
 | LOIBUS | `loi` | a post id or link | photo, archive |
 | mimihentai | `mht` [7.11] | a manga id or link; a chapter link | chapters, cover |
 
+- **A query** (`<site>?<query>`, §9) downloads each result its query route yields; `mht?example words` is one. A site without query routes refuses it.
 - **A single post's link** (`instagram.com/p/…`, `x.com/…/status/…`, a TikTok video) downloads
   that post whole, into its profile's folder; `--from` is refused with it.
 - **Unsupported pages** of a site (`x.com/home`, a Facebook group) are refused before anything
@@ -168,20 +154,18 @@ as patterns (`@target`), and `flnd --help` lists them, generated from those patt
 
 ---
 
-## 4. Sites: `Site`, `Downloader`, `Finder`
+## 4. Sites: `Site` and `Downloader`
 
 One module per site, in `flnd/sites/<code>.py` (was `flnd/sources/`). It holds the **site's
 knowledge**: how to read its pages and APIs, its quirks, its login wall and blocks. It declares up
-to three classes, **kept apart** (user, 2026-11-13), each matching what the user does with it:
+to two classes, **kept apart** (user, 2026-11-13), each matching what the user does with it:
 
 ```
 Site          the site's access: login, cookies, domains, pace, signing, browser   ← auth
- ├─ Downloader  targets → categories → posts → files                             ← download, sync
- └─ Finder      a free query → found things                                       ← find
+ └─ Downloader  routes: targets → categories → posts → files; or targets, run as targets   ← download, sync
 ```
 
-`Downloader` and `Finder` each name their `Site`, and neither knows the other. A site has a
-`Site` and a `Downloader`, a `Finder`, or both. They share only the `Site` and the module's own
+A site has a `Site` and a `Downloader`, which names its `Site`. They share only the `Site` and the module's own
 helper functions (how to read the site's JSON, say). The site helpers more than one site uses live
 in `flnd/sites/common/` (`replay` feed reading, `relay`, `dash`, `watch`).
 
@@ -191,10 +175,10 @@ in `flnd/sites/common/` (`replay` feed reading, `relay`, `dash`, `watch`).
 | --- | --- |
 | `flnd.site` | `Site`, `FetchError`, `LoginError`, `Page`, `pages` |
 | `flnd.downloader` | `Downloader`, `target`, `Post`, `File`, `Range`, `day`, `fill` |
-| `flnd.finder` | `Finder`, `Param`, the kinds (`Text`, `Name`, `Number`, `Date`, `Choice`), `Query`, `Term`, `Found`, `QueryError` (and `File`, `Range` from `flnd.downloader`) |
+| `flnd.query` | `Param`, the kinds (`Text`, `Name`, `Number`, `Date`, `Choice`), `Query`, `Term`, `Value`, `Lookup`, `QueryError` |
 
 A site module imports only these, `flnd.sites.common`, `shared` and the standard library.
-`flnd/sites/__init__.py` collects `SITES`, `DOWNLOADERS` and `FINDERS` by code. Today's `Source`
+`flnd/sites/__init__.py` collects `SITES` and `DOWNLOADERS` by code. Today's `Source`
 splits into `Site` and `Downloader`, today's `flnd.source` into `flnd.site` and
 `flnd.downloader`, and `sources.db` becomes `sites.db`, with no alias left behind (one spelling)
 [7.10]. "Source" leaves flnd's vocabulary: the word is **site** everywhere, in code, messages and
@@ -215,12 +199,12 @@ class Example(Site):
   `user_agent`, `stealth`; **hooks**: `prepare` (sign or adjust each request), and the site's own
   login when it has one (Telegram's QR, phone, Telegram Web).
 - **Live**: the engine makes one `Site` object per site for a run, and passes it as `site` to
-  every `Downloader` and `Finder` method. Its members: `cookies`; `fetch(url, …)` (paced, signed,
+  every `Downloader` method. Its members: `cookies`; `fetch(url, …)` (paced, signed,
   with the site's back-off; a `FetchError` on failure; `in_page=True` sends it from the browser
   page); `goto(url)` and `page` (the browser tab, opened on first use); `handoff(until=, message=)`
   (a captcha or login a person solves in the visible browser); `client`; `state` (the site's own
   saved values); `secrets`; `info`, `warn`; `back_off(reason, retry_after=)`; and `pages(fetch,
-  cursor)` for cursor pagination. Nothing in it is about downloading or finding.
+  cursor)` for cursor pagination. Nothing in it is about downloading.
 - `auth login`, `logout` and `ls` work on `Site`s alone.
 
 ### `Downloader`: the download API
@@ -237,11 +221,15 @@ class ExampleDownloader(Downloader):
     def posts(self, site, profile): yield from posts_of(site, profile)
 
     def date(self, site, post): ...             # optional: one item's date, by its own page [7.5]
+    @target("?{query}", params={"tag": Param(Name, "a tag", lookup=tags)})   # a query route [7.10]
+    def tagged(self, site, query: Query) -> Iterator[str]:
+        for item in example_search(site, query):
+            yield f"exm:{item['id']}"
 ```
 
 | Part | What it is |
 | --- | --- |
-| **route** (`@target`) | A target's patterns and the method that reads it. A route with categories returns a context every category receives; one without yields its posts itself (a single post). |
+| **route** (`@target`) | A target's patterns and the method that reads it, of one of three kinds: **a context** that its categories receive (a user, a manga); **posts** it yields itself (a single post, a chapter); or **targets** it yields, which the engine runs as ordinary targets (an author page, a genre page, a query: `@target("?{query}", params={...})`, whose method gets a `Query`). |
 | **category** (`@<route>.category`) | One thing a target can download, a generator of `Post`s. `newest_first` lets the engine stop early (§6). Its own `folder` and `key` may differ from the downloader's. |
 | **`date` hook** [7.5] | Asked for a post still undated when its category ends: one paced request for that item's own date. |
 | **fields** | `site`, `unsupported` (pages of the site that aren't targets), `folder`, `filename`, `key`. |
@@ -256,10 +244,6 @@ class ExampleDownloader(Downloader):
   file itself (Telegram). `audio` is a second stream merged into a video (DASH). `File.text(name,
   content)` is a text file the downloader writes (loi's `info.md`).
 
-### `Finder`: the find API
-
-Its own class, one method, a free query; §9 has the whole of it.
-
 ### Per site, after Phase 7
 
 | Site | Listing | Dates | Notes |
@@ -270,7 +254,7 @@ Its own class, one method, a free query; §9 has the whole of it.
 | twt | X's GraphQL timelines, then `SearchTimeline` past their cap [7.3] | `created_at` | X's rate headers; floor 0.2 s [7.8]; quoted tweets' media and card images saved [7.3] |
 | tlg | Telethon | the message's date | resumes, several connections a big file, `cryptg` [7.8] |
 | loi | its signed JSON API | the post's date | archives count against the day's VIP quota, so only `download --from archive` asks for them |
-| mht [7.11] | its public JSON API: `/api/manga/{id}`, `/api/manga/{id}/chapters`, `/api/chapters/{id}` | a chapter's `created_at` | no login needed; floor 0.5 s, learned; a finder over its advanced search (§17) |
+| mht [7.11] | its public JSON API: `/api/manga/{id}`, `/api/manga/{id}/chapters`, `/api/chapters/{id}` | a chapter's `created_at` | no login needed; floor 0.5 s, learned; a query route over its advanced search (§17) |
 
 ---
 
@@ -406,52 +390,40 @@ Videos encode one at a time across the run; photos on a pool of 8 [7.8].
 
 ---
 
-## 9. Finding [7.10]
+## 9. Query targets [7.10]
 
-### One engine, two inputs
+### The decision
 
-The user's rule (2026-11-13): **a `Downloader` takes a target and does everything for it; a
-`Finder` takes a query and finds things.** Facebook's downloader takes a user and downloads all of
-them; Facebook's finder takes a string and finds users, each with a target `download` would take.
-That input is the whole difference: below it, both run on **the same engine** (the job), and a
-finder decides how its files are saved exactly as a downloader does.
+The user's decisions (2026-11-13): "So should only have download. Now download can choose a query target. Remove finder and call it a day." and "delete finder, make everything downloader, downloader can have multiple kind of target". So there is one command and one class per site. A query is a route of the site's `Downloader`, and `download` takes `<site>?<query>` wherever it takes a target: arguments, stdin lines and `download --sync`.
+
+### A query route
 
 ```python
 # flnd/sites/mht.py: one site module; its helpers serve every class in it
 class Mimi(Site): ...                           # the access (§4)
-class MimiDownloader(Downloader): ...           # a target in: a manga, all its chapters
-
-class MimiFinder(Finder):                       # a query in: manga that match it
+class MimiDownloader(Downloader):
     site = Mimi
-    params = {                                  # this site's own find parameters
+
+    @target("?{query}", params={                # a query route: a Query in, targets out
         "title":     Param(Text, "words in the title (bare words mean this too)"),
         "genre":     Param(Name, "a genre", any_of=False, negate=True, lookup=genres),
         "author":    Param(Name, "an author", lookup=authors),
         "character": Param(Name, "a character", lookup=characters),
         "parody":    Param(Name, "the work it parodies", lookup=parodies),
         "chapters":  Param(Number, "how many chapters", compare=False),
-    }
-    folder, filename, key = "find/{query}", "{title}_{id}", "{id}"
-
-    def find(self, site, query: Query) -> Iterator[Found]:
-        """Manga by title words, genres, authors, characters, parody and chapter count."""
+    })
+    def query(self, site, query: Query) -> Iterator[str]:
+        """Yields the manga that match a query, as targets."""
         for item in advanced_search(site, query):           # query.terms → the site's parameters
-            yield Found(item["id"], title=item["title"], target=f"mht:{item['id']}",
-                        author=[a["name"] for a in item["authors"]],
-                        genre=[g["name"] for g in item["genres"]],
-                        chapters=item["chapter_count"], date=item["last_updated"],
-                        files=[File(item["cover_url"], name="cover")])
+            yield f"mht:{item['id']}"
 ```
 
-| | `Downloader` | `Finder` |
-| --- | --- | --- |
-| **takes** | a **target**, matched by `@target` patterns | a **query** in Lucene's syntax, over **its own declared `params`** |
-| **shape** | routes, then categories, with a context between them | **one method**, `find(site, query)` |
-| **yields** | `Post(id, files, date=, **fields)` | `Found(id, title=, target=None, files=(), date=None, **fields)` |
-| **saves** | its `folder`, `filename`, `key` formats | its own `folder`, `filename`, `key` formats (default `find/{query}`, `{title}_{id}`, `{id}`) |
-| **engine** | the job: names, dedupe by key, the downloader (§8), mtime, history | **the same job** |
-| **on top** | listing memory, dates, links, `--shrink`, `sync`, `targets.db` | a table of results, `results.json`, targets in a pipe |
-| **command** | `download`, `sync` | `find` |
+- **The query** is one token, `<site>?<query>`, in Lucene's syntax (below). Quote it in a shell: it has spaces and brackets. A parameter the route doesn't declare, or a value of the wrong kind, is refused before any request, with where in the query and what that site takes.
+- **A query route** gets a plain `Query` (below), once per search, and yields targets such as `mht:70982`.
+- **Target routes** (the third kind in §4) all share these rules. The engine runs each yielded target as an ordinary target: the same job, history, dates, `--shrink` and links. Results are deduped by target. `download --limit N` caps how many a route downloads, and `download --dry` lists the targets it would download, downloading none.
+- **Synced**: `download --sync '<site>?<query>'` is one row in `sync ls`. Each `flnd sync` runs the route again and downloads only results it hasn't seen, at most 25 new per query per run. Targets the user already follows are left alone. Seen results are kept in `targets.db` (§10).
+- **Help**: `flnd download --help` lists each site's query parameters.
+- **It stops when you do**: reaching `--limit` or Ctrl-C closes the route's generator, so no further page is asked for, and what was downloaded is kept.
 
 ### The query language: Lucene's, parsed by luqum
 
@@ -470,18 +442,18 @@ on Python 3.14 on 2026-11-13):
 | `param:[3 TO 8]`, `param:[3 TO *]`, `param:>5`, `param:<=10` | ranges and comparisons |
 | `param:[2026-01-01 TO 2026-06-30]` | dates |
 
-- **Each site declares its own parameters** (user, 2026-11-13), as `params` on its `Finder`: a
+- **Each query route declares its own parameters** (user, 2026-11-13), as its `params`: a
   name, a kind (`Text`, `Name`, `Number`, `Date`, `Choice(...)`), a one-line help, and what the
   site can do with it (`any_of`, `negate`, `compare`), and for a name the site knows by id, a
   `lookup` that turns names into ids. Nothing is shared between sites but the syntax: Facebook's
-  `kind`, mimihentai's `genre`, X's `from` are each that site's own. `flnd find <site> --help`
-  lists them; `sort` and `limit` are parameters too, where a site declares them.
+  `kind`, mimihentai's `genre`, X's `from` are each that site's own. `flnd download --help` lists
+  them; `sort` is a parameter too, where a site declares it.
 - **`flnd/query.py`** is the only place that touches luqum: it parses the query (luqum's own
   error, with its position, is the usage error), walks the tree with luqum's `TreeVisitor`, checks
-  every field against the site's `params` (unknown name, wrong kind), splits an OR the site can't
+  every field against the route's `params` (unknown name, wrong kind), splits an OR the site can't
   send into several searches (below), turns names into ids through the lookups, and hands the
-  finder, once per search, a plain **`Query`**: `text` (the free words), `terms` (each `Term(param,
-  values, negated, low, high)`), and `time` (`--time`). A finder never sees luqum's tree.
+  query route, once per search, a plain **`Query`**: `text` (the free words), `terms` (each `Term(param,
+  values, negated, low, high)`), and `time` (`--time`). A downloader never sees luqum's tree.
 - **OR on a site without it runs as several searches, merged** (user, 2026-11-13). Most sites
   take AND but not OR. `flnd/query.py` rewrites the query into an OR of AND-groups (De Morgan
   first, so `-(a OR b)` is `-a -b`), and each AND-group the site can send becomes **one search**:
@@ -493,12 +465,12 @@ on Python 3.14 on 2026-11-13):
                                                         character:example chapters:1
   ```
 
-  The searches run one after another; results are **merged and deduped by `Found.id`**, in the
-  order they first arrive, so a manga matching both genres is listed once. `limit` counts the
-  merged results, and a closed pipe stops every search. A site that declares `any_of` on a
-  parameter (its own OR within one parameter) gets that OR sent whole, as one search. More than
-  **8 searches** is refused with how many the query would need, so a query never fans out
-  unnoticed. Each search is paced as any request is.
+  The searches run one after another; results are **merged and deduped by target**, in the order
+  they first arrive, so a manga matching both genres is listed once. `--limit` counts the merged
+  results, and reaching it stops every search. A site that declares `any_of` on a parameter (its
+  own OR within one parameter) gets that OR sent whole, as one search. More than **8 searches** is
+  refused with how many the query would need, so a query never fans out unnoticed. Each search is
+  paced as any request is. This split applies to query routes only.
 - **What no number of searches can do is refused, not guessed**: a comparison on a parameter
   declared `compare=False`, a negation the site can't send, a parameter it doesn't take. The message
   names the part of the query and what that site takes. No query is silently widened or narrowed.
@@ -507,29 +479,10 @@ on Python 3.14 on 2026-11-13):
   with the candidates.
 - luqum builds its parsing tables on first import and `ply` prints warnings then; `flnd/query.py`
   builds them quietly (ply's error log silenced) and once per run. luqum goes in `pyproject.toml`'s
-  dependencies, and its Apache-2.0 licence in `licenses/`.
-
-- **`Found`** is one result: its `id` (for its key), a `title`, the `target` that `download` takes
-  (None for a thing that can't be downloaded), its `files` (a cover, a picture, a thumbnail, or more
-  when the finder wants them: `File`, as in §4), a `date` when it has one (for `--time` and the
-  files' modified time), and fields to show, in the finder's order.
-- **The job runs it as it runs a category**: each `Found`'s files are named by the finder's
-  formats (with `{query}`, the query made safe for a folder name), skipped when their key is saved,
-  downloaded by `shared.http`, dated, and recorded in history under `<code>:find:<key>`, so the
-  same query run again downloads only new files. `flnd/find.py` is the thin front: it builds the
-  `Query`, draws the results table as they come, writes `results.json` (every field and target) in
-  the query's folder when the finder ends or stops, and prints targets in a pipe.
-- **What `find` doesn't have**, being no download of a target: no `--from`, no listing memory or
-  dating rules, no links, no `--shrink`, no `targets.db` row, no part in `sync`.
-- **It stops when you do**: a pipe closing (`| head -20`) or Ctrl-C closes the finder's generator,
-  so no further page is asked for, and what was found is saved.
-- **Imports**: `flnd.finder` takes `File` and `Range` from `flnd.downloader` and nothing else of
-  it; `flnd.downloader` imports nothing of `flnd.finder`; both import `flnd.site` (§4). The job
-  takes either's items through one internal interface, so neither API knows the other.
-- **Which finders first** is the user's to say: loi's once its search page is checked by hand;
-  then others where a site has a search worth having (Facebook's people and pages, Instagram's
-  accounts and hashtags, X's search). A new site (a manga reader) is a new module with a `Site`,
-  and a `Downloader`, a `Finder`, or both.
+  dependencies.
+- **Which sites first**: loi's query targets, then others where a site has a search worth having
+  (Facebook's people and pages, Instagram's accounts and hashtags, X's search). A new site (a manga
+  reader) is a new module with a `Site` and a `Downloader`.
 
 ## 10. Storage: `.flnd/`
 
@@ -538,10 +491,9 @@ on Python 3.14 on 2026-11-13):
 ```
 .flnd/
   media/<site>/<target>/<category>/<files>        every saved file           [7.1, built]
-  media/<site>/find/<query>/                      what a finder saves, results.json   [7.10]
   metadata/
     history.db       every saved file by key: path, size, mtime, date, marks
-    targets.db       each target's saved settings (--shrink), complete listings, saved cursors
+    targets.db       each target's saved settings (--shrink), complete listings, saved cursors, a synced query's seen results
     sites.db         each site's own state (learned pace, tokens, loi's quota), a table per site
     secrets.db       every login, encrypted (cookies, Telegram's session, API keys)
     secret.key       the key that opens secrets.db
@@ -598,7 +550,7 @@ on 8-colour terminals; ASCII glyphs where Unicode isn't safe.
 
 ### Run logs [7.1, built]
 
-Every `download`, `sync` and `find` writes `.flnd/log/<date>_<time>_<command>.log`: every line `-v`
+Every `download` and `sync` writes `.flnd/log/<date>_<time>_<command>.log`: every line `-v`
 shows, at debug, with its time, in plain text, whatever the screen shows; each phase marked (start
 with the options as given, per target resolve, repair, list, shrink, link, summary; totals and exit
 status); warnings and errors with their cause. URLs never carry their query; no cookie, key,
@@ -649,8 +601,8 @@ stopped, and raises only `<module>.Error` types (`MissingError` for a missing pr
   clock; live checks are by hand on the test accounts, never in tests.
 - Commits `<action>:<summary>`, signed, one logical change each; pushed only when asked.
 - **Layout, after step 10** (AGENTS.md is updated in the same commit): `flnd/` keeps `cli`,
-  `engine`, `job` (downloads), `find` (finding), `site` (the public `Site`, and its live members,
-  which today's engine-side `site.py` holds), `downloader`, `finder`, `post`, `settings`, `repair`,
+  `engine`, `job` (downloads), `site` (the public `Site`, and its live members,
+  which today's engine-side `site.py` holds), `downloader`, `post`, `settings`, `repair`,
   `session`; `flnd/common/` the engine's helpers; `flnd/sites/` one module per site, and
   `flnd/sites/common/` what sites share.
 
@@ -665,7 +617,7 @@ filters beyond `--from` and `--time`; zip or exec postprocessors; metadata sidec
 
 ---
 
-## 16. Phase 7, with finding
+## 16. Phase 7
 
 | Step | | State |
 | --- | --- | --- |
@@ -679,11 +631,11 @@ filters beyond `--from` and `--time`; zip or exec postprocessors; metadata sidec
 | 7 | `shared` as a black box | |
 | 8 | speed | |
 | 9 | status lines, colour and motion | |
-| **10** | **sites split cleanly: `Source` becomes `Site` + `Downloader`, `flnd/sources/` becomes `flnd/sites/`; then the find API (`Finder`, `Param`, `Query`, `Found`, `flnd/find.py`) with Lucene queries parsed by luqum (`flnd/query.py`), `flnd find`; the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's finder first** | new |
-| **11** | **mimihentai (`mht`)**: its `Site`, `Downloader` (a manga's chapters) and `Finder` (its advanced search), per §17 | new |
+| **10** | **sites split cleanly: `Source` becomes `Site` + `Downloader`, `flnd/sources/` becomes `flnd/sites/`; then query targets (`<site>?<query>`, a query route of a `Downloader`; `Param`, `Query`) with Lucene queries parsed by luqum (`flnd/query.py`); the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's query targets first** | new |
+| **11** | **mimihentai (`mht`)**: its `Site` and `Downloader` (a manga's chapters, and a query route over its advanced search), per §17 | new |
 
-Finding comes last: it builds on the black-box `shared` (7), the status/table output (9) and the
-listing memory's common fields (4). Its first finders wait for the user's example pages.
+Query targets come last: they build on the black-box `shared` (7), the status lines (9) and the
+listing memory's common fields (4). Loi's first query targets wait for the user's example pages.
 
 ## 17. mimihentai (`mht`) [7.11]
 
@@ -707,7 +659,7 @@ Checked on 2026-11-13, against the public API and the site's own search code:
 - **Chapters aren't paged**: `/api/manga/{id}/chapters` returns every chapter whatever `limit`
   says (131 for a 131-chapter manga, with `limit=100`, `page=2` or `offset=100` alike).
 - **`chapters` does nothing**: the advanced search ignores it in every form tried (`1`, `5`,
-  `1-5`, `10-`), alone or with a genre. The finder filters by `chapter_count` itself, which each
+  `1-5`, `10-`), alone or with a genre. The query route filters by `chapter_count` itself, which each
   result carries, rather than send it.
 - **`character` takes names**, free text joined by commas, as the site's form sends them; no
   lookup to ids.
@@ -734,39 +686,27 @@ flnd download mht:70982 --from chapters --time 2026-01-01,
   `media/mht/<id>/cover/cover.webp`; keyed by chapter id and page number, so a renamed chapter is
   never downloaded again.
 
-### Find
+### Query targets
+
+mimihentai's routes (§4): a manga, a chapter, a query, and the author and genre pages if the site
+has them (checked by hand, not yet known).
+
+| Route | Kind | What it gives |
+| --- | --- | --- |
+| `mht:{id}`, `mimihentai.moe/manga/{id}` | a context | the manga, with categories `chapters` and `cover` |
+| `mimihentai.moe/manga/{id}/chapter/{chapter_id}` | posts | that chapter's post |
+| an author's page link, if the site has one | targets | manga, each as `mht:<id>` |
+| a genre's page link, if the site has one | targets | manga, each as `mht:<id>` |
+| `mht?{query}` | targets | manga that match the query, each as `mht:<id>` |
 
 ```
-flnd find mht 'example words'                                   # title words; the simple search
-flnd find mht 'genre:(vanilla AND romance) -genre:example'      # all of, and excluded
-flnd find mht 'author:"example creator" chapters:1'
-flnd find mht 'parody:example character:example' | flnd download
+flnd download 'mht?genre:(vanilla AND romance) -genre:example'
+flnd download 'mht?author:"example creator" chapters:1'
+flnd download 'mht?example words'
 ```
 
-Its `params` are `title`, `genre` (all of, negatable, by name through `/api/genres`), `author`,
-`character`, `parody` (by name through their search APIs) and `chapters`. Bare words alone use the
-simple search; anything else, the advanced one. Each result is a `Found` with `target=mht:<id>`,
-its title, authors, genres, chapter count, last update and views, and its cover saved under
-`media/mht/find/<query>/` with `results.json`.
+The query route's `params` stay the same, as in §9: `title`, `genre` (all of, negatable, by name through `/api/genres`), `author`, `character`, `parody` (by name through their search APIs) and `chapters`. Bare words alone use the simple search; anything else, the advanced one. Each result it yields is downloaded as a manga target, with its chapters and cover as above.
 
 ## Still to settle while building
 
-- **loi's first finder** waits for what loi's search page offers (words, author, category, tags,
-  sort), checked by hand on the test account with one example page; whoever builds step 10 asks
-  the user for it then.
-- **loi's finder lists several kinds** (user, 2026-11-13): every tag, the posts of one tag,
-  every author, the posts of one author, and so on, all folded into `find`:
-  `flnd find loi 'tags'`, `'tag:"example tag"'`, `'authors'`, `'author:example'`. A listing of
-  tags or authors gives each name with its next query (so it can be piped back into `find`); a
-  listing of posts gives download targets (`loi:5930`). Each kind is one entry in loi's
-  `params`. The API, read from loix.cc's own JavaScript on 2026-11-13 (signed, on
-  `api.moegoat.com/api/`): every author (`人物库`, which the API calls loiers and categories)
-  `user/library/loiers?page=N`; every tag in three groups (play 1, clothing 2, character 3)
-  `user/library/tags?group_id=G&page=N`; an author's posts
-  `user/library/loier/id?category_id=ID&sort=latest|popular|choicest&page=N`; a tag's posts
-  `user/library/tag/id?tag_id=ID&sort=…&page=N`; a keyword search
-  `user/loi/search/<keyword>/<latest|popular|choicest>?page=N`. Each answer is
-  `{data: [...], pagination: {total}}`, paged until `data` is empty; a tag or author item has
-  `id`, `name` (or `title`), `cover` and `count`, a post item what `lois` lists. The answers'
-  exact fields are unverified: a plain client gets the site's bot wall (403), so a live run by
-  hand confirms them.
+- **loi's query targets** (user, 2026-11-13): `tag:` and `author:` by name, looked up through the catalogue API, and words through the keyword search, each yielding `loi:<id>` posts. Listings of every tag or author are dropped, since they can't be downloaded. The API, read from loix.cc's own JavaScript on 2026-11-13 (signed, on `api.moegoat.com/api/`): every author (`人物库`, which the API calls loiers and categories) `user/library/loiers?page=N`; every tag in three groups (play 1, clothing 2, character 3) `user/library/tags?group_id=G&page=N`; an author's posts `user/library/loier/id?category_id=ID&sort=latest|popular|choicest&page=N`; a tag's posts `user/library/tag/id?tag_id=ID&sort=…&page=N`; a keyword search `user/loi/search/<keyword>/<latest|popular|choicest>?page=N`. Each answer is `{data: [...], pagination: {total}}`, paged until `data` is empty; a tag or author item has `id`, `name` (or `title`), `cover` and `count`, a post item what `lois` lists. The answers' exact fields are unverified: a plain client gets the site's bot wall (403), so a live run by hand confirms them.

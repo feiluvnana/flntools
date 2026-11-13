@@ -38,7 +38,7 @@ stores, and a log of each run to audit later.
 - The `Storage:` line names `.flnd/media/`. README's "Download Layout" becomes "Media Layout".
 
 Step 10 renames `sources.db` to `sites.db`, as "source" leaves flnd's vocabulary
-([flnd](flnd.md#4-sites-site-downloader-finder)); with no migration, a site's learned pace and
+([flnd](flnd.md#4-sites-site-and-downloader)); with no migration, a site's learned pace and
 state start fresh once, and loi's record of the posts it took today with it.
 
 ## No move

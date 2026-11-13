@@ -21,7 +21,7 @@ metadata and a log of each run.
 | `sync` decodes the whole library every run; encodes that can't win; one back-off for site and CDN | [speed](speed.md#3-less-work-around-the-downloads) |
 | `shared` makes flnd think: rebuilt fetches, side channels for headers, error text matched, no way to stop a download | [shared](shared.md): `shared` as a black box |
 | files flnd never gets (X's older tweets, a second CDN host) | [fixes](fixes.md#gaps-found-by-comparing-with-gallery-dl), from gallery-dl |
-| flnd only downloads; it should also find things on a site, and the API should say which is which | [flnd](flnd.md#9-finding-710): `Site` (access), `Downloader` (a target in), `Finder` (a query in), one engine below; `flnd find` |
+| flnd only takes targets; it should also download what a query matches on a site | [flnd](flnd.md#9-query-targets-710): a query is a target in `download` (`<site>?<query>`), a route of the site's `Downloader` |
 | the commands are flat; logins and kept targets have no home | [flnd](flnd.md#2-commands): `flnd auth login`/`logout`/`ls`, `flnd sync`/`sync ls`/`sync toggle` with `download --sync` |
 | the code is hard to follow: more prose than code, plan ids in comments, thin layers, callbacks, names that don't fit | [readable](readable.md): new writing rules, eleven refactors, a final docs diet, `shared` and `flnd` both |
 | flnd's code could be leaner | [lean](lean.md): proposals from two audits, about 425 lines |
@@ -48,11 +48,11 @@ Each step ends with `check` green and is committed on its own.
    downloads, and lower listing floors.
 9. **Built** (d1e8e15). [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
    line under them.
-10. [flnd › sites and finding](flnd.md#4-sites-site-downloader-finder): `Source` splits into `Site`
-    and `Downloader`, `flnd/sources/` becomes `flnd/sites/` ("site" everywhere); the find API
-    (`Finder`, `Query`, `Found`) on the same job, and `flnd find`; the `sync` and `auth` command
-    groups (`sync` opt-in: `download --sync`, `sync ls`, `sync toggle`); loi's finder first.
-11. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` site, its downloader and finder.
+10. [flnd › sites and query targets](flnd.md#4-sites-site-and-downloader): `Source` splits into `Site`
+    and `Downloader`, `flnd/sources/` becomes `flnd/sites/` ("site" everywhere); query targets
+    (`<site>?<query>`, a route of a downloader) on the same job; the `sync` and `auth` command
+    groups (`sync` opt-in: `download --sync`, `sync ls`, `sync toggle`); loi's query targets first.
+11. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` site, its downloader and query targets.
 12. [readable](readable.md): the docs diet and no plan or history in code, over `shared` and
     `flnd`, with the enforcement switched on. Its writing rules hold from now, and its refactors
     land in the steps that touch their files.
@@ -101,12 +101,9 @@ All decided by the user on 2026-11-13:
     as an opt-in group** (user, 2026-11-13, replacing the `target` group): `download --sync` marks
     targets, `flnd sync` updates only those, `sync ls` lists every known target with its sync
     status, `sync toggle` flips it; old rows count as synced. `sync ls` and `auth ls` take nothing.
-23. **Finding**: a `Finder` takes a free query (any words, any `key=value`), yields `Found` things
-    with the targets `download` takes, and saves its files by its own formats on the same job as
-    a `Downloader`; `flnd find <site> [words…] [key=value…]`, with a table, `results.json`, and
-    targets in a pipe.
-24. **"Site", not "source"**: `Site` (access) apart from `Downloader` and `Finder`; `flnd/sites/`,
-    `flnd.site`, `flnd.downloader`, `flnd.finder`, `SITES`, `sites.db`.
+23. **Query targets**: `download '<site>?<query>'` downloads what a query matches, as a route of the site's `Downloader`; no `find` command and no `Finder`. A downloader has routes of several kinds (user, 2026-11-13, replacing the earlier find design).
+24. **"Site", not "source"**: `Site` (access) apart from `Downloader`; `flnd/sites/`,
+    `flnd.site`, `flnd.downloader`, `flnd.query`, `SITES`, `sites.db`.
 25. **The code reads easily, and `shared` and `flnd` stay lean**: the writing rules of
     [readable](readable.md) replace Phase 6's comments.md and hold from now; its refactors R1–R11
     land in the steps that touch their files, R3's `browser = True` included; step 12 does the docs
