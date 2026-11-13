@@ -77,7 +77,7 @@ class SourceRun:
 
     # The source, as one instance for the whole run.
     source: Source
-    # What the run shares across sources: flnd's folder, the options, the history, the compressor.
+    # What the run shares across sources: flnd's folder, the history, targets.db, the compressor.
     settings: Settings
     # The login's cookies.
     jar: cookies.Jar
@@ -189,13 +189,14 @@ class TargetSite:
     Args:
         run: the source's resources for the run.
         target: the target it acts for.
+        time: the target's `--time`.
 
     Used on the job's thread only: the browser is Playwright's sync API, which is single-threaded.
     `close()` closes the browser.
     """
 
-    def __init__(self, run: SourceRun, target: Target):
-        self.target = target
+    def __init__(self, run: SourceRun, target: Target, *, time: Range = Range()):
+        self.target, self.time = target, time
         self._run = run
         self._source = run.source
         self._browser: browser.Browser | None = None
@@ -207,12 +208,6 @@ class TargetSite:
     def cookies(self) -> Mapping[str, str]:
         """The login's cookies as a read-only `{name: value}`."""
         return MappingProxyType({cookie["name"]: cookie["value"] for cookie in self._run.jar})
-
-    @property
-    def time(self) -> Range:
-        """`--time`, as a `Range`."""
-        options = self._run.settings.options
-        return Range(options.since, options.until)
 
     @overload
     def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,

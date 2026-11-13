@@ -22,8 +22,8 @@ from flnd.source import File, Post, Range, Source, Target, target
 
 class PlanTest(JobCase):
     def planned(self, options=Options()):
-        with site_module.source_run(Settings(home=self.home, options=options, history={}), Example()) as run:
-            return list(job.plan(run, Target("exm", "user", "example_user")))
+        with site_module.source_run(Settings(home=self.home, history={}), Example()) as run:
+            return list(job.plan(run, Target("exm", "user", "example_user"), options))
 
     def test_plan_yields_what_a_download_would_save_and_writes_nothing(self):
         placed = self.planned()
@@ -60,8 +60,8 @@ class PlanTest(JobCase):
                 finally:
                     finished.append(True)
 
-        with site_module.source_run(Settings(home=self.home, options=Options(), history={}), Feed()) as run:
-            listing = job.plan(run, Target("fed", "user", "example_user"))
+        with site_module.source_run(Settings(home=self.home, history={}), Feed()) as run:
+            listing = job.plan(run, Target("fed", "user", "example_user"), Options())
             next(listing)
             listing.close()
         self.assertEqual(finished, [True])

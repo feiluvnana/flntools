@@ -1,7 +1,7 @@
 """The engine end to end on httpx.MockTransport, with test sources. No network, no browser.
 
 Its runs, groups, HTTP, clients and logins through `Engine._run` (what `download` and `sync` call
-per settings group), then the API itself (redesign B1): `download`, `sync`, `login`, `logout` and
+once per run), then the API itself (redesign B1): `download`, `sync`, `login`, `logout` and
 `Report`, the options read from text, and `--from` refused for a post. The screen is a fake one,
 and `shared.media.open` a `FakeMedia` where only what was compressed matters.
 """
@@ -25,6 +25,7 @@ import httpx
 from media_samples import needs_pillow
 
 from flnd import engine as engine_module
+from flnd import job
 from flnd.common import auth, files, net
 from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.session import Options
@@ -186,13 +187,13 @@ class EngineCase(unittest.TestCase):
         return answer
 
     def run_engine(self, *sources, targets, options=Options(), **settings):
-        """Run the targets with one set of options, as `download` does per group, and return how many files were written."""
+        """Run the targets, each with `options`, and return how many files were written."""
         return self.report(*sources, targets=targets, options=options, **settings).files
 
     def report(self, *sources, targets, options=Options(), **settings):
-        """Run the targets with one set of options, as `download` does per group, and return the `Report`."""
+        """Run the targets, each with `options`, and return the `Report`."""
         engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
-        return Report(tuple(report for report, _ in engine._run(engine.resolve(targets), options)))
+        return Report(tuple(engine._run([(target, options) for target in engine.resolve(targets)])))
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
@@ -224,6 +225,28 @@ class GroupsTest(EngineCase):
         self.run_engine(first, second, targets=["aaa:1", "aaa:2", "bbb:1", "aaa:3", "bbb:2"])
         self.assertEqual((peaks["aaa"], peaks["bbb"]), (1, 1))
         self.assertGreater(peaks["all"], 1)
+
+    def test_targets_with_their_own_options_run_at_once_and_targets_db_opens_once(self):
+        seen, opened = [], []
+        real_download, real_open = job.download, kv.open
+
+        def download(run, target, row, options):
+            seen.append((target.value, options.shrink))
+            return real_download(run, target, row, options)
+
+        def opening(path, **kwargs):
+            opened.append(Path(path).name)
+            return real_open(path, **kwargs)
+
+        sources = {"aaa": make_source("aaa"), "bbb": make_source("bbb")}
+        engine = Engine(home=self.home, sources=sources)
+        chosen = [(Target("aaa", "user", "a"), Options(shrink=True)),
+                  (Target("aaa", "user", "b"), Options()), (Target("bbb", "user", "c"), Options())]
+        with mock.patch.object(job, "download", download), mock.patch.object(kv, "open", opening):
+            reports = engine._run(chosen)
+        self.assertEqual(sorted(seen), [("a", True), ("b", False), ("c", False)])
+        self.assertEqual(opened.count(files.TARGETS.name), 1)
+        self.assertEqual([report.target for report in reports], [target for target, _ in chosen])
 
     def test_rows_end_at_ok_or_error_and_the_run_goes_on(self):
         def run(site):
@@ -603,9 +626,9 @@ class ApiTest(EngineCase):
     def test_text_and_values_are_read_alike(self):
         runs = []
 
-        def run(engine, targets, options, stop=frozenset()):
-            runs.append(options)
-            return [(TargetReport(target, (), 0), ()) for target in targets]
+        def run(engine, chosen):
+            runs.extend(options for _, options in chosen)
+            return [TargetReport(target, (), 0) for target, _ in chosen]
 
         engine = self.engine(make_source("aaa"))
         with mock.patch.object(Engine, "_run", run):
@@ -668,8 +691,11 @@ class ApiTest(EngineCase):
         self.assertFalse((self.home / files.METADATA).exists())
         # Without --from the same link downloads whole.
         runs = []
-        with mock.patch.object(Engine, "_run", lambda engine, targets, options, stop=frozenset(): runs.append(options) or
-                               [(TargetReport(target, (), 0), ()) for target in targets]):
+        def run(engine, chosen):
+            runs.extend(options for _, options in chosen)
+            return [TargetReport(target, (), 0) for target, _ in chosen]
+
+        with mock.patch.object(Engine, "_run", run):
             self.assertTrue(engine.download(["https://www.instagram.com/p/C1abcDEFghi/"]).ok)
         self.assertEqual(runs, [Options()])
 

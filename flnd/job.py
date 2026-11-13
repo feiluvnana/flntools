@@ -51,9 +51,10 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
   second sets `net.stopping_now`: the downloads stop at their next chunk, keeping their
   resumable parts, and `KeyboardInterrupt` is raised.
 
-    for placed in job.plan(run, Target("loi", "post", "5930")): ...     # a dry run: nothing downloaded or recorded
-    done = job.download(run, Target("loi", "post", "5930"), row)
-    done.written, done.skipped, done.error, done.complete
+    target = Target("loi", "post", "5930")
+    for placed in job.plan(run, target, Options()): ...    # nothing downloaded or recorded
+    report = job.download(run, target, row, Options())
+    report.written, report.skipped, report.error
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ import re
 import string
 import threading
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import (TYPE_CHECKING, Any, Callable, Collection, Coroutine, Generator, Iterator,
@@ -78,6 +79,7 @@ from flnd import settings as saved_settings
 from flnd.common import files as disk
 from flnd.common import net
 from flnd.common.compress import KINDS, ONE_AT_A_TIME
+from flnd.session import Options
 from flnd.site import SourceRun, TargetSite
 from flnd.source import (Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site,
                          Source, Target, day, fill, listing)
@@ -86,10 +88,8 @@ from shared import atomic, fmt, log
 if TYPE_CHECKING:
     from shared import worker
 
-    from flnd.session import Options
-
-__all__ = ["STOPPED", "Done", "Downloads", "Ledger", "Placed", "download", "place", "plan", "posts",
-           "wanted"]
+__all__ = ["STOPPED", "Downloads", "Ledger", "Placed", "TargetReport", "download", "place", "plan",
+           "posts", "wanted"]
 
 # The history fields of a file's post: its id, its day (`YYYY-MM-DD`), and whether that day is
 # the nearest dated neighbour's estimate.
@@ -156,17 +156,26 @@ class Placed:
 
 
 @dataclass(frozen=True)
-class Done:
-    """What one target's job did, for the engine's `TargetReport` and `targets.db`'s `complete` record."""
+class TargetReport:
+    """What one command did for one target: `report.targets[0].written`.
 
-    # Every file written, where it ended up after shrinking, in the order they finished.
+        TargetReport(Target("ins", "user", "example_user"), written=(Path("…/a.jpg"),), skipped=3)
+    """
+
+    # The target, as `resolve` gave it.
+    target: Target
+    # Each file written, at its path after compressing.
     written: tuple[Path, ...]
-    # Files and lazy posts skipped as already saved or queued.
+    # Files already saved, or filtered out, that weren't downloaded again.
     skipped: int
-    # Why the target failed (its route or a category raised), or None.
-    error: str | None
-    # The categories whose listing ended by itself, not by an early stop, an error or Ctrl-C.
-    complete: tuple[str, ...]
+    # `sync` only: files that were missing, empty or broken and were downloaded again.
+    repaired: int = 0
+    # `sync` only: files the history names that the site no longer lists.
+    missing: int = 0
+    # The saved settings this run used, as shown at its start: "--shrink (saved)"; "" for none.
+    settings: str = ""
+    # Why the target failed, as logged; None when it didn't.
+    error: str | None = None
 
 
 def wanted(source: type[Source], route: Route, options: Options) -> tuple[Category, ...]:
@@ -221,15 +230,17 @@ def _context(source: Source, route: Route, site: Site, target: Target, run_async
     return context
 
 
-def plan(run: SourceRun, target: Target, *, row: Any = None) -> Generator[Placed, None, None]:
+def plan(run: SourceRun, target: Target, options: Options, *,
+         row: Any = None) -> Generator[Placed, None, None]:
     """What a download of the target would save, file by file, without downloading, writing or recording anything.
 
-        for placed in plan(run, Target("ins", "user", "example_user")):
+        for placed in plan(run, Target("ins", "user", "example_user"), Options()):
             print(placed.post.category, placed.post.id, placed.path)
 
     Args:
-        run: the source's resources for the run; its settings' options say `--from` and `--time`.
+        run: the source's resources for the run.
         target: the target, as `Engine.resolve` gives it.
+        options: its `--from` and `--time`.
         row: its progress row for a long pacing wait to caption, or None.
 
     Yields:
@@ -243,9 +254,9 @@ def plan(run: SourceRun, target: Target, *, row: Any = None) -> Generator[Placed
     categories' `complete` records and the history are neither read nor written, and the site is
     closed however it ends, which also closes the category being read.
     """
-    site = TargetSite(run, target)
+    site = TargetSite(run, target, time=Range(options.since, options.until))
     categories = {category.name: category for route in run.source.routes for category in route.categories}
-    stream = posts(run.source, site, target, run.settings.options, run_async=run.run_async)
+    stream = posts(run.source, site, target, options, run_async=run.run_async)
     try:
         for post in stream:
             files = list(post.files()) if callable(post.files) else list(post.files)
@@ -642,9 +653,9 @@ class Downloads:
     pool of their own, one at a time across the run.
     """
 
-    def __init__(self, run: SourceRun, target: Target, row: Any):
+    def __init__(self, run: SourceRun, target: Target, row: Any, *, shrink: bool):
         """Make one target's downloads, with no pool started; the pool starts on the first file."""
-        self.run, self.target, self.row = run, target, row
+        self.run, self.target, self.row, self.shrink = run, target, row, shrink
         self.source, self.settings = run.source, run.settings
         self._pool: worker.Pool | None = None
         self._encodes: worker.Pool | None = None
@@ -866,7 +877,7 @@ class Downloads:
             # The first file's row holds the post's file count, so a later run skips the lazy post
             # only when every one of its files is saved, not just this one.
             row[FILES] = count
-        shrink = bool(self.settings.options.shrink and kind in KINDS)
+        shrink = bool(self.shrink and kind in KINDS)
         # The post's day dates the file; else the server's Last-Modified does.
         dated = day(placed.post.date) or _served_day(received.get("last-modified"))
         finished = _Finished(row, kind if shrink else None, dated)
@@ -966,48 +977,54 @@ class Downloads:
 
 
 
-def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) -> Done:
+def download(run: SourceRun, target: Target, row: Any, options: Options) -> TargetReport:
     """Download one target of a ported source, ending its row at ok or error, and say what it did.
 
-        done = download(run, Target("loi", "post", "5930"), row)
-        len(done.written)                   # how many files were written
+        report = download(run, Target("loi", "post", "5930"), row, Options())
+        len(report.written)                   # how many files were written
 
     Args:
         run: the source's resources for the run.
         target: the target, as `Engine.resolve` gives it.
         row: its progress row, which ends at ok, or at error when the route or a category raised.
-        sync: stop each `newest_first` category after 5 already-saved posts in a row, when its
-            last listing reached its end (A9 rule 3). Without that record, or without `sync`, it
-            lists to its end and skips what is saved.
+        options: what to take from the target and what to do with its files.
 
     Returns:
-        The files written, how many were skipped, the error that failed the target if one did,
-        and the categories that listed to their end (even when a later one failed).
+        The files written, how many were skipped, and the error that failed the target if one
+        did. Each category that listed to its end is recorded in `targets.db`, even when a later
+        one failed.
 
     Raises:
         KeyboardInterrupt: a second Ctrl-C, after the running downloads stopped, keeping their
             resumable parts; other `BaseException`s, after the queued downloads are dropped and
             the running ones finish. An `Exception` is logged and fails the row instead.
 
-    After a first Ctrl-C it returns: the row ends at error with "stopped", and `Done.error` is
-    `STOPPED`; see the module for what finishes.
+    After a first Ctrl-C it returns: the row ends at error with "stopped", and the report's error
+    is `STOPPED`; a target not started by then starts nothing.
     """
+    if net.stopping.is_set():
+        row.caption = "stopped"
+        row.fail()
+        return TargetReport(target, (), 0, error=STOPPED)
     # One site and one job for the target: the site holds its browser and pacing, the job its downloads.
-    site = TargetSite(run, target)
-    ledger, downloads = Ledger(run, site, target), Downloads(run, target, row)
+    site = TargetSite(run, target, time=Range(options.since, options.until))
+    ledger = Ledger(run, site, target)
+    downloads = Downloads(run, target, row, shrink=options.shrink)
     work = _Work(ledger, downloads)
     # A target's row shows its running files, as many as the source downloads at once.
     row.slots = run.source.concurrency
     complete: list[str] = []
-    listed = _listed(run.settings.home, target) if sync else {}
+    saved = run.settings.targets
+    listed = saved_settings.listed(saved, target) if options.stop_at_saved else {}
     resumes: dict[str, Resume] = {}
     error: BaseException | None = None
     try:
         try:
-            if sync:
+            if options.stop_at_saved:
                 ledger.redate()
             # The first Ctrl-C stops listing between posts (D8); `queue` sees it too, between files.
-            _read(work, run, site, target, listed=listed, resumes=resumes, complete=complete)
+            _read(work, run, site, target, options, listed=listed, resumes=resumes,
+                  complete=complete)
         except KeyboardInterrupt:
             # The first Ctrl-C ends a rate-limit or pacing wait at once, raising this; that is
             # the graceful stop, not a failure. A second one is.
@@ -1025,22 +1042,32 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     # from; one that ended by itself has nothing to resume.
     cursors = {name: None if name in complete else resume.cursor
                for name, resume in resumes.items()}
-    saved_settings.keep_cursors(run.settings.home, target, cursors)
+    saved_settings.keep_cursors(saved, target, cursors)
+    saved_settings.complete(saved, target, complete)
+    report = TargetReport(target, written, ledger.skipped)
+    return _ended(row, report, error, complete=", ".join(complete) or "none")
+
+
+def _ended(row: Any, report: TargetReport, error: BaseException | None, *,
+           complete: str) -> TargetReport:
+    """End the target's row at ok, error or stopped, and give its report with that error."""
     if error is not None:
         if not isinstance(error, Exception):
             raise error
-        log.error("{target}: {error}", target=str(target), error=error)
-        log.debug("{target}: {chain}", target=str(target), chain=causes(error))
+        target = str(report.target)
+        log.error("{target}: {error}", target=target, error=error)
+        log.debug("{target}: {chain}", target=target, chain=causes(error))
         row.fail()
-        return Done(written, ledger.skipped, str(error), tuple(complete))
+        return replace(report, error=str(error))
     if net.stopping.is_set():
         row.caption = "stopped"
         row.fail()
-        return Done(written, ledger.skipped, STOPPED, tuple(complete))
+        return replace(report, error=STOPPED)
     row.finish()
-    log.debug("{target}: {written} written, {skipped} skipped; complete: {complete}", target=str(target),
-              written=len(written), skipped=ledger.skipped, complete=", ".join(complete) or "none")
-    return Done(written, ledger.skipped, None, tuple(complete))
+    log.debug("{target}: {written} written, {skipped} skipped; complete: {complete}",
+              target=str(report.target), written=len(report.written), skipped=report.skipped,
+              complete=complete)
+    return report
 
 
 def causes(error: BaseException) -> str:
@@ -1292,15 +1319,15 @@ def _queue_listed(work: _Work, kept: _Kept, *, stop_at_saved: bool) -> Ended:
     return Ended.RAN_OUT if kept.ran_out else Ended.CUT
 
 
-def _read(work: _Work, run: SourceRun, site: Site, target: Target, *, listed: Collection[str],
-          resumes: dict[str, Resume], complete: list[str]) -> None:
+def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Options, *,
+          listed: Collection[str], resumes: dict[str, Resume], complete: list[str]) -> None:
     """List the target's route and wanted categories into the job, each from its saved cursor.
 
     A `newest_first` category in `listed` stops after 5 saved posts in a row. One with a cursor an
     interrupted run saved lists from it to the end, then from the newest down to 5 saved posts in
     a row. Each category that ran out goes into `complete`; each category's `Resume` into `resumes`.
     """
-    options, run_async = run.settings.options, run.run_async
+    run_async = run.run_async
     time = Range(options.since, options.until)
     route = next(route for route in run.source.routes if route.kind == target.kind)
     categories = wanted(type(run.source), route, options)
@@ -1312,7 +1339,7 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, *, listed: Co
         own = _Kept(context, "", newest_first=False, time=time, run_async=run_async)
         _queue_all(work, own, stop_at_saved=False)
         return
-    cursors = saved_settings.cursors(run.settings.home, target)
+    cursors = saved_settings.cursors(run.settings.targets, target)
     for category in categories:
         # A phase mark for the run log, so a reader finds which listing a line belongs to.
         log.debug("{target}: list {category}", target=str(target), category=category.name)
@@ -1341,13 +1368,6 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, *, listed: Co
             with listing(Resume()):
                 if _queue_all(work, kept, stop_at_saved=True) is Ended.STOPPED:
                     return
-
-
-def _listed(home: Path, target: Target) -> dict[str, str]:
-    """The categories of a target whose last listing reached its end, each with the day: `targets.db`'s `complete` record."""
-    row = saved_settings.rows(home).get(saved_settings.key(target), {})
-    found = row.get(saved_settings.COMPLETE) if isinstance(row, dict) else None
-    return dict(found) if isinstance(found, dict) else {}
 
 
 def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:

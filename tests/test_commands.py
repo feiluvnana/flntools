@@ -6,6 +6,7 @@ import os
 import stat
 import tempfile
 import unittest
+from dataclasses import replace
 from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
@@ -85,16 +86,18 @@ class FlndCase(unittest.TestCase):
 
 
 class RunsCase(FlndCase):
-    """`Engine._run`, each settings group's run, is replaced: each call is recorded in `runs`, and writes 3 files."""
+    """`Engine._run` is replaced: each call goes in `runs`, with its first target's options; 3 files."""
 
     def setUp(self):
         super().setUp()
         self.runs = []
 
-        def run(engine, targets, options, stop=frozenset()):
-            self.runs.append((engine, targets, options))
+        def run(engine, chosen):
+            targets = [target for target, _ in chosen]
+            self.runs.append((engine, targets, replace(chosen[0][1], stop_at_saved=False)))
             written = tuple(Path(f"{name}.jpg") for name in "abc")
-            return [(TargetReport(target, written if not number else (), 0), ()) for number, target in enumerate(targets)]
+            return [TargetReport(target, written if not number else (), 0)
+                    for number, target in enumerate(targets)]
 
         patcher = mock.patch.object(Engine, "_run", run)
         patcher.start()

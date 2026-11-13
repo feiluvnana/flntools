@@ -104,7 +104,7 @@ class SiteCase(unittest.TestCase):
         if state:
             with kv.open(self.home / files.SOURCE_STATE, table=source.code) as store:
                 store.update(state)
-        opened = source_run(Settings(home=self.home, options=Options(), history={}), source())
+        opened = source_run(Settings(home=self.home, history={}), source())
         run = opened.__enter__()
         self.addCleanup(opened.__exit__, None, None, None)
         return run, TargetSite(run, Target(source.code, "user", "example_user"))
@@ -147,7 +147,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(len(members), 13)
         fake = FakeSite(Target("exm", "user", "example_user"))
         self.assertEqual(public(fake), members)
-        self.assertEqual(public(TargetSite) | {"target"}, members | {"close"})
+        self.assertEqual(public(TargetSite) | {"target", "time"}, members | {"close"})
 
 
 class GotoTest(SiteCase):

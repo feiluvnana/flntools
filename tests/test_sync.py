@@ -9,6 +9,7 @@ command line; the default, None, keeps the saved setting.
 
 import datetime
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -37,10 +38,10 @@ class Site:
 
 
 def recorded(record):
-    """An `Engine._run` that only calls `record(targets, options)`, and reports each target done with nothing written."""
-    def run(engine, targets, options, stop=frozenset()):
-        record(targets, options)
-        return [(TargetReport(target, (), 0), ()) for target in targets]
+    """An `Engine._run` that only calls `record(chosen)`, and reports each target done, empty."""
+    def run(engine, chosen):
+        record(chosen)
+        return [TargetReport(target, (), 0) for target, _ in chosen]
 
     return run
 
@@ -108,15 +109,15 @@ class SettingsTest(SyncCase):
         self.download()
         self.assertFalse(any("(saved)" in line for line in self.lines()))
 
-    def test_the_saved_settings_reach_the_run_and_targets_with_others_run_apart(self):
+    def test_the_saved_settings_reach_the_run_and_targets_with_others_run_together(self):
         runs = []
-        with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append((targets, options)))):
+        with mock.patch.object(Engine, "_run", recorded(runs.append)):
             self.download(texts=("aaa:a",), shrink=True)
             self.download(Options(categories=("posts",)), texts=("aaa:a", "aaa:b"))
-        self.assertEqual(runs[0], ([Target("aaa", "user", "a")], Options(shrink=True)))
-        self.assertEqual(sorted(runs[1:], key=lambda run: run[0][0].value),
-                         [([Target("aaa", "user", "a")], Options(categories=("posts",), shrink=True)),
-                          ([Target("aaa", "user", "b")], Options(categories=("posts",)))])
+        self.assertEqual(runs[0], [(Target("aaa", "user", "a"), Options(shrink=True))])
+        posts = Options(categories=("posts",))
+        self.assertEqual(runs[1:], [[(Target("aaa", "user", "a"), replace(posts, shrink=True)),
+                                     (Target("aaa", "user", "b"), posts)]])
 
     def test_every_recorded_target_and_unrecorded_folders(self):
         self.download(shrink=True)
@@ -362,9 +363,10 @@ class FetchTest(SyncCase):
     def test_sync_takes_every_category(self):
         runs = []
         self.download(Options(categories=("posts",)), shrink=True)
-        with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append(options))):
+        record = recorded(lambda chosen: runs.extend(options for _, options in chosen))
+        with mock.patch.object(Engine, "_run", record):
             self.sync()
-        self.assertEqual(runs, [Options(shrink=True)])
+        self.assertEqual(runs, [Options(shrink=True, stop_at_saved=True)])
 
 
 class HistoryTest(SyncCase):

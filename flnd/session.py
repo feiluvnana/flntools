@@ -1,8 +1,9 @@
-"""The options of one run, and the settings every source shares: what `--from`, `--time` and compression ask.
+"""Each target's options, and the settings every source of a run shares.
 
-`Options` is what a run downloads and how it compresses it; `Settings` is what the run shares across
-its sources (flnd's folder, the options, the history and the compressor). The engine reads both, the
-job and the sources' sites through them, and `Engine.download` checks `--from` with the helpers here.
+`Options` is what one target's run downloads and how it compresses it; `Settings` is what the run
+shares across its sources (flnd's folder, the history, `targets.db` and the compressor). The engine
+reads both, the job and the sources' sites through them, and `Engine.download` checks `--from` with
+the helpers here.
 """
 
 from __future__ import annotations
@@ -21,11 +22,7 @@ ALL = "all"
 
 @dataclass(frozen=True)
 class Options:
-    """What one run downloads and how it compresses it: `Options(categories=("reels",), shrink=True)`.
-
-    The same for every target of one `Engine._run`; `Engine.download` and `Engine.sync` run targets
-    whose saved settings differ separately. It is hashable, so it can key those groups.
-    """
+    """What one target's run downloads and how: `Options(categories=("reels",), shrink=True)`."""
 
     # `--from`: None (or "all") means every category of each source.
     categories: tuple[str, ...] | None = None
@@ -34,6 +31,9 @@ class Options:
     until: datetime.date | None = None
     # `--shrink`: compress each new photo, video and audio file at media's balanced level, in its own format.
     shrink: bool = False
+    # `sync` of a target with nothing lost: a `newest_first` category whose last listing reached
+    # its end stops after 5 saved posts in a row.
+    stop_at_saved: bool = False
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
@@ -85,14 +85,14 @@ def single_targets(targets: Sequence[Target], sources: Mapping[str, type[Source]
 
 @dataclass
 class Settings:
-    """What one run shares across every source: flnd's folder, the options, the history and the compressing."""
+    """What all sources of a run share: flnd's folder, the history, `targets.db`, compressing."""
 
     # flnd's folder, where the downloads, history, logins and settings are kept.
     home: Path
-    # What the run downloads and how it compresses it, shared by every source.
-    options: Options
     # The history of downloads, one row per file key, shared by every source of the run.
     history: MutableMapping[str, Any]
+    # `targets.db`'s rows, opened once for the run: each target's complete categories and cursors.
+    targets: MutableMapping[str, Any] = field(default_factory=dict)
     # Whether a person can be asked a question, which a source's own login needs.
     interactive: bool = False
     # One for the whole run, so videos encode one at a time across sources and each error warns once.

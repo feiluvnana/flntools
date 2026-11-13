@@ -58,13 +58,13 @@ def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None
     if needs_browser(source, target, options):
         _offer_browser()
     # Never the real history: a file already saved still shows, and nothing is recorded.
-    settings = Settings(home=home, options=options, history={})
+    settings = Settings(home=home, history={})
     with source_run(settings, source()) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not run.source.logged_in(account) and run.source.requires_login:
             raise ValueError(f"{source.code}: not logged in; run flnd login")
         with _connected(run, account):
-            yield from job.plan(run, target)
+            yield from job.plan(run, target, options)
 
 
 def tree(placed: Iterable[job.Placed]) -> Iterator[str]:

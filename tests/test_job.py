@@ -763,9 +763,9 @@ class CtrlCTest(JobCase):
         self.rows = []
         real = job.download
 
-        def spy(run, target, row, **options):
+        def spy(run, target, row, options):
             self.rows.append(row)
-            return real(run, target, row, **options)
+            return real(run, target, row, options)
 
         patcher = mock.patch.object(job, "download", spy)
         patcher.start()
