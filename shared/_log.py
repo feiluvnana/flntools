@@ -36,20 +36,22 @@ import threading
 import time
 import weakref
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Any, Callable, Iterator, Literal
+from typing import IO, Any, Callable, Iterator, Literal, TypeVar
 
 import shared
 from shared import _clock as clock
 from shared import _theme
 from shared._screen import SYNC_BEGIN, SYNC_END, hide_cursor, show_cursor
 from shared._style import strip
-from shared._theme import Bar, LogRecord, Screen, Theme, _bar_cells, _count, display_width, fit
+from shared._theme import (Bar, LogRecord, Screen, Status, Theme, _bar_cells, _count, display_width,
+                           fit)
 
 # `shared.log` is the `log` object: its methods, `Error` among them, are the module's names, and the
-# classes are what `log.progress` and `log.group` return.
-__all__ = ["Error", "Group", "Progress", "log"]
+# classes are what `log.progress`, `log.group` and `Group.add_status` return.
+__all__ = ["Error", "Group", "Progress", "StatusRow", "log"]
 
 Level = Literal["debug", "info", "ok", "warn", "error", "quiet"]
 LEVELS: tuple[Level, ...] = ("debug", "info", "ok", "warn", "error", "quiet")
@@ -65,6 +67,8 @@ SHOW_AFTER = 0.5
 QUERY = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s?#'\"<>]*)[?#][^\s'\"<>]*", re.IGNORECASE)
 # The row `log.under` names on this thread, which `log.progress` nests its row under.
 _nest = threading.local()
+# Either kind of row a group holds.
+_Row = TypeVar("_Row", "Progress", "StatusRow")
 
 
 class Error(shared.Error):
@@ -186,9 +190,29 @@ class Log:
         """
         self._line("error", message, args, fields)
 
+    def event(self, kind: str, message: str, /, *args: Any, **fields: Any) -> None:
+        """Write a debug line marked as one kind of event, in that kind's glyph and color.
+
+            log.event("skip", "{name} → {held}", name="posts/a.jpg", held="posts/b.jpg")
+
+        Args:
+            kind: one of `theme.EVENTS`: "skip", "link" or "shrink".
+            message: a `str.format` template.
+            *args: positional values for the template's numbered fields.
+            **fields: values for its named fields, checked as `debug` checks them.
+
+        Raises:
+            ValueError: `kind` is not one of `theme.EVENTS`.
+            TypeError: a keyword has no field in `message`.
+        """
+        if kind not in _theme.EVENTS:
+            kinds = ", ".join(_theme.EVENTS)
+            raise ValueError(f"log.event kind must be one of {kinds}, not {kind!r}")
+        self._line("debug", message, args, fields, kind=kind)
+
     @contextmanager
     def progress(self, label: str, *, total: float | None = None,
-                 show: Callable[[Any], str] = str) -> Iterator[Progress]:
+                 show: Callable[[Any], str] = str, wait: bool = False) -> Iterator[Progress]:
         """One row for the length of the block, ending at ok on a clean exit and at error on an exception.
 
             with log.progress("clip.mp4", total=size, show=fmt.size) as bar:
@@ -198,18 +222,20 @@ class Log:
             label: the row's text.
             total: how much there is to do, in the caller's unit; None draws a spinner and the count.
             show: how a count and the total are written, such as `fmt.size`.
+            wait: True for a wait (a rate limit, a block): drawn steady in the wait color, and
+                shown even under a status row whose other nested rows only `debug` shows.
 
         Returns:
             The row, a `Progress`. An exception, `KeyboardInterrupt` included, is re-raised after
             the row ends at error. The block may be used from one thread while others advance the row.
         """
         group = Group(_theme.theme, title="", parent=getattr(_nest, "row", None))
-        bar = group.add(label, total=total, show=show)
+        bar = group.add(label, total=total, show=show, wait=wait)
         with _ending(group):
             yield bar
 
     @contextmanager
-    def under(self, row: Progress | None) -> Iterator[None]:
+    def under(self, row: Progress | StatusRow | None) -> Iterator[None]:
         """Nest the rows `log.progress` opens on this thread under `row`, for the length of the block.
 
             with log.under(target_row):
@@ -218,7 +244,9 @@ class Log:
         Args:
             row: the row to nest under, one of the live area's; None nests nothing. The row's
                 `slots` says how many of its nested rows are drawn at once. Only this thread's
-                `log.progress` calls are nested; other threads' are not.
+                `log.progress` calls are nested; other threads' are not. Rows nested under a
+                `StatusRow` are its detail: drawn, and their final lines written, only at
+                `log.level` "debug" (a wait always), though a `record` file takes them all.
         """
         previous = getattr(_nest, "row", None)
         _nest.row = row
@@ -283,7 +311,7 @@ class Log:
         for sink in list(self._records):
             sink.write(text)
 
-    def _line(self, level: str, message: str, args: tuple, fields: dict) -> None:
+    def _line(self, level: str, message: str, args: tuple, fields: dict, *, kind: str = "") -> None:
         """Format a line, drop it below `level`, and write it above the live area."""
         # str.format ignores unused keywords, so a misspelled field would vanish without a word.
         unused = set(fields) - _field_names(message) if fields else ()
@@ -298,7 +326,7 @@ class Log:
         if args or fields:
             message = message.format(*args, **fields)
         theme = _theme.theme
-        line = render(theme, LogRecord(level, message))
+        line = render(theme, LogRecord(level, message, kind=kind))
         # A record file takes every level, so a run can be audited without having been run at debug.
         self._recorded([line])
         if shown:
@@ -336,7 +364,8 @@ class Progress:
     drawing thread shows the change in its next frame. Two threads advancing one row lose no count.
     """
 
-    def __init__(self, label: str, total: float | None, show: Callable[[Any], str], _group: Group):
+    def __init__(self, label: str, total: float | None, show: Callable[[Any], str], _group: Group,
+                 *, wait: bool = False):
         """Make a row that is not yet drawn; `Group.add` and `log.progress` are the ways to open one.
 
         Args:
@@ -344,8 +373,10 @@ class Progress:
             total: how much there is to do; None draws a spinner.
             show: how a count and the total are written.
             _group: the group whose live area redraws when this row changes.
+            wait: whether the row is a wait, drawn steady in the wait color.
         """
         self.label = label
+        self.wait = wait
         # How many rows nested under this one (`log.under`) are drawn at once; None draws them all.
         self.slots: int | None = None
         self._show = show
@@ -438,14 +469,15 @@ class Progress:
             self._caption = ""
         self._group._live.mark()
 
-    def _record(self) -> LogRecord:
+    def _final(self) -> tuple[str, str]:
+        """(level, drawn line) of the row's final line."""
         level = "info" if self._outcome is None else self._outcome
-        return LogRecord(level, self.label, self._view(None))
+        return level, render(self._group._theme, LogRecord(level, self.label, self._view(None)))
 
     def _view(self, now: float | None) -> Bar:
         """What the theme draws; `now` fixes the spinner's frame, None leaves it to the theme's clock."""
         return Bar(self.label, self._count, self._total, self._caption, self.finished, self._show,
-                   None if now is None else int(now * 10))
+                   None if now is None else int(now * 10), self.wait)
 
     def _area_line(self, now: float, width: int) -> str | None:
         """The row as drawn in the live area, cut to `width`; None while it is too young or ended unseen."""
@@ -457,7 +489,10 @@ class Progress:
             self._seen = True
         theme = self._group._theme
         bar = self._view(now)
-        drawn = (self._outcome, bar.label, bar.caption, _bar_cells(theme, bar), _count(bar), width, theme.color)
+        # A moving row (a gradient, a shaded spinner) changes with each tick as well.
+        moving = bar.tick if self._moves(theme) else None
+        drawn = (self._outcome, bar.label, bar.caption, _bar_cells(theme, bar), _count(bar), width,
+                 theme.color, moving)
         # Re-rendering is skipped when nothing the line shows has changed since the last frame.
         if drawn != self._drawn:
             self._drawn = drawn
@@ -469,7 +504,90 @@ class Progress:
         """Whether the row changes with the clock alone: a spinner, or a row not yet old enough to draw."""
         if self.finished:
             return False
-        return self._total is None or (not self._seen and now - self._created < SHOW_AFTER)
+        young = not self._seen and now - self._created < SHOW_AFTER
+        return self._total is None or young or (self._seen and self._moves(self._group._theme))
+
+    def _moves(self, theme: Theme) -> bool:
+        """Whether the row moves on its own while it runs: color with motion, and not a wait."""
+        return theme.motion and not self.finished and not self.wait
+
+
+class StatusRow:
+    """One status line in the live area, from `Group.add_status`, drawn from `status` each frame.
+
+        line = rows.add_status(theme.Status("fbk:example.page", "posts"))
+        line.status = replace(line.status, counts=counts)  # drawn in the next frame
+        line.finish()                                    # its last line stays in the scrollback
+
+    The live area fills in its outcome, the time since it was added, the spinner's frame and its
+    room. Setting `status` prints nothing; when the row ends, its final line is written above the
+    area at once (and to every `record` file) and the row leaves the area, its group still open.
+    Every member may be used from several threads.
+    """
+
+    def __init__(self, status: Status, _group: Group):
+        """Make a row that is not yet drawn; `Group.add_status` is the way to open one."""
+        # How many rows nested under this one (`log.under`) are drawn at once; None draws them all.
+        self.slots: int | None = None
+        self._status = status
+        self._group = _group
+        self._outcome: str | None = None
+        self._lock = threading.Lock()
+        self._created = clock.now()
+        self._ended = self._created
+
+    @property
+    def status(self) -> Status:
+        """What the line shows, as a `theme.Status`; setting it marks the live area to redraw."""
+        return self._status
+
+    @status.setter
+    def status(self, value: Status) -> None:
+        """Set what the line shows; the live area draws it in its next frame."""
+        self._status = value
+        self._group._live.mark()
+
+    @property
+    def outcome(self) -> str | None:
+        """How the row ended, "ok" or "error"; None while it runs."""
+        return self._outcome
+
+    @property
+    def finished(self) -> bool:
+        """Whether the row has ended, at ok or at error."""
+        return self._outcome is not None
+
+    def finish(self) -> None:
+        """End this row at ok; a row already ended is left as it is."""
+        self._end("ok")
+
+    def fail(self) -> None:
+        """End this row at error; a row already ended is left as it is."""
+        self._end("error")
+
+    def _end(self, outcome: str) -> None:
+        with self._lock:
+            if self._outcome is not None:
+                return
+            self._outcome = outcome
+            self._ended = clock.now()
+        self._group._retire(self)
+
+    def _final(self) -> tuple[str, str]:
+        """(level, drawn line) of the row's final line: its first line, with its whole time."""
+        status = replace(self._status, outcome=self._outcome, elapsed=self._ended - self._created,
+                         width=0)
+        return self._outcome or "info", render(self._group._theme, status)
+
+    def _area_line(self, now: float, width: int) -> str:
+        """The row as drawn in the live area, each of its lines cut to `width`."""
+        status = replace(self._status, elapsed=now - self._created, tick=int(now * 10), width=width)
+        drawn = render(self._group._theme, status)
+        return "\n".join(fit(line, width) for line in drawn.split("\n"))
+
+    def _waiting(self, now: float) -> bool:
+        """Whether the row changes with the clock alone: its spinner and time do while it runs."""
+        return not self.finished
 
 
 class Group:
@@ -481,42 +599,76 @@ class Group:
     `add` may be called from several threads at once; rows are drawn in the order they were added.
     """
 
-    def __init__(self, theme: Theme, title: str, parent: Progress | None = None):
+    def __init__(self, theme: Theme, title: str, parent: Progress | StatusRow | None = None):
         self._theme = theme
         self._title = title
         # The row this group's rows are drawn under, indented, while that row's group is open.
         self.parent = parent
-        self._bars: list[Progress] = []
+        self._bars: list[Progress | StatusRow] = []
         self._outcome: str | None = None
         self._live = live_area(theme.screen)
         self._title_drawn: tuple = ()
         self._title_line = ""
 
-    def add(self, label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Progress:
+    def add(self, label: str, *, total: float | None = None, show: Callable[[Any], str] = str,
+            wait: bool = False) -> Progress:
         """Open a row at the bottom of the group, and return it.
 
         Args:
             label: the row's text.
             total: how much there is to do, in the caller's unit; None draws a spinner and the count.
             show: how a count and the total are written, such as `fmt.size`.
+            wait: whether the row is a wait, drawn steady in the wait color.
         """
-        bar = Progress(label, total, show, self)
+        return self._opened(Progress(label, total, show, self, wait=wait))
+
+    def add_status(self, status: Status) -> StatusRow:
+        """Open a status line at the bottom of the group, and return it.
+
+            line = rows.add_status(theme.Status("fbk:example.page", "posts", counts=counts))
+
+        Args:
+            status: what the line shows first, as a `theme.Status`.
+        """
+        return self._opened(StatusRow(status, self))
+
+    def _opened(self, row: _Row) -> _Row:
+        """Add a row to the group's rows, and return it."""
         # The drawing thread reads `_bars` under the screen lock, so the append takes it too.
         with self._live.screen.lock:
-            self._bars.append(bar)
+            self._bars.append(row)
         self._live.mark()
-        return bar
+        return row
+
+    @property
+    def _hidden(self) -> bool:
+        """Whether the rows are a status row's detail, which only `debug` shows (a wait always)."""
+        if not isinstance(self.parent, StatusRow) or log.level == "debug":
+            return False
+        return not any(isinstance(bar, Progress) and bar.wait for bar in self._bars)
+
+    def _retire(self, row: StatusRow) -> None:
+        """Write an ended status row's final line above the area, and take it out of the group."""
+        level, line = row._final()
+        with self._live.screen.lock:
+            if row in self._bars:
+                self._bars.remove(row)
+            log._recorded([line])
+            if log.level != "quiet" or level == "error":
+                self._live.write_lines([line])
+            self._live.mark()
 
     def _rows(self) -> list[tuple[str, str]]:
         """(level, drawn line) for the title row and each bar row: the final lines."""
-        records = [bar._record() for bar in self._bars]
+        rows = [bar._final() for bar in self._bars]
         if self._title:
-            records.insert(0, LogRecord("info" if self._outcome is None else self._outcome, self._title))
-        return [(record.level, render(self._theme, record)) for record in records]
+            level = "info" if self._outcome is None else self._outcome
+            rows.insert(0, (level, render(self._theme, LogRecord(level, self._title))))
+        return rows
 
-    def _area_rows(self, now: float, width: int) -> list[tuple[Progress | None, str]]:
+    def _area_rows(self, now: float, width: int) -> list[tuple[Progress | StatusRow | None, str]]:
         """The rows to draw now, each with its bar (None for the title), reusing the lines of unchanged rows."""
-        rows: list[tuple[Progress | None, str]] = []
+        rows: list[tuple[Progress | StatusRow | None, str]] = []
         if self._title:
             drawn = (self._outcome, width, self._theme.color)
             if drawn != self._title_drawn:
@@ -619,7 +771,8 @@ class LiveArea:
             quiet = log.level == "quiet"
             rows = group._rows()
             log._recorded([line for _, line in rows])
-            self.write_lines([line for level, line in rows if not quiet or level == "error"])
+            if not group._hidden:
+                self.write_lines([line for level, line in rows if not quiet or level == "error"])
             if self.groups:
                 self.mark()
             else:
@@ -754,13 +907,16 @@ class LiveArea:
         rows: list[str] = []
 
         def emit(group: Group, indent: int) -> None:
-            for bar, line in group._area_rows(now, width - indent):
-                rows.append(" " * indent + line)
+            for bar, text in group._area_rows(now, width - indent):
+                # A status row may take two lines.
+                rows.extend(" " * indent + line for line in text.split("\n"))
                 if bar is None:
                     continue
                 # A bar's `slots` caps how many nested rows show; the surplus is cut from the end.
                 room = bar.slots
                 for child in nested.get(id(bar), ()):
+                    if child._hidden:
+                        continue
                     start = len(rows)
                     emit(child, indent + 2)
                     if room is not None:
@@ -771,7 +927,8 @@ class LiveArea:
                             room = 0
 
         for group in top:
-            emit(group, 0)
+            if not group._hidden:
+                emit(group, 0)
         return _cap_rows(rows, self.screen.height)
 
     def _draw(self, rows: list[str]) -> None:
@@ -888,8 +1045,8 @@ def live_area(screen: Screen) -> LiveArea:
         return _live_areas[screen]
 
 
-def render(theme: Theme, record: LogRecord) -> str:
-    """Draw a record with the theme, as a line or as a progress row, and strip escapes when colour is off.
+def render(theme: Theme, record: LogRecord | Status) -> str:
+    """Draw a line, a progress row or a status line, and strip escapes when colour is off.
 
     Args:
         theme: the theme that draws it.
@@ -898,7 +1055,11 @@ def render(theme: Theme, record: LogRecord) -> str:
     Returns:
         The drawn text, with any escape sequences removed when `theme.color` is "none".
     """
-    line = theme.draw("log" if record.bar is None else "progress", record)
+    if isinstance(record, Status):
+        kind = "status"
+    else:
+        kind = "log" if record.bar is None else "progress"
+    line = theme.draw(kind, record)
     return strip(line) if theme.color == "none" else line
 
 

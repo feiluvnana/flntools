@@ -17,6 +17,7 @@ stranger replaces a drawer, a plain function of (theme, value) that returns the 
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -28,13 +29,16 @@ from typing import Any, Callable, Iterator, Literal, NamedTuple
 
 import shared
 from shared import _clock as clock
+from shared import _fmt as fmt
 from shared._screen import Screen, isatty
-from shared._style import ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, Chain, style
+from shared._style import (ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, Chain, color_code, color_rgb,
+                           style)
 
 # `shared.theme` is the `theme` object: its members, `Error` among them, are the module's names, and
 # the rest are the records the drawers take and the types of `theme.screen`, `.palette` and `.glyphs`.
-__all__ = ["Bar", "Error", "HelpModel", "LogRecord", "Namespace", "PromptView", "Screen", "draw_help",
-           "draw_log", "draw_progress", "draw_prompt", "theme"]
+__all__ = ["Bar", "Count", "Error", "HelpModel", "LogRecord", "Namespace", "PromptView", "Screen",
+           "Status", "draw_help", "draw_log", "draw_progress", "draw_prompt", "draw_status",
+           "theme"]
 
 # The depths `Theme.color` accepts: "none" (plain text), "8" (the 16 ANSI colors), "256", and "16m"
 # (24-bit RGB).
@@ -43,6 +47,16 @@ COLOR_DEPTHS: tuple[ColorDepth, ...] = ("none", "8", "256", "16m")
 # Cells in a progress bar, and the column width of a help screen's option labels.
 BAR_CELLS = 20
 HELP_LABEL_WIDTH = 20
+# A running bar's gradient is one soft wave this many cells long, which moves one cell every
+# `DRIFT` ticks (tenths of a second): slow enough to read as calm rather than busy.
+WAVE = 20
+DRIFT = 3
+# The spinner steps through the accent's shades over this many ticks.
+SPIN_SHADES = 10
+# A status line's numbers are right-aligned in slots this wide, so many targets' lines line up.
+COUNT_WIDTH = 4
+# The kinds of debug line `log.event` writes, each drawn with its own glyph and palette color.
+EVENTS = ("skip", "link", "shrink")
 
 # Each glyph is (unicode, ascii). A nested dict is a group of glyphs. The ASCII half is what a
 # terminal that can't show the Unicode set gets (see `detect_unicode`).
@@ -56,16 +70,26 @@ GLYPHS: dict[str, Any] = {
     "bar": {"full": ("━", "="), "empty": ("─", "-")},
     # The spinner's Braille frames, and the ASCII frames used when Unicode is off.
     "spin": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), ("|", "/", "-", "\\")),
+    # A status line's counts and `log.event`'s lines. ↓ and ⛓ are ambiguous-width (and ⛓ an
+    # emoji in some fonts), so ⇣ and ⤷ stand for downloading and linked.
+    "found": ("◦", "#"), "download": ("⇣", "v"), "shrink": ("⟳", "~"), "skip": ("↷", ">"),
+    "link": ("⤷", "="), "arrow": ("→", "->"),
 }
 # Each value is anything `style.color` takes, or style names and colors such as "bold red".
 # The prompt colors are huh's ThemeCharm; ok and error match them, so log lines and prompts agree.
 # The numbers are 256-color indices. From 16 up they are fixed values rather than the terminal's own
 # palette, so the greys (237 to 252) look the same on every terminal.
+# Most text is toned down; plain `text` is kept for what a person must read, a name or a message.
+# `accent` and `glow` are the two neighbouring shades a running bar's gradient and the spinner move
+# between. A status line's numbers take `download`, `shrink`, `ok`, `link`, `skip` and `error`.
 PALETTE: dict[str, Any] = {
-    "info": "cyan", "ok": "#02BF87", "warn": "yellow", "error": "#ED567A", "debug": "dim",
+    "info": 243, "ok": "#02BF87", "warn": "yellow", "error": "#ED567A", "debug": 242,
     "title": "bold #7571F9", "cursor": "#F780E2", "chosen": "#02BF87",
     "text": 252, "muted": 243, "faint": 238, "key": 241, "hint": 239,
     "label": "magenta", "cream": "#FFFDF5", "button": 237,
+    "accent": "#7D84D6", "glow": "#A9AEF0", "target": "bold 252", "category": "#9A96C9",
+    "size": 245, "path": 245, "skip": 241, "link": "#6FA3D8", "download": "#5FBDC9",
+    "shrink": "#B86FB8", "wait": "#D7B65F",
 }
 # The glyph each log level draws before its message.
 LOG_GLYPHS = {"info": "bullet", "ok": "tick", "warn": "bang", "error": "cross", "debug": "dot"}
@@ -84,6 +108,8 @@ class LogRecord(NamedTuple):
     message: str
     # The bar `draw_progress` draws; None for a plain line. `draw_log` ignores it.
     bar: Bar | None = None
+    # One of `EVENTS`, whose glyph and color draw the whole line; empty for a plain line.
+    kind: str = ""
 
 
 # A dataclass, not a NamedTuple: a tuple's own `count` method would clash with the `count` field.
@@ -105,6 +131,45 @@ class Bar:
     show: Callable[[Any], str] = str
     # The spinner's frame number, which the live area fixes for a whole frame; None reads the clock.
     tick: int | None = None
+    # True for a wait (a rate limit, a block): drawn steady in the wait color, never moving.
+    wait: bool = False
+
+
+class Count(NamedTuple):
+    """One number of a status line: `150 saved`, or `✓150` on a narrow screen."""
+
+    number: int
+    word: str
+    # A key of the palette, which paints the number when it is above zero.
+    role: str
+    # A key of `glyphs`, which stands in for the word when the line is too narrow for words.
+    glyph: str
+
+
+@dataclass(frozen=True)
+class Status:
+    """The state of one status line, as `draw_status` draws it."""
+
+    # Drawn bold and padded to `subject_width`, such as a target.
+    subject: str
+    # Drawn in the category color and padded to `label_width`; empty draws none.
+    label: str = ""
+    # The first line's numbers, each in its slot; a zero one is dim.
+    counts: tuple[Count, ...] = ()
+    # The second line's numbers while the line runs; a zero one is left out.
+    running: tuple[Count, ...] = ()
+    # Dim text after the counts, such as the bytes saved.
+    tail: tuple[str, ...] = ()
+    # A wait on the second line while the line runs, steady in the wait color.
+    note: str = ""
+    subject_width: int = 0
+    label_width: int = 0
+    # Set by the live area: how the line ended (None while it runs), how long it has run (None
+    # draws no time), the spinner's frame (None reads the clock), and its room (0 for any).
+    outcome: str | None = None
+    elapsed: float | None = None
+    tick: int | None = None
+    width: int = 0
 
 
 class HelpModel(NamedTuple):
@@ -167,8 +232,12 @@ class Theme:
 
     _color: ColorDepth
 
-    # `shared.theme` is this object, not a module, so the module's error is reached through it.
+    # `shared.theme` is this object, not a module, so the module's error, the status line's records
+    # and its event kinds are reached through it.
     Error = Error
+    Status = Status
+    Count = Count
+    EVENTS = EVENTS
 
     def __init__(self, *, color: ColorDepth | None = None, unicode: bool | None = None,
                  screen: Screen | None = None):
@@ -239,7 +308,7 @@ class Theme:
         return chain.paint(text, self.color)
 
     def draw(self, kind: str, value: Any) -> str:
-        """Draw a value with this theme's drawer for its kind: log, progress, prompt, or help.
+        """Draw a value with this theme's drawer for its kind: log, progress, status, prompt, help.
 
         Args:
             kind: a key of `drawers`; an unknown kind raises AttributeError.
@@ -250,6 +319,44 @@ class Theme:
             ends with one.
         """
         return getattr(self.drawers, kind)(self, value)
+
+    @property
+    def motion(self) -> bool:
+        """Whether running rows may move: only with 256 or 24-bit color, never flat or plain."""
+        return self.color in ("256", "16m")
+
+    def gradient(self, text: str, *, phase: int = 0) -> str:
+        """Paint text with a soft wave between `accent` and `glow`, moved `phase` cells along.
+
+            theme.gradient("━" * 12, phase=tick // DRIFT)
+
+        Without `motion` the text is painted flat in `accent`, and plain without color.
+        """
+        shades = self._shades()
+        if not text or shades is None:
+            return self.paint("accent", text)
+        runs: list[tuple[str, str]] = []
+        for cell, char in enumerate(text):
+            code = shades(_wave(cell - phase, WAVE))
+            if runs and runs[-1][0] == code:
+                runs[-1] = (code, runs[-1][1] + char)
+            else:
+                runs.append((code, char))
+        return "".join(f"\x1b[{code}m{chars}" for code, chars in runs) + RESET
+
+    def _shades(self) -> Callable[[float], str] | None:
+        """A color code for each point from `accent` (0) to `glow` (1); None without motion."""
+        low, high = chain_of(self.palette.accent).fg, chain_of(self.palette.glow).fg
+        if not self.motion or low is None or high is None:
+            return None
+        start, end = color_rgb(low), color_rgb(high)
+        depth = self.color
+
+        def code(weight: float) -> str:
+            mixed = tuple(round(a + (b - a) * weight) for a, b in zip(start, end))
+            return color_code(("rgb", mixed), depth, "fg")
+
+        return code
 
     def _pick_glyph(self, pair: tuple) -> Any:
         return pair[0] if self.unicode else pair[1]
@@ -324,7 +431,13 @@ def chain_of(value: str | int) -> Chain:
 
 
 def draw_log(theme: Theme, record: LogRecord) -> str:
-    """A log line, wholly in its level's color; a part of the message with its own style keeps it.
+    """A log line: glyph and subject (up to the first ": ") in the level's color, the rest dimmer.
+
+        ✓ Complete. 159 files                      (ok: green, wholly)
+        • fbk:example.page: photos: 131 saved      (info: muted, the subject in normal text)
+        ↷ posts/a.jpg → posts/2026-11-11_a.jpg     (an event: wholly in its kind's color)
+
+    A debug line is faint grey throughout; a part of the message with its own style keeps it.
 
     Args:
         theme: the theme whose glyphs, palette and color depth draw the line.
@@ -333,18 +446,18 @@ def draw_log(theme: Theme, record: LogRecord) -> str:
     Returns:
         One line of text, with no trailing newline.
     """
+    if record.kind:
+        return theme.paint(record.kind, f"{getattr(theme.glyphs, record.kind)} {record.message}")
     glyph = getattr(theme.glyphs, LOG_GLYPHS[record.level])
-    line = f"{glyph} {record.message}" if record.message else glyph
-    # Paint a marker to learn the level's opening and closing sequences, whatever the color depth.
-    opening, _, closing = theme.paint(record.level, "\0").partition("\0")
-    if not opening:
-        return line
-    # A reset inside the message ends the level's color too, so it is started again after each one.
-    body = line.replace(RESET, RESET + opening)
-    if body.endswith(opening):
-        # The message ended in a reset, which already closes the line.
-        return opening + body[:-len(opening)]
-    return opening + body + closing
+    if not record.message or record.level == "debug":
+        return theme.paint(record.level, f"{glyph} {record.message}" if record.message else glyph)
+    head, colon, detail = record.message.partition(": ")
+    if record.level == "info":
+        # Only the subject is in normal text; the glyph and the detail sit back.
+        line = theme.paint("info", glyph) + " " + theme.paint("text", head)
+        return line + theme.paint("info", colon + detail)
+    dimmer = chain_of(getattr(theme.palette, record.level)).dim.paint(colon + detail, theme.color)
+    return theme.paint(record.level, f"{glyph} {head}") + (dimmer if colon else "")
 
 
 def draw_progress(theme: Theme, record: LogRecord) -> str:
@@ -373,22 +486,77 @@ def draw_progress(theme: Theme, record: LogRecord) -> str:
     """
     bar = record.bar
     assert bar is not None
-    level = "error" if record.level == "error" else "ok" if bar.finished else "info"
-    glyph = theme.paint(level, getattr(theme.glyphs, LOG_GLYPHS[level]))
+    level = _bar_level(record.level, bar)
+    glyph = theme.paint(_bar_role(level, bar), getattr(theme.glyphs, LOG_GLYPHS[level]))
+    label, caption = _path(theme, bar.label), theme.paint("muted", bar.caption)
     if bar.total is None and bar.count <= 0:
         # Nothing counted and nothing to count toward: a bar's columns would only be empty space.
-        return " ".join(part for part in (glyph, bar.label, _bar_cells(theme, bar), bar.caption) if part)
-    if bar.total is not None:
-        cells = _bar_cells(theme, bar)
-        count = bar.show(bar.total) if level == "ok" else _count(bar)
-    else:
-        # A spinner's frame sits in the cells' column, padded to its width, so the count and label stay put;
-        # once ended, the cells say how it ended, as a bar with a total does.
-        cells = (theme.glyphs.bar.full * BAR_CELLS if level == "ok" else theme.glyphs.bar.empty * BAR_CELLS) \
-            if bar.finished else _bar_cells(theme, bar).ljust(BAR_CELLS)
-        count = _count(bar)
-    parts = [glyph, cells, bar.label, count, bar.caption]
+        spinner = _spinner(theme, bar.tick) if not bar.finished else ""
+        return " ".join(part for part in (glyph, label, spinner, caption) if part)
+    count = bar.show(bar.total) if level == "ok" and bar.total is not None else _count(bar)
+    parts = [glyph, _painted_cells(theme, bar, level), label, theme.paint("size", count), caption]
     return " ".join(part for part in parts if part)
+
+
+def draw_status(theme: Theme, status: Status) -> str:
+    """A status line: state, subject and label, the counts in fixed slots, then tail and time.
+
+        ⠹ fbk:example.page photos  140 found    9 saved  131 skipped    0 failed 3.4 MB 12s
+                                   4 downloading  1 shrinking
+
+    The second line is drawn only while the line runs and something on it is above zero or
+    waits. When the line is wider than `status.width`, glyphs stand in for the words (`✓150`).
+
+    Args:
+        theme: the theme whose glyphs and palette draw the line.
+        status: the line's state.
+
+    Returns:
+        One line, or two joined by a newline, with no trailing newline.
+    """
+    head = " ".join(part for part in (
+        _state_glyph(theme, status),
+        theme.paint("target", status.subject.ljust(status.subject_width)),
+        theme.paint("category", status.label.ljust(status.label_width))) if part)
+    tail = [*status.tail] + ([_clock_text(status.elapsed)] if status.elapsed is not None else [])
+    painted_tail = [theme.paint("size", text) for text in tail]
+    words = True
+    line = " ".join([head, *(_slot(theme, count, words, COUNT_WIDTH) for count in status.counts),
+                     *painted_tail])
+    if status.width and display_width(line) > status.width:
+        words = False
+        line = " ".join([head, *(_slot(theme, count, words, 0) for count in status.counts),
+                         *painted_tail])
+    second = [_slot(theme, count, words, 0) for count in status.running if count.number > 0]
+    if status.note:
+        second.append(theme.paint("wait", status.note))
+    if status.outcome is not None or not second:
+        return line
+    return line + "\n" + " " * (display_width(head) + 1) + "  ".join(second)
+
+
+def _state_glyph(theme: Theme, status: Status) -> str:
+    """A status line's first cell: the spinner while it runs, then how it ended."""
+    if status.outcome == "ok":
+        return theme.paint("ok", theme.glyphs.tick)
+    if status.outcome == "error":
+        return theme.paint("error", theme.glyphs.cross)
+    return _spinner(theme, status.tick)
+
+
+def _slot(theme: Theme, count: Count, words: bool, width: int) -> str:
+    """One count: its number right-aligned in `width`, colored above zero, then word or glyph."""
+    role = count.role if count.number > 0 else "muted"
+    number = f"{count.number:,}"
+    if not words:
+        return theme.paint(role, getattr(theme.glyphs, count.glyph) + number)
+    return theme.paint(role, number.rjust(width)) + " " + theme.paint("muted", count.word)
+
+
+def _clock_text(seconds: float) -> str:
+    """How long a status line has run, in whole seconds, so the text changes once a second."""
+    whole = int(seconds)
+    return f"{whole}s" if whole < 60 else fmt.duration(whole)
 
 
 def draw_help(theme: Theme, model: HelpModel) -> str:
@@ -546,10 +714,13 @@ def _bar_cells(theme: Theme, bar: Bar) -> str:
             return ""
         frames = theme.glyphs.spin
         return frames[(int(clock.now() * 10) if bar.tick is None else bar.tick) % len(frames)]
-    done = max(bar.count, 0)
-    # A total of zero or less would divide by zero, so it draws as full.
-    filled = BAR_CELLS if bar.total <= 0 else round(BAR_CELLS * min(done, bar.total) / bar.total)
+    filled = _filled(bar.count, bar.total)
     return theme.glyphs.bar.full * filled + theme.glyphs.bar.empty * (BAR_CELLS - filled)
+
+
+def _filled(count: float, total: float) -> int:
+    """How many of the bar's cells are filled; a total of zero or less fills them all."""
+    return BAR_CELLS if total <= 0 else round(BAR_CELLS * min(max(count, 0), total) / total)
 
 
 def _count(bar: Bar) -> str:
@@ -557,6 +728,64 @@ def _count(bar: Bar) -> str:
     if bar.total is not None:
         return f"{bar.show(bar.count)}/{bar.show(bar.total)}"
     return bar.show(bar.count) if bar.count > 0 else ""
+
+
+def _bar_level(level: str, bar: Bar) -> str:
+    """The level a row is drawn at: error, ok once finished, else info."""
+    if level == "error":
+        return "error"
+    return "ok" if bar.finished else "info"
+
+
+def _bar_role(level: str, bar: Bar) -> str:
+    """The palette color of a row's glyph and filled cells."""
+    if level != "info":
+        return level
+    return "wait" if bar.wait else "accent"
+
+
+def _painted_cells(theme: Theme, bar: Bar, level: str) -> str:
+    """The bar's cells in color: a running bar's fill drifts; an ended or waiting one is flat."""
+    if bar.total is None and not bar.finished:
+        # A spinner's frame sits in the cells' column, padded to its width, so the label stays put.
+        return _spinner(theme, bar.tick) + " " * (BAR_CELLS - 1)
+    if bar.total is None:
+        # Once ended, the cells say how it ended, as a bar with a total does.
+        filled = BAR_CELLS if level == "ok" else 0
+    else:
+        filled = _filled(bar.count, bar.total)
+    full, empty = theme.glyphs.bar.full * filled, theme.glyphs.bar.empty * (BAR_CELLS - filled)
+    role = _bar_role(level, bar)
+    if role == "accent":
+        tick = int(clock.now() * 10) if bar.tick is None else bar.tick
+        full = theme.gradient(full, phase=tick // DRIFT)
+    else:
+        full = theme.paint(role, full)
+    return full + theme.paint("faint", empty)
+
+
+def _spinner(theme: Theme, tick: int | None) -> str:
+    """The spinner's frame for `tick` (None reads the clock), stepping through the accent shades."""
+    tick = int(clock.now() * 10) if tick is None else tick
+    frames = theme.glyphs.spin
+    frame = frames[tick % len(frames)]
+    shades = theme._shades()
+    if shades is None:
+        return theme.paint("accent", frame)
+    return f"\x1b[{shades(_wave(tick, SPIN_SHADES))}m{frame}{RESET}"
+
+
+def _wave(step: int, length: int) -> float:
+    """A point on a smooth wave from 0 to 1 and back, `length` steps long."""
+    return (1 - math.cos(2 * math.pi * step / length)) / 2
+
+
+def _path(theme: Theme, label: str) -> str:
+    """A row's label: a path's folder dim and its name in normal text; any other label normal."""
+    folder, slash, name = label.rpartition("/")
+    if not slash:
+        return theme.paint("text", label)
+    return theme.paint("path", folder + slash) + theme.paint("text", name)
 
 
 def detect_color(stream) -> ColorDepth:
@@ -655,7 +884,8 @@ def _same(value: Any) -> Any:
 
 
 # The four kinds `Theme.draw` knows. A script can replace one (see the module docstring).
-DRAWERS: dict[str, Any] = {"log": draw_log, "progress": draw_progress, "prompt": draw_prompt, "help": draw_help}
+DRAWERS: dict[str, Any] = {"log": draw_log, "progress": draw_progress, "prompt": draw_prompt,
+                           "help": draw_help, "status": draw_status}
 
 # The process theme, built once at import, so the color and Unicode detection runs once.
 theme = Theme()

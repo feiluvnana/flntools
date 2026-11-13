@@ -76,7 +76,8 @@ class PaletteTest(unittest.TestCase):
                                                                                       "#F780E2", "#02BF87"))
         self.assertEqual((palette.text, palette.muted, palette.faint, palette.key, palette.hint, palette.button),
                          (252, 243, 238, 241, 239, 237))
-        self.assertEqual((palette.info, palette.warn, palette.debug, palette.label), ("cyan", "yellow", "dim", "magenta"))
+        self.assertEqual((palette.info, palette.warn, palette.debug, palette.label),
+                         (243, "yellow", 242, "magenta"))
         self.assertEqual((palette.title, palette.cream), ("bold #7571F9", "#FFFDF5"))
 
     def test_unknown_name_and_bad_value(self):
@@ -111,9 +112,9 @@ class PaletteTest(unittest.TestCase):
         self.assertIn("\x1b[38;2;7;8;9mName\x1b[0m", frame)
 
     def test_depth_8_never_paints_black_or_yellow(self):
-        # warn is yellow on purpose; cursor and button are the only backgrounds.
+        # warn and wait are yellow on purpose; cursor and button are the only backgrounds.
         self.theme.color = "8"
-        painted = [self.theme.paint(name, "x") for name in PALETTE if name != "warn"]
+        painted = [self.theme.paint(name, "x") for name in PALETTE if name not in ("warn", "wait")]
         painted += [self.theme.paint("cream", "x", on="cursor"), self.theme.paint("text", "x", on="button")]
         for line in painted:
             codes = set(re.findall(r"\x1b\[([0-9;]*)m", line)[0].split(";"))
@@ -335,3 +336,165 @@ class WindowsVtHandleTest(unittest.TestCase):
         kernel32 = self.enable(StringIO())
         kernel32.GetStdHandle.assert_not_called()
         kernel32.SetConsoleMode.assert_not_called()
+
+
+def painter(depth: str, *, unicode: bool = True) -> Theme:
+    return Theme(color=depth, unicode=unicode, screen=Screen(dest=StringIO()))
+
+
+def codes(line: str) -> str:
+    """The SGR parameters that open a painted line."""
+    return line[2:line.index("m")]
+
+
+class RoleDepthTest(unittest.TestCase):
+    """The roles flnd names, pinned at each color depth: plain, flat 16 colors, 256 and 24-bit."""
+
+    ROLES = ("accent", "glow", "target", "category", "size", "path", "skip", "link", "download",
+             "shrink", "wait", "debug", "info")
+
+    def paints(self, depth: str) -> dict:
+        return {role: painter(depth).paint(role, "x") for role in self.ROLES}
+
+    def test_none_is_plain(self):
+        self.assertEqual(set(self.paints("none").values()), {"x"})
+
+    def test_8_is_flat_ansi(self):
+        self.assertEqual({role: codes(line) for role, line in self.paints("8").items()},
+                         {"accent": "94", "glow": "94", "target": "1;37", "category": "94",
+                          "size": "90", "path": "90", "skip": "90", "link": "94", "download": "36",
+                          "shrink": "35", "wait": "33", "debug": "90", "info": "90"})
+
+    def test_256(self):
+        found = {role: codes(line) for role, line in self.paints("256").items()}
+        self.assertEqual((found["accent"], found["glow"]), ("38;5;104", "38;5;147"))
+        self.assertEqual((found["target"], found["size"], found["skip"]),
+                         ("1;38;5;252", "38;5;245", "38;5;241"))
+        self.assertEqual((found["download"], found["shrink"], found["wait"]),
+                         ("38;5;74", "38;5;133", "38;5;179"))
+
+    def test_16m(self):
+        found = {role: codes(line) for role, line in self.paints("16m").items()}
+        self.assertEqual(found["accent"], "38;2;125;132;214")
+        self.assertEqual(found["link"], "38;2;111;163;216")
+        self.assertEqual(found["wait"], "38;2;215;182;95")
+
+
+class GradientTest(unittest.TestCase):
+    def test_flat_or_plain_without_motion(self):
+        self.assertFalse(painter("8").motion)
+        self.assertEqual(painter("none").gradient("━━━", phase=4), "━━━")
+        self.assertEqual(painter("8").gradient("━━━", phase=4), "\x1b[94m━━━\x1b[0m")
+
+    def test_16m_drifts_between_two_shades(self):
+        shades = painter("16m")
+        self.assertTrue(shades.motion)
+        still = shades.gradient("━" * 4)
+        self.assertEqual(still, "\x1b[38;2;125;132;214m━\x1b[38;2;126;133;215m━"
+                                "\x1b[38;2;129;136;216m━\x1b[38;2;134;141;219m━\x1b[0m")
+        moved = shades.gradient("━" * 4, phase=2)
+        self.assertNotEqual(moved, still)
+        self.assertEqual(re.sub(r"\x1b\[[0-9;]*m", "", moved), "━" * 4)
+        # The wave goes from the accent to the glow and back, never past either.
+        reds = [int(red) for red in re.findall(r"38;2;(\d+);", shades.gradient("━" * 20))]
+        self.assertEqual((min(reds), max(reds)), (125, 169))
+
+    def test_256_is_a_short_ramp_with_runs_merged(self):
+        cells = painter("256").gradient("━" * 20)
+        self.assertLessEqual(len(set(re.findall(r"38;5;(\d+)", cells))), 4)
+        self.assertIn("38;5;104", cells)
+        self.assertLess(cells.count("\x1b["), 20)
+
+
+class MotionDrawTest(unittest.TestCase):
+    def draw(self, depth: str, bar: Bar, level: str = "info") -> str:
+        return painter(depth).draw("progress", LogRecord(level, "", bar))
+
+    def test_a_running_bar_moves_with_its_tick(self):
+        bar = Bar("posts/a.jpg", 10, 20, "", False, tick=0)
+        moved = Bar("posts/a.jpg", 10, 20, "", False, tick=_theme.DRIFT)
+        self.assertNotEqual(self.draw("16m", bar), self.draw("16m", moved))
+        self.assertEqual(self.draw("8", bar), self.draw("8", moved))
+
+    def test_ended_and_waiting_bars_are_one_flat_color(self):
+        ended = Bar("posts/a.jpg", 20, 20, "", True, tick=0)
+        later = Bar("posts/a.jpg", 20, 20, "", True, tick=7)
+        self.assertEqual(self.draw("16m", ended), self.draw("16m", later))
+        self.assertIn("\x1b[38;2;2;191;135m" + "━" * 20, self.draw("16m", ended, "ok"))
+        failed = Bar("posts/a.jpg", 5, 20, "timed out", False, tick=0)
+        self.assertIn("\x1b[38;2;237;86;122m" + "━" * 5, self.draw("16m", failed, "error"))
+        waiting = Bar("ins: waiting", 5, 20, "", False, tick=0, wait=True)
+        self.assertIn("\x1b[38;2;215;182;95m" + "━" * 5, self.draw("16m", waiting))
+        still = Bar("ins: waiting", 5, 20, "", False, tick=9, wait=True)
+        self.assertEqual(self.draw("16m", waiting), self.draw("16m", still))
+
+    def test_a_path_label_has_a_dim_folder_and_a_normal_name(self):
+        line = self.draw("256", Bar("posts/a.jpg", 1, 2, "", False, tick=0))
+        folder, name = "\x1b[38;5;245mposts/\x1b[0m", "\x1b[38;5;252ma.jpg\x1b[0m"
+        self.assertIn(f"{folder}{name} \x1b[38;5;245m1/2\x1b[0m", line)
+
+    def test_the_spinner_steps_through_shades(self):
+        frames = {self.draw("16m", Bar("scroll", 0, None, "", False, tick=tick))
+                  for tick in range(10)}
+        self.assertEqual(len(frames), 10)
+        self.assertEqual(self.draw("8", Bar("scroll", 0, None, "", False, tick=3)),
+                         "\x1b[94m•\x1b[0m \x1b[37mscroll\x1b[0m \x1b[94m⠸\x1b[0m")
+
+
+class EventLineTest(unittest.TestCase):
+    def test_an_event_takes_its_glyph_and_color(self):
+        shades = painter("256")
+        self.assertEqual(shades.draw("log", LogRecord("debug", "a → b", kind="skip")),
+                         "\x1b[38;5;241m↷ a → b\x1b[0m")
+        self.assertEqual(shades.draw("log", LogRecord("debug", "a → b", kind="link")),
+                         "\x1b[38;5;74m⤷ a → b\x1b[0m")
+        shades.unicode = False
+        self.assertEqual(shades.draw("log", LogRecord("debug", "a", kind="shrink")),
+                         "\x1b[38;5;133m~ a\x1b[0m")
+
+
+class StatusDrawTest(unittest.TestCase):
+    COUNTS = (theme.Count(140, "found", "text", "found"), theme.Count(9, "saved", "ok", "tick"),
+              theme.Count(0, "failed", "error", "cross"))
+    RUNNING = (theme.Count(4, "downloading", "download", "download"),
+               theme.Count(0, "shrinking", "shrink", "shrink"))
+
+    def draw(self, status, depth: str = "none", unicode: bool = True) -> str:
+        return painter(depth, unicode=unicode).draw("status", status)
+
+    def status(self, **changes):
+        fields = dict(subject_width=18, label_width=7, elapsed=72, tick=2)
+        fields.update(changes)
+        return theme.Status("fbk:example.page", "photos", self.COUNTS, self.RUNNING, ("3.4 MB",),
+                            **fields)
+
+    def test_running_has_a_second_line_without_zeros(self):
+        self.assertEqual(self.draw(self.status()).split("\n"), [
+            "⠹ fbk:example.page   photos   140 found    9 saved    0 failed 3.4 MB 1m 12s",
+            "                             4 downloading"])
+
+    def test_ended_keeps_its_first_line_and_a_still_glyph(self):
+        self.assertEqual(self.draw(self.status(outcome="ok")), "✓ fbk:example.page   photos "
+                         "  140 found    9 saved    0 failed 3.4 MB 1m 12s")
+        self.assertTrue(self.draw(self.status(outcome="error")).startswith("✗ "))
+
+    def test_a_wait_shows_on_the_second_line(self):
+        line = self.draw(self.status(note="waiting 4m 10s: blocked")).split("\n")[1]
+        self.assertEqual(line.strip(), "4 downloading  waiting 4m 10s: blocked")
+
+    def test_narrow_drops_the_words(self):
+        self.assertEqual(self.draw(self.status(width=60)).split("\n"), [
+            "⠹ fbk:example.page   photos  ◦140 ✓9 ✗0 3.4 MB 1m 12s",
+            "                             ⇣4"])
+        self.assertEqual(self.draw(self.status(width=60), unicode=False).split("\n")[0],
+                         "- fbk:example.page   photos  #140 +9 x0 3.4 MB 1m 12s")
+
+    def test_counts_are_colored_only_above_zero(self):
+        line = self.draw(self.status(outcome="ok"), depth="256")
+        self.assertIn("\x1b[38;5;36m   9\x1b[0m \x1b[38;5;243msaved", line)
+        self.assertIn("\x1b[38;5;243m   0\x1b[0m \x1b[38;5;243mfailed", line)
+        self.assertIn("\x1b[1;38;5;252mfbk:example.page  \x1b[0m", line)
+
+    def test_seconds_then_minutes(self):
+        self.assertTrue(self.draw(self.status(elapsed=12.9, outcome="ok")).endswith("3.4 MB 12s"))
+        self.assertTrue(self.draw(self.status(elapsed=None, outcome="ok")).endswith("3.4 MB"))

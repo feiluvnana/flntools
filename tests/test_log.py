@@ -167,13 +167,18 @@ class LevelTest(LogCase):
         # The message's own red bold wins; the line's color is not started again after a final reset.
         self.assertEqual(self.output(), "\x1b[38;2;237;86;122m✗ \x1b[1;31mdisk full\x1b[0m\n")
 
-    def test_the_whole_line_takes_its_levels_color(self):
+    def test_the_glyph_and_subject_take_the_levels_color_and_the_detail_is_dimmer(self):
+        log.level = "debug"
         with theme.scope(color="16m"):
             log.ok("done")
-            log.info("note")
-            log.warn("careful")
-        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓ done\x1b[0m", "\x1b[36m• note\x1b[0m",
-                                       "\x1b[33m! careful\x1b[0m"])
+            log.info("note: aside")
+            log.warn("careful: slow")
+            log.debug("raw: bytes")
+        self.assertEqual(self.lines(), [
+            "\x1b[38;2;2;191;135m✓ done\x1b[0m",
+            "\x1b[38;5;243m•\x1b[0m \x1b[38;5;252mnote\x1b[0m\x1b[38;5;243m: aside\x1b[0m",
+            "\x1b[33m! careful\x1b[0m\x1b[2;33m: slow\x1b[0m",
+            "\x1b[38;5;242m· raw: bytes\x1b[0m"])
 
     def test_a_styled_part_keeps_its_style_and_the_line_goes_back_to_its_color(self):
         with theme.scope(color="16m"):
@@ -191,10 +196,13 @@ class LevelTest(LogCase):
                 del theme.palette._assigned["warn"]
         self.assertEqual(self.output(), "\x1b[38;2;1;2;3m! careful\x1b[0m\n")
 
-    def test_progress_rows_keep_a_colored_glyph_only(self):
+    def test_an_ended_progress_row_is_one_flat_color(self):
         with theme.scope(color="16m"), log.progress("a", total=2) as bar:
             bar.advance()
-        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓\x1b[0m " + "━" * 10 + "─" * 10 + " a " + "2"])
+        ok = "\x1b[38;2;2;191;135m"
+        cells = f"{ok}" + "━" * 10 + "\x1b[0m\x1b[38;5;238m" + "─" * 10 + "\x1b[0m"
+        self.assertEqual(self.lines(),
+                         [f"{ok}✓\x1b[0m {cells} \x1b[38;5;252ma\x1b[0m \x1b[38;5;245m2\x1b[0m"])
 
 
 class PipeProgressTest(LogCase):
@@ -657,6 +665,136 @@ class QuietTtyTest(QuietPipeTest):
         self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " bad " + "0/2", "✗ b", "✗ upload", "✗ c"])
 
 
+# How a status line of `counted` starts after its glyph.
+POSTS = "ins:example_user posts"
+
+
+def counted(saved: int) -> theme.Status:
+    """A status line of example_user's posts with `saved` files saved and one downloading."""
+    return theme.Status("ins:example_user", "posts", (theme.Count(saved, "saved", "ok", "tick"),),
+                        (theme.Count(1, "downloading", "download", "download"),))
+
+
+class StatusRowTest(LogCase):
+    """A status row: drawn from its record each frame, its last line left in the scrollback."""
+
+    tty = True
+
+    def test_it_is_drawn_live_and_leaves_one_line_when_it_ends(self):
+        with log.group() as rows:
+            line = rows.add_status(counted(0))
+            self.tick()
+            self.assertEqual(visible_screen(self.output()),
+                             [f"⠋ {POSTS}    0 saved 0s", " " * 25 + "1 downloading"])
+            line.status = counted(3)
+            self.tick(1.0)
+            self.assertEqual(visible_screen(self.output())[0], f"⠋ {POSTS}    3 saved 1s")
+            self.clock.advance(1.0)
+            line.finish()
+            self.tick()
+            self.assertEqual(visible_screen(self.output()), [f"✓ {POSTS}    3 saved 2s"])
+            self.assertNotIn(line, rows._bars)
+        self.assertEqual(visible_screen(self.output()), [f"✓ {POSTS}    3 saved 2s"])
+
+    def test_nested_rows_are_its_detail_shown_only_at_debug(self):
+        with log.group() as rows:
+            line = rows.add_status(counted(0))
+            with log.under(line), log.progress("posts/a.jpg", total=2) as bar:
+                bar.advance()
+                self.tick(0.6)
+                self.assertEqual(len(visible_screen(self.output())), 2)
+        self.assertEqual(visible_screen(self.output()), [f"✓ {POSTS}    0 saved 0s"])
+
+    def test_at_debug_its_detail_is_drawn_under_it_and_written(self):
+        log.level = "debug"
+        with log.group() as rows:
+            line = rows.add_status(counted(0))
+            with log.under(line), log.progress("posts/a.jpg", total=2) as bar:
+                bar.advance()
+                self.tick(0.6)
+                shown = visible_screen(self.output())
+                self.assertEqual(shown[2], "  • " + "━" * 10 + "─" * 10 + " posts/a.jpg 1/2")
+            line.finish()
+        self.assertEqual(visible_screen(self.output()), [
+            "✓ " + "━" * 10 + "─" * 10 + " posts/a.jpg 2", f"✓ {POSTS}    0 saved 0s"])
+
+    def test_a_wait_under_it_is_always_shown(self):
+        with log.group() as rows:
+            line = rows.add_status(counted(0))
+            with log.under(line), log.progress("ins: waiting", total=4, wait=True) as bar:
+                bar.count = 1
+                self.tick(0.6)
+                self.assertIn("ins: waiting", visible_screen(self.output())[2])
+
+class StatusPipeTest(LogCase):
+    def test_a_pipe_gets_only_its_last_line(self):
+        with log.group() as rows:
+            rows.add_status(counted(5)).fail()
+            self.assertEqual(self.lines(), ["✗ ins:example_user posts    5 saved 0s"])
+        self.assertEqual(self.lines(), ["✗ ins:example_user posts    5 saved 0s"])
+
+
+class StatusRecordTest(LogCase):
+    tty = True
+
+    def test_a_record_file_gets_its_last_line_only(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "run.log"
+        with log.record(path), log.group() as rows:
+            line = rows.add_status(counted(0))
+            for saved in range(1, 4):
+                line.status = counted(saved)
+                self.tick(0.2)
+        recorded = [text[13:] for text in path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(recorded, ["✓ ins:example_user posts    3 saved 0s"])
+
+
+class EventTest(LogCase):
+    def test_an_event_is_a_debug_line_with_its_own_glyph(self):
+        log.event("skip", "{name} → {held}", name="posts/a.jpg", held="posts/b.jpg")
+        self.assertEqual(self.output(), "")
+        log.level = "debug"
+        log.event("link", "reels/a.mp4 → videos/a.mp4")
+        self.assertEqual(self.lines(), ["⤷ reels/a.mp4 → videos/a.mp4"])
+        with self.assertRaises(ValueError):
+            log.event("shout", "x")
+
+
+class MotionTest(LogCase):
+    """A running bar moves only in the live area, with 256 or 24-bit color, and ends still."""
+
+    tty = True
+    width = 60
+
+    def test_a_running_bar_is_redrawn_as_its_gradient_drifts(self):
+        with theme.scope(color="16m"), log.progress("a.mp4", total=10) as bar:
+            bar.advance(5)
+            self.tick(0.6)
+            frames = self.area.frames
+            row = self.area._rows(self.clock.now())
+            self.assertTrue(bar._waiting(self.clock.now()))
+            self.tick(0.1 * theme_drift())
+            self.assertNotEqual(self.area._rows(self.clock.now()), row)
+            self.assertGreater(self.area.frames, frames)
+        self.assertFalse(bar._waiting(self.clock.now()))
+
+    def test_flat_color_waits_for_a_change(self):
+        with theme.scope(color="8"), log.progress("a.mp4", total=10) as bar:
+            bar.advance(5)
+            self.tick(0.6)
+            self.assertFalse(bar._waiting(self.clock.now()))
+            frames = self.area.frames
+            self.tick(1.0)
+            self.assertEqual(self.area.frames, frames)
+
+
+def theme_drift() -> int:
+    from shared._theme import DRIFT
+
+    return DRIFT
+
+
 class ThreadTest(LogCase):
     def test_bars_finish_out_of_order_from_threads(self):
         count = 6
@@ -864,7 +1002,8 @@ class RealTerminalCase(unittest.TestCase):
         self.assertEqual(out.count(b"\x1b[?2026h"), out.count(b"\x1b[?2026l"))
         for frame in frames:
             # Rows are rewritten in place: a clear-below never comes before a row, and a row ends
-            # with its own line's clear, not a screen's.
+            # with its own line's clear, not a screen's. Colors (a bar's gradient) are left out.
+            frame = re.sub(rb"\x1b\[[0-9;]*m", b"", frame)
             self.assertIsNone(re.search(rb"\x1b\[J.*" + CELL, frame, re.S), frame)
             for ending in re.findall(rb"[^\x1b\n]*" + CELL + rb"[^\x1b\n]*(\x1b\[K)?", frame):
                 self.assertEqual(ending, b"\x1b[K", frame)
