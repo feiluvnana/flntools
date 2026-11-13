@@ -1,0 +1,310 @@
+"""mimihentai (`mht`): manga chapters, covers, and search queries from its public JSON API.
+
+A manga route lists every chapter as a lazy post (pages are fetched only when not yet saved) and
+its cover. A chapter link downloads that chapter alone. Author, genre, and `?query` routes yield
+`mht:<id>` manga targets.
+
+Folder layout, under `.flnd/media/mht/<id>/`:
+  chapters/<order:03> <title>/001.webp …
+  cover/cover.webp
+"""
+
+from __future__ import annotations
+
+import unicodedata
+from pathlib import PurePosixPath
+from typing import Any, Iterator, Mapping
+from urllib.parse import unquote, urlsplit
+
+from flnd.query import Name, Number, Param, Query, Text
+from flnd.source import FetchError, File, Post, Site, Source, Target, TargetError, pages, target
+
+API = "https://mimihentai.moe/api/"
+
+
+def lookup_genres(site: Site, name: str) -> Iterator[tuple[str, str]]:
+    """Yield `(name, id)` pairs for every genre from mimihentai's genre list.
+
+    Args:
+        site: the target's site.
+        name: the genre name being looked up.
+    """
+    for item in _items_of(site.fetch(f"{API}genres").json):
+        label = str(item.get("name") or "")
+        if label and "id" in item:
+            yield label, str(item["id"])
+
+
+def lookup_authors(site: Site, name: str) -> Iterator[tuple[str, str]]:
+    """Yield `(name, id)` pairs matching `name` from mimihentai's author search.
+
+    Args:
+        site: the target's site.
+        name: the author name being looked up.
+    """
+    yield from _lookup_search(site, f"{API}authors/search", name)
+
+
+def lookup_parodies(site: Site, name: str) -> Iterator[tuple[str, str]]:
+    """Yield `(name, id)` pairs matching `name` from mimihentai's parody search.
+
+    Args:
+        site: the target's site.
+        name: the parody name being looked up.
+    """
+    yield from _lookup_search(site, f"{API}parodies/search", name)
+
+
+class Mimi(Source):
+    """mimihentai manga, chapters, covers, and search queries over its public JSON API."""
+
+    code = "mht"
+    name = "mimihentai"
+    domains = ("mimihentai.moe",)
+    pace = 0.5
+    folder = "chapters/{order} {title}"
+    filename = "{id}"
+    key = "{id}_{num}"
+
+    @target(r"mimihentai.moe/manga/*/chapter/{id:\d+}")
+    def chapter(self, site: Site, id: str) -> Iterator[Post]:
+        """One chapter, by its URL: `https://mimihentai.moe/manga/70982/chapter/123`.
+
+        Args:
+            site: the target's site.
+            id: the chapter's id.
+        """
+        body = site.fetch(f"{API}chapters/{id}").json
+        info = body.get("info") if isinstance(body, dict) else None
+        if not isinstance(info, dict) or "id" not in info:
+            raise FetchError(f"chapter {id} isn't there")
+        yield Post(info["id"], _chapter_pages(body), date=info.get("created_at"),
+                   order=format_order(info.get("order")), title=info.get("title") or "")
+
+    @target(r"{id:\d+}", r"mimihentai.moe/manga/{id:\d+}")
+    def manga(self, site: Site, id: str) -> dict[str, Any]:
+        """One manga, by id or link: `mht:70982` or `https://mimihentai.moe/manga/70982`.
+
+        Args:
+            site: the target's site.
+            id: the manga's id.
+        """
+        body = site.fetch(f"{API}manga/{id}").json
+        if not isinstance(body, dict) or not body.get("title"):
+            raise FetchError(f"manga {id} isn't there")
+        return {**body, "id": body.get("id") or id}
+
+    @manga.category
+    def chapters(self, site: Site, manga: dict[str, Any]) -> Iterator[Post]:
+        """Every chapter of `manga` as a lazy post dated by `created_at`.
+
+        Args:
+            site: the target's site.
+            manga: the manga's JSON, as `manga` returned it.
+        """
+        # The API returns every chapter in one response regardless of `limit`.
+        items = site.fetch(f"{API}manga/{manga['id']}/chapters", params={"limit": 100}).json
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict) or "id" not in item:
+                continue
+            chapter_id = item["id"]
+            yield Post(chapter_id, lambda cid=chapter_id: _chapter_files(site, cid),
+                       date=item.get("created_at"), order=format_order(item.get("order")),
+                       title=item.get("title") or "")
+
+    @manga.category(folder="cover", key="{id}_cover")
+    def cover(self, site: Site, manga: dict[str, Any]) -> Iterator[Post]:
+        """The manga's cover image, saved once.
+
+        Args:
+            site: the target's site.
+            manga: the manga's JSON, as `manga` returned it.
+        """
+        url = manga.get("cover_url")
+        if url:
+            yield Post(manga["id"], [File(url, name=cover_name(url))],
+                       date=manga.get("last_updated"), title=manga.get("title") or "")
+
+    @target(r"mimihentai.moe/author/{author:[^/]+}", r"mimihentai.moe/authors/{author:[^/]+}")
+    def author(self, site: Site, author: str) -> Iterator[Target]:
+        """Yield `mht:<id>` manga targets for an author page link.
+
+        Args:
+            site: the target's site.
+            author: the author id or name from the URL.
+        """
+        author_id = _resolve_id(site, "author", author, lookup_authors)
+        for item in _search_pages(site, f"{API}manga/advanced-search", {"author": author_id}):
+            yield Target(self.code, "manga", str(item["id"]))
+
+    @target(r"mimihentai.moe/genre/{genre:[^/]+}", r"mimihentai.moe/genres/{genre:[^/]+}")
+    def genre(self, site: Site, genre: str) -> Iterator[Target]:
+        """Yield `mht:<id>` manga targets for a genre page link.
+
+        Args:
+            site: the target's site.
+            genre: the genre id or name from the URL.
+        """
+        genre_id = _resolve_id(site, "genre", genre, lookup_genres)
+        for item in _search_pages(site, f"{API}manga/advanced-search", {"genre": genre_id}):
+            yield Target(self.code, "manga", str(item["id"]))
+
+    @target("?{query}", params={
+        "title": Param(Text, "words in the title (bare words mean this too)"),
+        "genre": Param(Name, "a genre", any_of=False, negate=True, lookup=lookup_genres),
+        "author": Param(Name, "an author", lookup=lookup_authors),
+        "character": Param(Name, "a character"),
+        "parody": Param(Name, "the work it parodies", lookup=lookup_parodies),
+        "chapters": Param(Number, "how many chapters", compare=False),
+    })
+    def query(self, site: Site, query: Query) -> Iterator[Target]:
+        """Yield `mht:<id>` manga targets matching `query`.
+
+        Args:
+            site: the target's site.
+            query: one planned search from `flnd.query.plan`.
+        """
+        # Bare words alone use simple search; any structured filter uses advanced search.
+        if query.text and not query.terms:
+            items = _search_pages(site, f"{API}manga/search", {"q": query.text})
+            chapter_filters: list[set[int]] = []
+        else:
+            params, chapter_filters = _advanced_params(query)
+            items = _search_pages(site, f"{API}manga/advanced-search", params)
+        for item in items:
+            if all(item.get("chapter_count") in wanted for wanted in chapter_filters):
+                yield Target(self.code, "manga", str(item["id"]))
+
+
+def format_order(value: Any) -> str:
+    """Format a chapter order number as 3-digit zero-padded when whole, else as text."""
+    if value is None or value == "" or isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return f"{value:03d}"
+    if isinstance(value, float):
+        return f"{int(value):03d}" if value.is_integer() else str(value)
+    text = str(value).strip()
+    return f"{int(text):03d}" if text.isdigit() else text
+
+
+def page_name(number: int, url: str) -> str:
+    """A chapter page's filename, `001.webp`, keeping the URL's extension when present.
+
+    Args:
+        number: the 1-based page number.
+        url: the page's image URL.
+    """
+    suffix = PurePosixPath(urlsplit(url).path).suffix
+    return f"{number:03d}{suffix or '.webp'}"
+
+
+def cover_name(url: str) -> str:
+    """The cover's filename, `cover.webp`, keeping the URL's extension when present."""
+    suffix = PurePosixPath(urlsplit(url).path).suffix
+    return f"cover{suffix or '.webp'}"
+
+
+def _chapter_files(site: Site, chapter_id: Any) -> list[File]:
+    body = site.fetch(f"{API}chapters/{chapter_id}").json
+    return _chapter_pages(body) if isinstance(body, dict) else []
+
+
+def _chapter_pages(body: Mapping[str, Any]) -> list[File]:
+    pages_data = body.get("pages") or []
+    return [File(page["image_url"], name=page_name(number, page["image_url"]))
+            for number, page in enumerate(pages_data, start=1)
+            if isinstance(page, dict) and page.get("image_url")]
+
+
+def _items_of(body: Any) -> list[dict[str, Any]]:
+    if isinstance(body, list):
+        items = body
+    elif isinstance(body, dict):
+        items = body.get("items") or body.get("data") or []
+    else:
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _lookup_search(site: Site, url: str, name: str) -> Iterator[tuple[str, str]]:
+    for item in _items_of(site.fetch(url, params={"q": name}).json):
+        label = str(item.get("name") or "")
+        if label and "id" in item:
+            yield label, str(item["id"])
+
+
+def _resolve_id(site: Site, kind: str, raw: str, lookup: Any) -> str:
+    value = unquote(raw).strip()
+    if value.isdigit():
+        return value
+    candidates = [value, value.replace("-", " ")] if "-" in value else [value]
+    found = list(lookup(site, candidates[-1]))
+    for candidate in candidates:
+        folded = _folded(candidate)
+        matches = [item_id for label, item_id in found if _folded(label) == folded]
+        if matches:
+            return matches[0]
+    raise TargetError(f"mht: no {kind} named {value}")
+
+
+def _folded(text: str) -> str:
+    norm = unicodedata.normalize("NFKD", text.replace("đ", "d").replace("Đ", "D"))
+    return " ".join("".join(ch for ch in norm if not unicodedata.combining(ch)).casefold().split())
+
+
+def _advanced_params(query: Query) -> tuple[dict[str, str], list[set[int]]]:
+    """Build `/api/manga/advanced-search` query parameters and client-side chapter filters."""
+    titles = [query.text] if query.text else []
+    authors: list[str] = []
+    characters: list[str] = []
+    parodies: list[str] = []
+    genres: list[str] = []
+    excluded_genres: list[str] = []
+    chapter_filters: list[set[int]] = []
+    for term in query.terms:
+        values = [str(v) for v in term.values]
+        if term.param == "title":
+            titles.extend(values)
+        elif term.param == "author":
+            authors.extend(values)
+        elif term.param == "character":
+            characters.extend(values)
+        elif term.param == "parody":
+            parodies.extend(values)
+        elif term.param == "genre":
+            (excluded_genres if term.negated else genres).extend(values)
+        elif term.param == "chapters":
+            chapter_filters.append({int(v) for v in term.values if isinstance(v, int)})
+    params: dict[str, str] = {}
+    if title := " ".join(titles).strip():
+        params["title"] = title
+    if authors:
+        params["author"] = ",".join(authors)
+    if characters:
+        params["character"] = ",".join(characters)
+    if parodies:
+        params["parody"] = ",".join(parodies)
+    if genres:
+        params["genre"] = ",".join(genres)
+    if excluded_genres:
+        params["exclude_genre"] = ",".join(excluded_genres)
+    return params, chapter_filters
+
+
+def _search_pages(site: Site, url: str, params: Mapping[str, str]) -> Iterator[dict[str, Any]]:
+    def fetch(cursor: str | None) -> Any:
+        request_params = {**params, "cursor_res": "true"}
+        if cursor:
+            request_params["cursor"] = cursor
+        return site.fetch(url, params=request_params).json
+
+    for page in pages(fetch, lambda body: str(body.get("next_cursor") or "") if isinstance(body, dict) else None):
+        items = page.get("items") if isinstance(page, dict) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and "id" in item:
+                yield item

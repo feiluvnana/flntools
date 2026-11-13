@@ -12,9 +12,10 @@ Written and approved by the user on 2026-11-13. Examples use example handles onl
 
 ## 1. What flnd is
 
-flnd saves what people post on six sites (Instagram, Facebook, TikTok, X, Telegram, LOIBUS) to
-your disk, **fast, complete and dated**, and keeps it up to date. It also **downloads what a query
-matches** on a site (by genre, author, search): a query is a target, such as `mht?genre:example` **[7.10]**.
+flnd saves what people post on seven sites (Instagram, Facebook, TikTok, X, Telegram, LOIBUS,
+mimihentai) to your disk, **fast, complete and dated**, and keeps it up to date. It also
+**downloads what a query matches** on a site (by genre, author, search): a query is a target,
+such as `mht?genre:example`.
 
 It is a command-line program in Python, built on `shared`, flntools' own toolkit. `shared` is a
 black box: flnd asks it for a fetch, a download, a browser page, a progress row, and doesn't think
@@ -614,8 +615,8 @@ filters beyond `--from` and `--time`; zip or exec postprocessors; metadata sidec
 | 7 | `shared` as a black box | |
 | 8 | speed | |
 | 9 | status lines, colour and motion | |
-| **10** | **query targets (`<site>?<query>`, a query route of a `Source`; `Param`, `Query`) with Lucene queries parsed by luqum (`flnd/query.py`); the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's query targets first (`Source` stays unified in `flnd/sources/`, no `Site`/`Downloader` split per 2026-11-14 decision)** | new |
-| **11** | **mimihentai (`mht`)**: its `Source` in `flnd/sources/mht.py` (a manga's chapters, and a query route over its advanced search), per §17 | new |
+| **10** | **query targets (`<site>?<query>`, a query route of a `Source`; `Param`, `Query`) with Lucene queries parsed by luqum (`flnd/query.py`); the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's query targets first (`Source` stays unified in `flnd/sources/`, no `Site`/`Downloader` split per 2026-11-14 decision)** | built |
+| **11** | **mimihentai (`mht`)**: its `Source` in `flnd/sources/mht.py` (a manga's chapters, and a query route over its advanced search), per §17 | built |
 
 Query targets come last: they build on the black-box `shared` (7), the status lines (9) and the
 listing memory's common fields (4). Loi's first query targets wait for the user's example pages.

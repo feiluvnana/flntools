@@ -940,11 +940,12 @@ class BrowserUpFrontTest(JobCase):
             self.run_engine(Paged, targets=["pgd:example_user", "pgd:example_creator"])
         self.assertEqual(self.asked, [0])
 
-    def test_the_six_sources(self):
+    def test_the_seven_sources(self):
         from flnd.sources import SOURCES
 
         needs = {code: engine_module.needs_browser(source) for code, source in SOURCES.items()}
-        self.assertEqual(needs, {"tik": True, "fbk": True, "ins": True, "twt": True, "loi": False, "tlg": False})
+        self.assertEqual(needs, {"tik": True, "fbk": True, "ins": True, "twt": True, "loi": False, "tlg": False,
+                                 "mht": False})
 
 
 class ResumeTest(JobCase):

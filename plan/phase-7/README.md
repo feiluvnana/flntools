@@ -48,11 +48,11 @@ Each step ends with `check` green and is committed on its own.
    downloads, and lower listing floors.
 9. **Built** (d1e8e15). [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
    line under them.
-10. [flnd › sources and query targets](flnd.md#4-sites-source): `Source` stays one unified class
+10. **Built**. [flnd › sources and query targets](flnd.md#4-sites-source): `Source` stays one unified class
     per site in `flnd/sources/` (no `Site`/`Downloader` split); query targets (`<site>?<query>`,
     a route of a `Source`) on the same job; the `sync` and `auth` command groups (`sync` opt-in:
     `download --sync`, `sync ls`, `sync toggle`); loi's query targets first.
-11. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` source (`Source` subclass) and its query targets.
+11. **Built**. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` source (`Source` subclass) and its query targets.
 12. [readable](readable.md): the docs diet and no plan or history in code, over `shared` and
     `flnd`, with the enforcement switched on. Its writing rules hold from now, and its refactors
     land in the steps that touch their files.

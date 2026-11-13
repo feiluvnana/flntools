@@ -111,10 +111,10 @@ class RefusedTest(unittest.TestCase):
             read("example_user")
         self.assertEqual(str(caught.exception), 'which source is "example_user"? Write it as tik:example_user, '
                                                 "fbk:example_user, ins:example_user, twt:example_user, loi:example_user, "
-                                                "tlg:example_user")
+                                                "tlg:example_user, mht:example_user")
 
     def test_unknown_source(self):
-        with self.assertRaisesRegex(TargetError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi, tlg$"):
+        with self.assertRaisesRegex(TargetError, "^unknown source 'ytb'. Sources: tik, fbk, ins, twt, loi, tlg, mht$"):
             read("ytb:nasa")
 
     def test_url_of_no_source(self):

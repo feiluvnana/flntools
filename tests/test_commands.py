@@ -186,8 +186,9 @@ class DownloadTest(RunsCase):
     def test_help(self):
         code, stdout, _ = self.run_app("--help")
         self.assertEqual(code, 0)
-        self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, and Telegram.", stdout)
-        self.assertIn("Sources: tik, fbk, ins, twt, loi", stdout)
+        self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, Telegram, "
+                      "and mimihentai.", stdout)
+        self.assertIn("Sources: tik, fbk, ins, twt, loi, tlg, mht", stdout)
         self.assertIn("https://www.facebook.com/profile.php?id=<user>", stdout)
         for command in ("download", "sync", "auth"):
             self.assertIn(command, stdout)
@@ -195,6 +196,7 @@ class DownloadTest(RunsCase):
         self.assertNotIn("  logout ", stdout)
         self.assertIn("Query parameters", stdout)
         self.assertIn("loi?<query>: tag, author, sort", stdout)
+        self.assertIn("mht?<query>: title, genre, author, character, parody, chapters", stdout)
         self.assertNotIn("install-browser", stdout)
         self.assertNotIn("--compress", stdout)
         self.assertEqual(self.run_app("auth", "set-cookie")[0], 2)
@@ -631,7 +633,7 @@ class ThinCliTest(unittest.TestCase):
         self.assertFalse(hasattr(flnd_cli, "BROWSERS"))
 
     def test_the_cookie_logins_are_the_sources_without_their_own(self):
-        self.assertEqual(Engine().cookie_logins, ("tik", "fbk", "ins", "twt", "loi"))
+        self.assertEqual(Engine().cookie_logins, ("tik", "fbk", "ins", "twt", "loi", "mht"))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from flnd.sources import SOURCES
 from flnd.sources.fbk import Facebook
 from flnd.sources.ins import Instagram
 from flnd.sources.loi import Loibus
+from flnd.sources.mht import Mimi
 from flnd.sources.tik import TIKTOK_UA, TikTok
 from flnd.sources.tlg import Telegram
 from flnd.sources.twt import CHROME, Twitter
@@ -35,7 +36,7 @@ class RegistryTest(unittest.TestCase):
             self.assertTrue(source.forms, code)
 
     def test_codes_and_order(self):
-        self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt", "loi", "tlg"])
+        self.assertEqual(list(SOURCES), ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht"])
 
     def test_no_domain_belongs_to_two_sources(self):
         owners = {}
@@ -57,7 +58,7 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual((source.concurrency, source.login_methods), (3 if telegram else 8, methods))
 
     def test_listing_floors(self):
-        floors = {"ins": 0.5, "twt": 0.2, "fbk": 0.8, "tik": 1.0, "loi": 0.5}
+        floors = {"ins": 0.5, "twt": 0.2, "fbk": 0.8, "tik": 1.0, "loi": 0.5, "mht": 0.5}
         for code, floor in floors.items():
             with self.subTest(source=code):
                 pace = SOURCES[code].pace
@@ -76,6 +77,7 @@ class RegistryTest(unittest.TestCase):
             Twitter: ("posts media highlights reposts replies profile", "post"),
             Loibus: ("photo archive", ""),
             Telegram: ("photo video file", ""),
+            Mimi: ("chapters cover", "chapter author genre"),
         }
         for source, (categories, single) in table.items():
             with self.subTest(source=source.code):
