@@ -481,6 +481,21 @@ class Cdn:
         return [request.headers.get("range") for request in self.requests]
 
 
+class StallingBody(httpx.SyncByteStream):
+    """A body that sends one chunk, then hangs until the response is closed, as a stalled CDN does."""
+
+    def __init__(self, data: bytes):
+        self.data, self.released = data, threading.Event()
+
+    def __iter__(self):
+        yield self.data[:1024]
+        self.released.wait(10)
+        raise httpx.ReadError("the connection was closed")
+
+    def close(self) -> None:
+        self.released.set()
+
+
 class DownloadCase(HttpTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -492,7 +507,7 @@ class DownloadCase(HttpTestCase):
     def download(self, url: str | list[str] = "https://cdn.example/v.mp4", dest: str | Path | None = None,
                  **options):
         with client(self.cdn.handler) as fake:
-            return http.download(url, dest if dest is not None else self.tmp / "v.mp4", client=fake, **options)
+            return http.download(url, dest if dest is not None else self.tmp / "v.mp4", client=fake, **options).path
 
     def leftovers(self) -> list[str]:
         return sorted(path.name for path in self.tmp.iterdir() if path.name.startswith("."))
@@ -921,7 +936,8 @@ class SplitTest(DownloadCase):
         results: dict[int, bytes] = {}
         with client(handler) as fake:
             def work(number: int) -> None:
-                results[number] = http.download(url, self.tmp / f"{number}.mp4", client=fake, parts=4).read_bytes()
+                saved = http.download(url, self.tmp / f"{number}.mp4", client=fake, parts=4)
+                results[number] = saved.path.read_bytes()
 
             threads = [threading.Thread(target=work, args=(number,)) for number in range(4)]
             for thread in threads:
@@ -938,6 +954,73 @@ class SplitTest(DownloadCase):
         for _ in taken:
             slot.release()
         self.assertTrue(all(taken))
+
+
+
+class DownloadRecordTest(DownloadCase):
+    def test_a_download_gives_its_path_url_and_headers(self):
+        with client(self.cdn.handler) as fake:
+            saved = http.download("https://cdn.example/v.mp4?sig=x", self.tmp, client=fake)
+        self.assertEqual(saved.path, self.tmp / "v.mp4")
+        self.assertEqual(saved.url, "https://cdn.example/v.mp4?sig=x")
+        self.assertEqual(saved.headers["ETag"], '"v1"')
+        self.assertEqual(saved.headers["content-length"], str(len(DATA)))
+
+    def test_a_resumed_download_gives_the_resuming_responses_headers(self):
+        self.cdn.script = [self.cdn.cut_at(3000)]
+        with client(self.cdn.handler) as fake:
+            saved = http.download("https://cdn.example/v.mp4", self.tmp / "v.mp4", client=fake)
+        self.assertEqual(saved.headers["content-range"], f"bytes 3000-{len(DATA) - 1}/{len(DATA)}")
+
+
+class StopTest(DownloadCase):
+    def test_a_stop_between_chunks_raises_and_keeps_the_part_to_resume(self):
+        stop = threading.Event()
+
+        def progress(done: int, total: int | None) -> None:
+            if done >= 4096:
+                stop.set()
+
+        with self.assertRaises(http.StoppedError):
+            self.download(progress=progress, stop=stop)
+        self.assertEqual(len(self.leftovers()), 2)
+        self.cdn.requests.clear()
+        self.assertEqual(self.download().read_bytes(), DATA)
+        self.assertTrue(self.cdn.ranges_asked()[0].startswith("bytes="))
+
+    def test_a_stalled_read_is_stopped_within_a_second(self):
+        stop = threading.Event()
+        self.cdn.script = [lambda request: httpx.Response(200, headers={"ETag": '"v1"', "Content-Length": str(len(DATA))},
+                                                          stream=StallingBody(DATA))]
+        threading.Timer(0.2, stop.set).start()
+        started = time.monotonic()
+        with self.assertRaises(http.StoppedError):
+            self.download(stop=stop)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(len(self.leftovers()), 2)
+
+    def test_a_wait_for_a_full_host_is_stopped(self):
+        stop = threading.Event()
+        slot = http._slot(httpx.URL("https://full.cdn.example/v.mp4"))
+        held = [slot.acquire(blocking=False) for _ in range(http.MAX_PER_HOST)]
+        self.addCleanup(lambda: [slot.release() for taken in held if taken])
+        threading.Timer(0.2, stop.set).start()
+        started = time.monotonic()
+        with self.assertRaises(http.StoppedError):
+            self.download("https://full.cdn.example/v.mp4", stop=stop)
+        self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_a_retry_wait_is_stopped(self):
+        stop = threading.Event()
+
+        def down(request: httpx.Request) -> httpx.Response:
+            stop.set()
+            return httpx.Response(503)
+
+        self.cdn.script = [down]
+        with self.assertRaises(http.StoppedError):
+            self.download(stop=stop)
+        self.assertEqual(len(self.cdn.requests), 1)
 
 
 if __name__ == "__main__":

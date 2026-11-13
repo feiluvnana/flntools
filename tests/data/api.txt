@@ -281,6 +281,10 @@ shared.fmt.size(n: int) -> str
 shared.fmt.url(text: str) -> str
 shared.http: module
 shared.http.ChangedError(shared.http.Error, shared.BrokenError)
+shared.http.Download(path: Path, url: str, headers: Mapping[str, str] = <factory>)
+shared.http.Download.headers: field -> Mapping[str, str]
+shared.http.Download.path: field -> Path
+shared.http.Download.url: field -> str
 shared.http.Error(shared.Error)
 shared.http.IncompleteError(shared.http.Error, shared.BrokenError)
 shared.http.RateLimitedError(shared.http.Error)
@@ -300,7 +304,8 @@ shared.http.Response.text: property -> str
 shared.http.Response.url: field -> str
 shared.http.ServerError(shared.http.Error)
 shared.http.ServerError.status: attribute
-shared.http.download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None) -> Path
+shared.http.StoppedError(shared.http.Error)
+shared.http.download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None, stop: threading.Event | None = None) -> Download
 shared.http.fetch(url: str, *, method: str = 'GET', client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
 shared.kv: module
 shared.kv.ClosedError(shared.kv.Error, RuntimeError)

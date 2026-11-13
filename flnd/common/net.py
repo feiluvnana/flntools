@@ -550,7 +550,7 @@ def _transfer(client: httpx.Client, url: str, dest: Path, *, headers: Mapping[st
         try:
             with _recording(seen):
                 saved = http.download(url, dest, client=client, headers=headers, size=size, parts=split_parts(url),
-                                      check=check, progress=progress)
+                                      check=check, progress=progress).path
         except http.RateLimitedError as error:
             # The transport started the pause from the headers; this counts it for a client
             # whose transport isn't ours. A second hit in one pause does nothing.

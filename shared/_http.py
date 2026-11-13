@@ -56,7 +56,7 @@ import os
 import re
 import secrets
 import threading
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -78,8 +78,8 @@ if TYPE_CHECKING:  # `selector` loads on the first `html`, so a JSON-only script
     from shared._selector import Selection
 
 __all__ = [
-    "ChangedError", "Error", "IncompleteError", "RateLimitedError", "RefusedError", "Response",
-    "ServerError", "download", "fetch",
+    "ChangedError", "Download", "Error", "IncompleteError", "RateLimitedError", "RefusedError", "Response",
+    "ServerError", "StoppedError", "download", "fetch",
 ]
 
 PathLike = Union[str, "os.PathLike[str]"]
@@ -118,6 +118,9 @@ DOWNLOAD_EXTENSION = "shared.http.download"
 INFO_SUFFIX = ".json"
 # The name of a file `download` saves into a folder when its URL's path names none.
 FALLBACK_NAME = "download"
+# How often, in seconds, a download waiting for a host slot or reading a stalled body looks at its
+# `stop` event: short enough that a stop takes effect within a second.
+STOP_POLL = 0.25
 
 class Error(shared.Error):
     """The base of every error `shared.http` raises; also what a failed connection raises."""
@@ -167,6 +170,10 @@ class ServerError(Error):
     def __init__(self, status: int, message: str = ""):
         super().__init__(message or f"HTTP {status}")
         self.status = status
+
+
+class StoppedError(Error):
+    """A download stopped because its caller set `stop`; a resumable part is kept for the next call."""
 
 
 class IncompleteError(Error, shared.BrokenError):
@@ -268,6 +275,26 @@ class Response:
             raise Error(f"expected JSON from {_where(self.url)}, got {self.text[:80]!r}: {error}") from None
 
 
+@dataclass(frozen=True)
+class Download:
+    """A file `download` saved: where it is, the URL it came from, and that response's headers.
+
+        saved = http.download("https://cdn.example/v.mp4", "videos/")
+        saved.path, saved.headers.get("last-modified")
+    """
+
+    # The path written: `dest`, the file in the `dest` folder, or the path `check` returned.
+    path: Path
+    # The URL the file came from, after any redirects.
+    url: str
+    # The headers of the response that started this call's transfer, read-only with lowercase
+    # names; empty when an earlier call had already fetched every byte.
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "headers", _Headers(self.headers))
+
+
 @overload
 def fetch(url: str, *, method: str = ..., client: httpx.Client | None = ...,
           headers: Mapping[str, str] | None = ..., params: Mapping[str, Any] | None = ...,
@@ -358,8 +385,9 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
              headers: Mapping[str, str] | None = None, size: int | None = None,
              parts: Literal["auto"] | int = "auto", resume: bool = True, attempts: int = 3,
              timeout: float = 30.0, check: Callable[[Path], Any] | None = None,
-             progress: Callable[[int, int | None], Any] | None = None, label: str | None = None) -> Path:
-    """Save one file from the web, resuming and splitting where the server allows, and return its path.
+             progress: Callable[[int, int | None], Any] | None = None, label: str | None = None,
+             stop: threading.Event | None = None) -> Download:
+    """Save one file from the web, resuming and splitting where the server allows, and return a `Download`.
 
         http.download("https://cdn.example/v.mp4", "videos/")                # videos/v.mp4
         http.download([mirror_a, mirror_b], "f.7z", client=client, progress=bar.update,
@@ -401,9 +429,8 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
             and is raised, keeping a resumable part, so a Ctrl-C there can stop it.
         label: the text of a progress row this function draws itself, such as the file's name;
             None draws none.
-
-    Returns:
-        The path written: `dest`, the file in the `dest` folder, or the path `check` returned.
+        stop: an event that stops the download within a second when set, between two chunks, in
+            a wait for a slot or a retry, or by closing a stalled read; a resumable part is kept.
 
     Raises:
         RateLimitedError: a 429, at once and never slept on, with the `Retry-After` seconds; a
@@ -415,6 +442,7 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
         ChangedError: the file changed on the server during a resume, and its restart failed.
         Error: the last mirror's connection failed on every attempt, or a request couldn't be
             sent (an invalid URL, too many redirects).
+        StoppedError: `stop` was set.
         ValueError: no URL, `attempts` below 1, or `parts` neither "auto" nor a number from 1.
         Whatever `check` or `progress` raised.
 
@@ -437,13 +465,16 @@ def download(url: str | Sequence[str], dest: PathLike, *, client: httpx.Client |
     with ExitStack() as stack:
         bar = stack.enter_context(log.progress(label, total=size, show=fmt.size)) if label is not None else None
         taken = stack.enter_context(_claimed(path))
+        streams = stack.enter_context(_Streams(stop))
         for number, mirror in enumerate(mirrors, start=1):
             transfer = _Transfer(sender, mirror, path, headers=headers, size=size, parts=parts,
                                  resume=resume and not taken, attempts=attempts, timeout=timeout,
-                                 check=check, report=_Report(bar, progress))
+                                 check=check, report=_Report(bar, progress), streams=streams)
             try:
                 return transfer.run()
-            except RateLimitedError:  # the caller's back-off decides; another mirror is likely the same site
+            # A 429: the caller's back-off decides, and another mirror is likely the same site. A
+            # stop: the caller wants no more of this file from any mirror.
+            except (RateLimitedError, StoppedError):
                 raise
             except Exception as error:  # any other failure of a mirror that isn't the last: the next one may work
                 if number == len(mirrors):
@@ -662,6 +693,66 @@ class _Stopped(Exception):
     """A segment stopped because another one failed; that one's error is what's raised."""
 
 
+class _Streams:
+    """One `download`'s stop: its open responses, closed as soon as `stop` is set, so a stalled read ends."""
+
+    def __init__(self, stop: threading.Event | None):
+        self.stop = stop
+        self.responses: set[httpx.Response] = set()
+        # Streams open and close on the ranges' threads while the watcher reads the set.
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+
+    def __enter__(self) -> _Streams:
+        if self.stop is not None:
+            threading.Thread(target=self._watch, name="shared-http-stop", daemon=True).start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.done.set()
+
+    @property
+    def stopped(self) -> bool:
+        """Whether the caller has set `stop`."""
+        return self.stop is not None and self.stop.is_set()
+
+    def check(self, url: str) -> None:
+        """Raise `StoppedError` once `stop` is set."""
+        if self.stopped:
+            raise StoppedError(f"GET {_where(url)}: stopped")
+
+    def acquire(self, slot: threading.BoundedSemaphore, url: str) -> None:
+        """Take a host slot, looking at `stop` every `STOP_POLL` seconds while the host is full."""
+        while not slot.acquire(timeout=STOP_POLL):
+            self.check(url)
+
+    def sleep(self, seconds: float, url: str) -> None:
+        """Wait between attempts on the shared clock; `stop` ends the wait with `StoppedError`."""
+        if clock.sleep(seconds, stop=self.stop):
+            self.check(url)
+
+    def opened(self, response: httpx.Response) -> None:
+        with self.lock:
+            self.responses.add(response)
+
+    def closed(self, response: httpx.Response) -> None:
+        with self.lock:
+            self.responses.discard(response)
+
+    def _watch(self) -> None:
+        """Close every open response once `stop` is set; the download's own threads then see why."""
+        assert self.stop is not None
+        # Real waits, not `clock`: the stop and the reads it ends are real.
+        while not self.done.is_set():
+            if self.stop.wait(STOP_POLL):
+                with self.lock:
+                    responses = list(self.responses)
+                for response in responses:
+                    with suppress(Exception):  # closing from another thread may race the reader's own close
+                        response.close()
+                return
+
+
 @dataclass
 class _Stream:
     """One open response of a download and the host slot it holds, both released by `close`."""
@@ -670,12 +761,15 @@ class _Stream:
     response: httpx.Response
     # The host slot this stream holds; released even when closing the response fails.
     slot: threading.BoundedSemaphore
+    # The download's open streams, which a stop closes.
+    streams: _Streams
 
     def close(self) -> None:
         """Close the response and give the host slot back."""
         try:
             self.response.close()
         finally:
+            self.streams.closed(self.response)
             self.slot.release()
 
 
@@ -703,7 +797,7 @@ class _Transfer:
 
     def __init__(self, client: httpx.Client, url: str, dest: Path, *, headers: Mapping[str, str] | None,
                  size: int | None, parts: Literal["auto"] | int, resume: bool, attempts: int, timeout: float,
-                 check: Callable[[Path], Any] | None, report: _Report):
+                 check: Callable[[Path], Any] | None, report: _Report, streams: _Streams):
         """One mirror's transfer, with the options `download` was given; nothing is requested until `run`.
 
         Args:
@@ -718,12 +812,15 @@ class _Transfer:
             timeout: seconds each request may wait to connect, and between bytes.
             check: the caller's check on the complete part, or None.
             report: the progress sink shared by every mirror of the call.
+            streams: the call's open responses and its `stop`.
         """
         self.client, self.url, self.dest = client, url, dest
         self.headers = dict(headers or {})
         self.size, self.parts, self.resume, self.attempts, self.timeout = size, parts, resume, attempts, timeout
-        self.check, self.report = check, report
+        self.check, self.report, self.streams = check, report, streams
         self.state: _State | None = None
+        # The URL and headers of the response that started the transfer, for the `Download`.
+        self.final_url, self.response_headers = url, httpx.Headers()
         # Where the whole file goes: `dest`, or the path `check` named.
         self.named = dest
         # Set once the server's file turned out to differ from the part's, so the part restarted.
@@ -733,13 +830,14 @@ class _Transfer:
         # Host slots taken for a fresh split's extra ranges, handed to them as they start.
         self.reserved: list[threading.BoundedSemaphore] = []
 
-    def run(self) -> Path:
+    def run(self) -> Download:
         """Every attempt until the file is whole and checked, then the rename; `download` says what raises."""
         if self.resume:
             self.state = _resumable(self.dest)
         attempt = 1
         while True:
             try:
+                self.streams.check(self.url)
                 self._transfer()
                 self._verify()
                 break
@@ -773,7 +871,7 @@ class _Transfer:
             seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
             log.debug("retry {n} of {url} in {seconds:g} s: {reason}", n=attempt, url=_where(self.url),
                       seconds=seconds, reason=failure)
-            clock.sleep(seconds)
+            self.streams.sleep(seconds, self.url)
             attempt += 1
         state = self.state
         assert state is not None
@@ -783,7 +881,7 @@ class _Transfer:
         with atomic.writing(self.named, replace=True) as final:
             os.replace(state.part, final)
         state.info.unlink(missing_ok=True)
-        return self.named
+        return Download(self.named, self.final_url, self.response_headers)
 
     # One attempt.
 
@@ -791,12 +889,14 @@ class _Transfer:
         """Fetch what the part still lacks: the whole file on a fresh start, or each unfinished range."""
         if self.state is None:
             stream = self._open(None)
+            self.final_url, self.response_headers = str(stream.response.url), stream.response.headers
             self._start(stream, split=not self.single)
         else:
             first = next((segment for segment in self.state.segments if not segment.finished), None)
             if first is None:
                 return
             stream = self._open(first)
+            self.final_url, self.response_headers = str(stream.response.url), stream.response.headers
             if stream.response.status_code == 200:
                 # A 200 to a range: the file changed (`If-Range` didn't match) or the server
                 # ignores ranges. Either way the body is the whole file, so the part restarts on it.
@@ -935,7 +1035,7 @@ class _Transfer:
                 file.seek(segment.at)
                 # As the bytes arrive, without a chunk size: httpx would hold back a partial
                 # chunk, and lose it when the connection drops, which is when it matters.
-                for chunk in stream.response.iter_bytes():
+                for chunk in self._chunks(stream):
                     if abort.is_set():
                         raise _Stopped()
                     if segment.end is not None:
@@ -962,6 +1062,17 @@ class _Transfer:
         finally:
             stream.close()
 
+    def _chunks(self, stream: _Stream) -> Iterator[bytes]:
+        """The body's bytes as they arrive, until the caller's `stop`, which ends even a stalled read."""
+        try:
+            for chunk in stream.response.iter_bytes():
+                self.streams.check(self.url)
+                yield chunk
+        except Exception:
+            # A stop closes the response under the read, which then fails in httpx's own way.
+            self.streams.check(self.url)
+            raise
+
     def _open(self, segment: _Segment | None, *, slot: threading.BoundedSemaphore | None = None) -> _Stream:
         """Send one GET for the whole file (`segment` None) or for the rest of `segment`, and check its status.
 
@@ -983,14 +1094,16 @@ class _Transfer:
                                             extensions={DOWNLOAD_EXTENSION: True})
         if slot is None:
             slot = _slot(request.url)
-            slot.acquire()
+            self.streams.acquire(slot, self.url)
         try:
             response = self.client.send(request, stream=True)
         except BaseException:
             slot.release()
             raise
-        stream = _Stream(response, slot)
+        self.streams.opened(response)
+        stream = _Stream(response, slot, self.streams)
         try:
+            self.streams.check(self.url)
             self._checked(response, request, segment)
         except BaseException:
             stream.close()
