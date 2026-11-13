@@ -475,13 +475,30 @@ on Python 3.14 on 2026-11-13):
   lists them; `sort` and `limit` are parameters too, where a site declares them.
 - **`flnd/query.py`** is the only place that touches luqum: it parses the query (luqum's own
   error, with its position, is the usage error), walks the tree with luqum's `TreeVisitor`, checks
-  every field against the site's `params` (unknown name, wrong kind, a shape the site can't do:
-  `genre:(a OR b)` on a site without `any_of`), turns names into ids through the lookups, and
-  hands the finder a plain **`Query`**: `text` (the free words), `terms` (each `Term(param,
+  every field against the site's `params` (unknown name, wrong kind), splits an OR the site can't
+  send into several searches (below), turns names into ids through the lookups, and hands the
+  finder, once per search, a plain **`Query`**: `text` (the free words), `terms` (each `Term(param,
   values, negated, low, high)`), and `time` (`--time`). A finder never sees luqum's tree.
-- **What the site can't do is refused, not guessed**: an `OR` across two parameters, a comparison
-  on a parameter declared `compare=False`, or a negation the site can't send stops with a message
-  naming the part and what that site takes. No query is silently widened or narrowed.
+- **OR on a site without it runs as several searches, merged** (user, 2026-11-13). Most sites
+  take AND but not OR. `flnd/query.py` rewrites the query into an OR of AND-groups (De Morgan
+  first, so `-(a OR b)` is `-a -b`), and each AND-group the site can send becomes **one search**:
+
+  ```
+  genre:(vanilla OR romance) -genre:example     →  genre:vanilla -genre:example
+                                                    genre:romance -genre:example
+  (parody:example OR character:example) chapters:1  →  parody:example chapters:1
+                                                        character:example chapters:1
+  ```
+
+  The searches run one after another; results are **merged and deduped by `Found.id`**, in the
+  order they first arrive, so a manga matching both genres is listed once. `limit` counts the
+  merged results, and a closed pipe stops every search. A site that declares `any_of` on a
+  parameter (its own OR within one parameter) gets that OR sent whole, as one search. More than
+  **8 searches** is refused with how many the query would need, so a query never fans out
+  unnoticed. Each search is paced as any request is.
+- **What no number of searches can do is refused, not guessed**: a comparison on a parameter
+  declared `compare=False`, a negation the site can't send, a parameter it doesn't take. The message
+  names the part of the query and what that site takes. No query is silently widened or narrowed.
 - **Lookups** (a genre's or an author's id by name) are asked once per run and kept in
   `sites.db` for a day; names match ignoring case and accents; a name that matches several stops
   with the candidates.
