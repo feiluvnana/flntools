@@ -20,6 +20,7 @@ dependencies = [
     "pillow>=11.3",
     "pi-heif>=1.0",
     "imageio-ffmpeg>=0.6",
+    "luqum==1.0.0",
 ]
 
 # For shared alone, without flnd. flnd's dependencies already hold what these add, except

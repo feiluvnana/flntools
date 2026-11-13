@@ -471,6 +471,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "httpx", extra = ["http2"] },
     { name = "imageio-ffmpeg" },
+    { name = "luqum" },
     { name = "parsel" },
     { name = "pi-heif" },
     { name = "pillow" },
@@ -527,6 +528,7 @@ requires-dist = [
     { name = "httpx", extras = ["http2"], marker = "extra == 'http'", specifier = ">=0.27.0" },
     { name = "imageio-ffmpeg", specifier = ">=0.6" },
     { name = "imageio-ffmpeg", marker = "extra == 'media'", specifier = ">=0.6" },
+    { name = "luqum", specifier = "==1.0.0" },
     { name = "parsel", specifier = ">=1.9.0" },
     { name = "parsel", marker = "extra == 'http'", specifier = ">=1.9.0" },
     { name = "parsel", marker = "extra == 'selector'", specifier = ">=1.9.0" },
@@ -820,6 +822,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d3/59/322338183ecda247fb5d1763a6cbe46eff7222eaeebafd9fa65d4bf5cb11/jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d", size = 27377, upload-time = "2026-01-22T16:35:26.279Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/2f/967ba146e6d58cf6a652da73885f52fc68001525b4197effc174321d70b4/jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64", size = 20419, upload-time = "2026-01-22T16:35:24.919Z" },
+]
+
+[[package]]
+name = "luqum"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ply" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/47/eb/740c176edbfcc8a207f9b4af0476e9ad07b96481e7dc37b03e47669dc208/luqum-1.0.0.tar.gz", hash = "sha256:3e7bf3a94eaf8dc936c63de3019b306ee96e63575bc19372dad56114b194f8e0", size = 75950, upload-time = "2025-02-18T07:39:31.799Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/92/25/cfcd4c64369b24b5bf28ccada686f228440897bf001bc165c0dd4f8aebe3/luqum-1.0.0-py3-none-any.whl", hash = "sha256:25e8723aa7b4a522f296eaf8553f7c887b75a29cc92479293cb44333a3b0bc2b", size = 55276, upload-time = "2025-02-18T07:39:29.592Z" },
 ]
 
 [[package]]
@@ -1191,6 +1205,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d4/a8/e5213ea8d8fe308b00412a1c21f51229e295faace74423375830c7b200a8/playwright-1.65.1-py3-none-win32.whl", hash = "sha256:43541b89fa293819eb98383feea837368ee681e67cc105b19f3dd58f1409f1d6", size = 42673459, upload-time = "2026-11-11T23:48:44.428Z" },
     { url = "https://files.pythonhosted.org/packages/6c/cc/f09f7a7f3ae3c4cd3cd2e6dc11b70f269e7fa018351e30339fb0d7c33ca4/playwright-1.65.1-py3-none-win_amd64.whl", hash = "sha256:f9ea4f4b4f70ecc27ef0bd46a1b929798f1a8bf68b3e771261fc098bc98e1a0b", size = 42673468, upload-time = "2026-11-11T23:48:49.783Z" },
     { url = "https://files.pythonhosted.org/packages/b9/c4/317b9e97cbacabd85704c6970a2c09c221bc84a93bae8ab616ef483175fe/playwright-1.65.1-py3-none-win_arm64.whl", hash = "sha256:d50ad4dd217d4ee9e4672efd7ec4ab0523b5e73f64f6e0c5eae258961fa73a49", size = 38404959, upload-time = "2026-11-11T23:48:54.745Z" },
+]
+
+[[package]]
+name = "ply"
+version = "3.11"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/69/882ee5c9d017149285cab114ebeab373308ef0f874fcdac9beb90e0ac4da/ply-3.11.tar.gz", hash = "sha256:00c7c1aaa88358b9c765b6d3000c6eec0ba42abca5351b095321aef446081da3", size = 159130, upload-time = "2018-02-15T19:01:31.097Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/58/35da89ee790598a0700ea49b2a66594140f44dec458c07e8e3d4979137fc/ply-3.11-py2.py3-none-any.whl", hash = "sha256:096f9b8350b65ebd2fd1346b12452efe5b9607f7482813ffca50c22722a807ce", size = 49567, upload-time = "2018-02-15T19:01:27.172Z" },
 ]
 
 [[package]]
