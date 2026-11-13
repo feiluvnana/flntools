@@ -451,7 +451,7 @@ class CtrlCTest(WorkerCase):
         self.assertLess(time.monotonic() - started, LONG / 2)
         self.assertFalse(release.is_set())
         self.assertEqual(self.lines()[0], STOPPING)
-        self.assertTrue(self.lines()[-1].startswith("✗ files"))
+        self.assertEqual(self.lines()[-1], "✗ " + "─" * 20 + " " + "0/1".rjust(17) + " files")
 
     def test_ctrl_c_inside_a_task_stops_the_run(self):
         ran = []
@@ -483,21 +483,20 @@ class ShutdownTest(WorkerCase):
 class LabelTest(WorkerCase):
     def test_known_total(self):
         worker.as_ordered(square, [1, 2, 3], label="squares")
-        self.assertTrue(self.lines()[-1].startswith("✓ squares"))
-        self.assertEqual(self.lines()[-1].split()[-1], "3/3")
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "3".rjust(17) + " squares")
 
     def test_growing_total(self):
         with worker.pool(label="files") as pool:
             for n in range(4):
                 pool.submit(square, n)
-        self.assertEqual(self.lines()[-1].split()[-1], "4/4")
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "4".rjust(17) + " files")
         worker.as_ordered(square, (n for n in range(2)), label="gen")
-        self.assertEqual(self.lines()[-1].split()[-1], "2/2")
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "2".rjust(17) + " gen")
 
     def test_failures_end_the_bar_at_error(self):
         with worker.pool(label="bad") as pool:
             pool.submit(square, "x")
-        self.assertTrue(self.lines()[-1].startswith("✗ bad"))
+        self.assertEqual(self.lines()[-1], "✗ " + "━" * 20 + " " + "1/1".rjust(17) + " bad")
 
 
 class ProgressTest(WorkerCase):
@@ -543,7 +542,7 @@ class ProgressTest(WorkerCase):
         calls = []
         worker.as_ordered(square, [1, 2], label="both", progress=lambda done, total: calls.append(done))
         self.assertEqual(calls[-1], 2)
-        self.assertTrue(self.lines()[-1].startswith("✓ both"))
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "2".rjust(17) + " both")
 
 
 class OptionTest(unittest.TestCase):

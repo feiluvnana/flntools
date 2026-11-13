@@ -86,6 +86,7 @@ def download(
     image: MediaChoice = None,
     video: MediaChoice = None,
     audio: MediaChoice = None,
+    verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
 ) -> int:
     """Download each target.
 
@@ -103,7 +104,11 @@ def download(
         video: compress each video the same way: a container (mp4, mkv, webm, …), a codec (h264,
             h265, vp9) or container:codec, and a level. h265 is smaller, but many browsers can't play it.
         audio: compress each audio file the same way: mp3, m4a, aac, opus, ogg or flac, and a level.
+        verbose: also show the details, such as each file skipped as already saved and the name that holds it.
     """
+    # Debug lines, such as each skipped file, are shown only when asked for.
+    if verbose:
+        log.level = "debug"
     try:
         # Every value is checked before anything starts, so a usage error never follows any work.
         # Only ValueError is a usage error: the engine raises it for a bad option or target, with the

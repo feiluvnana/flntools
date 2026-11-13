@@ -623,7 +623,7 @@ class DownloadTest(DownloadCase):
         screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=200, tty=False, interactive=False)
         with theme.scope(screen=screen, color="none", unicode=True):
             self.download(label="v.mp4")
-        self.assertEqual(screen.dest.getvalue().splitlines(), ["✓ v.mp4 ━━━━━━━━━━━━━━━━━━━━ 10.0 KB/10.0 KB"])
+        self.assertEqual(screen.dest.getvalue().splitlines(), ["✓ " + "━" * 20 + " " + "10.0 KB".rjust(17) + " v.mp4"])
 
 
 class ResumeTest(DownloadCase):

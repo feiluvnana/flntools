@@ -51,7 +51,7 @@ in the folder you run it from.
 
 ```bash
 flnd download <targets...> [--from CATEGORIES] [--time SINCE,UNTIL]
-              [--image FORMAT,LEVEL] [--video FORMAT,LEVEL] [--audio FORMAT,LEVEL]
+              [--image FORMAT,LEVEL] [--video FORMAT,LEVEL] [--audio FORMAT,LEVEL] [-v]
 flnd sync [targets...]
 flnd login
 flnd logout <sources...> | all
@@ -64,6 +64,9 @@ python -m flnd download <targets...>
 ```
 
 Files go to `.flnd/downloads/`, and the browser window is visible while a source runs.
+A file already saved, even under another name (a feed's dated post and a tab's undated photo of
+the same media), is not downloaded again; each category says how many it skipped, and `-v` lists
+each skipped file with the name that holds it.
 flnd uses the `HTTPS_PROXY` and `ALL_PROXY` environment variables (httpx reads them).
 
 ### Target Format

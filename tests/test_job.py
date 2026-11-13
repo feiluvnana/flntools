@@ -180,7 +180,9 @@ class SavedTest(JobCase):
                 yield Post("1", [File(f"{CDN}/1.jpg")])
 
         self.assertEqual(self.run_engine(Twice, targets=["twc:example_user"]), 1)
-        self.assertIn("• skip posts/1.jpg", self.lines())
+        # The second queueing is skipped quietly; the info level sums each category once.
+        self.assertIn("• twc:example_user: posts: 1 file already saved", self.lines())
+        self.assertFalse(any("skip" in line for line in self.lines()), self.lines())
 
     def test_a_file_in_two_categories_is_downloaded_once(self):
         class Both(Source):

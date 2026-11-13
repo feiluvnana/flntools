@@ -28,6 +28,9 @@ How it works, for one target (plan/phase-6/redesign.md, B3):
 - **Saved.** A file already on disk, or whose history row points at a file, is skipped, and so
   is one already queued. A lazy post (`files` a function) whose first key is saved is skipped
   without calling it, which saves its request; a post with its files listed checks each file.
+  A skip is a debug line (`-v`) naming the file that holds it, since one media is often listed
+  twice under two names, a feed's dated post and a tab's undated photo; at info, each category
+  says once how many files it skipped.
 - **Async.** An `async def` route or category (tlg) runs on the source's own loop one step at a
   time, from the job's thread, so the loop is free while the job waits for room in the download
   pool. There is no handover thread.
@@ -308,8 +311,13 @@ class Job:
         self._categories = {category.name: category for route in self.source.routes for category in route.categories}
         self._pool: worker.Pool | None = None
         self._encodes: worker.Pool | None = None
-        # Every path and history key queued so far, so one file is never written twice.
-        self._queued: set[Path | str] = set()
+        # Every path and history key queued so far, each to the name it was queued as, so one file
+        # is never written twice and a skip can say which name holds it.
+        self._queued: dict[Path | str, str] = {}
+        # The files skipped in the category being listed, which `sum_up` reports when it ends: one
+        # line per category, since a feed and a tab that list the same media can skip hundreds.
+        self._category: str | None = None
+        self._category_skips = 0
         # Each written file by its history key, at its path after postprocessing (a compressed copy
         # may have a new name). Download threads and the encode pool's thread both write it, so
         # under the lock. A video counts from its download, as it always did; another file once
@@ -352,11 +360,14 @@ class Job:
         """
         # Step 1: a lazy post whose first key is saved is skipped before its files are listed, so its request is saved.
         category = self._categories.get(post.category)
+        if post.category != self._category:
+            self.sum_up()
+            self._category = post.category
         self.caught_up = False
         if post.lazy and self._saved_first(post, category):
-            self.skipped += 1
+            self._skip()
             self.caught_up = True
-            log.info("skip {post}", post=post.id)
+            log.debug("skip {post}: already saved", post=post.id)
             return True
         # Step 2: list the files (a lazy post's `files` is called here), then queue each one not saved or queued.
         listed = list(post.files()) if callable(post.files) else list(post.files)
@@ -371,16 +382,22 @@ class Job:
                 atomic.write(dest, placed.file.content.encode("utf-8"))
                 continue
             key = f"{self.source.code}:{placed.key}"
-            if dest in self._queued or key in self._queued or self._saved(dest, key):
-                self.skipped += 1
+            held = self._held(dest, key)
+            if held is not None:
+                self._skip()
                 found += 1
-                log.info("skip {name}", name=placed.path)
+                # The same media is often listed twice under two names (a feed's dated post and a
+                # tab's undated photo), so the line names the one that holds it.
+                if held == placed.path:
+                    log.debug("skip {name}: already saved", name=placed.path)
+                else:
+                    log.debug("skip {name}: already saved as {held}", name=placed.path, held=held)
                 continue
             # Waiting for room first keeps the pool from growing without bound while the listing runs ahead.
             if not self._room():
                 return False
             fresh += 1
-            self._queued.update((dest, key))
+            self._queued.update(dict.fromkeys((dest, key), placed.path))
             try:
                 self._downloads().submit(self._task, _Queued(placed, dest, key))
             except BaseException:
@@ -460,15 +477,42 @@ class Job:
             return False
         values = {**post.fields, "id": post.id, "date": day(post.date), "category": post.category, "num": 0}
         key = fill(template, values, safe=False)
-        return bool(key) and self._saved(None, f"{self.source.code}:{key}")
+        return bool(key) and self._held(None, f"{self.source.code}:{key}") is not None
 
-    def _saved(self, dest: Path | None, key: str) -> bool:
-        """Whether a file is saved: at `dest` and not empty, or where its history row says."""
+    def sum_up(self) -> None:
+        """Log how many files the category being listed skipped as already saved, once, if any.
+
+            job.sum_up()        # • ins:example_user: posts: 12 files already saved
+
+        `queue` calls it when a post of another category comes, and `download` once the listing ends.
+        """
+        if self._category_skips:
+            files = fmt.count(self._category_skips, "file")
+            if self._category:
+                self.site.info("{category}: {files} already saved", category=self._category, files=files)
+            else:
+                self.site.info("{files} already saved", files=files)
+        self._category_skips = 0
+
+    def _skip(self) -> None:
+        """Count one skipped file, for the target's total and its category's line."""
+        self.skipped += 1
+        self._category_skips += 1
+
+    def _held(self, dest: Path | None, key: str) -> str | None:
+        """The name that already holds a file: queued this run, at `dest` and not empty, or where its history row says; None when it is new."""
+        for known in (dest, key):
+            if known is not None and known in self._queued:
+                return self._queued[known]
         if dest is not None and dest.is_file() and dest.stat().st_size > 0:
-            return True
+            return self._name(dest)
         row = self.settings.history.get(key)
         found = Path(row.get("path", "")) if isinstance(row, dict) and row.get("path") else None
-        return found is not None and found.is_file()
+        return self._name(found) if found is not None and found.is_file() else None
+
+    def _name(self, path: Path) -> str:
+        """A saved file's name as a log line shows it: from the target's folder, or whole when it is elsewhere."""
+        return path.relative_to(self.folder).as_posix() if path.is_relative_to(self.folder) else str(path)
 
     def _downloads(self) -> worker.Pool:
         """The target's download pool, made on the first file: the source's `concurrency` at once."""
@@ -714,6 +758,7 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
             # Closes the category being read, so its `finally` blocks run, and it isn't complete.
             listing.close()
             site.close()
+            job.sum_up()
         job.wait(row)
     except BaseException as caught:  # a route or a category failed, or a second Ctrl-C: handled below
         error = caught

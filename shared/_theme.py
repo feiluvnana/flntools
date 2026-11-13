@@ -42,6 +42,9 @@ ColorDepth = Literal["none", "8", "256", "16m"]
 COLOR_DEPTHS: tuple[ColorDepth, ...] = ("none", "8", "256", "16m")
 # Cells in a progress bar, and the column width of a help screen's option labels.
 BAR_CELLS = 20
+# The cells a bar's count is right-aligned in, so the label after it starts at one column on every
+# line: 17 holds `999.9 MB/999.9 MB`, the longest `fmt.size` pair below a GB; a longer one pushes on.
+COUNT_CELLS = 17
 HELP_LABEL_WIDTH = 20
 
 # Each glyph is (unicode, ascii). A nested dict is a group of glyphs. The ASCII half is what a
@@ -348,16 +351,34 @@ def draw_log(theme: Theme, record: LogRecord) -> str:
 
 
 def draw_progress(theme: Theme, record: LogRecord) -> str:
-    """One progress line: the glyph, label, bar, count and caption, drawn from `record.bar`.
+    """One progress line drawn from `record.bar`: a bar's columns first and its label last, or a spinner after its label.
 
-    An error level draws as a failed line; a finished bar draws as ok. A bar with no total is a
-    spinner, and a bar that is finished draws no spinner.
+        ✓ ━━━━━━━━━━━━━━━━━━━━           45.4 KB posts/a.jpg
+        • ━━━━━━━━━━──────────    7.3 MB/14.6 MB videos/b.mp4
+        • scroll posts ⠋ 12
+
+    A bar with a total draws its glyph, cells and count in fixed columns, so the labels of many
+    lines start at one column, whatever their length; a line too long for the screen is cut at its
+    label's end. A line that ended at ok shows its total alone, and a failed one keeps `count/total`,
+    so how far it got stays on screen. A bar with no total is a spinner, drawn after its label, and
+    a finished one draws no spinner.
+
+    Args:
+        theme: the theme whose glyphs and palette draw the line.
+        record: the level and the bar; an error level draws as a failed line, a finished bar as ok.
+
+    Returns:
+        One line of text, with no trailing newline.
     """
     bar = record.bar
     assert bar is not None
     level = "error" if record.level == "error" else "ok" if bar.finished else "info"
-    parts = [theme.paint(level, getattr(theme.glyphs, LOG_GLYPHS[level])), bar.label, _bar_cells(theme, bar),
-             _count(bar), bar.caption]
+    glyph = theme.paint(level, getattr(theme.glyphs, LOG_GLYPHS[level]))
+    if bar.total is None:
+        parts = [glyph, bar.label, _bar_cells(theme, bar), _count(bar), bar.caption]
+    else:
+        count = bar.show(bar.total) if level == "ok" else _count(bar)
+        parts = [glyph, _bar_cells(theme, bar), count.rjust(COUNT_CELLS), bar.label, bar.caption]
     return " ".join(part for part in parts if part)
 
 

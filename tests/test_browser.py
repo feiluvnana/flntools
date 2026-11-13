@@ -355,7 +355,7 @@ class ChromeOnlyTest(BrowserCase):
                                                       if key not in os.environ})
         out = self.screen.dest.getvalue()
         self.assertIn(f"✓ {browser.CHROMIUM_QUESTION} Yes", out)
-        self.assertIn("✓ Downloading Chromium", out)
+        self.assertIn("✓ " + "━" * 20 + " " + "100".rjust(17) + " Downloading Chromium", out)
         # A later run finds it and doesn't ask: the screen has no key left to answer with.
         browser.open().close()
         self.assertEqual((self.launched, len(self.installs)), (["chromium", "chromium"], 1))
@@ -404,7 +404,7 @@ class ChromeOnlyTest(BrowserCase):
                 self.assertRaisesRegex(RuntimeError, "installer exited with 1: Error: ENOSPC"):
             browser.open()
         self.assertEqual(self.launched, [])
-        self.assertIn("✗ Downloading Chromium", self.screen.dest.getvalue())
+        self.assertIn("✗ " + "─" * 20 + " " + "0/100".rjust(17) + " Downloading Chromium", self.screen.dest.getvalue())
 
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []

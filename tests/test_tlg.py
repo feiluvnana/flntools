@@ -644,7 +644,9 @@ class ChatTest(DownloadCase):
         by_title = self.target_dir("tlg", fmt.filename("example channel"))
         self.assertTrue((by_title / "Example_Channel" / "photo" / "2026-01-05_11.jpg").is_file())
         self.assertEqual(self.download("tlg:-1001001"), 0)
-        self.assertIn("• skip Example_Channel/photo/2026-01-05_11.jpg", self.lines())
+        # The file is already saved under the title, so the id run reports the category once at info.
+        self.assertIn("• tlg:-1001001: photo: 1 file already saved", self.lines())
+        self.assertFalse(any("skip" in line for line in self.lines()), self.lines())
 
     def test_an_ambiguous_title_fails_listing_ids(self):
         other = chat(1002, "Example Channel")
