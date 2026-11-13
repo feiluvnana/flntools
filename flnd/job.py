@@ -84,6 +84,8 @@ if TYPE_CHECKING:
 
 __all__ = ["STOPPED", "Done", "Job", "Placed", "download", "place", "plan", "posts", "wanted"]
 
+# The history field of a post's first file that holds how many files the post has, when more than one.
+FILES = "files"
 # Posts in a row older than `--time`'s since that end a `newest_first` category (A9 rule 2): more
 # than any site pins (Instagram and TikTok up to 3, X 1), so 5 can only mean the feed has passed it.
 OLDER_IN_A_ROW = 5
@@ -476,13 +478,27 @@ class Job:
             return tuple(self._written.values())
 
     def _saved_first(self, post: Post, category: Category | None) -> bool:
-        """Whether a lazy post's first file is saved, by its key alone; False when the key needs the listed files."""
+        """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed files.
+
+        The first file's history row holds the post's file count (`FILES`), so a post whose later
+        file failed is listed again; a row without it (a post of one file) needs only its own key.
+        """
         template = _format(self.source, category, "key")
         if not template or _fields(template) & LISTED_FIELDS:
             return False
-        values = {**post.fields, "id": post.id, "date": day(post.date), "category": post.category, "num": 0}
-        key = fill(template, values, safe=False)
-        return bool(key) and self._held(None, f"{self.source.code}:{key}") is not None
+        values = {**post.fields, "id": post.id, "date": day(post.date), "category": post.category}
+        keys = [f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}" for num in range(2)]
+        if keys[0] == f"{self.source.code}:" or self._held(None, keys[0]) is None:
+            return False
+        row = self.settings.history.get(keys[0])
+        count = row.get(FILES) if isinstance(row, dict) else None
+        if not isinstance(count, int) or count < 2:
+            return True
+        if keys[1] == keys[0]:
+            # A key without `num` can't tell the files apart; the first one stands for the post, as before.
+            return True
+        return all(self._held(None, f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}")
+                   is not None for num in range(1, count))
 
     def sum_up(self) -> None:
         """Log how many files the category being listed skipped as already saved, once, if any.
@@ -621,6 +637,11 @@ class Job:
         kind = disk.kind_of(saved.name)
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+        count = placed.values.get("count", 1)
+        if placed.num == 0 and isinstance(count, int) and count > 1:
+            # The first file's row holds the post's file count, so a later run skips the lazy post
+            # only when every one of its files is saved, not just this one (fixes #2).
+            row[FILES] = count
         shrink = self.settings.options.shrink and kind in KINDS
         fields = postprocess.Fields(day=day(placed.post.date), kind=kind, shrink=shrink,
                                     compressor=self.settings.compressor, last_modified=received.get("last-modified"),

@@ -71,7 +71,10 @@ class CategoriesTest(JobCase):
         self.assertEqual(sorted(rows), ["exm:A1_0", "exm:B2def_0", "exm:C1abc_0", "exm:C1abc_1",
                                         "exm:profile/avatar_42.jpg"])
         # Today's row format: where it is, its size, and when.
-        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "path", "size"])
+        # The first file of a post of several holds their count (fixes #2).
+        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "files", "path", "size"])
+        self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
+        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "path", "size"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
@@ -164,6 +167,34 @@ class SavedTest(JobCase):
         self.assertEqual(listed, ["new"])
         self.run_engine(Lazy, targets=["lzy:example_user"], options=options)
         self.assertEqual(listed, ["new"])
+
+    def test_a_lazy_post_whose_later_file_failed_is_listed_again(self):
+        listed = []
+
+        class Carousel(Source):
+            code, name, domains, key = "crs", "Carousel", ("example.com",), "{id}_{num}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield Post("C1abc", lambda: listed.append("C1abc") or [File(f"{CDN}/c{num}.jpg") for num in range(3)])
+
+        self.routes[f"{CDN}/c1.jpg"] = httpx.Response(403)
+        self.run_engine(Carousel, targets=["crs:example_user"])
+        self.assertEqual(sorted(self.history()), ["crs:C1abc_0", "crs:C1abc_2"])
+        del self.routes[f"{CDN}/c1.jpg"]
+        # The 403 asked for the post's files once more (B6), so the first run listed it twice.
+        before = len(listed)
+        self.requests.clear()
+        self.run_engine(Carousel, targets=["crs:example_user"])
+        self.assertEqual(len(listed), before + 1)
+        self.assertEqual([str(request.url) for request in self.requests], [f"{CDN}/c1.jpg"])
+        self.requests.clear()
+        self.run_engine(Carousel, targets=["crs:example_user"])
+        self.assertEqual((len(listed), self.requests), (before + 1, []))
 
     def test_a_file_queued_twice_is_downloaded_once(self):
         class Twice(Source):
@@ -281,11 +312,12 @@ class FilesTest(JobCase):
         # No date and no Last-Modified: the download day, which is when it was written.
         self.assertEqual(modified("albums/Summer_2026/A1.jpg").date(), datetime.datetime.now(datetime.timezone.utc).date())
 
-    def test_the_history_row_has_its_path_size_and_time_only(self):
+    def test_the_history_row_has_its_path_size_and_time_and_a_first_file_its_posts_count(self):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "path", "size"])
+        self.assertEqual(sorted(row), ["at", "files", "path", "size"])
+        self.assertEqual(sorted(self.history()["exm:B2def_0"]), ["at", "path", "size"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
