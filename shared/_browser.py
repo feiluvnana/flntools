@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Sequence, Union, overload
 
 import shared
+from shared import _fmt as fmt
 from shared import _prompt as prompt
 from shared._cookies import Jar
 from shared._log import log
@@ -577,7 +578,7 @@ class Page:
                 # A handler is a source's code, called from inside Playwright's event loop: an
                 # exception that went on up would be lost there, and stop every later response.
                 except Exception as error:
-                    log.warn("on_response handler failed for {url}: {error}", url=response.url,
+                    log.warn("on_response handler failed for {url}: {error}", url=fmt.url(response.url),
                              error=f"{type(error).__name__} {error}".strip())
 
         self.raw.on("response", listener)
@@ -1127,7 +1128,7 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
         # that: the body is gone, and it belonged to the page being left. That is expected, so it
         # is skipped without a line; any other unreadable body is still worth a debug line.
         if GONE_BODY not in str(error):
-            log.debug("on_response: no body for {url}: {error}", url=response.url, error=_first_line(error))
+            log.debug("on_response: no body for {url}: {error}", url=fmt.url(response.url), error=_first_line(error))
         return []
     pieces = [line for line in body.splitlines() if line.strip()] if lines else [body]
     parsed = []
@@ -1136,5 +1137,5 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
             parsed.append(jsonlib.loads(piece))
         # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
         except ValueError:
-            log.debug("on_response: skipped a body that is not JSON from {url}", url=response.url)
+            log.debug("on_response: skipped a body that is not JSON from {url}", url=fmt.url(response.url))
     return parsed

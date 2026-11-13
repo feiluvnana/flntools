@@ -1,7 +1,7 @@
 """Values as short text for a person to read, and text as safe file names.
 
 Each function takes one value and returns a plain `str`: a size in bytes, a duration, a date, a
-count with its noun, or a file name every platform accepts. They are pure, so the caller adds
+count with its noun, a file name every platform accepts, or a URL safe to show. They are pure, so the caller adds
 color (`shared.style`) and decides where the text goes. Stdlib only: nothing is wrapped, so there
 is no `.raw`.
 
@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import datetime as _datetime
 import re
+from urllib.parse import urlsplit
 
 import shared
 
-__all__ = ["Error", "count", "date", "duration", "filename", "size"]
+__all__ = ["Error", "count", "date", "duration", "filename", "size", "url"]
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f]')
@@ -26,6 +27,22 @@ RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"{kind}{n}" for kind in ("COM"
 
 class Error(shared.Error):
     """The base of every error `shared.fmt` raises."""
+
+
+def url(text: str) -> str:
+    """A URL as a message or a log shows it: without its query and fragment, where signed tokens live.
+
+        fmt.url("https://cdn.example.com/a.jpg?oe=1&sig=x")     # "https://cdn.example.com/a.jpg"
+
+    Args:
+        text: a URL; text without a host keeps only its path.
+
+    Returns:
+        The scheme, host and path, so a CDN's signed link, a credential while it lasts, never
+        reaches a screen, a log file or an exception message.
+    """
+    parts = urlsplit(text)
+    return f"{parts.scheme}://{parts.netloc}{parts.path}" if parts.netloc else parts.path
 
 
 def size(n: int) -> str:

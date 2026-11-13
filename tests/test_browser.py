@@ -704,9 +704,10 @@ class PageTest(PageCase):
             seen.append(parsed)
 
         self.page.on_response("/api/", handler)
-        self.fetch("/api/graphql")
+        self.fetch("/api/graphql?doc_id=1&sig=secret")
         self.fetch("/api/other")
         self.assertEqual(seen, [{"other": True}])
+        # The URL is shown without its query, where a signed token may be (fixes #6).
         self.assertEqual(self.lines(), ["! on_response handler failed for https://site.test/api/graphql: KeyError 'edges'"])
 
     def test_on_request_and_stop(self):

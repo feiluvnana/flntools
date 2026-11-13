@@ -434,7 +434,7 @@ def download(client: httpx.Client, source: Download, dest: Path, *, label: str, 
                 return _save_dash(client, mirror, audio, dest, label, headers, backoff, wait)
             return _save_url(client, mirror, dest, label, headers, size, backoff, kind, received)
         except http.RefusedError as error:
-            refused = FetchError(f"HTTP {error.status} for {_where(str(mirror))}", status=error.status)
+            refused = FetchError(f"HTTP {error.status} for {fmt.url(str(mirror))}", status=error.status)
             if number == len(mirrors):
                 raise refused from None
             reason: BaseException = refused
@@ -597,12 +597,6 @@ def _save_fetch(fetch: Fetch, dest: Path, label: str, size: int | None, kind: st
             # Named by its content: moved there in one step, so the block's rename onto `dest` has nothing to move.
             os.replace(part, final)
     return final
-
-
-def _where(url: str) -> str:
-    """The URL without its query or fragment, which may hold a signed token, for a message."""
-    parts = urlsplit(url)
-    return parts._replace(query="", fragment="").geturl()
 
 
 def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:

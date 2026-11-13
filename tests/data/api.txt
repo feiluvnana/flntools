@@ -246,6 +246,7 @@ shared.fmt.date(value: _datetime.date | float, *, pattern: str | None = None) ->
 shared.fmt.duration(seconds: float) -> str
 shared.fmt.filename(text: str, *, fallback: str = 'untitled', maxlen: int = 200) -> str
 shared.fmt.size(n: int) -> str
+shared.fmt.url(text: str) -> str
 shared.http: module
 shared.http.ChangedError(shared.http.Error, shared.BrokenError)
 shared.http.Error(shared.Error)

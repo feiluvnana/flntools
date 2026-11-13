@@ -81,8 +81,6 @@ class TreeTest(JobCase):
 
     def test_no_signed_query_is_ever_printed(self):
         self.assertNotIn("?", "\n".join(self.lines()))
-        self.assertEqual(dry.without_query("https://cdn.example.com/a.jpg?oe=1&sig=secret#x"),
-                         "https://cdn.example.com/a.jpg")
 
     def test_time_and_from_are_read_like_download(self):
         self.assertEqual(self.lines(categories="profile")[0], "  profile")

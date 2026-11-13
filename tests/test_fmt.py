@@ -4,6 +4,13 @@ from datetime import date, datetime
 from shared import fmt
 
 
+class UrlTest(unittest.TestCase):
+    def test_the_query_and_fragment_go_and_the_rest_stays(self):
+        self.assertEqual(fmt.url("https://cdn.example.com/a.jpg?oe=1&sig=secret#x"), "https://cdn.example.com/a.jpg")
+        self.assertEqual(fmt.url("http://example.com:8080/p/q"), "http://example.com:8080/p/q")
+        self.assertEqual(fmt.url("/relative/path?x=1"), "/relative/path")
+
+
 class SizeTest(unittest.TestCase):
     def test_units(self):
         self.assertEqual(fmt.size(0), "0.0 B")

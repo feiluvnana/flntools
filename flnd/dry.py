@@ -16,7 +16,6 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Sequence
-from urllib.parse import urlsplit
 
 from flnd import job
 from flnd.engine import ACCOUNT, Engine, _connected, _offer_browser, needs_browser
@@ -24,8 +23,9 @@ from flnd.session import Options, Settings, single_targets, unknown_categories
 from flnd.site import TargetSite, source_run
 from flnd.source import File, Range, Source, Target
 from flnd.sources import SOURCES
+from shared import fmt
 
-__all__ = ["main", "plan", "tree", "without_query"]
+__all__ = ["main", "plan", "tree"]
 
 
 def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None,
@@ -75,7 +75,7 @@ def tree(placed: Iterable[job.Placed]) -> Iterator[str]:
             C1abc  2026-01-02
               reels/2026-01-02_C1abc_0.jpg  https://cdn.example.com/a.jpg
 
-    Every URL is `without_query`, and a source's own fetch function or a text file is named as such.
+    Every URL is shown by `fmt.url`, without its query, and a source's own fetch function or a text file is named as such.
     """
     category = post = None
     for item in placed:
@@ -88,12 +88,6 @@ def tree(placed: Iterable[job.Placed]) -> Iterator[str]:
             post = item.post
             yield f"{indent}{post.id}  {item.values['date'] or 'undated'}"
         yield f"{indent}  {item.path}  {_where(item.file)}"
-
-
-def without_query(url: str) -> str:
-    """A URL without its query and fragment, where signed tokens live: `https://cdn.example.com/a.jpg?oe=1&sig=x` is `https://cdn.example.com/a.jpg`."""
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}{parts.path}" if parts.netloc else parts.path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -125,12 +119,12 @@ def _where(file: File) -> str:
     if file.content is not None:
         return f"(text, {len(file.content)} characters)"
     if isinstance(file.url, str):
-        found = without_query(file.url)
+        found = fmt.url(file.url)
     elif isinstance(file.url, tuple):
-        found = without_query(file.url[0]) + (f" (+{len(file.url) - 1} mirrors)" if len(file.url) > 1 else "")
+        found = fmt.url(file.url[0]) + (f" (+{len(file.url) - 1} mirrors)" if len(file.url) > 1 else "")
     else:
         found = "(fetched by the source)"
-    return f"{found} + audio {without_query(file.audio)}" if file.audio else found
+    return f"{found} + audio {fmt.url(file.audio)}" if file.audio else found
 
 
 if __name__ == "__main__":
