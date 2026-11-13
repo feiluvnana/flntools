@@ -5,7 +5,7 @@
   "flnd/cli.py": "94230cefceb9900afa3f077db7cfc359924c4c921c5d0ccd6babab9b2c747917",
   "flnd/common/__init__.py": "d74ff0ee8da3b9806b18c877dbf29bbde50b5bd8e4dad7a3a725000feb82e8f1",
   "flnd/common/auth.py": "32d08f5cfc314eac745e5945501282f590ec8ae352dbcd8ded452e5c7833a575",
-  "flnd/common/compress.py": "21c2766ff0d14a0439bd51054a12b56493d4f34cdacaa8502435ccd4016f92dd",
+  "flnd/common/compress.py": "06f14b61336d03af1f8e0a8c3cbfb01e12d52729cba1e94cf3c69cc75cf00e62",
   "flnd/common/files.py": "1fd8789ccdc605fc9d2688a49b0526a15dc983a00faa28451c7894fdad6cfc3f",
   "flnd/common/net.py": "209d7e98ac17c97d8cdf5e80f4ed68c26fe888f5fada8daac6d6d9cf02c95397",
   "flnd/dry.py": "02436b08289441387309f5b2ff9f753886fa22f89c8e9e131ab84d232bdccf42",

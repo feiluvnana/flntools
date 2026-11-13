@@ -27,10 +27,13 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Iterable, MutableMapping
+from typing import TYPE_CHECKING, Any, Iterable, MutableMapping
 
 from flnd.common import files
 from shared import log, worker
+
+if TYPE_CHECKING:
+    from shared import media
 
 # media's level for `--shrink`: the balance of quality and size (Phase 5's "balanced"). A history
 # row's `compressed` records it.
@@ -42,6 +45,15 @@ ONE_AT_A_TIME = frozenset({files.VIDEO})
 # Saved photos and audio `apply` shrinks at once: Pillow releases the GIL while it encodes, and
 # ffmpeg runs in a process of its own.
 AT_ONCE = 8
+# What `LEVEL` gives a video, in bits per pixel per frame (x264 at CRF 23, medium, on phone and
+# CDN clips); one already at or below it can't come out smaller, so it isn't encoded.
+BITS_PER_PIXEL = 0.1
+# `LEVEL`'s caps in `shared.media`: the shorter side in pixels, and the frame rate.
+LEVEL_SHORT_SIDE, LEVEL_FPS = 1080, 60
+# Seconds of a video encoded first; the whole file is encoded only when the slice came out at
+# least `SLICE_GAIN` smaller. A video under two slices long is encoded whole at once.
+SLICE = 4.0
+SLICE_GAIN = 0.10
 # A video's codec as ffmpeg names it, by the name `media.compress` takes: passed so an MP4 keeps its
 # own codec, since without one media writes the container's default (H.264 in an MP4).
 OWN_CODECS = {"h264": "h264", "hevc": "h265", "vp9": "vp9"}
@@ -134,12 +146,14 @@ def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[s
         # `with` drops the compressed copy's temporary file whenever it isn't saved, an error included.
         with media.open(path) as original:
             codec = OWN_CODECS.get(original.info.video or "") if kind == files.VIDEO else None
-            out = original.compress(LEVEL, codec=codec)
-            if out.size < original.size:
-                saved: Path | None = out.save()
+            saved: Path | None = None
+            if kind == files.VIDEO and not _can_win(original, codec):
+                log.info("{name}: an encode wouldn't save enough; kept as it is", name=path.name)
             else:
-                saved = None
-                if out is not original:
+                out = original.compress(LEVEL, codec=codec)
+                if out.size < original.size:
+                    saved = out.save()
+                elif out is not original:
                     log.info("{name}: compressing saved nothing; kept the original", name=path.name)
     except (ValueError, OSError) as error:
         # This file only: unreadable or refused (ValueError; BrokenError, UnsafeError and KindError among them),
@@ -157,6 +171,31 @@ def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[s
     if saved is None:
         return {"path": str(path), "size": size, "compressed": "none", "original_size": size}
     return {"path": str(saved), "size": saved.stat().st_size, "compressed": LEVEL, "original_size": size}
+
+
+def _can_win(original: media.Media, codec: str | None) -> bool:
+    """Whether a video encoded at `LEVEL` can come out much smaller, by its bitrate and a slice."""
+    info = original.info
+    target = _target_bitrate(info)
+    if info.bitrate is None or target is None:
+        return True
+    if info.bitrate <= target:
+        return False
+    if info.duration is None or info.duration <= 2 * SLICE:
+        return True
+    # From the middle, past any intro; cut at keyframes, so the slice is copied, not encoded.
+    start = info.duration / 2 - SLICE / 2
+    piece = original.trim(start=start, end=start + SLICE, exact=False)
+    return piece.compress(LEVEL, codec=codec).size <= piece.size * (1 - SLICE_GAIN)
+
+
+def _target_bitrate(info: media.Info) -> float | None:
+    """The bitrate `LEVEL` gives a video of this size and frame rate, after its caps, if known."""
+    if not (info.width and info.height and info.fps):
+        return None
+    short, long = sorted((info.width, info.height))
+    scale = min(1.0, LEVEL_SHORT_SIDE / short)
+    return BITS_PER_PIXEL * (short * scale) * (long * scale) * min(info.fps, LEVEL_FPS)
 
 
 def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], compressor: Compressor, *,

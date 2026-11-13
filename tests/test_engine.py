@@ -61,7 +61,9 @@ class FakeMedia:
 
     @property
     def info(self):
-        return SimpleNamespace(video=self.video_codec)
+        # No bitrate or size: a video is always worth encoding, as for a file media can't measure.
+        return SimpleNamespace(video=self.video_codec, bitrate=None, width=None, height=None,
+                               fps=None, duration=None)
 
     def __enter__(self):
         return self
