@@ -72,9 +72,9 @@ class CategoriesTest(JobCase):
                                         "exm:profile/avatar_42.jpg"])
         # Today's row format: where it is, its size, and when.
         # The first file of a post of several holds their count (fixes #2).
-        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "files", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_0"]), ["at", "date", "files", "path", "size"])
         self.assertEqual(rows["exm:C1abc_0"]["files"], 2)
-        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "path", "size"])
+        self.assertEqual(sorted(rows["exm:C1abc_1"]), ["at", "date", "path", "size"])
         # The route is called once for its three categories.
         self.assertEqual(len(self.fetched(f"{API}/users/example_user")), 1)
 
@@ -316,8 +316,8 @@ class FilesTest(JobCase):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         row = self.history()["exm:C1abc_0"]
         saved = self.target_dir("exm", "example_user") / "posts" / "2026-01-02_C1abc_0.jpg"
-        self.assertEqual(sorted(row), ["at", "files", "path", "size"])
-        self.assertEqual(sorted(self.history()["exm:B2def_0"]), ["at", "path", "size"])
+        self.assertEqual(sorted(row), ["at", "date", "files", "path", "size"])
+        self.assertEqual(sorted(self.history()["exm:B2def_0"]), ["at", "date", "path", "size"])
         self.assertEqual((row["path"], row["size"]), (str(saved), len(b"/C1abc_0.jpg")))
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
@@ -810,7 +810,9 @@ class CtrlCTest(JobCase):
                 try:
                     for number in range(1, 100):
                         listed.append(number)
-                        yield Post(str(number), [File(f"{CDN}/{number}.7z", name=f"{number}.7z")])
+                        # Dated, so each post is queued as it is listed, not held for its date.
+                        yield Post(str(number), [File(f"{CDN}/{number}.7z", name=f"{number}.7z")],
+                                   date=datetime.date(2026, 1, 1))
                 finally:
                     closed.set()
 
@@ -1044,6 +1046,52 @@ class ResumeTest(JobCase):
         self.assertIn("• pgd:example_user: posts: the cursor an interrupted run saved was refused; "
                       "listing from the newest", self.lines())
         self.assertNotIn("cursors", self.row())
+
+
+class MemoryTest(JobCase):
+    """The listing memory: an undated post waits for its category's end, and takes any day found."""
+
+    def run_feed(self, *categories):
+        class Feed(Source):
+            code, name, domains = "mem", "Memory", ("example.com",)
+            folder, filename, key = "", "{date}_{id}", "{id}_{num}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield from categories[0]
+
+            @user.category
+            def photos(self, site, user):
+                yield from categories[1] if len(categories) > 1 else []
+
+        self.run_engine(Feed, targets=["mem:example_user"])
+        return self.files("mem")
+
+    def test_a_dated_copy_later_in_the_category_names_the_undated_one(self):
+        undated = Post("A1", [File(f"{CDN}/a.jpg")])
+        dated = Post("A1", [File(f"{CDN}/a.jpg")], date=datetime.date(2026, 1, 2))
+        self.assertEqual(self.run_feed([undated, dated]), ["2026-01-02_A1.jpg"])
+
+    def test_an_undated_post_with_no_dated_copy_is_saved_when_its_category_ends(self):
+        self.assertEqual(self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")])]), ["A1.jpg"])
+
+    def test_an_earlier_category_or_run_gives_its_day(self):
+        dated = Post("A1", [File(f"{CDN}/a.jpg")], date=datetime.date(2026, 1, 2))
+        undated = Post("B2", [File(f"{CDN}/b.jpg")])
+        self.run_feed([dated])
+        # B2's day is known from an earlier run's history row for its key.
+        with kv.open(self.home / files.HISTORY, table="downloads") as history:
+            history["mem:B2_0"] = {"path": "/gone.jpg", "size": 1,
+                                   "at": "2026-01-03T00:00:00+00:00", "date": "2026-01-03"}
+        self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))
+
+    def test_a_second_undated_copy_counts_as_a_skip(self):
+        self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")]), Post("A1", [File(f"{CDN}/a.jpg")])])
+        self.assertIn("• mem:example_user: posts: 1 file already saved", self.lines())
 
 
 if __name__ == "__main__":

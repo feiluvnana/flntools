@@ -89,6 +89,8 @@ if TYPE_CHECKING:
 __all__ = ["STOPPED", "Done", "Downloads", "Ledger", "Placed", "download", "place", "plan", "posts",
            "wanted"]
 
+# The history field of a file's post's day, `YYYY-MM-DD`, when the listing gave one.
+DATE = "date"
 # The hour of the day, UTC, a dated file's modified time is set to.
 NOON = 12
 # The history field of a post's first file that holds how many files the post has, when more than one.
@@ -288,6 +290,7 @@ class Ledger:
     """
 
     def __init__(self, run: SourceRun, site: TargetSite, target: Target):
+        """Make the ledger of one target, with nothing queued, skipped or remembered yet."""
         self.source, self.settings, self.site = run.source, run.settings, site
         self.folder = disk.target_folder(self.settings.home, target)
         self.skipped = 0
@@ -300,15 +303,21 @@ class Ledger:
         # line per category, since a feed and a tab that list the same media can skip hundreds.
         self._category: str | None = None
         self._category_skips = 0
+        # The listing memory: each post's first key to the day any copy of it, or an earlier run,
+        # gave; and the undated posts waiting for their category to end, by that key.
+        self._dates: dict[str, datetime.date] = {}
+        self._waiting: dict[str, Post] = {}
 
-    def take(self, post: Post) -> tuple[Outcome, list[_Queued]]:
+    def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
         """Each file of one post not saved or queued yet; a lazy post's files are listed only if needed.
 
         Args:
             post: a post the listing kept, its category set.
+            hold: whether an undated post whose date isn't known yet waits for `release`.
 
         Returns:
-            What became of the post, and the files to submit, each marked queued already.
+            What became of the post, and the files to submit, each marked queued already; a post
+            held for its date counts neither way (`EMPTY`).
 
         Raises:
             Whatever a lazy post's `files` raises, such as `FetchError`.
@@ -319,6 +328,10 @@ class Ledger:
         if post.category != self._category:
             self.sum_up()
             self._category = post.category
+        dated = self._dated(post, category, hold=hold)
+        if dated is None:
+            return Outcome.EMPTY, []
+        post = dated
         skipped = self._saved_first(post, category) if post.lazy else None
         if skipped is not None:
             self._skip()
@@ -357,6 +370,53 @@ class Ledger:
         if todo:
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
+
+    def release(self) -> list[Post]:
+        """The undated posts held since the last call, each with any day the memory found meanwhile.
+
+        Called when a category ends: a dated copy in a later category is too late for these, but
+        the history and every copy listed so far have had their say.
+        """
+        waiting, self._waiting = self._waiting, {}
+        return [post.replace(date=self._dates[key]) if key in self._dates else post
+                for key, post in waiting.items()]
+
+    def _dated(self, post: Post, category: Category | None, *, hold: bool) -> Post | None:
+        """`post` with the day the memory knows, the memory told of its own; None while it waits.
+
+        A post whose key needs its listed files, or holds its date, is never held.
+        """
+        key = self._first_key(post, category)
+        if key is None:
+            return post
+        known = day(post.date)
+        if known is not None:
+            self._dates[key] = known
+            # A dated copy replaces an undated one held meanwhile.
+            self._waiting.pop(key, None)
+            return post
+        found = self._dates.get(key) or _row_day(self.settings.history.get(key))
+        if found is not None:
+            self._dates[key] = found
+            return post.replace(date=found)
+        if not hold:
+            return post
+        if key in self._waiting:
+            # A second undated copy of a post already waiting: one of them is enough.
+            self._skip()
+            log.debug("skip {post}: listed twice", post=post.id)
+            return None
+        self._waiting[key] = post
+        return None
+
+    def _first_key(self, post: Post, category: Category | None) -> str | None:
+        """The history key of a post's first file, from its fields alone; None if it needs more."""
+        template = _format(self.source, category, "key")
+        if not template or _fields(template) & (LISTED_FIELDS | {"date"}):
+            return None
+        values = {**post.fields, "id": post.id, "category": post.category, "num": 0}
+        key = fill(template, values, safe=False)
+        return f"{self.source.code}:{key}" if key else None
 
     def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
         """Whether every file of a lazy post is saved, by its keys alone; False when the key needs the listed files.
@@ -635,6 +695,10 @@ class Downloads:
         kind = disk.kind_of(saved.name)
         row = {"path": str(saved), "size": saved.stat().st_size,
                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+        posted = day(placed.post.date)
+        if posted is not None:
+            # The post's day, which the listing memory gives a later undated copy of it.
+            row[DATE] = posted.isoformat()
         count = placed.values.get("count", 1)
         if placed.num == 0 and isinstance(count, int) and count > 1:
             # The first file's row holds the post's file count, so a later run skips the lazy post
@@ -845,6 +909,16 @@ class _Finished:
     day: datetime.date | None
 
 
+def _row_day(row: Any) -> datetime.date | None:
+    """The post's day a history row recorded, or None."""
+    value = row.get(DATE) if isinstance(row, dict) else None
+    try:
+        return datetime.date.fromisoformat(value) if isinstance(value, str) else None
+    # A row edited by hand, or by another version: no day, rather than a failed run.
+    except ValueError:
+        return None
+
+
 def _set_mtime(path: Path, dated: datetime.date) -> None:
     """Set a file's modified time to noon UTC of its day, the same day from UTC-11 to UTC+11."""
     noon = datetime.datetime.combine(dated, datetime.time(NOON), tzinfo=datetime.timezone.utc)
@@ -987,15 +1061,27 @@ class _Work:
     ledger: Ledger
     downloads: Downloads
 
-    def queue(self, post: Post) -> Outcome:
+    def queue(self, post: Post, *, hold: bool = True) -> Outcome:
         """Take one post into the ledger and submit each file it gives; `STOPPED` on Ctrl-C."""
-        outcome, todo = self.ledger.take(post)
+        outcome, todo = self.ledger.take(post, hold=hold)
         for queued in todo:
             if not self.downloads.submit(queued):
                 return Outcome.STOPPED
         return outcome
 
 def _queue_all(work: _Work, kept: _Kept, *, stop_at_saved: bool) -> Ended:
+    """Queue each post a listing keeps, then the undated ones it held, until Ctrl-C or a stop."""
+    ended = _queue_listed(work, kept, stop_at_saved=stop_at_saved)
+    if ended is Ended.STOPPED:
+        return ended
+    # The category is over: an undated post goes now, with the day the memory found, if any.
+    for post in work.ledger.release():
+        if work.queue(post, hold=False) is Outcome.STOPPED:
+            return Ended.STOPPED
+    return ended
+
+
+def _queue_listed(work: _Work, kept: _Kept, *, stop_at_saved: bool) -> Ended:
     """Queue each post a listing keeps, until Ctrl-C or, if `stop_at_saved`, 5 saved in a row."""
     saved_in_a_row = 0
     try:
