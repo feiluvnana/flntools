@@ -360,6 +360,26 @@ class TimelineTest(unittest.TestCase):
                     json={url("UserByScreenName"): USER, url("UserOriginalsTimeline"): third_fails})
         self.assertEqual(queries(seen), ["UserByScreenName"] + ["UserOriginalsTimeline"] * 3)
 
+    def test_the_search_goes_on_past_the_timelines_cap(self):
+        searched = [page(item(tweet("150", [photo("c")]))), page(item(tweet("100", [photo("d")])))]
+        seen = Seen()
+        timeline = page(item(tweet("300", [photo("a")])), item(tweet("200", [photo("b")])),
+                        cursor="c1")
+        saved = collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
+                        json={
+            url("UserByScreenName"): USER,
+            url("UserOriginalsTimeline"): pages(timeline),
+            url("SearchTimeline"): lambda address, request: searched.pop(0) if searched else page(),
+        })
+        self.assertEqual([item.post.id for item in saved], ["300", "200", "150", "100"])
+        searches = [json.loads(request[2]["params"]["variables"]) for request in seen.requests
+                    if "SearchTimeline" in request[1]]
+        self.assertEqual([variables["rawQuery"] for variables in searches[:2]],
+                         ["from:someone max_id:199 -filter:retweets -filter:replies",
+                          "from:someone max_id:149 -filter:retweets -filter:replies"])
+        # Three empty pages, each asking fewer, then it stops.
+        self.assertEqual([variables["count"] for variables in searches[2:]], [50, 25, 12])
+
     def test_an_unknown_user_is_read_in_the_browser(self):
         seen = Seen()
         with browser({}):
@@ -533,6 +553,8 @@ class LoginStaysAtHomeTest(EngineCase):
             {"type": "video", "video_info": {"variants": [
                 {"content_type": "video/mp4", "bitrate": 9, "url": "https://video.twimg.com/v/v.mp4"}]}}])))
         self.routes[url("UserOriginalsTimeline")] = lambda request: httpx.Response(200, json=timeline)
+        # The search past the timeline's cap finds nothing older.
+        self.routes[url("SearchTimeline")] = lambda request: httpx.Response(200, json=page())
 
     def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
         self.run_engine(Twitter, targets=["twt:someone"], options=Options(categories=("posts",)))
@@ -546,7 +568,8 @@ class LoginStaysAtHomeTest(EngineCase):
                 self.assertNotIn("cookie", request.headers)
         self.assertEqual({request.headers["authorization"] for request in api}, {TWITTER_BEARER})
         # The first request carries the token it was saved with; x.com rotated it, and the rest carry the new one.
-        self.assertEqual([request.headers["x-csrf-token"] for request in api], ["old", "new", "new"])
+        tokens = [request.headers["x-csrf-token"] for request in api]
+        self.assertEqual((tokens[0], set(tokens[1:]), len(tokens) > 2), ("old", {"new"}, True))
         self.assertIn("ct0=new", api[1].headers["cookie"])
         self.assertNotIn("ct0=old", api[1].headers["cookie"])
         self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "someone").rglob("*")))

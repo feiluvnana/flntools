@@ -67,6 +67,8 @@ API = "https://x.com/i/api/graphql/"
 # and then; a stale one is refused, and the browser takes over.
 QUERIES = {
     "UserByScreenName": "AMIBMjtxEEATh4z8V9GtRg",
+    # gallery-dl's id, unverified here; a stale id is refreshed from x.com's script like any other.
+    "SearchTimeline": "nK1dw4oV3k4w5TdtcAdSww",
     "UserByRestId": "mxaYWwt52eAb6OAzYHMVzg",
     "UserOriginalsTimeline": "ZFKu1DFS63hgrkLzR3Hsdw",
     "UserMedia": "iTSlWbsmD00dAE7Sk9xvIw",
@@ -96,6 +98,13 @@ STALE = frozenset({400, 404})
 STATE_KEY = "graphql.queries"
 # Tweets asked for per page: what the web app itself asks for, 2.5 times fewer requests than 20.
 PAGE_SIZE = 50
+# The search each timeline goes on with past its cap, added to `from:<name> max_id:<id>`:
+# `posts` is the user's own tweets, as `UserOriginalsTimeline` is; `media` those with a link, which
+# every photo and video tweet has (gallery-dl's `filter:links`).
+SEARCHES = {"posts": " -filter:retweets -filter:replies", "media": " filter:links -filter:retweets"}
+# Search pages in a row with nothing new before the search stops, and the smallest `count` it asks.
+EMPTY_SEARCHES = 3
+MIN_SEARCH_COUNT = 10
 # A tweet's `created_at`, as Twitter writes it: `Mon Nov 09 10:00:00 +0000 2026`, always UTC.
 CREATED_AT = "%a %b %d %H:%M:%S %z %Y"
 # The largest banner size the CDN serves, as the `/<size>` suffix of a banner's URL.
@@ -324,19 +333,21 @@ class Twitter(Source):
             timeline: which timeline to read.
         """
         if account.id is not None and not account.browser:
-            refused = yield from self.api(site, account.id, timeline)
+            refused = yield from self.api(site, account.id, timeline, name=screen_name(account))
             if not refused:
                 return
             account.browser = True
         yield from self.browser(site, account, timeline)
 
-    def api(self, site: Site, user_id: str, timeline: Timeline) -> Generator[Post, None, bool]:
+    def api(self, site: Site, user_id: str, timeline: Timeline, *,
+            name: str | None = None) -> Generator[Post, None, bool]:
         """Read one timeline from the API to its end; the generator's value is True when the API refused it.
 
         Args:
             site: the target's site.
             user_id: the user's number.
             timeline: which timeline to read.
+            name: the user's screen name, to search past the timeline's cap; None searches nothing.
 
         Returns:
             True when the API refused the timeline (an old query id, say) and the browser should
@@ -376,7 +387,50 @@ class Twitter(Source):
         except http.Error as error:
             raise FetchError(f"{timeline.category}: {error}") from error
         site.info("{category}: {pages} read", category=timeline.category, pages=fmt.count(count, "page"))
+        if name and timeline.category in SEARCHES and seen:
+            yield from self.search(site, timeline, name, user_id, seen)
         return False
+
+    def search(self, site: Site, timeline: Timeline, name: str, user_id: str,
+               seen: set[str]) -> Iterator[Post]:
+        """Read past the timeline's cap with `SearchTimeline`, moving `max_id` down, as gallery-dl does.
+
+        X's `UserTweets` and `UserMedia` stop after a few thousand tweets. A connection that fails
+        raises, so the category isn't recorded complete; a refusal only warns, since the timeline
+        itself was read to its end.
+        """
+        oldest = min(int(tweet_id) for tweet_id in seen if tweet_id.isdigit())
+        empty, count, pages_read = 0, PAGE_SIZE, 0
+        while empty < EMPTY_SEARCHES:
+            query = f"from:{name} max_id:{oldest - 1}{SEARCHES[timeline.category]}"
+            variables = {"rawQuery": query, "count": count, "querySource": "typed_query",
+                         "product": "Latest"}
+            try:
+                tweets, _ = read_timeline_page(self.graph.get(site, "SearchTimeline", variables))
+            except FetchError as error:
+                if error.status is None:
+                    raise
+                site.warn("{category}: the search past the timeline's cap was refused ({error}); "
+                          "older posts aren't listed", category=timeline.category, error=error)
+                return
+            except http.Error as error:
+                raise FetchError(f"{timeline.category}: {error}") from error
+            new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen]
+            ids = [int(tweet_id_of(tweet)) for tweet in tweets if tweet_id_of(tweet).isdigit()]
+            if not new:
+                # An empty page may be X's, not the end: asked again smaller, a few times.
+                empty, count = empty + 1, max(count // 2, MIN_SEARCH_COUNT)
+                if ids:
+                    oldest = min(ids)
+                continue
+            empty, pages_read = 0, pages_read + 1
+            seen.update(tweet_id_of(tweet) for tweet in new)
+            oldest = min(ids)
+            for tweet in new:
+                yield from tweet_posts(tweet, timeline.category, user_id)
+        if pages_read:
+            site.info("{category}: {pages} past the timeline's cap", category=timeline.category,
+                      pages=fmt.count(pages_read, "search page"))
 
     def browser(self, site: Site, account: Account, timeline: Timeline) -> Iterator[Post]:
         """Scroll one timeline's tab to its end, reading the same GraphQL responses the API gives.
@@ -496,9 +550,12 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
     Returns:
         The page's tweets, wrapped or not, and the `Bottom` cursor that asks for the next page.
     """
-    # The timeline sits under `user` in one response shape and under `timeline_v2` in the other.
+    # The timeline sits under `user` in one response shape and under `timeline_v2` in the other; a
+    # search's under `search_by_raw_query`.
     instructions = selector.parse(data).jmespath(
-        "data.user.result.timeline.timeline.instructions || data.user.result.timeline_v2.timeline.instructions").all
+        "data.user.result.timeline.timeline.instructions"
+        " || data.user.result.timeline_v2.timeline.instructions"
+        " || data.search_by_raw_query.search_timeline.timeline.instructions").all
     tweets, cursor = [], None
     for entry in timeline_entries(instructions):
         content = entry.get("content") or entry.get("item") or {}
@@ -539,6 +596,13 @@ def unwrap(tweet: dict) -> dict:
     """
     inner = tweet.get("tweet")
     return inner if isinstance(inner, dict) else tweet
+
+
+def screen_name(account: Account) -> str | None:
+    """The user's screen name: the API's, else the target's handle unless it is a number."""
+    found = selector.parse(account.user or {}).jmespath(
+        "core.screen_name || legacy.screen_name").first
+    return found or (None if account.handle.isdigit() else account.handle)
 
 
 def tweet_id_of(tweet: dict) -> str:
