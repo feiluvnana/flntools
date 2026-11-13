@@ -341,10 +341,12 @@ def scrolled(*tabs):
     return FakeWatch({f"{SITE}/someone/{TABS[tab]}": [GRIDS[tab]] for tab in tabs})
 
 
-def read(text="ins:someone", *, options=Options(), watch=None, pages=PAGES, json=JSON, seen=None, cookies=None):
+def read(text="ins:someone", *, options=Options(), watch=None, pages=PAGES, json=JSON, seen=None, cookies=None,
+         state=None):
     """What the job would download for `text`, with `watch` as the tabs' scrolling (every tab's by default)."""
     with mock.patch("flnd.sources.ins.watch_responses", watch or scrolled(*TABS)):
-        return collect(Instagram, text, pages=pages, json=json, options=options, seen=seen, cookies=cookies)
+        return collect(Instagram, text, pages=pages, json=json, options=options, seen=seen, cookies=cookies,
+                       state=state)
 
 
 def api_urls(seen):
@@ -528,7 +530,7 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/someone/"])
         # flnd's client was refused first, then the tab's call: one warning each.
         self.assertIn("! Instagram refused flnd's own client; sending its API calls from the page", seen.messages)
-        self.assertTrue(any(message.startswith("! stories: the story API refused") for message in seen.messages))
+        self.assertIn("stories: reading the story pages, as Instagram's story API is refusing", seen.messages)
 
     def test_an_answer_that_is_not_a_reel_is_a_refusal_and_a_missing_reel_is_no_stories(self):
         # 2026-11, live: the story endpoint can send the home page, which isn't JSON.
@@ -539,7 +541,7 @@ class ProfileTest(unittest.TestCase):
                              seen=seen)
                 self.assertEqual(len(saved), 2)
                 self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/someone/"])
-                self.assertEqual(len([m for m in seen.messages if m.startswith("! stories: the story API")]), 1)
+                self.assertEqual(len([m for m in seen.messages if m.startswith("stories: reading the story pages")]), 1)
         seen = Seen()
         saved = read(options=Options(categories=("stories",)), seen=seen,
                      json={**JSON, f"{API}/feed/user/42/story/": {"reel": None, "status": "ok"}})
@@ -555,7 +557,25 @@ class ProfileTest(unittest.TestCase):
         read(options=Options(categories=("highlights",)), pages=pages, json=refused, seen=seen)
         # 7 highlights are two calls of 5 and 2; the second is never made.
         self.assertEqual(len([url for _, url, _ in seen.requests if url.endswith("/reels_media/")]), 1)
-        self.assertEqual(len([m for m in seen.messages if m.startswith("! highlights: the reels API refused")]), 1)
+        self.assertEqual(seen.messages.count("highlights: reading the story pages, as Instagram's reels API is refusing"), 1)
+        self.assertFalse([m for m in seen.messages if m.startswith("! highlights")])
+
+    def test_a_refused_api_is_left_alone_for_a_day_then_asked_again(self):
+        refused = {**JSON, f"{API}/feed/user/42/story/": FetchError("HTTP 500", status=500)}
+        state: dict = {}
+        stories = Options(categories=("stories",))
+
+        def story_calls(now):
+            seen = Seen()
+            with mock.patch("flnd.sources.ins.time.time", return_value=now):
+                saved = read(options=stories, json=refused, seen=seen, state=state)
+            self.assertEqual(len(saved), 2)  # the story pages give the stories either way
+            return len([url for _, url, _ in seen.requests if url.endswith("/story/")])
+
+        start = 1_800_000_000.0
+        self.assertEqual(story_calls(start), 1)
+        self.assertEqual(story_calls(start + 60 * 60), 0)          # an hour later: not asked
+        self.assertEqual(story_calls(start + 25 * 60 * 60), 1)     # a day later: asked again
 
     def test_a_throttled_response_backs_off_and_the_scroll_goes_on(self):
         seen = Seen()

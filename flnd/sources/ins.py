@@ -50,6 +50,7 @@ A post found on two tabs (a reel is on the grid too) is saved once, on the first
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Generator, Iterator, Mapping
@@ -97,6 +98,9 @@ SUSPENDED = "/accounts/suspended"
 WALLS = ("/accounts/login", "/challenge")
 # The cursor variable of every profile tab's GraphQL pagination query.
 CURSOR = "after"
+# Seconds a refused API is left alone: Instagram's refusals last, and asking again each run only
+# costs a request and its retries before the story pages are read anyway.
+REFUSAL_LIFETIME = 24 * 60 * 60
 # Reels asked for in one `reels_media` call: more is refused (gallery-dl's chunk size).
 REELS_PER_CALL = 5
 # A grid image within this share of the post's `original_width` is its full size, not a thumbnail.
@@ -407,19 +411,16 @@ class Api:
             Each reel's stories by its id; None, with a warning, when the API refused, so the story
             pages are read instead.
         """
-        if "reels" in self.refused:
+        if self._refused(site, "reels"):
             return None
         try:
             data = self.get(site, f"{API}/feed/reels_media/", params=[("reel_ids", str(reel)) for reel in reel_ids])
-        # Refused once: the reels API isn't asked again this run, and the story pages are read instead.
-        except FetchError as error:
-            self.refused.add("reels")
-            site.warn("{what}: the reels API refused ({error}); reading the story pages", what=what, error=error)
+        except FetchError:
+            self._refuse(site, "reels", what)
             return None
         # An answer without the reels' JSON is a refusal too, so the same fallback applies.
         if not isinstance(data, dict):
-            self.refused.add("reels")
-            site.warn("{what}: the reels API isn't there; reading the story pages", what=what)
+            self._refuse(site, "reels", what)
             return None
         found: dict[str, list[dict]] = {}
         for reel in data.get("reels_media") or list((data.get("reels") or {}).values()):
@@ -439,21 +440,35 @@ class Api:
             or answered something that isn't a reel (2026-11: it can send the home page instead), so
             the story pages are read. A refusal is remembered: later calls return None unasked.
         """
-        if "story" in self.refused:
+        if self._refused(site, "story"):
             return None
         try:
             data = self.get(site, f"{API}/feed/user/{user_id}/story/")
-        # Refused once: later calls return None unasked, and the story pages are read.
-        except FetchError as error:
-            self.refused.add("story")
-            site.warn("stories: the story API refused ({error}); reading the story pages", error=error)
+        except FetchError:
+            self._refuse(site, "story", "stories")
             return None
         # `reel` is null while the user has no story; an answer with no `reel` at all isn't this API's.
         if not isinstance(data, dict) or "reel" not in data or not isinstance(data["reel"], (dict, type(None))):
-            self.refused.add("story")
-            site.warn("stories: the story API isn't there; reading the story pages")
+            self._refuse(site, "story", "stories")
             return None
         return [item for item in (data["reel"] or {}).get("items") or [] if isinstance(item, dict)]
+
+    def _refused(self, site: Site, api: str) -> bool:
+        """Whether `api` was refused this run, or in an earlier run less than a day ago."""
+        if api in self.refused:
+            return True
+        since = site.state.get(f"refused.{api}")
+        if isinstance(since, (int, float)) and time.time() - since < REFUSAL_LIFETIME:
+            self.refused.add(api)
+            return True
+        return False
+
+    def _refuse(self, site: Site, api: str, what: str) -> None:
+        """Leave `api` alone for a day, and say once that `what` is read from the story pages."""
+        self.refused.add(api)
+        site.state[f"refused.{api}"] = time.time()
+        # Expected while Instagram refuses these APIs, so an info line, not a warning.
+        site.info("{what}: reading the story pages, as Instagram's {api} API is refusing", what=what, api=api)
 
     def _waited(self, site: Site, response: http.Response | None, *, refused: bool) -> bool:
         """Whether a call's answer was a throttle, now waited out, or a refusal that moved the calls into the tab.

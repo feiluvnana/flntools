@@ -61,10 +61,10 @@ class FakeSite:
     def __init__(self, target: Target, *, cookies: Mapping[str, str] | None = None,
                  json: Mapping[str, Answer] | None = None, html: Mapping[str, Answer] | None = None,
                  pages: Mapping[str, str] | None = None, options: Options = Options(), client: Any = None,
-                 seen: Seen | None = None):
+                 seen: Seen | None = None, state: MutableMapping[str, Any] | None = None):
         self.target = target
         self.client = client
-        self.state: MutableMapping[str, Any] = {}
+        self.state: MutableMapping[str, Any] = state if state is not None else {}
         self.secrets: MutableMapping[str, str] = {}
         self._seen = seen if seen is not None else Seen()
         self._cookies = dict(cookies or {})
@@ -149,7 +149,7 @@ class Saved:
 def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | None = None,
             html: Mapping[str, Answer] | None = None, pages: Mapping[str, str] | None = None,
             options: Options = Options(), cookies: Mapping[str, str] | None = None, client: Any = None,
-            seen: Seen | None = None) -> list[Saved]:
+            seen: Seen | None = None, state: MutableMapping[str, Any] | None = None) -> list[Saved]:
     """What the job would download for `text`: its route and wanted categories run on a `FakeSite`.
 
         saved = collect(Example, "exm:example_user", json=FIXTURES, options=Options(categories=("posts",)))
@@ -159,6 +159,7 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
         source: the source class.
         text: the target as people write it, `code:` or a link.
         json, html, pages, cookies, client, seen: the `FakeSite`'s, as it takes them.
+        state: the site's saved state, shared by runs that pass the same dict.
         options: `--from` and `--time`.
 
     Returns:
@@ -169,7 +170,7 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
     """
     target = resolve(text, {source.code: source})
     site = FakeSite(target, cookies=cookies, json=json, html=html, pages=pages, options=options, client=client,
-                    seen=seen)
+                    seen=seen, state=state)
     instance = source()
     categories = {category.name: category for route in source.routes for category in route.categories}
     loop = asyncio.new_event_loop()
