@@ -1097,6 +1097,10 @@ def _without_values(text: str, headers: Mapping[str, str]) -> str:
     return text
 
 
+# What Chrome answers for a response body it has already freed (Network.getResponseBody), seen 2026-11-13.
+GONE_BODY = "No resource with given identifier found"
+
+
 def _first_line(error: BaseException) -> str:
     return (str(error).splitlines() or [""])[0]
 
@@ -1118,7 +1122,12 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
         body = response.text()
     # A body Playwright can't read is skipped, so one odd response doesn't stop the handler's other calls.
     except PlaywrightError as error:
-        log.debug("on_response: no body for {url}: {error}", url=response.url, error=_first_line(error))
+        # Chrome frees a page's response bodies when the page moves on (a source going from one tab
+        # to the next), and a listener runs only when Playwright next pumps its events, often after
+        # that: the body is gone, and it belonged to the page being left. That is expected, so it
+        # is skipped without a line; any other unreadable body is still worth a debug line.
+        if GONE_BODY not in str(error):
+            log.debug("on_response: no body for {url}: {error}", url=response.url, error=_first_line(error))
         return []
     pieces = [line for line in body.splitlines() if line.strip()] if lines else [body]
     parsed = []

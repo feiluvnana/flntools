@@ -916,6 +916,23 @@ class PageContextTest(unittest.TestCase):
                 self.assertEqual(closed, [1])
 
 
+class GoneBodyTest(BrowserCase):
+    def response(self, error):
+        return SimpleNamespace(url="https://site.test/api/graphql", text=mock.Mock(side_effect=error))
+
+    def test_a_body_freed_after_the_page_moved_on_is_skipped_without_a_line(self):
+        log.level = "debug"
+        error = browser.PlaywrightError("Response.text: Protocol error (Network.getResponseBody): "
+                                        "No resource with given identifier found")
+        self.assertEqual(browser._json_bodies(self.response(error), False), [])
+        self.assertEqual(self.lines(), [])
+
+    def test_another_unreadable_body_is_a_debug_line(self):
+        log.level = "debug"
+        self.assertEqual(browser._json_bodies(self.response(browser.PlaywrightError("Target closed")), False), [])
+        self.assertEqual(self.lines(), ["· on_response: no body for https://site.test/api/graphql: Target closed"])
+
+
 class SubscriptionTest(unittest.TestCase):
     def test_stop_runs_once_and_with_stops(self):
         stops = []

@@ -33,7 +33,7 @@
   "shared/__init__.py": "8f2a885c7bacbb7a038aaf2d6c2efb248ab368f3283b6d950bf29bfb738acdac",
   "shared/_archive.py": "e29f1223a4e736bb6ce250d3aae2fefc915ef1f2e121ccc3b60f5313abc1c879",
   "shared/_atomic.py": "54ababcc0ec821435caed48230fb8069f58db8d5c57c398c5cf991e7e5cc8504",
-  "shared/_browser.py": "a7fbe65fad05a8c21325e5016de535d235c9592fd9dcdbd48880988a817e7d68",
+  "shared/_browser.py": "c27368550e9049297bedf8251f8c9e9aabcbefb15afdff847e72372931291e22",
   "shared/_bundler.py": "1dab19fcf45d5b156b742ad84db337c4ee7732afca3404606898ba22570b8473",
   "shared/_cli.py": "dbdfc7c06ba543cfbc5b8bf6206bf2afca1db9769fcfafc70e18e501537168ba",
   "shared/_cookies.py": "c5d49cd4ecbd3d0a5e7ec79b277a82d45406ddd0497181c5bb0e9a6793441ed4",
