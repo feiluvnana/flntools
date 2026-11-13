@@ -36,6 +36,13 @@ memory lives there, for every source:
   (ins stories and highlights, every `profile` category, loi, tlg).
 - ins's `taken` set and tik's `_seen` go, as the job does their work.
 
+As built (2026-11-13): the memory keys each post by its first file's key (a key format that
+needs the listed files, or holds the date, isn't held). History rows gain `date`, the post's day.
+A name the site built exactly as the `filename` format would (with or without the day) is
+rebuilt with the day found; any other name the site gives is kept, so tlg, loi and every
+path-keyed category keep theirs without a list. A second undated copy of a waiting post counts
+as a skip.
+
 ## 2. Every file dated
 
 Step 5, decided by the user on 2026-11-13. For a post still undated when its category ends:

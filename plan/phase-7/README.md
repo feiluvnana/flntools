@@ -37,7 +37,7 @@ Each step ends with `check` green and is committed on its own.
 1. [layout](layout.md): `media/`, `metadata/` and `log/`, and a log of every run at debug. **Built**, with lean's E9.
 2. [shrink](shrink.md): `--shrink` replaces `--image`, `--video` and `--audio`. **Built**.
 3. [fixes](fixes.md): five bugs from the 2026-11-13 review. **Built**: all eleven, one commit each (619ad17 … 043a478).
-4. [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
+4. **Built** (2f60bcf, 4d3cf40, with R1 853528e and R2 c5f2a8a). [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
    source: each key once, one key → date map, undated posts held until their category ends.
 5. [dates › every file dated](dates.md#2-every-file-dated): a source's `date` hook, then an
    estimate; `sync` dates files saved without a date.
