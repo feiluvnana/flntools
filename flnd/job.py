@@ -333,6 +333,11 @@ class Ledger:
         self._estimated: set[str] = set()
         # False once the site's `date` hook was refused (a block): the rest are estimated.
         self._asking = type(self.source).date is not Source.date
+        # Files linked into a second category's folder, and whether a link was refused already.
+        self.linked = 0
+        self._link_warned = False
+        # Links to files queued this run, by their key, made once the downloads are done.
+        self._later: list[tuple[Path, str]] = []
 
     def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
         """Each file of one post not saved or queued yet; a lazy post's files are listed only if needed.
@@ -391,12 +396,57 @@ class Ledger:
                     log.debug("skip {name}: already saved", name=placed.path)
                 else:
                     log.debug("skip {name}: already saved as {held}", name=placed.path, held=held)
+                    if key in self._queued:
+                        # Its holder is still downloading: linked once it is in place.
+                        self._later.append((dest, key))
+                    else:
+                        self._link(dest, self.folder.joinpath(*held.split("/")))
                 continue
             self._queued.update(dict.fromkeys((dest, key), placed.path))
             todo.append(_Queued(placed, dest, key, estimated=first in self._estimated))
         if todo:
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
+
+    def link_queued(self, written: Mapping[str, Path]) -> None:
+        """Make the links to files queued this run, now at their final paths in `written`."""
+        for dest, key in self._later:
+            holder = written.get(key)
+            if holder is not None:
+                # The content may have given the file another extension; the link takes the same.
+                self._link(dest.with_suffix(holder.suffix), holder)
+        self._later = []
+
+    def _link(self, dest: Path, holder: Path) -> None:
+        """Link a file held in another category's folder at the path it would have had in this one.
+
+        A relative symlink, so the target's folder moves as a whole; else a hard link; else
+        nothing, warned of once per run. Within one category nothing is linked.
+        """
+        if not holder.is_relative_to(self.folder):
+            return
+        here, there = dest.relative_to(self.folder).parts, holder.relative_to(self.folder).parts
+        if len(here) < 2 or len(there) < 2 or here[0] == there[0] or not holder.is_file():
+            return
+        if dest.exists() or dest.is_symlink():
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dest.symlink_to(os.path.relpath(holder, dest.parent))
+        # Windows without Developer Mode or admin refuses a symlink; a hard link needs neither.
+        except OSError:
+            try:
+                os.link(holder, dest)
+            # FAT, exFAT or another volume: no link of either kind, so the file stays in one folder.
+            except OSError as error:
+                if not self._link_warned:
+                    self._link_warned = True
+                    self.site.warn("can't link files found in two folders here: {error}",
+                                   error=error)
+                return
+        self.linked += 1
+        log.debug("link {name} → {held}", name=dest.relative_to(self.folder).as_posix(),
+                  held=holder.relative_to(self.folder).as_posix())
 
     def release(self) -> list[Post]:
         """The undated posts held since the last call, each with any day the memory found meanwhile.
@@ -618,6 +668,12 @@ class Downloads:
         self._answering = True
         # The thread that lists, where a lazy post's `files` may run.
         self._lister = threading.current_thread()
+
+    @property
+    def written(self) -> dict[str, Path]:
+        """Each file written so far by its history key, at its final path."""
+        with self._writing:
+            return dict(self._written)
 
     def submit(self, queued: _Queued) -> bool:
         """Start one file's download once the pool has room; False when Ctrl-C stopped the wait."""
@@ -964,6 +1020,7 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     except BaseException as caught:  # a route or a category failed, or a second Ctrl-C: handled below
         error = caught
     written = downloads.finish(error)
+    ledger.link_queued(downloads.written)
     # A category cut short keeps the cursor of the page it was reading, for the next run to go on
     # from; one that ended by itself has nothing to resume.
     cursors = {name: None if name in complete else resume.cursor

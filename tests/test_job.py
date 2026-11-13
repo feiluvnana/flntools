@@ -236,7 +236,9 @@ class SavedTest(JobCase):
         # Both categories name it `1_0` (their folders differ), so the second is skipped as queued.
         self.assertEqual(len(self.fetched(f"{CDN}/1.jpg")), 1)
         self.assertEqual(sorted(self.history()), ["bth:1_0", "bth:2_0"])
-        self.assertEqual(self.files("bth"), ["posts/1.jpg", "reels/2.jpg"])
+        # The second category's folder holds a link to the first one's file.
+        self.assertEqual(self.files("bth"), ["posts/1.jpg", "reels/1.jpg", "reels/2.jpg"])
+        self.assertTrue((self.target_dir("bth", "example_user") / "reels" / "1.jpg").is_symlink())
         # A later run finds both saved, whichever category lists them.
         self.requests.clear()
         self.assertEqual(self.run_engine(Both, targets=["bth:example_user"]), 0)
@@ -1144,6 +1146,65 @@ class MemoryTest(JobCase):
     def test_a_second_undated_copy_counts_as_a_skip(self):
         self.run_feed([Post("A1", [File(f"{CDN}/a.jpg")]), Post("A1", [File(f"{CDN}/a.jpg")])])
         self.assertIn("• mem:example_user: posts: 1 file already saved", self.lines())
+
+
+class LinkTest(JobCase):
+    """A file found in a second category's folder is linked there, not downloaded again."""
+
+    def feed(self, posts, reels):
+        class Tabs(Source):
+            code, name, domains, key = "lnk", "Links", ("example.com",), "{id}_{num}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def videos(self, site, user):
+                yield from posts
+
+            @user.category
+            def reels(self, site, user):
+                yield from reels
+
+        return Tabs
+
+    def clip(self, post_id="V1"):
+        return Post(post_id, [File(f"{CDN}/{post_id}.mp4")], date=datetime.date(2026, 1, 2))
+
+    def test_a_file_in_two_categories_is_saved_once_and_symlinked_relative(self):
+        self.run_engine(self.feed([self.clip()], [self.clip()]), targets=["lnk:example_user"])
+        folder = self.target_dir("lnk", "example_user")
+        link = folder / "reels" / "2026-01-02_V1.mp4"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), os.path.join("..", "videos", "2026-01-02_V1.mp4"))
+        self.assertEqual(link.read_bytes(), (folder / "videos" / "2026-01-02_V1.mp4").read_bytes())
+        self.assertEqual(len(self.fetched(f"{CDN}/V1.mp4")), 1)
+
+    def test_a_second_copy_in_one_category_is_skipped_not_linked(self):
+        self.run_engine(self.feed([self.clip(), self.clip()], []), targets=["lnk:example_user"])
+        self.assertEqual(self.files("lnk"), ["videos/2026-01-02_V1.mp4"])
+
+    def test_a_refused_symlink_falls_back_to_a_hard_link_then_to_one_warning(self):
+        with mock.patch.object(Path, "symlink_to", side_effect=OSError("no symlinks here")):
+            self.run_engine(self.feed([self.clip()], [self.clip()]), targets=["lnk:example_user"])
+        link = self.target_dir("lnk", "example_user") / "reels" / "2026-01-02_V1.mp4"
+        self.assertTrue(link.is_file() and not link.is_symlink())
+        self.assertEqual(link.stat().st_nlink, 2)
+        with mock.patch.object(Path, "symlink_to", side_effect=OSError("no")), \
+                mock.patch.object(os, "link", side_effect=OSError("no links on this volume")):
+            both = [self.clip("V2"), self.clip("V3")]
+            self.run_engine(self.feed(both, both), targets=["lnk:example_user"])
+        self.assertEqual(sum("can't link files" in line for line in self.lines()), 1)
+
+    def test_sync_removes_a_dangling_link_and_the_next_run_makes_it_again(self):
+        feed = self.feed([self.clip()], [self.clip()])
+        self.run_engine(feed, targets=["lnk:example_user"])
+        folder = self.target_dir("lnk", "example_user")
+        (folder / "videos" / "2026-01-02_V1.mp4").unlink()
+        Engine(home=self.home, sources={"lnk": feed}).sync()
+        link = folder / "reels" / "2026-01-02_V1.mp4"
+        self.assertTrue(link.is_symlink() and link.exists())
 
 
 if __name__ == "__main__":
