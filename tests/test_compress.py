@@ -5,6 +5,8 @@ runs; the screen is the fake one of `EngineCase`. Fix 7: a stalled ffmpeg (`Time
 (`ImportError`) used to end a whole `flnd sync`, or fail the file it hit, with a traceback.
 """
 
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -12,7 +14,7 @@ from unittest import mock
 from media_samples import needs_pillow
 from test_engine import EngineCase, FakeMedia, compressing
 
-from flnd.common import files
+from flnd.common import compress, files
 from flnd.common.compress import KINDS, LEVEL, ONE_AT_A_TIME, Compressor, compress_file
 
 
@@ -186,6 +188,39 @@ class CompressorTest(EngineCase):
         self.assertEqual((results[0], results[1], results[2]["compressed"]), (None, None, "none"))
         self.assertEqual(compressor.off, {"image"})
         self.assertIn("! image compression stops for this run", self.lines())
+
+
+
+class ApplyTest(EngineCase):
+    def test_photos_shrink_at_once_videos_one_at_a_time_and_rows_are_stamped(self):
+        folder = self.home / "files"
+        folder.mkdir(parents=True)
+        names = [f"{number}.jpg" for number in range(6)] + ["a.mp4", "b.mp4"]
+        rows = []
+        for name in names:
+            (folder / name).write_bytes(b"data")
+            rows.append((f"exm:{name}", {"path": str(folder / name), "size": 4}))
+        lock = threading.Lock()
+        running, peaks = {"image": 0, "video": 0}, {"image": 0, "video": 0}
+
+        def compress_file(path, kind, warned):
+            with lock:
+                running[kind] += 1
+                peaks[kind] = max(peaks[kind], running[kind])
+            time.sleep(0.02)
+            path.write_bytes(b"da")
+            with lock:
+                running[kind] -= 1
+            return {"path": str(path), "size": 2, "compressed": LEVEL, "original_size": 4}
+
+        history = dict(rows)
+        with mock.patch.object(compress, "compress_file", compress_file):
+            done = compress.apply(history, rows, Compressor(), label="exm:example_user")
+        self.assertEqual(done, 8)
+        self.assertGreater(peaks["image"], 1)
+        self.assertEqual(peaks["video"], 1)
+        for name in names:
+            self.assertTrue(files.unchanged(folder / name, history[f"exm:{name}"]), name)
 
 
 if __name__ == "__main__":

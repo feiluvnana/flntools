@@ -12,7 +12,8 @@ catches exactly what `media` raises for a file it can't compress (`ValueError`, 
 `RuntimeError`, `TimeoutError`, `ImportError`), warns once per kind of error per run, and leaves
 the original in place. `Compressor` is one run's shrinking on top of it: the encode lock, and the
 kinds this machine turned out unable to compress. `apply` shrinks a target's files already saved,
-when `flnd download --shrink` turns it on. The job shrinks each new download.
+when `flnd download --shrink` turns it on, `AT_ONCE` photos at a time. The job shrinks each new
+download.
 
     fields = Compressor().compress(Path("a.jpg"), "image")
     if fields is not None:
@@ -24,11 +25,12 @@ from __future__ import annotations
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, MutableMapping
 
 from flnd.common import files
-from shared import log
+from shared import log, worker
 
 # media's level for `--shrink`: the balance of quality and size (Phase 5's "balanced"). A history
 # row's `compressed` records it.
@@ -37,6 +39,9 @@ LEVEL = "mid"
 KINDS = (files.IMAGE, files.VIDEO, files.AUDIO)
 # The kinds whose encodes wait for the run's lock, one at a time, on a pool of their own.
 ONE_AT_A_TIME = frozenset({files.VIDEO})
+# Saved photos and audio `apply` shrinks at once: Pillow releases the GIL while it encodes, and
+# ffmpeg runs in a process of its own.
+AT_ONCE = 8
 # A video's codec as ffmpeg names it, by the name `media.compress` takes: passed so an MP4 keeps its
 # own codec, since without one media writes the container's default (H.264 in an MP4).
 OWN_CODECS = {"h264": "h264", "hevc": "h265", "vp9": "vp9"}
@@ -179,14 +184,30 @@ def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], c
             and row.get("compressed") != LEVEL and Path(row["path"]).is_file()]
     if not todo:
         return 0
+    # Videos last: they take turns on the run's lock, so a pool thread holding one only waits.
+    todo.sort(key=lambda item: files.kind_of(item[1]["path"]) in ONE_AT_A_TIME)
     with log.progress(f"--shrink {label}", total=len(todo)) as bar:
-        for key, row in todo:
+        for result in worker.as_completed(partial(_shrink, history, compressor), todo,
+                                          concurrency=AT_ONCE):
             bar.advance()
-            kind = files.kind_of(row["path"])
-            fields = compressor.compress(Path(row["path"]), kind) if kind is not None else None
-            if fields is not None:
-                history[key] = {**row, **fields, **files.stamp(Path(fields["path"]))}
+            if result.error is not None:
+                raise result.error
     return len(todo)
+
+
+def _shrink(history: MutableMapping[str, Any], compressor: Compressor,
+            item: tuple[str, dict]) -> None:
+    """Shrink one saved file and write its history row, on a pool thread."""
+    key, row = item
+    kind = files.kind_of(row["path"])
+    fields = compressor.compress(Path(row["path"]), kind) if kind is not None else None
+    if fields is None:
+        return
+    path = Path(fields.get("path", row["path"]))
+    # Written here, not by the caller: after a Ctrl-C the pool lets running files finish, and a
+    # file shrunk without its row would be shrunk a second time, losing quality again. Stamped
+    # as it now is, so `sync` trusts the smaller file.
+    history[key] = {**row, **fields, **(files.stamp(path) if path.is_file() else {})}
 
 
 def _warn(warned: set[type[Exception]], error: Exception, path: Path) -> None:

@@ -214,13 +214,16 @@ class DownloadAppliesTest(SyncCase):
         with self.shrink(fail_on=2), self.assertRaises(KeyboardInterrupt):
             self.download(shrink=True)
         self.assertIs(self.saved()["aaa:a"]["shrink"], False)
-        first, cut = self.compressed[0][0], self.compressed[1][0]
+        # Photos shrink at once, so any running when Ctrl-C came finished and kept their rows.
+        cut = self.compressed[1][0]
+        done = {Path(row["path"]).name for row in history(self.home).values()
+                if row.get("compressed") == "mid"}
+        self.assertNotIn(cut, done)
         self.compressed.clear()
         with self.shrink():
             self.download(shrink=True)
-        rest = sorted({"a.jpg", "b.jpg", "c.jpg"} - {first})
-        self.assertIn(cut, rest)
-        self.assertEqual(sorted(name for name, _ in self.compressed), rest)
+        self.assertEqual(sorted(name for name, _ in self.compressed),
+                         sorted({"a.jpg", "b.jpg", "c.jpg"} - done))
         self.assertIs(self.saved()["aaa:a"]["shrink"], True)
         self.assertEqual(self.names(), ["a.jpg", "b.jpg", "c.jpg"])
 
