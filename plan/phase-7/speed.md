@@ -139,6 +139,34 @@ gallery-dl's defaults (Instagram 6–12 s between requests; no delay for Faceboo
 X's rate-limit headers (`x-rate-limit-*`, 15-minute windows); Telethon's FAQ (`cryptg`; flood
 waits are the ceiling, parallel transfers reach them sooner). Checked 2026-11-13.
 
+## As built (2026-11-13)
+
+- The downloader is `shared/_download.py`: a first request for 2 MB; pieces of a 32nd of the
+  file, 2–4 MB, from one queue; up to 8 connections a file, a host starting at 4 and growing by
+  1 s windows that beat the best by 10%, capped after two refusals and forgotten after 10 min;
+  stalls: no first byte after 2× the first request's, or a connection under a quarter of the
+  best after 2 s; the first retry at once; digests from `Repr-Digest`, `Digest`, `x-goog-hash`
+  (and `Content-MD5` on a 200); free space checked for files of 4 MB or more (size + 128 MB).
+  A part without a validator resumes after a 64-byte overlap check, never split.
+- `http.Transport`: HTTP/2 for small files (with `h2`, now in flnd's dependencies), HTTP/1.1 for
+  split pieces, a host falling back to 1.1 for good when HTTP/2 fails.
+- `Source.concurrency` stays a field: 8 by default, tlg 3. `cryptg` is in the `telegram` extra
+  and the base dependencies.
+- One run grouped by source: options per target, `targets.db` opened once, `TargetReport` from
+  the job; engine layers are `_run` and `_run_site`.
+- `sync`: rows keep `size` and `mtime` (ns); unchanged files are trusted, changed ones and a
+  rolling 1/30 (oldest `checked` first) are fully checked on 8 threads, each target just before
+  its own listing.
+- `--shrink`: a video at or below 0.1 bit per pixel per frame (after mid's 1080p and 60 fps caps)
+  is kept; else a 4 s slice is compressed first and the whole only when it came out 10% smaller.
+  Saved photos shrink 8 at once, each row written as its file is done.
+- Telegram: `iter_download(offset=…)` resumes within one fetch; documents of 8 MiB or more in 4
+  parts at once.
+- Videos go first within a post; a DASH video's two streams download at once.
+- To check by hand: `cdninstagram.com` and `tiktokcdn.com` for `SPLIT_HOSTS`; Telegram parts as
+  real connections, a flood wait mid-file, cryptg in use; sync's rotation on a real library;
+  the shrink bitrate target on real clips; HTTP/2 against the real CDNs.
+
 ## Tests
 
 Fakes only (`httpx.MockTransport`, a fake clock): a big file is fetched in bounded pieces whose

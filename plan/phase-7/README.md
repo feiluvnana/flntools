@@ -44,7 +44,7 @@ Each step ends with `check` green and is committed on its own.
 6. **Built** (see links.md). [links](links.md): a file found again in another tab's folder is linked there.
 7. **Built** (shared d159407, flnd 1ae2ce4, 813bb73). [shared](shared.md): `shared` as a black box: `http.fetch` used, `download` and `goto` return
    their headers, downloads stoppable, errors caught by name, private imports gone.
-8. [speed](speed.md): the downloader after IDM and MDM, more at once, less work around the
+8. **Built** (shared 5b81e23, flnd 91c96a6, b493668). [speed](speed.md): the downloader after IDM and MDM, more at once, less work around the
    downloads, and lower listing floors.
 9. [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
    line under them.
