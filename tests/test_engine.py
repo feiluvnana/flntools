@@ -30,7 +30,6 @@ from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.session import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
-from fakes import SleepClock
 from shared import clock, cookies, http, kv, media, theme
 from shared._theme import Screen
 
@@ -167,20 +166,15 @@ class EngineCase(unittest.TestCase):
         self.home = Path(folder.name) / ".flnd"
         self.requests = []
         self.routes = {}
-        self.now = 0.0
-        patches = [
-            mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve)),
-            mock.patch.object(net, "_sleep", self.sleep),
-            mock.patch.object(net, "_clock", lambda: self.now),
-        ]
-        for patcher in patches:
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        # `http.download`'s waits between its own attempts.
-        self.enterContext(clock.use(SleepClock(self.sleep)))
+        patcher = mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
+        self.fake = self.enterContext(clock.use(clock.Fake()))
 
-    def sleep(self, seconds):
-        self.now += seconds
+    @property
+    def now(self):
+        return self.fake.now()
 
     def serve(self, request):
         self.requests.append(request)
@@ -374,7 +368,7 @@ class HttpTest(EngineCase):
         self.routes["https://api.aaa.example/gone"] = httpx.Response(404)
         self.routes["https://api.aaa.example/html"] = httpx.Response(200, html="<h1>Hi</h1>")
         self.run_engine(make_source("aaa", run), targets=["aaa:a"])
-        self.assertEqual(results, [None, (404, "HTTP 404 for https://api.aaa.example/gon"),
+        self.assertEqual(results, [None, (404, "GET https://api.aaa.example/gone: HTTP 4"),
                                    (None, "expected JSON from https://api.aaa.examp"), "Hi"])
 
     def test_a_rate_limit_never_stops_the_source(self):

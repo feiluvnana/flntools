@@ -2,9 +2,10 @@
 
 The client keeps one `Host` per host, or one for all the hosts a labelled `Pace` names. A
 request waits for the latest of: the host's rate headers once 5 or fewer requests are left until
-their reset; each budget's sliding window; the learned gap (the floor times the learned speed, plus up to 40% jitter); and a 429's back-off (its
-`Retry-After`, else 30 s doubling to 15 min). The learned speed runs from 1x to 8x: each 429
-doubles it, and every 50 clean requests bring it 20% back toward 1x. Private: callers use `http`.
+their reset; each budget's sliding window; the learned gap (the floor times the learned speed,
+plus up to 40% jitter); and a 429's back-off (its `Retry-After`, else 30 s doubling to 15 min).
+The learned speed runs from 1x to 8x: each 429 doubles it, and every 50 clean requests bring it
+20% back toward 1x. Private: callers use `http`.
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ class Host:
     """One host's pace in a run: its learned speed, budget windows, header hold and back-off."""
 
     def __init__(self, name: str, pace: Pace | None, *, speed: float = 1.0):
-        """Start `name`'s pace (a host's, or the label its hosts share) under `pace`, None for none."""
+        """Start `name`'s pace (a host's, or its hosts' label) under `pace`, or None for none."""
         self.name = name
         self.floor = pace.floor if pace is not None else 0.0
         self.budgets = dict(pace.budgets) if pace is not None else {}
@@ -102,7 +103,7 @@ class Host:
             return start - now
 
     def held(self) -> float:
-        """The seconds a rate header or a back-off still holds every request, without taking a turn."""
+        """The seconds a rate header or a back-off still holds every request; takes no turn."""
         with self._lock:
             return max(0.0, self._blocked_until - clock.now())
 

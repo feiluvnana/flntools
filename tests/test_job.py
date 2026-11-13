@@ -36,10 +36,6 @@ class JobCase(EngineCase):
 
     def setUp(self):
         super().setUp()
-        for patcher in (mock.patch.object(site_module, "_sleep", self.sleep),
-                        mock.patch.object(site_module, "_clock", lambda: self.now)):
-            patcher.start()
-            self.addCleanup(patcher.stop)
         for url, answer in FIXTURES.items():
             self.routes[url] = self.json_answer(url, answer)
 
@@ -873,7 +869,7 @@ class CtrlCTest(JobCase):
         self.until(sent.is_set)
         net.stopping.set()
         net.stopping_now.set()
-        # The next chunk arrives and is written; the download stops there, before the last one.
+        # The next chunk arrives and isn't written: the download stops before it, keeping the first.
         gate.set()
         thread.join(10)
         self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
@@ -888,7 +884,7 @@ class CtrlCTest(JobCase):
         net.stopping_now.clear()
         self.run_engine(Big, targets=["big:example_user"])
         self.assertEqual((folder / "big.7z").read_bytes(), body)
-        self.assertEqual(self.fetched(f"{CDN}/big.7z")[-1].headers["range"], "bytes=7-")
+        self.assertEqual(self.fetched(f"{CDN}/big.7z")[-1].headers["range"], "bytes=5-")
         self.assertEqual(sorted(path.name for path in folder.iterdir()), ["big.7z"])
 
 

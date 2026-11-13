@@ -8,8 +8,7 @@ Nothing is imported or run.
 The rules:
 1. a source (and `flnd.sources.common`) imports from flnd only `flnd.source`, the
    `flnd.sources.common` package and `flnd` itself (its version);
-2. `flnd.source` imports nothing from the engine side: from flnd, only `flnd.common.pace`, whose
-   `Pace` it re-exports;
+2. `flnd.source` imports nothing from flnd: it is what sources see, not the engine;
 3. `flnd/cli.py` imports from flnd only `flnd` (the engine API) and `flnd.sources` (for help and
    login's list): every decision is the engine's, so the CLI only parses, asks and prints;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it.
@@ -70,7 +69,7 @@ class LayersTest(unittest.TestCase):
                 self.assertEqual(sorted(found for found in flnd_imports(path) if not source_allowed(found)), [])
 
     def test_flnd_source_imports_nothing_from_the_engine_side(self):
-        self.assertEqual(sorted(flnd_imports(FLND / "source.py") - {"flnd.common.pace", "flnd.common"}), [])
+        self.assertEqual(sorted(flnd_imports(FLND / "source.py")), [])
 
     def test_the_cli_imports_the_engine_api_shared_and_the_sources(self):
         self.assertEqual(sorted(flnd_imports(FLND / "cli.py") - CLI_ALLOWED), [])

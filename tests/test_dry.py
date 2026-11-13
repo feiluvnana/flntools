@@ -32,7 +32,7 @@ class PlanTest(JobCase):
         self.assertEqual(len(placed), 5)
         # No download, no folder, no history, no settings: the CDN is never asked, nothing is on disk.
         self.assertFalse([request for request in self.requests if str(request.url).startswith(CDN)])
-        # Only the pacer's learned speed (`sources.db`) is kept, as any run of the source does.
+        # Only the learned speed (`sources.db`) is kept, as any run of the source does.
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["sources.db"])
         self.assertFalse((self.home / files.MEDIA).exists())
 

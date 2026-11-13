@@ -60,10 +60,6 @@ flnd.source.Login.info(message: str, **fields: Any) -> None
 flnd.source.Login.interactive: property -> bool
 flnd.source.Login.secrets: property -> MutableMapping[str, str]
 flnd.source.LoginError(flnd.source.Error)
-flnd.source.Pace(floor: float = 0.5, budgets: Mapping[str, tuple[int, float]] = <factory>)
-flnd.source.Pace.budgets: field -> Mapping[str, tuple[int, float]]
-flnd.source.Pace.floor: field -> float
-flnd.source.Pace.of(value: Pace | float) -> Pace
 flnd.source.Post(id: str | int, files: Sequence[File] | Callable[[], Iterable[File]] = (), *, date: DateLike = None, headers: Mapping[str, str] | None = None, **fields: Any)
 flnd.source.Post.category: field -> str
 flnd.source.Post.date: field -> DateLike
@@ -113,7 +109,7 @@ flnd.source.Source.logged_in(site: Site, /) -> bool
 flnd.source.Source.login(login: Login, method: str, /) -> None
 flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.needs: attribute -> ClassVar[tuple[str, ...]]
-flnd.source.Source.pace: attribute -> ClassVar[Pace | float]
+flnd.source.Source.pace: attribute -> ClassVar[http.Pace | float]
 flnd.source.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
 flnd.source.Source.requires_login: attribute -> ClassVar[bool]
 flnd.source.Source.resolve(text: str) -> Target
@@ -122,7 +118,6 @@ flnd.source.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.stealth: attribute -> ClassVar[bool]
 flnd.source.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
 flnd.source.Source.user_agent: attribute -> ClassVar[str | None]
-flnd.source.Source.wait: attribute -> ClassVar[Wait]
 flnd.source.Target(source: str, kind: str, value: str)
 flnd.source.Target.kind: field -> str
 flnd.source.Target.source: field -> str

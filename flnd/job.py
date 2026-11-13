@@ -243,7 +243,7 @@ def plan(run: SourceRun, target: Target, *, row: Any = None) -> Generator[Placed
     categories' `complete` records and the history are neither read nor written, and the site is
     closed however it ends, which also closes the category being read.
     """
-    site = TargetSite(run, target, row=row)
+    site = TargetSite(run, target)
     categories = {category.name: category for route in run.source.routes for category in route.categories}
     stream = posts(run.source, site, target, run.settings.options, run_async=run.run_async)
     try:
@@ -894,9 +894,9 @@ class Downloads:
             # Only a text file has no URL, and it is written by `queue`, never downloaded.
             return None
         try:
-            return net.download(self.run.http, source, queued.dest, label=placed.path, backoff=self.run.backoff,
-                                headers=headers, wait=type(self.source).wait, size=file.size, kind=placed.kind,
-                                audio=file.audio, received=received)
+            return net.download(self.run.files, source, queued.dest, label=placed.path,
+                                headers=headers, size=file.size, kind=placed.kind, audio=file.audio,
+                                received=received)
         except FetchError as error:
             if error.status not in EXPIRED or not callable(placed.post.files) or queued.refreshed:
                 raise
@@ -993,7 +993,7 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
     `STOPPED`; see the module for what finishes.
     """
     # One site and one job for the target: the site holds its browser and pacing, the job its downloads.
-    site = TargetSite(run, target, row=row)
+    site = TargetSite(run, target)
     ledger, downloads = Ledger(run, site, target), Downloads(run, target, row)
     work = _Work(ledger, downloads)
     # A target's row shows its running files, as many as the source downloads at once.

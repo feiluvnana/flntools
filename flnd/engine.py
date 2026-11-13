@@ -8,8 +8,8 @@ settings (flnd/settings.py) and applying a changed one to the files already save
 and tally (flnd/repair.py), and grouping targets by their settings. flnd/cli.py only parses,
 asks `login`'s questions and prints.
 
-How a run goes: targets are grouped by source; each source gets one worker, one HTTP client,
-back-off and pacer, and runs its targets one after another through the job (flnd/job.py), while
+How a run goes: targets are grouped by source; each source gets one worker and its HTTP clients,
+and runs its targets one after another through the job (flnd/job.py), while
 different sources run at the same time. It never asks a question, except `shared.browser`'s
 one, to download Chromium, before any work starts.
 
@@ -823,7 +823,7 @@ def _run_group(run_settings: Settings, done: Done, stop: frozenset[Target],
                 _run_targets(run, rows, done, stop)
         finally:
             # The cookies the site refreshed, even when the group failed or Ctrl-C stopped it (B5).
-            auth.write_back(run_settings.home, source.code, run.http.cookies.jar)
+            auth.write_back(run_settings.home, source.code, run.web.raw.cookies.jar)
 
 
 @contextmanager

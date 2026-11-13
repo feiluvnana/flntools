@@ -56,7 +56,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Generator, Iterator, Mapping
 from urllib.parse import urlsplit
 
-from flnd.source import FetchError, File, LoginError, Pace, Post, Site, Source, day, pages, target
+from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, pages, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.common.replay import Replay
@@ -130,7 +130,7 @@ class Instagram(Source):
     domains = ("instagram.com",)
     needs = ("sessionid",)
     # Instaloader's measured budgets (plan/phase-6/pace.md); the floor keeps bursts at a person's speed.
-    pace = Pace(1.0, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
+    pace = http.Pace(1.0, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
     # A post's category, and a highlight's title: "posts", "highlights/<title>", or "" for a single post.
     folder = "{category}/{album}"
     # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.

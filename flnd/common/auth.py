@@ -155,7 +155,7 @@ def save(home: Path, code: str, jar: cookies.Jar) -> None:
 def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
     """Save the cookies the site refreshed during a run into the vault's jar, for the names already in it.
 
-        auth.write_back(Path(".flnd"), "twt", run.http.cookies.jar)     # ["ct0"]
+        auth.write_back(Path(".flnd"), "twt", run.web.raw.cookies.jar)     # ["ct0"]
 
     Args:
         home: flnd's folder, `.flnd`.

@@ -14,7 +14,6 @@ import httpx
 from fakes import Seen, collect
 from test_engine import EngineCase
 
-from flnd import site as site_module
 from flnd.common import auth
 from flnd.session import Options
 from flnd.source import FetchError, Target, TargetError
@@ -539,10 +538,6 @@ class LoginStaysAtHomeTest(EngineCase):
 
     def setUp(self):
         super().setUp()
-        for patcher in (mock.patch.object(site_module, "_sleep", self.sleep),
-                        mock.patch.object(site_module, "_clock", lambda: self.now)):
-            patcher.start()
-            self.addCleanup(patcher.stop)
         jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
                for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
         auth.save(self.home, "twt", cookies.Jar(jar))

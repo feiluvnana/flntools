@@ -31,10 +31,11 @@ The fields. `code` is the prefix of a target (`exm:`), `name` is shown in help, 
 the site's hosts, short-link hosts included. The domains decide what is the source's own: its
 requests are paced and signed, its login cookies are sent, and its `prepare` runs; a CDN gets none
 of that. `needs` names cookies that prove a login, and `requires_login` makes a missing one an
-error. `pace` is `Pace(floor, budgets)` or a number of seconds between requests (0.5 by default).
-`folder`, `filename` and `key` are formats, described below. `concurrency` is how many files download
-at once (4). The browser fields are `stealth` and `user_agent`. `routes`, `forms`, `categories` and `single_kinds` are not written: they
-are collected from the routes when the class is created, and a `categories` field is refused.
+error. `pace` is `http.Pace(floor, budgets)` or a number of seconds between requests (0.5 by
+default). `folder`, `filename` and `key` are formats, described below. `concurrency` is how many
+files download at once (4). The browser fields are `stealth` and `user_agent`. `routes`, `forms`,
+`categories` and `single_kinds` are not written: they are collected from the routes when the class
+is created, and a `categories` field is refused.
 
 Routes. A route is a method marked `@target(*patterns, shown=None)`. Its name is the target's kind,
 and it takes `(self, site, value)`, where `value` is the one placeholder. Each pattern is one form
@@ -94,7 +95,7 @@ itself. A throttle the status doesn't show, such as a 200 that says "please wait
 
 Headers. `prepare(self, request, cookies)` runs before every attempt on the source's own domains, so
 a signature made there is fresh each time; it changes the request and returns it. Headers that a file
-needs, such as a CDN's Referer, go on `File(headers=)` or `Post(headers=)`, not in `prepare`:
+needs, such as a CDN's Referer, go on `Post(headers=)`, not in `prepare`:
 
     def prepare(self, request, cookies):
         if cookies.get("token"):
@@ -136,7 +137,6 @@ from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, 
                     MutableMapping, Protocol, Sequence, Union, overload)
 from urllib.parse import parse_qs, urlsplit
 
-from flnd.common.pace import Pace
 from shared import fmt, log
 
 if TYPE_CHECKING:
@@ -146,8 +146,9 @@ if TYPE_CHECKING:
 
     from shared import browser, http
 
-__all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Login", "LoginError", "Pace", "Post",
-           "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill", "pages", "target"]
+__all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Login", "LoginError",
+           "Post", "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill",
+           "pages", "target"]
 
 # Hosts that are the same site as their bare domain: the desktop, mobile and old mobile sites.
 SITE_PREFIXES = ("www.", "m.", "mobile.")
@@ -173,8 +174,6 @@ MILLISECONDS = 1e11
 TIME_USAGE = ("--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
               "for no limit")
 
-# Seconds before a retry, or a function of (error, attempt) giving them; None means the usual wait.
-Wait = Union[float, Callable[[BaseException, int], Union[float, None]]]
 # A file without a URL: `fetch(dest, progress)` writes it to `dest`, reporting `progress(done, total)`
 # in bytes. It may return a coroutine (tlg's SDK), which the engine runs on the source's loop.
 Fetch = Callable[["Path", Callable[..., None]], Any]
@@ -797,7 +796,8 @@ class Site(Protocol):
             soft: True returns None for a 401, 403 or 404 instead of raising.
             in_page: send it from the open page itself, with its cookies and TLS fingerprint
                 (`Page.fetch`), for an API the site checks that way.
-            **request: httpx's request options, such as `params`, `data`, `json` and `timeout`.
+            **request: `params`, `data`, `json`, `timeout` and `follow_redirects`, as httpx
+                takes them; with `in_page`, all but `follow_redirects`.
 
         Returns:
             The response; None only with `soft`.
@@ -1006,7 +1006,7 @@ class Source:
         class Instagram(Source):
             code, name, domains = "ins", "Instagram", ("instagram.com",)
             needs = ("sessionid",)
-            pace = Pace(1.0, budgets={"/graphql": (275, 600)})
+            pace = http.Pace(1.0, budgets={"/graphql": (275, 600)})
             folder = "{category}/{album}"
             unsupported = {"instagram.com/stories": "story links aren't supported; give the profile"}
 
@@ -1048,8 +1048,9 @@ class Source:
     needs: ClassVar[tuple[str, ...]] = ()
     requires_login: ClassVar[bool] = False
     login_methods: ClassVar[tuple[str, ...]] = ("browser", "file")
-    # How fast its own domains may be asked: `Pace(floor, budgets)`, or a number for the floor in seconds.
-    pace: ClassVar[Pace | float] = 0.5
+    # How fast its own domains may be asked: `http.Pace(floor, budgets)`, or a number for the floor
+    # in seconds; its `domains` and `label` are the source's own.
+    pace: ClassVar[http.Pace | float] = 0.5
     # Where a post's files go under the target's folder, what each is named (the content adds the
     # extension) and what its history row is keyed by: formats over a post's fields and the
     # engine's (see `fill` and `ENGINE_FIELDS`). A category may give its own.
@@ -1061,7 +1062,6 @@ class Source:
     stealth: ClassVar[bool] = True
     # Files downloading at once.
     concurrency: ClassVar[int] = 4
-    wait: ClassVar[Wait] = 1.0
     # `unsupported`, compiled when the class is created.
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()
 

@@ -60,8 +60,8 @@ from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import (TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, Literal, Mapping, Sequence, TypeVar,
-                    Union, overload)
+from typing import (TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, Literal, Mapping, Sequence,
+                    TypeVar, Union, overload)
 from urllib.parse import unquote, urlsplit
 
 import shared
@@ -655,7 +655,7 @@ class Client:
 
     def back_off(self, url: str, *, reason: str = "rate limited",
                  retry_after: float | None = None) -> None:
-        """Count a throttle seen on `url`'s host some other way, such as a block page, and wait it out.
+        """Count a throttle seen on `url`'s host some other way, such as a block page; wait it out.
 
             client.back_off("https://example.com/", reason="asked to wait", retry_after=120)
 
@@ -675,7 +675,7 @@ class Client:
         self._wait(host, host.held())
 
     def _host(self, url: str) -> Host:
-        """The pace of `url`'s host, or of its label, made on first use with an earlier run's speed."""
+        """The pace of `url`'s host or label, made on first use with an earlier run's speed."""
         name = (httpx.URL(url).host or "").lower()
         pace = self.pace if self.pace is not None and self.pace.paces(name) else None
         key = pace.label if pace is not None and pace.label else name
