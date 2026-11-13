@@ -28,6 +28,11 @@ A test (`tests/test_names.py`) fails on a `shared._` import outside `shared/`.
 | 9 | **Terminal edges**: rows fill the whole width, so a terminal that wraps at the last column (Windows' old console) or a window made narrower miscounts the area's lines. | Rows fit `width - 1`; a width change clears the area and draws it whole. | no |
 | 10 | **Windows file locks**: one `os.replace` in `atomic`, which an antivirus or a thumbnail scanner holding the file makes fail. | On Windows, the replace is retried for about a second on `PermissionError`. | no |
 
+Also in step 7, by the user's decision of 2026-11-13, so they are built once and not moved again
+in Phase 8: **`http.Client(pace=…)`**, the pace object (readable R4: rate headers, budgets, a learned
+gap and 429 back-off per host, inside the client), and **`shared.clock`**, one injectable clock for
+every module (readable R11).
+
 Also, folded into [speed](speed.md): `http`'s process-wide state (the default client never closed,
 `_slots` growing, `MAX_PER_HOST` fixed) becomes one run-scoped client with per-host limits; and
 `timeout` gets one meaning everywhere: per phase, plus a whole-request deadline.

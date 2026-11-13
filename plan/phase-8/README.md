@@ -173,14 +173,14 @@ Anything else stays where it is, however generic it looks.
 
 | flnd builds today | `shared` would offer | What the caller loses |
 | --- | --- | --- |
-| a `Pacer` and a `Backoff` per site, wired through `made[0]` lambdas, reading rate headers and budgets (`pace.py`, `net.py`, `site.py`) | `http.Client(pace=Pace(floor, budgets))`: rate headers, budgets, a learned gap and 429 back-off per host, inside the client | the pace wiring, `Transport`, `patiently`, `retrying` |
+| ~~a `Pacer` and a `Backoff` per site~~ | `http.Client(pace=…)` | **built in Phase 7, step 7** (user, 2026-11-13) |
 | a bounded download pool with room-waiting, pending counts, a condition and a refresh queue (`job.py`'s `_room`, `_pending`, `_running`, `_refreshes`) | `worker.Pool(…, bound=n)` whose `submit` waits for room and honours a `stop` event | about half of `Job`'s threading state |
 | JSON from a page's responses, scrolling until a request can be replayed, then replaying it page by page (`sites/common/watch.py`, `replay.py`, ins and fbk feed readers) | `browser.Page.responses(match)`, an iterator of JSON bodies, and `Page.replay(request, cursor=…)` | the site-agnostic half of `watch`, `replay` and both feed readers |
 | a site's cookies copied into flnd's own client before each fetch (`site.py`'s `net.cookie_jar(...)`) | one cookie jar shared live by a `Browser` and an `http.Client` | the copying, and cookies going stale between them |
 | "remember this refusal for a day" in a site's state (ins's `_refused`/`_refuse`), a lookup cache for a day (finders) | `kv.Store.get(key, max_age=…)` / `set(key, value, ttl=…)` | hand-rolled timestamps and comparisons |
 | leftover `.part` files found and removed by `repair` | `atomic.sweep(folder)`, removing what `atomic` itself leaves behind | repair's own part patterns |
-| `_sleep`, `_clock`, `_random` seams faked in three modules for tests | one injectable clock for `shared` (`shared.clock`), used by `http`, `worker` and `log` | three sets of seams |
-| a status row per target with counts redrawn from many threads (Phase 7's output step) | `log.status(label, fields=…)`, a row whose counts any thread may bump | the count bookkeeping around the row |
+| ~~`_sleep`, `_clock`, `_random` seams~~ | `shared.clock` | **built in Phase 7, step 7** (user, 2026-11-13) |
+| ~~a status row per target~~ | `log.status(…)` | **built in Phase 7, step 9** |
 
 What stays in flnd, however generic it looks: the name and key formats (`fill`), `day()`'s reading
 of a site's dates, the listing memory, sync's decisions, the query language's planning. They are
