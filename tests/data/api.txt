@@ -1,6 +1,6 @@
 flnd: module
 flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
-flnd.Engine.LoginError(flnd.source.Error)
+flnd.Engine.browsers: property -> dict[str, str]
 flnd.Engine.cookie_logins: property -> tuple[str, ...]
 flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None) -> Report
 flnd.Engine.home: attribute
@@ -10,6 +10,7 @@ flnd.Engine.logout(codes: Iterable[str]) -> list[str]
 flnd.Engine.resolve(texts: Sequence[str]) -> list[Target]
 flnd.Engine.sources: attribute
 flnd.Engine.sync(targets: Sequence[Target | str] = ()) -> Report
+flnd.LoginError(flnd.source.Error)
 flnd.Range(since: datetime.date | None = None, until: datetime.date | None = None)
 flnd.Range.parse(text: str) -> Range
 flnd.Range.since: field -> datetime.date | None

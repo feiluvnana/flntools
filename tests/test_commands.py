@@ -579,8 +579,9 @@ class LogoutTest(FlndCase):
 
 class ThinCliTest(unittest.TestCase):
     def test_the_browser_list_is_the_engines(self):
-        # The CLI asks from its own copy, since it imports nothing of the engine side; they must agree.
-        self.assertEqual(flnd_cli.BROWSERS, auth.BROWSERS)
+        # The CLI asks from the engine's table, so it has no copy to drift from.
+        self.assertEqual(Engine().browsers, auth.BROWSERS)
+        self.assertFalse(hasattr(flnd_cli, "BROWSERS"))
 
     def test_the_cookie_logins_are_the_sources_without_their_own(self):
         self.assertEqual(Engine().cookie_logins, ("tik", "fbk", "ins", "twt", "loi"))

@@ -23,7 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Optional
 
-from flnd import Engine, Range, __version__
+from flnd import Engine, LoginError, Range, __version__
 from flnd.sources import SOURCES
 from shared import cli, cookies, fmt, log, prompt, theme
 
@@ -31,9 +31,6 @@ from shared import cli, cookies, fmt, log, prompt, theme
 HOME = Path(".flnd")
 METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
                  "phone": "With your phone number and a code"}
-# The browsers a cookie login reads, by `shared.cookies` name, with the name a person knows; the
-# same table as the engine's `auth.BROWSERS`, which names them in "logged in from Chrome".
-BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave", "chromium": "Chromium"}
 
 
 def describe() -> str:
@@ -157,13 +154,13 @@ def login_command() -> int:
         if method == "file":
             answers["path"] = prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()
         else:
-            browser = prompt.choose("Read cookies from", {label: name for name, label in BROWSERS.items()})
+            browser = prompt.choose("Read cookies from", {label: name for name, label in engine.browsers.items()})
             answers.update(browser=browser, profile=_ask_profile(browser))
     try:
         message = engine.login(code, method, **answers)
     # A login that didn't work is an expected result, shown as the error with what to do instead; any
     # other exception is a bug and propagates.
-    except Engine.LoginError as error:
+    except LoginError as error:
         log.error("{error}", error=error)
         return 1
     if message:

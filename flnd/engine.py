@@ -47,7 +47,7 @@ from flnd.common import auth, compress, files, net
 from flnd.common.compress import Compressor
 from flnd.session import Options, Settings, single_targets, unknown_categories
 from flnd.site import LoginSite, SourceRun, TargetSite, source_run
-from flnd.source import LoginError, Range, Source, Target, TargetError
+from flnd.source import Range, Source, Target, TargetError
 from flnd.sources import SOURCES
 from shared import browser, kv, log, worker
 
@@ -60,8 +60,6 @@ ACCOUNT = "account"
 LOG_DAYS = 30
 # What `logout` takes for every source.
 ALL = "all"
-# The cookie logins every source without its own login has, by `login`'s method name.
-COOKIE_METHODS = ("browser", "file")
 
 # What in a source's code means it can drive a browser: the `Site` members and helpers that open
 # or use a page (`Site.page`, `goto`, `handoff`, `fetch(in_page=True)`, `watch_responses`,
@@ -136,10 +134,6 @@ class Engine:
     run at the same time. `download` and `sync` never ask questions; a source's own `login` asks
     through its `Login`.
     """
-
-    # What `login` raises for a login that didn't work, so a caller can catch it from the engine:
-    # `except Engine.LoginError`. It is `flnd.source.LoginError`, which sources raise too.
-    LoginError = LoginError
 
     def __init__(self, *, home: Path = Path(".flnd"), sources: Mapping[str, type[Source]] = SOURCES):
         """Make an engine; nothing is read or started until a method is called.
@@ -306,7 +300,7 @@ class Engine:
             The message to show; "" for a source with its own login, which says so itself.
 
         Raises:
-            Engine.LoginError: the login didn't work, with what to do instead.
+            LoginError: the login didn't work, with what to do instead (`flnd.LoginError`).
             ValueError: the source or method is unknown, or the method's answer is missing.
 
         Every credential is sealed in the vault, `.flnd/metadata/secrets.db`; nothing else is written.
@@ -369,6 +363,14 @@ class Engine:
             elif auth.api_key_saved(self.home, code):
                 found[code] = "api key saved"
         return found
+
+    @property
+    def browsers(self) -> dict[str, str]:
+        """The browsers a cookie login reads, by `login`'s `browser=` name, each with the name a person knows.
+
+            engine.browsers        # {"chrome": "Chrome", "firefox": "Firefox", …}
+        """
+        return dict(auth.BROWSERS)
 
     @property
     def cookie_logins(self) -> tuple[str, ...]:

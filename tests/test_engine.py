@@ -26,7 +26,7 @@ from media_samples import needs_pillow
 
 from flnd import engine as engine_module
 from flnd.common import auth, files, net
-from flnd import Engine, Range, Report, Target, TargetReport
+from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.session import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
@@ -562,7 +562,9 @@ class ApiTest(EngineCase):
     def test_flnd_exports_exactly_the_engine_api(self):
         import flnd
 
-        self.assertEqual(sorted(flnd.__all__), ["Engine", "Range", "Report", "Target", "TargetError", "TargetReport"])
+        self.assertEqual(sorted(flnd.__all__), ["Engine", "LoginError", "Range", "Report", "Target", "TargetError",
+                                                "TargetReport"])
+        self.assertFalse(hasattr(Engine, "LoginError"))
         self.assertFalse(hasattr(Engine, "run"))
         self.assertFalse(hasattr(Engine(home=self.home), "failed"))
 
@@ -732,7 +734,7 @@ class ApiLoginTest(EngineCase):
 
     def test_a_failed_login_and_bad_answers(self):
         with mock.patch("shared._cookies.from_browser", lambda browser="chrome", *, profile=None: cookies.Jar()):
-            with self.assertRaisesRegex(Engine.LoginError, "no sid for aaa.example in Chrome"):
+            with self.assertRaisesRegex(LoginError, "no sid for aaa.example in Chrome"):
                 self.engine.login("aaa", "browser", browser="chrome")
         for args, options in ((("aaa", "qr"), {}), (("zzz", "browser"), {}), (("aaa", "browser"), {}),
                               (("aaa", "file"), {})):

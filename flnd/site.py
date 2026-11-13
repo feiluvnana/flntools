@@ -124,10 +124,6 @@ class SourceRun:
             self._loop_thread.start()
         return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
 
-    def on_loop(self) -> bool:
-        """Whether the caller is running on this source's own event loop."""
-        return self._loop_thread is threading.current_thread()
-
     def show_wait(self, seconds: float) -> None:
         """Say on the current target's row that the next request waits `seconds`, the pacer's long waits."""
         if self.row is not None:
