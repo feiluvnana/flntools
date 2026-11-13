@@ -613,7 +613,7 @@ class ApiTest(EngineCase):
     def test_text_and_values_are_read_alike(self):
         runs = []
 
-        def run(engine, targets, options, sync=False):
+        def run(engine, targets, options, stop=frozenset()):
             runs.append(options)
             return [(TargetReport(target, (), 0), ()) for target in targets]
 
@@ -678,7 +678,7 @@ class ApiTest(EngineCase):
         self.assertFalse((self.home / files.METADATA).exists())
         # Without --from the same link downloads whole.
         runs = []
-        with mock.patch.object(Engine, "_run", lambda engine, targets, options, sync=False: runs.append(options) or
+        with mock.patch.object(Engine, "_run", lambda engine, targets, options, stop=frozenset(): runs.append(options) or
                                [(TargetReport(target, (), 0), ()) for target in targets]):
             self.assertTrue(engine.download(["https://www.instagram.com/p/C1abcDEFghi/"]).ok)
         self.assertEqual(runs, [Options()])

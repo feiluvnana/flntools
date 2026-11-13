@@ -271,7 +271,10 @@ class Engine:
                 log.debug("{target}: repair", target=tally.target)
                 repair.repair(history, folder, index[folder], tally)
         log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
-        reports = self._fetch(chosen, sync=True)
+        # A target with a lost or broken file lists to the end, so a file deeper than the saved-run
+        # stop is reached and saved again; the others stop at saved posts (A9 rule 3).
+        stop = frozenset(target for (target, _), tally in zip(chosen, tallies) if not (tally.lost or tally.broken))
+        reports = self._fetch(chosen, stop=stop)
         with self._history() as history:
             for tally, folder in zip(tallies, folders):
                 repair.count(history, folder, tally)
@@ -484,18 +487,19 @@ class Engine:
                 # be finished, since the next `download --shrink` would see no change.
                 settings.record(self.home, [(target, chosen[target])])
 
-    def _fetch(self, chosen: Sequence[tuple[Target, Options]], *, sync: bool = False) -> list[TargetReport]:
+    def _fetch(self, chosen: Sequence[tuple[Target, Options]], *,
+               stop: frozenset[Target] = frozenset()) -> list[TargetReport]:
         """Run the targets, those with the same options together, and give their reports in the order of `chosen`.
 
         Each category that listed to its end is recorded as complete in `targets.db` (A9 rule 3);
-        with `sync`, a category with that record stops after 5 saved posts in a row.
+        for a target in `stop`, a category with that record stops after 5 saved posts in a row.
         """
         groups: dict[Options, list[int]] = {}
         for number, (_, options) in enumerate(chosen):
             groups.setdefault(options, []).append(number)
         reports: dict[int, TargetReport] = {}
         for options, numbers in groups.items():
-            ran = self._run([chosen[number][0] for number in numbers], options, sync=sync)
+            ran = self._run([chosen[number][0] for number in numbers], options, stop=stop)
             for number, (report, complete) in zip(numbers, ran):
                 reports[number] = report
                 settings.complete(self.home, report.target, complete)
@@ -506,7 +510,7 @@ class Engine:
         return [reports[number] for number in range(len(chosen))]
 
     def _run(self, targets: Sequence[Target], options: Options, *,
-             sync: bool = False) -> list[tuple[TargetReport, tuple[str, ...]]]:
+             stop: frozenset[Target] = frozenset()) -> list[tuple[TargetReport, tuple[str, ...]]]:
         """Download every target with one set of options, and give each one's report and complete categories.
 
             [(report, complete)] = engine._run(engine.resolve(["ins:example_user"]), Options(categories=("reels",)))
@@ -514,7 +518,8 @@ class Engine:
         Args:
             targets: the targets to download, as `resolve` gives them.
             options: what to take from each target and what to do with the files.
-            sync: stop a `newest_first` category at saved posts when its last listing was complete.
+            stop: the targets whose `newest_first` categories stop at saved posts when their last
+                listing was complete (`sync`); every other target lists to the end.
 
         Returns:
             One (report, the categories that listed to their end) per target, in the order given.
@@ -544,7 +549,7 @@ class Engine:
             work = [(self.sources[code](), [(number, targets[number], rows.add(str(targets[number])))
                                             for number in numbers])
                     for code, numbers in groups.items()]
-            for result in worker.as_completed(partial(_run_group, run_settings, done, sync), work,
+            for result in worker.as_completed(partial(_run_group, run_settings, done, stop), work,
                                               concurrency=max(len(work), 1)):
                 if result.ok:
                     continue
@@ -799,7 +804,7 @@ def _follow(url: str) -> str:
 Done = MutableMapping[int, "tuple[TargetReport, tuple[str, ...]]"]
 
 
-def _run_group(run_settings: Settings, done: Done, sync: bool,
+def _run_group(run_settings: Settings, done: Done, stop: frozenset[Target],
                work: tuple[Source, list[tuple[int, Target, Row]]]) -> None:
     """Run one source's targets, one after another, on one worker, filling `done` as each ends.
 
@@ -819,7 +824,7 @@ def _run_group(run_settings: Settings, done: Done, sync: bool,
             log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
         try:
             with _connected(run, account):
-                _run_targets(run, rows, done, sync)
+                _run_targets(run, rows, done, stop)
         finally:
             # The cookies the site refreshed, even when the group failed or Ctrl-C stopped it (B5).
             auth.write_back(run_settings.home, source.code, run.http.cookies.jar)
@@ -846,14 +851,15 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
         run.run_async(manager.__aexit__(None, None, None))
 
 
-def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done, sync: bool = False) -> None:
+def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done,
+                 stop: frozenset[Target] = frozenset()) -> None:
     """Each target of one source through the job, with a person's pause between them.
 
     Args:
         run: the source's resources for the run.
         rows: each target's place in the run, its target and its progress row.
         done: filled with each target's report as it ends, keyed by its place.
-        sync: passed on to the job; see `job.download`.
+        stop: the targets that stop at saved posts, passed on to the job as `sync`; see `job.download`.
     """
     for index, (number, target, row) in enumerate(rows):
         if index and not net.stopping.is_set():
@@ -865,5 +871,5 @@ def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done
             row.fail()
             done[number] = (TargetReport(target, (), 0, error=job.STOPPED), ())
             continue
-        result = job.download(run, target, row, sync=sync)
+        result = job.download(run, target, row, sync=target in stop)
         done[number] = (TargetReport(target, result.written, result.skipped, error=result.error), result.complete)

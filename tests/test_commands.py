@@ -91,7 +91,7 @@ class RunsCase(FlndCase):
         super().setUp()
         self.runs = []
 
-        def run(engine, targets, options, sync=False):
+        def run(engine, targets, options, stop=frozenset()):
             self.runs.append((engine, targets, options))
             written = tuple(Path(f"{name}.jpg") for name in "abc")
             return [(TargetReport(target, written if not number else (), 0), ()) for number, target in enumerate(targets)]

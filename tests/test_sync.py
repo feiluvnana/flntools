@@ -19,7 +19,7 @@ from test_engine import CDN, EngineCase, FakeMedia, compressing, history, make_s
 from flnd import Engine, Range, TargetReport
 from flnd.common import files
 from flnd.session import Options
-from flnd.source import File, Target
+from flnd.source import File, Post, Source, Target, target
 from shared import kv
 
 class Site:
@@ -38,7 +38,7 @@ class Site:
 
 def recorded(record):
     """An `Engine._run` that only calls `record(targets, options)`, and reports each target done with nothing written."""
-    def run(engine, targets, options, sync=False):
+    def run(engine, targets, options, stop=frozenset()):
         record(targets, options)
         return [(TargetReport(target, (), 0), ()) for target in targets]
 
@@ -399,6 +399,52 @@ class SummaryTest(SyncCase):
         self.assertIn("; 0 repaired, 1 missing", summary[0])
         self.assertTrue(summary[1].startswith("• total: 2 targets, 2 files, "), summary[1])
         self.assertTrue(summary[1].endswith("; 0 repaired, 1 missing"), summary[1])
+
+
+class RepairListsToTheEndTest(SyncCase):
+    """fixes #1: a sync that finds a lost or broken file lists that target past the saved-run stop."""
+
+    NAMES = [f"p{number:02}.jpg" for number in range(12)]
+
+    def feed(self):
+        names = self.NAMES
+
+        class Feed(Source):
+            code, name, domains, folder, key = "aaa", "AAA", ("aaa.example",), "", "{path}"
+
+            @target("{user}")
+            def user(self, site, user):
+                return None
+
+            @user.category(newest_first=True)
+            def posts(self, site, context):
+                for name in names:
+                    yield Post(name, [File(f"{CDN}/{name}", name=name)])
+
+        return Feed
+
+    def setUp(self):
+        super().setUp()
+        for name in self.NAMES:
+            self.routes[f"{CDN}/{name}"] = httpx.Response(200, content=noise("JPEG"))
+
+    def test_a_lost_and_a_broken_file_deep_in_a_complete_feed_are_saved_again(self):
+        source = self.feed()
+        self.engine(source).download(["aaa:a"])
+        self.assertIn("posts", self.saved()["aaa:a"]["complete"])
+        (self.folder() / "p10.jpg").unlink()
+        # Empty is broken for every kind of file: a download that never got its bytes.
+        (self.folder() / "p09.jpg").write_bytes(b"")
+        [report] = self.sync(source=source)
+        self.assertEqual(report.repaired, 2)
+        self.assertEqual(self.names(), self.NAMES)
+
+    def test_a_target_with_nothing_lost_still_stops_at_saved_posts(self):
+        source = self.feed()
+        self.engine(source).download(["aaa:a"])
+        self.requests.clear()
+        self.sync(source=source)
+        self.assertEqual(self.requests, [])
 
 
 if __name__ == "__main__":
