@@ -1,4 +1,8 @@
-"""flnd's files on disk: where a target's go, what kind each is, and one media check.
+"""flnd's files on disk: the layout of `.flnd/`, where a target's go, what kind each is, and one media check.
+
+`.flnd/` holds three folders (plan/phase-7/layout.md): `media/` with every target's files,
+`metadata/` with every store and the vault's key, and `log/` with one log per run. Every module
+takes its path from the table below, joined onto flnd's folder, and never names a file itself.
 
 Every temporary file flnd writes comes from `shared.atomic`, which names it `.<name>.<random>.part`
 in the folder of the file it becomes and renames it onto that file only once complete. So a reader
@@ -10,7 +14,8 @@ files whole with `atomic.write`.
 file it repairs, so both sniff the same way and treat the same errors as "not checkable here".
 
     extension = files.checked(folder / "a.jpg", "image")    # ".webp" when it holds a WebP
-    files.target_folder(Path(".flnd"), target)              # .flnd/downloads/ins/example_user
+    files.target_folder(Path(".flnd"), target)              # .flnd/media/ins/example_user
+    Path(".flnd") / files.HISTORY                           # .flnd/metadata/history.db
 """
 
 from __future__ import annotations
@@ -23,6 +28,16 @@ from shared import fmt, log
 
 if TYPE_CHECKING:
     from flnd.source import Target
+
+# `.flnd/`'s three folders: the media, the stores, and a log of each run.
+MEDIA, METADATA, LOGS = Path("media"), Path("metadata"), Path("log")
+# Each store in `metadata/`: every saved file by key, each target's settings and complete listings,
+# each source's own state (a table per source), and the vault with the key beside the store it opens.
+HISTORY = METADATA / "history.db"
+TARGETS = METADATA / "targets.db"
+SOURCE_STATE = METADATA / "sources.db"
+SECRETS = METADATA / "secrets.db"
+KEY = METADATA / "secret.key"
 
 # What every temporary file flnd writes matches (`shared.atomic`'s part names), and what `flnd sync`'s repair deletes.
 PART_GLOB = ".*.part"
@@ -76,15 +91,15 @@ def kind_of(name: str) -> str | None:
 
 
 def target_folder(home: Path, target: Target) -> Path:
-    """A target's folder: `<home>/downloads/<code>/<value>`, its value made a safe file name.
+    """A target's folder: `<home>/media/<code>/<value>`, its value made a safe file name.
 
-        files.target_folder(Path(".flnd"), Target("ins", "user", "example_user"))   # .flnd/downloads/ins/example_user
+        files.target_folder(Path(".flnd"), Target("ins", "user", "example_user"))   # .flnd/media/ins/example_user
 
     Args:
         home: flnd's folder, `.flnd`.
         target: the target, as `Engine.resolve` gives it.
     """
-    return home / "downloads" / target.source / fmt.filename(target.value)
+    return home / MEDIA / target.source / fmt.filename(target.value)
 
 
 def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:

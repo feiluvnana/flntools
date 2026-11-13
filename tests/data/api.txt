@@ -307,6 +307,7 @@ shared.log.info(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.level: property, settable -> Level
 shared.log.ok(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str) -> Iterator[Progress]
+shared.log.record(path: Path) -> Iterator[None]
 shared.log.under(row: Progress | None) -> Iterator[None]
 shared.log.warn(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.media: module

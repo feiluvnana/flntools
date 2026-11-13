@@ -8,7 +8,8 @@ thread per screen, alive while a block is open, redraws the rows that changed (a
 and the lines written meanwhile go out above the area in that same frame. A row is drawn once it
 has run for 0.5 s, so a burst of small files never flickers. When the block ends each row is
 written once more as a final line. Off a terminal there is no live area and no thread: only the
-final lines are written. How a line or row looks is the theme's (`shared.theme`); this module
+final lines are written. `log.record` adds a file that takes every line and final row at debug,
+whatever `log.level` is, unpainted and timed, with each URL's query string cut off. How a line or row looks is the theme's (`shared.theme`); this module
 decides when and where.
 
     log.level = "debug"
@@ -19,6 +20,8 @@ decides when and where.
     with log.group("download") as rows:
         row = rows.add("ins:example")
         row.total = 12
+    with log.record(Path(".flnd/log/run.log")):
+        log.debug("written to the file only")
 
 Every function and property here may be called from several threads at once: `advance` and the
 row setters take no screen lock (a download thread may call them on every chunk), lines go
@@ -27,12 +30,15 @@ through the screen's lock, and `prompt` holds other threads' lines while it asks
 
 from __future__ import annotations
 
+import re
 import string
 import threading
 import time
 import weakref
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Literal
+from datetime import datetime
+from pathlib import Path
+from typing import IO, Any, Callable, Iterator, Literal
 
 import shared
 from shared import _theme
@@ -55,6 +61,9 @@ REDRAW_INTERVAL = 0.1
 SHOW_AFTER = 0.5
 # The clock rows and frames are timed with; tests replace it to run seconds in no time.
 clock = time.monotonic
+# A URL's query string and fragment in a recorded line: a CDN's signed URL is a credential while it
+# lasts, so a log file keeps only the scheme, host and path. It stops at whitespace and quotes.
+QUERY = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s?#'\"<>]*)[?#][^\s'\"<>]*", re.IGNORECASE)
 # The row `log.under` names on this thread, which `log.progress` nests its row under.
 _nest = threading.local()
 
@@ -79,6 +88,8 @@ class Log:
 
     def __init__(self) -> None:
         self._level: Level = "info"
+        # The files `record` opened, each written under its own lock by any thread.
+        self._records: list[_Record] = []
 
     @property
     def level(self) -> Level:
@@ -236,6 +247,43 @@ class Log:
         with _ending(group):
             yield group
 
+    @contextmanager
+    def record(self, path: Path) -> Iterator[None]:
+        """Also write every line, and every row's final line, to a file for the length of the block.
+
+            with log.record(Path(".flnd/log/2026-11-13_143005_download.log")):
+                log.debug("{n} posts listed", n=12)     # in the file, even at log.level "info"
+
+        Args:
+            path: the file, appended to; its folder is created when missing.
+
+        Raises:
+            OSError: the folder or the file can't be created.
+
+        The file takes every level, debug included, whatever `log.level` shows on the screen,
+        and rows' final lines as `log.group` writes them, but no live area. Each line is plain
+        text with no escape sequences, starts with its local time (`14:30:07.412`), and has every
+        URL's query string and fragment cut off (`QUERY`), since a signed URL is a credential.
+        A line that can't be written (a full disk) is dropped, never raised to the caller.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as file:
+            sink = _Record(file)
+            self._records.append(sink)
+            try:
+                yield
+            finally:
+                self._records.remove(sink)
+
+    def _recorded(self, lines: list[str]) -> None:
+        """Write drawn lines to every `record` file, plain, timed and without query strings."""
+        if not self._records:
+            return
+        stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        text = "".join(f"{stamp} {QUERY.sub(_keep_path, strip(line))}\n" for line in lines)
+        for sink in list(self._records):
+            sink.write(text)
+
     def _line(self, level: str, message: str, args: tuple, fields: dict) -> None:
         """Format a line, drop it below `level`, and write it above the live area."""
         # str.format ignores unused keywords, so a misspelled field would vanish without a word.
@@ -244,13 +292,36 @@ class Log:
             raise TypeError(f"log message {message!r} has no field {', '.join(sorted(unused))}")
         # The check above runs before the level filter, so a misspelled field is caught even on a
         # line that is then dropped.
-        if LEVEL_RANKS[level] < LEVEL_RANKS[self._level]:
+        shown = LEVEL_RANKS[level] >= LEVEL_RANKS[self._level]
+        if not shown and not self._records:
             return
         # Without values the message is written as it is, so braces in a plain message stay braces.
         if args or fields:
             message = message.format(*args, **fields)
         theme = _theme.theme
-        live_area(theme.screen).write_lines([render(theme, LogRecord(level, message))])
+        line = render(theme, LogRecord(level, message))
+        # A record file takes every level, so a run can be audited without having been run at debug.
+        self._recorded([line])
+        if shown:
+            live_area(theme.screen).write_lines([line])
+
+
+class _Record:
+    """One file `log.record` writes to, under a lock of its own, as threads write lines at once."""
+
+    def __init__(self, file: IO[str]):
+        self.file = file
+        self.lock = threading.Lock()
+
+    def write(self, text: str) -> None:
+        """Append `text` and flush it, so a killed run's file still holds every line written so far."""
+        with self.lock:
+            try:
+                self.file.write(text)
+                self.file.flush()
+            # A full disk or a removed folder loses the audit file's lines, never the run.
+            except OSError:
+                pass
 
 
 class Progress:
@@ -545,7 +616,9 @@ class LiveArea:
         with self.screen.lock:
             self.groups = [open_group for open_group in self.groups if open_group is not group]
             quiet = log.level == "quiet"
-            self.write_lines([line for level, line in group._rows() if not quiet or level == "error"])
+            rows = group._rows()
+            log._recorded([line for _, line in rows])
+            self.write_lines([line for level, line in rows if not quiet or level == "error"])
             if self.groups:
                 self.mark()
             else:
@@ -822,6 +895,11 @@ def _ending(group: Group) -> Iterator[None]:
         raise
     group._end("ok")
     group._live.close(group)
+
+
+def _keep_path(match: re.Match[str]) -> str:
+    """A `QUERY` match's URL up to its path, without the query string and fragment."""
+    return match.group(1)
 
 
 def _field_names(message: str) -> set[str]:

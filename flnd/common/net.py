@@ -36,6 +36,10 @@ MAX_RETRY_AFTER = 60.0
 # A source that keeps answering 429, or showing challenges, waits twice as long each time, up to 15 min.
 FIRST_BACKOFF = 30.0
 MAX_BACKOFF = 15 * 60.0
+# A 429's headers the run log keeps: the wait, and the sites' own rate headers (`x-rate-limit-*`,
+# `x-ratelimit-*`, `ratelimit-*`); never a cookie or an authorization header.
+RATE_HEADERS = frozenset({"retry-after"})
+RATE_PREFIXES = ("x-rate-limit-", "x-ratelimit-", "ratelimit-")
 # Seconds added to a rate limit's reset time, so a clock a little behind the server's isn't refused again.
 RESET_SLACK = 5.0
 # The request extension `shared.http.download` puts on its requests, which the transport sends
@@ -336,6 +340,10 @@ def retry_wait(wait: Wait, error: BaseException, attempt: int) -> float:
 
 def rate_limit_wait(headers: Mapping[str, str]) -> float | None:
     """How long a 429 asks to wait: its Retry-After, or else its `x-rate-limit-reset` time (Twitter's)."""
+    # The run log keeps the headers that say why and for how long, so a block can be understood afterwards.
+    rate = {name: value for name, value in headers.items() if name.lower() in RATE_HEADERS
+            or name.lower().startswith(RATE_PREFIXES)}
+    log.debug("rate limited: {headers}", headers=", ".join(f"{name}: {value}" for name, value in rate.items()) or "no rate headers")
     seconds = retry_after_seconds(headers.get("retry-after"))
     reset = headers.get("x-rate-limit-reset", "")
     if seconds is None and reset.isdigit():

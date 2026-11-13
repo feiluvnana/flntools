@@ -16,7 +16,7 @@ from test_engine import make_source
 from flnd import Choice, Engine, Target, TargetReport
 from flnd import cli as flnd_cli
 from flnd import sources
-from flnd.common import auth
+from flnd.common import auth, files
 from flnd.session import Options
 from flnd.source import Source
 from shared import cookies, kv, theme
@@ -111,7 +111,7 @@ class DownloadTest(RunsCase):
         self.assertEqual(options, Options(categories=("reels", "media", "tagged"), since=date(2026, 1, 1),
                                           until=date(2026, 6, 30)))
         self.assertEqual(engine.home, Path(".flnd"))
-        storage = (Path(self.tmp.name) / ".flnd/downloads").resolve()
+        storage = (Path(self.tmp.name) / ".flnd" / files.MEDIA).resolve()
         self.assertEqual(out.splitlines(), [f"• Storage: {storage}", "✓ Complete. 3 files"])
 
     def test_defaults(self):
@@ -159,7 +159,8 @@ class DownloadTest(RunsCase):
             self.assertEqual(code, 2, target)
             self.assertIn(message, out)
         self.assertEqual(self.runs, [])
-        self.assertFalse(Path(".flnd").exists())
+        self.assertFalse((Path(".flnd") / files.MEDIA).exists())
+        self.assertFalse((Path(".flnd") / files.METADATA).exists())
 
     def test_bad_options(self):
         message = ("✗ no source here has 'reels': use all, or tik: videos, stories, playlists, reposts, liked, "
@@ -230,7 +231,7 @@ class TimeTest(RunsCase):
                 self.assertEqual(code, 2)
                 self.assertIn(message, out)
         self.assertEqual(self.runs, [])
-        self.assertFalse(Path(".flnd/targets.db").exists())
+        self.assertFalse((Path(".flnd") / files.TARGETS).exists())
 
 
 class MediaOptionsTest(RunsCase):
@@ -240,7 +241,7 @@ class MediaOptionsTest(RunsCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(self.runs[0][2], Options(image=Choice("webp", "best"), video=Choice("mkv:h265", "low"),
                                                   audio=Choice("opus", "high")))
-        with kv.open(".flnd/targets.db", table="targets") as targets:
+        with kv.open(Path(".flnd") / files.TARGETS, table="targets") as targets:
             row = targets["ins:example_user"]
         self.assertEqual((row["kind"], row["image"], row["video"], row["audio"]),
                          ("user", "webp,best", "mkv:h265,low", "opus,high"))
@@ -273,7 +274,7 @@ class MediaOptionsTest(RunsCase):
             self.assertEqual(code, 2, args)
             self.assertIn(message, out)
         self.assertEqual(self.runs, [])
-        self.assertFalse(Path(".flnd/targets.db").exists())
+        self.assertFalse((Path(".flnd") / files.TARGETS).exists())
 
 
 class SyncCommandTest(RunsCase):
@@ -394,8 +395,8 @@ class LoginFileTest(LoginCase):
         self.assertEqual({cookie["name"]: cookie["domain"] for cookie in saved},
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
         # Sealed in the vault, whose key is as private as the plain cookie files were; nothing else is written.
-        self.assertEqual(sorted(path.name for path in Path(".flnd").iterdir()), ["secret.key", "secrets.db"])
-        self.assertEqual(stat.S_IMODE(Path(".flnd/secret.key").stat().st_mode), 0o600)
+        self.assertEqual(sorted(path.name for path in Path(".flnd").rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
+        self.assertEqual(stat.S_IMODE((Path(".flnd") / files.KEY).stat().st_mode), 0o600)
 
     def test_json_export_and_old_json_removed(self):
         Path(".flnd/cookies").mkdir(parents=True)

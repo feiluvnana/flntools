@@ -24,7 +24,7 @@ from test_engine import EngineCase, compressing
 from flnd import cli as flnd_cli
 from flnd import engine as engine_module
 from flnd import Engine, job, site as site_module
-from flnd.common import net
+from flnd.common import files, net
 from flnd.common.compress import Choice
 from flnd.session import Options, single_targets
 from flnd.source import FetchError, File, LoginError, Post, Source, Target, target
@@ -51,7 +51,7 @@ class JobCase(EngineCase):
         return respond
 
     def history(self):
-        with kv.open(self.home / "history.db", table="downloads") as history:
+        with kv.open(self.home / files.HISTORY, table="downloads") as history:
             return dict(history.items())
 
     def fetched(self, url):
@@ -390,11 +390,11 @@ class SyncStopTest(JobCase):
         self.engine = Engine(home=self.home, sources={"fed": Feed})
 
     def record(self):
-        with kv.open(self.home / "targets.db", table="targets") as rows:
+        with kv.open(self.home / files.TARGETS, table="targets") as rows:
             return rows.get("fed:example_user", {}).get("complete")
 
     def forget_record(self):
-        with kv.open(self.home / "targets.db", table="targets") as rows:
+        with kv.open(self.home / files.TARGETS, table="targets") as rows:
             row = dict(rows["fed:example_user"])
             row.pop("complete")
             rows["fed:example_user"] = row
@@ -428,7 +428,7 @@ class SyncStopTest(JobCase):
         # Remove two saved files in the middle: the 4 saved ones before it never reach 5, then a new one resets.
         for name in ("p2", "p3"):
             next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
-        with kv.open(self.home / "history.db", table="downloads") as history:
+        with kv.open(self.home / files.HISTORY, table="downloads") as history:
             for name in ("p2", "p3"):
                 del history[f"fed:{name}"]
         self.listed.clear()

@@ -26,7 +26,7 @@ more lines (`Choice` and its format tables).
 | E6 | **One host matcher and one URL scrubber.** `host == d or host.endswith("." + d)` is written four times; "a URL without its query" three times, and the [run log](layout.md#run-logs) needs it again. | 15 | low | no |
 | E7 | **`shared.http.download` does the mirrors and the row**, which it already can: a list of URLs, `label=`, `progress=`. A failed mirror becomes a debug line. | 15 | low | no |
 | E8 | **Dead code:** `SourceRun.on_loop`, `engine.COOKIE_METHODS`, `post.Fields.values`, `cli.BROWSERS` (a copy of `auth.BROWSERS`), and the alias `Engine.LoginError`, which the no-aliases rule forbids: `flnd.LoginError`. | 8 | low | yes |
-| E9 | **One table of `.flnd/` paths** in `files.py` (`MEDIA`, `METADATA`, `LOGS` and each store's file), which [layout](layout.md) needs anyway. | 5 | low | no |
+| E9 | **Built** (step 1). **One table of `.flnd/` paths** in `files.py` (`MEDIA`, `METADATA`, `LOGS` and each store's file), which [layout](layout.md) needs anyway. | 5 | low | no |
 | E10 | **Small repeats:** `--time` held twice (`Options.since/until` and `Range`); the format values, the category table and the route lookup each built twice; `Job`'s six counters become one counts record with the status lines. | 12 | low | no |
 
 ## Sources

@@ -15,6 +15,7 @@ from test_job import JobCase
 
 from flnd import dry, job
 from flnd import site as site_module
+from flnd.common import files
 from flnd.session import Options, Settings
 from flnd.source import File, Post, Range, Source, Target, target
 
@@ -33,7 +34,7 @@ class PlanTest(JobCase):
         self.assertFalse([request for request in self.requests if str(request.url).startswith(CDN)])
         # Only the pacer's learned speed (`sources.db`) is kept, as any run of the source does.
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["sources.db"])
-        self.assertFalse((self.home / "downloads").exists())
+        self.assertFalse((self.home / files.MEDIA).exists())
 
     def test_plan_does_not_skip_saved_files_and_follows_from(self):
         self.run_engine(Example, targets=["exm:example_user"])

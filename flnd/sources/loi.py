@@ -18,7 +18,7 @@ The site's quirks:
   - Archives are saved as the server sends them, under the name in their URL, whatever their
     extension says; info.md's unzip password opens them with any archive tool.
 
-Folder layout, under `.flnd/downloads/loi/<id>/<author>/<id> <title>/`:
+Folder layout, under `.flnd/media/loi/<id>/<author>/<id> <title>/`:
   info.md         the post's fields, its download links and the unzip password
   images/         the preview images, 01.jpg, 02.jpg, …
   loi-<hash>.7z   the archives (--from archive), saved as the server sends them and named as it

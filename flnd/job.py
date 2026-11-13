@@ -196,6 +196,7 @@ def posts(source: Source, site: Site, target: Target, options: Options, *, run_a
     time = Range(options.since, options.until)
     function = getattr(source, route.kind)
     if not route.categories:
+        log.debug("{target}: list {route}", target=str(target), route=route.kind)
         yield from _kept(function(site, target.value), "", newest_first=False, time=time, run_async=run_async,
                          saved=None)
         return
@@ -206,6 +207,8 @@ def posts(source: Source, site: Site, target: Target, options: Options, *, run_a
     if inspect.iscoroutine(context):
         context = run_async(context)
     for category in categories:
+        # A phase mark for the run log, so a reader finds which listing a line belongs to.
+        log.debug("{target}: list {category}", target=str(target), category=category.name)
         yielded = getattr(source, category.attribute)(site, context)
         stops = saved if category.newest_first and category.name in listed else None
         finished = yield from _kept(yielded, category.name, newest_first=category.newest_first, time=time,
@@ -467,6 +470,8 @@ class Job:
                     item = result.item[0] if isinstance(result.item, tuple) else result.item
                     log.error("{file}: {kind} {error}", file=item, kind=type(result.error).__name__,
                               error=result.error)
+                    if result.error is not None:
+                        log.debug("{file}: {chain}", file=item, chain=causes(result.error))
         with self._writing:
             return tuple(self._written.values())
 
@@ -603,6 +608,7 @@ class Job:
         except FetchError as error:
             # Refused, or its fresh link refused too: the same answer next time, so logged, not retried.
             log.error("{name}: {error}", name=placed.path, error=error)
+            log.debug("{name}: {chain}", name=placed.path, chain=causes(error))
             return False
         except KeyboardInterrupt:
             if net.stopping.is_set() and not net.stopping_now.is_set():
@@ -767,6 +773,7 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
         if not isinstance(error, Exception):
             raise error
         log.error("{target}: {error}", target=str(target), error=error)
+        log.debug("{target}: {chain}", target=str(target), chain=causes(error))
         row.fail()
         return Done(written, job.skipped, str(error), tuple(complete))
     if net.stopping.is_set():
@@ -774,7 +781,28 @@ def download(run: SourceRun, target: Target, row: Any, *, sync: bool = False) ->
         row.fail()
         return Done(written, job.skipped, STOPPED, tuple(complete))
     row.finish()
+    log.debug("{target}: {written} written, {skipped} skipped; complete: {complete}", target=str(target),
+              written=len(written), skipped=job.skipped, complete=", ".join(complete) or "none")
     return Done(written, job.skipped, None, tuple(complete))
+
+
+def causes(error: BaseException) -> str:
+    """An exception and every cause under it, for the run log: `FetchError: HTTP 403 ← HTTPStatusError: …`.
+
+        log.debug("{name}: {chain}", name=path, chain=causes(error))
+
+    Args:
+        error: the exception; its `__cause__`, else its `__context__` unless suppressed, is followed
+            down, each once.
+    """
+    links: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        links.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return " ← ".join(links)
 
 
 @dataclass

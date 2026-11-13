@@ -11,7 +11,7 @@ What the made-up site gives, and the quirks a real one has that this one copies:
   - albums whose photos need one request each, made only for an album not saved yet (a lazy post);
   - one profile picture, kept under its own name and keyed by its path, as sources did before step 6.
 
-Folder layout, under `.flnd/downloads/exm/<user>/`:
+Folder layout, under `.flnd/media/exm/<user>/`:
   posts/2026-01-02_<id>_0.jpg     a post's files, `_<num>` only when it has more than one
   albums/<title>/<id>_0.jpg        an album's photos (the album has no date)
   profile/avatar_<id>.jpg          the profile picture

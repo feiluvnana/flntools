@@ -76,7 +76,7 @@ class UnstorableError(Error, TypeError):
 def open(path: PathLike, *, table: str = "default", timeout: float = BUSY_TIMEOUT) -> Store:
     """Open or create the store at `path`, creating its folder, and sweep out `table`'s expired keys.
 
-        with kv.open(".flnd/history.db", table="downloads") as history:
+        with kv.open(".flnd/metadata/history.db", table="downloads") as history:
             history["ins:1"] = {"path": "ins/a.jpg"}
 
     Args:

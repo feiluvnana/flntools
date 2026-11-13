@@ -21,7 +21,7 @@ Example:
     flnd download tlg:@examplechannel --from photo,video --time 2026-01-01..
     flnd download "tlg:Lens Club"
 
-Folder layout, under `.flnd/downloads/tlg/<target>/<chat title>/`:
+Folder layout, under `.flnd/media/tlg/<target>/<chat title>/`:
   photo/  video/  file/    <date>_<message id>[_<original name>]; an album's files sort together
 A history row is keyed `<chat id>:<message id>`.
 """

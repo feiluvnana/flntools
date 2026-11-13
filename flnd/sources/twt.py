@@ -31,11 +31,11 @@ What the site does that the code works around:
 
 Reposts are the media of the tweets the user retweeted; replies, the user's own replies.
 
-Folder layout, under `.flnd/downloads/twt/<username>/`:
+Folder layout, under `.flnd/media/twt/<username>/`:
   posts/, highlights/, reposts/, replies/   <YYYY-MM-DD>_<tweet_id>_<n>.jpg (or .png, .mp4)
   images/, videos/                          the Media tab's photos and videos
   profile/                                  avatar_<id>.jpg and banner_<id>.jpg
-One tweet, `https://x.com/<user>/status/<id>`, lands in `.flnd/downloads/twt/<id>/`.
+One tweet, `https://x.com/<user>/status/<id>`, lands in `.flnd/media/twt/<id>/`.
 """
 
 from __future__ import annotations

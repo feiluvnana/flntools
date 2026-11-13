@@ -17,7 +17,7 @@ from unittest import mock
 
 import httpx
 
-from flnd.common import auth
+from flnd.common import auth, files
 from flnd.sources.ins import Instagram
 from shared import cookies, crypto, kv, theme
 from shared._theme import Screen
@@ -92,10 +92,10 @@ class VaultedCookiesTest(AuthCase):
         self.assertEqual(message, "ins: logged in from cookies.txt (1 cookie)")
         # Read once and never copied: the export is where it was, and `.flnd/` holds only the vault.
         self.assertTrue(export.is_file())
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*")), ["secret.key", "secrets.db"])
+        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
         self.assertEqual([(cookie["name"], cookie["domain"]) for cookie in auth.load(self.home, "ins")],
                          [("sessionid", ".instagram.com")])
-        with kv.open(self.home / "secrets.db", table="secrets") as db:
+        with kv.open(self.home / files.SECRETS, table="secrets") as db:
             self.assertEqual(list(db.keys(prefix="ins:")), ["ins:cookies"])
             self.assertNotIn(b"ins-session", base64.b64decode(db["ins:cookies"]))
 
@@ -118,7 +118,8 @@ class VaultedCookiesTest(AuthCase):
 
     def test_the_move_keeps_the_file_when_the_key_is_damaged(self):
         path = self.write("ins.txt")
-        (self.home / "secret.key").write_bytes(b"short")
+        (self.home / files.METADATA).mkdir(parents=True)
+        (self.home / files.KEY).write_bytes(b"short")
         with mock.patch.object(auth, "KEY_WAIT", 0.01):
             auth.logged_in(self.home, "ins")
         self.assertTrue(path.is_file())
@@ -160,7 +161,7 @@ class VaultedCookiesTest(AuthCase):
 
     def test_a_jar_copied_into_another_sources_slot_doesnt_decrypt(self):
         auth.save(self.home, "ins", cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
-        with kv.open(self.home / "secrets.db", table="secrets") as db:
+        with kv.open(self.home / files.SECRETS, table="secrets") as db:
             db["twt:cookies"] = db["ins:cookies"]
         with self.assertRaises(crypto.Error):
             auth.load(self.home, "twt")
@@ -263,7 +264,7 @@ class VaultTest(AuthCase):
             secrets["api_hash"] = "abc"
         with auth.secrets(self.home, "tlg") as secrets:
             self.assertEqual(dict(secrets), {"session": "1BVts-secret", "api_hash": "abc"})
-        with kv.open(self.home / "secrets.db", table="secrets") as db:
+        with kv.open(self.home / files.SECRETS, table="secrets") as db:
             stored = db["tlg:session"]
         self.assertNotIn(b"1BVts", base64.b64decode(stored))
 
@@ -279,7 +280,7 @@ class VaultTest(AuthCase):
     def test_a_value_moved_to_another_slot_fails(self):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets["session"] = "s"
-        with kv.open(self.home / "secrets.db", table="secrets") as db:
+        with kv.open(self.home / files.SECRETS, table="secrets") as db:
             db["loi:session"] = db["tlg:session"]
             db["tlg:other"] = db["tlg:session"]
         for code, name in (("loi", "session"), ("tlg", "other")):
@@ -289,17 +290,17 @@ class VaultTest(AuthCase):
     def test_no_key_file_until_a_secret_is_used(self):
         with auth.secrets(self.home, "tlg") as secrets:
             self.assertEqual(len(secrets), 0)
-        self.assertFalse((self.home / "secret.key").exists())
+        self.assertFalse((self.home / files.KEY).exists())
 
 
 class KeyTest(AuthCase):
     def test_created_with_mode_0600(self):
         secret = auth.key(self.home)
-        path = self.home / "secret.key"
+        path = self.home / files.KEY
         self.assertEqual(len(secret), 32)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(auth.key(self.home), secret)
-        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
+        self.assertEqual([entry.name for entry in (self.home / files.METADATA).iterdir()], ["secret.key"])
 
     def test_key_is_created_where_hard_links_fail(self):
         # Fix #2: FAT, exFAT and some network drives refuse os.link with a plain OSError.
@@ -307,18 +308,18 @@ class KeyTest(AuthCase):
             secret = auth.key(self.home)
         self.assertEqual(len(secret), 32)
         self.assertEqual(auth.key(self.home), secret)
-        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
+        self.assertEqual([entry.name for entry in (self.home / files.METADATA).iterdir()], ["secret.key"])
 
     def test_two_creators_end_with_one_key(self):
         """Fix #2: the loser of the create race reads the winner's key, even while it is still short."""
         winner = os.urandom(32)
         real_open = os.open
-        finish = threading.Timer(0.05, lambda: (self.home / "secret.key").write_bytes(winner))
+        finish = threading.Timer(0.05, lambda: (self.home / files.KEY).write_bytes(winner))
 
         def other_run_wins(path, flags, *args, **kwargs):
             if Path(path).name == "secret.key" and flags & os.O_EXCL:
                 # The other run has created the file and written only part of its key so far.
-                (self.home / "secret.key").write_bytes(winner[:5])
+                (self.home / files.KEY).write_bytes(winner[:5])
                 finish.start()
                 raise FileExistsError(path)
             return real_open(path, flags, *args, **kwargs)
@@ -327,13 +328,13 @@ class KeyTest(AuthCase):
         with mock.patch.object(auth.os, "open", other_run_wins):
             self.assertEqual(auth.key(self.home), winner)
         finish.join()
-        self.assertEqual([entry.name for entry in self.home.iterdir()], ["secret.key"])
+        self.assertEqual([entry.name for entry in (self.home / files.METADATA).iterdir()], ["secret.key"])
 
     def test_a_failed_write_leaves_no_key(self):
         with mock.patch.object(auth.os, "fdopen", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 auth.key(self.home)
-        self.assertEqual(list(self.home.iterdir()), [])
+        self.assertEqual([path for path in self.home.rglob("*") if path.is_file()], [])
 
     def test_many_threads_agree_on_one_key(self):
         keys = []
@@ -351,10 +352,10 @@ class KeyTest(AuthCase):
         self.assertEqual(len(set(keys)), 1)
 
     def test_a_damaged_key_is_refused(self):
-        self.home.mkdir(parents=True)
+        (self.home / files.METADATA).mkdir(parents=True)
         for content in (b"", b"x" * 5, b"x" * 33):
             with self.subTest(size=len(content)):
-                (self.home / "secret.key").write_bytes(content)
+                (self.home / files.KEY).write_bytes(content)
                 with mock.patch.object(auth, "KEY_WAIT", 0.05), \
                         self.assertRaisesRegex(ValueError, f"damaged: it should hold 32 bytes, not {len(content)}"):
                     auth.key(self.home)
@@ -363,7 +364,7 @@ class KeyTest(AuthCase):
         """A dangling link at secret.key can be neither read nor created, so it once spun forever at 100% CPU."""
         self.home.mkdir(parents=True)
         try:
-            (self.home / "secret.key").symlink_to(self.home / "missing.key")
+            (self.home / files.KEY).symlink_to(self.home / "missing.key")
         except (OSError, NotImplementedError):
             self.skipTest("symlinks aren't supported here")
         with mock.patch.object(auth, "KEY_WAIT", 0.05), \

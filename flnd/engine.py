@@ -13,6 +13,10 @@ back-off and pacer, and runs its targets one after another through the job (flnd
 person's pause between them, while different sources run at the same time. It never asks a
 question, except `shared.browser`'s one, to download Chromium, before any work starts.
 
+Every `download` and `sync` writes a log of its own, `.flnd/log/<date>_<time>_<command>.log`, at
+debug whatever the screen shows (plan/phase-7/layout.md): its start, each target's phases, every
+line and row, the totals and the exit status. Logs older than `LOG_DAYS` are deleted as a run starts.
+
     engine = Engine(home=Path(".flnd"))
     report = engine.download(["ins:example_user", "https://x.com/example_handle"], categories="reels,tagged",
                              time="2026-01-01,", image="webp,mid")
@@ -23,11 +27,13 @@ question, except `shared.browser`'s one, to download Chromium, before any work s
 from __future__ import annotations
 
 import inspect
+import itertools
 import signal
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from types import CodeType
@@ -47,10 +53,11 @@ from shared import browser, kv, log, worker
 
 __all__ = ["Engine", "Report", "TargetReport"]
 
-HISTORY_FILE = "history.db"
 HISTORY_TABLE = "downloads"
 # The target a source's login and `connect` see: the account, not anything to download.
 ACCOUNT = "account"
+# How long a run's log is kept, in days (user, 2026-11-13); older ones go as a run starts.
+LOG_DAYS = 30
 # What `logout` takes for every source.
 ALL = "all"
 # The cookie logins every source without its own login has, by `login`'s method name.
@@ -187,7 +194,7 @@ class Engine:
             ValueError: an option's text can't be read, `--from` names no category of these
                 targets' sources or is given for a single post, or a target
                 can't be read (`TargetError`); each message is what the CLI shows as a usage error.
-                Raised before any file is read or written, and before any request but a short link's.
+                Raised before any file but the run log is read or written, and before any request but a short link's.
             OSError: `targets.db` or the history can't be read or written.
 
         A setting given here is saved for each target, and used by every later `download` and
@@ -198,13 +205,24 @@ class Engine:
         crash, a full disk) is finished by the next download with the same option. Targets
         whose settings then differ run apart, one group after another.
         """
+        with self._logged("download", targets=targets, categories=categories, time=time, image=image,
+                          video=video, audio=audio):
+            report = self._download(targets, categories=categories, time=time, image=image, video=video,
+                                    audio=audio)
+            _log_totals(report)
+            return report
+
+    def _download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None,
+                  time: Range | str, image: Choice | str | None, video: Choice | str | None,
+                  audio: Choice | str | None) -> Report:
+        """`download`'s work, inside its run log."""
         # Read every option before anything starts, in the CLI's order, so the first bad one is the error.
         span = Range.parse(time) if isinstance(time, str) else time
         given = _given(image=image, video=video, audio=audio)
-        resolved = [target if isinstance(target, Target) else self.resolve([target])[0] for target in targets]
+        resolved = self._resolved(targets)
         names = self._categories(categories, resolved)
         options = Options(categories=names, since=span.since, until=span.until)
-        log.info("Storage: {path}", path=(self.home / "downloads").resolve())
+        log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
         rows = settings.rows(self.home)
         chosen: list[tuple[Target, Options]] = []
         shown: list[str] = []
@@ -233,7 +251,7 @@ class Engine:
 
         Args:
             targets: only these, as `Target`s or texts; when empty, every target in `targets.db`
-                and every folder under `downloads/<code>/` that a row doesn't name.
+                and every folder under `media/<code>/` that a row doesn't name.
 
         Returns:
             One `TargetReport` per target, with its repaired and missing counts.
@@ -249,7 +267,14 @@ class Engine:
         logged. The history is read once per sync (fixes #12). The fetch makes network requests
         and can take hours.
         """
-        resolved = [target if isinstance(target, Target) else self.resolve([target])[0] for target in targets]
+        with self._logged("sync", targets=targets):
+            report = self._sync(targets)
+            _log_totals(report)
+            return report
+
+    def _sync(self, targets: Sequence[Target | str]) -> Report:
+        """`sync`'s work, inside its run log."""
+        resolved = self._resolved(targets)
         chosen = self._plan(resolved)
         # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
         settings.record(self.home, chosen)
@@ -260,8 +285,9 @@ class Engine:
         with self._history() as history:
             index = repair.index(history, folders)
             for tally, folder in zip(tallies, folders):
+                log.debug("{target}: repair", target=tally.target)
                 repair.repair(history, folder, index[folder], tally)
-        log.info("Storage: {path}", path=(self.home / "downloads").resolve())
+        log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
         reports = self._fetch(chosen, sync=True)
         with self._history() as history:
             for tally, folder in zip(tallies, folders):
@@ -294,7 +320,7 @@ class Engine:
             Engine.LoginError: the login didn't work, with what to do instead.
             ValueError: the source or method is unknown, or the method's answer is missing.
 
-        Every credential is sealed in the vault, `.flnd/secrets.db`; nothing else is written.
+        Every credential is sealed in the vault, `.flnd/metadata/secrets.db`; nothing else is written.
         """
         if code not in self.sources:
             raise ValueError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
@@ -365,6 +391,47 @@ class Engine:
         """
         return tuple(code for code, source in self.sources.items() if source.login is Source.login)
 
+    def _resolved(self, targets: Sequence[Target | str]) -> list[Target]:
+        """Each target, a text read by `resolve`, each written to the run log as it was read."""
+        resolved = []
+        for given in targets:
+            target = given if isinstance(given, Target) else self.resolve([given])[0]
+            log.debug("resolve {given}: {target} ({kind})", given=given, target=target, kind=target.kind)
+            resolved.append(target)
+        return resolved
+
+    @contextmanager
+    def _logged(self, command: str, **given: Any) -> Iterator[None]:
+        """Write the block's run to its own log in `.flnd/log/`, after deleting the logs older than `LOG_DAYS`.
+
+        The log opens with the version, the command and the options as given, and ends with the
+        exit status the CLI gives: 2 for a usage error (`ValueError`), 130 for Ctrl-C, 1 for any
+        other exception, each with its cause; a finished run writes its own (`_log_totals`).
+        """
+        from flnd import __version__
+
+        folder = self.home / files.LOGS
+        _prune(folder)
+        stem = f"{datetime.now():%Y-%m-%d_%H%M%S}_{command}"
+        # Two runs started in one second each get a log of their own: the second is `…_download-2.log`.
+        path = next(path for number in itertools.count(1)
+                    if not (path := folder / (f"{stem}.log" if number == 1 else f"{stem}-{number}.log")).exists())
+        with log.record(path):
+            options = ", ".join(f"{name}={value!r}" for name, value in given.items() if value not in (None, (), Range()))
+            log.debug("flnd {version} {command}: {options}", version=__version__, command=command,
+                      options=options or "no options")
+            try:
+                yield
+            except ValueError as error:
+                log.debug("exit 2: {error}", error=error)
+                raise
+            except KeyboardInterrupt:
+                log.debug("exit 130: stopped")
+                raise
+            except BaseException as error:
+                log.debug("exit 1: {chain}", chain=job.causes(error))
+                raise
+
     def _categories(self, categories: str | Sequence[str] | None, targets: Sequence[Target]) -> tuple[str, ...] | None:
         """`--from`'s names, each once, checked against these targets; None without `--from`.
 
@@ -385,7 +452,7 @@ class Engine:
 
         Args:
             targets: only these; when empty, every recorded target and every unrecorded folder
-                under `downloads/<code>/`, in that order.
+                under `media/<code>/`, in that order.
         """
         rows = settings.rows(self.home)
         if not targets:
@@ -396,11 +463,11 @@ class Engine:
                 for target in targets]
 
     def _unrecorded(self, known: Sequence[Target]) -> Iterator[Target]:
-        """Folders under `downloads/<code>/` no row names: downloaded before Phase 5 recorded settings."""
+        """Folders under `media/<code>/` no row names: downloaded before Phase 5 recorded settings."""
         seen = {files.target_folder(self.home, target) for target in known}
-        downloads = self.home / "downloads"
+        media = self.home / files.MEDIA
         for code in self.sources:
-            for folder in sorted((downloads / code).iterdir()) if (downloads / code).is_dir() else ():
+            for folder in sorted((media / code).iterdir()) if (media / code).is_dir() else ():
                 if folder.is_dir() and folder not in seen:
                     try:
                         yield self.resolve([f"{code}:{folder.name}"])[0]
@@ -510,11 +577,30 @@ class Engine:
 
     def _history(self) -> kv.Store:
         """The download history, opened for a `with` block."""
-        return kv.open(self.home / HISTORY_FILE, table=HISTORY_TABLE)
+        return kv.open(self.home / files.HISTORY, table=HISTORY_TABLE)
 
     def _settings(self, options: Options, history: MutableMapping[str, Any], *,
                   interactive: bool = False) -> Settings:
         return Settings(home=self.home, options=options, history=history, interactive=interactive)
+
+
+def _log_totals(report: Report) -> None:
+    """Write a finished run's totals and exit status to its log: 1 when a target failed, else 0."""
+    log.debug("totals: {files} written, {skipped} skipped, {failed} of {targets} failed; exit {status}",
+              files=report.files, skipped=sum(target.skipped for target in report.targets),
+              failed=len(report.failed), targets=len(report.targets), status=0 if report.ok else 1)
+
+
+def _prune(folder: Path) -> None:
+    """Delete the run logs in `folder` last written more than `LOG_DAYS` ago."""
+    limit = time.time() - LOG_DAYS * 24 * 3600
+    for path in folder.glob("*.log") if folder.is_dir() else ():
+        try:
+            if path.stat().st_mtime < limit:
+                path.unlink()
+        # Gone already (another run pruned it), or not removable here: the next run tries again.
+        except OSError:
+            pass
 
 
 def _given(**values: Choice | str | None) -> dict[str, Choice | None]:

@@ -25,7 +25,7 @@ The site's quirks it works around:
     id is read from the header and media of another owner is left out of the scrolled results;
   - a tab's grid tile holds a small copy of a photo that the tile's inner node has in full.
 
-Folder layout, under `.flnd/downloads/fbk/<username_or_id>/`:
+Folder layout, under `.flnd/media/fbk/<username_or_id>/`:
   posts/, photos/, tagged/, reels/, videos/   <YYYY-MM-DD>_<id>.jpg (or .png, .mp4)
   albums/<album_title>/                        <YYYY-MM-DD>_<photo_id>.jpg
   stories/                                     <YYYY-MM-DD>_<id>.jpg (or .mp4)

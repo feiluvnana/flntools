@@ -24,7 +24,7 @@ import httpx
 from media_samples import needs_pillow
 
 from flnd import engine as engine_module
-from flnd.common import auth, net
+from flnd.common import auth, files, net
 from flnd import Choice, Engine, Range, Report, Target, TargetReport
 from flnd.session import Options
 from flnd.site import LoginSite
@@ -201,7 +201,7 @@ class EngineCase(unittest.TestCase):
         return self.screen.dest.getvalue().splitlines()
 
     def target_dir(self, code, name):
-        return self.home / "downloads" / code / name
+        return self.home / files.MEDIA / code / name
 
 
 class GroupsTest(EngineCase):
@@ -432,7 +432,7 @@ class CtrlCTest(unittest.TestCase):
 
 
 def history(home):
-    with kv.open(home / "history.db", table="downloads") as rows:
+    with kv.open(home / files.HISTORY, table="downloads") as rows:
         return dict(rows.items())
 
 
@@ -548,7 +548,7 @@ class ApiTest(EngineCase):
         return Engine(home=self.home, sources={source.code: source for source in sources})
 
     def saved(self):
-        with kv.open(self.home / "targets.db", table="targets") as targets:
+        with kv.open(self.home / files.TARGETS, table="targets") as targets:
             return dict(targets.items())
 
     def test_flnd_exports_exactly_the_engine_api(self):
@@ -654,7 +654,8 @@ class ApiTest(EngineCase):
             self.assertTrue(str(caught.exception).startswith(message), caught.exception)
         with self.assertRaisesRegex(ValueError, "unknown source 'zzz'"):
             engine.download(["zzz:a"])
-        self.assertFalse(self.home.exists())
+        self.assertFalse((self.home / files.MEDIA).exists())
+        self.assertFalse((self.home / files.METADATA).exists())
 
     def test_from_with_a_post_link_is_refused_before_any_request(self):
         from flnd.sources import SOURCES
@@ -668,7 +669,8 @@ class ApiTest(EngineCase):
             with self.subTest(targets=targets), self.assertRaisesRegex(ValueError, f"^{message}$"):
                 engine.download(targets, categories="all")
         self.assertEqual(self.requests, [])
-        self.assertFalse(self.home.exists())
+        self.assertFalse((self.home / files.MEDIA).exists())
+        self.assertFalse((self.home / files.METADATA).exists())
         # Without --from the same link downloads whole.
         runs = []
         with mock.patch.object(Engine, "_run", lambda engine, targets, options, sync=False: runs.append(options) or
@@ -714,7 +716,7 @@ class ApiLoginTest(EngineCase):
     def test_a_browser_login_lives_only_in_the_vault(self):
         self.assertEqual(self.engine.cookie_logins, ("aaa", "bbb"))
         self.assertEqual(self.engine.login("aaa", "browser", browser="chrome"), "aaa: logged in from Chrome (1 cookie)")
-        self.assertEqual(sorted(path.name for path in self.home.iterdir()), ["secret.key", "secrets.db"])
+        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
         self.assertEqual(self.engine.logins, {"aaa": "logged in"})
         self.assertEqual({cookie["name"] for cookie in auth.load(self.home, "aaa")}, {"sid"})
 
@@ -723,7 +725,7 @@ class ApiLoginTest(EngineCase):
         path.write_text("# Netscape HTTP Cookie File\n.aaa.example\tTRUE\t/\tTRUE\t1825861327\tsid\tv\n")
         self.assertEqual(self.engine.login("aaa", "file", path=path), "aaa: logged in from cookies.txt (1 cookie)")
         self.assertTrue(path.is_file())
-        self.assertEqual(sorted(path.name for path in self.home.iterdir()), ["secret.key", "secrets.db"])
+        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
 
     def test_a_failed_login_and_bad_answers(self):
         with mock.patch("shared._cookies.from_browser", lambda browser="chrome", *, profile=None: cookies.Jar()):

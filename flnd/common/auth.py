@@ -1,4 +1,4 @@
-"""Each source's login, every credential sealed in one vault, `.flnd/secrets.db` (plan/phase-6/redesign.md, B7).
+"""Each source's login, every credential sealed in one vault, `.flnd/metadata/secrets.db` (plan/phase-6/redesign.md, B7).
 
 A cookie source logs in by `from_browser` or `from_file`, then `store` checks that the jar
 proves a login and seals it in the vault as the source's `cookies` value; `load` reads it back
@@ -8,7 +8,7 @@ to `flnd login` is read once and never copied into `.flnd/`. Asking the question
 login`'s job, not this module's.
 
 Secrets are encrypted with AES-GCM, each bound to its source and name (`<code>:<name>`), so a
-value copied into another slot no longer decrypts; the key is `.flnd/secret.key`. This protects
+value copied into another slot no longer decrypts; the key is `.flnd/metadata/secret.key`. This protects
 against someone who copies `secrets.db`, or a backup of it, without the key. It doesn't protect
 against someone who can read the whole `.flnd/` folder, since the key is in it (keeping the key in
 the OS keychain is decision D13: not now).
@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 # A source's own login (tlg) raises it too, so it lives in base; `auth.LoginError` is the same class.
+from flnd.common import files
 from flnd.source import LoginError
 from shared import cookies, crypto, fmt, kv, log
 
@@ -50,8 +51,6 @@ BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "
 COOKIE_FOLDER = "cookies"
 # A plain cookie file was `<code>.txt`, or `<code>.json`, the older form; the first one found wins.
 COOKIE_SUFFIXES = (".txt", ".json")
-DB_FILE = "secrets.db"
-KEY_FILE = "secret.key"
 # The vault value that holds a cookie source's jar, as JSON: a list of cookie dicts.
 COOKIES = "cookies"
 # The secret that proves a login for a source with its own (tlg): the session its `login` stores.
@@ -172,7 +171,7 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
     A failure to save is warned of, without a value, and never fails the run.
     """
     fresh = list(current)
-    if not fresh or not (home / DB_FILE).is_file():
+    if not fresh or not (home / files.SECRETS).is_file():
         return []
     try:
         saved = load(home, code).raw
@@ -214,7 +213,7 @@ def load(home: Path, code: str) -> cookies.Jar:
             it was copied from another slot, or sealed with another key.
     """
     _move(home, code)
-    if not (home / DB_FILE).is_file():
+    if not (home / files.SECRETS).is_file():
         return cookies.Jar()
     with secrets(home, code) as vault:
         text = vault.get(COOKIES)
@@ -253,7 +252,7 @@ def logout(home: Path, code: str) -> bool:
     """
     removed = logged_in(home, code) or api_key_saved(home, code)
     # Opening the database would create it, so a home that has none is left without one.
-    if (home / DB_FILE).is_file():
+    if (home / files.SECRETS).is_file():
         with secrets(home, code) as saved:
             saved.clear()
     for path in _cookie_files(home, code):
@@ -266,7 +265,7 @@ def logout(home: Path, code: str) -> bool:
 
 def _secret_names(home: Path, code: str) -> set[str]:
     """The names of the source's stored secrets, without creating `secrets.db` or the key file."""
-    if not (home / DB_FILE).is_file():
+    if not (home / files.SECRETS).is_file():
         return set()
     with secrets(home, code) as saved:
         return set(saved)
@@ -353,7 +352,7 @@ class Vault(MutableMapping[str, str]):
     def __init__(self, home: Path, code: str):
         self._home = home
         self._code = code
-        self._db = kv.open(home / DB_FILE, table=TABLE)
+        self._db = kv.open(home / files.SECRETS, table=TABLE)
         self._key: bytes | None = None
 
     def __getitem__(self, name: str) -> str:
@@ -397,7 +396,7 @@ class Vault(MutableMapping[str, str]):
 
 
 def key(home: Path) -> bytes:
-    """The key in `home/secret.key`, created with mode 0600 when missing.
+    """The key in `home/metadata/secret.key`, created with mode 0600 when missing.
 
         secret = auth.key(Path(".flnd"))
 
@@ -415,7 +414,7 @@ def key(home: Path) -> bytes:
     When two runs create the key at once, the first one to create the file wins and the other
     reads its key: both end with the same one. No temporary file is written.
     """
-    path = home / KEY_FILE
+    path = home / files.KEY
     # A short key may be another run's that is still being written, so it is read again until
     # `KEY_WAIT` has passed; only then is it damaged (a run that died while writing it).
     deadline = time.monotonic() + KEY_WAIT

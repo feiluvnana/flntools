@@ -19,7 +19,7 @@ from example_source import API, CDN, Example
 from fakes import FakeSite
 
 from flnd import site as site_module
-from flnd.common import auth, net
+from flnd.common import auth, files, net
 from flnd.common.pace import STATE_KEY
 from flnd.session import Options, Settings
 from flnd.site import TargetSite, source_run
@@ -105,7 +105,7 @@ class SiteCase(unittest.TestCase):
     def open(self, source=Example, *, state=None, row=None):
         """A `TargetSite` for `exm:example_user` on a run closed at the end of the test."""
         if state:
-            with kv.open(self.home / "sources.db", table=source.code) as store:
+            with kv.open(self.home / files.SOURCE_STATE, table=source.code) as store:
                 store.update(state)
         opened = source_run(Settings(home=self.home, options=Options(), history={}), source())
         run = opened.__enter__()
@@ -194,7 +194,7 @@ class PaceTest(SiteCase):
         self.assertEqual(run.pacer.speed, 4.0)
         site.back_off("throttled")
         run.close()
-        with kv.open(self.home / "sources.db", table="exm") as store:
+        with kv.open(self.home / files.SOURCE_STATE, table="exm") as store:
             self.assertEqual(store[STATE_KEY], 8.0)
 
     def test_a_wait_over_15_seconds_shows_on_the_row(self):

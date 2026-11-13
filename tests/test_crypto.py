@@ -31,7 +31,7 @@ HASHES = {
 }
 
 # A blob made by `encrypt_aes_gcm` at 62fb584, before step 4 renamed it, with this key and the
-# context flnd's vault gives tlg's "session" slot. `decrypt` must open it: `secrets.db` vaults
+# context flnd's vault gives tlg's "session" slot. `decrypt` must open it: `metadata/secrets.db` vaults
 # hold such blobs, and a changed format would lock every saved login out.
 OLD_KEY = bytes(range(32))
 OLD_CONTEXT = b"tlg\x00session"

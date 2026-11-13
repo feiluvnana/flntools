@@ -17,6 +17,7 @@ from media_samples import needs_pillow
 from test_engine import CDN, EngineCase, FakeMedia, compressing, history, make_source, noise
 
 from flnd import Choice, Engine, Range, TargetReport
+from flnd.common import files
 from flnd.session import Options
 from flnd.source import File, Target
 from shared import kv
@@ -74,7 +75,7 @@ class SyncCase(EngineCase):
         return self.engine()._plan(list(targets))
 
     def saved(self):
-        with kv.open(self.home / "targets.db", table="targets") as targets:
+        with kv.open(self.home / files.TARGETS, table="targets") as targets:
             return dict(targets.items())
 
     def folder(self):
@@ -125,7 +126,7 @@ class SettingsTest(SyncCase):
                           ([Target("aaa", "user", "b")], Options(categories=("posts",)))])
 
     def test_phase_5_rows_read_into_the_new_form(self):
-        with kv.open(self.home / "targets.db", table="targets") as targets:
+        with kv.open(self.home / files.TARGETS, table="targets") as targets:
             targets["aaa:a"] = {"kind": "user", "categories": ["posts"], "unpack": True, "zip": True,
                                 "compress_image": "small", "compress_video": None, "format_image": None,
                                 "format_video": None, "at": "2026-11-01T00:00:00+00:00"}
@@ -145,20 +146,20 @@ class SettingsTest(SyncCase):
 
     def test_every_recorded_target_and_unrecorded_folders(self):
         self.download(image=WEBP_MID)
-        (self.home / "downloads" / "aaa" / "older").mkdir(parents=True)
-        (self.home / "downloads" / "aaa" / "older" / "x.jpg").write_bytes(b"x")
+        (self.home / files.MEDIA / "aaa" / "older").mkdir(parents=True)
+        (self.home / files.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
         chosen = dict(self.plan())
         self.assertEqual(chosen[Target("aaa", "user", "older")], Options())
         # A folder of a source flnd doesn't have, or a file beside the folders, isn't a target.
-        (self.home / "downloads" / "zzz" / "b").mkdir(parents=True)
-        (self.home / "downloads" / "aaa" / "a.zip").write_bytes(b"")
+        (self.home / files.MEDIA / "zzz" / "b").mkdir(parents=True)
+        (self.home / files.MEDIA / "aaa" / "a.zip").write_bytes(b"")
         self.assertEqual(len(self.plan()), 2)
         self.sync()
         self.assertEqual(sorted(self.saved()), ["aaa:a", "aaa:older"])
 
     def test_a_saved_setting_this_flnd_cant_read_is_kept_until_given_again(self):
         self.download()
-        with kv.open(self.home / "targets.db", table="targets") as targets:
+        with kv.open(self.home / files.TARGETS, table="targets") as targets:
             targets["aaa:a"] = {**targets["aaa:a"], "image": "webp,huge", "video": "h265,low"}
         self.assertEqual(self.plan()[0][1], Options(video=Choice("h265", "low")))
         self.sync()
@@ -171,7 +172,7 @@ class SettingsTest(SyncCase):
 
     def test_planning_creates_no_file(self):
         self.assertEqual(self.plan(), [])
-        self.assertFalse((self.home / "targets.db").exists())
+        self.assertFalse((self.home / files.TARGETS).exists())
 
 
 class DownloadAppliesTest(SyncCase):
@@ -209,7 +210,7 @@ class DownloadAppliesTest(SyncCase):
 
     def test_a_file_already_compressed_with_the_new_setting_is_left(self):
         self.download()
-        with kv.open(self.home / "history.db", table="downloads") as rows:
+        with kv.open(self.home / files.HISTORY, table="downloads") as rows:
             # Phase 5 wrote "balanced"; it reads as "mid", today's name.
             rows["aaa:a.jpg"] = {**rows["aaa:a.jpg"], "compressed": "balanced"}
             # Another level is compressed again, whatever its format.
@@ -276,7 +277,7 @@ class DownloadAppliesTest(SyncCase):
             self.compressed.clear()
             # mid to webp,mid: a file compressed at mid in its own format isn't WebP yet.
             for name in ("a", "b", "c"):
-                with kv.open(self.home / "history.db", table="downloads") as rows:
+                with kv.open(self.home / files.HISTORY, table="downloads") as rows:
                     rows[f"aaa:{name}.jpg"] = {**rows[f"aaa:{name}.jpg"], "compressed": "mid"}
             self.download(image=WEBP_MID)
         self.assertEqual(sorted(self.compressed), [(name, "webp", "mid") for name in ("a.webp", "b.webp", "c.webp")])
@@ -315,7 +316,7 @@ class RepairTest(SyncCase):
         from flnd import repair
         from flnd.common import files
 
-        folder = self.home / "downloads" / "aaa" / "example_user"
+        folder = self.home / files.MEDIA / "aaa" / "example_user"
         folder.mkdir(parents=True)
         made = {name: folder / name for name in (".a.jpg.11111111.part", ".a.jpg.11111111.part.json",
                                                   ".b.jpg.22222222.part", ".b.jpg.22222222.part.json",
@@ -408,7 +409,7 @@ class FetchTest(SyncCase):
             return None
 
         self.download()
-        with kv.open(self.home / "targets.db", table="targets") as targets:
+        with kv.open(self.home / files.TARGETS, table="targets") as targets:
             targets["aaa:a"] = {**targets["aaa:a"], "image": "webp,mid"}
         self.site.files["d.jpg"] = noise("JPEG")
         self.site.serve()

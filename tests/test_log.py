@@ -10,6 +10,7 @@ import os
 import re
 import struct
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -850,6 +851,80 @@ class RealTerminalCase(unittest.TestCase):
         self.assertIn(b"clip.mp4", out)
         self.assertGreater(out.rindex(b"\x1b[?25h"), out.rindex(b"\x1b[?25l"))
         self.assertIsNone(re.search(rb"(?<!\r)\n", out), out)
+
+
+class RecordTest(LogCase):
+    """`log.record`: a file that takes every line at debug, plain and timed, whatever the screen's level."""
+
+    tty = True
+
+    def setUp(self):
+        super().setUp()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / "log" / "run.log"
+
+    def recorded(self) -> list[str]:
+        """The file's lines without their times, after checking each starts with one."""
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            self.assertRegex(line, r"^\d\d:\d\d:\d\d\.\d{3} ")
+        return [line[13:] for line in lines]
+
+    def test_every_level_reaches_the_file_while_the_screen_keeps_its_own(self):
+        log.level = "warn"
+        with log.record(self.path):
+            log.debug("listed {n}", n=3)
+            log.info("saved")
+            log.warn("slow")
+        log.debug("after the block")
+        self.assertEqual(self.recorded(), ["· listed 3", "• saved", "! slow"])
+        self.assertEqual(visible_screen(self.output()), ["! slow"])
+
+    def test_rows_final_lines_are_written_plain_and_running_rows_are_not(self):
+        log.level = "quiet"
+        with theme.scope(color="16m"), log.record(self.path):
+            with log.group("download") as rows:
+                rows.add("ins:example_user").finish()
+                self.tick(0.6)
+            log.debug("next")
+        self.assertEqual(self.recorded(), ["✓ download", "✓ ins:example_user", "· next"])
+        self.assertNotIn("\x1b", self.path.read_text(encoding="utf-8"))
+
+    def test_query_strings_and_fragments_are_cut_from_urls(self):
+        with log.record(self.path):
+            log.debug("get {url} then {other}", url="https://cdn.example.com/a.jpg?oe=1&sig=secret",
+                      other="http://example.com/p#token=secret")
+            log.debug("plain ?question and a.b?c stay")
+        self.assertEqual(self.recorded(), ["· get https://cdn.example.com/a.jpg then http://example.com/p",
+                                           "· plain ?question and a.b?c stay"])
+
+    def test_appends_and_stops_with_the_block(self):
+        with log.record(self.path):
+            log.info("one")
+        with log.record(self.path):
+            log.info("two")
+        log.info("three")
+        self.assertEqual(self.recorded(), ["• one", "• two"])
+
+    def test_threads_write_whole_lines(self):
+        with log.record(self.path):
+            threads = [threading.Thread(target=lambda n=n: [log.debug("thread {n} line {i}", n=n, i=i)
+                                                             for i in range(50)]) for n in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        lines = self.recorded()
+        self.assertEqual(len(lines), 200)
+        self.assertTrue(all(re.fullmatch(r"· thread \d line \d+", line) for line in lines))
+
+    def test_a_write_that_fails_never_reaches_the_caller(self):
+        with log.record(self.path):
+            with patch.object(log._records[0].file, "write", side_effect=OSError("disk full")):
+                log.info("lost")
+            log.info("kept")
+        self.assertEqual(self.recorded(), ["• kept"])
 
 
 if __name__ == "__main__":

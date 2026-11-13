@@ -32,13 +32,13 @@ with the formats below, which equal what the source wrote before routes, except 
 which is now the UTC day. A file whose URL doesn't end in its extension, and every file of a
 lazy post, is named here instead (`File(name=)`) so its name stays the same.
 
-Folder layout, under `.flnd/downloads/ins/<username>/`:
+Folder layout, under `.flnd/media/ins/<username>/`:
   posts/, reels/, tagged/, reposts/   <YYYY-MM-DD>_<code>_<idx>.jpg (or .mp4; no _<idx> for one file)
 Videos are saved from their DASH manifest when they have one: the best video, merged with its audio.
   stories/                            <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
   highlights/<title>/                 <YYYY-MM-DD>_<story_id>.jpg (or .mp4)
   profile/                            the profile picture, named as Instagram names it
-One post, `ins:https://www.instagram.com/p/<code>/`, lands in `.flnd/downloads/ins/<code>/`.
+One post, `ins:https://www.instagram.com/p/<code>/`, lands in `.flnd/media/ins/<code>/`.
 
 History keys: `<code>_<idx>` for a tab's or a single post's files, the path for stories, highlights
 and the picture.

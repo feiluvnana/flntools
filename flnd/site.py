@@ -40,7 +40,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from flnd.common import auth, net
+from flnd.common import auth, files, net
 from flnd.common.pace import SHOWN_WAIT, Pacer
 from flnd.source import FetchError, Range, Source, Target
 from shared import browser, fmt, http, kv, log, prompt, theme
@@ -98,14 +98,14 @@ class SourceRun:
 
     @property
     def state(self) -> kv.Store:
-        """The source's `kv` table in `.flnd/sources.db`, opened on first use."""
+        """The source's `kv` table in `.flnd/metadata/sources.db`, opened on first use."""
         if self._state is None:
-            self._state = kv.open(self.settings.home / "sources.db", table=self.source.code)
+            self._state = kv.open(self.settings.home / files.SOURCE_STATE, table=self.source.code)
         return self._state
 
     @property
     def secrets(self) -> auth.Vault:
-        """The source's encrypted secrets in `.flnd/secrets.db`, opened on first use."""
+        """The source's encrypted secrets in `.flnd/metadata/secrets.db`, opened on first use."""
         if self._secrets is None:
             self._secrets = auth.secrets(self.settings.home, self.source.code)
         return self._secrets
@@ -340,12 +340,12 @@ class TargetSite:
 
     @property
     def state(self) -> MutableMapping[str, Any]:
-        """A `kv` table for this source, kept between runs in `.flnd/sources.db`."""
+        """A `kv` table for this source, kept between runs in `.flnd/metadata/sources.db`."""
         return self._run.state
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """This source's secrets, encrypted in `.flnd/secrets.db`."""
+        """This source's secrets, encrypted in `.flnd/metadata/secrets.db`."""
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:
@@ -492,7 +492,7 @@ class LoginSite:
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """This source's secrets, encrypted in `.flnd/secrets.db`."""
+        """This source's secrets, encrypted in `.flnd/metadata/secrets.db`."""
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:

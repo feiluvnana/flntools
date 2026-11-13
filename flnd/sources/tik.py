@@ -35,14 +35,14 @@ The site's quirks it works around:
   - Its CDN sends 403 Forbidden to a request without tt_chain_token, sessionid and the Referer.
   - When the API stays walled, each post linked on the page is read from its embed page instead.
 
-Folder layout, under `.flnd/downloads/tik/<username>/`:
+Folder layout, under `.flnd/media/tik/<username>/`:
   videos/<YYYY-MM-DD>_<video_id>.mp4
   images/<YYYY-MM-DD>_<post_id>_<idx>.jpg
   stories/<YYYY-MM-DD>_<story_id>.mp4 (or .jpg)
   albums/<playlist_title>/<YYYY-MM-DD>_<video_id>.mp4
   reposts/, liked/, favorites/   <YYYY-MM-DD>_<video_id>.mp4 (or _<idx>.jpg)
   profile/avatar_<id>.jpg
-A single video's folder, `.flnd/downloads/tik/<video_id>/`, has `videos/` or `images/` in it.
+A single video's folder, `.flnd/media/tik/<video_id>/`, has `videos/` or `images/` in it.
 """
 
 from __future__ import annotations

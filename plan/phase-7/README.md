@@ -23,7 +23,7 @@ metadata and a log of each run.
 Each step ends with `check` green and is committed on its own.
 0. [output › columns and skips](output.md#built-in-step-0): the column layout, per-category skip
    lines, `download -v`. **Built** (`9df3e36`).
-1. [layout](layout.md): `media/`, `metadata/` and `log/`, and a log of every run at debug.
+1. [layout](layout.md): `media/`, `metadata/` and `log/`, and a log of every run at debug. **Built**, with lean's E9.
 2. [shrink](shrink.md): `--shrink` replaces `--image`, `--video` and `--audio`.
 3. [dates › one listing memory](dates.md#1-one-listing-memory-in-the-job): in the job, for every
    source: each key once, one key → date map, undated posts held until their category ends.

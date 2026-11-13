@@ -1,4 +1,4 @@
-"""Each target's saved settings in `.flnd/targets.db`: `--image`, `--video` and `--audio`, and its complete categories.
+"""Each target's saved settings in `.flnd/metadata/targets.db`: `--image`, `--video` and `--audio`, and its complete categories.
 
 A row is keyed `<code>:<value>` and holds the target's kind (so `flnd sync` can rebuild it without
 resolving it again), each saved compress setting as the command line writes it ("webp,mid") or
@@ -22,13 +22,13 @@ import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from flnd.common import compress
+from flnd.common import compress, files
 from flnd.common.compress import KINDS, Choice
 from flnd.session import Options
 from flnd.source import Target
 from shared import kv, log
 
-TARGETS_FILE, TARGETS_TABLE = "targets.db", "targets"
+TARGETS_TABLE = "targets"
 # What is saved per target: --image, --video and --audio, each an `Options` field and a `targets.db` field.
 SAVED = tuple(kind.option for kind in KINDS.values())
 # The row field of the categories that last listed to their end: {category: "YYYY-MM-DD"}.
@@ -40,9 +40,9 @@ def rows(home: Path) -> dict[str, Any]:
 
         row = settings.rows(Path(".flnd")).get("ins:example_user", {})
     """
-    if not (home / TARGETS_FILE).is_file():
+    if not (home / files.TARGETS).is_file():
         return {}
-    with kv.open(home / TARGETS_FILE, table=TARGETS_TABLE) as saved:
+    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
         return dict(saved.items())
 
 
@@ -96,7 +96,7 @@ def record(home: Path, chosen: Sequence[tuple[Target, Options]], *, given: Itera
     if not chosen:
         return
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    with kv.open(home / TARGETS_FILE, table=TARGETS_TABLE) as saved:
+    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
         for target, options in chosen:
             old = saved.get(key(target))
             old = old if isinstance(old, dict) else {}
@@ -131,7 +131,7 @@ def complete(home: Path, target: Target, categories: Iterable[str]) -> None:
     if not names:
         return
     today = datetime.date.today().isoformat()
-    with kv.open(home / TARGETS_FILE, table=TARGETS_TABLE) as saved:
+    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
         old = saved.get(key(target))
         row: dict[str, Any] = dict(old) if isinstance(old, dict) else {"kind": target.kind}
         done = row.get(COMPLETE)

@@ -1,6 +1,6 @@
 # layout
 
-Phase 7, step 1. The user asked on 2026-11-13 for `.flnd/` to hold three folders: the media, the
+Phase 7, step 1, **built** 2026-11-13. The user asked on 2026-11-13 for `.flnd/` to hold three folders: the media, the
 stores, and a log of each run to audit later.
 
 ## Today
@@ -69,3 +69,14 @@ been run with `-v`.
 Every store opens under `metadata/` and every file lands under `media/`; a run writes a log with its phases at debug while the screen
 is at info; a URL's query string and a cookie value never reach the log file; logs older than the
 limit are deleted.
+
+## As built (2026-11-13)
+
+- The table is in `flnd/common/files.py` (lean E9): `MEDIA`, `METADATA`, `LOGS`, and `HISTORY`,
+  `TARGETS`, `SOURCE_STATE`, `SECRETS`, `KEY`, each a path relative to `.flnd/`.
+- `log.record(path)` is a context manager around the run. It also takes the rows' final lines
+  (whatever `quiet` hides), and cuts the query string and fragment off every `scheme://` URL in a line.
+- Two runs started in the same second get `…_download.log` and `…_download-2.log`.
+- Phase marks so far: start, `resolve`, `repair`, `list <category>`, each target's summary,
+  totals and exit status (2 usage error, 130 Ctrl-C, 1 failure). `encode` and `link` come with
+  their steps. A 429's `retry-after` and rate headers, and a failure's causes, are debug lines.

@@ -370,7 +370,7 @@ class LoginCase(EngineCase):
     def assert_logged_in(self):
         self.assertEqual(stored(self.home), {"session": SESSION, **CREDENTIALS})
         self.assertIn("• tlg: logged in as Example User", self.lines())
-        # The session and the hash are sealed in secrets.db: no file holds them readably.
+        # The session and the hash are sealed in metadata/secrets.db: no file holds them readably.
         for path in self.home.rglob("*"):
             if path.is_file():
                 self.assertNotIn(b"FAKE-SESSION", path.read_bytes(), path)

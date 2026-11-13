@@ -63,7 +63,7 @@ Or via python module:
 python -m flnd download <targets...>
 ```
 
-Files go to `.flnd/downloads/`, and the browser window is visible while a source runs.
+Files go to `.flnd/media/`, and the browser window is visible while a source runs.
 A file already saved, even under another name (a feed's dated post and a tab's undated photo of
 the same media), is not downloaded again; each category says how many it skipped, and `-v` lists
 each skipped file with the name that holds it.
@@ -166,7 +166,7 @@ Every source takes the same options:
   container (`mp4`, `mov`, `mkv`, `webm`, `avi`, `ts`, `3gp`, `gif`), a codec (`h264`, `h265`, `vp9`),
   or both as `mkv:h265`; for `--audio`: `mp3`, `m4a`, `aac`, `opus`, `ogg`, `flac`.
 
-`--image`, `--video` and `--audio` are **saved for each target** in `.flnd/targets.db`, each on its
+`--image`, `--video` and `--audio` are **saved for each target** in `.flnd/metadata/targets.db`, each on its
 own, and used by every later `download` and `sync` of it; a run that uses saved ones says so, as
 `ins:example_user: --image webp,mid (saved)`. Giving one again changes it, and that `download`
 compresses the target's files already saved with the new setting first, then the new ones. `off`
@@ -248,22 +248,40 @@ flnd logout ins tik         # removes those logins
 flnd logout all             # removes every login
 ```
 
-A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/secrets.db`
+A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/metadata/secrets.db`
 with every other login; the file you give is read once and never copied. A login saved by an earlier
 version as `.flnd/cookies/<source>.txt` moves into it on the next run, so there's no need to log in again.
-The key is `.flnd/secret.key`, so keep `.flnd/` as private as the logins in it.
+The key is `.flnd/metadata/secret.key`, so keep `.flnd/` as private as the logins in it.
 A source that isn't logged in still downloads with public access, and says so. LOIBUS without a
 login gives a post's info and preview images only; its archives need a VIP login,
 and count against the account's daily quota (`--from photo` leaves them out).
 
 ---
 
-## Download Layout (`.flnd/downloads/`)
+## The `.flnd/` folder
+
+```
+.flnd/
+├── media/       # every downloaded file, laid out as below
+├── metadata/    # history.db, targets.db, sources.db, secrets.db and secret.key
+└── log/         # one log per download or sync, kept 30 days
+```
+
+Each run of `flnd download` or `flnd sync` writes `.flnd/log/<date>_<time>_<command>.log`: every
+line `-v` would show, plain text with the time of each, whatever the screen showed. URLs are
+written without their query strings and no login ever reaches it, so a log can be read or shared
+to understand a run. Logs older than 30 days are deleted when a run starts.
+
+A `.flnd/` from before this layout isn't moved: flnd reads and writes only the folders above. To
+keep an old one, move it by hand while flnd isn't running: `downloads/` becomes `media/`, and
+`history.db`, `targets.db`, `sources.db`, `secrets.db` and `secret.key` go into `metadata/`.
+
+## Media Layout (`.flnd/media/`)
 
 Files are saved with platform-optimized subfolder layouts and automatic deduplication:
 
 ```
-.flnd/downloads/
+.flnd/media/
 ├── ins/<username>/
 │   ├── posts/                  # Feed photos and every carousel item
 │   ├── reels/                  # Reels not already saved from the grid
