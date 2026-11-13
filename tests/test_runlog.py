@@ -37,7 +37,7 @@ class RunLogCase(EngineCase):
 class LayoutTest(RunLogCase):
     def test_files_land_under_media_and_stores_under_metadata(self):
         source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
-        self.engine(source).download(["aaa:example_user"])
+        self.engine(source).download(["aaa:example_user"], sync=True)
         self.assertTrue((self.home / "media" / "aaa" / "example_user" / "a.jpg").is_file())
         self.assertTrue((self.home / "metadata" / "history.db").is_file())
         self.assertTrue((self.home / "metadata" / "targets.db").is_file())
@@ -98,7 +98,7 @@ class RunLogTest(RunLogCase):
 
     def test_a_sync_logs_its_repair(self):
         source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
-        self.engine(source).download(["aaa:example_user"])
+        self.engine(source).download(["aaa:example_user"], sync=True)
         for path in self.logs():
             path.unlink()
         self.engine(source).sync()
@@ -113,7 +113,7 @@ class RunLogTest(RunLogCase):
         self.routes[f"{CDN}/a.jpg"] = httpx.Response(403)
         with log.record(self.home / "extra.log"):
             log.debug("fetch {url}", url=f"{CDN}/a.jpg?sig=signed-token")
-        self.engine(source).download(["aaa:example_user"])
+        self.engine(source).download(["aaa:example_user"], sync=True)
         text = "\n".join(self.logged()) + (self.home / "extra.log").read_text(encoding="utf-8")
         self.assertIn(f"{CDN}/a.jpg", text)
         self.assertNotIn("signed-token", text)

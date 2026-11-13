@@ -53,6 +53,8 @@ COOKIE_FOLDER = "cookies"
 COOKIE_SUFFIXES = (".txt", ".json")
 # The vault value that holds a cookie source's jar, as JSON: a list of cookie dicts.
 COOKIES = "cookies"
+# The vault value that holds how a source logged in (e.g. "Chrome", "cookies.txt", "qr").
+ORIGIN = "origin"
 # The secret that proves a login for a source with its own (tlg): the session its `login` stores.
 # A cookie source's jar (`COOKIES`) proves one too. Any other secret, such as tlg's `api_id` and
 # `api_hash`, is only the source's API key.
@@ -127,14 +129,14 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     if source.needs and not any(name in jar for name in source.needs):
         raise LoginError(f"{source.code}: no {' or '.join(source.needs)} for {source.domains[0]} in {origin}; "
                          "log in there first")
-    save(home, source.code, jar)
+    save(home, source.code, jar, origin=origin)
     for path in _cookie_files(home, source.code):
         path.unlink(missing_ok=True)
     _remove_if_empty(home / COOKIE_FOLDER)
     return f"{source.code}: logged in from {origin} ({fmt.count(len(jar), 'cookie')})"
 
 
-def save(home: Path, code: str, jar: cookies.Jar) -> None:
+def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) -> None:
     """Seal a source's cookie jar in its vault as `cookies`, `fix_domains` applied, replacing the one there.
 
         auth.save(Path(".flnd"), "ins", jar)
@@ -143,6 +145,7 @@ def save(home: Path, code: str, jar: cookies.Jar) -> None:
         home: flnd's folder, `.flnd`; `secrets.db` and the key file are created when missing.
         code: the source's code; the value is bound to its slot, `<code>:cookies`.
         jar: the cookies; nothing checks that they prove a login (`store` does).
+        origin: optional login origin label to record alongside the cookies.
 
     Raises:
         ValueError: the key file is damaged (`key`).
@@ -150,6 +153,54 @@ def save(home: Path, code: str, jar: cookies.Jar) -> None:
     """
     with secrets(home, code) as vault:
         vault[COOKIES] = json.dumps(fix_domains(jar).raw)
+        if origin is not None:
+            vault[ORIGIN] = origin
+
+
+def record_origin(home: Path, code: str, origin: str) -> None:
+    """Record how `code` logged in (e.g. "qr", "phone", "Chrome") in its vault.
+
+    Args:
+        home: flnd's folder, `.flnd`.
+        code: the source's code.
+        origin: the login origin label.
+    """
+    with secrets(home, code) as vault:
+        vault[ORIGIN] = origin
+
+
+def origin(home: Path, code: str) -> str:
+    """The recorded login origin for `code`, or "" when none was recorded.
+
+    Args:
+        home: flnd's folder, `.flnd`.
+        code: the source's code.
+    """
+    if not (home / paths.SECRETS).is_file():
+        return ""
+    with secrets(home, code) as vault:
+        return vault.get(ORIGIN, "")
+
+
+def expiring(home: Path, source: Source, *, within: float = 24 * 3600) -> list[tuple[str, float]]:
+    """Login cookies of `source.needs` that have expired or will within `within` seconds, as `(name, remaining)`.
+
+    Args:
+        home: flnd's folder, `.flnd`.
+        source: the source whose `needs` cookies are checked.
+        within: horizon in seconds from now; defaults to 24 hours.
+    """
+    if not source.needs or not logged_in(home, source.code):
+        return []
+    now = time.time()
+    found: list[tuple[str, float]] = []
+    for cookie in load(home, source.code):
+        expires = cookie.get("expires", -1)
+        if cookie.get("name") in source.needs and isinstance(expires, (int, float)) and expires > 0:
+            remaining = expires - now
+            if remaining <= within:
+                found.append((str(cookie["name"]), remaining))
+    return found
 
 
 def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:

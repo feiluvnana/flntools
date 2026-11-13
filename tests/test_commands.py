@@ -115,7 +115,8 @@ class DownloadTest(RunsCase):
                                           until=date(2026, 6, 30)))
         self.assertEqual(engine.home, Path(".flnd"))
         storage = (Path(self.tmp.name) / ".flnd" / paths.MEDIA).resolve()
-        self.assertEqual(out.splitlines(), [f"• Storage: {storage}", "✓ Complete. 3 files"])
+        self.assertEqual(out.splitlines(),
+                         [f"• Storage: {storage}", "• not synced; add --sync to keep it up to date", "✓ Complete. 3 files"])
 
     def test_defaults(self):
         self.assertEqual(self.run_app("download", "tik:a")[0], 0)
@@ -188,16 +189,19 @@ class DownloadTest(RunsCase):
         self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, and Telegram.", stdout)
         self.assertIn("Sources: tik, fbk, ins, twt, loi", stdout)
         self.assertIn("https://www.facebook.com/profile.php?id=<user>", stdout)
-        for command in ("download", "sync", "login", "logout"):
+        for command in ("download", "sync", "auth"):
             self.assertIn(command, stdout)
-        self.assertNotIn("  auth ", stdout)
+        self.assertNotIn("  login ", stdout)
+        self.assertNotIn("  logout ", stdout)
         self.assertIn("Query parameters", stdout)
         self.assertIn("loi?<query>: tag, author, sort", stdout)
         self.assertNotIn("install-browser", stdout)
         self.assertNotIn("--compress", stdout)
         self.assertEqual(self.run_app("auth", "set-cookie")[0], 2)
+        self.assertEqual(self.run_app("login")[0], 2)
+        self.assertEqual(self.run_app("logout", "all")[0], 2)
         download_help = self.run_app("download", "--help")[1]
-        for option in ("--from CATEGORIES", "--time SINCE,UNTIL"):
+        for option in ("--from CATEGORIES", "--time SINCE,UNTIL", "--[no-]sync"):
             self.assertIn(f"  {option}  ", download_help)
         for gone in ("--since", "--until", "unpack", "--zip", "--locale", "--timezone", "--compress", "--format-"):
             self.assertNotIn(gone, download_help)
@@ -288,8 +292,8 @@ class SyncCommandTest(RunsCase):
         self.addCleanup(patcher.stop)
 
     def test_every_recorded_target_with_its_saved_settings(self):
-        self.run_app("download", "ins:example_user", "--shrink", "--from", "reels")
-        self.run_app("download", "twt:example_handle")
+        self.run_app("download", "ins:example_user", "--shrink", "--from", "reels", "--sync")
+        self.run_app("download", "twt:example_handle", "--sync")
         code, _, out = self.run_app("sync")
         self.assertEqual(code, 0, out)
         self.assertEqual(dict(self.synced[0]), {Target("ins", "user", "example_user"): Options(shrink=True),
@@ -299,7 +303,7 @@ class SyncCommandTest(RunsCase):
 
     def test_sync_v_shows_every_line_and_changes_no_setting(self):
         self.addCleanup(setattr, log, "level", log.level)
-        self.run_app("download", "ins:example_user", "--shrink")
+        self.run_app("download", "ins:example_user", "--shrink", "--sync")
         self.assertEqual(log.level, "info")
         self.assertEqual(self.run_app("sync", "-v")[0], 0)
         self.assertEqual(log.level, "debug")
@@ -307,13 +311,26 @@ class SyncCommandTest(RunsCase):
                          {Target("ins", "user", "example_user"): Options(shrink=True)})
 
     def test_sync_takes_no_options(self):
-        self.run_app("download", "ins:example_user")
+        self.run_app("download", "ins:example_user", "--sync")
         for args in (("--only", "info"), ("--from", "reels"), ("--time", "2026-01-01,"), ("--shrink", "on"),
                      ("--compress-video", "small"), ("--since", "2026-01-01")):
             code, _, out = self.run_app("sync", *args)
             self.assertEqual(code, 2, args)
             self.assertIn("✗ unrecognized arguments", out)
         self.assertEqual(self.synced, [])
+
+    def test_sync_ls_and_toggle(self):
+        self.run_app("download", "ins:example_user", "--shrink")
+        code, _, out = self.run_app("sync", "ls")
+        self.assertEqual(code, 0)
+        self.assertIn("ins:example_user: sync off, --shrink", out)
+        self.assertEqual(self.run_app("sync", "ls", "extra")[0], 2)
+        code, _, out = self.run_app("sync", "toggle", "ins:example_user")
+        self.assertEqual(code, 0)
+        self.assertIn("✓ ins:example_user: sync on", out)
+        code, _, out = self.run_app("sync", "toggle", "ins:unknown")
+        self.assertEqual(code, 2)
+        self.assertIn("not a known target", out)
 
     def test_a_short_link_is_resolved_once(self):
         # Fix 11: cli.sync and sync.plan each resolved the targets, so a short link made two HEAD requests.
@@ -359,14 +376,14 @@ class ExitStatusTest(FlndCase):
         self.assertNotIn("✓ bbb:good", out)
 
     def test_sync_exits_1_when_a_target_failed(self):
-        self.run_app("download", "aaa:bad", "aaa:good")
+        self.run_app("download", "aaa:bad", "aaa:good", "--sync")
         code, _, out = self.run_app("sync")
         self.assertEqual(code, 1, out)
         self.assertEqual(self.run_app("sync", "aaa:good")[0], 0)
 
 
 class LoginCase(FlndCase):
-    """`flnd login` in a fake terminal: `login` picks the source by its place in the list, then types `keys`."""
+    """`flnd auth login` in a fake terminal: `login` picks the source by its place in the list, then types `keys`."""
 
     def setUp(self):
         super().setUp()
@@ -378,7 +395,7 @@ class LoginCase(FlndCase):
 
     def login(self, source, *keys):
         self.keys(*["down"] * list(flnd_cli.SOURCES).index(source), "enter", *keys)
-        code, _, out = self.run_app("login")
+        code, _, out = self.run_app("auth", "login")
         return code, out
 
     def from_file(self, source, path):
@@ -453,15 +470,15 @@ class LoginFileTest(LoginCase):
 
 class LoginQuestionsTest(LoginCase):
     def test_without_a_terminal_it_exits_2(self):
-        code, _, out = self.run_app("login")
+        code, _, out = self.run_app("auth", "login")
         self.assertEqual(code, 2)
-        self.assertIn("✗ flnd login asks its questions in a terminal", out)
+        self.assertIn("✗ flnd auth login asks its questions in a terminal", out)
         self.assertFalse(Path(".flnd").exists())
 
     def test_it_takes_no_arguments(self):
         for argv in (["ins"], ["--method", "file"], ["--path", "c.txt"], ["--browser", "chrome"], ["--profile", "x"]):
             with self.subTest(argv=argv):
-                self.assertEqual(self.run_app("login", *argv)[0], 2)
+                self.assertEqual(self.run_app("auth", "login", *argv)[0], 2)
 
 
 class LoginBrowserTest(LoginCase):
@@ -546,7 +563,7 @@ class LogoutTest(FlndCase):
         self.log_in("ins", "twt")
         with auth.secrets(Path(".flnd"), "ins") as secrets:
             secrets["token"] = "t"
-        code, _, out = self.run_app("logout", "ins")
+        code, _, out = self.run_app("auth", "logout", "ins")
         self.assertEqual((code, out), (0, "✓ ins: logged out\n"))
         self.assertEqual(auth.load(Path(".flnd"), "ins"), cookies.Jar())
         self.assertTrue(auth.logged_in(Path(".flnd"), "twt"))
@@ -554,14 +571,14 @@ class LogoutTest(FlndCase):
             self.assertEqual(len(secrets), 0)
         self.screen.dest.truncate(0)
         self.screen.dest.seek(0)
-        code, _, out = self.run_app("logout", "ins", "twt", "tik")
+        code, _, out = self.run_app("auth", "logout", "ins", "twt", "tik")
         self.assertEqual((code, out), (0, "• ins: not logged in\n✓ twt: logged out\n• tik: not logged in\n"))
 
     def test_all(self):
         self.log_in("ins", "tik")
         with auth.secrets(Path(".flnd"), "tlg") as secrets:
             secrets["session"] = "s"
-        code, _, out = self.run_app("logout", "all")
+        code, _, out = self.run_app("auth", "logout", "all")
         self.assertEqual((code, out), (0, "✓ tik: logged out\n✓ ins: logged out\n✓ tlg: logged out\n"))
         self.assertFalse(Path(".flnd/cookies").exists())
         self.assertFalse(any(auth.logged_in(Path(".flnd"), code) for code in sources.SOURCES))
@@ -569,23 +586,42 @@ class LogoutTest(FlndCase):
     def test_an_api_key_alone_is_removed_but_is_not_a_login(self):
         with auth.secrets(Path(".flnd"), "tlg") as secrets:
             secrets.update(api_id="1", api_hash="h")
-        self.assertIn("no source is logged in", self.run_app("logout")[2])
+        self.assertIn("no source is logged in", self.run_app("auth", "logout")[2])
         self.screen.dest.truncate(0)
         self.screen.dest.seek(0)
-        code, _, out = self.run_app("logout", "tlg")
+        code, _, out = self.run_app("auth", "logout", "tlg")
         self.assertEqual((code, out), (0, "✓ tlg: logged out\n"))
         self.assertFalse(auth.api_key_saved(Path(".flnd"), "tlg"))
 
     def test_bare_is_a_usage_error_listing_the_logged_in_sources(self):
-        code, _, out = self.run_app("logout")
+        code, _, out = self.run_app("auth", "logout")
         self.assertEqual(code, 2)
         self.assertIn("✗ give the sources to log out of, or all; no source is logged in", out)
         self.log_in("twt", "ins")
-        self.assertIn("✗ give the sources to log out of, or all; logged in: ins, twt", self.run_app("logout")[2])
+        self.assertIn("✗ give the sources to log out of, or all; logged in: ins, twt",
+                      self.run_app("auth", "logout")[2])
 
     def test_an_unknown_source_and_the_old_flag(self):
-        self.assertEqual(self.run_app("logout", "ytb")[0], 2)
-        self.assertEqual(self.run_app("logout", "--all")[0], 2)
+        self.assertEqual(self.run_app("auth", "logout", "ytb")[0], 2)
+        self.assertEqual(self.run_app("auth", "logout", "--all")[0], 2)
+
+
+class AuthLsTest(FlndCase):
+    def test_auth_ls_shows_state_origin_and_expiring_cookie_and_takes_nothing(self):
+        import time
+
+        jar = cookies.Jar([{"name": "sessionid", "value": "secret-val", "domain": ".instagram.com",
+                            "expires": time.time() - 10}])
+        auth.store(sources.SOURCES["ins"](), jar, home=Path(".flnd"), origin="cookies.txt")
+        with auth.secrets(Path(".flnd"), "tlg") as secrets:
+            secrets["api_id"] = "1"
+        code, _, out = self.run_app("auth", "ls")
+        self.assertEqual(code, 0)
+        self.assertIn("ins (Instagram): logged in (cookies.txt); sessionid expired", out)
+        self.assertIn("tlg (Telegram): api key only", out)
+        self.assertIn("tik (TikTok): not logged in", out)
+        self.assertNotIn("secret-val", out)
+        self.assertEqual(self.run_app("auth", "ls", "extra")[0], 2)
 
 
 class ThinCliTest(unittest.TestCase):

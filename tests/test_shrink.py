@@ -123,7 +123,7 @@ class EngineShrinkTest(ShrinkCase):
 
     def test_a_later_sync_shrinks_only_the_new_files(self):
         with Shrinking().patched():
-            self.engine().download(["aaa:example_user"], shrink=True)
+            self.engine().download(["aaa:example_user"], shrink=True, sync=True)
         self.listed.append("b.jpg")
         with Shrinking().patched() as fake:
             self.engine().sync()
@@ -132,7 +132,7 @@ class EngineShrinkTest(ShrinkCase):
 
     def test_turning_it_on_again_skips_the_files_already_shrunk(self):
         with Shrinking().patched():
-            self.engine().download(["aaa:example_user"], shrink=True)
+            self.engine().download(["aaa:example_user"], shrink=True, sync=True)
         self.engine().download(["aaa:example_user"], shrink=False)
         with Shrinking().patched() as fake:
             self.engine().download(["aaa:example_user"], shrink=True)

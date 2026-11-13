@@ -706,7 +706,7 @@ class ApiTest(EngineCase):
             return [File(f"{CDN}/{name}", name=name) for name in sorted(listed)]
 
         engine = self.engine(make_source("aaa", files=files))
-        engine.download(["aaa:a"], shrink=True)
+        engine.download(["aaa:a"], shrink=True, sync=True)
         folder = self.target_dir("aaa", "a")
         (folder / "a.jpg").unlink()
         (folder / "c.jpg").unlink()
@@ -917,6 +917,149 @@ class QueryAndLimitDryTest(EngineCase):
         self.assertTrue(report2.ok)
         self.assertTrue((self.target_dir("srch", "1") / "photo" / "1.jpg").is_file())
         self.assertFalse((self.target_dir("srch", "2") / "photo" / "2.jpg").exists())
+
+
+class SyncedQueryTest(EngineCase):
+    """Synced queries: 25 cap, known targets marked seen, `--dry`, Ctrl-C / `--limit` close, failing route."""
+
+    def _paged_source(self, pages, *, closed, seen_pages, fail_on=None):
+        from flnd.query import Param, Query, Text
+
+        class Paged(Source):
+            code, name, domains = "pgd", "Paged", ("pgd.example",)
+
+            @target("{id:\\d+}")
+            def post(self, site, id):
+                return id
+
+            @post.category
+            def photo(self, site, id):
+                yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
+
+            @target("?{query}", params={"q": Param(Text, "words")})
+            def query(self, site, query: Query):
+                try:
+                    for page_num, ids in enumerate(pages):
+                        seen_pages.append(page_num)
+                        if fail_on is not None and query.text == fail_on:
+                            raise RuntimeError("search failed")
+                        for item_id in ids:
+                            yield Target("pgd", "post", str(item_id))
+                finally:
+                    closed.append(True)
+
+        return Paged
+
+    def test_30_new_results_start_25_and_leave_5_for_next_sync(self):
+        pages = [list(range(1, 16)), list(range(16, 31))]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        for n in range(1, 31):
+            self.routes[f"{CDN}/{n}.jpg"] = httpx.Response(200, content=str(n).encode())
+        engine = Engine(home=self.home, sources={"pgd": src})
+        # Save the query as synced with 0 initial results by patching pages for initial download,
+        # or download --sync with limit=0? No, download --sync with 1st item, or toggle after dry?
+        # Even simpler: record the synced query via download --sync on an empty page, then sync with 30 results!
+        empty_src = self._paged_source([], closed=[], seen_pages=[])
+        Engine(home=self.home, sources={"pgd": empty_src}).download(["pgd?cats"], sync=True)
+
+        report1 = engine.sync()
+        self.assertTrue(report1.ok)
+        self.assertEqual(len(report1.targets[0].written), 25)
+        self.assertEqual(closed, [True])
+        from flnd import targets as targets_db
+        rows = targets_db.rows(self.home)
+        self.assertEqual(len(targets_db.seen(rows, Target("pgd", "query", "cats"))), 25)
+
+        closed.clear()
+        seen_pages.clear()
+        pages[:] = [list(range(31, 36)), *pages]
+        for n in range(31, 36):
+            self.routes[f"{CDN}/{n}.jpg"] = httpx.Response(200, content=str(n).encode())
+        report2 = engine.sync()
+        self.assertTrue(report2.ok)
+        self.assertEqual(len(report2.targets[0].written), 5)
+        # Stopped at pgd:1 on page 1 without asking for page 2.
+        self.assertEqual(seen_pages, [0, 1])
+        rows = targets_db.rows(self.home)
+        self.assertEqual(len(targets_db.seen(rows, Target("pgd", "query", "cats"))), 30)
+
+    def test_already_known_target_is_marked_seen_and_not_touched(self):
+        from flnd import targets as targets_db
+        pages = [[1, 2]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
+        engine = Engine(home=self.home, sources={"pgd": src})
+        # User already downloaded pgd:1 (not synced).
+        engine.download(["pgd:1"])
+        empty_src = self._paged_source([], closed=[], seen_pages=[])
+        Engine(home=self.home, sources={"pgd": empty_src}).download(["pgd?cats"], sync=True)
+
+        self.requests.clear()
+        report = engine.sync()
+        self.assertTrue(report.ok)
+        # Only pgd:2 was downloaded; pgd:1 was not touched and was marked seen.
+        self.assertEqual([p.name for p in report.targets[0].written], ["2.jpg"])
+        rows = targets_db.rows(self.home)
+        self.assertEqual(targets_db.seen(rows, Target("pgd", "query", "cats")), ("pgd:1", "pgd:2"))
+
+    def test_dry_lists_targets_and_marks_no_result_seen(self):
+        pages = [[1, 2]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        engine = Engine(home=self.home, sources={"pgd": src})
+        report = engine.download(["pgd?cats"], dry=True, sync=True)
+        self.assertTrue(report.ok)
+        self.assertFalse((self.home / paths.TARGETS).exists())
+
+    def test_ctrl_c_and_limit_close_generator_and_keep_partial_seen(self):
+        from flnd import targets as targets_db
+        pages = [[1], [2], [3]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
+        engine = Engine(home=self.home, sources={"pgd": src})
+        # --limit 1 stops after page 0 and closes the generator without asking for page 1.
+        report = engine.download(["pgd?cats"], limit=1, sync=True)
+        self.assertTrue(report.ok)
+        self.assertEqual(seen_pages, [0])
+        self.assertEqual(closed, [True])
+        rows = targets_db.rows(self.home)
+        self.assertEqual(targets_db.seen(rows, Target("pgd", "query", "cats")), ("pgd:1",))
+
+        # Ctrl-C during item 2 stops before page 2 and keeps item 1 seen.
+        closed.clear()
+        seen_pages.clear()
+        real_download = job.download
+
+        def stop_on_second(run, child, board, opts):
+            if child.value == "2":
+                net.stopping.set()
+            return real_download(run, child, board, opts)
+
+        with mock.patch("flnd.job.download", stop_on_second), self.assertRaises(KeyboardInterrupt):
+            engine.download(["pgd?dogs"], sync=True)
+        self.assertEqual(seen_pages, [0, 1])
+        self.assertEqual(closed, [True])
+        rows = targets_db.rows(self.home)
+        self.assertEqual(targets_db.seen(rows, Target("pgd", "query", "dogs")), ("pgd:1",))
+
+    def test_failing_route_fails_target_and_next_target_still_runs(self):
+        pages = [[1]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages, fail_on="bad")
+        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        empty_src = self._paged_source([], closed=[], seen_pages=[])
+        Engine(home=self.home, sources={"pgd": empty_src}).download(["pgd?bad", "pgd?good"], sync=True)
+
+        engine = Engine(home=self.home, sources={"pgd": src})
+        report = engine.sync()
+        self.assertFalse(report.ok)
+        self.assertEqual([str(t) for t in report.failed], ["pgd?bad"])
+        self.assertEqual([p.name for p in report.targets[1].written], ["1.jpg"])
 
 
 if __name__ == "__main__":

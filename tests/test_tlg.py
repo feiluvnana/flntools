@@ -390,7 +390,8 @@ class LoginCase(EngineCase):
         Engine(home=self.home, sources={"tlg": Telegram}).login("tlg", method)
 
     def assert_logged_in(self):
-        self.assertEqual(stored(self.home), {"session": SESSION, **CREDENTIALS})
+        saved = stored(self.home)
+        self.assertEqual({k: v for k, v in saved.items() if k != "origin"}, {"session": SESSION, **CREDENTIALS})
         self.assertIn("• tlg: logged in as Example User", self.lines())
         # The session and the hash are sealed in metadata/secrets.db: no file holds them readably.
         for path in self.home.rglob("*"):
@@ -501,7 +502,7 @@ class LoginCommandTest(FlndCase):
         methods = []
         self.choose_telegram("down", "enter")
         with mock.patch.object(Telegram, "login", lambda self, session, method: methods.append(method)):
-            self.assertEqual(self.run_app("login")[0], 0)
+            self.assertEqual(self.run_app("auth", "login")[0], 0)
         self.assertEqual(methods, ["qr"])
         out = self.screen.dest.getvalue()
         self.assertIn("✓ Log in to: Telegram (tlg)", out)
@@ -513,7 +514,7 @@ class LoginCommandTest(FlndCase):
 
         self.choose_telegram("down", "enter")
         with mock.patch.object(Telegram, "login", refuse):
-            code, _, out = self.run_app("login")
+            code, _, out = self.run_app("auth", "login")
         self.assertEqual(code, 1)
         self.assertIn("✗ tlg: no QR code was scanned; run flnd login again", out)
 
@@ -522,7 +523,7 @@ class LoginCommandTest(FlndCase):
             secrets.update(session=SESSION, **CREDENTIALS)
         self.choose_telegram("enter")
         with mock.patch.object(Telegram, "login", lambda self, session, method: None):
-            self.run_app("login")
+            self.run_app("auth", "login")
         self.assertIn("Telegram (tlg) · logged in", self.screen.dest.getvalue())
 
 

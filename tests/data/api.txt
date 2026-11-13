@@ -1,8 +1,9 @@
 flnd: module
 flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
+flnd.Engine.auth_ls() -> list[dict[str, Any]]
 flnd.Engine.browsers: property -> dict[str, str]
 flnd.Engine.cookie_logins: property -> tuple[str, ...]
-flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None, limit: int | None = None, dry: bool = False) -> Report
+flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None, limit: int | None = None, dry: bool = False, sync: bool = False) -> Report
 flnd.Engine.home: attribute
 flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
 flnd.Engine.logins: property -> dict[str, str]
@@ -10,6 +11,8 @@ flnd.Engine.logout(codes: Iterable[str]) -> list[str]
 flnd.Engine.resolve(texts: Sequence[str]) -> list[Target]
 flnd.Engine.sources: attribute
 flnd.Engine.sync(targets: Sequence[Target | str] = ()) -> Report
+flnd.Engine.sync_ls() -> list[dict[str, Any]]
+flnd.Engine.sync_toggle(targets: Sequence[Target | str]) -> list[tuple[Target, bool]]
 flnd.LoginError(flnd.source.Error)
 flnd.Range(since: datetime.date | None = None, until: datetime.date | None = None)
 flnd.Range.parse(text: str) -> Range

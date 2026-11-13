@@ -57,10 +57,10 @@ class SyncCase(EngineCase):
         source = source or self.site.source()
         return Engine(home=self.home, sources={source.code: source})
 
-    def download(self, options=Options(), source=None, texts=("aaa:a",), shrink=None):
+    def download(self, options=Options(), source=None, texts=("aaa:a",), shrink=None, sync=True):
         """`Engine.download` with `options`' --from and --time, and `shrink` as given: None keeps the saved one."""
         report = self.engine(source).download(list(texts), categories=options.categories,
-                                              time=Range(options.since, options.until), shrink=shrink)
+                                              time=Range(options.since, options.until), shrink=shrink, sync=sync)
         return report.files
 
     def sync(self, texts=(), source=None):
@@ -95,7 +95,7 @@ class SettingsTest(SyncCase):
         self.download(Options(categories=("posts",), since=datetime.date(2026, 1, 1), until=datetime.date(2026, 6, 30)))
         row = self.saved()["aaa:a"]
         # `complete` is what was listed to its end, not a setting: here the one category, `posts`.
-        self.assertEqual(sorted(row), ["at", "complete", "kind", "shrink"])
+        self.assertEqual(sorted(row), ["at", "complete", "kind", "shrink", "sync"])
         self.assertEqual(sorted(row["complete"]), ["posts"])
         self.assertEqual(self.plan()[0][1], Options())
 
@@ -484,7 +484,7 @@ class RepairListsToTheEndTest(SyncCase):
 
     def test_a_lost_and_a_broken_file_deep_in_a_complete_feed_are_saved_again(self):
         source = self.feed()
-        self.engine(source).download(["aaa:a"])
+        self.engine(source).download(["aaa:a"], sync=True)
         self.assertIn("posts", self.saved()["aaa:a"]["complete"])
         (self.folder() / "p10.jpg").unlink()
         # Empty is broken for every kind of file: a download that never got its bytes.
@@ -495,10 +495,40 @@ class RepairListsToTheEndTest(SyncCase):
 
     def test_a_target_with_nothing_lost_still_stops_at_saved_posts(self):
         source = self.feed()
-        self.engine(source).download(["aaa:a"])
+        self.engine(source).download(["aaa:a"], sync=True)
         self.requests.clear()
         self.sync(source=source)
         self.assertEqual(self.requests, [])
+
+
+class SyncOptInTest(SyncCase):
+    def test_download_without_sync_is_not_synced_and_legacy_rows_count_as_on(self):
+        self.download(sync=False)
+        self.assertIs(self.saved()["aaa:a"]["sync"], False)
+        self.assertEqual(self.plan(), [])
+        self.assertEqual(self.sync(), [])
+        self.assertIn("• nothing to sync", self.lines())
+        # A legacy row without a `sync` key counts as synced.
+        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
+            row = dict(targets["aaa:a"])
+            del row["sync"]
+            targets["aaa:a"] = row
+        self.assertEqual([t for t, _ in self.plan()], [Target("aaa", "user", "a")])
+
+    def test_sync_toggle_and_ls(self):
+        self.download(sync=False)
+        self.assertEqual(self.engine().sync_toggle(["aaa:a"]), [(Target("aaa", "user", "a"), True)])
+        self.assertEqual([t for t, _ in self.plan()], [Target("aaa", "user", "a")])
+        # Re-downloading without --sync preserves sync=True.
+        self.download(sync=False, shrink=True)
+        self.assertIs(self.saved()["aaa:a"]["sync"], True)
+        items = self.engine().sync_ls()
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]["sync"])
+        self.assertTrue(items[0]["shrink"])
+        self.assertEqual(items[0]["files"], 3)
+        self.assertEqual(self.engine().sync_toggle(["aaa:a"]), [(Target("aaa", "user", "a"), False)])
+        self.assertEqual(self.plan(), [])
 
 
 if __name__ == "__main__":

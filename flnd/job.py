@@ -1483,7 +1483,7 @@ class _Work:
         return outcome
 
 def discover(run: SourceRun, target: Target, *, limit: int | None = None,
-             time_range: Range = Range()) -> Iterator[Target]:
+             time_range: Range = Range(), seen: Collection[str] = ()) -> Generator[Target, None, None]:
     """Yield deduped targets from a query or target-yielding route, closing generators on stop.
 
     Args:
@@ -1491,15 +1491,17 @@ def discover(run: SourceRun, target: Target, *, limit: int | None = None,
         target: the query or target-yielding target.
         limit: maximum number of targets to yield, or None for no limit.
         time_range: `--time` range passed to `TargetSite` and `query.plan`.
+        seen: target keys (`<code>:<value>`) already seen; encountering one stops that search branch.
     """
     route = next(route for route in run.source.routes if route.kind == target.kind)
     site = TargetSite(run, target, time=time_range)
-    seen: set[Target] = set()
+    seen_keys = set(seen)
+    yielded: set[Target] = set()
     method = getattr(run.source, route.kind)
     try:
         args = _plan_queries(route, site, target) if route.is_query else [target.value]
         for arg in args:
-            if net.stopping.is_set() or (limit is not None and len(seen) >= limit):
+            if net.stopping.is_set() or (limit is not None and len(yielded) >= limit):
                 return
             steps = _steps(method(site, arg), run.run_async)
             try:
@@ -1507,11 +1509,13 @@ def discover(run: SourceRun, target: Target, *, limit: int | None = None,
                     if net.stopping.is_set():
                         return
                     child = item if isinstance(item, Target) else run.source.resolve(str(item))
-                    if child in seen:
+                    if targets.key(child) in seen_keys:
+                        break
+                    if child in yielded:
                         continue
-                    seen.add(child)
+                    yielded.add(child)
                     yield child
-                    if limit is not None and len(seen) >= limit:
+                    if net.stopping.is_set() or (limit is not None and len(yielded) >= limit):
                         return
             finally:
                 steps.close()

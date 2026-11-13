@@ -97,8 +97,9 @@ class VaultedCookiesTest(AuthCase):
         self.assertEqual([(cookie["name"], cookie["domain"]) for cookie in auth.load(self.home, "ins")],
                          [("sessionid", ".instagram.com")])
         with kv.open(self.home / paths.SECRETS, table="secrets") as db:
-            self.assertEqual(list(db.keys(prefix="ins:")), ["ins:cookies"])
+            self.assertEqual(list(db.keys(prefix="ins:")), ["ins:cookies", "ins:origin"])
             self.assertNotIn(b"ins-session", base64.b64decode(db["ins:cookies"]))
+        self.assertEqual(auth.origin(self.home, "ins"), "cookies.txt")
 
     def test_a_plain_cookie_file_moves_into_the_vault_on_the_first_run(self):
         self.write("ins.txt")
@@ -372,6 +373,26 @@ class KeyTest(AuthCase):
         with mock.patch.object(auth, "KEY_WAIT", 0.05), \
                 self.assertRaisesRegex(ValueError, "damaged: it exists but can't be read.*delete it"):
             auth.key(self.home)
+
+
+class OriginAndExpiryTest(AuthCase):
+    def test_origin_and_expiring_cookies_never_expose_values(self):
+        import time
+
+        now = time.time()
+        jar = cookies.Jar([
+            {"name": "sessionid", "value": "top-secret-1", "domain": ".instagram.com", "expires": now + 3600},
+            {"name": "other", "value": "top-secret-2", "domain": ".instagram.com", "expires": now - 10},
+        ])
+        auth.store(Instagram(), jar, home=self.home, origin="Chrome")
+        self.assertEqual(auth.origin(self.home, "ins"), "Chrome")
+        expiring = auth.expiring(self.home, Instagram())
+        self.assertEqual(len(expiring), 1)
+        self.assertEqual(expiring[0][0], "sessionid")
+        self.assertGreater(expiring[0][1], 0)
+        self.assertNotIn("top-secret", repr(expiring))
+        auth.logout(self.home, "ins")
+        self.assertEqual(auth.origin(self.home, "ins"), "")
 
 
 if __name__ == "__main__":

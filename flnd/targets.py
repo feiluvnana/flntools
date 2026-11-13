@@ -26,6 +26,10 @@ from shared import kv, log
 TARGETS_TABLE = "targets"
 # The row field of `--shrink`: true or false.
 SHRINK = "shrink"
+# The row field of `--sync`: true or false (rows without it count as true).
+SYNC = "sync"
+# The row field of a synced query's seen target keys: ["src:1", ...].
+SEEN = "seen"
 # The row field of the categories that last listed to their end: {category: "YYYY-MM-DD"}.
 COMPLETE = "complete"
 # The row field of the cursors interrupted listings saved, for the next run: {category: cursor}.
@@ -56,20 +60,36 @@ def shrink(row: Mapping[str, Any]) -> bool:
     return row.get(SHRINK) is True
 
 
-def record(home: Path, chosen: Sequence[tuple[Target, Options]]) -> None:
-    """Save each target's `--shrink` in `targets.db`, replacing its row in today's form.
+def synced(saved: Mapping[str, Any]) -> dict[str, Any]:
+    """Rows in `saved` whose `sync` is on; legacy rows without a `sync` field count as on.
 
-        targets.record(Path(".flnd"), [(target, Options(shrink=True))])
+        targets.synced({"ins:a": {"kind": "user"}, "ins:b": {"kind": "user", "sync": False}})
+    """
+    return {name: row for name, row in saved.items()
+            if isinstance(row, dict) and row.get(SYNC, True) is True}
+
+
+def sync_enabled(row: Mapping[str, Any]) -> bool:
+    """Whether a `targets.db` row has `sync` on; rows without `sync` count as on."""
+    return row.get(SYNC, True) is True
+
+
+def record(home: Path, chosen: Sequence[tuple[Target, Options]], *, sync: bool | None = None) -> None:
+    """Save each target's `--shrink` and `--sync` in `targets.db`, replacing its row in today's form.
+
+        targets.record(Path(".flnd"), [(target, Options(shrink=True))], sync=True)
 
     Args:
         home: flnd's folder, `.flnd`, which holds `targets.db`; the file is created when missing.
         chosen: (target, options) for each target, the options already holding its saved
             setting or the one given; `--from` and `--time` are never saved.
+        sync: True to mark targets synced, False to keep existing sync state (or False for new
+            targets), None to keep existing state (defaulting new/legacy rows to True).
 
     Raises:
         OSError: `targets.db` can't be created or written.
 
-    The row's `complete` and `cursors` records are kept: a setting doesn't change what was listed.
+    The row's `complete`, `cursors` and `seen` records are kept.
     """
     if not chosen:
         return
@@ -77,9 +97,68 @@ def record(home: Path, chosen: Sequence[tuple[Target, Options]]) -> None:
     with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         for target, options in chosen:
             old = saved.get(key(target))
-            kept = {name: old[name] for name in (COMPLETE, CURSORS)
-                    if isinstance(old, dict) and isinstance(old.get(name), dict) and old[name]}
-            saved[key(target)] = {"kind": target.kind, SHRINK: options.shrink, "at": now, **kept}
+            kept: dict[str, Any] = {
+                name: old[name] for name in (COMPLETE, CURSORS)
+                if isinstance(old, dict) and isinstance(old.get(name), dict) and old[name]
+            }
+            if isinstance(old, dict) and isinstance(old.get(SEEN), list) and old[SEEN]:
+                kept[SEEN] = old[SEEN]
+            if sync is True:
+                is_sync = True
+            elif isinstance(old, dict):
+                is_sync = old.get(SYNC, True) is True
+            else:
+                is_sync = sync is None
+            saved[key(target)] = {"kind": target.kind, SHRINK: options.shrink,
+                                  SYNC: is_sync, "at": now, **kept}
+
+
+def toggle(home: Path, target: Target) -> bool:
+    """Flip `target`'s `sync` state in `targets.db` and return its new state.
+
+        new_state = targets.toggle(Path(".flnd"), Target("ins", "user", "example_user"))
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+        old = saved.get(key(target))
+        row = dict(old) if isinstance(old, dict) else {"kind": target.kind, SHRINK: False, "at": now}
+        new_state = not (row.get(SYNC, True) is True)
+        row[SYNC] = new_state
+        saved[key(target)] = row
+    return new_state
+
+
+def seen(saved: Mapping[str, Any], target: Target) -> tuple[str, ...]:
+    """The target keys already seen by a synced query target, in order.
+
+    Args:
+        saved: `targets.db`'s rows, as the run opened them.
+        target: the query target whose `seen` keys are read.
+    """
+    found = _row(saved, target).get(SEEN)
+    return tuple(str(item) for item in found) if isinstance(found, list) else ()
+
+
+def mark_seen(home: Path, target: Target, keys: Iterable[str]) -> None:
+    """Append `keys` to `target`'s `seen` list in `targets.db`, preserving order and deduping.
+
+    Args:
+        home: flnd's folder, `.flnd`.
+        target: the query target whose `seen` list is updated.
+        keys: target keys (`<code>:<value>`) to mark seen.
+    """
+    items = list(dict.fromkeys(keys))
+    if not items:
+        return
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+        old = saved.get(key(target))
+        row = dict(old) if isinstance(old, dict) else {"kind": target.kind, SHRINK: False, SYNC: True, "at": now}
+        existing = row.get(SEEN)
+        current = [str(x) for x in existing] if isinstance(existing, list) else []
+        merged = list(dict.fromkeys([*current, *items]))
+        row[SEEN] = merged
+        saved[key(target)] = row
 
 
 def complete(saved: MutableMapping[str, Any], target: Target, categories: Iterable[str]) -> None:

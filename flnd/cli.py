@@ -1,18 +1,20 @@
-"""The flnd command line: `flnd download`, `flnd sync`, `flnd login` and `flnd logout`.
+"""The flnd command line: `flnd download`, `flnd sync`, and `flnd auth`.
 
 Usage:
   flnd download ins:example_user https://x.com/example_handle --from reels,media --time 2026-01-01,
   cat list.txt | flnd download
-  flnd download ins:example_user --shrink
+  flnd download ins:example_user --shrink --sync
   flnd sync
-  flnd login
-  flnd logout ins tik
-  flnd logout all
+  flnd sync ls
+  flnd sync toggle ins:example_user
+  flnd auth login
+  flnd auth logout ins tik
+  flnd auth ls
 
-`login` asks every answer. `download` and `sync` ask nothing, except `shared.browser`'s one
+`auth login` asks every answer. `download` and `sync` ask nothing, except `shared.browser`'s one
 question, to download Chromium, when a source needs a browser and Google Chrome is missing.
 
-It only parses the arguments, asks `login`'s questions and prints: each command is one call of
+It only parses the arguments, asks `auth login`'s questions and prints: each command is one call of
 `flnd.Engine`, given the arguments as typed, whose `ValueError` is shown as a usage error (exit 2)
 and whose `Report` gives the exit status, 1 when a target failed. It imports only `flnd` (the
 API), `flnd.sources` (for help and login's list) and `shared` (plan/phase-6/redesign.md, B4).
@@ -64,12 +66,15 @@ Examples:
   flnd download tik:example_creator twt:example_handle --from all
   flnd download fbk:example.page --from profile,stories
   flnd download https://x.com/example_handle/status/1790000000000000000
-  flnd download ins:example_user --shrink
+  flnd download ins:example_user --shrink --sync
   flnd download twt:example_handle --time 2026-01-01,2026-06-30
   cat list.txt | flnd download
   flnd sync
-  flnd login
-  flnd logout all
+  flnd sync ls
+  flnd sync toggle ins:example_user
+  flnd auth login
+  flnd auth logout all
+  flnd auth ls
 """
 
 
@@ -84,6 +89,7 @@ def download(
     time: Annotated[Optional[str], cli.opt(metavar="SINCE,UNTIL")] = None,
     # `--shrink` alone is on; `--shrink off` turns a saved one off; not given keeps the saved one.
     shrink: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None,
+    sync: Annotated[bool, cli.opt("--sync")] = False,
     limit: Annotated[Optional[int], cli.opt("--limit", metavar="N")] = None,
     dry: Annotated[bool, cli.opt("--dry")] = False,
     verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
@@ -102,6 +108,7 @@ def download(
             leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
         shrink: compress each photo, video and audio file to a balanced quality in its own format,
             replacing it when smaller, metadata (GPS too) stripped; off stops it.
+        sync: keep these targets up to date with `flnd sync`.
         limit: cap how many results a query target downloads, or how many posts a normal target
             downloads.
         dry: list the targets or files it would download, and download none.
@@ -117,7 +124,7 @@ def download(
         # text to show. Anything else is a bug or a failed run, and propagates to report it.
         report = Engine(home=HOME).download(targets, categories=categories, time=Range() if time is None else time,
                                             shrink=None if shrink is None else shrink == "on",
-                                            limit=limit, dry=dry)
+                                            limit=limit, dry=dry, sync=sync)
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
     if not dry:
@@ -127,19 +134,18 @@ def download(
     return 0 if report.ok else 1
 
 
-@app.command
 def sync(
     targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)],
     *,
     verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
 ) -> int:
-    """Bring downloaded targets up to date: repair broken or missing files, fetch new posts, and sum up.
+    """Bring synced targets up to date: repair broken or missing files, fetch new posts, and sum up.
 
     Each target runs with its saved --shrink and each source's default
     categories; sync changes no setting. To change one, run flnd download with it.
 
     Args:
-        targets: only these targets, as in flnd download; every one downloaded so far without them.
+        targets: only these targets, as in flnd download; every synced one without them.
         verbose: also show every file as it runs and ends, and each skip, link and shrink,
             under the status lines.
     """
@@ -155,7 +161,49 @@ def sync(
     return 0 if report.ok else 1
 
 
-@app.command("login")
+sync_group = app.group("sync", default=sync)
+
+
+@sync_group.command("ls")
+def sync_ls() -> int:
+    """List every known target with its sync state, saved settings, disk size and category status."""
+    items = Engine(home=HOME).sync_ls()
+    if not items:
+        log.info("no targets")
+        return 0
+    for item in items:
+        state = "sync on" if item["sync"] else "sync off"
+        shrink = ", --shrink" if item["shrink"] else ""
+        stats = (fmt.count(item["seen"], "seen") if item["query"]
+                 else f"{fmt.count(item['files'], 'file')}, {fmt.size(item['size'])}")
+        last = f", {item['at'][:10]}" if item["at"] else ""
+        cats = ", ".join(f"{cat}: {st}" for cat, st in item["categories"].items())
+        cats_part = f" ({cats})" if cats else ""
+        log.info("{target}: {state}{shrink}, {stats}{last}{cats}",
+                 target=str(item["target"]), state=state, shrink=shrink, stats=stats, last=last, cats=cats_part)
+    return 0
+
+
+@sync_group.command("toggle")
+def sync_toggle(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
+    """Flip each target between synced and not, keeping all saved settings and history.
+
+    Args:
+        targets: the targets to toggle, as in flnd download.
+    """
+    try:
+        toggled = Engine(home=HOME).sync_toggle(targets)
+    except ValueError as error:
+        raise cli.UsageError(str(error)) from None
+    for target, state in toggled:
+        log.ok("{target}: sync {state}", target=str(target), state="on" if state else "off")
+    return 0
+
+
+auth_group = app.group("auth", description="Logins and saved credentials.")
+
+
+@auth_group.command("login")
 def login_command() -> int:
     """Log in to a source: from your browser, a cookie file, or Telegram's own ways.
 
@@ -165,7 +213,7 @@ def login_command() -> int:
     # Logging in is a one-time step done by a person, so there is no flag form for scripts. With no
     # terminal there is nobody to answer the questions, so the command refuses before asking any.
     if not theme.screen.interactive:
-        raise cli.UsageError("flnd login asks its questions in a terminal")
+        raise cli.UsageError("flnd auth login asks its questions in a terminal")
     engine = Engine(home=HOME)
     code = _ask_source(engine)
     source = SOURCES[code]
@@ -192,7 +240,7 @@ def login_command() -> int:
     return 0
 
 
-@app.command
+@auth_group.command("logout")
 def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "all"), stdin=False)]) -> int:
     """Remove saved logins: each source's cookies and secrets, an API key included.
 
@@ -212,6 +260,19 @@ def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "
         # `all` names every source, so only the ones asked for by name say they had no login.
         elif not everything:
             log.info("{code}: not logged in", code=code)
+    return 0
+
+
+@auth_group.command("ls")
+def auth_ls() -> int:
+    """List each site with its login state, origin, and any expiring login cookie."""
+    for item in Engine(home=HOME).auth_ls():
+        origin = f" ({item['origin']})" if item["origin"] else ""
+        exp_parts = [f"{name} expired" if rem <= 0 else f"{name} expires in {fmt.duration(rem)}"
+                     for name, rem in item["expiring"]]
+        exp = f"; {', '.join(exp_parts)}" if exp_parts else ""
+        log.info("{code} ({name}): {state}{origin}{exp}",
+                 code=item["code"], name=item["name"], state=item["state"], origin=origin, exp=exp)
     return 0
 
 
