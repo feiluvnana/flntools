@@ -464,7 +464,12 @@ def _create_key(path: Path) -> bytes | None:
     # The stdlib's CSPRNG makes the key; `shared.crypto` leaves keys to it (redesign C2).
     secret = token_bytes(KEY_SIZE)
     try:
-        with os.fdopen(handle, "wb") as file:
+        try:
+            file = os.fdopen(handle, "wb")
+        except BaseException:
+            os.close(handle)
+            raise
+        with file:
             file.write(secret)
     except BaseException:
         path.unlink(missing_ok=True)

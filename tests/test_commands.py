@@ -394,7 +394,8 @@ class LoginFileTest(LoginCase):
                          {"sessionid": ".instagram.com", "ds_user_id": ".www.instagram.com"})
         # Sealed in the vault, whose key is as private as the plain cookie files were; nothing else is written.
         self.assertEqual(sorted(path.name for path in Path(".flnd").rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
-        self.assertEqual(stat.S_IMODE((Path(".flnd") / files.KEY).stat().st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE((Path(".flnd") / files.KEY).stat().st_mode), 0o600)
 
     def test_json_export_and_old_json_removed(self):
         Path(".flnd/cookies").mkdir(parents=True)

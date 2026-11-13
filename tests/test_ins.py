@@ -433,6 +433,7 @@ class NamesAndKeysTest(unittest.TestCase):
                          [(f"{DAY}_{code}_0.jpg", f"{code}_0"), (f"{DAY}_{code}_1.mp4", f"{code}_1")])
         self.assertEqual(seen.visited, [])
 
+    @unittest.skipUnless(hasattr(time, "tzset"), "no time.tzset on this platform")
     def test_the_date_in_a_name_is_the_utc_day(self):
         # 23:00 UTC on 14 November is already the 15th in Auckland, where the old names took their day from.
         late = 1700002800

@@ -40,6 +40,7 @@ import inspect
 import os
 import pickle
 import signal
+import sys
 import threading
 import time
 from collections import deque
@@ -686,7 +687,7 @@ def _call_in_child(fn: Callable[..., Any], args: tuple[Any, ...], timeout: float
     """Run one try in a worker process, which stops it itself after `timeout` seconds."""
     # The parent can't stop one task in a shared ProcessPoolExecutor, so the child sets an alarm.
     # Windows has no alarm: there a try past `timeout` runs on, as a thread's does.
-    if timeout is None or not hasattr(signal, "setitimer"):
+    if timeout is None or sys.platform == "win32" or not hasattr(signal, "setitimer"):
         return fn(*args)
 
     def give_up(signal_number: int, frame: Any) -> None:

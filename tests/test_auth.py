@@ -34,6 +34,7 @@ class AuthCase(unittest.TestCase):
 
 
 class CookieFileTest(AuthCase):
+    @unittest.skipIf(os.name == "nt", "E: is a drive letter on Windows")
     def test_legacy_dirs_are_gone(self):
         """Fix #2: `E:/…` was read relative to the working directory on macOS and Linux."""
         self.assertFalse(hasattr(auth, "LEGACY_DIRS"))
@@ -298,7 +299,8 @@ class KeyTest(AuthCase):
         secret = auth.key(self.home)
         path = self.home / files.KEY
         self.assertEqual(len(secret), 32)
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(auth.key(self.home), secret)
         self.assertEqual([entry.name for entry in (self.home / files.METADATA).iterdir()], ["secret.key"])
 

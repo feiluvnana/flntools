@@ -38,6 +38,35 @@ def parts(folder: Path) -> list[str]:
     return [path.name for path in folder.iterdir() if path.name.endswith(".part")]
 
 
+def child_pids() -> list[str]:
+    if sys.platform != "win32":
+        return subprocess.run(["pgrep", "-P", str(os.getpid())],
+                              capture_output=True, text=True).stdout.split()
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+    kernel32 = ctypes.windll.kernel32
+    snap = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    entry = PROCESSENTRY32W(dwSize=ctypes.sizeof(PROCESSENTRY32W))
+    pids: list[str] = []
+    try:
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32ParentProcessID == os.getpid():
+                pids.append(str(entry.th32ProcessID))
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snap)
+    return pids
+
+
 def converted(src: Path, dest: Path, **options) -> Path:
     """`src` converted to the format `dest`'s extension names, and saved there."""
     return media.open(src).convert(dest.suffix, **options).save(dest)
@@ -794,8 +823,7 @@ class SafetyTest(unittest.TestCase):
             shrink(sample("big.mp4"), dest=dest, quality=10, progress=progress)
         self.assertEqual(parts(self.folder), [])
         self.assertEqual(parts(FOLDER), [])
-        children = subprocess.run(["pgrep", "-P", str(os.getpid())], capture_output=True, text=True).stdout.split()
-        self.assertEqual(children, [])
+        self.assertEqual(child_pids(), [])
 
 
 @needs_ffmpeg("libx264")

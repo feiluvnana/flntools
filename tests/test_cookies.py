@@ -406,7 +406,7 @@ class LoadTest(FileTestCase):
     def test_exactly_16_mb_is_read(self):
         path = self.folder / "big.txt"
         line = "x.com\tFALSE\t/\tFALSE\t0\tn\tv\n"
-        path.write_text(line + "#" * (16 * 1024 * 1024 - len(line) - 1) + "\n", encoding="utf-8")
+        path.write_text(line + "#" * (16 * 1024 * 1024 - len(line) - 1) + "\n", encoding="utf-8", newline="\n")
         self.assertEqual(path.stat().st_size, 16 * 1024 * 1024)
         self.assertEqual(cookies.load(path).names, ["n"])
 

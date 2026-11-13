@@ -220,11 +220,11 @@ class AmbiguousWidthTest(unittest.TestCase):
                     ["*", "(*)", "( )", "+", "x", "|"])
 
     def test_lc_all_wins_over_lang(self):
-        with mock.patch.dict(os.environ, {"LANG": "ja_JP.UTF-8", "LC_ALL": "en_US.UTF-8"}, clear=True):
+        with mock.patch("os.name", "posix"), mock.patch.dict(os.environ, {"LANG": "ja_JP.UTF-8", "LC_ALL": "en_US.UTF-8"}, clear=True):
             self.assertTrue(_theme.detect_unicode(self.Utf8()))
 
     def test_other_locales_keep_unicode(self):
-        with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
+        with mock.patch("os.name", "posix"), mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=True):
             self.assertTrue(_theme.detect_unicode(self.Utf8()))
 
     def test_windows_legacy_console_gets_ascii(self):

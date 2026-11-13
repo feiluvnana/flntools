@@ -452,7 +452,7 @@ class ChromeOnlyTest(BrowserCase):
         with mock.patch.object(Path, "is_file", lambda path: found.append(str(path)) or False):
             for platform, env in (("darwin", {}), ("linux", {}),
                                   ("win32", {"LOCALAPPDATA": "C:/Users/a/AppData/Local", "PROGRAMFILES": "C:/PF"})):
-                with mock.patch.object(browser.sys, "platform", platform), mock.patch.dict(os.environ, env):
+                with mock.patch.object(browser.sys, "platform", platform), mock.patch.dict(os.environ, env, clear=True):
                     self.assertFalse(CHROME_INSTALLED())
         self.assertEqual([Path(path) for path in found], [
             Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), Path("/opt/google/chrome/chrome"),

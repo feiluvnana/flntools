@@ -154,11 +154,11 @@ class Screen:
         fd = None
         try:
             # Windows reads keys through msvcrt, not a descriptor, so there is no fd to set raw.
-            fd = self.inp.fileno() if self.inp is not None and os.name != "nt" else None
+            fd = self.inp.fileno() if self.inp is not None and sys.platform != "win32" else None
         except (AttributeError, OSError, ValueError):
             # A stream without a real descriptor can't go raw; its keys are read as a plain stream.
             fd = None
-        if fd is not None:
+        if fd is not None and sys.platform != "win32":
             import termios
             import tty
 
@@ -176,7 +176,7 @@ class Screen:
             yield
         finally:
             self.write(PASTE_OFF)
-            if saved is not None and fd is not None:
+            if saved is not None and fd is not None and sys.platform != "win32":
                 import termios
 
                 self._raw = False
@@ -327,6 +327,8 @@ def _readkey_from_stream(stream) -> str:
 
 def _keep_output_processing(fd: int) -> None:
     """Undo what `tty.setraw` does to output: with OPOST off a newline no longer returns to column 0."""
+    if sys.platform == "win32":
+        return
     import termios
 
     attrs = termios.tcgetattr(fd)
@@ -337,6 +339,8 @@ def _keep_output_processing(fd: int) -> None:
 
 def _readkey_posix(fd: int, raw: bool = False) -> str:
     """Read one key; `raw` says the terminal is already raw (held by `Screen.reading`)."""
+    if sys.platform == "win32":
+        raise RuntimeError("POSIX only")
     import select
     import termios
     import tty

@@ -193,7 +193,7 @@ class SniffTest(ArchiveCase):
                                (".tar.xz", "mirror.7z")):
             with self.subTest(real=real):
                 written = archive.zip(self.album, self.root / f"real{real}")[0]
-                self.assert_round_trip([written.rename(self.root / disguise)])
+                self.assert_round_trip([written.replace(self.root / disguise)])
                 shutil.rmtree(self.out)
 
     def test_not_an_archive(self):
