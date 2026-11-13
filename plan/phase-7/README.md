@@ -46,7 +46,7 @@ Each step ends with `check` green and is committed on its own.
    their headers, downloads stoppable, errors caught by name, private imports gone.
 8. **Built** (shared 5b81e23, flnd 91c96a6, b493668). [speed](speed.md): the downloader after IDM and MDM, more at once, less work around the
    downloads, and lower listing floors.
-9. [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
+9. **Built** (d1e8e15). [output › status lines](output.md#status-lines): live status lines, colors, `-v` adding every
    line under them.
 10. [flnd › sites and finding](flnd.md#4-sites-site-downloader-finder): `Source` splits into `Site`
     and `Downloader`, `flnd/sources/` becomes `flnd/sites/` ("site" everywhere); the find API

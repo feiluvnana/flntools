@@ -123,3 +123,12 @@ The user said on 2026-11-13 that the screen is **too white and hard to look at, 
   `⛓` `=`), and none of them is ambiguous-width.
 
 `sync` takes `-v` with the same rule (user, 2026-11-13).
+
+## As built, step 9 (2026-11-13)
+
+One status line per target and category (found, saved, linked, skipped, failed, bytes, time),
+with a second line while it runs (downloading, shrinking, a note); narrow screens use glyphs.
+`job.Counts` is the one counts record. Glyphs `⇣` and `⤷` stand for download and link (`↓` and
+`⛓` are ambiguous-width). Every count is shown, zeros dim, so columns line up. Waits stay a
+steady-yellow row of their own. Not built: the download speed on the status line. The per-
+category "N files already saved" line and the sites' own found counts are gone (lean S7).
