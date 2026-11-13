@@ -779,5 +779,145 @@ class ApiLoginTest(EngineCase):
         self.assertFalse(any("not logged in" in line for line in self.lines()))
 
 
+class QueryAndLimitDryTest(EngineCase):
+    """Query targets, target-yielding routes, 24h lookup cache, `--limit`, `--dry`, and early close."""
+
+    def _query_source(self, *, closed: list[bool], lookup_calls: list[str]):
+        from flnd.query import Name, Param, Query
+
+        def lookup_tags(site, name):
+            lookup_calls.append(name)
+            return [("action", "10"), ("comedy", "20")]
+
+        class Searchable(Source):
+            code, name, domains = "srch", "Searchable", ("srch.example",)
+
+            @target("{id:\\d+}")
+            def post(self, site, id):
+                return id
+
+            @post.category
+            def photo(self, site, id):
+                yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
+
+            @post.category
+            def extra(self, site, id):
+                yield Post(id, [File(f"{CDN}/{id}_extra.jpg", name=f"{id}_extra.jpg")])
+
+            @target("list/{name}")
+            def listing(self, site, name):
+                yield Target("srch", "post", "1")
+                yield f"srch:2"
+
+            @target("?{query}", params={"tag": Param(Name, "a tag", lookup=lookup_tags)})
+            def query(self, site, query: Query):
+                try:
+                    for term in query.terms:
+                        for val in term.values:
+                            if val == "10":
+                                yield Target("srch", "post", "1")
+                                yield Target("srch", "post", "2")
+                                yield Target("srch", "post", "3")
+                            elif val == "20":
+                                yield Target("srch", "post", "2")
+                                yield Target("srch", "post", "4")
+                    if query.text:
+                        yield Target("srch", "post", "1")
+                        yield Target("srch", "post", "2")
+                finally:
+                    closed.append(True)
+
+        return Searchable
+
+    def test_query_route_dedupes_caches_lookups_24h_and_respects_from(self):
+        closed, calls = [], []
+        src = self._query_source(closed=closed, lookup_calls=calls)
+        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
+        self.routes[f"{CDN}/3.jpg"] = httpx.Response(200, content=b"3")
+        self.routes[f"{CDN}/4.jpg"] = httpx.Response(200, content=b"4")
+        engine = Engine(home=self.home, sources={"srch": src})
+
+        # First run: OR-split asks lookup for "action" and "comedy", dedupes post "2", respects --from photo.
+        report = engine.download(["srch?tag:(action OR comedy)"], categories="photo", limit=4)
+        self.assertTrue(report.ok)
+        self.assertEqual([r.target.value for r in report.targets], ["1", "2", "3", "4"])
+        self.assertEqual(calls, ["action", "comedy"])
+        self.assertEqual(len(closed), 2)
+        self.assertFalse((self.target_dir("srch", "1") / "extra").exists())
+
+        # Second run within 24h: lookup cache in sources.db avoids calling lookup_tags again.
+        calls.clear()
+        report2 = engine.download(["srch?tag:action"], categories="photo", limit=1)
+        self.assertTrue(report2.ok)
+        self.assertEqual(calls, [])
+
+        # Expire cache (>24h): lookup_tags is called again.
+        with kv.open(self.home / paths.SOURCE_STATE, table="srch") as store:
+            lookups = dict(store["query.lookups"])
+            lookups["tag:action"] = {"id": "10", "at": time.time() - 25 * 3600}
+            store["query.lookups"] = lookups
+        engine.download(["srch?tag:action"], categories="photo", limit=1)
+        self.assertEqual(calls, ["action"])
+
+    def test_limit_and_stop_close_generator_early(self):
+        closed, calls = [], []
+        src = self._query_source(closed=closed, lookup_calls=calls)
+        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        engine = Engine(home=self.home, sources={"srch": src})
+
+        # --limit 1 on query route stops after 1 target and closes the generator.
+        report = engine.download(["srch?words"], categories="photo", limit=1)
+        self.assertEqual(len(report.targets), 1)
+        self.assertEqual(closed, [True])
+
+    def test_dry_run_on_query_and_normal_target_writes_nothing(self):
+        closed, calls = [], []
+        src = self._query_source(closed=closed, lookup_calls=calls)
+        engine = Engine(home=self.home, sources={"srch": src})
+
+        report = engine.download(["srch?words"], limit=2, dry=True)
+        self.assertTrue(report.ok)
+        output = "\n".join(self.lines())
+        self.assertIn("srch:1", output)
+        self.assertIn("srch:2", output)
+        self.assertFalse((self.home / paths.TARGETS).exists())
+        self.assertFalse((self.home / paths.HISTORY).exists())
+        self.assertFalse((self.home / paths.MEDIA).exists())
+
+        report_normal = engine.download(["srch:1"], categories="photo", dry=True)
+        self.assertTrue(report_normal.ok)
+        self.assertIn("1.jpg", "\n".join(self.lines()))
+        self.assertFalse((self.home / paths.MEDIA).exists())
+
+    def test_limit_on_normal_target_and_target_yielding_route(self):
+        class Multi(Source):
+            code, name, domains = "mlt", "Multi", ("mlt.example",)
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                for n in range(1, 5):
+                    yield Post(str(n), [File(f"{CDN}/{n}.jpg", name=f"{n}.jpg")])
+
+        for n in range(1, 5):
+            self.routes[f"{CDN}/{n}.jpg"] = httpx.Response(200, content=str(n).encode())
+        engine = Engine(home=self.home, sources={"mlt": Multi})
+        report = engine.download(["mlt:example_user"], limit=2)
+        self.assertTrue(report.ok)
+        self.assertEqual(len(report.targets[0].written), 2)
+
+        closed, calls = [], []
+        src = self._query_source(closed=closed, lookup_calls=calls)
+        engine2 = Engine(home=self.home, sources={"srch": src})
+        report2 = engine2.download(["srch:list/all"], limit=1)
+        self.assertTrue(report2.ok)
+        self.assertTrue((self.target_dir("srch", "1") / "photo" / "1.jpg").is_file())
+        self.assertFalse((self.target_dir("srch", "2") / "photo" / "2.jpg").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

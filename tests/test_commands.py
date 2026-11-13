@@ -169,7 +169,7 @@ class DownloadTest(RunsCase):
         message = ("✗ no source here has 'reels': use all, or tik: videos, stories, playlists, reposts, liked, "
                    "favorites, profile; twt: posts, media, highlights, reposts, replies, profile")
         self.assertIn(message, self.run_app("download", "tik:a", "twt:b", "--from", "videos,reels")[2])
-        for option in ("--limit", "--output", "--headless"):
+        for option in ("--output", "--headless"):
             self.assertEqual(self.run_app("download", option, "5", "ins:a")[0], 2)
         self.assertEqual(self.runs, [])
 
@@ -190,7 +190,9 @@ class DownloadTest(RunsCase):
         self.assertIn("https://www.facebook.com/profile.php?id=<user>", stdout)
         for command in ("download", "sync", "login", "logout"):
             self.assertIn(command, stdout)
-        self.assertNotIn("auth", stdout)
+        self.assertNotIn("  auth ", stdout)
+        self.assertIn("Query parameters", stdout)
+        self.assertIn("loi?<query>: tag, author, sort", stdout)
         self.assertNotIn("install-browser", stdout)
         self.assertNotIn("--compress", stdout)
         self.assertEqual(self.run_app("auth", "set-cookie")[0], 2)

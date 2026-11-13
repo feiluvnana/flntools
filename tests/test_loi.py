@@ -91,6 +91,13 @@ ROUTES = [
     ("https://moegoat.com/lois/5930", ("post", "5930")),
     ("https://www.moegoat.com/lois/5930/", ("post", "5930")),
     ("https://loix.cc/lois/0", ("post", "0")),
+    ("loi:?tag:night", ("query", "tag:night")),
+    ("loi:?author:example_author sort:views", ("query", "author:example_author sort:views")),
+    ("loi:?example words", ("query", "example words")),
+    ("loi:?", "the query is empty"),
+    ("loi:?unknown:x", "'unknown:x': no parameter unknown"),
+    ("loi:?-tag:night", "'tag:night': this site can't exclude by tag"),
+    ("loi:?sort:invalid", "'sort:invalid': sort takes one of"),
     ("example_user", "can't read"),
     ("loi:abc", "can't read"),
     ("https://loix.cc/library/loier/7", "can't read"),
@@ -392,6 +399,63 @@ class LoginTest(unittest.TestCase):
             store.clear()
             with self.assertRaisesRegex(auth.LoginError, "no access-token"):
                 auth.store(Loibus(), auth.from_browser(Loibus(), browser="chrome"), home=self.home, origin="Chrome")
+
+
+class QueryTest(unittest.TestCase):
+    def _site(self, answers):
+        seen = Seen()
+        return FakeSite(Target("loi", "query", ""), json=answers, seen=seen), seen
+
+    def test_tag_lookup_and_pagination(self):
+        def tags_api(url, req):
+            g, p = req["params"]["group_id"], req["params"]["page"]
+            if g == 2 and p == 1:
+                return {"data": [{"id": 11, "name": "Night"}], "pagination": {"total": 1}}
+            return {"data": [], "pagination": {"total": 0}}
+
+        def tag_posts(url, req):
+            self.assertEqual(req["params"], {"tag_id": "11", "sort": "popular", "page": 1})
+            return {"data": [{"id": 5930, "loi_title": "A"}], "pagination": {"total": 1}}
+
+        site, _ = self._site({f"{API}user/library/tags": tags_api, f"{API}user/library/tag/id": tag_posts})
+        from flnd.query import plan
+        route = next(r for r in Loibus.routes if r.is_query)
+        [q] = plan("tag:night sort:views", route.params, site=site)
+        self.assertEqual(list(Loibus().query(site, q)), [Target("loi", "post", "5930")])
+
+    def test_author_lookup_and_keyword_search(self):
+        def loiers_api(url, req):
+            if req["params"]["page"] == 1:
+                return {"data": [{"id": 7, "name": "example_author"}], "pagination": {"total": 2}}
+            return {"data": [{"id": 8, "name": "other_author"}], "pagination": {"total": 2}}
+
+        def loier_posts(url, req):
+            self.assertEqual(req["params"], {"category_id": "7", "sort": "choicest", "page": 1})
+            return {"data": [{"id": 101, "loi_title": "B", "tags": [{"id": 1}]},
+                             {"id": 102, "loi_title": "C", "tags": []}],
+                    "pagination": {"total": 2}}
+
+        site, _ = self._site({
+            f"{API}user/library/loiers": loiers_api,
+            f"{API}user/library/loier/id": loier_posts,
+            f"{API}user/loi/search/hello%20world/latest": {"data": [{"id": 201}], "pagination": {"total": 1}},
+        })
+        from flnd.query import plan
+        route = next(r for r in Loibus.routes if r.is_query)
+        [q_author] = plan("author:example_author sort:likes", route.params, site=site)
+        self.assertEqual(list(Loibus().query(site, q_author)),
+                         [Target("loi", "post", "101"), Target("loi", "post", "102")])
+
+        [q_words] = plan("hello world", route.params, site=site)
+        self.assertEqual(list(Loibus().query(site, q_words)), [Target("loi", "post", "201")])
+
+    def test_sort_only_refuses(self):
+        from flnd.query import plan
+        site, _ = self._site({})
+        route = next(r for r in Loibus.routes if r.is_query)
+        [q] = plan("sort:views", route.params, site=site)
+        with self.assertRaisesRegex(TargetError, "give a tag, author, or search words"):
+            list(Loibus().query(site, q))
 
 
 if __name__ == "__main__":

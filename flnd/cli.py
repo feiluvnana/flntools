@@ -44,14 +44,20 @@ def epilog() -> str:
     # Each form a source's routes read, placeholders in angle brackets, so help can't drift from them.
     forms = "\n".join(f"  {form}" for source in SOURCES.values() for form in source.forms)
     categories = "\n".join(f"  {code}: {', '.join(source.categories)}" for code, source in SOURCES.items())
+    queries = "\n".join(
+        f"  {code}?<query>: {', '.join(route.params) if route.params else 'words'}"
+        for code, source in SOURCES.items()
+        for route in source.routes if route.is_query
+    )
+    query_section = f"\n\nQuery parameters (<source>?<query>):\n{queries}" if queries else ""
     return f"""\
 Target format:
-  <source>:<name, id or URL>, or a bare URL
+  <source>:<name, id or URL>, <source>?<query>, or a bare URL
   Sources: {", ".join(SOURCES)}
 {forms}
 
 Categories (--from; without it, every one; not for a single post's link):
-{categories}
+{categories}{query_section}
 
 Examples:
   flnd download ins:example_user
@@ -78,6 +84,8 @@ def download(
     time: Annotated[Optional[str], cli.opt(metavar="SINCE,UNTIL")] = None,
     # `--shrink` alone is on; `--shrink off` turns a saved one off; not given keeps the saved one.
     shrink: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None,
+    limit: Annotated[Optional[int], cli.opt("--limit", metavar="N")] = None,
+    dry: Annotated[bool, cli.opt("--dry")] = False,
     verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
 ) -> int:
     """Download each target.
@@ -86,13 +94,17 @@ def download(
     it on shrinks the files already saved too, and --shrink off turns it off.
 
     Args:
-        targets: source:value pairs or URLs; read one per line from stdin when none are given.
+        targets: source:value pairs, source?query targets, or URLs; read one per line from stdin
+            when none are given.
         categories: what to take from each source, such as posts,reels; a comma list or repeated.
             Without it, every category. Not for a single post's link, which is downloaded whole.
         time: only items dated from one day to another, both included, as 2026-01-01,2026-06-30;
             leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
         shrink: compress each photo, video and audio file to a balanced quality in its own format,
             replacing it when smaller, metadata (GPS too) stripped; off stops it.
+        limit: cap how many results a query target downloads, or how many posts a normal target
+            downloads.
+        dry: list the targets or files it would download, and download none.
         verbose: also show every file as it runs and ends, and each skip, link and shrink,
             under the status lines.
     """
@@ -104,10 +116,12 @@ def download(
         # Only ValueError is a usage error: the engine raises it for a bad option or target, with the
         # text to show. Anything else is a bug or a failed run, and propagates to report it.
         report = Engine(home=HOME).download(targets, categories=categories, time=Range() if time is None else time,
-                                            shrink=None if shrink is None else shrink == "on")
+                                            shrink=None if shrink is None else shrink == "on",
+                                            limit=limit, dry=dry)
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
-    log.ok("Complete. {files}", files=fmt.count(report.files, "file"))
+    if not dry:
+        log.ok("Complete. {files}", files=fmt.count(report.files, "file"))
     # 1 when a target failed, so a script can tell. A rate-limit wait, a skipped file, or one file
     # of a target that failed while the target went on, isn't a failed target.
     return 0 if report.ok else 1

@@ -34,6 +34,8 @@ class Options:
     # `sync` of a target with nothing lost: a `newest_first` category whose last listing reached
     # its end stops after 5 saved posts in a row.
     stop_at_saved: bool = False
+    # `--limit`: max discovered targets on a target-yielding route, or max posts on a normal target.
+    limit: int | None = None
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
@@ -95,5 +97,7 @@ class RunShared:
     targets: MutableMapping[str, Any] = field(default_factory=dict)
     # Whether a person can be asked a question, which a source's own login needs.
     interactive: bool = False
+    # `--dry`: list what would be downloaded without writing or downloading anything.
+    dry: bool = False
     # One for the whole run, so videos encode one at a time across sources and each error warns once.
     compressor: Compressor = field(default_factory=Compressor)

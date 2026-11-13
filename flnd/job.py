@@ -66,10 +66,12 @@ import datetime
 import email.utils
 import filecmp
 import inspect
+import itertools
 import os
 import re
 import string
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -92,8 +94,7 @@ if TYPE_CHECKING:
     from shared import worker
 
 __all__ = ["STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",
-           "download",
-           "posts", "wanted"]
+           "discover", "download", "posts", "wanted"]
 
 # The history fields of a file's post: its id, its day (`YYYY-MM-DD`), and whether that day is
 # the nearest dated neighbour's estimate.
@@ -128,6 +129,9 @@ FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
 # Seconds the job's thread waits between looks at its downloads, their refresh requests and
 # Ctrl-C: short enough that a second Ctrl-C or a refresh is answered at once to a person.
 WAKE = 0.1
+# How long lookup ids from query routes stay cached in `sources.db`, in seconds (one day).
+LOOKUP_TTL = 24 * 3600
+LOOKUP_KEY = "query.lookups"
 
 # Runs a coroutine to its end, as `SourceRun.run_async` does on the source's loop.
 RunAsync = Callable[[Coroutine[Any, Any, Any]], Any]
@@ -441,8 +445,12 @@ def plan(run: SourceRun, target: Target, options: Options, *,
     site = TargetSite(run, target, time=Range(options.since, options.until))
     categories = {category.name: category for route in run.source.routes for category in route.categories}
     stream = posts(run.source, site, target, options, run_async=run.run_async)
+    taken = 0
     try:
         for post in stream:
+            if options.limit is not None and taken >= options.limit:
+                break
+            taken += 1
             files = list(post.files()) if callable(post.files) else list(post.files)
             yield from place(run.source, post, files, category=categories.get(post.category))
     finally:
@@ -1474,35 +1482,114 @@ class _Work:
                 return Outcome.STOPPED
         return outcome
 
-def _queue_all(work: _Work, kept: _Kept, *, stop_at_saved: bool) -> Ended:
-    """Queue each post a listing keeps, then the undated ones it held, until Ctrl-C or a stop."""
-    ended = _queue_listed(work, kept, stop_at_saved=stop_at_saved)
+def discover(run: SourceRun, target: Target, *, limit: int | None = None,
+             time_range: Range = Range()) -> Iterator[Target]:
+    """Yield deduped targets from a query or target-yielding route, closing generators on stop.
+
+    Args:
+        run: the source's resources for the run.
+        target: the query or target-yielding target.
+        limit: maximum number of targets to yield, or None for no limit.
+        time_range: `--time` range passed to `TargetSite` and `query.plan`.
+    """
+    route = next(route for route in run.source.routes if route.kind == target.kind)
+    site = TargetSite(run, target, time=time_range)
+    seen: set[Target] = set()
+    method = getattr(run.source, route.kind)
+    try:
+        args = _plan_queries(route, site, target) if route.is_query else [target.value]
+        for arg in args:
+            if net.stopping.is_set() or (limit is not None and len(seen) >= limit):
+                return
+            steps = _steps(method(site, arg), run.run_async)
+            try:
+                for item in steps:
+                    if net.stopping.is_set():
+                        return
+                    child = item if isinstance(item, Target) else run.source.resolve(str(item))
+                    if child in seen:
+                        continue
+                    seen.add(child)
+                    yield child
+                    if limit is not None and len(seen) >= limit:
+                        return
+            finally:
+                steps.close()
+    finally:
+        site.close()
+
+
+def _plan_queries(route: Route, site: Site, target: Target) -> list[Any]:
+    """Plan `target` into `Query` searches, caching lookup ids in `site.state` for 24 hours."""
+    from flnd import query
+
+    now = time.time()
+    raw = site.state.get(LOOKUP_KEY)
+    raw_dict = raw if isinstance(raw, dict) else {}
+    entries = {
+        k: v for k, v in raw_dict.items()
+        if isinstance(v, dict) and isinstance(v.get("id"), str)
+        and isinstance(v.get("at"), (int, float)) and now - v["at"] < LOOKUP_TTL
+    }
+    cache = {k: v["id"] for k, v in entries.items()}
+    before = dict(cache)
+    try:
+        return query.plan(target.value, route.params, site=site, cache=cache, time=site.time)
+    finally:
+        if cache != before or len(entries) != len(raw_dict):
+            for k, v in cache.items():
+                if before.get(k) != v:
+                    entries[k] = {"id": v, "at": now}
+            site.state[LOOKUP_KEY] = entries
+
+
+def _queue_all(work: _Work, kept: _Kept, *, stop_at_saved: bool,
+               limit: int | None = None) -> tuple[Ended, int]:
+    """Queue each post a listing keeps, then the undated ones it held, until Ctrl-C, limit, or a stop."""
+    ended, taken = _queue_listed(work, kept, stop_at_saved=stop_at_saved, limit=limit)
     if ended is Ended.STOPPED:
-        return ended
+        return ended, taken
     # The category is over: an undated post goes now, with the day the memory found, if any.
     for post in work.ledger.release():
         if work.queue(post, hold=False) is Outcome.STOPPED:
-            return Ended.STOPPED
-    return ended
+            return Ended.STOPPED, taken
+    return ended, taken
 
 
-def _queue_listed(work: _Work, kept: _Kept, *, stop_at_saved: bool) -> Ended:
-    """Queue each post a listing keeps, until Ctrl-C or, if `stop_at_saved`, 5 saved in a row."""
+def _queue_listed(work: _Work, kept: _Kept, *, stop_at_saved: bool,
+                  limit: int | None = None) -> tuple[Ended, int]:
+    """Queue each post a listing keeps, until Ctrl-C, `limit`, or `stop_at_saved`."""
     saved_in_a_row = 0
+    taken = 0
     try:
         for post in kept:
+            if limit is not None and taken >= limit:
+                return Ended.CUT, taken
             outcome = Outcome.STOPPED if net.stopping.is_set() else work.queue(post)
             if outcome is Outcome.STOPPED:
-                return Ended.STOPPED
+                return Ended.STOPPED, taken
+            taken += 1
+            if limit is not None and taken >= limit:
+                return Ended.CUT, taken
             if outcome is not Outcome.EMPTY:
                 saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
             if stop_at_saved and saved_in_a_row >= SAVED_IN_A_ROW:
                 log.info("{category}: {count} saved posts in a row, caught up",
                          category=kept.category, count=saved_in_a_row)
-                return Ended.CUT
+                return Ended.CUT, taken
     finally:
         kept.close()
-    return Ended.RAN_OUT if kept.ran_out else Ended.CUT
+    return (Ended.RAN_OUT if kept.ran_out else Ended.CUT), taken
+
+
+def _chained(first: Any, steps: Generator[Any, None, None]) -> Generator[Any, None, None]:
+    """Yield `first` followed by `steps`, closing `steps` when done or closed early."""
+    try:
+        if first is not None:
+            yield first
+        yield from steps
+    finally:
+        steps.close()
 
 
 def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Options, *,
@@ -1514,22 +1601,36 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
     a row. Each category that ran out goes into `complete`; each category's `Resume` into `resumes`.
     """
     run_async = run.run_async
-    time = Range(options.since, options.until)
+    span = Range(options.since, options.until)
     route = next(route for route in run.source.routes if route.kind == target.kind)
     categories = wanted(type(run.source), route, options)
     if route.categories and not categories:
         return
-    context = _context(run.source, route, site, target, run_async)
     board, slots = work.ledger.board, run.source.concurrency
     if not route.categories:
         log.debug("{target}: list {route}", target=str(target), route=route.kind)
+        context = _context(run.source, route, site, target, run_async)
+        steps = _steps(context, run_async)
+        try:
+            first = next(steps, None)
+        except BaseException:
+            steps.close()
+            raise
+        if isinstance(first, (Target, str)):
+            _run_discovered(run, board, options, _chained(first, steps))
+            return
         board.start(target, "", slots=slots)
-        own = _Kept(context, "", newest_first=False, time=time, run_async=run_async)
-        if _queue_all(work, own, stop_at_saved=False) is not Ended.STOPPED:
+        own = _Kept(_chained(first, steps), "", newest_first=False, time=span, run_async=run_async)
+        ended, _ = _queue_all(work, own, stop_at_saved=False, limit=options.limit)
+        if ended is not Ended.STOPPED:
             board.listed(target, "")
         return
+    context = _context(run.source, route, site, target, run_async)
     cursors = targets.cursors(run.settings.targets, target)
+    remaining = options.limit
     for category in categories:
+        if remaining is not None and remaining <= 0:
+            return
         # A phase mark for the run log, so a reader finds which listing a line belongs to.
         log.debug("{target}: list {category}", target=str(target), category=category.name)
         board.start(target, category.name, slots=slots)
@@ -1540,10 +1641,12 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
                      target=str(target), category=category.name)
         method = getattr(run.source, category.name)
         kept = _Kept(method(site, context), category.name, newest_first=category.newest_first,
-                     time=time, run_async=run_async)
+                     time=span, run_async=run_async)
         stop_at_saved = category.newest_first and category.name in listed and not start
         with listing(resume):
-            ended = _queue_all(work, kept, stop_at_saved=stop_at_saved)
+            ended, taken = _queue_all(work, kept, stop_at_saved=stop_at_saved, limit=remaining)
+        if remaining is not None:
+            remaining -= taken
         if ended is Ended.STOPPED:
             return
         if ended is Ended.RAN_OUT:
@@ -1553,12 +1656,33 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
             # which 5 saved posts in a row mark.
             log.debug("{target}: list {category} from the newest", target=str(target),
                       category=category.name)
-            kept = _Kept(method(site, context), category.name, newest_first=True, time=time,
+            kept = _Kept(method(site, context), category.name, newest_first=True, time=span,
                          run_async=run_async)
             with listing(Resume()):
-                if _queue_all(work, kept, stop_at_saved=True) is Ended.STOPPED:
+                ended_new, _ = _queue_all(work, kept, stop_at_saved=True, limit=remaining)
+                if ended_new is Ended.STOPPED:
                     return
         board.listed(target, category.name)
+
+
+def _run_discovered(run: SourceRun, board: Board, options: Options,
+                    items: Generator[Any, None, None]) -> None:
+    """Run targets yielded by a non-query target-yielding route, up to `options.limit`."""
+    seen: set[Target] = set()
+    child_options = replace(options, limit=None)
+    try:
+        for item in items:
+            if net.stopping.is_set():
+                return
+            child = item if isinstance(item, Target) else run.source.resolve(str(item))
+            if child in seen:
+                continue
+            seen.add(child)
+            download(run, child, board, child_options)
+            if options.limit is not None and len(seen) >= options.limit:
+                return
+    finally:
+        items.close()
 
 
 def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:

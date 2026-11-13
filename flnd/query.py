@@ -23,10 +23,13 @@ import ply.yacc
 from luqum.exceptions import ParseError
 from luqum.visitor import TreeVisitor
 
+from flnd import source as _source
 from flnd.source import Range
 
+_source._query_check = None  # initialized below once `check` is defined
+
 __all__ = ["Choice", "Date", "Error", "Kind", "Lookup", "MAX_SEARCHES", "Name", "Number",
-           "Param", "Query", "QueryError", "Term", "Text", "Value", "plan"]
+           "Param", "Query", "QueryError", "Term", "Text", "Value", "check", "plan"]
 
 # One value of a term, as its kind reads it: words and names are text, numbers whole, dates days.
 Value = Union[str, int, datetime.date]
@@ -173,6 +176,25 @@ MAX_SEARCHES = 8
 _LOCK = threading.Lock()
 
 
+def check(text: str, params: Mapping[str, Param]) -> Any:
+    """Validate `text` against `params` without calling lookups, returning its planned shape.
+
+    Args:
+        text: the query, in Lucene's syntax.
+        params: the route's parameters, by name.
+    """
+    tree = _Reader(params).read(_tree(text))
+    shape = _merged(_pushed(tree, negated=False, params=params), params)
+    count = _count(shape)
+    if count > MAX_SEARCHES:
+        raise QueryError(f"the query needs {count} searches and flnd runs at most {MAX_SEARCHES} "
+                         "for one; narrow its ORs")
+    return shape
+
+
+_source._query_check = check
+
+
 def plan(text: str, params: Mapping[str, Param], *, site: Any = None,
          cache: MutableMapping[str, str] | None = None, time: Range | None = None) -> list[Query]:
     """The searches that together find what `text` asks for, in the order the query gives them.
@@ -192,12 +214,7 @@ def plan(text: str, params: Mapping[str, Param], *, site: Any = None,
             value of the wrong kind, asks what the site can't send, needs more than
             `MAX_SEARCHES` searches, or names a thing its lookup doesn't find once.
     """
-    tree = _Reader(params).read(_tree(text))
-    shape = _merged(_pushed(tree, negated=False, params=params), params)
-    count = _count(shape)
-    if count > MAX_SEARCHES:
-        raise QueryError(f"the query needs {count} searches and flnd runs at most {MAX_SEARCHES} "
-                         "for one; narrow its ORs")
+    shape = check(text, params)
     names = _Names(params, site, {} if cache is None else cache)
     return [names.query(group, time) for group in _groups(shape)]
 

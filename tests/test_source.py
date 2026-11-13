@@ -581,5 +581,43 @@ class BrowserDeclarationTest(unittest.TestCase):
         self.assertTrue(_source_uses_browser(Uses))
 
 
+class QueryRouteTest(unittest.TestCase):
+    def test_query_route_formats_and_validates_before_any_request(self):
+        from flnd.query import Choice, Name, Number, Param
+
+        class Search(Source):
+            code, name, domains = "src", "Search", ("example.com",)
+
+            @target("{id:\\d+}")
+            def post(self, site, id): ...
+
+            @target("?{query}", params={
+                "tag": Param(Name, "a tag", lookup=lambda site, name: [("action", "1")]),
+                "sort": Param(Choice("date", "views"), "sort order"),
+                "min": Param(Number, "min", compare=False),
+            })
+            def query(self, site, query):
+                yield f"src:{query.text}"
+
+        self.assertIn("src?<query>", Search.forms)
+        self.assertEqual(Search.single_kinds, ("post",))
+        self.assertTrue(Search.routes[1].is_query)
+        self.assertEqual(set(Search.routes[1].params), {"tag", "sort", "min"})
+
+        resolved = Search().resolve("?tag:action sort:views")
+        self.assertEqual(resolved, Target("src", "query", "tag:action sort:views"))
+        self.assertEqual(str(resolved), "src?tag:action sort:views")
+
+        for bad in ("?", "?unknown:x", "?-tag:action", "?sort:invalid", "?min:>5", "?tag:("):
+            with self.subTest(bad=bad), self.assertRaisesRegex(TargetError, "^src: "):
+                Search().resolve(bad)
+
+    def test_params_requires_a_query_pattern(self):
+        from flnd.query import Param, Text
+
+        with self.assertRaisesRegex(TypeError, "params= requires"):
+            target("{user}", params={"q": Param(Text, "words")})(lambda self, site, user: None)
+
+
 if __name__ == "__main__":
     unittest.main()

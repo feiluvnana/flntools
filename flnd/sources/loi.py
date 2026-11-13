@@ -36,9 +36,10 @@ import datetime
 import secrets
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
-from flnd.source import FetchError, File, Post, Site, Source, day, target
+from flnd.query import Choice, Name, Param, Query
+from flnd.source import FetchError, File, Post, Site, Source, Target, TargetError, day, target
 from shared import crypto
 
 if TYPE_CHECKING:
@@ -62,6 +63,76 @@ SITE_IV = b"RgaXNyE5aWckBwI7"
 VIP_DAILY_LIMITS = {1: 15, 2: 25, 3: 40, 4: 60}
 # The characters Markdown reads as syntax in a heading, a table cell or a link; `markdown` escapes them.
 MARKDOWN_SPECIAL = set("\\`*_[]<>|#")
+# Tag group ids in LOIBUS's catalogue API: play (1), clothing (2), character (3).
+TAG_GROUPS = (1, 2, 3)
+# Maps flnd's `sort` choices to LOIBUS's API sort names.
+SORT_MAP = {"date": "latest", "views": "popular", "likes": "choicest",
+            "bookmarks": "choicest", "comments": "choicest"}
+
+
+def lookup_authors(site: Site, name: str) -> Iterator[tuple[str, str]]:
+    """Yield `(name, id)` pairs for every author in LOIBUS's catalogue.
+
+    Args:
+        site: the target's site.
+        name: the author name being looked up.
+    """
+    for item in _paged(site, f"{API}user/library/loiers"):
+        label = str(item.get("name") or item.get("title") or "")
+        if label and "id" in item:
+            yield label, str(item["id"])
+
+
+def lookup_tags(site: Site, name: str) -> Iterator[tuple[str, str]]:
+    """Yield `(name, id)` pairs for every tag across LOIBUS's three tag groups.
+
+    Args:
+        site: the target's site.
+        name: the tag name being looked up.
+    """
+    for group_id in TAG_GROUPS:
+        for item in _paged(site, f"{API}user/library/tags", params={"group_id": group_id}):
+            label = str(item.get("name") or item.get("title") or "")
+            if label and "id" in item:
+                yield label, str(item["id"])
+
+
+def _paged(site: Site, url: str, *, params: Mapping[str, Any] | None = None) -> Iterator[dict[str, Any]]:
+    """Yield items from a `{data: [...], pagination: {total}}` endpoint, page 1 onward."""
+    page = 1
+    seen = 0
+    while True:
+        body = site.fetch(url, params={**(params or {}), "page": page}).json
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, list) or not data:
+            return
+        for item in data:
+            if isinstance(item, dict):
+                yield item
+                seen += 1
+        total = (body.get("pagination") or {}).get("total") if isinstance(body, dict) else None
+        if isinstance(total, int) and seen >= total:
+            return
+        page += 1
+
+
+def _matches_extra(item: Mapping[str, Any], authors: set[str], tags: set[str], text: str) -> bool:
+    """Return whether `item` satisfies additional combined filters."""
+    if authors:
+        cat = item.get("category")
+        cat_id = str(cat.get("id")) if isinstance(cat, dict) and "id" in cat else ""
+        if cat_id not in authors:
+            return False
+    if tags:
+        item_tags = {str(t.get("id")) for t in (item.get("tags") or [])
+                     if isinstance(t, dict) and "id" in t}
+        if not tags <= item_tags:
+            return False
+    if text:
+        title = str(item.get("loi_title") or "").casefold()
+        if text.casefold() not in title:
+            return False
+    return True
 
 
 class Loibus(Source):
@@ -136,6 +207,40 @@ class Loibus(Source):
         yield Post(post["id"], [File.text("info.md", info_md(post, links)),
                                 *(File(mirrors, name=name) for name, mirrors in archives)],
                    date=post.get("date"), headers=SITE_HEADERS, **fields_of(post))
+
+    @target("?{query}", params={
+        "tag": Param(Name, "a tag", lookup=lookup_tags),
+        "author": Param(Name, "an author", lookup=lookup_authors),
+        "sort": Param(Choice("date", "views", "likes", "bookmarks", "comments"), "sort order"),
+    })
+    def query(self, site: Site, query: Query) -> Iterator[Target]:
+        """Yield `loi:<id>` post targets matching `query`.
+
+        Args:
+            site: the target's site.
+            query: one planned search from `flnd.query.plan`.
+        """
+        authors = [str(v) for term in query.terms if term.param == "author" for v in term.values]
+        tags = [str(v) for term in query.terms if term.param == "tag" for v in term.values]
+        sorts = [str(v) for term in query.terms if term.param == "sort" for v in term.values]
+        sort = SORT_MAP[sorts[-1]] if sorts else "latest"
+        if authors:
+            items = _paged(site, f"{API}user/library/loier/id",
+                           params={"category_id": authors[0], "sort": sort})
+            extra_authors, extra_tags = set(authors[1:]), set(tags)
+        elif tags:
+            items = _paged(site, f"{API}user/library/tag/id",
+                           params={"tag_id": tags[0], "sort": sort})
+            extra_authors, extra_tags = set(), set(tags[1:])
+        elif query.text:
+            items = _paged(site, f"{API}user/loi/search/{quote(query.text, safe='')}/{sort}")
+            extra_authors, extra_tags = set(), set()
+        else:
+            raise TargetError("loi: give a tag, author, or search words")
+        for item in items:
+            if _matches_extra(item, extra_authors, extra_tags,
+                              query.text if (authors or tags) else ""):
+                yield Target(self.code, "post", str(item["id"]))
 
     def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
         """Give a request to the source's domains the site's referer and origin, and sign an API request with the token.

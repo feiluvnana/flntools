@@ -131,7 +131,7 @@ import re
 import string
 import threading
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType, MethodType
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Mapping,
                     MutableMapping, Protocol, Sequence, Union, overload)
@@ -149,6 +149,9 @@ if TYPE_CHECKING:
 __all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Login", "LoginError",
            "Post", "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill",
            "pages", "target"]
+
+# Registered by `flnd.query` on import so `Source.resolve` validates queries without a circular import.
+_query_check: Callable[[str, Mapping[str, Any]], Any] | None = None
 
 # Hosts that are the same site as their bare domain: the desktop, mobile and old mobile sites.
 SITE_PREFIXES = ("www.", "m.", "mobile.")
@@ -240,10 +243,15 @@ class Target:
     kind: str
     # Its clean form, the captured placeholder: it names the target's folder and starts its history keys.
     value: str
+    # Whether this target is a query (`code?query`) rather than `code:value`.
+    query: bool = field(default=False, compare=False, repr=False)
 
     def __str__(self) -> str:
         # The account a login and `connect` see has no value, and reads as its source's code.
-        return f"{self.source}:{self.value}" if self.value else self.source
+        if not self.value:
+            return self.source
+        separator = "?" if (self.query or self.kind == "query") else ":"
+        return f"{self.source}{separator}{self.value}"
 
 
 @dataclass(frozen=True)
@@ -266,14 +274,22 @@ class _Pattern:
         first = segments[0] if segments else ""
         # A first segment with a dot and no placeholder or `*` is a host; anything else is a code pattern.
         self.host = _bare_host(first.lower()) if "." in first and not set(first) & set("{}*") else None
-        if self.host is None and mark:
+        self.is_query = self.host is None and not segments and mark == "?"
+        if self.host is None and mark and not self.is_query:
             raise TypeError(f"pattern {text!r}: only a URL pattern can name a query")
+        self.names: list[str] = []
+        if self.is_query:
+            self.segments = []
+            self.keys = []
+            self.regexes = []
+            self.query = [("", _compile(query, text, self.names))]
+            self.literals = 0
+            return
         self.segments = segments[1:] if self.host is not None else ["/".join(segments)]
         self.keys = [_split(pair, "=", once=True) for pair in _split(query, "&")] if mark else []
         if any(not key or not value for key, _, value in self.keys):
             raise TypeError(f"pattern {text!r}: write a query as ?key={{name}}")
         # Every placeholder's name, in order: a route's pattern has exactly one, an unsupported one none.
-        self.names: list[str] = []
         self.regexes = [_compile(segment, text, self.names) for segment in self.segments]
         self.query = [(key, _compile(value, text, self.names)) for key, _, value in self.keys]
         # How specific the pattern is: its literal segments, the host being one. A code pattern has none.
@@ -282,8 +298,12 @@ class _Pattern:
 
     def match(self, text: str, url: _Url | None) -> str | None:
         """The captured value when `text` (or its `url`, for a domain pattern) matches; "" for no placeholder."""
+        if self.is_query:
+            return text[1:] if url is None and text.startswith("?") else None
         if self.host is None:
-            found = self.regexes[0].fullmatch(text) if url is None else None
+            if url is not None or text.startswith("?"):
+                return None
+            found = self.regexes[0].fullmatch(text)
             return None if found is None else found.groupdict().get("value", "")
         if url is None or url.host != self.host or len(url.parts) < len(self.regexes):
             return None
@@ -296,6 +316,8 @@ class _Pattern:
 
     def form(self, code: str) -> str:
         """The pattern as people write it, each placeholder in angle brackets: `https://www.instagram.com/p/<code>/`."""
+        if self.is_query:
+            return f"{code}?<{self.names[0]}>"
         path = "/".join(_shown(segment) for segment in self.segments)
         if self.host is None:
             return f"{code}:{path}"
@@ -353,13 +375,15 @@ class Route:
     returns a context, which every category it has receives; `@route.category` adds one.
     """
 
-    def __init__(self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None):
+    def __init__(self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None,
+                 params: Mapping[str, Any] | None = None):
         """Compile `patterns` for `function`, raising `TypeError` for a mistake in them.
 
         Args:
             function: the decorated method, `(self, site, value)`.
             patterns: the forms it reads, as `target` takes them.
             shown: the form help shows for the first pattern, or the route's only form when it has none.
+            params: query parameters for a `?{query}` route, keyed by parameter name.
 
         Raises:
             TypeError: a pattern doesn't compile, has no placeholder or two, or its placeholder
@@ -370,6 +394,10 @@ class Route:
         self.patterns = patterns
         self.shown = shown
         self._patterns = [_Pattern(pattern) for pattern in patterns]
+        self.is_query = any(pattern.is_query for pattern in self._patterns)
+        if params is not None and not self.is_query:
+            raise TypeError(f"route {self.kind}: params= requires a '?{{query}}' pattern")
+        self.params: Mapping[str, Any] = MappingProxyType(dict(params)) if params is not None else MappingProxyType({})
         self._categories: list[Category] = []
         parameters = [parameter.name for parameter in inspect.signature(function).parameters.values()]
         if len(parameters) != 3:
@@ -447,7 +475,8 @@ class Route:
         return forms
 
 
-def target(*patterns: str, shown: str | None = None) -> Callable[[Callable[..., Any]], Route]:
+def target(*patterns: str, shown: str | None = None,
+           params: Mapping[str, Any] | None = None) -> Callable[[Callable[..., Any]], Route]:
     """Mark a method as a route: the targets it reads, as patterns, named by the method's kind.
 
         @target("instagram.com/p/{code:[\\w-]+}", "instagram.com/reel/{code:[\\w-]+}")
@@ -470,6 +499,7 @@ def target(*patterns: str, shown: str | None = None) -> Callable[[Callable[..., 
             only a hand-written `resolve` reaches (tlg's).
         shown: the form help shows instead of the first pattern's generated one, when that reads
             badly, such as "tik:<video id>"; for a route with no patterns, its only form.
+        params: query parameters for a `?{query}` route, keyed by parameter name.
 
     Returns:
         A decorator turning the method into a `Route`.
@@ -478,7 +508,7 @@ def target(*patterns: str, shown: str | None = None) -> Callable[[Callable[..., 
         TypeError: a pattern is malformed, or doesn't capture the method's value parameter. It
             fails when the class is created, so a mistake fails at import.
     """
-    return lambda function: Route(function, patterns, shown=shown)
+    return lambda function: Route(function, patterns, shown=shown, params=params)
 
 
 @dataclass(frozen=True, init=False)
@@ -1092,13 +1122,14 @@ class Source:
                             "declare no categories or single_kinds field")
         names = [category.name for route in cls.routes for category in route.categories]
         cls.categories = tuple(dict.fromkeys(names))
-        cls.single_kinds = tuple(route.kind for route in cls.routes if not route.categories)
+        cls.single_kinds = tuple(route.kind for route in cls.routes
+                                 if not route.categories and not route.is_query)
         if not cls.routes:
             return
         code = getattr(cls, "code", "")
         forms = [form for route in cls.routes for form in route.forms(code)]
-        # `ins:<user>` is the form people write most, so the forms after `code:` come first.
-        cls.forms = tuple(sorted(forms, key=lambda form: not form.startswith(f"{code}:")))
+        # `ins:<user>` is the form people write most, so the forms after `code:` or `code?` come first.
+        cls.forms = tuple(sorted(forms, key=lambda form: not form.startswith((f"{code}:", f"{code}?"))))
 
     def resolve(self, text: str) -> Target:
         """Read one target's text, as people write it, through the routes.
@@ -1131,6 +1162,13 @@ class Source:
                 if value is None:
                     continue
                 if refused is None or pattern.literals > refused[0].literals:
+                    if route.is_query:
+                        if _query_check is not None:
+                            try:
+                                _query_check(value, route.params)
+                            except ValueError as error:
+                                raise TargetError(f"{self.code}: {error}") from None
+                        return Target(self.code, route.kind, value.strip(), query=True)
                     return Target(self.code, route.kind, value)
                 break
         if refused is not None:

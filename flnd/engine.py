@@ -39,6 +39,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+import flnd.query  # noqa: F401
 import flnd.targets
 from flnd import job, repair
 from flnd.job import TargetReport
@@ -127,7 +128,8 @@ class Engine:
         return [resolve(text, self.sources, follow=_follow) for text in texts]
 
     def download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None,
-                 time: Range | str = Range(), shrink: bool | None = None) -> Report:
+                 time: Range | str = Range(), shrink: bool | None = None,
+                 limit: int | None = None, dry: bool = False) -> Report:
         """Download each target, with its saved `--shrink` or the one given, and say what was done.
 
             report = engine.download(["ins:example_user"], categories="reels,tagged", time="2026-01-01,",
@@ -142,6 +144,9 @@ class Engine:
             shrink: `--shrink`: True shrinks each photo, video and audio file at media's balanced
                 level in its own format, False (`--shrink off`) stops it, and None keeps the
                 target's saved setting.
+            limit: `--limit`: max discovered targets on a query route, or max posts on a normal
+                target; None for no limit.
+            dry: `--dry`: list what would be downloaded without downloading or recording anything.
 
         Returns:
             One `TargetReport` per target, in the order given, each with the saved setting it used.
@@ -160,14 +165,28 @@ class Engine:
         that is done, so a shrink cut short (Ctrl-C, a crash, a full disk) is finished by the
         next `download --shrink`. Turning it off touches no file.
         """
-        with self._logged("download", targets=targets, categories=categories, time=time, shrink=shrink):
+        with self._logged("download", targets=targets, categories=categories, time=time, shrink=shrink,
+                          limit=limit, dry=dry):
             # Every option is read before anything starts, in the CLI's order, so the first bad
             # one is the error.
+            if limit is not None and limit < 1:
+                raise ValueError("--limit must be at least 1")
             span = Range.parse(time) if isinstance(time, str) else time
             resolved = self._resolved(targets)
             names = self._categories(categories, resolved)
-            options = Options(categories=names, since=span.since, until=span.until)
+            options = Options(categories=names, since=span.since, until=span.until, limit=limit)
+            if dry:
+                report = self._dry_run(resolved, options, span)
+                _end_if_stopped()
+                _log_totals(report)
+                return report
             log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
+            if any(self._is_query(target) for target in resolved):
+                reports = self._download_mixed(resolved, options, shrink=shrink, span=span)
+                _end_if_stopped()
+                report = Report(tuple(reports))
+                _log_totals(report)
+                return report
             rows = flnd.targets.rows(self.home)
             chosen: list[tuple[Target, Options]] = []
             shown: list[str] = []
@@ -340,6 +359,112 @@ class Engine:
         """
         return tuple(code for code, source in self.sources.items() if source.login is Source.login)
 
+    def _is_query(self, target: Target) -> bool:
+        """Whether `target` resolves to a `?{query}` route."""
+        route = next((r for r in self.sources[target.source].routes if r.kind == target.kind), None)
+        return route is not None and route.is_query
+
+    def _dry_run(self, resolved: Sequence[Target], options: Options, span: Range) -> Report:
+        """List discovered targets or planned files without downloading or writing state."""
+        if any(needs_browser(self.sources[target.source]) for target in resolved):
+            _offer_browser()
+        reports: list[TargetReport] = []
+        with _stop_waits_on_ctrl_c():
+            settings = RunShared(home=self.home, history={}, dry=True)
+            for target in resolved:
+                source = self.sources[target.source]()
+                with source_run(settings, source) as run:
+                    account = TargetSite(run, Target(source.code, ACCOUNT, ""))
+                    if not source.logged_in(account) and source.requires_login:
+                        log.error("{target}: not logged in; run flnd login", target=str(target))
+                        reports.append(TargetReport(target, (), 0, error="not logged in; run flnd login"))
+                        continue
+                    try:
+                        with _connected(run, account):
+                            if self._is_query(target):
+                                for item in job.discover(run, target, limit=options.limit, time_range=span):
+                                    log.info("{target}", target=str(item))
+                            else:
+                                for placed in job.plan(run, target, options):
+                                    log.info("{target}: {path}", target=str(target), path=placed.path)
+                    except KeyboardInterrupt:
+                        if not net.stopping.is_set() or net.stopping_now.is_set():
+                            raise
+                        reports.append(TargetReport(target, (), 0, error=job.STOPPED))
+                        continue
+                    except Exception as error:
+                        log.error("{target}: {error}", target=str(target), error=error)
+                        reports.append(TargetReport(target, (), 0, error=str(error)))
+                        continue
+                    reports.append(TargetReport(target, (), 0))
+        return Report(tuple(reports))
+
+    def _download_mixed(self, resolved: Sequence[Target], options: Options, *,
+                        shrink: bool | None, span: Range) -> list[TargetReport]:
+        """Run a mix of query targets and normal targets, preserving target order."""
+        reports: list[TargetReport] = []
+        for target in resolved:
+            if self._is_query(target):
+                reports.extend(self._run_query(target, options, shrink=shrink, span=span))
+                continue
+            rows = flnd.targets.rows(self.home)
+            saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
+            shown = flnd.targets.announce(target, saved) if shrink is None else ""
+            chosen_options = replace(options, shrink=saved if shrink is None else shrink)
+            if shrink and not saved:
+                self._apply([target], {target: chosen_options})
+            else:
+                flnd.targets.record(self.home, [(target, chosen_options)])
+            [report] = self._run([(target, chosen_options)])
+            reports.append(replace(report, settings=shown))
+        return reports
+
+    def _run_query(self, target: Target, options: Options, *,
+                   shrink: bool | None, span: Range) -> list[TargetReport]:
+        """Discover targets from a query route and download each one sequentially."""
+        source_cls = self.sources[target.source]
+        if needs_browser(source_cls):
+            _offer_browser()
+        source = source_cls()
+        reports: list[TargetReport] = []
+        rows = flnd.targets.rows(self.home)
+        with self._history() as history, self._targets() as saved_targets, _stop_waits_on_ctrl_c(), \
+                log.group() as log_rows:
+            run_settings = RunShared(home=self.home, history=history, targets=saved_targets)
+            board = job.Board(log_rows, subject_width=len(str(target)),
+                              label_width=self._label_width([(target, options)]))
+            with source_run(run_settings, source) as run:
+                account = TargetSite(run, Target(source.code, ACCOUNT, ""))
+                if not source.logged_in(account) and source.requires_login:
+                    log.error("{target}: not logged in; run flnd login", target=str(target))
+                    return [TargetReport(target, (), 0, error="not logged in; run flnd login")]
+                if not source.logged_in(account):
+                    log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
+                try:
+                    with _written_back(run), _connected(run, account):
+                        for child in job.discover(run, target, limit=options.limit, time_range=span):
+                            if net.stopping.is_set():
+                                break
+                            saved_shrink = flnd.targets.shrink(rows.get(flnd.targets.key(child), {}))
+                            shown = flnd.targets.announce(child, saved_shrink) if shrink is None else ""
+                            child_shrink = saved_shrink if shrink is None else shrink
+                            child_options = replace(options, shrink=child_shrink, limit=None)
+                            flnd.targets.record(self.home, [(child, child_options)])
+                            if child.source == target.source:
+                                report = job.download(run, child, board, child_options)
+                            else:
+                                [report] = self._run([(child, child_options)])
+                            reports.append(replace(report, settings=shown))
+                except KeyboardInterrupt:
+                    if not net.stopping.is_set() or net.stopping_now.is_set():
+                        raise
+                    reports.append(TargetReport(target, (), 0, error=job.STOPPED))
+                except Exception as error:
+                    log.error("{target}: {error}", target=str(target), error=error)
+                    log.debug("{target}: {chain}", target=str(target), chain=job.causes(error))
+                    reports.append(TargetReport(target, (), 0, error=str(error)))
+        return reports
+
     def _resolved(self, targets: Sequence[Target | str]) -> list[Target]:
         """Each target, a text read by `resolve`, each written to the run log as it was read."""
         resolved = []
@@ -366,7 +491,8 @@ class Engine:
         path = next(path for number in itertools.count(1)
                     if not (path := folder / (f"{stem}.log" if number == 1 else f"{stem}-{number}.log")).exists())
         with log.record(path):
-            options = ", ".join(f"{name}={value!r}" for name, value in given.items() if value not in (None, (), Range()))
+            options = ", ".join(f"{name}={value!r}" for name, value in given.items()
+                                if value not in (None, (), Range()) and not (name == "dry" and value is False))
             log.debug("flnd {version} {command}: {options}", version=__version__, command=command,
                       options=options or "no options")
             try:
@@ -552,20 +678,25 @@ def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[
     cleaned = text.strip()
     if not cleaned:
         raise TargetError("a target can't be empty")
-    code, colon, value = cleaned.partition(":")
-    if colon and not _is_url(cleaned):
-        code = code.strip().lower()
-        if code not in sources:
-            raise TargetError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
-        source, cleaned = sources[code](), value.strip()
-        if not cleaned:
-            raise TargetError(f"{source.code}: can't read {value!r}; write it like {', '.join(source.forms)}")
+    if not _is_url(cleaned):
+        qmark = cleaned.find("?")
+        colon = cleaned.find(":")
+        if qmark != -1 and (colon == -1 or qmark < colon) and "/" not in cleaned[:qmark]:
+            code = cleaned[:qmark].strip().lower()
+            if code not in sources:
+                raise TargetError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
+            source, cleaned = sources[code](), f"?{cleaned[qmark + 1:].strip()}"
+        elif colon != -1:
+            code, value = cleaned[:colon].strip().lower(), cleaned[colon + 1:]
+            if code not in sources:
+                raise TargetError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
+            source, cleaned = sources[code](), value.strip()
+            if not cleaned:
+                raise TargetError(f"{source.code}: can't read {value!r}; write it like {', '.join(source.forms)}")
+        else:
+            source = _owner_source(cleaned, sources)
     else:
-        found = owner(cleaned, sources)
-        if found is None:
-            choices = ", ".join(f"{code}:{cleaned}" for code in sources)
-            raise TargetError(f'which source is "{cleaned}"? Write it as {choices}')
-        source = found()
+        source = _owner_source(cleaned, sources)
     try:
         return source.resolve(cleaned)
     except TargetError as miss:
@@ -575,6 +706,15 @@ def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[
         url = miss.url
     # Followed once only: a second miss is the refusal, listing the forms.
     return source.resolve(follow(url))
+
+
+def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
+    """Resolve the owning `Source` for a bare URL or raise `TargetError`."""
+    found = owner(cleaned, sources)
+    if found is None:
+        choices = ", ".join(f"{code}:{cleaned}" for code in sources)
+        raise TargetError(f'which source is "{cleaned}"? Write it as {choices}')
+    return found()
 
 
 def owner(text: str, sources: Mapping[str, type[Source]]) -> type[Source] | None:
