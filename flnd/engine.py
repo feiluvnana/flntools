@@ -5,13 +5,12 @@
 decision a command makes is here, where a test reaches it without a terminal: reading the options'
 text (`Range.parse`), refusing `--from` for a single post, each target's saved
 settings (flnd/settings.py) and applying a changed one to the files already saved, `sync`'s repair
-and tally (flnd/repair.py), and grouping targets by their settings. flnd/cli.py only parses,
-asks `login`'s questions and prints.
+and tally (flnd/repair.py). flnd/cli.py only parses, asks `login`'s questions and prints.
 
-How a run goes: targets are grouped by source; each source gets one worker and its HTTP clients,
-and runs its targets one after another through the job (flnd/job.py), while
-different sources run at the same time. It never asks a question, except `shared.browser`'s
-one, to download Chromium, before any work starts.
+How a run goes: targets are grouped by source only; each source gets one worker and its HTTP
+clients, and runs its targets one after another through the job (flnd/job.py), each with its own
+saved settings, while different sources run at the same time. It never asks a question, except
+`shared.browser`'s one, to download Chromium, before any work starts.
 
 Every `download` and `sync` writes a log of its own, `.flnd/log/<date>_<time>_<command>.log`, at
 debug whatever the screen shows (plan/phase-7/layout.md): its start, each target's phases, every
@@ -43,6 +42,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from flnd import job, repair, settings
+from flnd.job import TargetReport
 from flnd.common import auth, compress, files, net
 from flnd.common.compress import Compressor
 from flnd.session import Options, Settings, single_targets, unknown_categories
@@ -66,31 +66,6 @@ ALL = "all"
 # `meta_results`, `scroll`), and the `Page` methods that listen to responses or requests.
 BROWSER_NAMES = frozenset({"page", "goto", "handoff", "in_page", "watch_responses", "meta_results",
                            "on_response", "on_request", "scroll", "browser"})
-
-Row = Any
-
-
-@dataclass(frozen=True)
-class TargetReport:
-    """What one command did for one target: `report.targets[0].written`.
-
-        TargetReport(Target("ins", "user", "example_user"), written=(Path("…/a.jpg"),), skipped=3)
-    """
-
-    # The target, as `resolve` gave it.
-    target: Target
-    # Each file written, at its path after compressing.
-    written: tuple[Path, ...]
-    # Files already saved, or filtered out, that weren't downloaded again.
-    skipped: int
-    # `sync` only: files that were missing, empty or broken and were downloaded again.
-    repaired: int = 0
-    # `sync` only: files the history names that the site no longer lists.
-    missing: int = 0
-    # The saved settings this run used, as shown at its start: "--shrink (saved)"; "" for none.
-    settings: str = ""
-    # Why the target failed, as logged; None when it didn't.
-    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,38 +165,36 @@ class Engine:
         files already saved before anything is downloaded, so a folder is never half shrunk;
         that is slow, and replaces originals with their smaller copies. It is saved only once
         that is done, so a shrink cut short (Ctrl-C, a crash, a full disk) is finished by the
-        next `download --shrink`. Turning it off touches no file. Targets whose settings then
-        differ run apart, one group after another.
+        next `download --shrink`. Turning it off touches no file.
         """
         with self._logged("download", targets=targets, categories=categories, time=time, shrink=shrink):
-            report = self._download(targets, categories=categories, time=time, shrink=shrink)
+            # Every option is read before anything starts, in the CLI's order, so the first bad
+            # one is the error.
+            span = Range.parse(time) if isinstance(time, str) else time
+            resolved = self._resolved(targets)
+            names = self._categories(categories, resolved)
+            options = Options(categories=names, since=span.since, until=span.until)
+            log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
+            rows = settings.rows(self.home)
+            chosen: list[tuple[Target, Options]] = []
+            shown: list[str] = []
+            turned_on: list[Target] = []
+            for target in resolved:
+                saved = settings.shrink(rows.get(settings.key(target), {}))
+                shown.append(settings.announce(target, saved) if shrink is None else "")
+                given = saved if shrink is None else shrink
+                chosen.append((target, replace(options, shrink=given)))
+                if shrink and not saved:
+                    turned_on.append(target)
+            settings.record(self.home, [pair for pair in chosen if pair[0] not in turned_on])
+            if turned_on:
+                self._apply(turned_on, dict(chosen))
+            reports = self._run(chosen)
+            _end_if_stopped()
+            report = Report(tuple(replace(report, settings=text)
+                                  for report, text in zip(reports, shown)))
             _log_totals(report)
             return report
-
-    def _download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None,
-                  time: Range | str, shrink: bool | None) -> Report:
-        """`download`'s work, inside its run log."""
-        # Read every option before anything starts, in the CLI's order, so the first bad one is the error.
-        span = Range.parse(time) if isinstance(time, str) else time
-        resolved = self._resolved(targets)
-        names = self._categories(categories, resolved)
-        options = Options(categories=names, since=span.since, until=span.until)
-        log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
-        rows = settings.rows(self.home)
-        chosen: list[tuple[Target, Options]] = []
-        shown: list[str] = []
-        turned_on: list[Target] = []
-        for target in resolved:
-            saved = settings.shrink(rows.get(settings.key(target), {}))
-            shown.append(settings.announce(target, saved) if shrink is None else "")
-            chosen.append((target, replace(options, shrink=saved if shrink is None else shrink)))
-            if shrink and not saved:
-                turned_on.append(target)
-        settings.record(self.home, [(target, options) for target, options in chosen if target not in turned_on])
-        if turned_on:
-            self._apply(turned_on, dict(chosen))
-        reports = self._fetch(chosen)
-        return Report(tuple(replace(report, settings=text) for report, text in zip(reports, shown)))
 
     def sync(self, targets: Sequence[Target | str] = ()) -> Report:
         """Bring downloaded targets up to date: repair what was lost, fetch what's new, and sum it up.
@@ -240,43 +213,36 @@ class Engine:
             ValueError: a target can't be read (`TargetError`), before anything starts.
             OSError: the history or `targets.db` can't be opened or written.
 
-        It changes no setting and takes each source's default categories. For each target, in
-        order: leftover `.part` files are removed and files that are missing, empty or broken are
-        forgotten (broken ones deleted, which can't be undone); then what is new or was lost is
-        downloaded with the target's saved settings; then one line per target and the totals are
-        logged. The history is read once per sync (fixes #12). The fetch makes network requests
-        and can take hours.
+        It changes no setting and takes each source's default categories. For each target, on its
+        source's worker while other sources list: leftover `.part` files are removed and files
+        that are missing, empty or broken are forgotten (broken ones deleted, which can't be
+        undone); then what is new or was lost is downloaded with the target's saved settings.
+        Then one line per target and the totals are logged. The history is read once per sync.
+        The fetch makes network requests and can take hours.
         """
         with self._logged("sync", targets=targets):
-            report = self._sync(targets)
+            chosen = self._plan(self._resolved(targets))
+            # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
+            settings.record(self.home, chosen)
+            shown = [settings.announce(target, options.shrink) for target, options in chosen]
+            folders = [files.target_folder(self.home, target) for target, _ in chosen]
+            with self._history() as history:
+                index = repair.index(history, folders)
+            tallies = [repair.Tally(str(target), folder, index[folder])
+                       for (target, _), folder in zip(chosen, folders)]
+            log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
+            chosen = [(target, replace(options, stop_at_saved=True)) for target, options in chosen]
+            reports = self._run(chosen, tallies=tallies)
+            _end_if_stopped()
+            with self._history() as history:
+                for tally in tallies:
+                    repair.count(history, tally)
+            repair.summary(tallies)
+            report = Report(tuple(replace(report, repaired=tally.repaired, missing=tally.missing,
+                                          settings=text)
+                                  for report, tally, text in zip(reports, tallies, shown)))
             _log_totals(report)
             return report
-
-    def _sync(self, targets: Sequence[Target | str]) -> Report:
-        """`sync`'s work, inside its run log."""
-        resolved = self._resolved(targets)
-        chosen = self._plan(resolved)
-        # Recorded again in today's form, changing no setting: a Phase 5 row is migrated here.
-        settings.record(self.home, chosen)
-        shown = [settings.announce(target, options.shrink) for target, options in chosen]
-        tallies = [repair.Tally(str(target)) for target, _ in chosen]
-        folders = [files.target_folder(self.home, target) for target, _ in chosen]
-        with self._history() as history:
-            index = repair.index(history, folders)
-            for tally, folder in zip(tallies, folders):
-                log.debug("{target}: repair", target=tally.target)
-                repair.repair(history, folder, index[folder], tally)
-        log.info("Storage: {path}", path=(self.home / files.MEDIA).resolve())
-        # A target with a lost or broken file lists to the end, so a file deeper than the saved-run
-        # stop is reached and saved again; the others stop at saved posts (A9 rule 3).
-        stop = frozenset(target for (target, _), tally in zip(chosen, tallies) if not (tally.lost or tally.broken))
-        reports = self._fetch(chosen, stop=stop)
-        with self._history() as history:
-            for tally, folder in zip(tallies, folders):
-                repair.count(history, folder, tally)
-        repair.summary(tallies)
-        return Report(tuple(replace(report, repaired=tally.repaired, missing=tally.missing, settings=text)
-                            for report, tally, text in zip(reports, tallies, shown)))
 
     def login(self, code: str, method: str, *, browser: str | None = None, profile: str | None = None,
               path: Path | str | None = None) -> str:
@@ -311,7 +277,7 @@ class Engine:
             raise ValueError(f"{code} logs in by {', '.join(source.login_methods)}, not {method!r}")
         if code not in self.cookie_logins:
             # A source with its own login (tlg) asks its own questions, through an asking `Login`.
-            with source_run(self._settings(Options(), {}, interactive=True), source) as run:
+            with source_run(Settings(home=self.home, history={}, interactive=True), source) as run:
                 source.login(LoginSite(run), method)
             return ""
         if method == "file":
@@ -483,91 +449,63 @@ class Engine:
                 # be finished, since the next `download --shrink` would see no change.
                 settings.record(self.home, [(target, chosen[target])])
 
-    def _fetch(self, chosen: Sequence[tuple[Target, Options]], *,
-               stop: frozenset[Target] = frozenset()) -> list[TargetReport]:
-        """Run the targets, those with the same options together, and give their reports in the order of `chosen`.
+    def _run(self, chosen: Sequence[tuple[Target, Options]], *,
+             tallies: Sequence[repair.Tally] = ()) -> list[TargetReport]:
+        """Download each target with its own options, and give each one's report in order.
 
-        Each category that listed to its end is recorded as complete in `targets.db` (A9 rule 3);
-        for a target in `stop`, a category with that record stops after 5 saved posts in a row.
+            [report] = engine._run([(Target("ins", "user", "example_user"), Options())])
+
+        `tallies`, one per target for `sync`, repairs each target's folder just before its
+        listing; a target that lost a file then lists to its end.
+
+        One source's targets run one after another, each source on a worker of its own, so
+        different sites download side by side and none sees more requests than alone. When a
+        target can open a browser and Google Chrome is missing, the "download Chromium?"
+        question is asked once, before anything starts.
+
+        One target failing never stops the others; a source that can't start (its `logged_in`
+        or `connect` raises) fails each of its targets. A rate limit is waited out and isn't a
+        failure. The first Ctrl-C stops gracefully: listing stops, the running downloads
+        finish, no target starts, and each one not done ends as stopped (`job.STOPPED`); this
+        then returns with `net.stopping` still set. The second raises `KeyboardInterrupt`.
         """
-        groups: dict[Options, list[int]] = {}
-        for number, (_, options) in enumerate(chosen):
-            groups.setdefault(options, []).append(number)
-        reports: dict[int, TargetReport] = {}
-        for options, numbers in groups.items():
-            ran = self._run([chosen[number][0] for number in numbers], options, stop=stop)
-            for number, (report, complete) in zip(numbers, ran):
-                reports[number] = report
-                settings.complete(self.home, report.target, complete)
-            if net.stopping.is_set():
-                # A first Ctrl-C stopped the run gracefully (D8): what finished is recorded above,
-                # and the command ends as Ctrl-C always does, which the CLI exits 130 for.
-                raise KeyboardInterrupt
-        return [reports[number] for number in range(len(chosen))]
-
-    def _run(self, targets: Sequence[Target], options: Options, *,
-             stop: frozenset[Target] = frozenset()) -> list[tuple[TargetReport, tuple[str, ...]]]:
-        """Download every target with one set of options, and give each one's report and complete categories.
-
-            [(report, complete)] = engine._run(engine.resolve(["ins:example_user"]), Options(categories=("reels",)))
-
-        Args:
-            targets: the targets to download, as `resolve` gives them.
-            options: what to take from each target and what to do with the files.
-            stop: the targets whose `newest_first` categories stop at saved posts when their last
-                listing was complete (`sync`); every other target lists to the end.
-
-        Returns:
-            One (report, the categories that listed to their end) per target, in the order given.
-
-        When a target's source can open a browser (`needs_browser`) and Google Chrome is missing,
-        the "download Chromium?" question is asked once, before anything starts.
-
-        Each target ends its row at ok or error; one failing never stops the others. A whole
-        source that can't start (its `logged_in` or `connect` raises) fails each of its targets. A
-        rate limit is waited out, however long it takes, and isn't a failure; Ctrl-C ends the wait.
-
-        The first Ctrl-C stops gracefully (D8): listing stops, the running downloads finish,
-        no target starts, and each target not done ends as stopped (`job.STOPPED`); this then
-        returns, with `net.stopping` still set. The second stops at once with `KeyboardInterrupt`.
-        """
-        groups: dict[str, list[int]] = {}
-        for number, target in enumerate(targets):
-            groups.setdefault(target.source, []).append(number)
-        # The one question `flnd download` can ask, before any work starts (cli.md, "Chrome only").
-        if any(needs_browser(self.sources[target.source], target, options) for target in targets):
+        if any(needs_browser(self.sources[target.source], target, options)
+               for target, options in chosen):
             _offer_browser()
-        # Filled by every source's worker thread at once, each under its own targets' numbers, and read
+        groups: dict[str, list[int]] = {}
+        for number, (target, _) in enumerate(chosen):
+            groups.setdefault(target.source, []).append(number)
+        # Filled by every source's worker at once, each under its own targets' numbers, and read
         # only once they have all ended: one assignment per key needs no lock.
-        done: dict[int, tuple[TargetReport, tuple[str, ...]]] = {}
-        with self._history() as history, _stop_waits_on_ctrl_c(), log.group("download") as rows:
-            run_settings = self._settings(options, history)
-            work = [(self.sources[code](), [(number, targets[number], rows.add(str(targets[number])))
-                                            for number in numbers])
+        reports: dict[int, TargetReport] = {}
+        with self._history() as history, self._targets() as saved, _stop_waits_on_ctrl_c(), \
+                log.group("download") as rows:
+            run_settings = Settings(home=self.home, history=history, targets=saved)
+            work = [(self.sources[code](),
+                     [_Planned(number, *chosen[number], rows.add(str(chosen[number][0])),
+                               tallies[number] if tallies else None)
+                      for number in numbers])
                     for code, numbers in groups.items()]
-            for result in worker.as_completed(partial(_run_group, run_settings, done, stop), work,
+            for result in worker.as_completed(partial(_run_site, run_settings, reports), work,
                                               concurrency=max(len(work), 1)):
-                if result.ok:
-                    continue
-                # The whole group stopped before or between its targets: the targets it never reached
-                # failed too, or `log.group` would end their rows at ok.
-                source, group_rows = result.item
-                log.error("{source}: {error}", source=source.code, error=result.error)
-                for number, target, row in group_rows:
-                    if not row.finished:
-                        row.caption = str(result.error)
-                        row.fail()
-                    if number not in done:
-                        done[number] = (TargetReport(target, (), 0, error=str(result.error)), ())
-        return [done[number] for number in range(len(targets))]
+                if not result.ok:
+                    _fail_unreached(result.item, result.error, reports)
+        return [reports[number] for number in range(len(chosen))]
 
     def _history(self) -> kv.Store:
         """The download history, opened for a `with` block."""
         return kv.open(self.home / files.HISTORY, table=HISTORY_TABLE)
 
-    def _settings(self, options: Options, history: MutableMapping[str, Any], *,
-                  interactive: bool = False) -> Settings:
-        return Settings(home=self.home, options=options, history=history, interactive=interactive)
+    def _targets(self) -> kv.Store:
+        """`targets.db`, opened once for a run's `with` block."""
+        return kv.open(self.home / files.TARGETS, table=settings.TARGETS_TABLE)
+
+
+def _end_if_stopped() -> None:
+    """Raise `KeyboardInterrupt` once a first Ctrl-C stopped the run: the CLI exits 130."""
+    # What finished is recorded by now; the command ends as Ctrl-C always does.
+    if net.stopping.is_set():
+        raise KeyboardInterrupt
 
 
 def _log_totals(report: Report) -> None:
@@ -665,7 +603,7 @@ def _stop_waits_on_ctrl_c() -> Iterator[None]:
     """Make the first Ctrl-C a graceful stop and the second an immediate one, in every thread (D8).
 
     The first sets `net.stopping` and raises nothing: every rate-limit wait ends at once, each job
-    stops listing and lets its running downloads finish (flnd/job.py), and `Engine._fetch` raises
+    stops listing and lets its running downloads finish (flnd/job.py), and the command raises
     `KeyboardInterrupt` once they have. The second sets `net.stopping_now`, which stops the
     downloads at their next chunk with their resumable parts kept, and does what Ctrl-C always does.
     """
@@ -796,34 +734,77 @@ def _follow(url: str) -> str:
         raise TargetError(f"can't follow {url}: {error}") from None
 
 
-# What `_run_group` fills for each target, by its place in the run: its report and its complete categories.
-Done = MutableMapping[int, "tuple[TargetReport, tuple[str, ...]]"]
+@dataclass(frozen=True)
+class _Planned:
+    """One target of a source's group: its place in the run, its options, its row and its repair."""
+
+    number: int
+    target: Target
+    options: Options
+    row: Any
+    # `sync` only: the tally its folder's repair fills, just before its listing.
+    tally: repair.Tally | None
 
 
-def _run_group(run_settings: Settings, done: Done, stop: frozenset[Target],
-               work: tuple[Source, list[tuple[int, Target, Row]]]) -> None:
-    """Run one source's targets, one after another, on one worker, filling `done` as each ends.
+def _run_site(run_settings: Settings, reports: dict[int, TargetReport],
+              work: tuple[Source, list[_Planned]]) -> None:
+    """Run one source's targets, one after another, on one worker, filling `reports` as each ends.
 
-    A target that ends is in `done` even when a later one stops the whole group, so its report
+    A target that ends is in `reports` even when a later one stops the whole group, so its report
     survives; `Engine._run` fails the ones the group never reached.
     """
-    source, rows = work
+    source, group = work
     with source_run(run_settings, source) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
+        if not source.logged_in(account) and source.requires_login:
+            for planned in group:
+                log.error("{target}: not logged in; run flnd login", target=str(planned.target))
+                planned.row.fail()
+                reports[planned.number] = TargetReport(planned.target, (), 0,
+                                                       error="not logged in; run flnd login")
+            return
         if not source.logged_in(account):
-            if source.requires_login:
-                for number, target, row in rows:
-                    log.error("{target}: not logged in; run flnd login", target=str(target))
-                    row.fail()
-                    done[number] = (TargetReport(target, (), 0, error="not logged in; run flnd login"), ())
-                return
             log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
-        try:
-            with _connected(run, account):
-                _run_targets(run, rows, done, stop)
-        finally:
-            # The cookies the site refreshed, even when the group failed or Ctrl-C stopped it (B5).
-            auth.write_back(run_settings.home, source.code, run.web.raw.cookies.jar)
+        with _written_back(run), _connected(run, account):
+            for planned in group:
+                options = _repaired(run_settings.history, planned)
+                reports[planned.number] = job.download(run, planned.target, planned.row, options)
+
+
+def _repaired(history: MutableMapping[str, Any], planned: _Planned) -> Options:
+    """Repair a target's folder right before its listing under `sync`, and give its options."""
+    tally = planned.tally
+    if tally is None or net.stopping.is_set():
+        return planned.options
+    log.debug("{target}: repair", target=tally.target)
+    with log.under(planned.row):
+        repair.repair(history, tally)
+    # A target with a lost or broken file lists to the end, so a file deeper than the saved-run
+    # stop is reached and saved again; the others stop at saved posts.
+    return replace(planned.options, stop_at_saved=planned.options.stop_at_saved and not tally.lost)
+
+
+def _fail_unreached(work: tuple[Source, list[_Planned]], error: BaseException | None,
+                    reports: dict[int, TargetReport]) -> None:
+    """Fail each target of a group that stopped before or between its targets."""
+    source, group = work
+    log.error("{source}: {error}", source=source.code, error=error)
+    for planned in group:
+        # An ended row keeps its end; any other would end at ok when `log.group` closes.
+        if not planned.row.finished:
+            planned.row.caption = str(error)
+            planned.row.fail()
+        if planned.number not in reports:
+            reports[planned.number] = TargetReport(planned.target, (), 0, error=str(error))
+
+
+@contextmanager
+def _written_back(run: SourceRun) -> Iterator[None]:
+    """Write the cookies the site refreshed back to the vault, however the block ends."""
+    try:
+        yield
+    finally:
+        auth.write_back(run.settings.home, run.source.code, run.web.raw.cookies.jar)
 
 
 @contextmanager
@@ -845,24 +826,3 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
             raise
     else:
         run.run_async(manager.__aexit__(None, None, None))
-
-
-def _run_targets(run: SourceRun, rows: list[tuple[int, Target, Row]], done: Done,
-                 stop: frozenset[Target] = frozenset()) -> None:
-    """Each target of one source through the job, one after another.
-
-    Args:
-        run: the source's resources for the run.
-        rows: each target's place in the run, its target and its progress row.
-        done: filled with each target's report as it ends, keyed by its place.
-        stop: the targets that stop at saved posts, passed on to the job as `sync`; see `job.download`.
-    """
-    for number, target, row in rows:
-        if net.stopping.is_set():
-            # After the first Ctrl-C no target starts; the ones left are stopped, not failed by a site.
-            row.caption = "stopped"
-            row.fail()
-            done[number] = (TargetReport(target, (), 0, error=job.STOPPED), ())
-            continue
-        result = job.download(run, target, row, sync=target in stop)
-        done[number] = (TargetReport(target, result.written, result.skipped, error=result.error), result.complete)

@@ -129,8 +129,9 @@ class Instagram(Source):
     name = "Instagram"
     domains = ("instagram.com",)
     needs = ("sessionid",)
-    # Instaloader's measured budgets (plan/phase-6/pace.md); the floor keeps bursts at a person's speed.
-    pace = http.Pace(1.0, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
+    # Instaloader's measured budgets set the ceiling; the floor only spaces a burst while a window
+    # still has room.
+    pace = http.Pace(0.5, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
     # A post's category, and a highlight's title: "posts", "highlights/<title>", or "" for a single post.
     folder = "{category}/{album}"
     # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.

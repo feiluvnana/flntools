@@ -163,6 +163,8 @@ class Twitter(Source):
     unsupported = {f"{host}/{path}": "that's not a profile" for host in ("x.com", "twitter.com")
                    for path in ("home", "explore", "search", "settings", "notifications", "messages", "hashtag", "i")}
     needs = ("auth_token",)
+    # X's `x-rate-limit-*` headers stop flnd exactly at the limit, so the floor only spaces a burst.
+    pace = 0.2
     user_agent = CHROME
     # This browser never hid navigator.webdriver, so stealth stays off.
     stealth = False

@@ -18,6 +18,7 @@ from flnd.sources.loi import Loibus
 from flnd.sources.tik import TIKTOK_UA, TikTok
 from flnd.sources.tlg import Telegram
 from flnd.sources.twt import CHROME, Twitter
+from shared import http
 
 SOURCES_DIR = Path(__file__).resolve().parent.parent / "flnd" / "sources"
 FORBIDDEN = ("httpx", "playwright", "shared.worker", "shared.kv", "shared.log", "shared.prompt",
@@ -51,8 +52,20 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(TikTok.user_agent, TIKTOK_UA)
         self.assertIsNone(Instagram.user_agent)
         for source in SOURCES.values():
-            methods = ("browser", "qr", "phone") if source is Telegram else ("browser", "file")
-            self.assertEqual((source.concurrency, source.login_methods), (4, methods))
+            telegram = source is Telegram
+            methods = ("browser", "qr", "phone") if telegram else ("browser", "file")
+            self.assertEqual((source.concurrency, source.login_methods), (3 if telegram else 8, methods))
+
+    def test_listing_floors(self):
+        floors = {"ins": 0.5, "twt": 0.2, "fbk": 0.8, "tik": 1.0, "loi": 0.5}
+        for code, floor in floors.items():
+            with self.subTest(source=code):
+                pace = SOURCES[code].pace
+                self.assertEqual(pace.floor if isinstance(pace, http.Pace) else pace, floor)
+        # The floor moves; Instaloader's budgets stay.
+        pace = Instagram.pace
+        assert isinstance(pace, http.Pace)
+        self.assertEqual(dict(pace.budgets), {"/graphql": (275, 600), "/api/v1/": (75, 660)})
 
     def test_categories_and_single_post_kinds(self):
         # Without --from a target gets every category; a single post's kind has none.

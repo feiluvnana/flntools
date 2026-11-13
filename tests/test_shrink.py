@@ -173,5 +173,20 @@ class RealMediaTest(unittest.TestCase):
         self.assertEqual(media.open(Path(fields["path"])).info.video, "hevc")
 
 
+    @needs_ffmpeg("libx264")
+    def test_a_long_video_is_encoded_after_its_slice_and_a_lean_one_is_left(self):
+        heavy = fresh("big.mp4").with_name("heavy.mp4")
+        run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=10", "-c:v", "mpeg4",
+            "-q:v", "2", str(heavy))
+        fields = compress.compress_file(heavy, files.VIDEO, set())
+        self.assertEqual(fields["compressed"], compress.LEVEL)
+        lean = fresh("big.mp4").with_name("lean.mp4")
+        run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=10", "-c:v", "libx264",
+            "-crf", "45", str(lean))
+        before = lean.read_bytes()
+        self.assertEqual(compress.compress_file(lean, files.VIDEO, set())["compressed"], "none")
+        self.assertEqual(lean.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

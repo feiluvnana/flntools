@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 from flnd.common import files
 from flnd.session import Options
@@ -82,65 +82,69 @@ def record(home: Path, chosen: Sequence[tuple[Target, Options]]) -> None:
             saved[key(target)] = {"kind": target.kind, SHRINK: options.shrink, "at": now, **kept}
 
 
-def complete(home: Path, target: Target, categories: Iterable[str]) -> None:
+def complete(saved: MutableMapping[str, Any], target: Target, categories: Iterable[str]) -> None:
     """Record that each of a target's categories listed to its end today, for `sync`'s saved-run stop.
 
-        settings.complete(Path(".flnd"), target, ["posts", "reels"])
-
     Args:
-        home: flnd's folder; `targets.db` is created when missing.
+        saved: `targets.db`'s rows, as the run opened them.
         target: the target whose categories ended by themselves, not by Ctrl-C, an error or an early stop.
         categories: their names; nothing is written when there is none.
-
-    Raises:
-        OSError: `targets.db` can't be written.
     """
     names = list(categories)
     if not names:
         return
     today = datetime.date.today().isoformat()
-    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
-        old = saved.get(key(target))
-        row: dict[str, Any] = dict(old) if isinstance(old, dict) else {"kind": target.kind}
-        done = row.get(COMPLETE)
-        row[COMPLETE] = {**(done if isinstance(done, dict) else {}), **{name: today for name in names}}
-        saved[key(target)] = row
+    row = _row(saved, target)
+    done = row.get(COMPLETE)
+    row[COMPLETE] = {**(done if isinstance(done, dict) else {}), **{name: today for name in names}}
+    saved[key(target)] = row
 
 
+def listed(saved: Mapping[str, Any], target: Target) -> dict[str, str]:
+    """The categories of a target whose last listing reached its end, each with the day it did.
 
-def cursors(home: Path, target: Target) -> dict[str, str]:
+    Args:
+        saved: `targets.db`'s rows, as the run opened them.
+        target: the target whose row is read.
+    """
+    found = _row(saved, target).get(COMPLETE)
+    return dict(found) if isinstance(found, dict) else {}
+
+
+def cursors(saved: Mapping[str, Any], target: Target) -> dict[str, str]:
     """The cursors a target's interrupted listings saved, by category; empty when there is none.
 
     Args:
-        home: flnd's folder; `targets.db` is only read.
+        saved: `targets.db`'s rows, as the run opened them.
         target: the target whose row is read.
     """
-    row = rows(home).get(key(target), {})
-    found = row.get(CURSORS) if isinstance(row, dict) else None
+    found = _row(saved, target).get(CURSORS)
     if not isinstance(found, dict):
         return {}
     return {name: value for name, value in found.items() if isinstance(value, str)}
 
 
-def keep_cursors(home: Path, target: Target, changed: Mapping[str, str | None]) -> None:
-    """Save each category's cursor in `changed`, or forget it for None.
+def keep_cursors(saved: MutableMapping[str, Any], target: Target,
+                 changed: Mapping[str, str | None]) -> None:
+    """Save each category's cursor in `changed` into `targets.db`'s rows, or forget it for None.
 
-    Raises:
-        OSError: `targets.db` can't be written.
+    Args:
+        saved: `targets.db`'s rows, as the run opened them.
+        target: the target whose row is written.
+        changed: each category's cursor to keep, or None to forget it.
     """
     if not changed:
         return
-    with kv.open(home / files.TARGETS, table=TARGETS_TABLE) as saved:
-        old = saved.get(key(target))
-        row: dict[str, Any] = dict(old) if isinstance(old, dict) else {"kind": target.kind}
-        found = row.get(CURSORS)
-        merged = {**(found if isinstance(found, dict) else {}), **changed}
-        kept = {name: value for name, value in merged.items() if value}
-        if kept:
-            row[CURSORS] = kept
-        else:
-            row.pop(CURSORS, None)
-        saved[key(target)] = row
+    row = _row(saved, target)
+    found = row.get(CURSORS)
+    merged = {**(found if isinstance(found, dict) else {}), **changed}
+    kept = {name: value for name, value in merged.items() if value}
+    if kept:
+        row[CURSORS] = kept
+    else:
+        row.pop(CURSORS, None)
+    saved[key(target)] = row
+
 
 def announce(target: Target, shrink: bool) -> str:
     """Say when a run of this target shrinks by its saved setting, so it never applies by surprise, and return what was said.
@@ -158,3 +162,9 @@ def announce(target: Target, shrink: bool) -> str:
         return ""
     log.info("{target}: --shrink (saved)", target=str(target))
     return "--shrink (saved)"
+
+
+def _row(saved: Mapping[str, Any], target: Target) -> dict[str, Any]:
+    """A copy of the target's row, or a new one holding its kind."""
+    old = saved.get(key(target))
+    return dict(old) if isinstance(old, dict) else {"kind": target.kind}

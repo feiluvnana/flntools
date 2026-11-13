@@ -14,8 +14,9 @@ How it works:
   - `--until` is sent to Telegram as `offset_date`; `--since` is the engine's job, which stops
     reading a category once 5 messages in a row are older than it.
   - A flood wait (`FloodWaitError`) in a download is waited out with `site.back_off`, which every
-    download shares, and the download is tried again. Listing never meets one: the client sleeps
-    through any flood wait up to a day by itself.
+    download shares, and a video or file goes on from where it stopped (`iter_download`'s
+    offset), as after a dropped connection; a big one comes in 4 parts at once. Listing never
+    meets one: the client sleeps through any flood wait up to a day by itself.
 
 Example:
     flnd download tlg:@examplechannel --from photo,video --time 2026-01-01..
@@ -55,6 +56,14 @@ FLOOD_SLEEP = 24 * 3600
 # Telethon's server-side filter class for each category: Telegram then sends only those messages.
 FILTERS = {"photo": "InputMessagesFilterPhotos", "video": "InputMessagesFilterVideo",
            "file": "InputMessagesFilterDocument"}
+# Telegram's largest file request; a request may not cross a 1 MiB boundary, so every part
+# starts on a multiple of it.
+REQUEST = 512 * 1024
+# A document this big or more is fetched in `CONNECTIONS` parts at once.
+SPLIT_SIZE = 8 * 1024 * 1024
+CONNECTIONS = 4
+# Dropped connections one part survives, each going on from where it stopped.
+RESUMES = 3
 # One character per pair of QR modules (top, bottom), where True is a light module: a full block is two lit halves.
 HALF_BLOCKS = {(True, True): "█", (True, False): "▀", (False, True): "▄", (False, False): " "}
 
@@ -71,6 +80,9 @@ class Telegram(Source):
     folder = "{chat}/{category}"
     # The chat's id and the message's id: a message id repeats from chat to chat, and the key is a history row's.
     key = "{chat_id}:{id}"
+    # Every download shares one MTProto client and its flood waits: more at once only meets the
+    # flood limit sooner (Telethon's FAQ).
+    concurrency = 3
 
     # `resolve` below reads the target's text, since no pattern can say a chat title or a `t.me/c/<n>`
     # link; the route has no pattern of its own, only the form help shows.
@@ -280,10 +292,12 @@ def file_name(message: Any) -> str:
 
 
 def fetcher(site: Site, message: Any) -> Fetch:
-    """A `fetch(dest, progress)` for the engine: Telethon downloads the message's media into `dest`.
+    """A `fetch(dest, progress)` for the engine: the message's media, downloaded into `dest`.
 
     A flood wait (Telegram's `FloodWaitError`) is waited out for the seconds it names, through
-    `site.back_off`, which every download shares, and the download starts again.
+    `site.back_off`, which every download shares. A video or file then goes on from where it
+    stopped, as it does after a dropped connection, and a big one comes in parts at once; a
+    photo, small and sized by Telethon, starts again.
 
     Args:
         site: the target's site, whose `client` downloads and whose `back_off` shares the waits.
@@ -292,6 +306,10 @@ def fetcher(site: Site, message: Any) -> Fetch:
     from telethon.errors import FloodWaitError
 
     async def fetch(dest: Any, progress: Any) -> None:
+        if message.document is not None:
+            with open(dest, "wb") as file:
+                await _Download(site, message.document, file, progress).run()
+            return
         while True:
             try:
                 with open(dest, "wb") as file:
@@ -302,6 +320,70 @@ def fetcher(site: Site, message: Any) -> Fetch:
                 await asyncio.to_thread(site.back_off, "Telegram flood wait", retry_after=error.seconds)
 
     return fetch
+
+
+class _Download:
+    """One document's bytes into an open file, in parts at once, each going on where it stopped."""
+
+    def __init__(self, site: Site, document: Any, file: Any, progress: Any):
+        self.site, self.document, self.file, self.progress = site, document, file, progress
+        self.size: int = document.size
+        self.parts = parts(self.size)
+        # The bytes each part has written so far; one loop runs every part, so no lock.
+        self.done = [0] * len(self.parts)
+
+    async def run(self) -> None:
+        """Fetch every part at once; one failing stops the others."""
+        tasks = [asyncio.ensure_future(self._part(number)) for number in range(len(self.parts))]
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    async def _part(self, number: int) -> None:
+        """Fetch one part, waiting out flood waits and going on after up to `RESUMES` drops."""
+        from telethon.errors import FloodWaitError
+
+        start, end = self.parts[number]
+        drops = 0
+        while self.done[number] < end - start:
+            try:
+                await self._read(number, start + self.done[number], end)
+            except FloodWaitError as error:
+                await asyncio.to_thread(self.site.back_off, "Telegram flood wait",
+                                        retry_after=error.seconds)
+            # Telethon reconnects by itself; the part goes on from its last whole request.
+            except ConnectionError:
+                drops += 1
+                if drops > RESUMES:
+                    raise
+
+    async def _read(self, number: int, position: int, end: int) -> None:
+        """Write the part's bytes from `position` up to `end`, as Telegram sends them."""
+        requests = -(-(end - position) // REQUEST)
+        before = self.done[number]
+        async for chunk in self.site.client.iter_download(
+                self.document, offset=position, limit=requests, request_size=REQUEST,
+                file_size=self.size):
+            # Each part's writes land at its own place, between two awaits of the one loop.
+            self.file.seek(position)
+            self.file.write(chunk)
+            position += len(chunk)
+            self.done[number] += len(chunk)
+            self.progress(sum(self.done), self.size)
+        if self.done[number] == before:
+            raise FetchError(f"Telegram sent nothing from byte {position} of {self.size}")
+
+
+def parts(size: int) -> list[tuple[int, int]]:
+    """Where each part of a document starts and ends: `CONNECTIONS` for a big one, else one."""
+    count = CONNECTIONS if size >= SPLIT_SIZE else 1
+    # Each part a whole number of requests, so every request starts on a multiple of its size.
+    step = max(-(-size // count // REQUEST) * REQUEST, REQUEST)
+    return [(start, min(start + step, size)) for start in range(0, size, step)]
 
 
 def credentials(login: Login) -> tuple[int, str]:

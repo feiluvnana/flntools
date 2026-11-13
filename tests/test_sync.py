@@ -9,6 +9,7 @@ command line; the default, None, keeps the saved setting.
 
 import datetime
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -37,10 +38,10 @@ class Site:
 
 
 def recorded(record):
-    """An `Engine._run` that only calls `record(targets, options)`, and reports each target done with nothing written."""
-    def run(engine, targets, options, stop=frozenset()):
-        record(targets, options)
-        return [(TargetReport(target, (), 0), ()) for target in targets]
+    """An `Engine._run` that only calls `record(chosen)`, and reports each target done, empty."""
+    def run(engine, chosen, tallies=()):
+        record(chosen)
+        return [TargetReport(target, (), 0) for target, _ in chosen]
 
     return run
 
@@ -108,15 +109,15 @@ class SettingsTest(SyncCase):
         self.download()
         self.assertFalse(any("(saved)" in line for line in self.lines()))
 
-    def test_the_saved_settings_reach_the_run_and_targets_with_others_run_apart(self):
+    def test_the_saved_settings_reach_the_run_and_targets_with_others_run_together(self):
         runs = []
-        with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append((targets, options)))):
+        with mock.patch.object(Engine, "_run", recorded(runs.append)):
             self.download(texts=("aaa:a",), shrink=True)
             self.download(Options(categories=("posts",)), texts=("aaa:a", "aaa:b"))
-        self.assertEqual(runs[0], ([Target("aaa", "user", "a")], Options(shrink=True)))
-        self.assertEqual(sorted(runs[1:], key=lambda run: run[0][0].value),
-                         [([Target("aaa", "user", "a")], Options(categories=("posts",), shrink=True)),
-                          ([Target("aaa", "user", "b")], Options(categories=("posts",)))])
+        self.assertEqual(runs[0], [(Target("aaa", "user", "a"), Options(shrink=True))])
+        posts = Options(categories=("posts",))
+        self.assertEqual(runs[1:], [[(Target("aaa", "user", "a"), replace(posts, shrink=True)),
+                                     (Target("aaa", "user", "b"), posts)]])
 
     def test_every_recorded_target_and_unrecorded_folders(self):
         self.download(shrink=True)
@@ -213,13 +214,16 @@ class DownloadAppliesTest(SyncCase):
         with self.shrink(fail_on=2), self.assertRaises(KeyboardInterrupt):
             self.download(shrink=True)
         self.assertIs(self.saved()["aaa:a"]["shrink"], False)
-        first, cut = self.compressed[0][0], self.compressed[1][0]
+        # Photos shrink at once, so any running when Ctrl-C came finished and kept their rows.
+        cut = self.compressed[1][0]
+        done = {Path(row["path"]).name for row in history(self.home).values()
+                if row.get("compressed") == "mid"}
+        self.assertNotIn(cut, done)
         self.compressed.clear()
         with self.shrink():
             self.download(shrink=True)
-        rest = sorted({"a.jpg", "b.jpg", "c.jpg"} - {first})
-        self.assertIn(cut, rest)
-        self.assertEqual(sorted(name for name, _ in self.compressed), rest)
+        self.assertEqual(sorted(name for name, _ in self.compressed),
+                         sorted({"a.jpg", "b.jpg", "c.jpg"} - done))
         self.assertIs(self.saved()["aaa:a"]["shrink"], True)
         self.assertEqual(self.names(), ["a.jpg", "b.jpg", "c.jpg"])
 
@@ -250,6 +254,55 @@ class RepairTest(SyncCase):
         self.assertGreater((folder / "a.jpg").stat().st_size, 0)
         self.assertEqual((line.repaired, line.missing), (3, 0))
 
+    def test_unchanged_files_are_trusted_and_changed_ones_and_a_rolling_share_are_checked(self):
+        import os
+
+        from shared import media
+
+        self.download()
+        folder = self.folder()
+        # The same bytes, a second later: only the modified time tells it changed.
+        changed = folder / "b.jpg"
+        later = changed.stat().st_mtime_ns + 1_000_000_000
+        os.utime(changed, ns=(later, later))
+        opened = []
+        real_open = media.open
+
+        def spying(path, *args, **options):
+            opened.append(Path(path).name)
+            return real_open(path, *args, **options)
+
+        with mock.patch("shared.media.open", spying):
+            self.sync()
+            # b.jpg changed; of the two trusted, one (a thirtieth, rounded up) is due.
+            self.assertEqual(len(opened), 2)
+            self.assertIn("b.jpg", opened)
+            first = set(opened)
+            opened.clear()
+            self.sync()
+        # Every file is trusted now, and the one checked longest ago (never) is due.
+        self.assertEqual(opened, sorted({"a.jpg", "b.jpg", "c.jpg"} - first))
+
+    def test_each_target_is_repaired_on_its_source_worker_just_before_its_listing(self):
+        from flnd import job, repair
+
+        self.download(texts=("aaa:a", "aaa:b"))
+        steps = []
+        real_repair, real_download = repair.repair, job.download
+
+        def repairing(history, tally):
+            steps.append(f"repair {tally.target}")
+            return real_repair(history, tally)
+
+        def downloading(run, target, row, options):
+            steps.append(f"list {target}")
+            return real_download(run, target, row, options)
+
+        with mock.patch.object(repair, "repair", repairing), \
+                mock.patch.object(job, "download", downloading):
+            self.sync()
+        self.assertEqual(steps, ["repair aaa:a", "list aaa:a", "repair aaa:b", "list aaa:b"])
+
     def test_a_recent_resumable_part_is_kept_for_the_fetch_and_every_other_leftover_goes(self):
         """B6: sync's fetch resumes a download's part, so repair keeps it while it is recent, with its `.part.json`."""
         import os
@@ -267,7 +320,7 @@ class RepairTest(SyncCase):
             path.write_bytes(b"x")
         old = time.time() - (files.RESUMABLE_DAYS + 1) * 24 * 3600
         os.utime(made[".b.jpg.22222222.part"], (old, old))
-        repair.repair({}, folder, [], repair.Tally("aaa:example_user"))
+        repair.repair({}, repair.Tally("aaa:example_user", folder))
         self.assertEqual(sorted(path.name for path in folder.iterdir()),
                          [".a.jpg.11111111.part", ".a.jpg.11111111.part.json"])
 
@@ -362,9 +415,10 @@ class FetchTest(SyncCase):
     def test_sync_takes_every_category(self):
         runs = []
         self.download(Options(categories=("posts",)), shrink=True)
-        with mock.patch.object(Engine, "_run", recorded(lambda targets, options: runs.append(options))):
+        record = recorded(lambda chosen: runs.extend(options for _, options in chosen))
+        with mock.patch.object(Engine, "_run", record):
             self.sync()
-        self.assertEqual(runs, [Options(shrink=True)])
+        self.assertEqual(runs, [Options(shrink=True, stop_at_saved=True)])
 
 
 class HistoryTest(SyncCase):

@@ -12,7 +12,8 @@ catches exactly what `media` raises for a file it can't compress (`ValueError`, 
 `RuntimeError`, `TimeoutError`, `ImportError`), warns once per kind of error per run, and leaves
 the original in place. `Compressor` is one run's shrinking on top of it: the encode lock, and the
 kinds this machine turned out unable to compress. `apply` shrinks a target's files already saved,
-when `flnd download --shrink` turns it on. The job shrinks each new download.
+when `flnd download --shrink` turns it on, `AT_ONCE` photos at a time. The job shrinks each new
+download.
 
     fields = Compressor().compress(Path("a.jpg"), "image")
     if fields is not None:
@@ -24,11 +25,15 @@ from __future__ import annotations
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
-from typing import Any, Iterable, MutableMapping
+from typing import TYPE_CHECKING, Any, Iterable, MutableMapping
 
 from flnd.common import files
-from shared import log
+from shared import log, worker
+
+if TYPE_CHECKING:
+    from shared import media
 
 # media's level for `--shrink`: the balance of quality and size (Phase 5's "balanced"). A history
 # row's `compressed` records it.
@@ -37,6 +42,18 @@ LEVEL = "mid"
 KINDS = (files.IMAGE, files.VIDEO, files.AUDIO)
 # The kinds whose encodes wait for the run's lock, one at a time, on a pool of their own.
 ONE_AT_A_TIME = frozenset({files.VIDEO})
+# Saved photos and audio `apply` shrinks at once: Pillow releases the GIL while it encodes, and
+# ffmpeg runs in a process of its own.
+AT_ONCE = 8
+# What `LEVEL` gives a video, in bits per pixel per frame (x264 at CRF 23, medium, on phone and
+# CDN clips); one already at or below it can't come out smaller, so it isn't encoded.
+BITS_PER_PIXEL = 0.1
+# `LEVEL`'s caps in `shared.media`: the shorter side in pixels, and the frame rate.
+LEVEL_SHORT_SIDE, LEVEL_FPS = 1080, 60
+# Seconds of a video encoded first; the whole file is encoded only when the slice came out at
+# least `SLICE_GAIN` smaller. A video under two slices long is encoded whole at once.
+SLICE = 4.0
+SLICE_GAIN = 0.10
 # A video's codec as ffmpeg names it, by the name `media.compress` takes: passed so an MP4 keeps its
 # own codec, since without one media writes the container's default (H.264 in an MP4).
 OWN_CODECS = {"h264": "h264", "hevc": "h265", "vp9": "vp9"}
@@ -129,12 +146,14 @@ def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[s
         # `with` drops the compressed copy's temporary file whenever it isn't saved, an error included.
         with media.open(path) as original:
             codec = OWN_CODECS.get(original.info.video or "") if kind == files.VIDEO else None
-            out = original.compress(LEVEL, codec=codec)
-            if out.size < original.size:
-                saved: Path | None = out.save()
+            saved: Path | None = None
+            if kind == files.VIDEO and not _can_win(original, codec):
+                log.info("{name}: an encode wouldn't save enough; kept as it is", name=path.name)
             else:
-                saved = None
-                if out is not original:
+                out = original.compress(LEVEL, codec=codec)
+                if out.size < original.size:
+                    saved = out.save()
+                elif out is not original:
                     log.info("{name}: compressing saved nothing; kept the original", name=path.name)
     except (ValueError, OSError) as error:
         # This file only: unreadable or refused (ValueError; BrokenError, UnsafeError and KindError among them),
@@ -152,6 +171,31 @@ def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[s
     if saved is None:
         return {"path": str(path), "size": size, "compressed": "none", "original_size": size}
     return {"path": str(saved), "size": saved.stat().st_size, "compressed": LEVEL, "original_size": size}
+
+
+def _can_win(original: media.Media, codec: str | None) -> bool:
+    """Whether a video encoded at `LEVEL` can come out much smaller, by its bitrate and a slice."""
+    info = original.info
+    target = _target_bitrate(info)
+    if info.bitrate is None or target is None:
+        return True
+    if info.bitrate <= target:
+        return False
+    if info.duration is None or info.duration <= 2 * SLICE:
+        return True
+    # From the middle, past any intro; cut at keyframes, so the slice is copied, not encoded.
+    start = info.duration / 2 - SLICE / 2
+    piece = original.trim(start=start, end=start + SLICE, exact=False)
+    return piece.compress(LEVEL, codec=codec).size <= piece.size * (1 - SLICE_GAIN)
+
+
+def _target_bitrate(info: media.Info) -> float | None:
+    """The bitrate `LEVEL` gives a video of this size and frame rate, after its caps, if known."""
+    if not (info.width and info.height and info.fps):
+        return None
+    short, long = sorted((info.width, info.height))
+    scale = min(1.0, LEVEL_SHORT_SIDE / short)
+    return BITS_PER_PIXEL * (short * scale) * (long * scale) * min(info.fps, LEVEL_FPS)
 
 
 def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], compressor: Compressor, *,
@@ -179,14 +223,30 @@ def apply(history: MutableMapping[str, Any], rows: Iterable[tuple[str, dict]], c
             and row.get("compressed") != LEVEL and Path(row["path"]).is_file()]
     if not todo:
         return 0
+    # Videos last: they take turns on the run's lock, so a pool thread holding one only waits.
+    todo.sort(key=lambda item: files.kind_of(item[1]["path"]) in ONE_AT_A_TIME)
     with log.progress(f"--shrink {label}", total=len(todo)) as bar:
-        for key, row in todo:
+        for result in worker.as_completed(partial(_shrink, history, compressor), todo,
+                                          concurrency=AT_ONCE):
             bar.advance()
-            kind = files.kind_of(row["path"])
-            fields = compressor.compress(Path(row["path"]), kind) if kind is not None else None
-            if fields is not None:
-                history[key] = {**row, **fields}
+            if result.error is not None:
+                raise result.error
     return len(todo)
+
+
+def _shrink(history: MutableMapping[str, Any], compressor: Compressor,
+            item: tuple[str, dict]) -> None:
+    """Shrink one saved file and write its history row, on a pool thread."""
+    key, row = item
+    kind = files.kind_of(row["path"])
+    fields = compressor.compress(Path(row["path"]), kind) if kind is not None else None
+    if fields is None:
+        return
+    path = Path(fields.get("path", row["path"]))
+    # Written here, not by the caller: after a Ctrl-C the pool lets running files finish, and a
+    # file shrunk without its row would be shrunk a second time, losing quality again. Stamped
+    # as it now is, so `sync` trusts the smaller file.
+    history[key] = {**row, **fields, **(files.stamp(path) if path.is_file() else {})}
 
 
 def _warn(warned: set[type[Exception]], error: Exception, path: Path) -> None:

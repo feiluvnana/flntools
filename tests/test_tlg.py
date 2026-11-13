@@ -27,11 +27,12 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
-from flnd.common import auth
+from flnd.common import auth, net
 from flnd.engine import Engine
 from flnd.session import Options
 from flnd.source import LoginError, Target, TargetError
 from flnd.sources import SOURCES
+from flnd.sources import tlg
 from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
 from shared import fmt
 
@@ -84,7 +85,11 @@ def message(number, kind, *, day=DAY, name=None, content=b"media", size=None):
     ext = {"photo": ".jpg", "video": ".mp4"}.get(kind, "")
     when = datetime.datetime.combine(day, datetime.time(12), tzinfo=datetime.timezone.utc)
     file = SimpleNamespace(name=name, ext=ext or (name and "." + name.rsplit(".", 1)[-1]), size=size or len(content))
-    return SimpleNamespace(id=number, date=when, kind=kind, file=file, content=content)
+    # A video or file is a document, which `iter_download` fetches; a photo isn't.
+    document = None if kind == "photo" else SimpleNamespace(id=number, size=len(content),
+                                                            content=content)
+    return SimpleNamespace(id=number, date=when, kind=kind, file=file, content=content,
+                           document=document)
 
 
 def chat(number, title, username=None):
@@ -109,6 +114,11 @@ class FakeTelegram:
         self.downloads = []
         self.download_errors = []
         self.threads = set()
+        # Each `iter_download` asked for: (offset, requests); and the chunks after which the
+        # connection drops, counted over the whole run.
+        self.reads = []
+        self.drops = set()
+        self.chunks = 0
 
     def client(self, string, api_id, api_hash):
         client = FakeClient(self, string, api_id, api_hash)
@@ -175,6 +185,20 @@ class FakeClient:
             if item.kind == kind and (offset_date is None or item.date < offset_date):
                 self.telegram.yielded += 1
                 yield item
+            await asyncio.sleep(0)
+
+    async def iter_download(self, document, *, offset=0, limit=None, request_size, file_size=None):
+        if self.telegram.download_errors:
+            raise self.telegram.download_errors.pop(0)
+        if offset == 0:
+            self.telegram.downloads.append(document.id)
+        self.telegram.reads.append((offset, limit))
+        end = min(len(document.content), offset + limit * request_size)
+        for start in range(offset, end, request_size):
+            self.telegram.chunks += 1
+            if self.telegram.chunks in self.telegram.drops:
+                raise ConnectionError("the connection dropped")
+            yield document.content[start:start + request_size]
             await asyncio.sleep(0)
 
     async def download_media(self, item, file=None, *, progress_callback=None):
@@ -561,6 +585,36 @@ class DownloadTest(DownloadCase):
         self.assertEqual(self.download(), 1)
         self.assertEqual(self.now, 3)
         self.assertTrue((self.folder / "photo" / "2026-01-05_11.jpg").is_file())
+
+    def test_a_video_goes_on_from_where_a_flood_wait_or_a_drop_stopped_it(self):
+        body = bytes(range(40))
+        self.telegram.messages[1001] = [message(21, "video", content=body)]
+        # A flood wait first, then the connection drops at the third and the sixth chunk.
+        self.telegram.download_errors = [FloodWaitError(None, capture=3)]
+        self.telegram.drops = {3, 6}
+        with mock.patch.object(tlg, "REQUEST", 8):
+            self.assertEqual(self.download(categories=("video",)), 1)
+        self.assertEqual(self.now, 3)
+        self.assertEqual((self.folder / "video" / "2026-01-05_21.mp4").read_bytes(), body)
+        # Each pass asks from the last whole chunk, never from 0 again.
+        self.assertEqual(self.telegram.reads, [(0, 5), (16, 3), (32, 1)])
+
+    def test_a_part_dropped_more_than_resumes_times_fails_the_file(self):
+        self.telegram.messages[1001] = [message(22, "video", content=bytes(40))]
+        self.telegram.drops = set(range(1, 100))
+        with mock.patch.object(tlg, "REQUEST", 8):
+            self.assertEqual(self.download(categories=("video",)), 0)
+        # Each of the engine's tries of the file gives the part its own resumes.
+        self.assertEqual(len(self.telegram.reads), net.ATTEMPTS * (tlg.RESUMES + 1))
+
+    def test_a_big_document_comes_in_parts_at_once(self):
+        body = bytes(range(64)) * 2
+        self.telegram.messages[1001] = [message(23, "file", name="big.zip", content=body)]
+        with mock.patch.object(tlg, "REQUEST", 8), mock.patch.object(tlg, "SPLIT_SIZE", 64):
+            self.assertEqual(self.download(categories=("file",)), 1)
+        self.assertEqual((self.folder / "file" / "2026-01-05_23_big.zip").read_bytes(), body)
+        self.assertEqual(sorted(self.telegram.reads), [(0, 4), (32, 4), (64, 4), (96, 4)])
+        self.assertEqual(tlg.parts(10), [(0, 10)])
 
     def test_not_logged_in_fails_the_target(self):
         with auth.secrets(self.home, "tlg") as secrets:
