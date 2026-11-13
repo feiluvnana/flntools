@@ -332,12 +332,24 @@ class TtyProgressTest(LogCase):
             self.tick(0.1)
             self.assertEqual(len(visible_screen(self.output())), 3)
 
-    def test_rows_cut_to_width(self):
+    def test_rows_stop_one_cell_short_of_the_width(self):
         with log.progress("a-very-long-label-that-goes-past-the-width", total=10):
             self.tick(0.6)
             rows = visible_screen(self.output())
             self.assertEqual(len(rows), 1)
-            self.assertEqual(len(rows[0]), 30)
+            self.assertEqual(len(rows[0]), 29)
+
+    def test_a_narrower_window_clears_every_line_the_old_rows_now_take_and_draws_whole(self):
+        with log.progress("a-very-long-label-that-goes-past-the-width", total=10):
+            self.tick(0.6)
+            before = len(self.output())
+            self.screen._width = 20
+            self.tick()
+            frame = self.output()[before:]
+            # The old 29-cell row now wraps onto two 20-column lines.
+            self.assertIn("\r\x1b[2A\x1b[J", frame)
+            redrawn = frame.split("\x1b[J", 1)[1]
+            self.assertEqual([len(row) for row in visible_screen(redrawn) if row], [19])
 
     def test_a_spinner_row_changes_with_the_clock(self):
         with log.progress("wait"):
@@ -572,6 +584,27 @@ class DrawingThreadTest(LogCase):
             bar.advance()
             time.sleep(0.3)
             self.assertGreater(self.area.frames, frames)
+
+    def test_a_show_that_raises_stops_the_thread_and_the_next_group_draws_again(self):
+        failing = [True]
+
+        def show(count):
+            if failing[0]:
+                raise ValueError("a broken show")
+            return str(count)
+
+        with log.progress("bad", total=10, show=show) as bar:
+            bar.advance()
+            for _ in range(40):
+                if self.area.thread is None:
+                    break
+                time.sleep(0.05)
+            self.assertIsNone(self.area.thread)
+            failing[0] = False
+        with log.progress("next"):
+            time.sleep(0.8)
+            self.assertIsNotNone(self.area.thread)
+            self.assertEqual(visible_screen(self.output())[-1][:1], "•")
 
     def test_one_thread_serves_every_area(self):
         with log.progress("a"), log.progress("b"):

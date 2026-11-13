@@ -35,7 +35,7 @@ import string
 import threading
 import time
 import weakref
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Literal
@@ -45,7 +45,7 @@ from shared import _clock as clock
 from shared import _theme
 from shared._screen import SYNC_BEGIN, SYNC_END, hide_cursor, show_cursor
 from shared._style import strip
-from shared._theme import Bar, LogRecord, Screen, Theme, _bar_cells, _count, fit
+from shared._theme import Bar, LogRecord, Screen, Theme, _bar_cells, _count, display_width, fit
 
 # `shared.log` is the `log` object: its methods, `Error` among them, are the module's names, and the
 # classes are what `log.progress` and `log.group` return.
@@ -582,6 +582,8 @@ class LiveArea:
         self.frames = 0
         # When the last frame was written, by `time.perf_counter`, which spaces the drawing thread's frames.
         self.drawn_at = 0.0
+        # The screen's width when the last frame was written; a change redraws the area whole.
+        self.drawn_width = 0
 
     def mark(self) -> None:
         """Say a row or line changed. No lock, no drawing: the drawing thread does that."""
@@ -692,7 +694,20 @@ class LiveArea:
             self.thread.start()
 
     def _run(self) -> None:
-        """The drawing thread: sleep until something changes, wait out the interval since the last frame, draw."""
+        """The drawing thread: draw until the last group closes; an error stops it until a group opens."""
+        try:
+            self._draw_while_open()
+        except Exception as error:
+            # A `show=` that raises, or a stderr closed under us: the screen must not freeze for
+            # the rest of the run, so the area starts afresh and the next group starts a thread.
+            with self.screen.lock:
+                self.thread = None
+                self.shown, self.skip = [], False
+            with suppress(Exception):  # the screen that failed may fail this line too
+                log.debug("the live area stopped drawing: {error}", error=error)
+
+    def _draw_while_open(self) -> None:
+        """Sleep until something changes, wait out the interval since the last frame, draw."""
         while True:
             with self.screen.lock:
                 if not self.groups:
@@ -724,7 +739,9 @@ class LiveArea:
         # Under log.level "quiet", running bars are not drawn at all.
         if log.level == "quiet":
             return []
-        width = self.screen.width
+        # One cell short of the width: a terminal that wraps at the last column (Windows' old
+        # console) would put a full-width row on two lines and miscount the area.
+        width = self.screen.width - 1
         open_ids = {id(group) for group in self.groups}
         nested: dict[int, list[Group]] = {}
         top: list[Group] = []
@@ -774,13 +791,21 @@ class LiveArea:
         a cursor move, and the whole frame sits inside synchronized output.
         """
         old, pending = self.shown, self.pending
-        if not pending and rows == old:
+        width = self.screen.width
+        resized = bool(old) and width != self.drawn_width
+        if not pending and rows == old and not resized:
             return ""
-        self.shown, self.pending = rows, []
+        self.shown, self.pending, self.drawn_width = rows, [], width
         # Between SYNC_BEGIN and SYNC_END the terminal shows the frame all at once, so the redraw
         # does not show a half-written area.
         out = [SYNC_BEGIN]
-        if pending:
+        if resized:
+            # The terminal rewrapped the old rows to the new width: go up over every line they take
+            # now, clear from there, and write the area whole.
+            up = sum(max(1, -(-display_width(row) // width)) for row in old)
+            out.append(f"\r\x1b[{up}A\x1b[J")
+            out.extend(line + "\x1b[K\n" for line in pending + rows)
+        elif pending:
             # Lines above the area push it down, so every row moves: all are written again. The
             # cursor starts on the line below the old rows, and goes back to the area's top.
             # CR returns to column 0; CUU (`ESC [ n A`) moves up over the old rows.
