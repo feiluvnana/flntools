@@ -749,5 +749,14 @@ its title, authors, genres, chapter count, last update and views, and its cover 
   `flnd find loi 'tags'`, `'tag:"example tag"'`, `'authors'`, `'author:example'`. A listing of
   tags or authors gives each name with its next query (so it can be piped back into `find`); a
   listing of posts gives download targets (`loi:5930`). Each kind is one entry in loi's
-  `params`. Waits for the pages by hand: the tag list, a tag's page, the author list, an
-  author's page, and how each pages.
+  `params`. The API, read from loix.cc's own JavaScript on 2026-11-13 (signed, on
+  `api.moegoat.com/api/`): every author (`人物库`, which the API calls loiers and categories)
+  `user/library/loiers?page=N`; every tag in three groups (play 1, clothing 2, character 3)
+  `user/library/tags?group_id=G&page=N`; an author's posts
+  `user/library/loier/id?category_id=ID&sort=latest|popular|choicest&page=N`; a tag's posts
+  `user/library/tag/id?tag_id=ID&sort=…&page=N`; a keyword search
+  `user/loi/search/<keyword>/<latest|popular|choicest>?page=N`. Each answer is
+  `{data: [...], pagination: {total}}`, paged until `data` is empty; a tag or author item has
+  `id`, `name` (or `title`), `cover` and `count`, a post item what `lois` lists. The answers'
+  exact fields are unverified: a plain client gets the site's bot wall (403), so a live run by
+  hand confirms them.
