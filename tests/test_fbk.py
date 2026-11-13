@@ -19,7 +19,7 @@ from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
 from flnd.session import Options
-from flnd.source import FetchError, Target, TargetError
+from flnd.source import FetchError, Post, Target, TargetError
 from flnd.sources.fbk import Facebook, image_extension, media_items
 from shared import browser
 
@@ -329,6 +329,23 @@ class RoutesTest(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(TargetError, f"^fbk: {expected}"):
                         Facebook().resolve(value)
+
+
+class DateHookTest(unittest.TestCase):
+    """The photo's own page dates a photo the feed left undated, asked from the tab."""
+
+    def test_the_first_created_time_on_the_photo_page_is_its_day(self):
+        url = "https://www.facebook.com/photo/"
+        page = '<script>{"created_time":1767312000,"x":{"created_time":1}}</script>'
+        site = FakeSite(Target("fbk", "user", "example.page"), html={url: page})
+        self.assertEqual(Facebook().date(site, Post("123")), 1767312000)
+        method, asked, options = site._seen.requests[0]
+        self.assertEqual((asked, options["in_page"]), (f"{url}?fbid=123", True))
+
+    def test_a_page_without_one_gives_none(self):
+        site = FakeSite(Target("fbk", "user", "example.page"),
+                        html={"https://www.facebook.com/photo/": "<p>gone</p>"})
+        self.assertIsNone(Facebook().date(site, Post("123")))
 
 
 class WalkerTest(unittest.TestCase):
