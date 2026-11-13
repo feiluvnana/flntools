@@ -108,6 +108,9 @@ DOWNLOAD_EXTENSION = "shared.http.download"
 PIECE_EXTENSION = "shared.http.piece"
 # The most connections `parts` may ask for on one file.
 MAX_PARTS = 8
+# The longest `Retry-After` a CDN's 429 is waited out for in `Client.download`; a longer one is
+# more likely a misconfigured CDN than a real five-minute ban.
+MAX_RETRY_AFTER = 300.0
 # Idle connections `Transport` keeps open for reuse: 8 per host across a run's few CDNs.
 KEEP_ALIVE = 64
 # A client's wait of this many seconds or more is a countdown row: a slow run explains itself.
@@ -568,7 +571,7 @@ class Client:
             client.download("https://cdn.example.com/v.mp4", "videos/", progress=bar.update)
 
         `stop` stops this transfer, keeping its part; None uses the client's own `stop`, which
-        still ends the waits before it.
+        still ends the waits before it. A 429's `Retry-After` is waited out up to 5 minutes.
 
         Raises:
             StoppedError: `stop` was set.
@@ -576,10 +579,18 @@ class Client:
         """
         first = url if isinstance(url, str) else next(iter(url), "")
         halt = stop if stop is not None else self.stop
-        return self.call(first, lambda: download(
-            url, dest, client=self.raw, headers=headers, size=size, parts=parts, resume=resume,
-            attempts=attempts, timeout=timeout, check=check, progress=progress, label=label,
-            stop=halt))
+
+        def send() -> Download:
+            try:
+                return download(url, dest, client=self.raw, headers=headers, size=size,
+                                parts=parts, resume=resume, attempts=attempts, timeout=timeout,
+                                check=check, progress=progress, label=label, stop=halt)
+            except RateLimitedError as error:
+                if error.retry_after is None or error.retry_after <= MAX_RETRY_AFTER:
+                    raise
+                raise RateLimitedError(MAX_RETRY_AFTER, str(error)) from None
+
+        return self.call(first, send)
 
     def call(self, url: str, send: Callable[[], A], *, attempts: int = 1) -> A:
         """Run `send`, a request made some other way such as from a browser tab, in `url`'s pace.

@@ -209,6 +209,11 @@ class DownloadTest(ClientCase):
         self.assertEqual((saved.path, saved.path.read_bytes()), (Path(folder) / "v.mp4", b"ok"))
         self.assertAlmostEqual(self.gaps()[0], 3.0)
 
+    def test_a_cdns_retry_after_is_waited_out_up_to_five_minutes(self):
+        folder = self.enterContext(tempfile.TemporaryDirectory())
+        self.answers = [httpx.Response(429, headers={"Retry-After": "3600"})]
+        self.client().download(f"{CDN}/v.mp4", folder + "/")
+        self.assertAlmostEqual(self.gaps()[0], http.MAX_RETRY_AFTER)
 
     def test_a_download_stops_on_its_own_stop_not_only_the_clients(self):
         folder = self.enterContext(tempfile.TemporaryDirectory())
