@@ -42,9 +42,6 @@ ColorDepth = Literal["none", "8", "256", "16m"]
 COLOR_DEPTHS: tuple[ColorDepth, ...] = ("none", "8", "256", "16m")
 # Cells in a progress bar, and the column width of a help screen's option labels.
 BAR_CELLS = 20
-# The cells a bar's count is right-aligned in, so the label after it starts at one column on every
-# line: 17 holds `999.9 MB/999.9 MB`, the longest `fmt.size` pair below a GB; a longer one pushes on.
-COUNT_CELLS = 17
 HELP_LABEL_WIDTH = 20
 
 # Each glyph is (unicode, ascii). A nested dict is a group of glyphs. The ASCII half is what a
@@ -351,17 +348,18 @@ def draw_log(theme: Theme, record: LogRecord) -> str:
 
 
 def draw_progress(theme: Theme, record: LogRecord) -> str:
-    """One progress line drawn from `record.bar`: a bar's columns first and its label last, or a spinner after its label.
+    """One progress line drawn from `record.bar`: its glyph and cells in fixed columns, then its label, count and caption.
 
-        ✓ ━━━━━━━━━━━━━━━━━━━━           45.4 KB posts/a.jpg
-        • ━━━━━━━━━━──────────    7.3 MB/14.6 MB videos/b.mp4
-        • scroll posts ⠋ 12
+        ✓ ━━━━━━━━━━━━━━━━━━━━ posts/a.jpg 45.4 KB
+        • ━━━━━━━━━━────────── videos/b.mp4 7.3 MB/14.6 MB
+        • ⠋                    posts/c.jpg 12.0 KB
 
-    A bar with a total draws its glyph, cells and count in fixed columns, so the labels of many
-    lines start at one column, whatever their length; a line too long for the screen is cut at its
-    label's end. A line that ended at ok shows its total alone, and a failed one keeps `count/total`,
-    so how far it got stays on screen. A bar with no total is a spinner, drawn after its label, and
-    a finished one draws no spinner.
+    Every line starts the same way, so the labels of many lines start at one column, and the count
+    follows its label with one space, so no line has a wide gap. A bar with no total
+    (a download whose size the server didn't send) draws its spinner in the cells' column while it
+    runs, and full cells once it ends at ok, as a bar with a total does. A line that ended at ok
+    shows its total alone (the count, when there was no total), and a failed one keeps
+    `count/total`, so how far it got stays on screen.
 
     Args:
         theme: the theme whose glyphs and palette draw the line.
@@ -374,11 +372,16 @@ def draw_progress(theme: Theme, record: LogRecord) -> str:
     assert bar is not None
     level = "error" if record.level == "error" else "ok" if bar.finished else "info"
     glyph = theme.paint(level, getattr(theme.glyphs, LOG_GLYPHS[level]))
-    if bar.total is None:
-        parts = [glyph, bar.label, _bar_cells(theme, bar), _count(bar), bar.caption]
-    else:
+    if bar.total is not None:
+        cells = _bar_cells(theme, bar)
         count = bar.show(bar.total) if level == "ok" else _count(bar)
-        parts = [glyph, _bar_cells(theme, bar), count.rjust(COUNT_CELLS), bar.label, bar.caption]
+    else:
+        # A spinner's frame sits in the cells' column, padded to its width, so the count and label stay put;
+        # once ended, the cells say how it ended, as a bar with a total does.
+        cells = (theme.glyphs.bar.full * BAR_CELLS if level == "ok" else theme.glyphs.bar.empty * BAR_CELLS) \
+            if bar.finished else _bar_cells(theme, bar).ljust(BAR_CELLS)
+        count = _count(bar)
+    parts = [glyph, cells, bar.label, count, bar.caption]
     return " ".join(part for part in parts if part)
 
 

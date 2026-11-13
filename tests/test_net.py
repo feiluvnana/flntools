@@ -187,7 +187,7 @@ class BackoffTest(NetCase):
         backoff.hit("challenged")
         backoff.wait_turn()
         self.assertEqual(self.sleeps, [1.0] * 30)
-        self.assertTrue(any(line.startswith("✓ ") and line.endswith(" 30.0s ins: waiting") for line in self.lines()),
+        self.assertTrue(any(line.startswith("✓ ") and line.endswith(" ins: waiting 30.0s") for line in self.lines()),
                         self.lines())
 
     def test_jitter_is_20_percent(self):
@@ -240,7 +240,7 @@ class DownloadTest(NetCase):
         self.assertEqual(stat.S_IMODE(dest.stat().st_mode) & 0o644, 0o644)
         self.assertEqual(list(dest.parent.iterdir()), [dest])
         self.assertEqual(self.requests[0].headers["referer"], "https://site/")
-        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " " + "1.5 KB".rjust(17) + " posts/a.jpg"])
+        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " posts/a.jpg " + "1.5 KB"])
 
     def test_a_streaming_error_is_retried_and_no_part_is_left(self):
         with self.client(httpx.Response(200, stream=Broken()), httpx.Response(200, content=b"whole")) as http:
@@ -323,7 +323,7 @@ class DownloadTest(NetCase):
             self.assertTrue(self.download(http, fetch, "m.mp4"))
         self.assertEqual((self.tmp / "posts" / "m.mp4").read_bytes(), b"media")
         self.assertEqual(self.requests, [])
-        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " " + "5.0 B".rjust(17) + " posts/m.mp4"])
+        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " posts/m.mp4 " + "5.0 B"])
 
     def test_the_second_ctrl_c_stops_a_blocking_fetch_function_at_its_next_report(self):
         """D8: a source's fetch function (tlg's) gets a progress callback that a second Ctrl-C stops."""

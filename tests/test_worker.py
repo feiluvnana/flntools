@@ -451,7 +451,7 @@ class CtrlCTest(WorkerCase):
         self.assertLess(time.monotonic() - started, LONG / 2)
         self.assertFalse(release.is_set())
         self.assertEqual(self.lines()[0], STOPPING)
-        self.assertEqual(self.lines()[-1], "✗ " + "─" * 20 + " " + "0/1".rjust(17) + " files")
+        self.assertEqual(self.lines()[-1], "✗ " + "─" * 20 + " files " + "0/1")
 
     def test_ctrl_c_inside_a_task_stops_the_run(self):
         ran = []
@@ -483,20 +483,20 @@ class ShutdownTest(WorkerCase):
 class LabelTest(WorkerCase):
     def test_known_total(self):
         worker.as_ordered(square, [1, 2, 3], label="squares")
-        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "3".rjust(17) + " squares")
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " squares " + "3")
 
     def test_growing_total(self):
         with worker.pool(label="files") as pool:
             for n in range(4):
                 pool.submit(square, n)
-        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "4".rjust(17) + " files")
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " files " + "4")
         worker.as_ordered(square, (n for n in range(2)), label="gen")
-        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "2".rjust(17) + " gen")
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " gen " + "2")
 
     def test_failures_end_the_bar_at_error(self):
         with worker.pool(label="bad") as pool:
             pool.submit(square, "x")
-        self.assertEqual(self.lines()[-1], "✗ " + "━" * 20 + " " + "1/1".rjust(17) + " bad")
+        self.assertEqual(self.lines()[-1], "✗ " + "━" * 20 + " bad " + "1/1")
 
 
 class ProgressTest(WorkerCase):
@@ -542,7 +542,7 @@ class ProgressTest(WorkerCase):
         calls = []
         worker.as_ordered(square, [1, 2], label="both", progress=lambda done, total: calls.append(done))
         self.assertEqual(calls[-1], 2)
-        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " " + "2".rjust(17) + " both")
+        self.assertEqual(self.lines()[-1], "✓ " + "━" * 20 + " both " + "2")
 
 
 class OptionTest(unittest.TestCase):

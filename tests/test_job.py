@@ -561,7 +561,7 @@ class FailureTest(JobCase):
         lines = self.lines()
         for line in ("✗ err:gone: HTTP 404 for https://example.com/gone", "✗ err:locked: err: run flnd login err",
                      "✗ err:cut: HTTP 500 for https://example.com/cut", "✗ err:expired: err: the saved login expired",
-                     "✓ err:good", "✓ err:last"):
+                     "✓ " + "━" * 20 + " err:good", "✓ " + "━" * 20 + " err:last"):
             self.assertIn(line, lines)
         self.assertEqual(self.files("err", "good"), ["good.jpg"])
 
@@ -769,7 +769,7 @@ class CtrlCTest(JobCase):
         # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
         self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
         self.assertEqual(listed, [1, 2, 3])
-        self.assertIn("✗ slw:example_user stopped", self.lines())
+        self.assertIn("✗ " + "─" * 20 + " slw:example_user stopped", self.lines())
 
     def test_the_second_ctrl_c_stops_now_and_keeps_the_part(self):
         sent, gate = threading.Event(), threading.Event()

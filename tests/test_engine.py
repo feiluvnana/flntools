@@ -247,8 +247,8 @@ class GroupsTest(EngineCase):
         self.assertEqual(total, 1)
         lines = self.lines()
         self.assertIn("✗ aaa:bad: blocked", lines)
-        self.assertIn("✗ aaa:bad", lines)
-        self.assertIn("✓ aaa:good", lines)
+        self.assertIn("✗ " + "─" * 20 + " aaa:bad", lines)
+        self.assertIn("✓ " + "━" * 20 + " aaa:good", lines)
 
 
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
@@ -259,9 +259,9 @@ class GroupsTest(EngineCase):
         report = self.report(make_source("aaa", connect=connect), make_source("bbb"), targets=["aaa:a", "aaa:b", "bbb:c"])
         lines = self.lines()
         self.assertIn("✗ aaa: tlg: the saved login no longer works", lines)
-        self.assertFalse(any(line.startswith("✓ aaa:") for line in lines), lines)
-        self.assertEqual(sum(line.startswith("✗ aaa:a") or line.startswith("✗ aaa:b") for line in lines), 2)
-        self.assertIn("✓ bbb:c", lines)
+        self.assertFalse(any(line.startswith("✓ " + "━" * 20 + " aaa:") for line in lines), lines)
+        self.assertEqual(sum(line.startswith("✗ " + "─" * 20 + " aaa:a") or line.startswith("✗ " + "─" * 20 + " aaa:b") for line in lines), 2)
+        self.assertIn("✓ " + "━" * 20 + " bbb:c", lines)
         self.assertEqual([str(target) for target in report.failed], ["aaa:a", "aaa:b"])
         self.assertEqual(report.targets[0].error, "tlg: the saved login no longer works")
 
@@ -270,7 +270,7 @@ class GroupsTest(EngineCase):
             raise RuntimeError("can't read the login")
 
         report = self.report(make_source("aaa", logged_in=logged_in), targets=["aaa:a"])
-        self.assertFalse(any(line.startswith("✓ aaa:a") for line in self.lines()), self.lines())
+        self.assertFalse(any(line.startswith("✓ " + "━" * 20 + " aaa:a") for line in self.lines()), self.lines())
         self.assertEqual([str(target) for target in report.failed], ["aaa:a"])
 
     def test_failed_lists_only_the_targets_that_failed(self):
@@ -334,7 +334,7 @@ class LoginStateTest(EngineCase):
         self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
         self.assertIn("✗ aaa:a: not logged in; run flnd login", self.lines())
-        self.assertIn("✗ aaa:b", self.lines())
+        self.assertIn("✗ " + "─" * 20 + " aaa:b", self.lines())
 
     def test_download_never_asks(self):
         # The `Site` a download gives has no `ask`, so a source can't stop to ask a question.
@@ -393,14 +393,14 @@ class HttpTest(EngineCase):
         self.assertEqual(ran, [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
         self.assertIn("! aaa: rate limited; waiting", " ".join(self.lines()))
         self.assertIn("(attempt 4)", " ".join(self.lines()))
-        self.assertIn("✓ aaa:c", self.lines())
+        self.assertIn("✓ " + "━" * 20 + " aaa:c", self.lines())
 
     def test_challenges_are_waited_out(self):
         self.run_engine(make_source("aaa", lambda site: site.back_off("challenged")),
                         targets=["aaa:a", "aaa:b", "aaa:c", "aaa:d"])
         waits = [line for line in self.lines() if "challenged; waiting" in line]
         self.assertEqual([wait.rsplit(" ", 1)[-1] for wait in waits], ["1)", "2)", "3)", "4)"])
-        self.assertIn("✓ aaa:d", self.lines())
+        self.assertIn("✓ " + "━" * 20 + " aaa:d", self.lines())
 
     def test_ctrl_c_during_a_wait_stops_the_run(self):
         """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the command as Ctrl-C."""
@@ -414,7 +414,7 @@ class HttpTest(EngineCase):
         engine = Engine(home=self.home, sources={"aaa": source})
         with self.assertRaises(KeyboardInterrupt):
             engine.download(["aaa:a"])
-        self.assertIn("✗ aaa:a stopped", self.lines())
+        self.assertIn("✗ " + "─" * 20 + " aaa:a stopped", self.lines())
 
 
 class CtrlCTest(unittest.TestCase):

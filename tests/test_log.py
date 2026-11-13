@@ -196,7 +196,7 @@ class LevelTest(LogCase):
     def test_progress_rows_keep_a_colored_glyph_only(self):
         with theme.scope(color="16m"), log.progress("a", total=2) as bar:
             bar.advance()
-        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓\x1b[0m " + "━" * 10 + "─" * 10 + " " + "2".rjust(17) + " a"])
+        self.assertEqual(self.lines(), ["\x1b[38;2;2;191;135m✓\x1b[0m " + "━" * 10 + "─" * 10 + " a " + "2"])
 
 
 class PipeProgressTest(LogCase):
@@ -206,7 +206,7 @@ class PipeProgressTest(LogCase):
             bar.count = 1258291
             bar.caption = "part 3"
             self.assertEqual(self.output(), "")
-        self.assertEqual(self.lines(), ["✓ " + "━" * 8 + "─" * 12 + " " + "3.0 MB".rjust(17) + " clip.mp4"])
+        self.assertEqual(self.lines(), ["✓ " + "━" * 8 + "─" * 12 + " clip.mp4 " + "3.0 MB"])
         self.assertTrue(bar.finished)
         self.assertEqual((bar.label, bar.count, bar.caption), ("clip.mp4", 1258291, ""))
 
@@ -216,7 +216,7 @@ class PipeProgressTest(LogCase):
                 bar.advance(4)
                 bar.caption = "part 3"
                 raise KeyboardInterrupt
-        self.assertEqual(self.lines(), ["✗ " + "━" * 8 + "─" * 12 + " " + "4/10".rjust(17) + " clip.mp4 part 3"])
+        self.assertEqual(self.lines(), ["✗ " + "━" * 8 + "─" * 12 + " clip.mp4 " + "4/10" + " part 3"])
 
     def test_count_and_total_are_set(self):
         with log.progress("upload") as bar:
@@ -225,14 +225,14 @@ class PipeProgressTest(LogCase):
             self.assertEqual((bar.count, bar.total), (5, 10))
             bar.count = 7
             self.assertEqual(bar.total, 10)
-        self.assertEqual(self.lines(), ["✓ " + "━" * 14 + "─" * 6 + " " + "10".rjust(17) + " upload"])
+        self.assertEqual(self.lines(), ["✓ " + "━" * 14 + "─" * 6 + " upload " + "10"])
 
     def test_return_and_break_are_clean(self):
         for _ in range(2):
             with log.progress("loop") as bar:
                 bar.advance()
                 break
-        self.assertEqual(self.lines(), ["✓ loop 1"])
+        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " loop 1"])
 
     def test_spinner_and_late_total(self):
         with log.progress("scroll posts") as bar:
@@ -241,14 +241,14 @@ class PipeProgressTest(LogCase):
         with log.progress("late") as late:
             late.total = 4
             late.count = -5
-        self.assertEqual(self.lines(), ["✓ scroll posts 12", "✓ " + "─" * 20 + " " + "4".rjust(17) + " late"])
+        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " scroll posts 12", "✓ " + "─" * 20 + " late " + "4"])
 
     def test_nested_bars(self):
         with log.progress("run") as outer:
             with log.progress("file", total=2) as inner:
                 inner.advance(2)
             outer.advance()
-        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " " + "2".rjust(17) + " file", "✓ run 1"])
+        self.assertEqual(self.lines(), ["✓ " + "━" * 20 + " file " + "2", "✓ " + "━" * 20 + " run 1"])
 
     def test_group_with_finish_and_fail(self):
         with self.assertRaises(RuntimeError):
@@ -264,21 +264,21 @@ class PipeProgressTest(LogCase):
                 raise RuntimeError
         self.assertEqual(self.lines(), [
             "✗ download",
-            "✗ " + "━" * 2 + "─" * 18 + " " + "1/12".rjust(17) + " ins:ada reel 3",
-            "✓ twt:bob",
-            "✗ fbk:cy",
+            "✗ " + "━" * 2 + "─" * 18 + " ins:ada " + "1/12" + " reel 3",
+            "✓ " + "━" * 20 + " twt:bob",
+            "✗ " + "─" * 20 + " fbk:cy",
         ])
 
     def test_group_clean_exit(self):
         with log.group("download") as jobs:
             jobs.add("a", total=1).advance()
-        self.assertEqual(self.lines(), ["✓ download", "✓ " + "━" * 20 + " " + "1".rjust(17) + " a"])
+        self.assertEqual(self.lines(), ["✓ download", "✓ " + "━" * 20 + " a " + "1"])
 
     def test_log_line_while_bar_open(self):
         with log.progress("run", total=2) as bar:
             log.info("hello")
             bar.advance()
-        self.assertEqual(self.lines(), ["• hello", "✓ " + "━" * 10 + "─" * 10 + " " + "2".rjust(17) + " run"])
+        self.assertEqual(self.lines(), ["• hello", "✓ " + "━" * 10 + "─" * 10 + " run " + "2"])
 
 
 class TtyProgressTest(LogCase):
@@ -291,18 +291,18 @@ class TtyProgressTest(LogCase):
         with log.progress("c", total=4) as bar:
             bar.advance(1)
             self.tick(0.6)
-            self.assertEqual(visible_screen(self.output()), ["• " + "━" * 5 + "─" * 15 + " " + "1/4".rjust(17) + " c"])
+            self.assertEqual(visible_screen(self.output()), ["• " + "━" * 5 + "─" * 15 + " c " + "1/4"])
             bar.advance(1)
             self.tick(0.1)
-            self.assertEqual(visible_screen(self.output()), ["• " + "━" * 10 + "─" * 10 + " " + "2/4".rjust(17) + " c"])
-        self.assertEqual(visible_screen(self.output()), ["✓ " + "━" * 10 + "─" * 10 + " " + "4".rjust(17) + " c"])
+            self.assertEqual(visible_screen(self.output()), ["• " + "━" * 10 + "─" * 10 + " c " + "2/4"])
+        self.assertEqual(visible_screen(self.output()), ["✓ " + "━" * 10 + "─" * 10 + " c " + "4"])
 
     def test_exception_on_tty(self):
         self.screen._width = 60
         with self.assertRaises(ValueError), log.progress("clip", total=4) as bar:
             bar.caption = "x"
             raise ValueError
-        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " " + "0/4".rjust(17) + " clip x"])
+        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " clip " + "0/4" + " x"])
 
     def test_log_line_above_open_bars(self):
         self.screen._width = 60
@@ -313,11 +313,11 @@ class TtyProgressTest(LogCase):
                 log.warn("careful")
                 self.tick(0.1)
                 self.assertEqual(visible_screen(self.output()), [
-                    "! careful", "• download", "• " + "─" * 20 + " " + "0/2".rjust(17) + " a",
-                    "• " + "─" * 20 + " " + "0/1".rjust(17) + " inner",
+                    "! careful", "• download", "• " + "─" * 20 + " a " + "0/2",
+                    "• " + "─" * 20 + " inner " + "0/1",
                 ])
         self.assertEqual(visible_screen(self.output()), [
-            "! careful", "✓ " + "─" * 20 + " " + "1".rjust(17) + " inner", "✓ download", "✓ " + "─" * 20 + " " + "2".rjust(17) + " a",
+            "! careful", "✓ " + "─" * 20 + " inner " + "1", "✓ download", "✓ " + "─" * 20 + " a " + "2",
         ])
 
     def test_live_area_capped_to_height(self):
@@ -328,7 +328,7 @@ class TtyProgressTest(LogCase):
                 jobs.add(name, total=1)
             self.tick(0.6)
             rows = visible_screen(self.output())
-            self.assertEqual(rows[:2], ["• download", "• " + "─" * 20 + " " + "0/1".rjust(17) + " a"])
+            self.assertEqual(rows[:2], ["• download", "• " + "─" * 20 + " a " + "0/1"])
             self.assertEqual(rows[2:], ["… 4 more"])
             jobs.add("f", total=1)
             self.tick(0.1)
@@ -347,7 +347,7 @@ class TtyProgressTest(LogCase):
             first = self.output()
             self.tick(0.25)
             self.assertNotEqual(self.output(), first)
-        self.assertEqual(visible_screen(self.output()), ["✓ wait"])
+        self.assertEqual(visible_screen(self.output()), ["✓ " + "━" * 20 + " wait"])
 
 
 class FrameTest(LogCase):
@@ -378,13 +378,13 @@ class FrameTest(LogCase):
         self.assertEqual(outside, "\x1b[?25l\x1b[?25h")
         empty, half = "─" * 20, "━" * 10 + "─" * 10
         self.assertEqual(frames, [
-            "\r• download\x1b[K\n• " + empty + " " + "0/4".rjust(17) + " a\x1b[K\n• " + empty + " " + "0/4".rjust(17) + " b\x1b[K\n",
+            "\r• download\x1b[K\n• " + empty + " a " + "0/4" + "\x1b[K\n• " + empty + " b " + "0/4" + "\x1b[K\n",
             # A frame that changed one bar writes that bar's row alone: a cursor move, the row, its clear.
-            "\x1b[2A\r• " + half + " " + "2/4".rjust(17) + " a\x1b[K\x1b[2B\r",
-            "\x1b[1A\r• " + half + " " + "2/4".rjust(17) + " b\x1b[K\x1b[1B\r",
-            "\x1b[2A\r✓ " + half + " " + "4".rjust(17) + " a\x1b[K\x1b[2B\r",
+            "\x1b[2A\r• " + half + " a " + "2/4" + "\x1b[K\x1b[2B\r",
+            "\x1b[1A\r• " + half + " b " + "2/4" + "\x1b[K\x1b[1B\r",
+            "\x1b[2A\r✓ " + half + " a " + "4" + "\x1b[K\x1b[2B\r",
             # The last frame goes back up to write the lines the rows become, and clears nothing.
-            "\r\x1b[3A✓ download\x1b[K\n✓ " + half + " " + "4".rjust(17) + " a\x1b[K\n✓ " + half + " " + "4".rjust(17) + " b\x1b[K\n",
+            "\r\x1b[3A✓ download\x1b[K\n✓ " + half + " a " + "4" + "\x1b[K\n✓ " + half + " b " + "4" + "\x1b[K\n",
         ])
         self.assertNotIn("\x1b[J", self.output())
 
@@ -522,8 +522,8 @@ class FrameTest(LogCase):
             self.tick(0.6)
             empty = "─" * 20
             self.assertEqual(visible_screen(self.output()), [
-                "• download", "• ins:example_user ⠦", "  • " + empty + " " + "0/2".rjust(17) + " a.jpg",
-                "  • " + empty + " " + "0/2".rjust(17) + " b.jpg",
+                "• download", "• ⠦" + " " * 20 + "ins:example_user", "  • " + empty + " a.jpg " + "0/2",
+                "  • " + empty + " b.jpg " + "0/2",
             ])
             target.caption = "3 files · 3 running · 0 queued"
             self.tick(0.1)
@@ -537,7 +537,7 @@ class FrameTest(LogCase):
         self.screen._tty = False
         with log.progress("a"):
             self.assertIsNone(self.area.thread)
-        self.assertEqual(self.lines(), ["• idle", "✓ a"])
+        self.assertEqual(self.lines(), ["• idle", "✓ " + "━" * 20 + " a"])
 
 
 class DrawingThreadTest(LogCase):
@@ -557,7 +557,7 @@ class DrawingThreadTest(LogCase):
             self.assertIsNotNone(self.area.thread)
             self.assertGreaterEqual(self.area.frames, 3)
             self.assertEqual(visible_screen(self.output())[0][:1], "•")
-        self.assertEqual(visible_screen(self.output()), ["✓ wait"])
+        self.assertEqual(visible_screen(self.output()), ["✓ " + "━" * 20 + " wait"])
         for _ in range(20):
             if self.area.thread is None:
                 break
@@ -599,7 +599,7 @@ class QuietPipeTest(LogCase):
     def test_quiet_writes_only_bars_that_end_at_error(self):
         log.level = "quiet"
         self.run_bars()
-        self.assertEqual(self.lines(), ["✗ " + "─" * 20 + " " + "0/2".rjust(17) + " bad", "✗ b", "✗ upload", "✗ c"])
+        self.assertEqual(self.lines(), ["✗ " + "─" * 20 + " bad " + "0/2", "✗ " + "─" * 20 + " b", "✗ upload", "✗ " + "─" * 20 + " c"])
 
     def test_other_levels_write_every_bar(self):
         log.level = "error"
@@ -618,12 +618,12 @@ class QuietTtyTest(QuietPipeTest):
             self.assertEqual(self.output(), "")
         with self.assertRaises(RuntimeError), log.progress("bad", total=2):
             raise RuntimeError
-        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " " + "0/2".rjust(17) + " bad"])
+        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " bad " + "0/2"])
 
     def test_quiet_writes_only_bars_that_end_at_error(self):
         log.level = "quiet"
         self.run_bars()
-        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " " + "0/2".rjust(17) + " bad", "✗ b", "✗ upload", "✗ c"])
+        self.assertEqual(visible_screen(self.output()), ["✗ " + "─" * 20 + " bad " + "0/2", "✗ " + "─" * 20 + " b", "✗ upload", "✗ " + "─" * 20 + " c"])
 
 
 class ThreadTest(LogCase):
@@ -643,8 +643,8 @@ class ThreadTest(LogCase):
         for thread in threads:
             thread.join()
         finals = [line for line in self.lines()]
-        self.assertEqual(sorted(finals), sorted("✓ " + "━" * 20 + " " + "1".rjust(17) + f" job {n}" for n in range(count)))
-        self.assertEqual(finals[0], "✓ " + "━" * 20 + " " + "1".rjust(17) + f" job {count - 1}")
+        self.assertEqual(sorted(finals), sorted("✓ " + "━" * 20 + f" job {n} " + "1" for n in range(count)))
+        self.assertEqual(finals[0], "✓ " + "━" * 20 + f" job {count - 1} " + "1")
         self.assertEqual(live_area(self.screen).groups, [])
 
     def test_bars_finish_out_of_order_on_tty(self):
@@ -663,12 +663,12 @@ class ThreadTest(LogCase):
             bar.advance()
         self.tick(0.6)
         self.assertEqual(visible_screen(self.output()), [
-            "✓ " + "━" * 20 + " " + "1".rjust(17) + " second", "• " + "─" * 20 + " " + "0/1".rjust(17) + " first",
+            "✓ " + "━" * 20 + " second " + "1", "• " + "─" * 20 + " first " + "0/1",
         ])
         second_done.set()
         thread.join()
         self.assertEqual(visible_screen(self.output()), [
-            "✓ " + "━" * 20 + " " + "1".rjust(17) + " second", "✓ " + "─" * 20 + " " + "1".rjust(17) + " first",
+            "✓ " + "━" * 20 + " second " + "1", "✓ " + "─" * 20 + " first " + "1",
         ])
 
     def test_many_threads_never_split_lines(self):
@@ -718,7 +718,7 @@ class ThreadTest(LogCase):
             self.assertEqual([row.count for row in rows._bars[1:]], [steps] * workers)
         screen = visible_screen(self.output())
         self.assertEqual(sum(line.startswith("• job ") for line in screen), workers * steps // 50)
-        self.assertIn("✓ " + "━" * 20 + " " + str(workers * steps).rjust(17) + " all", screen)
+        self.assertIn("✓ " + "━" * 20 + " all " + str(workers * steps), screen)
         self.assertEqual(live_area(self.screen).groups, [])
 
     def test_output_is_held_while_a_prompt_is_open(self):
@@ -742,7 +742,7 @@ class ThreadTest(LogCase):
         self.assertEqual(prompt.ask("Name", default="ada"), "ada")
         thread.join()
         self.assertEqual(self.lines(), [
-            "┃ Name", "┃ > ada_", "enter submit", "✓ Name: ada", "• background", "✓ " + "━" * 20 + " " + "1".rjust(17) + " bar",
+            "┃ Name", "┃ > ada_", "enter submit", "✓ Name: ada", "• background", "✓ " + "━" * 20 + " bar " + "1",
         ])
 
 

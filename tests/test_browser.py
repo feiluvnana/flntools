@@ -355,7 +355,7 @@ class ChromeOnlyTest(BrowserCase):
                                                       if key not in os.environ})
         out = self.screen.dest.getvalue()
         self.assertIn(f"✓ {browser.CHROMIUM_QUESTION} Yes", out)
-        self.assertIn("✓ " + "━" * 20 + " " + "100".rjust(17) + " Downloading Chromium", out)
+        self.assertIn("✓ " + "━" * 20 + " Downloading Chromium " + "100", out)
         # A later run finds it and doesn't ask: the screen has no key left to answer with.
         browser.open().close()
         self.assertEqual((self.launched, len(self.installs)), (["chromium", "chromium"], 1))
@@ -404,7 +404,7 @@ class ChromeOnlyTest(BrowserCase):
                 self.assertRaisesRegex(RuntimeError, "installer exited with 1: Error: ENOSPC"):
             browser.open()
         self.assertEqual(self.launched, [])
-        self.assertIn("✗ " + "─" * 20 + " " + "0/100".rjust(17) + " Downloading Chromium", self.screen.dest.getvalue())
+        self.assertIn("✗ " + "─" * 20 + " Downloading Chromium " + "0/100", self.screen.dest.getvalue())
 
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []
@@ -1086,11 +1086,11 @@ class HandoffTest(BrowserCase):
         ready = time.monotonic() + 0.1
         self.assertTrue(self.page.handoff(until=lambda: time.monotonic() >= ready, message="Solve the captcha",
                                           poll=0.02))
-        self.assertEqual(self.lines(), ["! Solve the captcha", "✓ Solve the captcha"])
+        self.assertEqual(self.lines(), ["! Solve the captcha", "✓ " + "━" * 20 + " Solve the captcha"])
 
     def test_timeout(self):
         self.assertFalse(self.page.handoff(until=lambda: False, message="Log in", poll=0.02, timeout=0.1))
-        self.assertEqual(self.lines(), ["! Log in", "✗ Log in"])
+        self.assertEqual(self.lines(), ["! Log in", "✗ " + "─" * 20 + " Log in"])
 
 
 # Every byte value, so a body that went through text anywhere would come back changed.

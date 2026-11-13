@@ -139,23 +139,23 @@ class DrawerTest(unittest.TestCase):
     def test_progress_rows(self):
         draw = lambda bar, level="info": self.theme.draw("progress", LogRecord(level, "", bar))  # noqa: E731
         running = Bar("clip.mp4", 3, 10, "part 3", False)
-        # The bar's 20 cells come first, then the count right-aligned to 17 cells, then the label and caption.
-        self.assertEqual(draw(running), "• " + "━" * 6 + "─" * 14 + " " + "3/10".rjust(17) + " clip.mp4 part 3")
+        # The bar's 20 cells come first, then the label, then the count with its "/" total, then the caption.
+        self.assertEqual(draw(running), "• " + "━" * 6 + "─" * 14 + " clip.mp4 3/10 part 3")
         # A line that ended at ok shows the total alone, not n/n.
-        self.assertEqual(draw(Bar("clip.mp4", 10, 10, "", True), "ok"),
-                         "✓ " + "━" * 20 + " " + "10".rjust(17) + " clip.mp4")
+        self.assertEqual(draw(Bar("clip.mp4", 10, 10, "", True), "ok"), "✓ " + "━" * 20 + " clip.mp4 10")
         # A failed line keeps count/total and its caption, so how far it got stays on screen.
-        self.assertEqual(draw(running, "error"), "✗ " + "━" * 6 + "─" * 14 + " " + "3/10".rjust(17) + " clip.mp4 part 3")
+        self.assertEqual(draw(running, "error"), "✗ " + "━" * 6 + "─" * 14 + " clip.mp4 3/10 part 3")
         self.assertIn("━" * 20, draw(Bar("a", 50, 10, "", False)))
         self.assertEqual(draw(Bar("a", 1024, 2048, "", False, show=lambda n: f"{n // 1024}K")),
-                         "• " + "━" * 10 + "─" * 10 + " " + "1K/2K".rjust(17) + " a")
+                         "• " + "━" * 10 + "─" * 10 + " a 1K/2K")
 
     def test_spinner_rows_collapse(self):
         draw = lambda bar, level="info": self.theme.draw("progress", LogRecord(level, "", bar))  # noqa: E731
-        self.assertRegex(draw(Bar("scroll posts", 0, None, "", False)), r"^• scroll posts [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$")
-        self.assertRegex(draw(Bar("scroll posts", 12, None, "", False)), r"^• scroll posts . 12$")
-        self.assertEqual(draw(Bar("scroll posts", 12, None, "", True), "ok"), "✓ scroll posts 12")
-        self.assertEqual(draw(Bar("scroll posts", 0, None, "", True), "ok"), "✓ scroll posts")
+        # A spinner's frame sits in the 20-cell bar column, padded with spaces, so the label stays in one column.
+        self.assertRegex(draw(Bar("scroll posts", 0, None, "", False)), r"^• [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] {19} scroll posts$")
+        self.assertRegex(draw(Bar("scroll posts", 12, None, "", False)), r"^• [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] {19} scroll posts 12$")
+        self.assertEqual(draw(Bar("scroll posts", 12, None, "", True), "ok"), "✓ " + "━" * 20 + " scroll posts 12")
+        self.assertEqual(draw(Bar("scroll posts", 0, None, "", True), "ok"), "✓ " + "━" * 20 + " scroll posts")
 
     def test_help(self):
         model = HelpModel("tool", "Does things.", "tool [options] name",

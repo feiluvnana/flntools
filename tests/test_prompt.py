@@ -582,7 +582,7 @@ class LiveAreaTest(PromptCase):
         # The prompt shows the cursor again; the area is still open, so it is hidden once more.
         # No row was on the screen when the block ended, so its line is written plainly. An ok line
         # shows the total alone, and the label comes after the count.
-        ok_line = "✓ " + "━" * 10 + "─" * 10 + " " + "2".rjust(17) + " run"
+        ok_line = "✓ " + "━" * 10 + "─" * 10 + " run " + "2"
         self.assertTrue(output.endswith("✓ Go? Yes\n\x1b[?25h\x1b[?2004l\x1b[?25l" + ok_line + "\n\x1b[?25h"))
 
     def test_two_threads_ask_one_at_a_time(self):
