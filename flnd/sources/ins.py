@@ -142,7 +142,7 @@ class Instagram(Source):
         if media is not None:
             yield post_of(media)
 
-    @target("{user}", r"instagram.com/{user:(?!share$)[\w.]+}")
+    @target("{user}", "instagram.com/{user}")
     def user(self, site: Site, user: str) -> Profile:
         """A profile, by its user name; a tab's URL (/reels/, /tagged/) is its profile too.
 

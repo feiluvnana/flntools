@@ -831,7 +831,7 @@ def _retry_after(value: str | None) -> float | None:
         seconds = when.timestamp() - clock.wall()
     if not math.isfinite(seconds):
         return None
-    return min(max(0.0, seconds), MAX_RETRY_AFTER)
+    return max(0.0, seconds)
 
 
 def _reset(headers: Mapping[str, str]) -> float | None:
@@ -846,7 +846,7 @@ def _reset(headers: Mapping[str, str]) -> float | None:
         # A big number is a Unix time (X's), a small one seconds from now; the second is slack for
         # a clock a little behind the server's.
         seconds = reset - clock.wall() if reset > EPOCH else reset
-        return min(max(0.0, seconds) + 1.0, MAX_RETRY_AFTER)
+        return max(0.0, seconds) + 1.0
     return None
 
 

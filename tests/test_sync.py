@@ -428,13 +428,20 @@ class HistoryTest(SyncCase):
     def test_the_history_is_read_once_per_run(self):
         """Fix 12: repair, compress and the tally each scanned the whole history, per target."""
         self.download(texts=("aaa:a", "aaa:b", "aaa:c"))
-        real_iter, scans = kv.Store.__iter__, []
+        real_iter, real_items, scans = kv.Store.__iter__, kv.Store._items, []
 
-        def counted(store):
+        def counted_iter(store):
             scans.append(store)
             return real_iter(store)
 
-        with mock.patch.object(kv.Store, "__iter__", counted):
+        def counted_items(store):
+            scans.append(store)
+            return real_items(store)
+
+        with (
+            mock.patch.object(kv.Store, "__iter__", counted_iter),
+            mock.patch.object(kv.Store, "_items", counted_items),
+        ):
             lines = self.sync()
         history_scans = [store for store in scans if store._table == "downloads"]
         self.assertEqual(len(lines), 3)

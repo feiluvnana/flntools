@@ -37,6 +37,9 @@ class AcceptedFormsTest(unittest.TestCase):
             ("https://fb.com/example.page", Target("fbk", "user", "example.page")),
             ("https://m.facebook.com/example.page/photos", Target("fbk", "user", "example.page")),
             ("https://mobile.facebook.com/example.page", Target("fbk", "user", "example.page")),
+            ("https://web.facebook.com/example.page", Target("fbk", "user", "example.page")),
+            ("https://mbasic.facebook.com/example.page", Target("fbk", "user", "example.page")),
+            ("https://touch.facebook.com/example.page", Target("fbk", "user", "example.page")),
         ])
 
     def test_twt(self):
@@ -81,6 +84,12 @@ class AcceptedFormsTest(unittest.TestCase):
     def test_codes_are_case_insensitive_and_trimmed(self):
         self.assertEqual(read(" INS:someone "), Target("ins", "user", "someone"))
 
+    def test_percent_encoded_path_segments_are_decoded(self):
+        self.assertEqual(
+            read("https://mimihentai.moe/author/some%20author"),
+            Target("mht", "author", "some author"),
+        )
+
 
 class ShortLinkTest(unittest.TestCase):
     def test_followed_with_the_given_function(self):
@@ -104,6 +113,22 @@ class ShortLinkTest(unittest.TestCase):
         with self.assertRaisesRegex(TargetError, "^fbk: single posts and videos aren't supported yet"):
             read("https://fb.watch/abc/", lambda url: "https://www.facebook.com/watch/?v=123")
 
+    def test_share_links_are_followed(self):
+        self.assertEqual(
+            read("https://www.facebook.com/share/r/abc/",
+                 lambda url: "https://www.facebook.com/example.page"),
+            Target("fbk", "user", "example.page"),
+        )
+
+    def test_cross_source_redirect_and_unchanged_follow(self):
+        self.assertEqual(
+            read("https://vm.tiktok.com/ZMabc123/",
+                 lambda url: "https://www.instagram.com/p/C1abcDEFghi/"),
+            Target("ins", "post", "C1abcDEFghi"),
+        )
+        with self.assertRaisesRegex(TargetError, "can't read"):
+            read("https://vm.tiktok.com/ZMabc123/", lambda url: url)
+
 
 class RefusedTest(unittest.TestCase):
     def test_bare_value_lists_every_source(self):
@@ -125,8 +150,11 @@ class RefusedTest(unittest.TestCase):
         rows = [
             ("https://www.instagram.com/stories/example_user/123/", "ins: story links aren't supported; give the "
                                                                    "profile, and its stories come with it"),
+            ("https://www.instagram.com/explore/", "ins: that's not a profile"),
+            ("https://www.instagram.com/accounts/login/", "ins: that's not a profile"),
             ("https://www.facebook.com/example.page/posts/123", "fbk: single posts and videos aren't supported yet"),
             ("https://x.com/explore", "twt: that's not a profile"),
+            ("https://x.com/intent/tweet", "twt: that's not a profile"),
         ]
         for text, message in rows:
             with self.subTest(text=text), self.assertRaisesRegex(TargetError, "^" + message):
