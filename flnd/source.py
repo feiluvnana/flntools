@@ -266,7 +266,7 @@ class Route:
 
     def __init__(
         self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None,
-        params: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None, discovers: bool = False,
     ):
         """Compile `patterns` for `function`, raising `TypeError` for a mistake in them.
 
@@ -275,6 +275,7 @@ class Route:
             patterns: the forms it reads, as `target` takes them.
             shown: form help shows for first pattern, or route's only form when it has none.
             params: query parameters for a `?{query}` route, keyed by parameter name.
+            discovers: whether this route yields targets rather than posts.
 
         Raises:
             TypeError: a pattern doesn't compile, has no placeholder or two, or its placeholder
@@ -286,6 +287,7 @@ class Route:
         self.shown = shown
         self._patterns = [_Pattern(pattern) for pattern in patterns]
         self.is_query = any(pattern.is_query for pattern in self._patterns)
+        self.discovers = self.is_query or discovers
         if params is not None and not self.is_query:
             raise TypeError(f"route {self.kind}: params= requires a '?{{query}}' pattern")
         self.params: Mapping[str, Any] = (
@@ -361,7 +363,8 @@ class Route:
 
 
 def target(*patterns: str, shown: str | None = None,
-           params: Mapping[str, Any] | None = None) -> Callable[[Callable[..., Any]], Route]:
+           params: Mapping[str, Any] | None = None,
+           discovers: bool = False) -> Callable[[Callable[..., Any]], Route]:
     """Mark a method as a route: the targets it reads, as patterns, named by the method's kind.
 
         @target("instagram.com/p/{code:[\\w-]+}", "instagram.com/reel/{code:[\\w-]+}")
@@ -369,7 +372,9 @@ def target(*patterns: str, shown: str | None = None,
 
     Each pattern has exactly one placeholder matching the method's value parameter.
     """
-    return lambda function: Route(function, patterns, shown=shown, params=params)
+    return lambda function: Route(
+        function, patterns, shown=shown, params=params, discovers=discovers,
+    )
 
 
 @dataclass(frozen=True, init=False)
@@ -1007,7 +1012,7 @@ class Source:
         names = [category.name for route in cls.routes for category in route.categories]
         cls.categories = tuple(dict.fromkeys(names))
         cls.single_kinds = tuple(
-            route.kind for route in cls.routes if not route.categories and not route.is_query
+            route.kind for route in cls.routes if not route.categories and not route.discovers
         )
         if not cls.routes:
             return

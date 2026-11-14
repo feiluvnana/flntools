@@ -20,9 +20,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
-from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
+from flnd.source import FetchError, File, LoginError, Post, Site, Source, Target, day, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.common.watch import caught_up, warm_tabs, watch_responses
@@ -92,6 +92,7 @@ CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 WALL_ATTEMPTS = 2
 CHECKPOINTS = ("checkpoint_required", "challenge_required", "login_required")
+FOLLOWING_COUNT = 100
 
 
 class Instagram(Source):
@@ -141,6 +142,11 @@ class Instagram(Source):
         media = self.api.post(site, code)
         if media is not None:
             yield post_of(media)
+
+    @target("{me:me}", shown="ins:me", discovers=True)
+    def me(self, site: Site, me: str) -> Iterator[Target]:
+        """All users the logged-in account follows."""
+        yield from self.api.following(site)
 
     @target("{user}", "instagram.com/{user}")
     def user(self, site: Site, user: str) -> Profile:
@@ -384,6 +390,42 @@ class Api:
             self._refuse(site, "story", "stories")
             return None
         return [item for item in (data["reel"] or {}).get("items") or [] if isinstance(item, dict)]
+
+    def following(self, site: Site) -> Iterator[Target]:
+        """Every user the logged-in account follows, paginated from the friendships API."""
+        user_id = self._self_id(site)
+        max_id: str | None = None
+        while True:
+            params: dict[str, Any] = {"count": FOLLOWING_COUNT}
+            if max_id is not None:
+                params["max_id"] = max_id
+            data = self.get(site, f"{API}/friendships/{user_id}/following/", params=params)
+            if not isinstance(data, dict) or not isinstance(data.get("users"), list):
+                raise FetchError("ins:me: unexpected following response")
+            for user in data["users"]:
+                username = user.get("username") if isinstance(user, dict) else None
+                if isinstance(username, str) and username:
+                    yield Target("ins", "user", username)
+            next_id = data.get("next_max_id")
+            if not next_id or str(next_id) == max_id:
+                return
+            max_id = str(next_id)
+
+    def _self_id(self, site: Site) -> str:
+        """The logged-in account's numeric Instagram user id."""
+        user_id = site.cookies.get("ds_user_id", "")
+        if user_id.isdigit():
+            return user_id
+        session = unquote(site.cookies.get("sessionid", ""))
+        prefix = session.split(":", 1)[0]
+        if prefix.isdigit():
+            return prefix
+        data = self.get(site, f"{API}/accounts/current_user/", params={"edit": "true"})
+        user = data.get("user") if isinstance(data, dict) else None
+        found = user.get("pk") or user.get("id") if isinstance(user, dict) else None
+        if found:
+            return str(found)
+        raise LoginError("ins: not logged in; run flnd auth login")
 
     def _refused(self, site: Site, api: str) -> bool:
         """Whether `api` was refused this run, or in an earlier run less than a day ago."""

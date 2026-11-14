@@ -163,7 +163,7 @@ class RefusedTest(unittest.TestCase):
     def test_unreadable_forms_list_the_forms(self):
         with self.assertRaises(TargetError) as caught:
             read("ins:not a name")
-        self.assertEqual(str(caught.exception), "ins: can't read 'not a name'; write it like ins:<user>, "
+        self.assertEqual(str(caught.exception), "ins: can't read 'not a name'; write it like ins:me, ins:<user>, "
                                                 "https://www.instagram.com/p/<code>/, https://www.instagram.com/reel/<code>/, "
                                                 "https://www.instagram.com/reels/<code>/, https://www.instagram.com/tv/<code>/, "
                                                 "https://www.instagram.com/…/p/<code>/, "

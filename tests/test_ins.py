@@ -8,9 +8,11 @@ is slept: `back_off` only records.
 
 import json
 import os
+import tempfile
 import time
 import unittest
 from datetime import date
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
@@ -18,6 +20,8 @@ import httpx
 from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
+from flnd import targets as db_targets
+from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import FetchError, LoginError, Target, TargetError, day
 from flnd.sources.common.relay import embedded_results
@@ -91,6 +95,7 @@ HIGHLIGHTS = {"data": {"highlights": {"edges": [{"node": {"id": "highlight:9001"
 # Every form ins reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
 # The kinds and values are the keys of targets.db and the history, so a change here is a migration.
 ROUTES = [
+    ("ins:me", ("me", "me")),
     ("ins:example_user", ("user", "example_user")),
     ("ins:@example_user", ("user", "example_user")),
     ("ins:example.user", ("user", "example.user")),
@@ -779,6 +784,103 @@ class SinglePostTest(unittest.TestCase):
         saved = read("https://www.instagram.com/p/SINGLE/", json=other, seen=seen)
         self.assertEqual([(item.path, item.key) for item in saved], OLD_SINGLE)
         self.assertEqual(seen.visited, [f"{SITE}/p/SINGLE/"])
+
+
+class MeTest(unittest.TestCase):
+    def test_resolve_ins_me(self):
+        target = Instagram().resolve("me")
+        self.assertEqual(target, Target("ins", "me", "me"))
+        self.assertEqual(str(target), "ins:me")
+        self.assertFalse(target.query)
+        self.assertNotIn("me", Instagram.single_kinds)
+        self.assertIn("ins:me", Instagram.forms)
+        self.assertEqual(Instagram().resolve("https://www.instagram.com/me/"), Target("ins", "user", "me"))
+
+    def test_me_paginates_following_with_ds_user_id_cookie(self):
+        seen = Seen()
+        pages = [
+            {"users": [{"username": "example_user"}], "next_max_id": "1"},
+            {"users": [{"username": "example_creator"}], "next_max_id": None},
+        ]
+        json_map = {f"{API}/friendships/99/following/": lambda u, req: pages.pop(0)}
+        site = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json=json_map, seen=seen)
+        found = list(Instagram().me(site, "me"))
+        self.assertEqual(found, [Target("ins", "user", "example_user"), Target("ins", "user", "example_creator")])
+
+    def test_me_falls_back_to_sessionid_prefix_and_current_user_api(self):
+        json_map = {
+            f"{API}/friendships/77/following/": {"users": [{"username": "example_user"}]},
+            f"{API}/accounts/current_user/": {"user": {"pk": 88}},
+            f"{API}/friendships/88/following/": {"users": [{"username": "example_handle"}]},
+        }
+        site_session = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "77%3Aabc%3A2"}, json=json_map)
+        self.assertEqual(list(Instagram().me(site_session, "me")), [Target("ins", "user", "example_user")])
+
+        site_api = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "opaque"}, json=json_map)
+        self.assertEqual(list(Instagram().me(site_api, "me")), [Target("ins", "user", "example_handle")])
+
+    def test_me_rejects_unexpected_response(self):
+        site = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json={f"{API}/friendships/99/following/": {}})
+        with self.assertRaises(FetchError):
+            list(Instagram().me(site, "me"))
+
+    def test_engine_treats_ins_me_as_query_target(self):
+        from flnd.common import auth
+        from flnd.source import File, Post
+        from shared import cookies
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            following_pages = [
+                {"users": [{"username": "example_user"}]},
+                {"users": [{"username": "example_creator"}, {"username": "example_user"}]},
+            ]
+            step = {"i": 0}
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                url = str(request.url).split("?", 1)[0]
+                if url == f"{API}/friendships/99/following/":
+                    body = following_pages[min(step["i"], len(following_pages) - 1)]
+                    return httpx.Response(200, json=body)
+                if url.startswith("https://cdn.example/"):
+                    return httpx.Response(200, content=b"IMG")
+                return httpx.Response(404)
+
+            def fake_read_tab(profile, site, api, tab):
+                code = "A1" if profile.user == "example_user" else "B1"
+                yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
+
+            transport = httpx.MockTransport(handler)
+            auth.save(home, "ins", cookies.Jar([
+                {"name": "sessionid", "value": "99:abc:1", "domain": ".instagram.com", "path": "/"},
+            ]))
+            engine = Engine(home=home, sources={"ins": Instagram})
+            with mock.patch("flnd.common.net._base_transport", return_value=transport), \
+                    mock.patch("flnd.engine.needs_browser", return_value=False), \
+                    mock.patch("flnd.sources.ins.Profile.read_tab", fake_read_tab):
+                dry = engine.download(["ins:me"], categories="posts", dry=True)
+                self.assertTrue(dry.ok)
+                self.assertEqual(db_targets.rows(home), {})
+
+                report = engine.download(["ins:me"], categories="posts", sync=True)
+                self.assertTrue(report.ok)
+                rows = db_targets.rows(home)
+                self.assertEqual(list(rows), ["ins:me"])
+                self.assertEqual(db_targets.seen(rows, Target("ins", "me", "me")), ("ins:example_user",))
+                ls = engine.target_ls()
+                self.assertEqual(len(ls), 1)
+                self.assertEqual(str(ls[0]["target"]), "ins:me")
+                self.assertTrue(ls[0]["query"])
+                self.assertEqual(ls[0]["seen"], 1)
+                self.assertTrue((home / "media" / "ins" / "example_user" / "posts" / f"{DAY}_A1.jpg").exists())
+
+                step["i"] = 1
+                sync_report = engine.sync()
+                self.assertTrue(sync_report.ok)
+                self.assertEqual(len(sync_report.targets), 1)
+                self.assertEqual(str(sync_report.targets[0].target), "ins:me")
+                self.assertEqual(list(db_targets.rows(home)), ["ins:me"])
+                self.assertTrue((home / "media" / "ins" / "example_creator" / "posts" / f"{DAY}_B1.jpg").exists())
 
 
 if __name__ == "__main__":

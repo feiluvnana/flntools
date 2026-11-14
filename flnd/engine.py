@@ -487,10 +487,10 @@ class Engine:
         return tuple(code for code, source in self.sources.items() if source.login is Source.login)
 
     def _is_query(self, target: Target) -> bool:
-        """Whether `target` resolves to a `?{query}` route."""
+        """Whether `target` resolves to a target-discovering route."""
         source = self.sources[target.source]
         route = next((r for r in source.routes if r.kind == target.kind), None)
-        return route is not None and route.is_query
+        return route is not None and route.discovers
 
     def _dry_run(
         self, resolved: Sequence[Target], by_source: Mapping[str, Options], span: Range,
@@ -835,6 +835,11 @@ class Engine:
         saved_rows = rows or {}
         for target in known:
             row = saved_rows.get(flnd.targets.key(target), {})
+            if self._is_query(target):
+                for child_key in flnd.targets.seen(saved_rows, target):
+                    if ":" in child_key:
+                        child_code, child_val = child_key.split(":", 1)
+                        seen.add(paths.target_folder(self.home, Target(child_code, "", child_val)))
             query_val = flnd.targets.query_name(row) or (
                 target.value if self._is_query(target) else ""
             )

@@ -124,9 +124,10 @@ flnd.source.Range(since: datetime.date | None = None, until: datetime.date | Non
 flnd.source.Range.parse(text: str) -> Range
 flnd.source.Range.since: field -> datetime.date | None
 flnd.source.Range.until: field -> datetime.date | None
-flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None, params: Mapping[str, Any] | None = None)
+flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None, params: Mapping[str, Any] | None = None, discovers: bool = False)
 flnd.source.Route.categories: property -> tuple[Category, ...]
 flnd.source.Route.category(function: Callable[..., Any] | None = None, /, *, newest_first: bool = False, folder: str | None = None, key: str | None = None) -> Any
+flnd.source.Route.discovers: attribute
 flnd.source.Route.forms(code: str) -> list[str]
 flnd.source.Route.function: attribute
 flnd.source.Route.is_query: attribute
@@ -183,7 +184,7 @@ flnd.source.TargetError.url: attribute
 flnd.source.day(value: Any) -> datetime.date | None
 flnd.source.fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str
 flnd.source.pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None]) -> Iterator[Any]
-flnd.source.target(*patterns: str, shown: str | None = None, params: Mapping[str, Any] | None = None) -> Callable[[Callable[..., Any]], Route]
+flnd.source.target(*patterns: str, shown: str | None = None, params: Mapping[str, Any] | None = None, discovers: bool = False) -> Callable[[Callable[..., Any]], Route]
 shared: module
 shared.BrokenError(shared.Error, ValueError)
 shared.Error(Exception)
