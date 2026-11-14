@@ -44,8 +44,8 @@ SPLIT_HOSTS: frozenset[str] = frozenset({
     "video.twimg.com",
     # live check passed 2026-11-12: 206, 4 ranges identical (loi's archive mirror)
     "loicloud.com",
-    # cdninstagram.com: not checked, ins served every file from fbcdn.net hosts, never from this one.
-    # tiktokcdn.com: not checked, tik showed a captcha on the profile listing, so no file URL was reached.
+    # cdninstagram.com: not checked, ins served every file from fbcdn.net hosts.
+    # tiktokcdn.com: not checked, tik showed captcha on profile listing, so no file URL was reached.
 })
 # Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
@@ -76,16 +76,21 @@ def client(*, user_agent: str | None, jar: Iterable[dict],
             headers in place.
     """
     defaults = httpx.Headers({"User-Agent": user_agent} if user_agent else {})
-    return httpx.Client(headers=defaults, cookies=cookie_jar(jar), timeout=30.0, follow_redirects=True,
-                        transport=_base_transport(),
-                        event_hooks={"request": [sign], "response": [_record]})
+    return httpx.Client(
+        headers=defaults, cookies=cookie_jar(jar), timeout=30.0, follow_redirects=True,
+        transport=_base_transport(),
+        event_hooks={"request": [sign], "response": [_record]},
+    )
 
 
 def cookie_jar(jar: Iterable[dict]) -> httpx.Cookies:
-    """A `shared.cookies.Jar`, or any cookie dicts in its shape, as `httpx.Cookies`, keeping domains and paths."""
+    """A `shared.cookies.Jar`, or any cookie dicts in its shape, as `httpx.Cookies`."""
     cookies = httpx.Cookies()
     for cookie in jar:
-        cookies.set(cookie["name"], cookie["value"], domain=cookie.get("domain", ""), path=cookie.get("path") or "/")
+        cookies.set(
+            cookie["name"], cookie["value"], domain=cookie.get("domain", ""),
+            path=cookie.get("path") or "/",
+        )
     return cookies
 
 
@@ -119,7 +124,9 @@ def download(client: http.Client, file: File, dest: Path, *, label: str,
         except http.StoppedError:
             raise KeyboardInterrupt from None
         except http.RefusedError as error:
-            refused = FetchError(f"HTTP {error.status} for {fmt.url(str(mirror))}", status=error.status)
+            refused = FetchError(
+                f"HTTP {error.status} for {fmt.url(str(mirror))}", status=error.status
+            )
             if number == len(mirrors):
                 raise refused from None
             reason: BaseException = refused
@@ -133,14 +140,13 @@ def download(client: http.Client, file: File, dest: Path, *, label: str,
 
 def follow(url: str) -> str:
     """Where a short link leads, from one HEAD request: `follow("https://vm.tiktok.com/ZM…")`."""
-    # HEAD, since only the final URL is needed, not the body. It uses a plain transport, not the source's
-    # client, so the request is not signed, paced or retried.
+    # HEAD, since only final URL is needed, not body. Plain transport without signing or retry.
     with httpx.Client(follow_redirects=True, timeout=30.0, transport=_base_transport()) as http:
         return str(http.head(url).url)
 
 
 def _base_transport() -> httpx.BaseTransport:
-    """The transport under every client: HTTP/2 for small files, HTTP/1.1 for a split file's pieces."""
+    """Underlying transport: HTTP/2 for small files, HTTP/1.1 for split pieces."""
     return http.Transport()
 
 
@@ -156,7 +162,9 @@ def _save_url(client: http.Client, url: str, dest: Path, label: str,
         known = "content-length" in seen or size is not None
         # The name its content calls for, which `http.download` renames the part onto in one
         # step: a crash never leaves `a.jpg` holding a PNG, which the job would take as saved.
-        return _sniffed(part, dest, known) if kind == paths.SNIFF else _as_media(part, dest, kind or "", known)
+        if kind == paths.SNIFF:
+            return _sniffed(part, dest, known)
+        return _as_media(part, dest, kind or "", known)
 
     with _Row(label) as row, _recording(seen):
         transfer = http.Transfer(
@@ -170,7 +178,7 @@ def _save_url(client: http.Client, url: str, dest: Path, label: str,
 
 def _save_dash(client: http.Client, video: str, audio: str, dest: Path, label: str,
                headers: Mapping[str, str] | None) -> Path:
-    """Download a DASH video and its `audio` stream, and save them merged as `dest`, trying the whole three times."""
+    """Download a DASH video and its audio stream, saving merged as `dest`."""
     from shared import media
 
     # Both streams are only inputs, named to match PART_GLOB, so a run killed before the merge
@@ -187,7 +195,10 @@ def _save_dash(client: http.Client, video: str, audio: str, dest: Path, label: s
             # Both streams at once, each on its own connections, as a player fetches them; a
             # stream cut off keeps its resumable part for the next try.
             with ThreadPoolExecutor(max_workers=2) as pool:
-                started = [pool.submit(fetch, url, stream, row) for url, stream in zip((video, audio), streams)]
+                started = [
+                    pool.submit(fetch, url, stream, row)
+                    for url, stream in zip((video, audio), streams)
+                ]
                 for running in started:
                     running.result()
             # The merge is a stream copy by ffmpeg, which `stopping_now` can't reach; it is
@@ -236,7 +247,7 @@ def _again(attempt: Callable[[], T], *, retryable: tuple[type[BaseException], ..
 
 
 def split_parts(url: str) -> Literal["auto", 1]:
-    """`http.download`'s `parts` for `url`: "auto" on a host in `SPLIT_HOSTS` or under one, else 1 (D6)."""
+    """`http.download`'s `parts`: "auto" on a host in `SPLIT_HOSTS` or under one, else 1."""
     host = (urlsplit(url).hostname or "").lower()
     return "auto" if any(host == name or host.endswith(f".{name}") for name in SPLIT_HOSTS) else 1
 
@@ -260,10 +271,10 @@ def _record(response: httpx.Response) -> None:
 
 
 def _save_fetch(fetch: Fetch, dest: Path, label: str, size: int | None, kind: str | None) -> Path:
-    """Have a source's `fetch(dest, progress)` write the file into a part, check it, and rename it onto `dest`."""
+    """Have `fetch(dest, progress)` write into a part, check it, and rename onto `dest`."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     # `atomic` names the part `.<name>.<random>.part`, so two runs never write into each other's
-    # files, and whatever a killed run leaves is removed by `flnd sync`'s repair (fixes #13). It
+    # files, and whatever a killed run leaves is removed by `flnd sync`'s repair. It
     # deletes the part however the block ends, and renames it onto `dest` only if it's still there.
     with atomic.writing(dest, replace=True) as part:
         with _Row(label) as row:
@@ -275,17 +286,13 @@ def _save_fetch(fetch: Fetch, dest: Path, label: str, size: int | None, kind: st
             else:
                 final = dest if kind is None else _as_media(part, dest, kind, known)
         if final != dest:
-            # Named by its content: moved there in one step, so the block's rename onto `dest` has nothing to move.
+            # Named by content: moved in one step, so block's rename has nothing to move.
             os.replace(part, final)
     return final
 
 
 def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
-    """Where a downloaded photo or video goes, named by its content; a web page or a broken file raises.
-
-    A file whose size matched Content-Length (`known`) is only sniffed: decoding it would cost
-    time and catch nothing the size didn't. See `paths.checked` for what raises.
-    """
+    """Where a downloaded photo or video goes by content; raises on web page or corrupt."""
     extension = paths.checked(part, kind, decode=not known)
     if extension is None or same_extension(extension, dest.suffix):
         return dest
@@ -293,12 +300,7 @@ def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
 
 
 def _sniffed(part: Path, dest: Path, known: bool) -> Path:
-    """Where a downloaded file whose content decides its kind goes: media by its content, anything else as `dest`.
-
-    `dest` has no extension yet, so the content's is added to its name, never put in place of a
-    part of it (`5930 a.b` stays `5930 a.b.jpg`). A web page raises `NotMediaError`, as it would
-    for a photo: a post's file is never a login wall. Media is checked as `_as_media` checks it.
-    """
+    """Where a file whose content decides its kind goes: media by content, else as `dest`."""
     from shared import media
 
     extension = media.sniff(part)
@@ -314,17 +316,15 @@ def _sniffed(part: Path, dest: Path, known: bool) -> Path:
 
 
 def same_extension(one: str, other: str) -> bool:
-    """Whether two extensions name one format: `.jpg` and `.jpeg` do.
-
-    Args:
-        one: an extension, with its dot.
-        other: the other extension, with its dot; compared case-insensitively.
-    """
-    return SAME_EXTENSIONS.get(one.lower(), one.lower()) == SAME_EXTENSIONS.get(other.lower(), other.lower())
+    """Whether two extensions name one format: `.jpg` and `.jpeg` do."""
+    return (
+        SAME_EXTENSIONS.get(one.lower(), one.lower())
+        == SAME_EXTENSIONS.get(other.lower(), other.lower())
+    )
 
 
 class _Row:
-    """One progress bar for a file, or for a DASH video and its audio, opened when the first response arrives."""
+    """One progress bar for a file, or for DASH video and audio, opened on first response."""
 
     def __init__(self, label: str):
         self.label, self.stack, self.base = label, ExitStack(), 0.0
@@ -338,10 +338,14 @@ class _Row:
 
     def start(self, total: float | None) -> None:
         if self.bar is None:
-            self.bar = self.stack.enter_context(log.progress(self.label, total=total, show=fmt.size))
+            self.bar = self.stack.enter_context(
+                log.progress(self.label, total=total, show=fmt.size)
+            )
             return
         self.base = self.bar.count
-        self.bar.total = self.base + total if total is not None and self.bar.total is not None else None
+        self.bar.total = (
+            self.base + total if total is not None and self.bar.total is not None else None
+        )
 
     def update(self, done: float, total: float | None = None) -> None:
         if total:
@@ -349,18 +353,18 @@ class _Row:
         self.bar.count = self.base + done
 
     def stoppable(self, done: float, total: float | None = None) -> None:
-        """`update`, for a source's `fetch` function, which a second Ctrl-C stops at its next report (D8)."""
+        """`update`, for a source's `fetch` function, which a second Ctrl-C stops at next report."""
         if stopping_now.is_set():
             raise KeyboardInterrupt
         self.update(done, total)
 
     def follow(self) -> Callable[[int, int | None], None]:
-        """A `progress(done, total)` for one more stream on this bar, which a second Ctrl-C stops."""
+        """A `progress(done, total)` for one more stream on this bar, stoppable on second Ctrl-C."""
         started = False
 
         def progress(done: int, total: int | None) -> None:
             nonlocal started
-            # Raised in the download's thread, so `http.download` keeps the resumable part (D8).
+            # Raised in the download's thread, so `http.download` keeps the resumable part.
             if stopping_now.is_set():
                 raise KeyboardInterrupt
             if not started:

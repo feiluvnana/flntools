@@ -11,9 +11,7 @@ how wide to catch:
 
     try:
         archive.unzip("photos.zip", "photos/")
-    except shared.UnsafeError:          # this kind of problem, from any module
-        ...
-    except archive.Error:               # anything from this one module
+    except shared.UnsafeError:
         ...
 """
 
@@ -29,16 +27,16 @@ class Error(Exception):
 
 
 class UnsafeError(Error, ValueError):
-    """Input refused because trusting it could do harm: path traversal, a decompression bomb, a decoder exploit.
+    """Input refused because trusting it could do harm: traversal, bomb, or exploit.
 
-    A ValueError, so code written before the error tree still catches it.
+    A ValueError, so callers expecting ValueError still catch it.
     """
 
 
 class BrokenError(Error, ValueError):
     """Input that is damaged or isn't what it claims: a cut-off video, a bad archive.
 
-    A ValueError, so code written before the error tree still catches it.
+    A ValueError, so callers expecting ValueError still catch it.
     """
 
 
@@ -73,13 +71,15 @@ if TYPE_CHECKING:
     from shared import _worker as worker
 
 LAZY_MODULES = (
-    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
+    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http",
+    "browser", "worker", "bundler", "media",
 )
 
 __all__ = [
     "Error", "UnsafeError", "BrokenError", "RefusedError", "MissingError",
     "cli", "clock", "fmt", "log", "prompt", "style", "theme",
-    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http", "browser", "worker", "bundler", "media",
+    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http",
+    "browser", "worker", "bundler", "media",
 ]
 
 

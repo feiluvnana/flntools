@@ -507,7 +507,12 @@ def code_hashes() -> dict[str, str]:
 def doc_breaches(path: str) -> list[str]:
     """The ways a file breaks the docstring standard, one `line N: what` text each."""
     tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
-    found = [] if ast.get_docstring(tree) else ["line 1: module has no docstring"]
+    module_doc = ast.get_docstring(tree)
+    found: list[str] = []
+    if not module_doc:
+        found.append("line 1: module has no docstring")
+    elif len(module_doc.splitlines()) > 15:
+        found.append(f"line 1: module docstring is {len(module_doc.splitlines())} lines (at most 15)")
 
     def visit(node: ast.AST, public: bool) -> None:
         for child in ast.iter_child_nodes(node):
@@ -526,6 +531,12 @@ def doc_breaches(path: str) -> list[str]:
             if public and not doc:
                 found.append(f"{where} has no docstring")
             return
+        if doc:
+            body = node.body[1:]
+            body_lines = (node.end_lineno or node.lineno) - body[0].lineno + 1 if body else 0
+            doc_lines = len(doc.splitlines())
+            if doc_lines > body_lines + 10:
+                found.append(f"{where} docstring is {doc_lines} lines for a {body_lines}-line body (max {body_lines + 10})")
         if not public:
             if not doc and (node.end_lineno or node.lineno) - node.lineno + 1 > 15:
                 found.append(f"{where} is private, over 15 lines and has no docstring")
@@ -537,8 +548,6 @@ def doc_breaches(path: str) -> list[str]:
             return
         a = node.args
         names = [x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg) if x and x.arg not in ("self", "cls")]
-        if len(names) >= 2 and "\n" not in doc.strip():
-            found.append(f"{where} takes {len(names)} arguments but has a one-line docstring")
         listed = _args_section(doc)
         if listed is not None and set(listed) != set(names):
             found.append(f"{where}: Args lacks {sorted(set(names) - set(listed))} and names {sorted(set(listed) - set(names))}")

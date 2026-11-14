@@ -1,126 +1,10 @@
-"""Writing a source: what a site's class declares, and what the engine does with it.
+"""Writing a source: declarations for site extractors and target routes.
 
-A source is one class in `flnd/sources/<code>.py`. Its fields say what the site is (`code`,
-`domains`, `pace`, the formats), its routes say which targets it reads, and its categories say what
-it can download from them. The engine does the rest: it reads the target, runs the route and the
-categories `--from` asks for, filters by `--time`, names and keys each file, skips what is saved,
-downloads, compresses, dates the files and writes the history. To start a source, copy
-`tests/example_source.py`, a complete small one over fixtures; the examples here are from it.
+A source is a `Source` subclass defining `code`, `domains`, and `@target` routes.
+Routes return context for `@category` methods, which yield `Post` and `File` objects.
+The engine handles pacing, authentication, rate limits, downloads, compression, and history.
 
-    from flnd.source import File, Post, Site, Source, target
-
-    class Example(Source):
-        code, name, domains = "exm", "Example", ("example.com",)
-        needs = ("token",)                              # any one of these cookies proves a login
-
-        @target("example.com/p/{code:[\\w-]+}")
-        def post(self, site: Site, code: str):          # no categories: the route yields its posts
-            yield Post(code, [File(f"https://cdn.example.com/{code}.jpg")])
-
-        @target("{user}", "example.com/{user}")         # `exm:example_user`, or a profile's link
-        def user(self, site: Site, user: str):
-            return site.fetch(f"https://api.example.com/users/{user}").json   # the context
-
-        @user.category(newest_first=True)               # what `--from posts` names
-        def posts(self, site: Site, profile: dict):
-            items = site.fetch(f"https://api.example.com/users/{profile['id']}/posts").json["items"]
-            for item in items:
-                yield Post(item["id"], [File(url) for url in item["urls"]], date=item["taken_at"])
-
-The fields. `code` is the prefix of a target (`exm:`), `name` is shown in help, and `domains` are
-the site's hosts, short-link hosts included. The domains decide what is the source's own: its
-requests are paced and signed, its login cookies are sent, and its `prepare` runs; a CDN gets none
-of that. `needs` names cookies that prove a login, and `requires_login` makes a missing one an
-error. `pace` is `http.Pace(floor, budgets)` or a number of seconds between requests (0.5 by
-default). `folder`, `filename` and `key` are formats, described below. `concurrency` is how many
-files of one target download at once (8). The browser fields are `stealth` and `user_agent`. `routes`, `forms`,
-`categories` and `single_kinds` are not written: they are collected from the routes when the class
-is created, and a `categories` field is refused.
-
-Routes. A route is a method marked `@target(*patterns, shown=None)`. Its name is the target's kind,
-and it takes `(self, site, value)`, where `value` is the one placeholder. Each pattern is one form
-people write:
-- a pattern that starts with a domain matches URLs on that host: the scheme is optional, `www.`, `m.`
-  and `mobile.` are ignored, and so are a trailing slash, `#…`, a query it doesn't name and any path
-  after the pattern;
-- a pattern without a domain matches the text after `code:`, so `{user}` reads `exm:example_user`;
-- `{name}` is one segment, captured, with one leading `@` dropped; `{name:regex}` is one segment that
-  must match the regex; `*` is any one segment, not captured; `?key={name}` captures a query value.
-
-`shown="exm:<video id>"` replaces the first form help and refusals show, when the generated one
-reads badly. `unsupported = {"example.com/stories": "stories aren't supported; give the profile"}`
-refuses links with their own message, tried before any route, unless a route pattern matches with
-more literal segments. A link on the source's domains that no route matches is followed once with a
-HEAD request by the engine (short links such as `vm.tiktok.com/…`), so a source never requests a page
-just to read a target. A mistake fails at import: a pattern on another host, one given twice, or a
-placeholder that isn't the method's value parameter.
-
-Categories. A route that has categories returns a context, which each category receives. A category
-is a method marked `@<route>.category`, with `(self, site, context)` and yielding `Post`s, or an
-`async def` generator (tlg). Its name, which `--from` takes, is the method's name unless `name=` gives
-one. `newest_first=True` says the site lists newest first, so `--time` may stop the category after
-5 posts in a row older than `since`; set it only where that order is known, since a wrong `True`
-silently loses posts. `folder=`, `filename=` and `key=` give one category its own formats. A route
-without categories yields its posts itself, and they are filed in the target's own folder.
-
-Posts and files. `Post(id, files, *, date=None, headers=None, **fields)` is one post. Its `files`
-are a list of `File`s, or a function that returns them: the function is called only for a post that
-passes `--time` and isn't saved yet, so a saved post costs no request. `date` takes any form `day()`
-reads (a date, a datetime, Unix seconds or milliseconds, a digit string or ISO text); None is an
-undated post, which `--time` keeps. Each keyword field is the site's own, for the formats, such as
-`album=`, except the engine's (`category`, `num`, `count`, `index`, `extension` and `path`), which
-raise `TypeError`. `File(url, *, audio=None, headers=None, name=None, size=None)` takes a URL, a
-tuple of mirror URLs, or a `fetch(dest, progress)` function. `File.text(name, text)` writes a text
-file on each download of its post.
-
-The formats rule. `folder`, `filename` and `key` are `str.format` strings over a post's fields and
-the engine's. A missing or empty field is "", and the separator before it (`_`, `-`, space, `.`, `:`
-or `,`) goes with it, so `{date}_{id}{index}` without a date is `<id>`. A `/` separates folders, and each
-folder or file segment is made a safe file name, so a title with `../` can't leave the folder. A key
-is never a path, so it is kept as written.
-
-The `Site` handle. Every route and category receives one `Site` for its target. Its `fetch(url, *,
-method, headers, in_page, **request)` makes one paced, retried request and returns its response,
-with `.json` and `.text`; it raises `FetchError`, whose `status` and `response` say why, and
-`try_fetch` returns None for a 401, 403 or 404 instead. `goto(url)` loads a page in `site.page`,
-and `handoff` waits for a person (a captcha). `target`, `cookies` (read-only), `time`, `client`,
-`state` and `secrets` are what the target, its login and its source keep, and `info` and `warn` log
-a line naming the target. The engine waits out every rate limit, so a source never sleeps or retries
-itself. A throttle the status doesn't show, such as a 200 that says "please wait", is counted with
-`back_off(reason, retry_after=None)`, which waits the pause out before it returns:
-
-    body = site.fetch("https://api.example.com/feed").json
-    if body.get("message") == "please wait a few minutes":
-        site.back_off("asked to wait a few minutes", retry_after=120)
-
-Headers. `prepare(self, request, cookies)` runs before every attempt on the source's own domains, so
-a signature made there is fresh each time; it changes the request and returns it. Headers that a file
-needs, such as a CDN's Referer, go on `Post(headers=)`, not in `prepare`:
-
-    def prepare(self, request, cookies):
-        if cookies.get("token"):
-            request.headers["Authorization"] = f"Bearer {cookies['token']}"
-        return request
-
-Testing. `tests/fakes.py`'s `collect` runs a target's route and wanted categories on a fake `Site`,
-with no network, and lists each file it would save:
-
-    saved = collect(Example, "exm:example_user", json=FIXTURES, options=Options(categories=("posts",)))
-    [file.path for file in saved]    # ["posts/2026-01-02_C1abc_0.jpg", …]
-
-Each source's test keeps a `ROUTES` table, `[("exm:example_user", ("user", "example_user")), …]`, one
-row per form, and `tests/test_source.py` checks that every pattern has one.
-
-The template. `tests/example_source.py` is a source that is run, not only read: `test_job` and
-`test_dry` drive it through the engine on `httpx.MockTransport`. It has a JSON API that wants a login
-token as a Bearer header, pages chained by a cursor, lazy albums, and a profile picture category that
-keeps its own names. Its module docstring gives the layout of its folders. Copy it to
-`flnd/sources/<code>.py` and replace the site's URLs and JSON paths. A source imports only
-`flnd.source`, `flnd.sources.common`, `shared` and the standard library.
-
-This module holds declarations only. The engine's `TargetSite`, `LoginSite` and the job live in
-`flnd/site.py` and `flnd/job.py`, which a source never imports. Importing it loads no third-party
-module.
+See `tests/example_source.py` for a complete reference implementation.
 """
 
 from __future__ import annotations
@@ -150,7 +34,8 @@ __all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Logi
            "Post", "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill",
            "pages", "target"]
 
-# Registered by `flnd.query` on import so `Source.resolve` validates queries without a circular import.
+# Registered by `flnd.query` on import so `Source.resolve` validates queries without a circular
+# import.
 _query_check: Callable[[str, Mapping[str, Any]], Any] | None = None
 
 # Hosts that are the same site as their bare domain: the desktop, mobile and old mobile sites.
@@ -171,13 +56,16 @@ SEPARATORS = "_- .:,"
 # The oldest year a post can be from: the sites flnd reads all started later. A timestamp before
 # it is a mistake for another number, such as an id read as seconds.
 FIRST_YEAR = 2004
-# Seconds since 1970 pass this in 5138; a larger number is milliseconds (13 digits today, 10 for seconds).
+# Seconds since 1970 pass this in 5138; a larger number is milliseconds (13 digits today, 10 for
+# seconds).
 MILLISECONDS = 1e11
 # What `Range.parse` says about any value it can't read: the usage error of `--time`.
-TIME_USAGE = ("--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
-              "for no limit")
+TIME_USAGE = (
+    "--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
+    "for no limit"
+)
 
-# A file without a URL: `fetch(dest, progress)` writes it to `dest`, reporting `progress(done, total)`
+# A file without a URL: `fetch(dest, progress)` writes to `dest`, reporting `progress(done, total)`
 # in bytes. It may return a coroutine (tlg's SDK), which the engine runs on the source's loop.
 Fetch = Callable[["Path", Callable[..., None]], Any]
 # What `Post(date=)` takes; `day()` reads every one of them.
@@ -189,7 +77,7 @@ class Error(Exception):
 
 
 class FetchError(Error):
-    """A request that failed: `status` is the refusing HTTP status, or None (no response, or not JSON).
+    """A request that failed: `status` is the refusing HTTP status, or None (no response or JSON).
 
         try:
             data = site.fetch(url).json
@@ -204,14 +92,16 @@ class FetchError(Error):
             None when there was none.
     """
 
-    def __init__(self, message: str, *, status: int | None = None, response: http.Response | None = None):
+    def __init__(
+        self, message: str, *, status: int | None = None, response: http.Response | None = None
+    ):
         super().__init__(message)
         self.status = status
         self.response = response
 
 
 class LoginError(Error):
-    """A login that didn't work, with what to do instead: `LoginError("tlg: run flnd login tlg")`."""
+    """A login failure with next steps: `LoginError("tlg: run flnd login tlg")`."""
 
 
 class TargetError(Error, ValueError):
@@ -234,14 +124,15 @@ class TargetError(Error, ValueError):
 class Target:
     """One thing to download: `Target("ins", "user", "example_user")`.
 
-        target = Target("tik", "video", "7301234567890123456"); str(target)   # "tik:7301234567890123456"
+        target = Target("tik", "video", "7301234567890123456")
+        str(target)  # "tik:7301234567890123456"
     """
 
     # The source's code, such as "ins".
     source: str
     # What it points to: its route's name (`user`, `post`, `video` or `chat`).
     kind: str
-    # Its clean form, the captured placeholder: it names the target's folder and starts its history keys.
+    # Clean form, the captured placeholder: names target folder and starts history keys.
     value: str
     # Whether this target is a query (`code?query`) rather than `code:value`.
     query: bool = field(default=False, compare=False, repr=False)
@@ -256,7 +147,7 @@ class Target:
 
 @dataclass(frozen=True)
 class _Url:
-    """A URL on a source's site: its host without `www.`, `m.` or `mobile.`, its path's parts, and its query."""
+    """A URL on a source's site: host without prefixes, path parts, and query."""
 
     host: str
     parts: tuple[str, ...]
@@ -264,16 +155,20 @@ class _Url:
 
 
 class _Pattern:
-    """One compiled pattern: a domain pattern matches a `_Url`, a code pattern the text after `code:`."""
+    """One compiled pattern: domain pattern matches `_Url`, code pattern text after `code:`."""
 
     def __init__(self, text: str):
-        """Split `text` into its domain or code part, its segments and its query, and compile each placeholder's regex."""
+        """Split `text` into parts and compile each placeholder regex."""
         self.text = text
         path, mark, query = _split(text, "?", once=True)
         segments = [segment for segment in _split(path, "/") if segment]
         first = segments[0] if segments else ""
-        # A first segment with a dot and no placeholder or `*` is a host; anything else is a code pattern.
-        self.host = _bare_host(first.lower()) if "." in first and not set(first) & set("{}*") else None
+        # First segment with dot and no placeholder or `*` is host; else code pattern.
+        self.host = (
+            _bare_host(first.lower())
+            if "." in first and not set(first) & set("{}*")
+            else None
+        )
         self.is_query = self.host is None and not segments and mark == "?"
         if self.host is None and mark and not self.is_query:
             raise TypeError(f"pattern {text!r}: only a URL pattern can name a query")
@@ -289,15 +184,16 @@ class _Pattern:
         self.keys = [_split(pair, "=", once=True) for pair in _split(query, "&")] if mark else []
         if any(not key or not value for key, _, value in self.keys):
             raise TypeError(f"pattern {text!r}: write a query as ?key={{name}}")
-        # Every placeholder's name, in order: a route's pattern has exactly one, an unsupported one none.
+        # Placeholder names in order: route pattern has one, unsupported pattern none.
         self.regexes = [_compile(segment, text, self.names) for segment in self.segments]
         self.query = [(key, _compile(value, text, self.names)) for key, _, value in self.keys]
-        # How specific the pattern is: its literal segments, the host being one. A code pattern has none.
+        # How specific the pattern is: literal segments, host being one. Code pattern has none.
         self.literals = (self.host is not None) + sum(
-            1 for segment in self.segments if self.host is not None and not set(segment) & set("{}*"))
+            1 for s in self.segments if self.host is not None and not set(s) & set("{}*")
+        )
 
     def match(self, text: str, url: _Url | None) -> str | None:
-        """The captured value when `text` (or its `url`, for a domain pattern) matches; "" for no placeholder."""
+        """Captured value when `text` or `url` matches; "" for no placeholder."""
         if self.is_query:
             return text[1:] if url is None and text.startswith("?") else None
         if self.host is None:
@@ -309,19 +205,24 @@ class _Pattern:
             return None
         # The pattern's segments match the URL's first parts; the parts after them are allowed.
         found = [regex.fullmatch(part) for regex, part in zip(self.regexes, url.parts)]
-        found += [regex.fullmatch(url.query[key]) if key in url.query else None for key, regex in self.query]
+        found += [
+            regex.fullmatch(url.query[key]) if key in url.query else None
+            for key, regex in self.query
+        ]
         if not all(found):
             return None
-        return next((match["value"] for match in found if match and "value" in match.groupdict()), "")
+        return next(
+            (match["value"] for match in found if match and "value" in match.groupdict()), ""
+        )
 
     def form(self, code: str) -> str:
-        """The pattern as people write it, each placeholder in angle brackets: `https://www.instagram.com/p/<code>/`."""
+        """The pattern as people write it, each placeholder in angle brackets."""
         if self.is_query:
             return f"{code}?<{self.names[0]}>"
         path = "/".join(_shown(segment) for segment in self.segments)
         if self.host is None:
             return f"{code}:{path}"
-        # Help shows the address a browser's bar does: www. on a bare domain, and a closing slash on a folder.
+        # Help shows address browser bar does: www. on bare domain, closing slash on folder.
         host = f"www.{self.host}" if self.host.count(".") == 1 else self.host
         query = "&".join(f"{key}={_shown(value)}" for key, _, value in self.keys)
         slash = "" if query or "." in path.rsplit("/", 1)[-1] else "/"
@@ -331,23 +232,7 @@ class _Pattern:
 
 
 class Category:
-    """One thing a route's target can download, made by `@<route>.category`: `Instagram.routes[1].categories[0]`.
-
-        @user.category(newest_first=True)
-        def posts(self, site, account): ...
-
-        Instagram.routes[1].categories[0].name        # "posts"
-
-    Args:
-        function: the decorated method, `(self, site, context)`, yielding `Post`s; it may be an
-            `async def` generator.
-        newest_first: whether it yields posts newest first, so the engine may stop early on
-            `--time`. A wrong True silently loses posts, so it is set only where the site's order is known.
-        folder: a format for this category's files' folders instead of the source's, for a category
-            whose files were always filed another way; None keeps the source's.
-        key: a format for this category's history keys instead of the source's, such as "" for a
-            category whose files were never keyed (a profile picture keyed by its path); None keeps it.
-    """
+    """One thing a route's target can download, made by `@<route>.category`."""
 
     def __init__(self, function: Callable[..., Any], *, newest_first: bool = False,
                  folder: str | None = None, key: str | None = None):
@@ -358,7 +243,9 @@ class Category:
         self.folder, self.key = folder, key
         parameters = list(inspect.signature(function).parameters)
         if len(parameters) != 3:
-            raise TypeError(f"category {self.name}: take (self, site, context), not ({', '.join(parameters)})")
+            raise TypeError(
+                f"category {self.name}: take (self, site, context), not ({', '.join(parameters)})"
+            )
 
     def __repr__(self) -> str:
         return f"Category({self.name!r}, newest_first={self.newest_first})"
@@ -375,14 +262,16 @@ class Route:
     returns a context, which every category it has receives; `@route.category` adds one.
     """
 
-    def __init__(self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None,
-                 params: Mapping[str, Any] | None = None):
+    def __init__(
+        self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None,
+        params: Mapping[str, Any] | None = None,
+    ):
         """Compile `patterns` for `function`, raising `TypeError` for a mistake in them.
 
         Args:
             function: the decorated method, `(self, site, value)`.
             patterns: the forms it reads, as `target` takes them.
-            shown: the form help shows for the first pattern, or the route's only form when it has none.
+            shown: form help shows for first pattern, or route's only form when it has none.
             params: query parameters for a `?{query}` route, keyed by parameter name.
 
         Raises:
@@ -397,23 +286,33 @@ class Route:
         self.is_query = any(pattern.is_query for pattern in self._patterns)
         if params is not None and not self.is_query:
             raise TypeError(f"route {self.kind}: params= requires a '?{{query}}' pattern")
-        self.params: Mapping[str, Any] = MappingProxyType(dict(params)) if params is not None else MappingProxyType({})
+        self.params: Mapping[str, Any] = (
+            MappingProxyType(dict(params)) if params is not None else MappingProxyType({})
+        )
         self._categories: list[Category] = []
-        parameters = [parameter.name for parameter in inspect.signature(function).parameters.values()]
+        parameters = [
+            parameter.name for parameter in inspect.signature(function).parameters.values()
+        ]
         if len(parameters) != 3:
-            raise TypeError(f"route {self.kind}: take (self, site, value), not ({', '.join(parameters)})")
+            raise TypeError(
+                f"route {self.kind}: take (self, site, value), not ({', '.join(parameters)})"
+            )
         for pattern in self._patterns:
             if len(pattern.names) != 1:
                 # One value is the target's identity: its folder and its history keys.
-                raise TypeError(f"route {self.kind}: pattern {pattern.text!r} needs exactly one placeholder, "
-                                f"not {len(pattern.names)}")
+                raise TypeError(
+                    f"route {self.kind}: pattern {pattern.text!r} needs exactly one placeholder, "
+                    f"not {len(pattern.names)}"
+                )
             if pattern.names[0] != parameters[2]:
-                raise TypeError(f"route {self.kind}: pattern {pattern.text!r} captures {pattern.names[0]!r}, "
-                                f"but the method's value parameter is {parameters[2]!r}")
+                raise TypeError(
+                    f"route {self.kind}: pattern {pattern.text!r} captures {pattern.names[0]!r}, "
+                    f"but the method's value parameter is {parameters[2]!r}"
+                )
 
     @property
     def categories(self) -> tuple[Category, ...]:
-        """The route's categories, in the order the class declares them; empty for a route that yields posts itself."""
+        """The route's categories, in declaration order; empty if it yields posts itself."""
         return tuple(self._categories)
 
     @overload
@@ -430,22 +329,6 @@ class Route:
 
             @user.category(newest_first=True)
             def reels(self, site, account): ...
-
-        The `@property` / `@x.setter` idiom: the route in the class body registers the category,
-        and the method is returned unchanged, so it stays an ordinary method tests can call.
-
-        Args:
-            function: the method, when the decorator is used bare (`@user.category`).
-            newest_first: whether the category yields posts newest first; see `Category`.
-            folder: its folders' format instead of the source's; see `Category`.
-            key: its history keys' format instead of the source's; see `Category`.
-
-        Returns:
-            The method itself; or, with options, a decorator that registers and returns it.
-
-        Raises:
-            TypeError: the method doesn't take `(self, site, context)`, or the route already has
-                a category of that name.
         """
         def register(method: Callable[..., Any]) -> Callable[..., Any]:
             made = Category(method, newest_first=newest_first, folder=folder, key=key)
@@ -457,7 +340,7 @@ class Route:
         return register(function) if function is not None else register
 
     def __set_name__(self, owner: type, name: str):
-        """Take the attribute's name as the kind, which is the method's own name unless the class was built by `type()`."""
+        """Take attribute name as kind, which is method name unless class was built by `type()`."""
         self.kind = name
 
     def __get__(self, instance: object, owner: type | None = None) -> Any:
@@ -482,41 +365,17 @@ def target(*patterns: str, shown: str | None = None,
         @target("instagram.com/p/{code:[\\w-]+}", "instagram.com/reel/{code:[\\w-]+}")
         def post(self, site, code): ...
 
-    The pattern syntax, in five rules:
-    1. a pattern that starts with a domain matches URLs on that host: the scheme is optional, and
-       `www.`, `m.`, `mobile.`, a trailing `/`, `#…`, a query it doesn't name and any path
-       segments after it are ignored;
-    2. a pattern without a domain matches the text after `code:` (`{user}` reads `ins:example_user`);
-    3. `{name}` is one segment, captured: a user name, `[\\w.]+`, with one leading `@` dropped;
-    4. `{name:regex}` is one segment matching the regex, and `*` is any one segment (or, inside
-       a segment, any text), not captured;
-    5. `?key={name}` captures a query parameter.
-
-    Each pattern has exactly one placeholder, named as the method's value parameter.
-
-    Args:
-        *patterns: the forms the route reads, tried in order. None, as `@target()`, makes a route
-            only a hand-written `resolve` reaches (tlg's).
-        shown: the form help shows instead of the first pattern's generated one, when that reads
-            badly, such as "tik:<video id>"; for a route with no patterns, its only form.
-        params: query parameters for a `?{query}` route, keyed by parameter name.
-
-    Returns:
-        A decorator turning the method into a `Route`.
-
-    Raises:
-        TypeError: a pattern is malformed, or doesn't capture the method's value parameter. It
-            fails when the class is created, so a mistake fails at import.
+    Each pattern has exactly one placeholder matching the method's value parameter.
     """
     return lambda function: Route(function, patterns, shown=shown, params=params)
 
 
 @dataclass(frozen=True, init=False)
 class File:
-    """One file of a post: a URL (or mirrors, or a fetch function), with what downloading it needs.
+    """One file of a post: a URL (or mirrors, or a fetch function), and download settings.
 
         File("https://cdn.example.com/a.jpg")
-        File([mirror_a, mirror_b], name="loi-5930.7z")             # kept as the site names it
+        File([mirror_a, mirror_b], name="loi-5930.7z")    # kept as the site names it
         File(video_url, audio=audio_url)                            # DASH: merged into one video
         File.text("info.md", "# Title\\n")                          # written, not downloaded
 
@@ -560,7 +419,7 @@ class File:
 
     @classmethod
     def text(cls, name: str, text: str) -> File:
-        """A text file the source writes itself, such as loi's `info.md`: saved atomically, never downloaded.
+        """A text file written by the source itself (e.g. `info.md`): saved atomically.
 
             File.text("info.md", "# Title\\n")
 
@@ -577,7 +436,7 @@ class File:
 
 @dataclass(frozen=True, init=False)
 class Post:
-    """One post a category yields: its id, its files, its date and the site's own fields for the formats.
+    """One post a category yields: its id, its files, its date and fields for the formats.
 
         Post(item["code"], [File(url) for url in urls], date=item["taken_at"], album=title)
         Post(code, lambda: files_of(site, code))      # listed only when the post isn't saved yet
@@ -587,9 +446,9 @@ class Post:
     Args:
         id: the post's id as the site shows it; it names the files and starts their keys.
         files: the post's files in order, or a function returning them, called only for a post
-            that passes `--time` and isn't saved yet, so a post's own request costs nothing once saved.
-        date: when it was posted, in any form `day()` reads (a date, a datetime, Unix seconds or
-            milliseconds, a digit or ISO string); None for an undated post, which `--time` always keeps.
+            that passes `--time` and isn't saved yet, saving requests for saved posts.
+        date: when it was posted, in any form `day()` reads (a date, a datetime, Unix seconds,
+            milliseconds, a digit or ISO string); None for undated posts, which `--time` keeps.
         headers: headers for downloading each of its files, such as a CDN Referer.
         **fields: the site's own fields for the formats, such as `album`, `title` or `author`.
 
@@ -615,22 +474,20 @@ class Post:
                  date: DateLike = None, headers: Mapping[str, str] | None = None, **fields: Any):
         reserved = sorted(ENGINE_FIELDS & fields.keys())
         if reserved:
-            raise TypeError(f"Post: {', '.join(reserved)} {'is a field' if len(reserved) == 1 else 'are fields'} "
-                            "the engine sets; name the site's own field another way")
+            msg = "is a field" if len(reserved) == 1 else "are fields"
+            raise TypeError(
+                f"Post: {', '.join(reserved)} {msg} the engine sets; name the site field otherwise"
+            )
         _assign(self, id=str(id), files=files if callable(files) else tuple(files), date=date,
                 headers=_frozen(headers), fields=MappingProxyType(dict(fields)), category="")
 
     def replace(self, **fields: Any) -> Post:
-        """A copy with fields changed: `post.replace(album=highlight.title)`, `post.replace(files=[...])`.
-
-        Args:
-            **fields: `id`, `files`, `date`, `headers`, or the site's own fields, as `Post` takes them.
-
-        Raises:
-            TypeError: a field the engine sets, as for `Post`.
-        """
-        made = Post(fields.pop("id", self.id), fields.pop("files", self.files), date=fields.pop("date", self.date),
-                    headers=fields.pop("headers", self.headers), **{**self.fields, **fields})
+        """A copy with fields changed: `post.replace(album=highlight.title)`."""
+        made = Post(
+            fields.pop("id", self.id), fields.pop("files", self.files),
+            date=fields.pop("date", self.date), headers=fields.pop("headers", self.headers),
+            **{**self.fields, **fields},
+        )
         _assign(made, category=self.category)
         return made
 
@@ -647,24 +504,13 @@ class Post:
 
 
 def fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str:
-    """A format filled in from fields: a missing or empty field is "", and the separator it leaves is dropped.
+    """Format a template from fields, dropping separators around missing or empty fields.
 
         fill("{category}/{album}", {"category": "posts"})                   # "posts"
         fill("{date}_{id}{index}", {"id": "C1abc", "date": "", "index": ""})  # "C1abc"
         fill("{author}/{id} {title}", {"author": "a/b", "id": 7})            # "a_b/7"
 
-    Args:
-        template: a `str.format` string; `/` in it separates path segments.
-        fields: the values; one that is missing or None counts as "".
-        safe: pass each segment through `fmt.filename`, so a value from a site (a title holding
-            `../` or `:`) can never leave the folder or break a name on any system. False is for
-            history keys, which are never paths.
-
-    Returns:
-        The segments joined by `/`, an empty segment dropped; "" when every one came out empty.
-
-    The separators dropped beside an empty field are `_`, `-`, space, `.`, `:` and `,`: those
-    before it, or those after it when it starts its segment. A value's own text is never touched.
+    Passes path segments through `fmt.filename` when `safe` is True.
     """
     segments = []
     for segment in _split(template, "/"):
@@ -733,7 +579,7 @@ class Range:
 
     @classmethod
     def parse(cls, text: str) -> Range:
-        """Read `--time`'s value, `<since>,<until>`, each side a YYYY-MM-DD day, or `*` or nothing for no limit.
+        """Read `--time`'s value, `<since>,<until>`, each side a day or `*` for no limit.
 
             Range.parse("2026-01-01,")               # Range(since=date(2026, 1, 1), until=None)
             Range.parse("*,2026-06-30")              # Range(since=None, until=date(2026, 6, 30))
@@ -742,8 +588,8 @@ class Range:
             text: the value as given on the command line.
 
         Raises:
-            ValueError: there is no comma or more than one, a side isn't a day, or the since is after
-                the until; the message is `TIME_USAGE`, the same for each, since it says the whole form.
+            ValueError: there is no comma, a side isn't a day, or since is after until;
+                the message is `TIME_USAGE`.
         """
         since, comma, until = text.partition(",")
         if not comma or "," in until:
@@ -757,7 +603,7 @@ class Range:
         return cls(days[0], days[1])
 
     def __contains__(self, value: object) -> bool:
-        """Whether a day is in the range; None (an undated post) always is, and a datetime counts by its day."""
+        """Whether a day is in range; None (undated post) always is, datetime counts by day."""
         if value is None:
             return True
         if isinstance(value, datetime.datetime):
@@ -768,7 +614,7 @@ class Range:
 
 
 def _side(text: str) -> datetime.date | None:
-    """One side of `--time`: a YYYY-MM-DD day, or None for `*` or nothing; `ValueError` otherwise."""
+    """One side of `--time`: YYYY-MM-DD day, or None for `*` or empty; `ValueError` otherwise."""
     text = text.strip()
     if text in ("", "*"):
         return None
@@ -800,7 +646,7 @@ class Site(Protocol):
 
     @property
     def time(self) -> Range:
-        """`--time`, for a source that can ask its server for a range (tlg's `offset_date`); the engine filters anyway."""
+        """`--time`, for a source querying a range (tlg's `offset_date`); engine filters too."""
         ...
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
@@ -809,18 +655,7 @@ class Site(Protocol):
 
             items = site.fetch(API, params={"cursor": cursor}).json
 
-        Args:
-            url: the URL to request.
-            method: the HTTP method.
-            headers: headers on top of the source's for this request; None adds none.
-            in_page: send it from the open page itself, with its cookies and TLS fingerprint
-                (`Page.fetch`), for an API the site checks that way.
-            **request: `params`, `data`, `json`, `timeout` and `follow_redirects`, as httpx
-                takes them; with `in_page`, all but `follow_redirects`.
-
-        Raises:
-            FetchError: no response after the retries, or a 4xx other than 429 (with `status`, and
-                `response` to read the site's reason from).
+        Raises `FetchError` on refusal or error.
         """
         ...
 
@@ -833,13 +668,15 @@ class Site(Protocol):
         ...
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
-        """Load `url` in the target's tab, paced; False (with a warning) when it didn't load or answered 400 or more.
+        """Load `url` in target tab, paced; False when it didn't load or answered 400 or more.
 
         A 429 is waited out with `back_off` and the page loaded again, as long as it takes.
         """
         ...
 
-    def handoff(self, *, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool:
+    def handoff(
+        self, *, until: Callable[[], bool], message: str, timeout: float | None = None
+    ) -> bool:
         """Show `message` and wait for a person to do a step in the window, such as a captcha.
 
         Args:
@@ -854,7 +691,7 @@ class Site(Protocol):
 
     @property
     def page(self) -> browser.Page:
-        """The target's tab, a `shared.browser.Page`, opened (blank) on first use; its scrolling keeps the source's pace."""
+        """The target's tab, a `shared.browser.Page`, opened on first use; scrolling is paced."""
         ...
 
     @property
@@ -891,17 +728,17 @@ class Site(Protocol):
         ...
 
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
-        """Count one rate limit (a captcha nobody solved, a "please wait" body), and wait it out before returning.
+        """Count one rate limit and wait it out before returning.
 
         Args:
             reason: what the site did, shown on the countdown.
-            retry_after: the seconds the site asked for; None waits 30 s, 60 s, 120 s, … up to 15 min.
+            retry_after: the seconds the site asked for; None waits 30 s up to 15 min.
         """
         ...
 
 
 class Login(Protocol):
-    """The handle a source's own `login` asks through (tlg's QR code and phone), during `flnd login` only.
+    """The handle a source login asks through (tlg's QR code and phone), in `flnd login` only.
 
         code = login.ask("Code", description="Sent to your phone")
         login.secrets["session"] = session_string
@@ -938,9 +775,11 @@ class Login(Protocol):
 
 
 def pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None]) -> Iterator[Any]:
-    """Each page of a paginated API: `fetch(None)`, then `fetch(c)` while the last page gives a cursor `c` not seen before.
+    """Each page of a paginated API: `fetch(None)`, then `fetch(c)` while `c` is new.
 
-        for page in pages(lambda c: site.fetch(API, params=variables(c)).json, lambda page: page["next"]):
+        for page in pages(
+            lambda c: site.fetch(API, params=variables(c)).json, lambda page: page["next"]
+        ):
             yield from posts_of(page)
 
     Args:
@@ -1032,7 +871,7 @@ class Source:
             needs = ("sessionid",)
             pace = http.Pace(1.0, budgets={"/graphql": (275, 600)})
             folder = "{category}/{album}"
-            unsupported = {"instagram.com/stories": "story links aren't supported; give the profile"}
+            unsupported = {"instagram.com/stories": "stories not supported; give profile"}
 
             @target("{user}", "instagram.com/{user}")
             def user(self, site, user): return Account.load(site, user)
@@ -1057,7 +896,7 @@ class Source:
     # `{pattern: message}`: links on the site that are refused with their own message, tried before
     # any route, such as Instagram's story links. A pattern here has no placeholder.
     unsupported: ClassVar[Mapping[str, str]] = {}
-    # The routes, collected from the `@target` methods when the class is created, in declaration order.
+    # Routes collected from `@target` methods when class is created, in declaration order.
     routes: ClassVar[tuple[Route, ...]] = ()
     # The forms help and refusals list: generated from the routes when the class is created.
     forms: ClassVar[tuple[str, ...]] = ()
@@ -1092,49 +931,64 @@ class Source:
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any):
-        """Collect and check the class's routes and `unsupported`, generate its forms, and derive its categories.
+        """Collect and check routes and unsupported patterns, and derive forms and categories.
 
         Raises:
-            TypeError: a pattern on a host outside `domains`, a pattern given twice, a placeholder in
-                `unsupported`, or categories both declared as a field and as methods.
+            TypeError: a pattern outside `domains`, a pattern given twice, a placeholder in
+                `unsupported`, or categories declared as both field and methods.
         """
         super().__init_subclass__(**kwargs)
         # A subclass keeps its base's routes; one of the same name replaces it in place.
         routes = {route.kind: route for route in cls.routes}
-        routes.update((value.kind, value) for value in vars(cls).values() if isinstance(value, Route))
+        routes.update(
+            (value.kind, value) for value in vars(cls).values() if isinstance(value, Route)
+        )
         cls.routes = tuple(routes.values())
-        cls._refusals = tuple((_Pattern(pattern), message) for pattern, message in cls.unsupported.items())
+        cls._refusals = tuple(
+            (_Pattern(pattern), message) for pattern, message in cls.unsupported.items()
+        )
         if any(pattern.names for pattern, _ in cls._refusals):
-            raise TypeError(f"{cls.__name__}.unsupported: a pattern there captures nothing; use * for any segment")
+            raise TypeError(
+                f"{cls.__name__}.unsupported: pattern captures nothing; use * for any segment"
+            )
         domains = getattr(cls, "domains", ())
         seen: set[str] = set()
         for pattern in [pattern for route in cls.routes for pattern in route._patterns] + \
                 [pattern for pattern, _ in cls._refusals]:
-            if pattern.host is not None and not any(pattern.host == _bare_host(domain) for domain in domains):
-                raise TypeError(f"{cls.__name__}: pattern {pattern.text!r} isn't on its domains {domains}")
+            if pattern.host is not None and not any(
+                pattern.host == _bare_host(domain) for domain in domains
+            ):
+                raise TypeError(
+                    f"{cls.__name__}: pattern {pattern.text!r} isn't on its domains {domains}"
+                )
             # Compared without www. and m., which matching drops anyway.
             key = pattern.text if pattern.host is None else _bare_host(pattern.text.lower())
             if key in seen:
                 raise TypeError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
             seen.add(key)
         if "categories" in vars(cls) or "single_kinds" in vars(cls):
-            raise TypeError(f"{cls.__name__}: its categories are its @<route>.category methods; "
-                            "declare no categories or single_kinds field")
+            raise TypeError(
+                f"{cls.__name__}: its categories are its @<route>.category methods; "
+                "declare no categories or single_kinds field"
+            )
         names = [category.name for route in cls.routes for category in route.categories]
         cls.categories = tuple(dict.fromkeys(names))
-        cls.single_kinds = tuple(route.kind for route in cls.routes
-                                 if not route.categories and not route.is_query)
+        cls.single_kinds = tuple(
+            route.kind for route in cls.routes if not route.categories and not route.is_query
+        )
         if not cls.routes:
             return
         code = getattr(cls, "code", "")
         forms = [form for route in cls.routes for form in route.forms(code)]
-        # `ins:<user>` is the form people write most, so the forms after `code:` or `code?` come first.
-        cls.forms = tuple(sorted(forms, key=lambda form: not form.startswith((f"{code}:", f"{code}?"))))
+        # `ins:<user>` is the form people write most, so forms after `code:` or `code?` come first.
+        cls.forms = tuple(
+            sorted(forms, key=lambda form: not form.startswith((f"{code}:", f"{code}?")))
+        )
 
     def resolve(self, text: str) -> Target:
         """Read one target's text, as people write it, through the routes.
 
-            Instagram().resolve("https://www.instagram.com/p/C1abcDEFghi/")   # Target("ins", "post", "C1abcDEFghi")
+            Instagram().resolve("https://www.instagram.com/p/C1abcDEFghi/")
 
         Override it only for forms no pattern can say (tlg's chat titles and `t.me/c/<n>` links),
         and pass anything else on with `super().resolve(text)`.
@@ -1174,33 +1028,24 @@ class Source:
         if refused is not None:
             raise TargetError(f"{self.code}: {refused[1]}")
         link = None if url is None else text if _is_url(text) else f"https://{text}"
-        raise TargetError(f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}", url=link)
+        raise TargetError(
+            f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}", url=link
+        )
 
     def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
-        """Add headers to and sign a request to the source's own `domains`, before every attempt; never called for a CDN.
+        """Add headers or signature to a request on source domains before each attempt.
 
             def prepare(self, request, cookies):
                 request.headers["x-csrf-token"] = cookies.get("ct0", "")
                 return request
-
-        Args:
-            request: the request about to be sent; change it in place or return another.
-            cookies: the login's cookies as they are now, `{name: value}`, so a rotated one is seen.
-
-        Returns:
-            The request to send. It runs again for each retry, so a timestamp in a signature stays fresh.
         """
         return request
 
     def login(self, login: Login, method: str, /) -> None:
-        """Log in by `method`, for a source with its own way (tlg), asking through `login` (a `Login`).
+        """Log in by `method` (tlg), asking through `login` (a `Login`).
 
         Cookie sources keep this default, and the engine's `browser` and `file` methods log in.
         A login that fails raises `LoginError`, which `flnd login` reports.
-
-        Args:
-            login: the `Login` handle.
-            method: one of the source's `login_methods`.
         """
         raise NotImplementedError(f"{self.code} has no login method {method!r}")
 
@@ -1236,8 +1081,8 @@ class Source:
 
 
 def _parse(text: str, domains: tuple[str, ...]) -> _Url | None:
-    """`text` as a `_Url` when it's a URL on one of `domains` or their subdomains, with or without a scheme."""
-    # Without a scheme, only a slash tells a link (instagram.com/example_user) from a name (example.user).
+    """`text` as a `_Url` when it's a URL on one of `domains`, with or without a scheme."""
+    # Without a scheme, a slash tells a link (instagram.com/example_user) from a name.
     if "/" not in text and not _is_url(text):
         return None
     parsed = urlsplit(text if _is_url(text) else f"https://{text}")
@@ -1249,7 +1094,7 @@ def _parse(text: str, domains: tuple[str, ...]) -> _Url | None:
 
 
 def _bare_host(host: str) -> str:
-    """A host without the prefixes that are the same site: `www.m.instagram.com` is `instagram.com`."""
+    """A host without prefixes that are the same site: `www.m.instagram.com` is `instagram.com`."""
     for prefix in SITE_PREFIXES:
         host = host.removeprefix(prefix)
     return host
@@ -1260,7 +1105,7 @@ def _is_url(text: str) -> bool:
 
 
 def _split(text: str, separator: str, *, once: bool = False) -> list[str]:
-    """`text` split at `separator` outside `{…}`, so a placeholder's regex may hold `/`, `?` or `{16,}`.
+    """`text` split at `separator` outside `{…}`, allowing `/`, `?` or `{16,}` in regexes.
 
     With `once`, it splits at the first one only and returns `[before, separator, after]`, or
     `[text, "", ""]` when there's none, as `str.partition` does.
@@ -1344,11 +1189,14 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
 
 def _shown(segment: str) -> str:
     """A segment as help shows it: `{name:regex}` as `<name>`, `*` as `…`."""
-    return "".join({"text": text, "any": ANY}.get(kind, f"<{text}>") for kind, text, _ in _tokens(segment, segment))
+    return "".join(
+        {"text": text, "any": ANY}.get(kind, f"<{text}>")
+        for kind, text, _ in _tokens(segment, segment)
+    )
 
 
 def _assign(instance: Any, **values: Any) -> None:
-    """Set a frozen dataclass's fields from its own `__init__`, which `frozen=True` otherwise refuses."""
+    """Set a frozen dataclass's fields from its own `__init__`."""
     for name, value in values.items():
         object.__setattr__(instance, name, value)
 
@@ -1363,8 +1211,8 @@ _FORMATTER = string.Formatter()
 
 
 def _fill_segment(segment: str, fields: Mapping[str, Any]) -> str:
-    """One path segment of a format, filled in, with the separators an empty field leaves dropped (see `fill`)."""
-    # Each piece is [text, whether it's the format's own literal text]; only literals lose separators.
+    """One path segment of a format, filled in, with dropped separators (see `fill`)."""
+    # Each piece is [text, whether literal]; only literals lose separators.
     pieces: list[list[Any]] = []
     # Set by an empty field that starts the segment: the separators after it go too.
     drop_next = False

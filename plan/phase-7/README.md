@@ -53,7 +53,7 @@ Each step ends with `check` green and is committed on its own.
     a route of a `Source`) on the same job; the `sync` and `auth` command groups (`sync` opt-in:
     `download --sync`, `sync ls`, `sync toggle`); loi's query targets first.
 11. **Built**. [flnd › mimihentai](flnd.md#17-mimihentai-mht-711): the `mht` source (`Source` subclass) and its query targets.
-12. [readable](readable.md): the docs diet and no plan or history in code, over `shared` and
+12. **Built**. [readable](readable.md): the docs diet and no plan or history in code, over `shared` and
     `flnd`, with the enforcement switched on. Its writing rules hold from now, and its refactors
     land in the steps that touch their files.
 

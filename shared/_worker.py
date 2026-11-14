@@ -1,35 +1,16 @@
 """Run a function on many inputs at once: `as_ordered`, `as_completed` and `pool`.
 
-How it works: each entry point starts a run, a bounded queue of tasks served by runner threads
-that `worker` starts as tasks arrive, up to `concurrency`, and that exit when the queue is empty.
-A runner tries a task, waits 1, 2, 4… s (with jitter, at most 60 s) between `retries`, and gives
-up on one try after `timeout` seconds. Inputs are read only as fast as runners take them, so an
-endless generator never fills memory. Tasks run in threads by default, which suits work that
-waits: network, files, browsers. `processes=True` hands each try to a stdlib
-`concurrent.futures.ProcessPoolExecutor`, for work that computes. An `async def` function runs on
-an `asyncio` event loop in a background thread, so the calling code stays synchronous. Every
-task's outcome is a `Result`: `as_ordered` returns the values in input order and raises `TaskError`
-if any failed, `as_completed` yields each `Result` as it finishes, and `pool` takes tasks one
-at a time, for work that is found while other work runs. `label=` draws a progress row with
-`shared.log`; `progress=` reports to a callback instead.
-
     from shared import worker
-
     sizes = worker.as_ordered(file_size, urls, concurrency=8, retries=2, label="files")
     for result in worker.as_completed(download, urls, timeout=30):
         print(result.item, result.value if result.ok else result.error)
     with worker.pool(concurrency=6) as pool:
         pool.submit(download, url)
 
-It wraps the stdlib's `concurrent.futures` (for processes), `asyncio` (for coroutines) and
-`threading` (for the runners and timeouts). `Pool.raw` is the `ProcessPoolExecutor` or the event
-loop, once one is started; there is no other `.raw`.
-
-Threads: `as_ordered`, `as_completed` and `pool` may be called from several threads at once, each
-call with a run of its own. A `Pool` may be fed from several threads: `submit`, `close`, `join` and
-its properties take the run's lock. `fn` itself runs on worker's threads, several at once, so
-whatever it shares needs its own lock; so does `progress`, which runner threads call one at a time.
-Ctrl-C once cancels queued tasks and lets running ones finish; twice stops at once.
+Each call starts a bounded queue served by runner threads (`processes=True` uses a
+`ProcessPoolExecutor`; `async def` functions run on a background `asyncio` loop).
+`Pool.raw` is the `ProcessPoolExecutor` or event loop once started. Entry points and
+`Pool` methods are thread-safe; Ctrl-C once finishes running tasks, twice stops at once.
 """
 
 from __future__ import annotations
@@ -46,7 +27,18 @@ import time
 from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Generic, Iterable, Iterator, NamedTuple, TypedDict, TypeVar, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    Iterator,
+    NamedTuple,
+    TypedDict,
+    TypeVar,
+    overload,
+)
 
 import shared
 from shared import _clock as clock
@@ -120,7 +112,10 @@ class TaskError(Error):
         self.results = results
         failed = [result for result in results if not result.ok]
         first = failed[0]
-        super().__init__(f"{len(failed)} of {len(results)} tasks failed; first: {first.item}: {_describe(first.error)}")
+        super().__init__(
+            f"{len(failed)} of {len(results)} tasks failed; "
+            f"first: {first.item}: {_describe(first.error)}"
+        )
 
 
 class _Options(TypedDict, total=False):
@@ -135,52 +130,38 @@ class _Options(TypedDict, total=False):
 
 
 @overload
-def as_ordered(fn: Callable[[A1], R], items: Iterable[A1], /, **options: Unpack[_Options]) -> list[R]: ...
+def as_ordered(
+    fn: Callable[[A1], R], items: Iterable[A1], /, **options: Unpack[_Options]
+) -> list[R]: ...
 @overload
 def as_ordered(fn: Callable[[A1, A2], R], items: Iterable[A1], second: Iterable[A2], /,
                **options: Unpack[_Options]) -> list[R]: ...
 @overload
-def as_ordered(fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2], third: Iterable[A3], /,
-               **options: Unpack[_Options]) -> list[R]: ...
+def as_ordered(
+    fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2],
+    third: Iterable[A3], /, **options: Unpack[_Options]
+) -> list[R]: ...
 @overload
-def as_ordered(fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
-               fourth: Iterable[Any], /, *more: Iterable[Any], **options: Unpack[_Options]) -> list[Any]: ...
+def as_ordered(
+    fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
+    fourth: Iterable[Any], /, *more: Iterable[Any], **options: Unpack[_Options]
+) -> list[Any]: ...
 def as_ordered(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> list[Any]:
-    """Run `fn` on every item, several at once, and return every result in input order, as a list.
+    """Run `fn` on every item concurrently and return the results in input order.
 
-        sizes = worker.as_ordered(file_size, urls, concurrency=8, retries=2, timeout=30, label="files")
+        sizes = worker.as_ordered(file_size, urls, concurrency=8, retries=2, timeout=30)
 
     Args:
-        fn: the task, a function or an `async def` function; with `processes=True`, one defined
-            at the top level of a module, so it can be sent to another process.
-        *iterables: the inputs. With several, `fn` gets one item from each, paired up like the
-            builtin `map`, and the shortest one ends the run.
-        **options: the keyword options below, each optional.
-            concurrency: how many tasks run at once. None: `min(32, CPUs + 4)` threads, or one process
-                per CPU with `processes=True`.
-            retries: how many more tries a failed task gets, after waits of 1, 2, 4… s (at most 60 s).
-            timeout: seconds before one try fails with `StalledError`; None waits forever. A
-                coroutine or a process really stops; a thread can't be stopped, so it runs on in
-                the background and its result is thrown away.
-            label: the text of a progress row of finished tasks, drawn with `shared.log`; None draws none.
-            progress: a callback `progress(done, total)`, called after each task finishes with how many
-                have and how many there are: the input's length, or the number read so far when the
-                input has no length. None calls nothing.
-            processes: run tasks in processes, for work that computes, instead of threads.
-
-    Returns:
-        What `fn` returned for each item, in the input's order.
+        fn: Sync or `async def` callable (top-level when `processes=True`).
+        *iterables: Input iterables paired like `map`.
+        **options: `concurrency` (default `min(32, CPUs + 4)` threads or `CPUs` processes),
+            `retries` (1, 2, 4… s backoff up to 60 s), `timeout` (seconds per try before
+            `StalledError`), `label` (`shared.log` progress row), `progress(done, total)`
+            callback, and `processes` (use `ProcessPoolExecutor`).
 
     Raises:
-        TaskError: some task failed after its retries, raised once the others have finished.
-        ValueError: `concurrency` is below 1, `retries` below 0 or `timeout` not above 0.
-        TypeError: `progress` isn't callable, or, with `processes=True`, `fn` can't be sent to
-            another process.
-
-    The same options go to `as_completed` and `pool`. `progress` is called from worker's runner
-    threads, one call at a time, before `as_ordered` returns; if it raises, the run stops and the
-    error is raised here. It is typed for one to three iterables; with more, the results are `Any`.
-    It may be called from several threads at once.
+        TaskError: Any task failed after its retries, once all others finish.
+        ValueError, TypeError: Invalid option or unpicklable `fn` when `processes=True`.
     """
     with _Run(total=_length(iterables), **options) as run:
         for args in zip(*iterables):
@@ -198,36 +179,27 @@ def as_completed(fn: Callable[[A1], R], items: Iterable[A1], /,
 def as_completed(fn: Callable[[A1, A2], R], items: Iterable[A1], second: Iterable[A2], /,
                  **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
 @overload
-def as_completed(fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2], third: Iterable[A3], /,
-                 **options: Unpack[_Options]) -> Iterator[Result[R]]: ...
+def as_completed(
+    fn: Callable[[A1, A2, A3], R], items: Iterable[A1], second: Iterable[A2],
+    third: Iterable[A3], /, **options: Unpack[_Options]
+) -> Iterator[Result[R]]: ...
 @overload
-def as_completed(fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
-                 fourth: Iterable[Any], /, *more: Iterable[Any],
-                 **options: Unpack[_Options]) -> Iterator[Result[Any]]: ...
-def as_completed(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]:
-    """Run `fn` on every item, several at once, and yield each `Result` as soon as it is ready.
+def as_completed(
+    fn: Callable[..., Any], items: Iterable[Any], second: Iterable[Any], third: Iterable[Any],
+    fourth: Iterable[Any], /, *more: Iterable[Any],
+    **options: Unpack[_Options]
+) -> Iterator[Result[Any]]: ...
+def as_completed(
+    fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any
+) -> Iterator[Result[Any]]:
+    """Run `fn` on every item concurrently and yield each `Result` as soon as it is ready.
 
         for result in worker.as_completed(download, urls, concurrency=8):
             if not result.ok:
                 log.error("{url}: {error}", url=result.item, error=result.error)
 
-    Args:
-        fn: the task, as for `as_ordered`.
-        *iterables: the inputs, as for `as_ordered`.
-        **options: `concurrency`, `retries`, `timeout`, `label`, `progress` and `processes`,
-            as for `as_ordered`.
-
-    Returns:
-        An iterator of every task's `Result`, in the order they finish, as the stdlib's
-        `concurrent.futures.as_completed` gives futures. Stopping early (a `break`) cancels the
-        queued tasks and waits for the running ones.
-
-    Raises:
-        ValueError: a bad option, as for `as_ordered`.
-        TypeError: with `processes=True`, `fn` can't be sent to another process.
-
-    It never raises because a task failed: each failure is a `Result` whose `ok` is False. The
-    iterator belongs to the thread that reads it; several threads may each run their own.
+    Takes the same arguments and options as `as_ordered`. Never raises on task failure; stopping
+    early cancels queued tasks and waits for running ones.
     """
     with _Run(total=_length(iterables), **options) as run:
         # `seen` counts the results already yielded, so each result is yielded exactly once.
@@ -250,27 +222,13 @@ def as_completed(fn: Callable[..., Any], *iterables: Iterable[Any], **options: A
 
 
 def pool(**options: Unpack[_Options]) -> Pool:
-    """Start a pool that takes tasks one at a time, while other work is still going on.
+    """Start a `Pool` that accepts tasks one at a time; takes the same options as `as_ordered`.
 
         with worker.pool(concurrency=6, label="downloads") as pool:
             for post in scroll_through_feed():
                 pool.submit(download, post.url)
-        print(len(pool.results), "done")
 
-    Args:
-        **options: `concurrency`, `retries`, `timeout`, `label`, `progress` and `processes`, as
-            for `as_ordered`. The total a progress row or `progress` sees is the number submitted
-            so far, since a pool can't know how many will come.
-
-    Returns:
-        A `Pool`. Leaving its `with` block calls `close()` then `join()`; if the block raised,
-        queued tasks are dropped instead, with a warning line. Without `with`, call `close()` and
-        `join()` yourself.
-
-    Raises:
-        ValueError: a bad option, as for `as_ordered`.
-
-    It never raises because a task failed. It may be called from several threads at once.
+    Leaving a `with` block calls `close()` and `join()`, or drops queued tasks if the block raised.
     """
     return Pool(_Run(**options))
 
@@ -346,7 +304,9 @@ class Pool:
     def __enter__(self) -> Pool:
         return self
 
-    def __exit__(self, error_type: type[BaseException] | None, error: BaseException | None, traceback: Any) -> None:
+    def __exit__(
+        self, error_type: type[BaseException] | None, error: BaseException | None, traceback: Any
+    ) -> None:
         self._run.__exit__(error_type, error, traceback)
 
     def __del__(self) -> None:
@@ -357,7 +317,7 @@ class Pool:
 
 
 class _Job(NamedTuple):
-    """One queued task: the function, the arguments to call it with, and where it sits in the input."""
+    """One queued task: the function, its arguments, and its position in the input."""
 
     # The task to call; a coroutine function runs on the event loop.
     fn: Callable[..., Any]
@@ -370,17 +330,18 @@ class _Job(NamedTuple):
 
 
 class _Run:
-    """The engine under `as_ordered`, `as_completed` and `pool`: a bounded queue, runner threads, retries and stopping.
+    """The engine under `as_ordered`, `as_completed` and `pool`: queue, runners, retries and stop.
 
     Every count below is read and changed under `changed`, which is notified on every change: the
     caller's thread submits and waits, and every runner thread takes jobs and adds results.
     """
 
-    def __init__(self, *, concurrency: int | None = None, retries: int = 0, timeout: float | None = None,
-                 label: str | None = None, progress: Callable[[int, int], Any] | None = None,
-                 processes: bool = False, total: int | None = None):
-        """Check the options and set up an empty run; no thread or process starts until the first submit."""
-        # Step 1: check the options before anything is started, so a bad one raises with nothing to clean up.
+    def __init__(self, *, concurrency: int | None = None, retries: int = 0,
+                 timeout: float | None = None, label: str | None = None,
+                 progress: Callable[[int, int], Any] | None = None, processes: bool = False,
+                 total: int | None = None):
+        """Check options and set up an empty run; threads/processes start on the first submit."""
+        # Step 1: check options before anything starts, so a bad one raises cleanly.
         if concurrency is not None and concurrency < 1:
             raise ValueError(f"concurrency must be at least 1, not {concurrency}")
         if retries < 0:
@@ -388,10 +349,9 @@ class _Run:
         if timeout is not None and timeout <= 0:
             raise ValueError(f"timeout must be above 0, not {timeout}")
         if progress is not None and not callable(progress):
-            # Before Phase 6 `progress=` took a row's text; say where that went rather than fail later.
             raise TypeError(f"progress must be a progress(done, total) callback, not {progress!r}; "
                             "a progress row's text goes in label=")
-        # Step 2: the default concurrency. Threads use the stdlib ThreadPoolExecutor's own default rule;
+        # Step 2: the default concurrency. Threads use ThreadPoolExecutor's default rule;
         # processes take one per CPU.
         cpus = os.cpu_count() or 1
         self.concurrency = concurrency or (cpus if processes else min(32, cpus + 4))
@@ -425,13 +385,15 @@ class _Run:
     def __enter__(self) -> _Run:
         return self
 
-    def __exit__(self, error_type: type[BaseException] | None, error: BaseException | None, traceback: Any) -> None:
-        """Finish the run: stop it on an error, or close and wait for every task on a normal exit."""
+    def __exit__(
+        self, error_type: type[BaseException] | None, error: BaseException | None, traceback: Any
+    ) -> None:
+        """Finish the run: stop it on an error, or close and wait for every task on normal exit."""
         # Step 1: an error in the block stops the run at once; queued tasks are dropped.
         if error is not None:
             self.stop(error)
         else:
-            # Step 2: a normal exit waits for every queued task. A Ctrl-C during that wait stops the run.
+            # Step 2: a normal exit waits for every queued task; Ctrl-C there stops the run.
             try:
                 self.close()
                 self.wait(self.is_idle)
@@ -444,7 +406,7 @@ class _Run:
 
     def has_room(self) -> bool:
         """Whether another task may be queued: fewer than twice `concurrency` are waiting."""
-        # Twice the concurrency is enough queued work to keep every runner busy, without reading far ahead.
+        # Twice the concurrency keeps every runner busy without reading far ahead.
         return len(self.queued) < 2 * self.concurrency
 
     def is_idle(self) -> bool:
@@ -452,18 +414,18 @@ class _Run:
         return not self.queued and self.busy == 0
 
     def submit(self, fn: Callable[..., Any], args: tuple[Any, ...]) -> None:
-        """Queue one task, waiting first while the queue is full, and start a runner when one is missing.
+        """Queue one task, waiting while the queue is full, and start a runner when needed.
 
         Raises:
             RuntimeError: the run was closed before this submit.
             TypeError: with `processes`, `fn` can't be sent to another process.
         """
-        # With processes, the picklability check runs first, in the caller's thread, so the error reaches the caller.
+        # With processes, check picklability in the caller's thread so the error reaches the caller.
         if self.processes:
             _check_picklable(fn)
         if self.closed:
             raise RuntimeError("this pool was closed: no more tasks can be submitted")
-        # Reading inputs only as fast as runners take them keeps a huge or endless input out of memory.
+        # Read inputs only as fast as runners take them to keep huge or endless inputs out of RAM.
         self.wait(self.has_room)
         with self.changed:
             self._start_backend(fn)
@@ -471,7 +433,7 @@ class _Run:
             self.submitted += 1
             if self.bar is not None and self.total is None:
                 self.bar.total = self.submitted
-            # Runners are added as tasks arrive, up to `concurrency`, and each exits when the queue is empty.
+            # Add runners as tasks arrive up to `concurrency`; each exits when the queue is empty.
             if self.runners < self.concurrency:
                 self.runners += 1
                 threading.Thread(target=self._serve, name="shared-worker", daemon=True).start()
@@ -494,7 +456,8 @@ class _Run:
                         raise interrupt
                     if ready():
                         return True
-                    left = WAKE_INTERVAL if deadline is None else min(WAKE_INTERVAL, deadline - time.monotonic())
+                    left = (WAKE_INTERVAL if deadline is None
+                            else min(WAKE_INTERVAL, deadline - time.monotonic()))
                     if left <= 0:
                         return False
                     self.changed.wait(left)
@@ -515,9 +478,13 @@ class _Run:
         try:
             if isinstance(error, KeyboardInterrupt):
                 if running:
-                    log.warn("stopping: waiting for {n} running tasks (Ctrl-C again to force)", n=running)
+                    log.warn(
+                        "stopping: waiting for {n} running tasks (Ctrl-C again to force)", n=running
+                    )
             elif dropped and not isinstance(error, GeneratorExit):
-                log.warn("dropped {n} queued tasks after {error}", n=dropped, error=type(error).__name__)
+                log.warn(
+                    "dropped {n} queued tasks after {error}", n=dropped, error=type(error).__name__
+                )
             with self.changed:
                 while self.busy:
                     self.changed.wait(WAKE_INTERVAL)
@@ -526,7 +493,7 @@ class _Run:
             raise
 
     def end(self, error: BaseException | None, *, force: bool = False) -> None:
-        """Shut down processes and the event loop, and end the progress bar. Later calls do nothing."""
+        """Shut down processes and the event loop, and end the progress bar. Idempotent."""
         with self.changed:
             if self.ended:
                 return
@@ -544,13 +511,17 @@ class _Run:
             self.exits.__exit__(type(error), error, error.__traceback__)
 
     def _start_backend(self, fn: Callable[..., Any]) -> None:
-        """Start the process pool, or the event loop for a coroutine, the first time it is needed."""
-        # Processes are one pool per run. A coroutine gets its own loop on a thread, so the caller stays synchronous.
+        """Start the process pool, or the event loop for a coroutine, on first use."""
+        # One process pool per run; a coroutine gets a loop on a thread so the caller stays sync.
         if self.processes and self.executor is None:
-            self.executor = concurrent.futures.ProcessPoolExecutor(self.concurrency, initializer=_ignore_ctrl_c)
+            self.executor = concurrent.futures.ProcessPoolExecutor(
+                self.concurrency, initializer=_ignore_ctrl_c
+            )
         elif not self.processes and self.loop is None and inspect.iscoroutinefunction(fn):
             self.loop = asyncio.new_event_loop()
-            threading.Thread(target=_run_loop, args=(self.loop,), name="shared-worker-loop", daemon=True).start()
+            threading.Thread(
+                target=_run_loop, args=(self.loop,), name="shared-worker-loop", daemon=True
+            ).start()
 
     def _serve(self) -> None:
         """One runner thread: run queued tasks until none are left, then exit."""
@@ -558,7 +529,7 @@ class _Run:
             result: Result[Any] | None = None
             try:
                 result = self._run_task(job)
-            except BaseException as interrupt:  # KeyboardInterrupt or SystemExit, e.g. Ctrl-C at a question
+            except BaseException as interrupt:  # KeyboardInterrupt or SystemExit
                 self._interrupt(interrupt)
             with self.changed:
                 if result is not None and not self.ended:
@@ -566,11 +537,11 @@ class _Run:
                     if self.bar is not None:
                         self.bar.advance()
                 self.changed.notify_all()
-            # Reported while this task still counts as busy, so the run can't end before its last report.
+            # Reported while still busy, so the run can't end before its last report.
             if result is not None and self.progress is not None:
                 try:
                     self._report(self.progress)
-                except BaseException as error:  # the caller's bug: it stops the run and reaches the caller
+                except BaseException as error:  # caller bug: stops the run and reaches the caller
                     self._interrupt(error)
             with self.changed:
                 self.busy -= 1
@@ -584,7 +555,7 @@ class _Run:
             self.changed.notify_all()
 
     def _report(self, progress: Callable[[int, int], Any]) -> None:
-        """Call `progress(done, total)` with the current count, unless another runner already did."""
+        """Call `progress(done, total)` with the current count, if not already reported."""
         with self.reporting:
             with self.changed:
                 done = len(self.finished)
@@ -594,7 +565,7 @@ class _Run:
                 progress(done, total)
 
     def _take(self) -> _Job | None:
-        """Take the next queued task for a runner, marking it busy, or None when the runner should exit."""
+        """Take the next queued task for a runner, marking it busy, or None to exit."""
         with self.changed:
             # A stop empties the queue for good, so a runner that finds a stop requested just exits.
             if self.queued and not self.stop_requested.is_set():
@@ -605,9 +576,9 @@ class _Run:
             return None
 
     def _run_task(self, job: _Job) -> Result[Any]:
-        """Try one task until it succeeds, or until its retries run out or a stop cancels the next retry.
+        """Try one task until it succeeds, its retries run out, or a stop cancels the next retry.
 
-        A task's own Exception becomes the Result's error; a BaseException such as Ctrl-C is not caught here.
+        A task's Exception becomes the Result's error; BaseException (e.g. Ctrl-C) is not caught.
         """
         attempt = 0
         while True:
@@ -615,7 +586,7 @@ class _Run:
             try:
                 return Result(job.item, self._counted_attempt(job), None, attempt, job.position)
             except Exception as error:
-                # After Ctrl-C a pending retry is cancelled too: waiting a minute to retry is not "finishing".
+                # After Ctrl-C a pending retry is cancelled too: waiting to retry is not finishing.
                 stopped = attempt <= self.retries and clock.sleep(_retry_wait(attempt),
                                                                    stop=self.stop_requested)
                 if attempt > self.retries or stopped:
@@ -644,18 +615,20 @@ class _Run:
         else:
             future = concurrent.futures.Future()
             future.set_running_or_notify_cancel()
-            threading.Thread(target=_call_into, args=(future, job.fn, job.args), daemon=True).start()
+            threading.Thread(
+                target=_call_into, args=(future, job.fn, job.args), daemon=True
+            ).start()
         try:
             return future.result(self.timeout)
         except concurrent.futures.TimeoutError:
-            # Cancelling stops a coroutine. Python can't stop a thread, so a timed-out thread runs on
-            # in the background and its result is thrown away. A process stops itself: see _call_in_child.
+            # Cancelling stops a coroutine; a timed-out thread runs on in the background with its
+            # result discarded; a process stops itself in _call_in_child.
             future.cancel()
             raise StalledError(f"took longer than {self.timeout}s") from None
 
 
 def _check_picklable(fn: Callable[..., Any]) -> None:
-    """Raise TypeError with a hint when fn can't be pickled, so a process run fails before it starts."""
+    """Raise TypeError with a hint when `fn` can't be pickled before a process run starts."""
     # pickle is used as the test: a function that pickles is one a child process can import and run.
     try:
         pickle.dumps(fn)
@@ -672,10 +645,10 @@ def _ignore_ctrl_c() -> None:
 
 
 def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
-    """Run an event loop on the thread it is given to, until `end` stops it, then cancel and close it."""
+    """Run an event loop on its thread until `end` stops it, then cancel and close it."""
     asyncio.set_event_loop(loop)
     loop.run_forever()
-    # A timed-out coroutine was only asked to stop; it stops on the loop's next turn, so give it one.
+    # A timed-out coroutine was only asked to stop; give the loop one turn so it finishes.
     leftover = asyncio.all_tasks(loop)
     for task in leftover:
         task.cancel()
@@ -701,7 +674,9 @@ def _call_in_child(fn: Callable[..., Any], args: tuple[Any, ...], timeout: float
         signal.setitimer(signal.ITIMER_REAL, 0)
 
 
-def _call_into(future: concurrent.futures.Future[Any], fn: Callable[..., Any], args: tuple[Any, ...]) -> None:
+def _call_into(
+    future: concurrent.futures.Future[Any], fn: Callable[..., Any], args: tuple[Any, ...]
+) -> None:
     try:
         future.set_result(fn(*args))
     except BaseException as error:
@@ -715,7 +690,7 @@ def _retry_wait(attempt: int) -> float:
 
 
 def _stop_processes(executor: concurrent.futures.ProcessPoolExecutor, force: bool) -> None:
-    """Shut the process pool down: wait for running tasks, or with `force` terminate the processes at once."""
+    """Shut the process pool down: wait for running tasks, or with `force` terminate at once."""
     if force:
         # ProcessPoolExecutor has no public way to stop running tasks before Python 3.14, so the
         # private `_processes` map is the only handle on the child processes.
@@ -735,10 +710,13 @@ def _logging_failure(step: Callable[..., Any], *args: Any) -> None:
 
 
 def _length(iterables: tuple[Iterable[Any], ...]) -> int | None:
-    """The shortest input's length, which is the run's total, or None when an input has no length."""
-    # A generator has no len(), so the TypeError means the total is unknown and the progress row counts up instead.
+    """The shortest input's length (the run's total), or None when an input has no length."""
+    # A generator has no len(), so TypeError means the total is unknown and the row counts up.
     try:
-        return min(len(iterable) for iterable in iterables) if iterables else 0  # pyright: ignore[reportArgumentType]
+        return (
+            min(len(iterable) for iterable in iterables)  # pyright: ignore[reportArgumentType]
+            if iterables else 0
+        )
     except TypeError:
         return None
 

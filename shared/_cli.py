@@ -1,26 +1,16 @@
 """Command-line apps whose function signatures are the parser.
 
-A handler is a plain function: each parameter becomes a positional, an option or a flag, read from
-its annotation and default, and its docstring's first line and `Args:` section become the help.
-`App.run` follows the command words down to a handler (`_route`), parses the rest with argparse
-(the library this wraps; it is never exposed, so there is no `.raw`), calls the handler and returns
-its exit code. The parameters are read by `shared._params`, and the drawing is `shared._theme`'s.
-A bad command line raises `UsageError`, drawn by `shared.theme` as `✗ message` and the usage, with
-exit code 2; help is drawn by the same theme, to stdout.
+A handler is a plain function: parameters become positionals, options, or flags.
+`App.run` routes commands, parses arguments via argparse, calls handlers, and
+returns exit codes. Help and errors are styled through `shared._theme`.
 
     app = cli.App("notes", version="1.0")
 
     @app.command
     def add(text: str, *, tag: list[str] = []) -> int:
-        \"\"\"Add a note.
-
-        Args:
-            text: the note.
-            tag: a label for it; may be given more than once.
-        \"\"\"
         return 0
 
-    app()                                          # notes add "buy milk" --tag home
+    app()
 """
 
 from __future__ import annotations
@@ -56,7 +46,7 @@ def run(fn: Callable) -> typing.NoReturn:
 
 
 class App:
-    """A program and its commands. Bare `app` with no command prints help; `cli.run(fn)` has one handler.
+    """A program and its commands. Bare `app` prints help; `cli.run(fn)` has one handler.
 
         app = cli.App("notes", version="1.0")
 
@@ -72,7 +62,9 @@ class App:
         epilog: text printed after the commands in the root's help.
     """
 
-    def __init__(self, name: str, *, version: str | None = None, description: str = "", epilog: str = ""):
+    def __init__(
+        self, name: str, *, version: str | None = None, description: str = "", epilog: str = ""
+    ):
         self.name, self.version, self.description, self.epilog = name, version, description, epilog
         self.parent: App | None = None
         self.children: dict[str, Command | App] = {}
@@ -91,7 +83,7 @@ class App:
             The handler itself, unchanged, when used bare; otherwise a decorator that returns it.
 
         Raises:
-            ValueError: the name is already a command or group here, or this app has its own handler.
+            ValueError: name is already a command or group here, or app has handler.
         """
         def register(fn: Callable, name: str | None = None) -> Callable:
             command = Command(fn, name or fn.__name__.replace("_", "-"))
@@ -103,24 +95,20 @@ class App:
         return lambda fn: register(fn, target)
 
     def group(self, name: str, *, description: str = "", default: Callable | None = None) -> App:
-        """Add a group of commands under `name`, and return it to register its commands on.
+        """Add a group of commands under `name`, and return it to register commands.
 
-            auth = app.group("auth", description="Cookie files for a source.")
+            auth = app.group("auth", description="Cookie files.")
 
             @auth.command
-            def show(source: str) -> int: ...            # app auth show <source>
-
-            sync = app.group("sync", default=sync_all)   # app sync [targets…] runs sync_all
-            sync.command(ls)                             # app sync ls
+            def show(source: str) -> int: ...
 
         Args:
             name: the word that selects the group on the command line.
-            description: the group's help text; its first line is its row in the parent's help.
-            default: the handler run when the word after `name` isn't one of the group's commands,
-                given every word that follows; None shows the group's help instead.
+            description: the group's help text.
+            default: handler run when command word not in group; None shows help.
 
         Raises:
-            ValueError: this app already has a command or group called `name`, or has its own handler.
+            ValueError: app already has a command or group called `name`.
         """
         child = App(name, description=description)
         child.parent = self
@@ -134,13 +122,13 @@ class App:
         sys.exit(self.run())
 
     def run(self, argv: list[str] | None = None) -> int:
-        """Route argv to a command, run its handler, and return the exit code; help and errors are drawn here.
+        """Route argv to a command, run handler, and return exit code; draws help and errors.
 
         Args:
             argv: the words after the program name; None reads `sys.argv[1:]`.
 
         Returns:
-            The handler's exit code (0 when it returns no int), 0 after help or the version, 2 after a
+            The handler's exit code (0 when no int returned), 0 after help/version, 2 after
             bad command line, or 130 on Ctrl-C.
 
         Raises:
@@ -156,13 +144,13 @@ class App:
             arguments = command.parse(tokens, path, self)
             try:
                 return _exit_code(command.fn(*arguments.args, **arguments.kwargs))
-            # A UsageError raised by the handler itself is a bad argument, so it gets the command's usage.
+            # A UsageError raised by handler is a bad argument, so it gets command usage.
             except UsageError as error:
                 raise _usage_error(str(error), command.help_model(path, self).usage) from None
         except _HelpRequested as request:
             _write_help(request.text)
             return 0
-        # A usage error raised before any command ran has no command's usage, so the root's usage is shown.
+        # A usage error before command ran has no command usage, so root usage is shown.
         except UsageError as error:
             usage = error.usage or self._help_model([self.name]).usage
             model = HelpModel(prog="", description="", usage=usage, error=str(error))
@@ -210,11 +198,12 @@ class App:
                 raise KeyError(f"no command {' '.join(path)!r}")
             node = node.children[name]
         names = [self.name, *path]
-        model = node.help_model(names, self) if isinstance(node, Command) else node._help_model(names)
+        is_cmd = isinstance(node, Command)
+        model = node.help_model(names, self) if is_cmd else node._help_model(names)
         return _theme.theme.draw("help", model)
 
     def _add(self, name: str, child: Command | App) -> None:
-        """Register child under name, refusing a duplicate name or a group that already has a handler."""
+        """Register child under name, refusing duplicate or group with handler."""
         if name in self.children:
             raise ValueError(f"{self.name} already has a command or group named {name!r}")
         if self.handler is not None:
@@ -225,11 +214,11 @@ class App:
         """Follow the command words in tokens down to a command: (command, path, its tokens)."""
         app, path = self, [self.name]
         while True:
-            # Flags before a command word belong to the program or a group; a command's own flags are
+            # Flags before a command word belong to program or group; command flags
             # left for its argparse parser, so `-h` after a command shows that command's help.
             while tokens and tokens[0].startswith("-"):
                 flag = tokens[0]
-                # A group's or program's -h is handled here, since it has no argparse parser of its own.
+                # A group's or program's -h is handled here; has no argparse parser.
                 if flag in ("-h", "--help") and app.handler is None:
                     raise _HelpRequested(app._help_model(path))
                 # The version is only the program's own flag, so a group's -V is not treated as it.
@@ -251,12 +240,13 @@ class App:
             elif child is not None:
                 return child, path + [tokens[0]], tokens[1:]
             else:
-                message = (f"unrecognized arguments: {' '.join(tokens)}" if tokens[0].startswith("-")
+                is_opt = tokens[0].startswith("-")
+                message = (f"unrecognized arguments: {' '.join(tokens)}" if is_opt
                            else f"unknown command '{tokens[0]}'")
                 raise _usage_error(message, app._help_model(path).usage)
 
     def _help_model(self, path: list[str]) -> HelpModel:
-        """The help for this app or group, as the model the theme draws, for the command words in path."""
+        """Help for this app or group, as the model theme draws, for words in path."""
         if self.handler is not None:
             return self.handler.help_model(path, self)
         commands = tuple((name, child.row_text()) for name, child in self.children.items())
@@ -269,13 +259,16 @@ class App:
         usage = " ".join(path) + (" [options]" if options else "") + " [command]"
         # Options are listed only when there is more than -h, the same rule as [options].
         rows = options + (("-h, --help", ""),) if options else ()
-        return HelpModel(" ".join(path), self.description, usage, options=rows, commands=commands, epilog=self.epilog)
+        return HelpModel(
+            " ".join(path), self.description, usage, options=rows,
+            commands=commands, epilog=self.epilog,
+        )
 
     def _root_options(self) -> tuple:
         return (("-V, --version", "show the version"),) if self.version else ()
 
     def row_text(self) -> str:
-        """The row this group shows in its parent's command list: its description's first line, or its name."""
+        """The row shown in parent's command list: description first line, or name."""
         if self.description or self.default is None:
             return _first_line(self.description) or self.name
         return self.default.row_text()
@@ -289,7 +282,7 @@ class Command:
         self.signature = inspect.signature(fn)
 
     def row_text(self) -> str:
-        """The row this command shows in its parent's list: its summary without the final period, or its name."""
+        """The row shown in parent's list: summary without final period, or name."""
         return self.summary.rstrip(".") or self.name
 
     def parse(self, tokens: list[str], path: list[str], app: App) -> inspect.BoundArguments:
@@ -304,23 +297,29 @@ class Command:
             The arguments bound to the handler's signature, ready to call it with.
 
         Raises:
-            UsageError: a word is missing, unknown or invalid; its `usage` is this command's usage line.
+            UsageError: a word is missing, unknown or invalid; usage is command's line.
         """
         prog = " ".join(path)
-        # add_help=False, because -h is added as its own action so the help can be drawn by the theme.
+        # add_help=False: -h is added as own action so help is drawn by theme.
         parser = _Parser(prog=prog, add_help=False)
         parser.add_argument("-h", "--help", action=_HelpAction)
         for param in self.params:
             param.add_to(parser)
         try:
             namespace = parser.parse_args(spell_consts(self.params, tokens))
-            # "given" is what the command line set, used to stop an option from reading stdin when another was given.
-            given = {param.name for param in self.params if param.is_given(getattr(namespace, param.name))}
-            values = {
-                param.name: param.finish(getattr(namespace, param.name), others_given=bool(given - {param.name}))
+            # "given" tracks what command line set, stopping option reading stdin if another given.
+            given = {
+                param.name for param in self.params
+                if param.is_given(getattr(namespace, param.name))
+            }
+            parsed = {
+                param.name: param.finish(
+                    getattr(namespace, param.name), others_given=bool(given - {param.name})
+                )
                 for param in self.params
             }
-        # -h from argparse carries no model, so the help is built here and re-raised with the command's own help.
+            values = parsed
+        # -h carries no model, so help is built here and re-raised with command's help.
         except _HelpRequested as request:
             raise _HelpRequested(self.help_model(path, app)) from request
         except UsageError as error:
@@ -328,7 +327,7 @@ class Command:
         return self.bind(values)
 
     def bind(self, values: dict) -> inspect.BoundArguments:
-        """Arrange parsed values into the positional and keyword arguments the handler's signature takes.
+        """Arrange parsed values into args and kwargs the handler signature takes.
 
         Args:
             values: each parameter's finished value, keyed by the parameter's name.
@@ -375,7 +374,10 @@ class Command:
         return HelpModel(
             " ".join(path), description, " ".join(usage),
             arguments=tuple((param.metavar, param.help_row()) for param in positionals),
-            options=tuple((param.label(), param.help_row()) for param in options) + extra + (("-h, --help", ""),),
+            options=(
+                tuple((p.label(), p.help_row()) for p in options)
+                + extra + (("-h, --help", ""),)
+            ),
             epilog=root.epilog if root.handler is self else "",
         )
 
@@ -388,7 +390,7 @@ class _HelpRequested(Exception):
     def text(self) -> str:
         """The help text drawn for the model, in the color depth of stdout.
 
-        Raises AssertionError when no model is attached yet; `Command.parse` attaches one before it re-raises.
+        # Raises AssertionError when no model attached; Command.parse attaches one.
         """
         # _HelpAction raises without a model; the command catching it re-raises with one.
         assert self.model is not None
@@ -398,7 +400,7 @@ class _HelpRequested(Exception):
 
 
 class _HelpAction(argparse.Action):
-    """The argparse action behind -h: it raises `_HelpRequested` so the help is drawn outside argparse."""
+    """Argparse action for -h: raises `_HelpRequested` so help is drawn outside."""
 
     def __init__(self, option_strings: list[str], dest: str, **kwargs: Any):
         # dest and default are suppressed, so -h stores nothing on the namespace and needs no value.
@@ -409,7 +411,7 @@ class _HelpAction(argparse.Action):
 
 
 class _Parser(argparse.ArgumentParser):
-    """An argparse parser that raises `UsageError` on a bad command line, instead of printing and exiting."""
+    """Argparse parser that raises `UsageError` instead of printing and exiting."""
 
     def error(self, message: str) -> typing.NoReturn:
         raise UsageError(message)
@@ -429,7 +431,7 @@ def _write_help(text: str) -> None:
 
 
 def _exit_code(result: Any) -> int:
-    """The handler's return value as an exit code; anything that isn't an int (such as None) exits 0."""
+    """Handler return value as exit code; non-int (such as None) exits 0."""
     return result if isinstance(result, int) else 0
 
 

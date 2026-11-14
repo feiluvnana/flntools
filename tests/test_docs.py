@@ -39,17 +39,23 @@ class DocstringCheckTest(unittest.TestCase):
             return dev.doc_breaches("m.py")
 
     def test_a_complete_file_passes(self):
-        source = ('"""Module."""\n\n\ndef f(a, b):\n    """Does it.\n\n    Args:\n        a: one.\n        b: two.\n    """\n')
+        source = ('"""Module."""\n\n\ndef f(a, b):\n    """Does it."""\n    return a + b\n')
         self.assertEqual(self.breaches(source), [])
 
     def test_each_rule_is_reported(self):
-        source = ('class C:\n    pass\n\n\ndef f(a, b):\n    """One line."""\n\n\n'
+        long_doc = "\n".join(f"    line {i}" for i in range(12))
+        source = ('class C:\n    pass\n\n\ndef f(a, b):\n    """Summary.\n\n'
+                  f'{long_doc}\n    """\n    return a + b\n\n\n'
                   'def g(a, b):\n    """Does it.\n\n    Args:\n        a: one.\n        c: three.\n    """\n\n\n'
                   'def _h():\n' + "    pass\n" * 16)
         text = "\n".join(self.breaches(source))
-        for expected in ("module has no docstring", "C has no docstring", "f takes 2 arguments", "g: Args lacks ['b'] and names ['c']",
-                         "_h is private, over 15 lines"):
+        for expected in ("module has no docstring", "C has no docstring", "f docstring is",
+                         "g: Args lacks ['b'] and names ['c']", "_h is private, over 15 lines"):
             self.assertIn(expected, text)
+
+    def test_long_module_docstring_is_reported(self):
+        source = '"""' + "\n".join(f"line {i}" for i in range(16)) + '"""\n'
+        self.assertIn("module docstring is 16 lines (at most 15)", "\n".join(self.breaches(source)))
 
 
 if __name__ == "__main__":

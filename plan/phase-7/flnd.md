@@ -617,6 +617,7 @@ filters beyond `--from` and `--time`; zip or exec postprocessors; metadata sidec
 | 9 | status lines, colour and motion | |
 | **10** | **query targets (`<site>?<query>`, a query route of a `Source`; `Param`, `Query`) with Lucene queries parsed by luqum (`flnd/query.py`); the `sync` group (`flnd sync`, `sync ls`, `sync toggle`, `download --sync`); `flnd auth login`/`logout`/`ls`; loi's query targets first (`Source` stays unified in `flnd/sources/`, no `Site`/`Downloader` split per 2026-11-14 decision)** | built |
 | **11** | **mimihentai (`mht`)**: its `Source` in `flnd/sources/mht.py` (a manga's chapters, and a query route over its advanced search), per §17 | built |
+| **12** | **[readable](readable.md)**: docs diet (R8), no plan/history in code and 100-char lines (R10), and enforcement checks in `scripts/dev.py`, `tests/test_docs.py`, `tests/test_names.py` | built |
 
 Query targets come last: they build on the black-box `shared` (7), the status lines (9) and the
 listing memory's common fields (4). Loi's first query targets wait for the user's example pages.

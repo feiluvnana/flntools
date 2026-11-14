@@ -38,8 +38,10 @@ PathLike = Union[str, "os.PathLike[str]"]
 # Python 3.14 and later, and imageio-ffmpeg's hook collects the ffmpeg binary. shared's own private
 # modules need no entry: each lazy module is a hidden import below, and PyInstaller follows the
 # plain imports inside its functions (`media`'s `from shared import _media_video`) to the rest.
-PACKAGES = ("playwright.sync_api", "cryptography", "pyzipper", "py7zr", "parsel", "jmespath", "jsonpath", "telethon",
-            "compression.zstd", "PIL", "pi_heif", "imageio_ffmpeg")
+PACKAGES = (
+    "playwright.sync_api", "cryptography", "pyzipper", "py7zr", "parsel", "jmespath", "jsonpath",
+    "telethon", "compression.zstd", "PIL", "pi_heif", "imageio_ffmpeg",
+)
 LAST_LINES = 15
 
 
@@ -51,7 +53,8 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Itera
           dest: PathLike = "dist") -> Path:
     """Build `entry` into the one-folder bundle `dest/name`, and return that folder.
 
-        bundler.build("tool.py", name="tool", hidden=("mypkg.plugins",), data=("assets",))   # dist/tool/
+        # dist/tool/
+        bundler.build("tool.py", name="tool", hidden=("mypkg.plugins",), data=("assets",))
 
     PyInstaller can't see lazy imports, so every module `shared` loads lazily, and the packages
     those modules use, are added as hidden imports; `hidden=` adds the script's own. A one-folder
@@ -59,9 +62,9 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Itera
 
     Args:
         entry: the script to build, such as "flnd/__main__.py".
-        name: the program's name: the bundle's folder and the executable in it (`name.exe` on Windows).
+        name: program name: bundle folder and executable (`name.exe` on Windows).
         hidden: modules the script imports in a way PyInstaller can't see, such as by name.
-        data: folders copied beside the program, which finds them at `Path(sys.executable).parent / name`.
+        data: folders copied beside the program, found at `Path(sys.executable).parent / name`.
         dest: the folder the bundle is built in, relative to the working directory; an earlier
             bundle of the same name in it is replaced.
 
@@ -82,24 +85,29 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Itera
             raise FileNotFoundError(f"no data folder at {folder}")
     dest = Path(dest).resolve()
     with tempfile.TemporaryDirectory() as work:
-        _run(pyinstaller, _arguments(entry, name=name, hidden=hidden, dest=dest, work=Path(work)), name)
+        args = _arguments(entry, name=name, hidden=hidden, dest=dest, work=Path(work))
+        _run(pyinstaller, args, name)
     bundle = dest / name
     for folder in folders:
         shutil.copytree(folder, bundle / folder.name, dirs_exist_ok=True)
     return bundle
 
 
-def _arguments(entry: PathLike, *, name: str, hidden: Iterable[str], dest: Path, work: Path) -> list[str]:
-    """PyInstaller's command line for `build`, with every lazy module of `shared` as a hidden import."""
-    # The .spec file and the build cache go to a temp folder, so there is nothing to maintain or clean up.
+def _arguments(
+    entry: PathLike, *, name: str, hidden: Iterable[str], dest: Path, work: Path
+) -> list[str]:
+    """PyInstaller command line for `build`, with lazy `shared` modules as hidden imports."""
+    # .spec file and build cache go to a temp folder, so there is nothing to clean up.
     lazy = [f"shared._{module}" for module in shared.LAZY_MODULES if module != "bundler"]
     imports = [*lazy, *(package for package in PACKAGES if _installed(package)), *hidden]
-    argv = [str(Path(entry).resolve()), "--onedir", "--noconfirm", "--log-level", "WARN", "--name", name,
-            "--distpath", str(dest), "--workpath", str(work / "build"), "--specpath", str(work),
-            "--paths", str(Path(shared.__file__).resolve().parent.parent)]
+    argv = [
+        str(Path(entry).resolve()), "--onedir", "--noconfirm", "--log-level", "WARN",
+        "--name", name, "--distpath", str(dest), "--workpath", str(work / "build"),
+        "--specpath", str(work), "--paths", str(Path(shared.__file__).resolve().parent.parent),
+    ]
     for module in imports:
         argv += ["--hidden-import", module]
-    # The bundler is reachable from shared's TYPE_CHECKING imports, and would bring PyInstaller along.
+    # Bundler is reachable from shared's TYPE_CHECKING imports and would bring PyInstaller along.
     return [*argv, "--exclude-module", "shared._bundler", "--exclude-module", "PyInstaller"]
 
 
@@ -119,7 +127,8 @@ def _run(pyinstaller: Any, argv: list[str], name: str) -> None:
     except (Exception, SystemExit) as error:
         if not (isinstance(error, SystemExit) and error.code in (0, None)):
             lines = "\n".join(tail.lines)
-            raise RuntimeError(f"PyInstaller could not build {name}: {error}\n{lines}".rstrip()) from None
+            msg = f"PyInstaller could not build {name}: {error}\n{lines}".rstrip()
+            raise RuntimeError(msg) from None
     finally:
         logger.removeHandler(tail)
 

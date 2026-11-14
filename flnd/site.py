@@ -1,29 +1,17 @@
 """The engine's `Site` and `Login`: what a source's routes, categories and login act through.
 
-How it works: a run opens one `SourceRun` per source (`source_run`): its login's cookies, two
-`http.Client`s over one httpx client that holds them, and its stores. `web` paces the source's own
-requests: its `domains` share one pace named by the source's code (its floor and budgets, a
-learned speed saved in its `state` between runs, and one back-off), and the source's `prepare`
-signs each request to them. `files` downloads, with a back-off of its own, so a CDN's 429 never
-slows the listing. Each target then gets a `TargetSite` over that run, and `flnd
-login` a `LoginSite`.
+A run opens one `SourceRun` per source (`source_run`): login cookies, two `http.Client`s
+over one httpx client, and stores. `web` paces the source's requests; `files` downloads files.
+Each target gets a `TargetSite` over that run, and `flnd login` gets a `LoginSite`.
 
-- `TargetSite.fetch` is `web.fetch`, its refusals turned into `FetchError`; `in_page=True` sends
-  it from the target's tab instead (`Page.fetch`), in the same pace.
-- `TargetSite.goto` loads a page in the target's tab in the same pace; a 429 is waited out and the
-  page loaded again, and another status of 400 or more warns and returns False.
-- `TargetSite.back_off` counts a throttle on the source's pace and waits it out.
-- `TargetSite.page` is the target's tab, opened on first use. Its scrolls are spaced by at least
-  0.3 s times the learned speed.
-- The first Ctrl-C (`net.stopping`) ends any wait at once with `KeyboardInterrupt`.
+- `TargetSite.fetch` performs paced HTTP requests, raising `FetchError` on failure.
+- `TargetSite.goto` loads a page in the browser tab within the same pace.
+- `TargetSite.page` provides the browser tab, opened on first use.
 
     with source_run(settings, source) as run:
         site = TargetSite(run, Target("ins", "user", "example_user"))
-        profile = site.fetch("https://www.instagram.com/api/v1/users/web_profile_info/",
-                             params={"username": "example_user"}).json
+        profile = site.fetch("https://example.com/api", params={"user": "example_user"}).json
         site.close()
-
-The job (flnd/job.py) drives a target; this module only acts for it. A source never imports it.
 """
 
 from __future__ import annotations
@@ -34,7 +22,9 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterator, Mapping, MutableMapping, TypeVar
+from typing import (
+    TYPE_CHECKING, Any, Callable, Coroutine, Iterator, Mapping, MutableMapping, TypeVar,
+)
 from urllib.parse import urlencode
 
 import httpx
@@ -234,7 +224,7 @@ class TargetSite:
         if in_page:
             return self._fetch_in_page(url, method, headers, soft, request)
         if self._browser is not None:
-            # Cookies the site set in the browser reach the client too, as a logged-in page would send them.
+            # Cookies set in the browser reach the client too, as a logged-in page would send them.
             self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies))
         options = dict(request)
         redirects = options.pop("follow_redirects", None)
@@ -261,7 +251,9 @@ class TargetSite:
             return False
         return True
 
-    def handoff(self, *, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool:
+    def handoff(
+        self, *, until: Callable[[], bool], message: str, timeout: float | None = None
+    ) -> bool:
         """Wait for a person to complete a step in the browser tab.
 
         See `flnd.source.Site.handoff`.
@@ -298,7 +290,7 @@ class TargetSite:
 
         See `flnd.source.Site.info`.
         """
-        # The target's name is put in front of the message as a field, so its text can't break the format.
+        # Target's name is put in front of the message as a field so text cannot break format.
         log.info("{target}: " + message, target=str(self.target), **fields)
 
     def warn(self, message: str, **fields: Any) -> None:
@@ -328,9 +320,11 @@ class TargetSite:
         """`fetch(in_page=True)`: one request the tab sends, in the source's pace."""
         options = dict(request)
         params = options.pop("params", None)
-        data, body, timeout = options.pop("data", None), options.pop("json", None), options.pop("timeout", 30.0)
+        data, body = options.pop("data", None), options.pop("json", None)
+        timeout = options.pop("timeout", 30.0)
         if options:
-            raise TypeError(f"fetch(in_page=True) takes params, data, json and timeout, not {', '.join(options)}")
+            bad = ", ".join(options)
+            raise TypeError(f"fetch(in_page=True) takes params, data, json and timeout, not {bad}")
         if params:
             url = f"{url}{'&' if '?' in url else '?'}{urlencode(params)}"
         page = self.page
@@ -354,12 +348,9 @@ class TargetSite:
 
 
 class LoginSite:
-    """The engine's `Login` for a source's own login (tlg's), during `flnd login`; see `flnd.source.Login`.
+    """The engine's `Login` for a source's own login (tlg's), during `flnd login`.
 
         Telegram().login(LoginSite(run), "phone")
-
-    Args:
-        run: the source's resources, opened for the login.
     """
 
     def __init__(self, run: SourceRun):
@@ -409,9 +400,11 @@ class _PacedPage(browser.Page):
         super().__init__(raw, owner)
         self._speed = speed
 
-    def scroll(self, *, within: Any = None, until: Callable[[], bool] | None = None,
-               count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0, pause: float = 0.3,
-               on_step: Callable[[], Any] | None = None) -> int:
+    def scroll(
+        self, *, within: Any = None, until: Callable[[], bool] | None = None,
+        count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0,
+        pause: float = 0.3, on_step: Callable[[], Any] | None = None,
+    ) -> int:
         """`Page.scroll`, its `pause` raised to the source's scroll floor; see `Page.scroll`."""
         return super().scroll(within=within, until=until, count=count, idle=idle, wait=wait,
                               pause=max(pause, SCROLL_FLOOR * self._speed()), on_step=on_step)
@@ -439,20 +432,29 @@ def _fetch_errors() -> Iterator[None]:
 
 
 def _warn_expiring(source: Source, jar: Any) -> None:
-    """Warn of each login cookie (`source.needs`) that has expired, or will within `EXPIRY_WARNING`, naming it, never its value."""
+    """Warn of login cookies (`source.needs`) that have expired or will expire soon."""
     now = clock.wall()
     for cookie in jar:
         expires = cookie.get("expires", -1)
         # -1 (or 0) is a session cookie, which lasts as long as the browser it came from said.
-        if cookie.get("name") not in source.needs or not isinstance(expires, (int, float)) or expires <= 0:
+        if (
+            cookie.get("name") not in source.needs
+            or not isinstance(expires, (int, float))
+            or expires <= 0
+        ):
             continue
         if expires <= now:
-            log.warn("{code}: the login cookie {name} has expired; run flnd login again", code=source.code,
-                     name=cookie["name"])
+            log.warn(
+                "{code}: the login cookie {name} has expired; run flnd login again",
+                code=source.code, name=cookie["name"],
+            )
         elif expires - now <= EXPIRY_WARNING:
-            log.warn("{code}: the login cookie {name} expires in {time}; run flnd login again soon",
-                     code=source.code, name=cookie["name"], time=fmt.duration(expires - now))
+            log.warn(
+                "{code}: the login cookie {name} expires in {time}; run flnd login again soon",
+                code=source.code, name=cookie["name"], time=fmt.duration(expires - now),
+            )
+
 
 def _names(cookies: httpx.Cookies) -> Mapping[str, str]:
-    """A client's cookies as `{name: value}`; of two with one name on different domains, the last wins."""
+    """A client's cookies as `{name: value}`; last wins for duplicates on different domains."""
     return MappingProxyType({cookie.name: cookie.value or "" for cookie in cookies.jar})

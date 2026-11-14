@@ -1,7 +1,7 @@
 """The flnd command line: `flnd download`, `flnd sync`, and `flnd auth`.
 
 Usage:
-  flnd download ins:example_user https://x.com/example_handle --from reels,media --time 2026-01-01,
+  flnd download ins:example_user https://x.com/example_handle --from reels --time 2026-01-01,
   cat list.txt | flnd download
   flnd download ins:example_user --shrink --sync
   flnd sync
@@ -11,13 +11,7 @@ Usage:
   flnd auth logout ins tik
   flnd auth ls
 
-`auth login` asks every answer. `download` and `sync` ask nothing, except `shared.browser`'s one
-question, to download Chromium, when a source needs a browser and Google Chrome is missing.
-
-It only parses the arguments, asks `auth login`'s questions and prints: each command is one call of
-`flnd.Engine`, given the arguments as typed, whose `ValueError` is shown as a usage error (exit 2)
-and whose `Report` gives the exit status, 1 when a target failed. It imports only `flnd` (the
-API), `flnd.sources` (for help and login's list) and `shared` (plan/phase-6/redesign.md, B4).
+It parses arguments, invokes `flnd.Engine`, and formats reports and errors.
 """
 
 from __future__ import annotations
@@ -29,10 +23,12 @@ from flnd import Engine, LoginError, Range, __version__
 from flnd.sources import SOURCES
 from shared import cli, cookies, fmt, log, prompt, theme
 
-# flnd's data folder, relative to the directory flnd runs in: the logins, history and saved settings live there.
+# Data folder relative to current working directory: stores logins, history, settings.
 HOME = Path(".flnd")
-METHOD_LABELS = {"browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
-                 "phone": "With your phone number and a code"}
+METHOD_LABELS = {
+    "browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
+    "phone": "With your phone number and a code",
+}
 
 
 def describe() -> str:
@@ -42,10 +38,12 @@ def describe() -> str:
 
 
 def epilog() -> str:
-    """The help's footer: the target forms, each source's categories and the examples, generated from the sources."""
-    # Each form a source's routes read, placeholders in angle brackets, so help can't drift from them.
+    """The help footer: target forms, categories, and examples from sources."""
+    # Each form a source's routes read, placeholders in angle brackets.
     forms = "\n".join(f"  {form}" for source in SOURCES.values() for form in source.forms)
-    categories = "\n".join(f"  {code}: {', '.join(source.categories)}" for code, source in SOURCES.items())
+    categories = "\n".join(
+        f"  {code}: {', '.join(source.categories)}" for code, source in SOURCES.items()
+    )
     queries = "\n".join(
         f"  {code}?<query>: {', '.join(route.params) if route.params else 'words'}"
         for code, source in SOURCES.items()
@@ -119,12 +117,12 @@ def download(
     if verbose:
         log.level = "debug"
     try:
-        # Every value is checked before anything starts, so a usage error never follows any work.
-        # Only ValueError is a usage error: the engine raises it for a bad option or target, with the
-        # text to show. Anything else is a bug or a failed run, and propagates to report it.
-        report = Engine(home=HOME).download(targets, categories=categories, time=Range() if time is None else time,
-                                            shrink=None if shrink is None else shrink == "on",
-                                            limit=limit, dry=dry, sync=sync)
+        # ValueError is a usage error: engine raises it for bad option/target with message.
+        report = Engine(home=HOME).download(
+            targets, categories=categories, time=Range() if time is None else time,
+            shrink=None if shrink is None else shrink == "on",
+            limit=limit, dry=dry, sync=sync,
+        )
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
     if not dry:
@@ -153,8 +151,7 @@ def sync(
     if verbose:
         log.level = "debug"
     try:
-        # The engine logs each target's line and the totals, which only it can count (the folder's files and size).
-        # As for download, only ValueError is a usage error; the rest propagates.
+        # Engine logs each target's line and totals; ValueError is usage error, rest propagates.
         report = Engine(home=HOME).sync(targets)
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
@@ -166,7 +163,7 @@ sync_group = app.group("sync", default=sync)
 
 @sync_group.command("ls")
 def sync_ls() -> int:
-    """List every known target with its sync state, saved settings, disk size and category status."""
+    """List every known target with sync state, settings, disk size and category status."""
     items = Engine(home=HOME).sync_ls()
     if not items:
         log.info("no targets")
@@ -179,8 +176,11 @@ def sync_ls() -> int:
         last = f", {item['at'][:10]}" if item["at"] else ""
         cats = ", ".join(f"{cat}: {st}" for cat, st in item["categories"].items())
         cats_part = f" ({cats})" if cats else ""
-        log.info("{target}: {state}{shrink}, {stats}{last}{cats}",
-                 target=str(item["target"]), state=state, shrink=shrink, stats=stats, last=last, cats=cats_part)
+        log.info(
+            "{target}: {state}{shrink}, {stats}{last}{cats}",
+            target=str(item["target"]), state=state, shrink=shrink, stats=stats, last=last,
+            cats=cats_part,
+        )
     return 0
 
 
@@ -226,12 +226,12 @@ def login_command() -> int:
         if method == "file":
             answers["path"] = prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()
         else:
-            browser = prompt.choose("Read cookies from", {label: name for name, label in engine.browsers.items()})
+            choices = {label: name for name, label in engine.browsers.items()}
+            browser = prompt.choose("Read cookies from", choices)
             answers.update(browser=browser, profile=_ask_profile(browser))
     try:
         message = engine.login(code, method, **answers)
-    # A login that didn't work is an expected result, shown as the error with what to do instead; any
-    # other exception is a bug and propagates.
+    # A failed login is expected, logged as error; any other exception is a bug.
     except LoginError as error:
         log.error("{error}", error=error)
         return 1
@@ -241,7 +241,9 @@ def login_command() -> int:
 
 
 @auth_group.command("logout")
-def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "all"), stdin=False)]) -> int:
+def logout(
+    sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "all"), stdin=False)],
+) -> int:
     """Remove saved logins: each source's cookies and secrets, an API key included.
 
     Args:
@@ -250,8 +252,8 @@ def logout(sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "
     engine = Engine(home=HOME)
     if not sources:
         logged_in = [code for code, state in engine.logins.items() if state == "logged in"]
-        raise cli.UsageError("give the sources to log out of, or all; "
-                             + (f"logged in: {', '.join(logged_in)}" if logged_in else "no source is logged in"))
+        msg = f"logged in: {', '.join(logged_in)}" if logged_in else "no source is logged in"
+        raise cli.UsageError(f"give the sources to log out of, or all; {msg}")
     everything = "all" in sources
     removed = engine.logout(sources)
     for code in SOURCES if everything else dict.fromkeys(sources):
@@ -271,14 +273,16 @@ def auth_ls() -> int:
         exp_parts = [f"{name} expired" if rem <= 0 else f"{name} expires in {fmt.duration(rem)}"
                      for name, rem in item["expiring"]]
         exp = f"; {', '.join(exp_parts)}" if exp_parts else ""
-        log.info("{code} ({name}): {state}{origin}{exp}",
-                 code=item["code"], name=item["name"], state=item["state"], origin=origin, exp=exp)
+        log.info(
+            "{code} ({name}): {state}{origin}{exp}",
+            code=item["code"], name=item["name"], state=item["state"], origin=origin, exp=exp,
+        )
     return 0
 
 
 def _ask_source(engine: Engine) -> str:
-    """Ask which source to log in to, marking the ones logged in or holding only an API key, and return its code."""
-    # tlg keeps its API key before its login; the list tells the two apart, by the mark after its name.
+    """Ask which source to log in to, and return its code."""
+    # List differentiates sources logged in or holding only an API key.
     logins = engine.logins
     options = {f"{source.name} ({code})" + (f" · {logins[code]}" if code in logins else ""): code
                for code, source in SOURCES.items()}
@@ -297,6 +301,6 @@ def _ask_profile(browser: str) -> Optional[str]:
 
 
 def _readable(raw: str) -> Optional[str]:
-    """The validator for the cookie file's path: None when it names a file, else the message to ask again with."""
+    """Validate cookie file path: None if exists, else error message to prompt again."""
     path = Path(raw.strip()).expanduser()
     return None if path.is_file() else f"no file at {raw.strip() or '(empty)'}"

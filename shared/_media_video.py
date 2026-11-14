@@ -1,4 +1,6 @@
-"""What `Media.trim`, `Media.frames` and `Media.merge` do: anything with a timeline. Private: callers use `media`.
+"""What `Media.trim`, `Media.frames` and `Media.merge` do: timeline operations.
+
+Private: callers use `media`.
 
 `Media` checks the kind and the arguments that need only the probe record, then calls one of these
 with the record and the chain's temporary path (`frames` gets the folder to write into instead).
@@ -26,7 +28,9 @@ from shared._media import Info, Progress
 __all__ = ["frames", "merge", "trim"]
 
 
-def trim(info: Info, part: Path, extension: str, *, start: float, end: float | None, exact: bool) -> None:
+def trim(
+    info: Info, part: Path, extension: str, *, start: float, end: float | None, exact: bool
+) -> None:
     """Write the part of `info`'s file from `start` to `end` seconds to `part` as `extension`.
 
     `exact` re-encodes the video at the "high" level's quality, so the cut is exactly at `start`;
@@ -45,7 +49,7 @@ def trim(info: Info, part: Path, extension: str, *, start: float, end: float | N
         frames, delays = _pillow.animation(_photo(info), start=start, end=end)
         _pillow.save_animation(frames, delays, part, _media.ANIMATIONS[extension], quality=90)
         return
-    # `-ss` before the input seeks to the keyframe at or before `start`; a re-encode then drops the frames before it.
+    # `-ss` seeks to keyframe at or before `start`; a re-encode drops frames before it.
     window = ["-ss", f"{start:g}", *(["-t", f"{end - start:g}"] if end is not None else [])]
     encoding = _media.Encoding(
         video=info.video, audio=info.audio, speed="slow",
@@ -56,12 +60,13 @@ def trim(info: Info, part: Path, extension: str, *, start: float, end: float | N
     if copied:
         _ffmpeg.run(command, name=info.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
     else:
-        _ffmpeg.encode(command, name=info.path.name, duration=(end or info.duration or 0) - start, progress=None)
+        dur = (end or info.duration or 0) - start
+        _ffmpeg.encode(command, name=info.path.name, duration=dur, progress=None)
 
 
 def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequence[float] | None,
            count: int | None, format: str, quality: int, limit: int | None) -> list[Path]:
-    """Save the chosen frames of a video or animation into `folder` as `<stem>_<seconds>.<ext>`; see `Media.frames`.
+    """Save chosen frames of video or animation into `folder`; see `Media.frames`.
 
     Args:
         info: the probe of the video or animation to read.
@@ -90,17 +95,22 @@ def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequ
     if extension not in _media.STILLS:
         raise ValueError(f"media can't write frames as {format!r}")
     duration = info.duration or 0.0
-    # With `count`, each frame sits in the middle of one of `count` equal slices, not at the very ends.
+    # With `count`, each frame sits in middle of one of `count` equal slices.
     times = sorted(at) if at is not None else (
         [(index + 0.5) * duration / count for index in range(count)] if count else None)
     if times and (times[0] < 0 or times[-1] > duration):
         raise ValueError(f"at= must be within 0 and {duration:.3f} s")
     # A stream with no frame rate is counted at 30 fps, the usual default.
     rate = info.fps or 30.0
-    # The 1e-9 tolerance keeps float error in duration / every from adding one frame at an exact multiple.
-    expected = len(times) if times else math.ceil(duration / every - 1e-9) if every else round(duration * rate)
+    # 1e-9 tolerance keeps float error in duration / every from adding extra frame.
+    expected = (
+        len(times) if times
+        else math.ceil(duration / every - 1e-9) if every
+        else round(duration * rate)
+    )
     if limit is not None and expected > limit:
-        raise ValueError(f"that is {expected} frames, more than limit={limit}; pass a larger limit= or limit=None")
+        msg = f"{expected} frames exceeds limit={limit}; pass larger limit= or limit=None"
+        raise ValueError(msg)
 
     def name(seconds: float) -> Path:
         return folder / f"{stem}_{seconds:09.3f}{extension}"
@@ -134,7 +144,9 @@ def _pictures(info: Info, times: list[float] | None, every: float | None, rate: 
         wanted = times if times is not None else _steps(clock, every) if every else None
         # Each time picks the frame on screen then; with no selector, every frame at its own start.
         picks = starts if wanted is None else [
-            (seconds, max(index for start, index in starts if start <= seconds + 1e-6)) for seconds in wanted]
+            (seconds, max(index for start, index in starts if start <= seconds + 1e-6))
+            for seconds in wanted
+        ]
         for seconds, index in picks:
             photo.seek(index)
             yield seconds, photo.convert("RGB")
@@ -146,7 +158,7 @@ def _pictures(info: Info, times: list[float] | None, every: float | None, rate: 
         for index, picture in enumerate(_media.decoded(info, graph, width, height)):
             yield index * step, picture
         return
-    # Each time picks the frame shown then; the frames are decoded once, with ffmpeg's select filter.
+    # Each time picks frame shown then; frames decoded once with ffmpeg's select filter.
     # The 1e-6 nudge lands a time that float error leaves just under a frame boundary on that frame.
     wanted = sorted({math.floor(t * rate + 1e-6) for t in times})
     picked = dict(zip(wanted, _media.decoded(
@@ -161,8 +173,10 @@ def _steps(duration: float, every: float) -> list[float]:
     return [index * every for index in range(math.ceil(duration / every - 1e-9))]
 
 
-def _save_frames(pictures: Any, folder: Path, extension: str, quality: int, name: Any) -> list[Path]:
-    """Write each picture into `folder` under its `name`, through a hidden folder so a failure leaves nothing behind.
+def _save_frames(
+    pictures: Any, folder: Path, extension: str, quality: int, name: Any
+) -> list[Path]:
+    """Write pictures into `folder` under `name`, through a hidden folder for safety.
 
     Args:
         pictures: `(seconds, image)` pairs, in time order.
@@ -188,7 +202,7 @@ def _save_frames(pictures: Any, folder: Path, extension: str, quality: int, name
             final = name(seconds)
             _pillow.save(picture, work / final.name, _media.STILLS[extension], quality=quality)
             saved.append((work / final.name, final))
-        # Checked again just before the moves: a file may have appeared while the frames were decoded.
+        # Checked just before moves: a file may have appeared while frames were decoded.
         for part, final in saved:
             if final.exists():
                 raise FileExistsError(f"{final} already exists")
@@ -200,7 +214,7 @@ def _save_frames(pictures: Any, folder: Path, extension: str, quality: int, name
 
 def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *, fps: float | None,
           duration: float | None, progress: Progress | None) -> None:
-    """Combine photos, or video clips, into one moving picture at `part`, as `extension`, with `track`'s sound.
+    """Combine photos or clips into moving picture at `part`, as `extension`, with sound.
 
     `Media.merge` has checked the kinds and the arguments. Photos are letterboxed to the first
     one's size and shown `duration` seconds each (default 1.0), or played at `fps`. Clips sharing
@@ -234,15 +248,17 @@ def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *, 
 
 def _slideshow(infos: list[Info], part: Path, extension: str, rate: float, track: Info | None,
                progress: Progress | None) -> None:
-    """Letterbox each photo onto the first one's size and write them as one animation or video at `rate` a second."""
+    """Letterbox each photo onto first size and write as animation or video at `rate`."""
     from PIL import ImageOps
 
     width, height = _pillow.upright(_photo(infos[0]), keep=False).size
-    # H.264 needs even sides, so the size is trimmed to even for a video; an animation takes any size.
+    # H.264 needs even sides, so size is trimmed to even for video; animation takes any size.
     if extension not in _media.ANIMATIONS:
         width, height = width - width % 2, height - height % 2
-    pictures = (ImageOps.pad(_pillow.upright(_photo(info), keep=False).convert("RGB"), (width, height),
-                             color="black") for info in infos)
+    pictures = (
+        ImageOps.pad(_pillow.upright(_photo(info), keep=False).convert("RGB"), (width, height),
+                     color="black") for info in infos
+    )
     if extension in _media.ANIMATIONS:
         _pillow.save_animation(list(pictures), [round(1000 / rate)] * len(infos), part,
                                _media.ANIMATIONS[extension], quality=90)
@@ -250,27 +266,36 @@ def _slideshow(infos: list[Info], part: Path, extension: str, rate: float, track
     encoding = _media.Encoding(video="rawvideo", audio=track.audio if track else None,
                                codec=_default_codec(extension), maps=("0:v:0", "1:a:0"))
     args, _ = _media.output(extension, encoding)
-    inputs = [*_media.raw_input(width, height, rate), *(_ffmpeg.source(track.path) if track else [])]
+    track_in = _ffmpeg.source(track.path) if track else []
+    inputs = [*_media.raw_input(width, height, rate), *track_in]
     _ffmpeg.encode(["-n", *inputs, *args, *(["-shortest"] if track else []), _ffmpeg.target(part)],
                    name=part.name, duration=len(infos) / rate, progress=progress,
                    feed=(picture.tobytes() for picture in pictures))
 
 
 def _dash(video: Info, track: Info, part: Path, extension: str) -> None:
-    """Join one video and a separate audio file into one container, copying both streams as they are."""
-    # Both streams are copied as they are; ffmpeg reads every packet, so a truncated part fails here.
-    _ffmpeg.run(["-n", "-xerror", *_ffmpeg.source(video.path), *_ffmpeg.source(track.path), "-map", "0:v:0",
-                 "-map", "1:a:0", "-c", "copy", *_media.muxer(extension), _ffmpeg.target(part)],
-                name=video.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
+    """Join video and separate audio into container, copying both streams as they are."""
+    # Streams copied as they are; ffmpeg reads every packet, so truncated part fails here.
+    cmd = [
+        "-n", "-xerror", *_ffmpeg.source(video.path), *_ffmpeg.source(track.path),
+        "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+        *_media.muxer(extension), _ffmpeg.target(part),
+    ]
+    _ffmpeg.run(cmd, name=video.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
 
 
-def _join(infos: list[Info], part: Path, extension: str, track: Info | None, progress: Progress | None) -> None:
-    """Concatenate the clips into `part`, copying them when they match, else encoding them to the first clip's size."""
+def _join(
+    infos: list[Info], part: Path, extension: str, track: Info | None, progress: Progress | None
+) -> None:
+    """Concatenate clips into `part`, copying when matching, else encoding to first size."""
     box = _media.CONTAINERS[extension]
     first = infos[0]
-    # Clips can be copied only when they share codecs, size and frame rate, so concat can join the packets as they are.
-    alike = len({(info.video, info.width, info.height, info.fps, info.audio) for info in infos}) == 1
-    if alike and _media.holds(box.video_holds, first.video) and _media.holds(box.audio_holds, first.audio):
+    # Clips can be copied only when codecs, size and rate match, so concat joins packets.
+    props = {(info.video, info.width, info.height, info.fps, info.audio) for info in infos}
+    alike = len(props) == 1
+    holds_v = _media.holds(box.video_holds, first.video)
+    holds_a = _media.holds(box.audio_holds, first.audio)
+    if alike and holds_v and holds_a:
         _concat_copy(infos, part, extension, track)
         return
     # Even sides, as H.264 needs; the first clip's size is the one every other clip is fitted to.
@@ -279,13 +304,21 @@ def _join(infos: list[Info], part: Path, extension: str, track: Info | None, pro
     sound = track is None and any(info.audio for info in infos)
     graph = []
     for index, info in enumerate(infos):
-        # Each clip is fitted inside the frame and padded with black to its size, at one shared frame rate.
-        graph.append(f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                     f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate:g},format=yuv420p[v{index}]")
-        if sound:  # a clip without audio gets silence, so the sound stays in sync
-            # Every clip's sound is resampled to 48 kHz stereo, so the concat joins streams of one format.
-            graph.append(f"[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{index}]" if info.audio
-                         else f"anullsrc=r=48000:cl=stereo,atrim=duration={info.duration or 0:g}[a{index}]")
+        # Fitted inside frame and padded with black, at one shared frame rate.
+        graph.append(
+            f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={rate:g},"
+            f"format=yuv420p[v{index}]"
+        )
+        if sound:  # clip without audio gets silence, so sound stays in sync
+            # Clip sound resampled to 48 kHz stereo, so concat joins streams of one format.
+            if info.audio:
+                graph.append(
+                    f"[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{index}]"
+                )
+            else:
+                dur = info.duration or 0
+                graph.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={dur:g}[a{index}]")
     pads = "".join(f"[v{index}]" + (f"[a{index}]" if sound else "") for index in range(len(infos)))
     graph.append(f"{pads}concat=n={len(infos)}:v=1:a={int(sound)}[v]" + ("[a]" if sound else ""))
     encoding = _media.Encoding(
@@ -293,10 +326,15 @@ def _join(infos: list[Info], part: Path, extension: str, track: Info | None, pro
         codec=_default_codec(extension), copy=False, simple=False,
         maps=("[v]", "[a]" if sound else f"{len(infos)}:a:0"))
     args, _ = _media.output(extension, encoding)
-    inputs = [arg for info in [*infos, *([track] if track else [])] for arg in _ffmpeg.source(info.path)]
-    _ffmpeg.encode(["-n", *inputs, "-filter_complex", ";".join(graph), *args, *(["-shortest"] if track else []),
-                    _ffmpeg.target(part)], name=part.name, duration=sum(info.duration or 0 for info in infos),
-                   progress=progress)
+    all_infos = [*infos, *([track] if track else [])]
+    inputs = [arg for info in all_infos for arg in _ffmpeg.source(info.path)]
+    shortest = ["-shortest"] if track else []
+    cmd = [
+        "-n", *inputs, "-filter_complex", ";".join(graph), *args,
+        *shortest, _ffmpeg.target(part),
+    ]
+    tot_dur = sum(info.duration or 0 for info in infos)
+    _ffmpeg.encode(cmd, name=part.name, duration=tot_dur, progress=progress)
 
 
 def _concat_copy(infos: list[Info], part: Path, extension: str, track: Info | None) -> None:
@@ -306,12 +344,20 @@ def _concat_copy(infos: list[Info], part: Path, extension: str, track: Info | No
     with tempfile.TemporaryDirectory() as folder:
         listing = Path(folder) / "list.ffconcat"
         quoted = ("'" + _ffmpeg.target(info.path).replace("'", "'\\''") + "'" for info in infos)
-        listing.write_text("ffconcat version 1.0\n" + "\n".join(f"file {line}" for line in quoted) + "\n", encoding="utf-8")
-        inputs = ["-protocol_whitelist", "file", "-format_whitelist", f"concat,{_ffmpeg.READERS}", "-f", "concat",
-                  "-safe", "0", "-i", _ffmpeg.target(listing), *(_ffmpeg.source(track.path) if track else [])]
+        content = "ffconcat version 1.0\n" + "\n".join(f"file {line}" for line in quoted) + "\n"
+        listing.write_text(content, encoding="utf-8")
+        track_in = _ffmpeg.source(track.path) if track else []
+        inputs = [
+            "-protocol_whitelist", "file", "-format_whitelist", f"concat,{_ffmpeg.READERS}",
+            "-f", "concat", "-safe", "0", "-i", _ffmpeg.target(listing), *track_in,
+        ]
         maps = ["-map", "0:v:0", *(["-map", "1:a:0"] if track else ["-map", "0:a:0?"])]
-        _ffmpeg.run(["-n", *inputs, *maps, "-c", "copy", *(["-shortest"] if track else []), *_media.muxer(extension),
-                     _ffmpeg.target(part)], name=part.name, timeout=_ffmpeg.COPY_TIMEOUT)
+        shortest = ["-shortest"] if track else []
+        cmd = [
+            "-n", *inputs, *maps, "-c", "copy", *shortest,
+            *_media.muxer(extension), _ffmpeg.target(part),
+        ]
+        _ffmpeg.run(cmd, name=part.name, timeout=_ffmpeg.COPY_TIMEOUT)
 
 
 def _default_codec(extension: str) -> str:
@@ -319,7 +365,7 @@ def _default_codec(extension: str) -> str:
 
 
 def _photo(info: Info) -> Any:
-    """The opened Pillow image of `info`'s file; BrokenError when Pillow doesn't read it as a photo."""
+    """The opened Pillow image of `info`'s file; BrokenError when not a photo."""
     photo = _pillow.open(info.path)
     if photo is None:
         raise _media.BrokenError(f"{info.path.name}: not a photo")

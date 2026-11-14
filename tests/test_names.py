@@ -11,8 +11,10 @@ so the list can only shrink.
 
 import ast
 import inspect
+import io
 import re
 import sys
+import tokenize
 import typing
 import unittest
 from pathlib import Path
@@ -197,6 +199,63 @@ def private_imports(source: str) -> list[str]:
     return found
 
 
+PLAN_REF = re.compile(
+    r"plan/"
+    r"|(?i:\bphase[- ]?\d+\b)"
+    r"|(?i:\bstep\s+\d+\b(?!:))"
+    r"|(?i:\bfixes\s+#\d+\b)"
+    r"|(?i:\b(?:as|was|as it was)\s+before\b|\bas it always did\b)"
+    r"|(?i:(?<!\w)(?!info\.md\b)[A-Za-z0-9_-]+\.md\b)"
+    r"|(?<!#)\b[A-F]\d{1,2}\b"
+)
+
+
+def history_breaches(source: str) -> list[str]:
+    """Comments or docstrings that refer to plans, `.md` files, issues, phases or "as before"."""
+    tree = ast.parse(source)
+    doc_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if ast.get_docstring(node, clean=False) is not None:
+                doc = node.body[0]
+                doc_lines.update(range(doc.lineno, (doc.end_lineno or doc.lineno) + 1))
+    found: list[str] = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            if "# noqa" in token.string:
+                continue
+        elif not (token.type == tokenize.STRING and token.start[0] in doc_lines):
+            continue
+        for offset, line in enumerate(token.string.splitlines()):
+            match = PLAN_REF.search(line)
+            if match:
+                found.append(f"line {token.start[0] + offset}: {match.group(0)}")
+    return found
+
+
+def flnd_import_aliases(source: str) -> list[str]:
+    """Import aliases (`as`) of `flnd` modules or symbols."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname and (alias.name == "flnd" or alias.name.startswith("flnd.")):
+                    found.append(f"line {node.lineno}: import {alias.name} as {alias.asname}")
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if node.level > 0 or mod == "flnd" or mod.startswith("flnd."):
+                for alias in node.names:
+                    if alias.asname:
+                        found.append(f"line {node.lineno}: from {mod} import {alias.name} as {alias.asname}")
+    return found
+
+
+def line_length_breaches(source: str, limit: int = 100) -> list[str]:
+    """Lines longer than `limit` characters."""
+    return [f"line {i}: {len(line)} chars" for i, line in enumerate(source.splitlines(), 1)
+            if len(line) > limit]
+
+
 def from_a_library(error: type) -> bool:
     """Whether an error class is an installed library's, not this project's or a test's."""
     file = getattr(sys.modules.get(error.__module__), "__file__", None) or ""
@@ -242,6 +301,41 @@ class PrivateImportTest(unittest.TestCase):
                   "from shared import _kv, log\n")
         self.assertEqual(private_imports(source), ["shared._http", "shared._browser", "shared._kv"])
         self.assertEqual(private_imports("from shared import browser\nimport shared\n"), [])
+
+
+class ReadableTest(unittest.TestCase):
+    def test_no_plan_or_history_references_in_code(self):
+        for path in dev.source_files():
+            with self.subTest(path):
+                self.assertEqual(history_breaches((dev.ROOT / path).read_text(encoding="utf-8")), [])
+
+    def test_no_flnd_import_aliases(self):
+        for path in sorted((dev.ROOT / "flnd").rglob("*.py")):
+            rel = path.relative_to(dev.ROOT).as_posix()
+            with self.subTest(rel):
+                self.assertEqual(flnd_import_aliases(path.read_text(encoding="utf-8")), [])
+
+    def test_lines_are_at_most_100_characters(self):
+        for path in dev.source_files():
+            with self.subTest(path):
+                self.assertEqual(line_length_breaches((dev.ROOT / path).read_text(encoding="utf-8")), [])
+
+    def test_history_and_alias_checks_catch_breaches(self):
+        bad = ('"""See plan/phase-6/redesign.md (B3)."""\n'
+               '# fixes #8, Phase 5, as before, step 4\n'
+               'from flnd import source as _source\n'
+               f'x = "{"a" * 100}"\n')
+        self.assertEqual(len(history_breaches(bad)), 2)
+        self.assertEqual(len(flnd_import_aliases(bad)), 1)
+        self.assertEqual(len(line_length_breaches(bad)), 1)
+        good = ('"""Writes info.md."""\n'
+                '# Step 1: parse.\n'
+                'A1 = TypeVar("A1")\n'
+                'color = "#f00"\n'
+                'from flnd import source\n')
+        self.assertEqual(history_breaches(good), [])
+        self.assertEqual(flnd_import_aliases(good), [])
+        self.assertEqual(line_length_breaches(good), [])
 
 
 class ChecksTest(unittest.TestCase):

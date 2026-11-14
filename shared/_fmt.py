@@ -1,11 +1,12 @@
 """Values as short text for a person to read, and text as safe file names.
 
 Each function takes one value and returns a plain `str`: a size in bytes, a duration, a date, a
-count with its noun, a file name every platform accepts, or a URL safe to show. They are pure, so the caller adds
+count with its noun, a safe file name, or a URL safe to show. They are pure, so the caller adds
 color (`shared.style`) and decides where the text goes. Stdlib only: nothing is wrapped, so there
 is no `.raw`.
 
-    log.ok("saved {count}, {size}", count=fmt.count(3, "file"), size=fmt.size(1536))  # 3 files, 1.5 KB
+    # 3 files, 1.5 KB
+    log.ok("saved {count}, {size}", count=fmt.count(3, "file"), size=fmt.size(1536))
 """
 
 from __future__ import annotations
@@ -22,7 +23,9 @@ BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f]')
 SEPARATOR_RUNS = re.compile(r"[\s_]+")
 # Windows refuses these names with any extension, in any case.
-RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"{kind}{n}" for kind in ("COM", "LPT") for n in range(1, 10)}
+RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {
+    f"{kind}{n}" for kind in ("COM", "LPT") for n in range(1, 10)
+}
 
 
 class Error(shared.Error):
@@ -30,7 +33,7 @@ class Error(shared.Error):
 
 
 def url(text: str) -> str:
-    """A URL as a message or a log shows it: without its query and fragment, where signed tokens live.
+    """A URL for display: without query and fragment, where signed tokens live.
 
         fmt.url("https://cdn.example.com/a.jpg?oe=1&sig=x")     # "https://cdn.example.com/a.jpg"
 

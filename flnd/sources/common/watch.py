@@ -1,22 +1,16 @@
 """The JSON responses a page receives, as an iterator: the scroll fallback's way to read a feed.
 
-How it works: `watch_responses` subscribes to the target's tab (`site.page.on_response`) at once,
-so a `site.goto` after it misses nothing of the first load. Iterating it yields each matching
-response's JSON as it arrives. With `scroll=True`, once nothing is waiting it scrolls the page
-(`Page.scroll`, at the source's pace) until a new response comes, and it ends when the feed does:
-10 s at the bottom with nothing new. Without, it waits for the network to go quiet once, yields
-what came, and ends. Closing it, or the end of a `with` block, stops the subscription.
+`watch_responses` subscribes to the target's tab (`site.page.on_response`) immediately,
+so a subsequent `site.goto` misses nothing. Iterating it yields each matching response's
+JSON as it arrives. With `scroll=True`, it scrolls (`Page.scroll`) until new responses arrive
+or the feed ends (10 s at the bottom with nothing new). Closing it stops the subscription.
+
+`request` holds the request of the response last yielded, enabling pagination replays.
 
     with watch_responses(site, "graphql", scroll=True) as responses:
         if site.goto(f"https://www.example.com/{user}/"):
             for data in responses:
                 yield from posts_of(data)
-
-`request` is the request of the response last yielded (Playwright's `Request`: its `url`, `method`,
-`post_data` and `headers`), so a source can replay the page's own pagination request with another
-cursor (`flnd/sources/common/replay.py`) instead of scrolling on.
-
-It is a source helper, not a `Site` member (user, 2026-11-12): only the scroll fallbacks need it.
 """
 
 from __future__ import annotations
@@ -37,20 +31,21 @@ QUIET = 10.0
 
 
 class Responses:
-    """The iterator `watch_responses` returns: each matching response's JSON, until the feed ends.
+    """The iterator `watch_responses` returns: matching response JSON until the feed ends."""
 
-    Args:
-        site: the target's site, whose tab is watched.
-        match: a substring of the response's URL, a compiled regex searched in it, or a predicate over it.
-        scroll: scroll the page for more while nothing is waiting.
-        lines: read each body as newline-delimited JSON (Facebook's), one item per line.
-    """
-
-    def __init__(self, site: Site, match: browser.Match, *, scroll: bool = False, lines: bool = False):
+    def __init__(
+        self,
+        site: Site,
+        match: browser.Match,
+        *,
+        scroll: bool = False,
+        lines: bool = False,
+    ):
+        """Subscribe to matching responses on the target's page."""
         self._site = site
         self._scroll = scroll
-        # (data, Playwright response) pairs, oldest first; the handler runs inside Playwright's waits,
-        # on this same thread, so no lock is needed.
+        # (data, Playwright response) pairs, oldest first; the handler runs inside Playwright's
+        # waits on this same thread, so no lock is needed.
         self._waiting: deque[tuple[Any, Any]] = deque()
         # The request of the response last yielded; None before the first.
         self.request: Any = None
@@ -75,7 +70,7 @@ class Responses:
         self._subscription.stop()
 
     def _iterate(self) -> Iterator[Any]:
-        """What has arrived, then, scrolling or once the network is quiet, what comes next; see the module."""
+        """Yield arrived responses, scrolling or waiting for network quiet as configured."""
         page = self._site.page
         try:
             while True:
@@ -83,7 +78,7 @@ class Responses:
                 if not self._scroll:
                     try:
                         page.wait(idle=True, timeout=QUIET)
-                    # A page that never goes quiet (polling, a live feed) has sent its responses by now.
+                    # A page that never goes quiet (polling, live feed) has sent its responses.
                     except browser.WaitError:
                         pass
                     yield from self.arrived()
@@ -96,13 +91,7 @@ class Responses:
             self.close()
 
     def arrived(self) -> Iterator[Any]:
-        """What has arrived and is waiting, oldest first, without scrolling or waiting for more.
-
-            for data in responses.arrived(): ...    # the rest of a response's lines, say
-
-        Each response's request is kept in `request` as its data is yielded. The lines of one
-        response arrive together, so after one of them, the rest are here already.
-        """
+        """What has arrived and is waiting, oldest first, without scrolling or waiting for more."""
         while self._waiting:
             data, response = self._waiting.popleft()
             # A fake tab in the tests hands no response; a real one always does.
@@ -110,22 +99,8 @@ class Responses:
             yield data
 
 
-def watch_responses(site: Site, match: browser.Match, *, scroll: bool = False, lines: bool = False) -> Responses:
-    """Watch the target's tab for JSON responses whose URL matches, from now on; see the module.
-
-        responses = watch_responses(site, "graphql", scroll=True)
-        site.goto(url)
-        for data in responses: ...
-
-    Args:
-        site: the target's site; its tab is opened if it isn't yet.
-        match: a substring of the URL, a compiled regex searched in it, or a predicate over it.
-        scroll: scroll the page for more whenever nothing is waiting, until the feed ends.
-        lines: read each body as newline-delimited JSON, one item per line.
-
-    Returns:
-        An iterator of the responses' JSON, also a context manager that stops watching.
-
-    Use it on the job's thread, as everything on a page: handlers run inside Playwright's waits.
-    """
+def watch_responses(
+    site: Site, match: browser.Match, *, scroll: bool = False, lines: bool = False,
+) -> Responses:
+    """Watch the target's tab for JSON responses whose URL matches."""
     return Responses(site, match, scroll=scroll, lines=lines)

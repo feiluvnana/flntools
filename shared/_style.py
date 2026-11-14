@@ -22,10 +22,10 @@ import shared
 # `shared.style` is the `style` object: its methods, `Error` among them, are the module's names.
 __all__ = ["Error", "strip", "style"]
 
-# SGR 0 turns every style off; a painted string always ends with it, so nothing bleeds into later text.
+# SGR 0 turns every style off; a painted string ends with it, so nothing bleeds into later text.
 RESET = "\x1b[0m"
 # OSC 8 hyperlinks: `ESC ] 8 ; params ; URL ST` opens one, and the same with an empty URL closes it.
-# ST is `ESC \`, the string terminator the spec names; BEL is accepted too, but this module writes ST.
+# ST is `ESC \`, string terminator spec names; BEL is accepted too, but this module writes ST.
 LINK_CLOSE = "\x1b]8;;\x1b\\"
 # A CSI sequence is `ESC [`, parameter bytes 0x30-0x3F, intermediate bytes 0x20-0x2F, then one final
 # byte 0x40-0x7E. An OSC sequence is `ESC ]` up to BEL or ST. `strip` removes both kinds.
@@ -45,7 +45,9 @@ NAMED_COLORS = {
 }
 # SGR parameters for each modifier. Each is its own code, so modifiers combine: bold and underline
 # together send both.
-MODIFIER_CODES = {"bold": "1", "dim": "2", "italic": "3", "underline": "4", "reverse": "7", "strike": "9"}
+MODIFIER_CODES = {
+    "bold": "1", "dim": "2", "italic": "3", "underline": "4", "reverse": "7", "strike": "9",
+}
 
 
 class Error(shared.Error):
@@ -100,15 +102,11 @@ class Chain:
             style.color("#fa0").color(208, background=True)
 
         Args:
-            value: a 256-color index (0-255), a hex string such as "#fa0" or "#ffaa00", or
-                "rgb(r, g, b)"; see `parse_color`.
-            background: True sets the background color; False, the default, sets the text color.
+            value: a 256-color index (0-255), hex string ("#fa0"), or "rgb(r, g, b)".
+            background: True sets background color; False (default) sets text color.
 
         Returns:
             A new `Chain`; this one is unchanged.
-
-        Raises:
-            ValueError: `value` is not a color this module understands.
         """
         color = parse_color(value)
         return replace(self, bg=color) if background else replace(self, fg=color)
@@ -118,18 +116,15 @@ class Chain:
 
             print(style.gradient("#f00", "#00f")("hello"))
 
-        Each character gets the next color between the first stop and the last, so the gradient
-        follows the text, not the line. Newlines take no color, and a line ends with a reset.
-
         Args:
-            *stops: at least two colors, in the forms `color` accepts, from first to last.
-            background: True paints the gradient on the background; False, the default, on the text.
+            *stops: at least two colors, from first to last stop.
+            background: True paints on background; False (default) on text.
 
         Returns:
             A new `Chain`; this one is unchanged.
 
         Raises:
-            ValueError: fewer than two stops are given, or a stop is not a color.
+            ValueError: fewer than two stops are given, or a stop is invalid.
         """
         if len(stops) < 2:
             raise ValueError("a gradient needs at least two stops")
@@ -267,14 +262,15 @@ def parse_color(value: str | int) -> tuple:
             # "#fa0" is shorthand for "#ffaa00": each digit is doubled.
             if len(digits) == 3:
                 digits = "".join(digit * 2 for digit in digits)
-            # The first three pairs are red, green and blue; an eight-digit value's alpha pair is dropped.
+            # First three pairs are red, green, blue; an eight-digit value's alpha pair is dropped.
             return ("rgb", tuple(int(digits[i:i + 2], 16) for i in (0, 2, 4)))
         rgb_match = re.fullmatch(r"(rgba?)\(([^)]*)\)", text)
         if rgb_match:
             channels = [channel.strip() for channel in rgb_match[2].split(",")]
             expected = 4 if rgb_match[1] == "rgba" else 3
             # Only whole numbers: "50%" and decimals are refused, so a percentage is never misread.
-            if len(channels) == expected and all(c.isdigit() and int(c) <= 255 for c in channels[:3]):
+            valid = [c.isdigit() and int(c) <= 255 for c in channels[:3]]
+            if len(channels) == expected and all(valid):
                 return ("rgb", tuple(int(c) for c in channels[:3]))
     raise ValueError(f"not a color: {value!r}")
 
@@ -325,13 +321,13 @@ CUBE_LEVELS = (0, 95, 135, 175, 215, 255)
 
 
 def color_rgb(color: tuple) -> tuple:
-    """The RGB triple a color stands for: the value itself for "rgb", or a table value for a palette index.
+    """The RGB triple a color stands for: value for "rgb", or table value for a palette index.
 
     Args:
         color: a color tuple from `parse_color`.
 
     Returns:
-        A `(r, g, b)` tuple of 0-255 values. For an ANSI color this is the approximation in `ANSI_RGB`.
+        A `(r, g, b)` tuple of 0-255 values. For an ANSI color this is approximation in `ANSI_RGB`.
     """
     kind, value = color
     if kind == "rgb":
@@ -339,7 +335,7 @@ def color_rgb(color: tuple) -> tuple:
     if value < 16:
         return ANSI_RGB[value]
     if value < 232:
-        # Indices 16-231 are the cube: base-6 digits of (index - 16) give the red, green and blue levels.
+        # Indices 16-231: base-6 digits of (index - 16) give red, green, and blue levels.
         cube = value - 16
         return (CUBE_LEVELS[cube // 36], CUBE_LEVELS[cube // 6 % 6], CUBE_LEVELS[cube % 6])
     # Indices 232-255 are 24 evenly spaced greys, from 8 to 238 in steps of 10.
@@ -399,7 +395,7 @@ def ramp_colors(stops: tuple, steps: int) -> list[tuple]:
     points = [color_rgb(stop) for stop in stops]
     colors = []
     for step in range(steps):
-        # Spread the steps evenly over the stop-to-stop segments; `position` runs from 0 to the last stop.
+        # Spread steps over stop segments; `position` runs from 0 to the last stop.
         position = (step / (steps - 1) if steps > 1 else 0) * (len(points) - 1)
         # The last step lands exactly on the final stop, so the segment is clamped to the last pair.
         segment = min(int(position), len(points) - 2)

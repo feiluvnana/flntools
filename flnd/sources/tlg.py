@@ -1,30 +1,16 @@
 """Telegram: every photo, video or file in a chat, group or channel the account can see.
 
-How it works:
-  - Telethon, with a user account over MTProto. Not the Bot API, which can't read a group's
-    history from before the bot joined and stops at 20 MB, and not Pyrogram, whose upkeep is uncertain.
-  - `flnd login`, for Telegram, asks for `api_id` and `api_hash` once (from my.telegram.org), then logs in
-    from Telegram Web in Chrome, a QR code, or a phone number and code. The Telethon session is
-    kept in flnd's encrypted secrets, never in a `.session` file.
-  - `connect` opens one Telethon client for the whole run, on the source's own event loop, and the
-    `chat` route finds the chat with it. The `photo`, `video` and `file` categories are async
-    generators over `client.iter_messages`, newest first, each message one `Post` with one `File`,
-    which Telethon downloads itself into the file the engine opens.
-  - The categories are Telegram's own server-side filters, so only what `--from` names is asked for.
-  - `--until` is sent to Telegram as `offset_date`; `--since` is the engine's job, which stops
-    reading a category once 5 messages in a row are older than it.
-  - A flood wait (`FloodWaitError`) in a download is waited out with `site.back_off`, which every
-    download shares, and a video or file goes on from where it stopped (`iter_download`'s
-    offset), as after a dropped connection; a big one comes in 4 parts at once. Listing never
-    meets one: the client sleeps through any flood wait up to a day by itself.
+Telethon connects via user MTProto. The session is stored encrypted, never in a `.session` file.
+`connect` opens a single client on the source's event loop. `photo`, `video`, and `file`
+categories use Telegram's server-side filters over `client.iter_messages` (newest first).
+Flood waits are handled via `site.back_off`.
 
 Example:
     flnd download tlg:@examplechannel --from photo,video --time 2026-01-01..
     flnd download "tlg:Lens Club"
 
-Folder layout, under `.flnd/media/tlg/<target>/<chat title>/`:
-  photo/  video/  file/    <date>_<message id>[_<original name>]; an album's files sort together
-A history row is keyed `<chat id>:<message id>`.
+Folder layout under `.flnd/media/tlg/<target>/<chat title>/`:
+  photo/ video/ file/   <date>_<message id>[_<original name>]
 """
 
 from __future__ import annotations
@@ -38,24 +24,30 @@ from typing import Any, AsyncIterator, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from flnd import __version__
-from flnd.source import (Fetch, FetchError, File, Login, LoginError, Post, Site, Source, Target, TargetError,
-                         target)
+from flnd.source import (
+    Fetch, FetchError, File, Login, LoginError, Post, Site, Source, Target, TargetError,
+    target,
+)
 
 TELEGRAM_WEB = "https://web.telegram.org/"
-# Telegram's production data centers, as every client ships them; Telethon moves on from there itself.
-DATA_CENTERS = {1: "149.154.175.53", 2: "149.154.167.51", 3: "149.154.175.100", 4: "149.154.167.91",
-                5: "91.108.56.130"}
+# Telegram's production data centers, as every client ships them.
+DATA_CENTERS = {
+    1: "149.154.175.53", 2: "149.154.167.51", 3: "149.154.175.100", 4: "149.154.167.91",
+    5: "91.108.56.130",
+}
 # The port the data centers above are reached on, as Telethon's own default session uses it.
 PORT = 443
 # A Telegram username: 4 to 32 characters, starting with a letter.
 USERNAME = re.compile(r"[A-Za-z]\w{3,31}")
 # A QR login token lasts about 30 seconds; this many are shown before giving up.
 QR_CODES = 5
-# Telethon itself sleeps through a flood wait up to this long, so iterating a big chat never stops for one.
+# Telethon itself sleeps through flood waits up to this duration so iterating never stops.
 FLOOD_SLEEP = 24 * 3600
 # Telethon's server-side filter class for each category: Telegram then sends only those messages.
-FILTERS = {"photo": "InputMessagesFilterPhotos", "video": "InputMessagesFilterVideo",
-           "file": "InputMessagesFilterDocument"}
+FILTERS = {
+    "photo": "InputMessagesFilterPhotos", "video": "InputMessagesFilterVideo",
+    "file": "InputMessagesFilterDocument",
+}
 # Telegram's largest file request; a request may not cross a 1 MiB boundary, so every part
 # starts on a multiple of it.
 REQUEST = 512 * 1024
@@ -64,7 +56,7 @@ SPLIT_SIZE = 8 * 1024 * 1024
 CONNECTIONS = 4
 # Dropped connections one part survives, each going on from where it stopped.
 RESUMES = 3
-# One character per pair of QR modules (top, bottom), where True is a light module: a full block is two lit halves.
+# One character per pair of QR modules (top, bottom), where True is a light module.
 HALF_BLOCKS = {(True, True): "█", (True, False): "▀", (False, True): "▄", (False, False): " "}
 
 
@@ -76,80 +68,60 @@ class Telegram(Source):
     domains = ("t.me", "telegram.org")
     login_methods = ("browser", "qr", "phone")
     requires_login = True
-    # A chat's folder, then the type; both are sanitized as file names, so a title holding `/` or `:` stays one folder.
+    # A chat's folder, then the type; both are sanitized as file names.
     folder = "{chat}/{category}"
-    # The chat's id and the message's id: a message id repeats from chat to chat, and the key is a history row's.
+    # The chat's id and the message's id: a message id repeats from chat to chat.
     key = "{chat_id}:{id}"
     # Every download shares one MTProto client and its flood waits: more at once only meets the
     # flood limit sooner (Telethon's FAQ).
     concurrency = 3
 
-    # `resolve` below reads the target's text, since no pattern can say a chat title or a `t.me/c/<n>`
-    # link; the route has no pattern of its own, only the form help shows.
+    # `resolve` reads target text: no pattern can match a chat title or `t.me/c/<n>` link;
+    # the route has no pattern of its own, only the form help shows.
     @target(shown="tlg:<@username, chat title or id>")
     async def chat(self, site: Site, chat: str) -> Any:
-        """A chat, by its username, invite link, id or title: `Target("tlg", "chat", "examplechannel")`.
-
-        Args:
-            site: the target's site, whose `client` is the connected Telethon client.
-            chat: the value `resolve` read: a username, `+<invite hash>`, an id or an exact title.
-
-        Returns:
-            The chat's entity, which each category receives.
-
-        Raises:
-            FetchError: no chat of the account has that name, or several do (`find_chat`).
-        """
+        """A chat by username, invite link, id or title."""
         return await find_chat(site.client, chat)
 
     @chat.category(newest_first=True)
     async def photo(self, site: Site, chat: Any) -> AsyncIterator[Post]:
-        """The chat's photos, newest first.
-
-        Args:
-            site: the target's site, whose `client` lists the messages.
-            chat: the chat's entity, as `chat` returned it.
-        """
+        """The chat's photos, newest first."""
         async for post in messages(site, chat, "photo"):
             yield post
 
     @chat.category(newest_first=True)
     async def video(self, site: Site, chat: Any) -> AsyncIterator[Post]:
-        """The chat's videos, newest first.
-
-        Args:
-            site: the target's site, whose `client` lists the messages.
-            chat: the chat's entity, as `chat` returned it.
-        """
+        """The chat's videos, newest first."""
         async for post in messages(site, chat, "video"):
             yield post
 
     @chat.category(newest_first=True)
     async def file(self, site: Site, chat: Any) -> AsyncIterator[Post]:
-        """The chat's other files (documents, archives, audio), newest first.
-
-        Args:
-            site: the target's site, whose `client` lists the messages.
-            chat: the chat's entity, as `chat` returned it.
-        """
+        """The chat's other files (documents, archives, audio), newest first."""
         async for post in messages(site, chat, "file"):
             yield post
 
     def resolve(self, text: str) -> Target:
-        """A username, a t.me link, an invite, a chat id or a chat title, read as the `chat` route's forms."""
+        """Resolve a username, t.me link, invite, chat id, or title into a Target."""
         scheme = text.lower().startswith(("http://", "https://"))
         url = urlsplit(text if scheme else f"https://{text}") if "/" in text or scheme else None
         host = (url.hostname or "").lower() if url is not None else ""
-        if url is not None and any(host == domain or host.endswith("." + domain) for domain in self.domains):
-            # The desktop, mobile and old mobile sites are t.me's own; a link on telegram.org names no chat.
+        is_tlg_domain = any(
+            host == domain or host.endswith("." + domain) for domain in self.domains
+        )
+        if url is not None and is_tlg_domain:
+            # Desktop, mobile and old mobile sites are t.me's; telegram.org names no chat.
             for prefix in ("www.", "m.", "mobile."):
                 host = host.removeprefix(prefix)
-            # The `s` segment is the web preview's marker, not part of the name; only t.me has chat links.
-            parts = [part for part in url.path.split("/") if part and part != "s"] if host == "t.me" else []
-            # A `t.me/c/<n>` link names a channel by a number that Telegram writes with a `-100` prefix.
+            # The `s` segment is web preview marker; only t.me has chat links.
+            parts = (
+                [part for part in url.path.split("/") if part and part != "s"]
+                if host == "t.me" else []
+            )
+            # A `t.me/c/<n>` link names a channel by a number written with a `-100` prefix.
             if parts[:1] == ["c"] and len(parts) > 1 and parts[1].isdigit():
                 value = f"-100{parts[1]}"
-            # The old `joinchat/<hash>` invite link, read as the `+<hash>` form that `find_chat` takes.
+            # The old `joinchat/<hash>` invite link, read as the `+<hash>` form.
             elif parts[:1] == ["joinchat"] and len(parts) > 1:
                 value = f"+{parts[1]}"
             elif parts and (parts[0].startswith("+") or USERNAME.fullmatch(parts[0])):
@@ -161,30 +133,18 @@ class Telegram(Source):
         else:
             value = text.strip()
         if value is None:
-            raise TargetError(f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}")
+            forms_str = ", ".join(self.forms)
+            raise TargetError(f"{self.code}: can't read {text!r}; write it like {forms_str}")
         return Target(self.code, "chat", value)
 
     def login(self, login: Login, method: str) -> None:
-        """Log in by `browser` (Telegram Web's login in Chrome), `qr`, or `phone`, and keep the session.
-
-        `browser` reuses Telegram Web's own login rather than adding a device, so Telegram sees one
-        session: logging out of Telegram Web logs flnd out too. It works only when you are logged
-        in at web.telegram.org in Chrome's default profile, and it asks nothing once `api_id` and
-        `api_hash` are stored. `qr` and `phone` add a device named flnd, and need a terminal.
-
-        Args:
-            login: the handle to ask through and keep the session in.
-            method: one of `login_methods`.
-
-        Raises:
-            LoginError: the method needs a terminal and there is none, Telegram Web isn't logged in,
-                or Telegram refuses the login.
-        """
+        """Log in by browser, qr, or phone, and keep the session."""
         # qr and phone ask questions, which a run with no terminal can't answer.
         if method != "browser" and not login.interactive:
-            raise LoginError(f"tlg: the {method} login asks questions; run flnd login in a terminal")
+            msg = f"tlg: the {method} login asks questions; run flnd login in a terminal"
+            raise LoginError(msg)
         api_id, api_hash = credentials(login)
-        # A browser login starts from Telegram Web's own session; qr and phone add a new device to the account.
+        # Browser login starts from Telegram Web's session; qr and phone add a new device.
         start = from_web_storage(read_telegram_web()) if method == "browser" else ""
         string, name = asyncio.run(log_in(login, method, start, api_id, api_hash))
         login.secrets.update(session=string, api_id=str(api_id), api_hash=api_hash)
@@ -196,17 +156,10 @@ class Telegram(Source):
 
     @asynccontextmanager
     async def connect(self, site: Site) -> AsyncIterator[Any]:
-        """The Telethon client of the stored login, connected for the whole run, on the source's loop.
-
-        Args:
-            site: the target's site, whose secrets hold the session and the API credentials.
-
-        Raises:
-            LoginError: Telegram no longer accepts the stored session.
-        """
+        """Connect the Telethon client for the stored login on the source's loop."""
         secrets = site.secrets
         client = _client(secrets["session"], int(secrets["api_id"]), secrets["api_hash"])
-        # Telethon sleeps through a flood wait up to FLOOD_SLEEP by itself, so listing never stops for one.
+        # Telethon sleeps through flood waits up to FLOOD_SLEEP automatically.
         client.flood_sleep_threshold = FLOOD_SLEEP
         await client.connect()
         try:
@@ -220,44 +173,41 @@ class Telegram(Source):
 
 
 async def messages(site: Site, chat: Any, kind: str) -> AsyncIterator[Post]:
-    """A chat's messages of one type, newest first, each as a post of its one file.
-
-    Args:
-        site: the target's site; its `client` lists the messages and its `time` bounds them.
-        chat: the chat's entity.
-        kind: `photo`, `video` or `file`: Telegram's filter for it asks only for those messages.
-
-    The post's date is the message's, and `chat` and `chat_id` are the fields the folder and key use.
-    """
+    """A chat's messages of one type, newest first, each as a post of its one file."""
     # offset_date takes messages before it, and --until is inclusive.
     before = None
     if site.time.until:
-        before = datetime.datetime.combine(site.time.until + datetime.timedelta(days=1), datetime.time(),
-                                           tzinfo=datetime.timezone.utc)
-    async for message in site.client.iter_messages(chat, filter=server_filter(kind), offset_date=before):
+        until_date = site.time.until + datetime.timedelta(days=1)
+        before = datetime.datetime.combine(
+            until_date, datetime.time(), tzinfo=datetime.timezone.utc,
+        )
+    async for message in site.client.iter_messages(
+        chat, filter=server_filter(kind), offset_date=before,
+    ):
         size = message.file.size if message.file else None
-        yield Post(message.id, [File(fetcher(site, message), name=file_name(message), size=size)],
-                   date=message.date, chat=display_name(chat), chat_id=chat.id)
+        yield Post(
+            message.id,
+            [File(fetcher(site, message), name=file_name(message), size=size)],
+            date=message.date,
+            chat=display_name(chat),
+            chat_id=chat.id,
+        )
 
 
 async def find_chat(client: Any, value: str) -> Any:
-    """The chat a target names; a title must match exactly one of the account's chats, whatever its case.
-
-    Args:
-        client: the connected Telethon client.
-        value: a username, an invite as `+<hash>`, a chat id, or an exact title.
-
-    Raises `FetchError` for a chat that isn't there, and for a title several chats share, listing their ids.
-    """
+    """Find the chat named by value (username, invite, id, or title)."""
     from telethon.errors import RPCError
 
     if value.startswith("+") or USERNAME.fullmatch(value):
         try:
-            return await client.get_entity(f"https://t.me/{value}" if value.startswith("+") else value)
-        # A username Telegram doesn't resolve falls through to the account's dialogs; an invite can only be one of them.
+            target_url = f"https://t.me/{value}" if value.startswith("+") else value
+            return await client.get_entity(target_url)
+        # Unresolved username falls through to dialogs; an invite can only be one of them.
         except (ValueError, RPCError):
             if value.startswith("+"):
-                raise FetchError(f"the invite {value!r} isn't one of your chats; join it first") from None
+                raise FetchError(
+                    f"the invite {value!r} isn't one of your chats; join it first"
+                ) from None
     dialogs = await client.get_dialogs()
     if value.lstrip("-").isdigit():
         found = [dialog for dialog in dialogs if dialog.id == int(value)]
@@ -273,8 +223,15 @@ async def find_chat(client: Any, value: str) -> Any:
 
 def display_name(entity: Any) -> str:
     """A chat's title, or a person's name, or else a username or id."""
-    person = " ".join(filter(None, (getattr(entity, "first_name", None), getattr(entity, "last_name", None))))
-    return getattr(entity, "title", None) or person or getattr(entity, "username", None) or str(entity.id)
+    first = getattr(entity, "first_name", None)
+    last = getattr(entity, "last_name", None)
+    person = " ".join(filter(None, (first, last)))
+    return (
+        getattr(entity, "title", None)
+        or person
+        or getattr(entity, "username", None)
+        or str(entity.id)
+    )
 
 
 def server_filter(kind: str) -> Any:
@@ -285,24 +242,15 @@ def server_filter(kind: str) -> Any:
 
 
 def file_name(message: Any) -> str:
-    """`<date>_<message id>_<original name>`, or `<date>_<message id><ext>` for media without a name."""
+    """A message's media file name `<date>_<message id>[_<name>|<ext>]`."""
     stem = f"{message.date.date().isoformat()}_{message.id}"
     file = message.file
-    return f"{stem}_{file.name}" if file and file.name else f"{stem}{file.ext if file and file.ext else ''}"
+    ext = file.ext if file and file.ext else ""
+    return f"{stem}_{file.name}" if file and file.name else f"{stem}{ext}"
 
 
 def fetcher(site: Site, message: Any) -> Fetch:
-    """A `fetch(dest, progress)` for the engine: the message's media, downloaded into `dest`.
-
-    A flood wait (Telegram's `FloodWaitError`) is waited out for the seconds it names, through
-    `site.back_off`, which every download shares. A video or file then goes on from where it
-    stopped, as it does after a dropped connection, and a big one comes in parts at once; a
-    photo, small and sized by Telethon, starts again.
-
-    Args:
-        site: the target's site, whose `client` downloads and whose `back_off` shares the waits.
-        message: the Telethon message whose media is downloaded.
-    """
+    """A `fetch(dest, progress)` for the engine: the message's media, downloaded into `dest`."""
     from telethon.errors import FloodWaitError
 
     async def fetch(dest: Any, progress: Any) -> None:
@@ -316,8 +264,10 @@ def fetcher(site: Site, message: Any) -> Fetch:
                     await site.client.download_media(message, file=file, progress_callback=progress)
                 return
             except FloodWaitError as error:
-                # Off the loop: the wait is a sleep, and other downloads on the loop have their own to finish.
-                await asyncio.to_thread(site.back_off, "Telegram flood wait", retry_after=error.seconds)
+                # Off the loop: wait is a sleep, and other downloads have their own to finish.
+                await asyncio.to_thread(
+                    site.back_off, "Telegram flood wait", retry_after=error.seconds,
+                )
 
     return fetch
 
@@ -353,8 +303,9 @@ class _Download:
             try:
                 await self._read(number, start + self.done[number], end)
             except FloodWaitError as error:
-                await asyncio.to_thread(self.site.back_off, "Telegram flood wait",
-                                        retry_after=error.seconds)
+                await asyncio.to_thread(
+                    self.site.back_off, "Telegram flood wait", retry_after=error.seconds,
+                )
             # Telethon reconnects by itself; the part goes on from its last whole request.
             except ConnectionError:
                 drops += 1
@@ -387,11 +338,7 @@ def parts(size: int) -> list[tuple[int, int]]:
 
 
 def credentials(login: Login) -> tuple[int, str]:
-    """The stored `api_id` and `api_hash`, or asked for when there are none yet.
-
-    Raises:
-        LoginError: none are stored and there is no terminal to ask in, or the `api_id` isn't a number.
-    """
+    """The stored `api_id` and `api_hash`, or asked for when there are none yet."""
     secrets = login.secrets
     if "api_id" in secrets and "api_hash" in secrets:
         return int(secrets["api_id"]), secrets["api_hash"]
@@ -404,19 +351,10 @@ def credentials(login: Login) -> tuple[int, str]:
     return int(api_id), login.ask("Telegram api_hash", secret=True, description=where).strip()
 
 
-async def log_in(login: Login, method: str, start: str, api_id: int, api_hash: str) -> tuple[str, str]:
-    """Log a client in by `method`, from the session string `start`, and give its new string and the account's name.
-
-    Args:
-        login: the handle to ask questions through (a code, a password).
-        method: "browser", "qr" or "phone"; "browser" asks nothing, since `start` already holds its login.
-        start: the session string to begin from; "" for a new device.
-        api_id: the Telegram app's id, from my.telegram.org.
-        api_hash: the Telegram app's hash, from my.telegram.org.
-
-    Returns:
-        The client's session string, to store, and the account's display name.
-    """
+async def log_in(
+    login: Login, method: str, start: str, api_id: int, api_hash: str,
+) -> tuple[str, str]:
+    """Log a client in by `method`, from session string `start`."""
     from telethon.errors import RPCError
 
     client = _client(start, api_id, api_hash)
@@ -428,10 +366,12 @@ async def log_in(login: Login, method: str, start: str, api_id: int, api_hash: s
             await by_phone(login, client)
         me = await client.get_me()
         if me is None:
-            raise LoginError("tlg: Telegram Web's login no longer works; log in at web.telegram.org again")
+            raise LoginError(
+                "tlg: Telegram Web's login no longer works; log in at web.telegram.org again"
+            )
         # The session string is what the source stores and reads back on later runs.
         return client.session.save(), display_name(me)
-    # Telegram's refusal is shown as a login error; any other exception is not caught here and reaches the caller.
+    # Telegram's refusal is shown as a login error; any other reaches caller.
     except RPCError as error:
         raise LoginError(f"tlg: Telegram refused the login: {error}") from None
     finally:
@@ -439,18 +379,15 @@ async def log_in(login: Login, method: str, start: str, api_id: int, api_hash: s
 
 
 async def by_qr(login: Login, client: Any) -> None:
-    """Log in by showing QR codes until one is scanned, `QR_CODES` at most; Telegram's two-step password is asked after.
-
-    Args:
-        login: the handle to show the codes through.
-        client: the connected Telethon client to log in.
-    """
+    """Log in by showing QR codes until one is scanned, up to `QR_CODES` times."""
     from telethon.errors import SessionPasswordNeededError
 
     qr = await client.qr_login()
+    instruction = (
+        "scan this in the Telegram app, under Settings → Devices → Link Desktop Device:\n{qr}"
+    )
     for _ in range(QR_CODES):
-        login.info("scan this in the Telegram app, under Settings → Devices → Link Desktop Device:\n{qr}",
-                   qr=draw_qr(qr.url))
+        login.info(instruction, qr=draw_qr(qr.url))
         try:
             await qr.wait()
             return
@@ -463,12 +400,7 @@ async def by_qr(login: Login, client: Any) -> None:
 
 
 async def by_phone(login: Login, client: Any) -> None:
-    """Log in by the phone number and the code Telegram sends; the two-step password is asked when the account has one.
-
-    Args:
-        login: the handle to ask the number, the code and the password through.
-        client: the connected Telethon client to log in.
-    """
+    """Log in by the phone number and the code Telegram sends."""
     from telethon.errors import SessionPasswordNeededError
 
     phone = login.ask("Phone number", description="With the country code, such as +44 7700 900123")
@@ -481,52 +413,45 @@ async def by_phone(login: Login, client: Any) -> None:
 
 
 async def two_step(login: Login, client: Any) -> None:
-    """Finish a login with the account's two-step verification password, which isn't echoed.
-
-    Args:
-        login: the handle to ask the password through, with no echo.
-        client: the connected Telethon client to sign in.
-    """
+    """Finish a login with the account's two-step verification password."""
     await client.sign_in(password=login.ask("Two-step verification password", secret=True))
 
 
 def read_telegram_web() -> dict[str, str]:
-    """Telegram Web's local storage, from a copy of Chrome's default profile, in a browser nobody sees."""
+    """Telegram Web's local storage from Chrome's default profile."""
     from urllib.parse import urlparse
 
     from shared import browser
 
+    err_msg = "tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead"
     try:
         # Headless: the read happens without a window, so nothing is shown to the user.
         with browser.open(profile="Default", headless=True) as chrome:
             page = chrome.open(TELEGRAM_WEB, idle=True)
-            # `Browser.open` logs a failed navigation and returns the tab still on about:blank, whose
-            # evaluate would raise; so check where the tab is and say it plainly.
+            # Check where the tab is and say it plainly.
             if urlparse(page.url).hostname != urlparse(TELEGRAM_WEB).hostname:
-                raise LoginError("tlg: Chrome could not open Telegram Web; check the connection, "
-                                 "or try a QR code instead")
+                raise LoginError(
+                    "tlg: Chrome could not open Telegram Web; check connection, "
+                    "or try a QR code instead"
+                )
             try:
                 return page.raw.evaluate("Object.assign({}, localStorage)")
             # What evaluate raises when the tab navigated away or closed meanwhile.
             except browser.RawError as error:
-                raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None
+                raise LoginError(err_msg.format(error=error)) from None
     except (OSError, RuntimeError, ValueError) as error:
-        raise LoginError(f"tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead") from None
+        raise LoginError(err_msg.format(error=error)) from None
 
 
 def from_web_storage(storage: Mapping[str, str]) -> str:
-    """A Telethon `StringSession` from Telegram Web's local storage: the account's data center and its auth key.
-
-    Both web clients keep `user_auth` (with `dcID`), `dc`, and `dc<N>_auth_key` as hex, JSON-encoded.
-    Raises `LoginError` when Telegram Web isn't logged in.
-    """
+    """A Telethon StringSession from Telegram Web's local storage."""
     from telethon.crypto import AuthKey
     from telethon.sessions import StringSession
 
     # Web storage holds JSON-encoded values; the auth key itself is hex inside that JSON string.
     values = {name: _json_or_text(value) for name, value in storage.items()}
     user = values.get("user_auth")
-    # `dcID` in `user_auth` is the account's data center; `dc` is the fallback when `user_auth` lacks it.
+    # `dcID` in `user_auth` is the account's data center; `dc` is fallback when lacking.
     dc = (user.get("dcID") if isinstance(user, dict) else None) or values.get("dc")
     key = values.get(f"dc{dc}_auth_key")
     try:
@@ -536,8 +461,10 @@ def from_web_storage(storage: Mapping[str, str]) -> str:
         auth_key = b""
     # A Telegram auth key is 256 bytes (2048 bits); any other length is not a key.
     if len(auth_key) != 256 or str(dc) not in map(str, DATA_CENTERS):
-        raise LoginError("tlg: not logged in to Telegram Web in Chrome; log in at web.telegram.org first, "
-                         "or log in with a QR code")
+        raise LoginError(
+            "tlg: not logged in to Telegram Web in Chrome; log in at web.telegram.org first, "
+            "or log in with a QR code"
+        )
     string_session = StringSession()
     string_session.set_dc(int(str(dc)), DATA_CENTERS[int(str(dc))], PORT)
     string_session.auth_key = AuthKey(auth_key)
@@ -554,12 +481,14 @@ def draw_qr(text: str) -> str:
 
 
 def half_blocks(matrix: Sequence[Sequence[bool]]) -> str:
-    """Draw a QR matrix (True is dark), lighting the light modules, as `qrencode -t UTF8` does for a dark terminal."""
+    """Draw a QR matrix (True is dark), lighting the light modules."""
     light = [[not dark for dark in row] for row in matrix]
     if len(light) % 2:
         light.append([True] * len(light[0]))
     lines = zip(light[::2], light[1::2])
-    return "\n".join("".join(HALF_BLOCKS[pair] for pair in zip(top, bottom)) for top, bottom in lines)
+    return "\n".join(
+        "".join(HALF_BLOCKS[pair] for pair in zip(top, bottom)) for top, bottom in lines
+    )
 
 
 def _json_or_text(value: str) -> Any:
@@ -574,6 +503,7 @@ def _client(string: str, api_id: int, api_hash: str) -> Any:
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
-    # A device named flnd, in the account's settings, for a QR or phone login. Any, because Telethon's own
-    # annotations call some coroutines None.
-    return TelegramClient(StringSession(string), api_id, api_hash, device_model="flnd", app_version=__version__)
+    # A device named flnd in the account settings for QR or phone login.
+    return TelegramClient(
+        StringSession(string), api_id, api_hash, device_model="flnd", app_version=__version__,
+    )

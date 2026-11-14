@@ -29,7 +29,7 @@ class Options:
     # `--time`'s two days, both included; None is no limit on that side.
     since: datetime.date | None = None
     until: datetime.date | None = None
-    # `--shrink`: compress each new photo, video and audio file at media's balanced level, in its own format.
+    # `--shrink`: compress each new photo, video and audio file at balanced level in its format.
     shrink: bool = False
     # `sync` of a target with nothing lost: a `newest_first` category whose last listing reached
     # its end stops after 5 saved posts in a row.
@@ -53,15 +53,7 @@ def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
 
 
 def unknown_categories(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None:
-    """Why `--from names` can't be used with these sources, listing the names per source; None when it can.
-
-    Args:
-        names: the names `--from` gave, after splitting on commas; `all` is always known.
-        sources: the sources the targets belong to, whose categories are the known names.
-
-    Returns:
-        The message the command shows as a usage error, or None when every name is known.
-    """
+    """Why `--from names` cannot be used with these sources; None when it can."""
     known = {category for source in sources for category in source.categories}
     unknown = [name for name in names if name != ALL and name not in known]
     if not unknown:
@@ -71,17 +63,13 @@ def unknown_categories(names: Sequence[str], sources: Sequence[type[Source]]) ->
 
 
 def single_targets(targets: Sequence[Target], sources: Mapping[str, type[Source]]) -> str | None:
-    """Why `--from` can't be used with these targets, naming the first single post; None when it can.
-
-        single_targets([Target("ins", "post", "C1abc")], SOURCES)     # "--from applies to profiles and chats; …"
-
-    A post has no categories: tagged or reposts describe a profile's tab, not a post. Filtering
-    one by `--from` would only ever drop every file, so the command refuses it before it starts.
-    """
+    """Why `--from` cannot be used with these targets; None when it can."""
     for target in targets:
         if target.kind in sources[target.source].single_kinds:
-            return (f"--from applies to profiles and chats; {target} is one post, downloaded whole: "
-                    "give it without --from")
+            return (
+                f"--from applies to profiles and chats; {target} is one post, downloaded whole: "
+                "give it without --from"
+            )
     return None
 
 
@@ -99,5 +87,5 @@ class RunShared:
     interactive: bool = False
     # `--dry`: list what would be downloaded without writing or downloading anything.
     dry: bool = False
-    # One for the whole run, so videos encode one at a time across sources and each error warns once.
+    # Shared across the run so videos encode sequentially and each error warns once.
     compressor: Compressor = field(default_factory=Compressor)

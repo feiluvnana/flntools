@@ -34,8 +34,8 @@ from shared._screen import Screen, isatty
 from shared._style import (ESCAPE, ESCAPE_PATTERN, LINK_CLOSE, RESET, Chain, color_code, color_rgb,
                            style)
 
-# `shared.theme` is the `theme` object: its members, `Error` among them, are the module's names, and
-# the rest are the records the drawers take and the types of `theme.screen`, `.palette` and `.glyphs`.
+# `shared.theme` is the `theme` object: its members, `Error` among them, are the module's names;
+# the rest are the records drawers take and the types of `theme.screen`, `.palette` and `.glyphs`.
 __all__ = ["Bar", "Count", "Error", "HelpModel", "LogRecord", "Namespace", "PromptView", "Screen",
            "Status", "draw_help", "draw_log", "draw_progress", "draw_prompt", "draw_status",
            "theme"]
@@ -66,7 +66,9 @@ GLYPHS: dict[str, Any] = {
     "border": ("┃", "|"), "keysep": ("•", "|"),
     "select": {"yes": ("●", "(*)"), "no": ("○", "( )")},
     "check": {"yes": ("✓", "[x]"), "no": ("•", "[ ]")},
-    "keys": {"up": ("↑", "up"), "down": ("↓", "down"), "left": ("←", "left"), "right": ("→", "right")},
+    "keys": {
+        "up": ("↑", "up"), "down": ("↓", "down"), "left": ("←", "left"), "right": ("→", "right"),
+    },
     "bar": {"full": ("━", "="), "empty": ("─", "-")},
     # The spinner's Braille frames, and the ASCII frames used when Unicode is off.
     "spin": (("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"), ("|", "/", "-", "\\")),
@@ -270,7 +272,7 @@ class Theme:
         """Apply changes for the length of the block, then restore the old values.
 
         Args:
-            **changes: any of `color`, `unicode` or `screen`, with the value to use inside the block.
+            **changes: any of `color`, `unicode` or `screen`, with values to use inside block.
 
         Raises:
             TypeError: a name in `changes` is none of those three.
@@ -284,7 +286,7 @@ class Theme:
                 setattr(self, name, value)
             yield self
         finally:
-            # Restored in `finally`, so an exception inside the block still puts the old values back.
+            # Restored in `finally`, so an exception inside still puts the old values back.
             for name, value in previous.items():
                 setattr(self, name, value)
 
@@ -374,7 +376,10 @@ class Namespace:
 
     def __init__(self, kind: str, defaults: dict, pick: Callable[[Any], Any], *,
                  check: Callable[[Any], Any] = lambda value: value):
-        groups = {name: Namespace(kind, value, pick) for name, value in defaults.items() if isinstance(value, dict)}
+        groups = {
+            name: Namespace(kind, value, pick)
+            for name, value in defaults.items() if isinstance(value, dict)
+        }
         # `object.__setattr__` because `__setattr__` below refuses names that are not defaults.
         object.__setattr__(self, "_kind", kind)
         object.__setattr__(self, "_defaults", defaults)
@@ -416,7 +421,7 @@ def chain_of(value: str | int) -> Chain:
     try:
         return style.color(value)
     except ValueError:
-        # A color as a whole (a hex, an rgb() or an index) is tried first; anything else is read as words.
+        # A color as a whole (hex, rgb(), index) is tried first; anything else is read as words.
         pass
     chain = style
     for word in str(value).split():
@@ -461,7 +466,7 @@ def draw_log(theme: Theme, record: LogRecord) -> str:
 
 
 def draw_progress(theme: Theme, record: LogRecord) -> str:
-    """One progress line drawn from `record.bar`: its glyph and cells in fixed columns, then its label, count and caption.
+    """One progress line drawn from `record.bar`: glyph, cells, label, count and caption.
 
         ✓ ━━━━━━━━━━━━━━━━━━━━ posts/a.jpg 45.4 KB
         • ━━━━━━━━━━────────── videos/b.mp4 7.3 MB/14.6 MB
@@ -560,7 +565,7 @@ def _clock_text(seconds: float) -> str:
 
 
 def draw_help(theme: Theme, model: HelpModel) -> str:
-    """A `--help` screen: the error if any, the description, the usage, then the argument, option and command rows.
+    """A `--help` screen: error if any, description, usage, then argument, option and command rows.
 
     Args:
         theme: the theme that draws the screen.
@@ -575,13 +580,18 @@ def draw_help(theme: Theme, model: HelpModel) -> str:
     if model.description:
         lines += [model.description, ""]
     lines += [theme.paint("title", "Usage:"), theme.paint("label", "  " + model.usage)]
-    for title, rows in (("Arguments:", model.arguments), ("Options:", model.options), ("Commands:", model.commands)):
+    sections = (
+        ("Arguments:", model.arguments), ("Options:", model.options),
+        ("Commands:", model.commands),
+    )
+    for title, rows in sections:
         if rows:
             lines += ["", theme.paint("title", title)]
             for label, text in rows:
                 # Labels are padded to HELP_LABEL_WIDTH, so every description starts in one column.
                 padded = ("  " + label).ljust(HELP_LABEL_WIDTH)
-                lines.append(theme.paint("label", padded) + "  " + theme.paint("muted", text) if text
+                desc = theme.paint("muted", text)
+                lines.append(theme.paint("label", padded) + "  " + desc if text
                              else theme.paint("label", "  " + label))
     if model.epilog:
         lines += [""] + [theme.paint("muted", line) for line in model.epilog.splitlines()]
@@ -612,7 +622,10 @@ def draw_prompt(theme: Theme, view: PromptView) -> str:
     if view.kind in ("input", "secret"):
         body = [_input_line(theme, view)]
     elif view.kind == "confirm":
-        buttons = [_button(theme, label, index == view.position) for index, label in enumerate(view.options)]
+        buttons = [
+            _button(theme, label, index == view.position)
+            for index, label in enumerate(view.options)
+        ]
         body = ["", "  ".join(buttons)]
     else:
         body = _option_rows(theme, view, room)
@@ -631,7 +644,8 @@ def _input_line(theme: Theme, view: PromptView) -> str:
     if theme.color == "none":
         return f"{pointer} {before}{_cursor_cell(theme)}{after}"
     # In color the cell is reverse video over the character under it, so nothing shifts.
-    return f"{pointer} {theme.paint('text', before)}{_cursor_cell(theme, after[:1] or ' ')}{theme.paint('text', after[1:])}"
+    cursor_cell = _cursor_cell(theme, after[:1] or ' ')
+    return f"{pointer} {theme.paint('text', before)}{cursor_cell}{theme.paint('text', after[1:])}"
 
 
 def _cursor_cell(theme: Theme, char: str = " ") -> str:
@@ -651,7 +665,8 @@ def _option_rows(theme: Theme, view: PromptView, room: int) -> list[str]:
         end = start + shown
     # Rows without the cursor are indented by the pointer's width, so the labels line up.
     blank = " " * display_width(theme.glyphs.pointer)
-    rows = [f"{blank} {theme.paint('faint', f'{theme.glyphs.keys.up} {start} more')}"] if start else []
+    more_up = f"{theme.glyphs.keys.up} {start} more"
+    rows = [f"{blank} {theme.paint('faint', more_up)}"] if start else []
     for row in range(start, end):
         label = view.options[row]
         cursor = theme.paint("cursor", theme.glyphs.pointer) if row == view.position else blank
@@ -662,9 +677,11 @@ def _option_rows(theme: Theme, view: PromptView, room: int) -> list[str]:
                 else theme.paint("muted", theme.glyphs.check.no)
             rows.append(f"{cursor} {mark} {theme.paint('chosen' if checked else 'text', label)}")
         else:
-            rows.append(f"{cursor} {theme.paint('chosen' if row == view.position else 'text', label)}")
+            chosen = "chosen" if row == view.position else "text"
+            rows.append(f"{cursor} {theme.paint(chosen, label)}")
     if end < count:
-        rows.append(f"{blank} {theme.paint('faint', f'{theme.glyphs.keys.down} {count - end} more')}")
+        more_down = f"{theme.glyphs.keys.down} {count - end} more"
+        rows.append(f"{blank} {theme.paint('faint', more_down)}")
     return rows
 
 
@@ -677,24 +694,29 @@ def _button(theme: Theme, label: str, active: bool) -> str:
     if theme.color == "none":
         return f"[ {label} ]" if active else f"  {label}  "
     padded = f"  {label}  "
-    return theme.paint("cream", padded, on="cursor") if active else theme.paint("text", padded, on="button")
+    role = "cursor" if active else "button"
+    fg = "cream" if active else "text"
+    return theme.paint(fg, padded, on=role)
 
 
 def _keys_line(theme: Theme, keys: tuple) -> str:
-    """The help line: each action with its keys, the keys joined by "/" and the actions by a separator.
+    """The help line: each action with keys joined by "/" and actions by a separator.
 
     Arrow key names are drawn as their glyphs; any other key name is drawn as its word.
     """
+    def key_glyph(k: str) -> str:
+        return getattr(theme.glyphs.keys, k) if k in GLYPHS["keys"] else k
+
     separator = f" {theme.paint('hint', theme.glyphs.keysep)} "
     return separator.join(
-        theme.paint("key", "/".join(getattr(theme.glyphs.keys, key) if key in GLYPHS["keys"] else key for key in bound))
+        theme.paint("key", "/".join(key_glyph(k) for k in bound))
         + " " + theme.paint("hint", action)
         for action, bound in keys
     )
 
 
 def _done_text(view: PromptView) -> str:
-    """The one line a finished question leaves: the answer, shown after the question, except for a secret."""
+    """The one line a finished question leaves: the answer, shown after question."""
     if view.kind == "secret":
         # A secret's answer is never printed, so only the question stays on the line.
         return view.message
@@ -819,11 +841,11 @@ def detect_unicode(stream) -> bool:
 
 
 def ambiguous_width() -> bool:
-    """Whether ambiguous-width characters probably show two cells wide: a CJK locale, or Windows' legacy console."""
+    """Whether ambiguous-width characters probably show two cells wide."""
     locale = os.environ.get("LC_ALL") or os.environ.get("LANG") or ""
     if locale.lower().startswith(("ja", "ko", "zh")):
         return True
-    # Windows Terminal, ConEmu, ANSICON and terminals that set TERM (mintty, VS Code) aren't the legacy console.
+    # Windows Terminal, ConEmu, ANSICON and terminals that set TERM aren't the legacy console.
     # The legacy console is the one assumed to draw these glyphs two cells wide; the variables below
     # are set by the terminals that do not.
     modern = ("WT_SESSION", "TERM", "ANSICON", "TERM_PROGRAM")

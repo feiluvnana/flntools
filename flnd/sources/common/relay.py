@@ -24,18 +24,7 @@ SCRIPTS = 'script[type="application/json"]::text'
 
 
 def meta_results(site: Site, url: str) -> list[Any]:
-    """Load a Facebook or Instagram page and return the GraphQL results its HTML embeds; [] when it didn't load.
-
-        for result in meta_results(site, f"https://www.instagram.com/p/{code}/"):
-            yield from posts_of(result)
-
-    Args:
-        site: the target's site; `goto` loads the page, paced, waiting out a 429.
-        url: the page.
-
-    Returns:
-        Each result, shaped like a response: `{"data": {…}}`, in the page's order.
-    """
+    """Load a Facebook or Instagram page and return its embedded GraphQL results, or []."""
     if not site.goto(url):
         return []
     return embedded_results(site.page.document)

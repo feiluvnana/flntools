@@ -1,21 +1,16 @@
-"""`flnd sync`'s repair and tally: what a target's folder lost before the fetch, and what it holds after.
+"""`flnd sync`'s repair and tally: what a folder lost before fetch, and holds after.
 
-`Engine.sync` reads the whole history once (`index`), then for each target, on its source's worker:
-1. `repair` removes leftover `.part` files (keeping a recent resumable download's), and forgets the
-   files its history names that are missing, empty or broken, deleting the broken ones, so the
-   fetch that follows downloads them again;
-2. the job fetches what is new or was lost;
-3. `count` sees which lost files came back, names each that didn't, and counts the folder;
-4. `summary` writes one line per target, then the totals.
-
-A file whose size and modified time match its history row is trusted without a decode; a file that
-changed is fully checked, and so is a rolling share of the trusted ones, so bit rot is still found.
+`Engine.sync` reads the history once (`index`), then for each target on its source worker:
+1. `repair` removes leftover `.part` files and forgets missing, empty, or broken files;
+2. the job fetches what is new or lost;
+3. `count` checks which lost files returned and counts the folder;
+4. `summary` writes one line per target and the totals.
 
     tally = repair.Tally("ins:example_user", folder, index[folder])
     repair.repair(history, tally)
-    ...                                     # the fetch
+    ...
     repair.count(history, tally)
-    repair.summary([tally])                 # "ins:example_user: 120 files, 85.2 MB; 2 repaired, 1 missing"
+    repair.summary([tally])
 """
 
 from __future__ import annotations
@@ -41,7 +36,7 @@ CHECKED = "checked"
 
 @dataclass
 class Tally:
-    """One target's sync: what its folder holds, and what this sync repaired or couldn't get back."""
+    """One target's sync: folder contents, repaired files, and missing files."""
 
     # The target as people write it, which starts its summary line.
     target: str
@@ -54,23 +49,21 @@ class Tally:
     # Lost files the fetch saved again, and lost files it couldn't.
     repaired: int = 0
     missing: int = 0
-    # History keys whose file was gone, or broken and deleted, before the fetch, with their file names.
+    # History keys whose file was gone or broken before fetch, with their file names.
     lost: dict[str, str] = field(default_factory=dict, repr=False)
     broken: set[str] = field(default_factory=set, repr=False)
 
 
-def index(history: MutableMapping[str, Any], folders: Iterable[Path]) -> dict[Path, list[tuple[str, dict]]]:
-    """The history rows whose file is in each folder, or was, from one read of the whole history.
+def index(
+    history: MutableMapping[str, Any], folders: Iterable[Path]
+) -> dict[Path, list[tuple[str, dict]]]:
+    """The history rows whose file is in each folder, from one history read.
 
         rows = repair.index(history, [folder])[folder]
 
     Args:
         history: the download history.
         folders: the target folders to index; each gets a list, empty when no row is in it.
-
-    With 100 targets and 100,000 rows, a scan per target and step was 30 million row reads; this
-    is 100,000. Paths are compared made absolute from the working directory, as they were saved,
-    without resolving links, which would cost a system call per row.
     """
     roots = {Path(os.path.abspath(folder)): folder for folder in folders}
     found: dict[Path, list[tuple[str, dict]]] = {folder: [] for folder in roots.values()}
@@ -85,14 +78,11 @@ def index(history: MutableMapping[str, Any], folders: Iterable[Path]) -> dict[Pa
 
 
 def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
-    """Remove leftover parts, and forget the target's files that are gone, empty or broken, for the fetch to get again.
+    """Remove leftover parts and forget missing or broken files for re-download.
 
     Args:
         history: the download history; a broken file's row is deleted, a checked one's updated.
         tally: the target's tally, with its folder and rows; each lost file is noted in it.
-
-    A broken file is deleted, which can't be undone. A file media refuses to open (`UnsafeError`)
-    isn't known to be broken, so it is kept.
     """
     _remove_leftovers(tally.folder)
     changed: list[tuple[str, dict]] = []
@@ -188,9 +178,17 @@ def count(history: MutableMapping[str, Any], tally: Tally) -> None:
             gone[key] = name
     for key, name in sorted(gone.items(), key=lambda item: item[1]):
         if key in tally.broken:
-            log.warn("{target}: {name} was broken and couldn't be downloaded again", target=tally.target, name=name)
+            log.warn(
+                "{target}: {name} was broken and couldn't be downloaded again",
+                target=tally.target,
+                name=name,
+            )
         else:
-            log.warn("{target}: {name} is missing; its post may be gone", target=tally.target, name=name)
+            log.warn(
+                "{target}: {name} is missing; its post may be gone",
+                target=tally.target,
+                name=name,
+            )
     tally.missing = len(gone)
     # A link is a view of a file counted already, not a file of its own.
     on_disk = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()
@@ -199,7 +197,7 @@ def count(history: MutableMapping[str, Any], tally: Tally) -> None:
 
 
 def summary(tallies: Sequence[Tally]) -> None:
-    """One line per target, then the totals: `ins:example_user: 120 files, 85.2 MB; 2 repaired, 1 missing`.
+    """Log one line per target, then the totals across all targets.
 
         repair.summary(tallies)
     """
@@ -214,5 +212,7 @@ def summary(tallies: Sequence[Tally]) -> None:
 
 
 def _described(tally: Tally) -> str:
-    return (f"{fmt.count(tally.files, 'file')}, {fmt.size(tally.size)}; {tally.repaired:,} repaired, "
-            f"{tally.missing:,} missing")
+    return (
+        f"{fmt.count(tally.files, 'file')}, {fmt.size(tally.size)}; "
+        f"{tally.repaired:,} repaired, {tally.missing:,} missing"
+    )

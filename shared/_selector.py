@@ -1,32 +1,17 @@
-"""Getting data out of HTML and JSON: `selector.parse(source)` gives a `Selection` to query.
+"""Getting data out of HTML and JSON: `selector.parse(source)` gives a `Selection`.
 
-How it works: `parse` reads its source (HTML or JSON text, bytes, a file, an httpx or Playwright
-response, or a `dict` or `list` already parsed) into one `parsel.Selector`, of type "html" or
-"json", and wraps it in a `Selection`. Every query on a `Selection` returns a new `Selection`, so
-queries chain: `css` and `xpath` run on HTML through parsel (lxml underneath), `jmespath` on JSON
-through parsel's jmespath support, and `jsonpath` on JSON through python-jsonpath (RFC 9535).
-`script` and `json` turn text found in a page into JSON to query further. `first` and `all` end
-a chain with the values: text for HTML, Python values for JSON. Sources are told apart by duck
-typing, so this module imports neither httpx nor Playwright; fetching the text is left to them.
+`parse` reads HTML or JSON text, bytes, file Path, response, or dict/list into a
+`Selection`. Queries chain: `css`/`xpath` on HTML, `jmespath`/`jsonpath` on JSON.
+`script` and `json` extract embedded JSON. `first` and `all` return matches.
 
     from shared import selector
 
     page = selector.parse(response)
-    page.css("a[href*='/video/']::attr(href)").all          # ["/video/1", "/video/2"]
+    page.css("a[href*='/video/']::attr(href)").all
     page.script(id="__NEXT_DATA__").jmespath("props.user").first
-    page.css("script#data::text").json.jmespath("items[].id").all
-    selector.parse({"data": {"id": "9"}}).jmespath("data.id").first     # "9"
+    selector.parse({"data": {"id": "9"}}).jmespath("data.id").first
 
-`.raw` is the parsel object underneath: the `parsel.Selector` from `parse`, `script` and `json`,
-or the `parsel.SelectorList` of a query's matches; its root is the lxml tree for HTML and the
-parsed data for JSON.
-
-Text over 64 MB is refused with `UnsafeError` before it is parsed, since a page that size is
-either a mistake or an attack on the parser. JSON text that doesn't parse raises `BrokenError`.
-
-Threads: `parse` may be called from several threads at once, each on its own source. A
-`Selection` is never changed once made, but the lxml tree behind an HTML one isn't safe to read
-from two threads at the same time, so keep each `Selection` to one thread at a time.
+Text over 64 MB raises `UnsafeError`. Invalid JSON raises `BrokenError`.
 """
 
 from __future__ import annotations
@@ -62,35 +47,23 @@ class UnsafeError(Error, shared.UnsafeError):
     """Text over 64 MB, refused before it is parsed."""
 
 
-# A ValueError through shared.BrokenError, as json's error was before the error tree, so an old
-# `except ValueError` still catches it.
+# A ValueError through shared.BrokenError so callers catching ValueError still handle it.
 class BrokenError(Error, shared.BrokenError):
     """Text that should be JSON but doesn't parse: the site changed what it sends."""
 
 
 def parse(source: Any) -> Selection:
-    """A `Selection` over HTML or JSON, read from text, bytes, a file, a response, or parsed data.
+    """A `Selection` over HTML or JSON, read from text, bytes, a file, or response.
 
         page = selector.parse(response)
         page.css("h1::text").first
-        selector.parse('{"a": [1, 2]}').jmespath("a[1]").first      # 2
+        selector.parse('{"a": [1, 2]}').jmespath("a[1]").first
 
     Args:
-        source: HTML or JSON as a `str` or `bytes` (decoded as UTF-8, bad bytes replaced); a
-            `Path` to a file of either; a response with `text` and `headers`, such as httpx's
-            or Playwright's; or a `dict` or `list` already parsed.
+        source: HTML/JSON text, bytes, Path, response, or parsed dict/list.
 
     Returns:
-        A JSON `Selection` for a `dict` or `list`, for text that parses as JSON, and for a
-        response whose content type says JSON; an HTML `Selection` for anything else.
-
-    Raises:
-        UnsafeError: the text is over 64 MB.
-        BrokenError: a response's content type says JSON but its text doesn't parse.
-        TypeError: `source` is none of the kinds above.
-        OSError: a `Path` can't be read.
-
-    It may be called from several threads at once.
+        A Selection for querying HTML (css, xpath) or JSON (jmespath, jsonpath).
     """
     return Selection(_selector(source))
 
@@ -136,7 +109,7 @@ class Selection:
             query: the XPath expression.
 
         Raises:
-            ValueError: the selection is JSON, not HTML, or `query` isn't valid XPath (parsel's error).
+            ValueError: selection is JSON not HTML, or invalid XPath (parsel error).
         """
         return Selection(self._matches.xpath(query))
 
@@ -171,7 +144,8 @@ class Selection:
             if match.type not in ("json", "text"):
                 raise ValueError(f"Cannot use jsonpath on a Selector of type {match.type!r}")
             found.extend(_jsonpath().findall(query, match.root))
-        return Selection(parsel.SelectorList(parsel.Selector(root=value, type="json") for value in found))
+        selectors = (parsel.Selector(root=value, type="json") for value in found)
+        return Selection(parsel.SelectorList(selectors))
 
     def script(self, id: str | None = None, *, pattern: str | None = None) -> Selection:
         """The JSON embedded in the page, from `<script id=...>` or the first group of `pattern`.
@@ -222,7 +196,8 @@ class Selection:
                 values.append(_loads(match.root))
             else:
                 values.append(_loads("".join(match.xpath("descendant-or-self::text()").getall())))
-        return Selection(parsel.SelectorList(parsel.Selector(root=value, type="json") for value in values))
+        selectors = (parsel.Selector(root=value, type="json") for value in values)
+        return Selection(parsel.SelectorList(selectors))
 
     @property
     def first(self) -> Any:
@@ -236,13 +211,13 @@ class Selection:
 
     @property
     def text(self) -> str:
-        """Every text node inside the HTML matches, joined, with whitespace collapsed; "" when empty."""
+        """Every text node inside HTML matches, joined and collapsed; "" when empty."""
         pieces = self._matches.xpath("descendant-or-self::text()").getall()
         return WHITESPACE.sub(" ", " ".join(pieces)).strip()
 
     @property
     def raw(self) -> Raw:
-        """The parsel object: a `parsel.Selector` from `parse`, `script` and `json`, else a `parsel.SelectorList`."""
+        """The underlying parsel.Selector or parsel.SelectorList."""
         return self._raw
 
     def __len__(self) -> int:
@@ -297,7 +272,7 @@ def _text_selector(text: str) -> parsel.Selector:
 
 
 def _loads(text: str) -> Any:
-    """`text` parsed as JSON, raising `UnsafeError` when it is too big and `BrokenError` when it isn't JSON."""
+    """Parse JSON text, raising UnsafeError if too large and BrokenError if invalid."""
     _check_size(len(text), "characters")
     try:
         return json.loads(text)
@@ -317,6 +292,8 @@ def _jsonpath() -> Any:
     try:
         import jsonpath
     except ImportError:
-        raise ImportError("shared.selector needs python-jsonpath: pip install 'flntools[selector]'") from None
-    # The default environment adds keywords such as `missing`, which then can't be used as key names.
+        raise ImportError(
+            "shared.selector needs python-jsonpath: pip install 'flntools[selector]'"
+        ) from None
+    # The default environment adds keywords such as `missing`, which can't be keys.
     return jsonpath.JSONPathEnvironment(strict=True)

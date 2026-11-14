@@ -7,7 +7,8 @@ absolute path, behind a protocol and format whitelist, so a hostile download can
 read another file, a playlist or a URL. Each run is one of three shapes: `run` waits for the end
 and returns stderr, `encode` reports progress, and `frames_out` yields raw frames from stdout.
 
-    run(["-xerror", *source(path), "-map", "0", "-c", "copy", "-f", "null", "-"], name=path.name, timeout=COPY_TIMEOUT)
+    cmd = ["-xerror", *source(path), "-map", "0", "-c", "copy", "-f", "null", "-"]
+    run(cmd, name=path.name, timeout=COPY_TIMEOUT)
 """
 
 from __future__ import annotations
@@ -27,10 +28,12 @@ from typing import IO, Any
 from shared import _media
 
 # Private: what `media`'s files call.
-__all__ = ["encode", "encoders", "exe", "failure", "ffmetadata", "found", "frames_out", "need", "parse_version",
-           "passthrough", "probe", "run", "source", "summary", "target"]
+__all__ = [
+    "encode", "encoders", "exe", "failure", "ffmetadata", "found", "frames_out",
+    "need", "parse_version", "passthrough", "probe", "run", "source", "summary", "target",
+]
 
-# Readers that never open another file or URL. hls, dash, concat, image2 and the *_pipe readers are left out.
+# Readers that never open file or URL. hls, dash, concat, image2, *_pipe readers left out.
 READERS = "mov,matroska,avi,mpegts,mpeg,flv,asf,ogg,mp3,aac,flac,wav,aiff,caf,amr,gif"
 # The oldest build the options here work on; `found` refuses an older one by its printed version.
 MIN_VERSION = (4, 4)
@@ -46,15 +49,15 @@ CHANNELS = {"mono": 1, "stereo": 2, "2.1": 3, "quad": 4, "5.0": 5, "5.1": 6, "6.
 
 
 def exe() -> str:
-    """The ffmpeg to run: imageio-ffmpeg's (which honors IMAGEIO_FFMPEG_EXE), else the one on PATH."""
+    """The ffmpeg to run: imageio-ffmpeg's, else the one on PATH."""
     return found()[0]
 
 
 @functools.cache
 def found() -> tuple[str, tuple[int, int] | None]:
-    """The ffmpeg path and its version, looked up once; a failed lookup is tried again on the next call."""
+    """The ffmpeg path and its version; a failed lookup is retried on next call."""
     path = None
-    # imageio-ffmpeg ships its own binary; it raises RuntimeError when there's none for this platform,
+    # imageio-ffmpeg ships its binary; raises RuntimeError when none for this platform,
     # and then the ffmpeg on PATH is the fallback, so that error is not an error here.
     try:
         import imageio_ffmpeg
@@ -65,8 +68,10 @@ def found() -> tuple[str, tuple[int, int] | None]:
     path = path or shutil.which("ffmpeg")
     if not path:
         raise _media.MissingError(NO_FFMPEG)
-    text = subprocess.run([path, "-hide_banner", "-version"], capture_output=True, text=True, timeout=PROBE_TIMEOUT,
-                          env=_env()).stdout
+    text = subprocess.run(
+        [path, "-hide_banner", "-version"], capture_output=True, text=True,
+        timeout=PROBE_TIMEOUT, env=_env(),
+    ).stdout
     # A git or other build that prints no version number is accepted: its `None` skips the check.
     if (version := parse_version(text)) and version < MIN_VERSION:
         raise _media.MissingError(f"ffmpeg {'.'.join(map(str, version))} is too old; "
@@ -75,14 +80,14 @@ def found() -> tuple[str, tuple[int, int] | None]:
 
 
 def parse_version(text: str) -> tuple[int, int] | None:
-    """(major, minor) from `ffmpeg -version`, or None for a build that doesn't say, such as a git one."""
+    """(major, minor) from `ffmpeg -version`, or None for a build that doesn't say."""
     match = re.search(r"ffmpeg version n?(\d+)\.(\d+)", text)
     return (int(match[1]), int(match[2])) if match else None
 
 
 @functools.cache
 def encoders() -> frozenset[str]:
-    """The names of every encoder this ffmpeg build has, looked up once; `need` checks one of them."""
+    """The names of every encoder this ffmpeg build has; `need` checks one of them."""
     text = subprocess.run([exe(), "-hide_banner", "-encoders"], capture_output=True, text=True,
                           timeout=PROBE_TIMEOUT, env=_env()).stdout
     # Each encoder line starts with a six-character flag column (type V, A or S, then frame, slice,
@@ -100,7 +105,7 @@ def need(encoder: str) -> str:
 
 
 def passthrough() -> list[str]:
-    """Keep frames as they come, with no duplicates: `-vsync` was renamed `-fps_mode` in ffmpeg 5.1."""
+    """Keep frames as they come, with no duplicates: `-fps_mode` or `-vsync 0`."""
     version = found()[1]
     return ["-vsync", "0"] if version and version < (5, 1) else ["-fps_mode", "passthrough"]
 
@@ -111,7 +116,7 @@ def source(path: Path) -> list[str]:
 
 
 def target(path: Path) -> str:
-    """The ffmpeg input or output name for `path`: `file:` plus its absolute path, so nothing else is named.
+    """The ffmpeg input or output name for `path`: `file:` plus absolute path.
 
         target(Path("clip.mp4"))    # "file:/abs/path/clip.mp4"
     """
@@ -147,15 +152,17 @@ def run(args: list[str], *, name: str, timeout: float, level: str = "error") -> 
     return stderr
 
 
-def encode(args: list[str], *, name: str, duration: float | None, progress: Callable[..., Any] | None,
-           feed: Iterable[bytes] | None = None) -> None:
-    """Run an encode, reporting seconds done to `progress(done, total)`, and kill it after STALL quiet seconds.
+def encode(
+    args: list[str], *, name: str, duration: float | None, progress: Callable[..., Any] | None,
+    feed: Iterable[bytes] | None = None,
+) -> None:
+    """Run encode, reporting seconds done to `progress(done, total)`, and kill if stalled.
 
     Args:
-        args: ffmpeg's arguments; the last one is the output file, and `-progress` goes before it.
+        args: ffmpeg's arguments; the last one is output file, `-progress` before it.
         name: the file's name, for messages.
-        duration: the media's length in seconds, the total `progress` gets; None when unknown.
-        progress: `progress(done, total)`, called with seconds encoded so far, or None for no report.
+        duration: media length in seconds for `progress`; None when unknown.
+        progress: `progress(done, total)` callback, or None for no report.
         feed: raw frames written to ffmpeg's stdin, for an input that isn't a file; None for none.
 
     Raises:
@@ -165,7 +172,8 @@ def encode(args: list[str], *, name: str, duration: float | None, progress: Call
     Blocks the calling thread until the encode ends; `progress` runs on that thread.
     """
     # `-progress pipe:1` sends key=value lines to stdout; the output is then the last argument.
-    with _started([*args[:-1], "-progress", "pipe:1", "-nostats", args[-1]], name=name, feed=feed) as (out, kick):
+    cmd = [*args[:-1], "-progress", "pipe:1", "-nostats", args[-1]]
+    with _started(cmd, name=name, feed=feed) as (out, kick):
         for line in out:
             kick()
             # out_time_us is in microseconds of output written, so /1e6 gives seconds.
@@ -174,7 +182,9 @@ def encode(args: list[str], *, name: str, duration: float | None, progress: Call
                 progress(min(done, duration) if duration else done, duration)
 
 
-def frames_out(args: list[str], *, name: str, size: int, feed: Iterable[bytes] | None = None) -> Iterator[bytes]:
+def frames_out(
+    args: list[str], *, name: str, size: int, feed: Iterable[bytes] | None = None
+) -> Iterator[bytes]:
     """Run ffmpeg writing raw frames of `size` bytes to its stdout, and yield each frame.
 
     Args:
@@ -199,17 +209,20 @@ def frames_out(args: list[str], *, name: str, size: int, feed: Iterable[bytes] |
 
 
 @contextmanager
-def _started(args: list[str], *, name: str, feed: Iterable[bytes] | None) -> Iterator[tuple[IO[bytes], Callable]]:
-    """Start ffmpeg with `args`, yield its stdout and a `kick` to call on each line, and check its exit when done.
+def _started(
+    args: list[str], *, name: str, feed: Iterable[bytes] | None
+) -> Iterator[tuple[IO[bytes], Callable]]:
+    """Start ffmpeg with `args`, yield stdout and a kick callback, and check exit when done.
 
-    A watcher thread kills ffmpeg after STALL quiet seconds, and a feeder thread writes `feed` to its
+    A watcher thread kills ffmpeg after STALL quiet seconds, and feeder thread writes `feed` to
     stdin. On exit, whatever happened, ffmpeg is killed if still running; a run that failed then
     raises its stderr as the media error.
     """
     # stderr goes to a file, so a chatty ffmpeg can't fill a pipe and deadlock.
+    cmd = [exe(), "-hide_banner", "-nostdin", "-v", "error", *args]
+    stdin_mode = subprocess.PIPE if feed is not None else subprocess.DEVNULL
     with tempfile.TemporaryFile() as errors, subprocess.Popen(
-            [exe(), "-hide_banner", "-nostdin", "-v", "error", *args], env=_env(), stdout=subprocess.PIPE,
-            stdin=subprocess.PIPE if feed is not None else subprocess.DEVNULL, stderr=errors) as process:
+            cmd, env=_env(), stdout=subprocess.PIPE, stdin=stdin_mode, stderr=errors) as process:
         stalled = threading.Event()
         quiet = threading.Event()
         threading.Thread(target=_watch, args=(process, quiet, stalled), daemon=True).start()
@@ -233,7 +246,7 @@ def _started(args: list[str], *, name: str, feed: Iterable[bytes] | None) -> Ite
 
 
 def _watch(process: subprocess.Popen, quiet: threading.Event, stalled: threading.Event) -> None:
-    """Kill `process` when `quiet` isn't set for STALL seconds, recording that in `stalled`; runs on its own thread."""
+    """Kill `process` when `quiet` isn't set for STALL seconds; runs on own thread."""
     # Each progress line or frame sets `quiet`; STALL seconds without one kill ffmpeg.
     while process.poll() is None:
         if not quiet.wait(STALL):
@@ -253,7 +266,7 @@ def _feed(process: subprocess.Popen, chunks: Iterable[bytes]) -> None:
             process.stdin.write(chunk)
         process.stdin.close()
     except (BrokenPipeError, OSError, ValueError):
-        # ffmpeg stopped reading (a broken pipe) or was killed; its exit status is the error to report, not this.
+        # ffmpeg stopped reading or was killed; its exit status is the error to report.
         pass
 
 
@@ -305,8 +318,10 @@ def probe(path: Path, *, format: str | None) -> _media.Info:
             video or audio stream.
     """
     # bitexact keeps ffmpeg from adding its own `encoder` tag to the metadata it prints.
-    command = [exe(), "-hide_banner", "-nostdin", "-v", "info", *source(path), "-fflags", "+bitexact",
-               "-f", "ffmetadata", "pipe:1"]
+    command = [
+        exe(), "-hide_banner", "-nostdin", "-v", "info", *source(path),
+        "-fflags", "+bitexact", "-f", "ffmetadata", "pipe:1",
+    ]
     try:
         done = subprocess.run(command, capture_output=True, timeout=PROBE_TIMEOUT, env=_env())
     except subprocess.TimeoutExpired:
@@ -331,9 +346,11 @@ def probe(path: Path, *, format: str | None) -> _media.Info:
 
 
 def summary(stderr: str) -> dict[str, Any]:
-    """The fields of ffmpeg's `Input #0` summary, matched at their exact indent so a tag can't fake a line."""
-    fields: dict[str, Any] = dict(reader=None, duration=None, bitrate=None, video=None, width=None, height=None,
-                                  fps=None, audio=None, sample_rate=None, channels=None, created=None)
+    """The fields of ffmpeg's `Input #0` summary, matched at exact indent."""
+    fields: dict[str, Any] = dict(
+        reader=None, duration=None, bitrate=None, video=None, width=None, height=None,
+        fps=None, audio=None, sample_rate=None, channels=None, created=None,
+    )
     # Global tags are printed at 4 spaces before `Duration:`; streams at 2 (ffmpeg 6 and later) or 4
     # (older) after it. A tag's continuation lines start with spaces and ": ", so they never match.
     rotation, in_video, before_duration = 0.0, False, True
@@ -342,7 +359,9 @@ def summary(stderr: str) -> dict[str, Any]:
             fields["reader"] = match[1].split(",")[0]
         elif before_duration and (match := re.match(r"    creation_time   : (\S+)$", line)):
             fields["created"] = match[1]
-        elif match := re.match(r"  Duration: (?:(\d+):(\d+):(\d+(?:\.\d+)?)|N/A).*?bitrate: (?:(\d+) kb/s|N/A)", line):
+        elif match := re.match(
+            r"  Duration: (?:(\d+):(\d+):(\d+(?:\.\d+)?)|N/A).*?bitrate: (?:(\d+) kb/s|N/A)", line
+        ):
             before_duration = False
             if match[1]:
                 fields["duration"] = int(match[1]) * 3600 + int(match[2]) * 60 + float(match[3])
@@ -357,8 +376,9 @@ def summary(stderr: str) -> dict[str, Any]:
                 _audio_fields(fields, match[2], match[3])
         elif re.match(r"  (?:  )?Stream #0:", line):
             in_video = False
-        elif in_video and (match := re.match(r"      display ?matrix: rotation of (-?\d+(?:\.\d+)?) degrees", line,
-                                             re.IGNORECASE)):
+        elif in_video and (match := re.match(
+            r"      display ?matrix: rotation of (-?\d+(?:\.\d+)?) degrees", line, re.IGNORECASE
+        )):
             rotation = float(match[1])
     if round(abs(rotation)) % 180 == 90:
         fields["width"], fields["height"] = fields["height"], fields["width"]
@@ -383,7 +403,7 @@ def _audio_fields(fields: dict[str, Any], codec: str, rest: str) -> None:
 
 
 def ffmetadata(text: str) -> dict[str, str]:
-    """The global tags from ffmpeg's ffmetadata output, where `=`, `;`, `#`, `\\` and newline are escaped."""
+    """Global tags from ffmpeg's ffmetadata output, with escaped characters."""
     if not text.startswith(";FFMETADATA"):
         return {}
     tags: dict[str, str] = {}

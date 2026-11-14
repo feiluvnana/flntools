@@ -1,26 +1,16 @@
-"""Each source's login, every credential sealed in one vault, `.flnd/metadata/secrets.db` (plan/phase-6/redesign.md, B7).
+"""Each source's login, sealed in vault `.flnd/metadata/secrets.db`.
 
-A cookie source logs in by `from_browser` or `from_file`, then `store` checks that the jar
-proves a login and seals it in the vault as the source's `cookies` value; `load` reads it back
-for the engine. A source with its own login (tlg) keeps what it needs in `secrets` beside it:
-`session`, `api_id`, `api_hash`. `logged_in` and `logout` see the vault only. A cookie file given
-to `flnd login` is read once and never copied into `.flnd/`. Asking the questions is `flnd
-login`'s job, not this module's.
+A cookie source logs in by `from_browser` or `from_file`, then `store` verifies the jar
+and seals it in the vault as the source's `cookies` value; `load` reads it back.
+Sources with custom logins keep secrets beside it (`session`, `api_id`, `api_hash`).
 
-Secrets are encrypted with AES-GCM, each bound to its source and name (`<code>:<name>`), so a
-value copied into another slot no longer decrypts; the key is `.flnd/metadata/secret.key`. This protects
-against someone who copies `secrets.db`, or a backup of it, without the key. It doesn't protect
-against someone who can read the whole `.flnd/` folder, since the key is in it (keeping the key in
-the OS keychain is decision D13: not now).
-
-Logins from before the vault held cookies sit as plain `.flnd/cookies/<code>.txt` (or the older
-`.json`). The first `load`, `logged_in` or `logout` of a source moves its file into the vault,
-deleting the plain file only once the vault holds it, and removes the folder once empty.
+Secrets are encrypted with AES-GCM bound to `<code>:<name>`; key is `secret.key`.
+Legacy plain cookie files are migrated into the vault on first access.
 
     jar = auth.from_browser(Instagram(), browser="chrome")
     message = auth.store(Instagram(), jar, home=Path(".flnd"), origin="Chrome")
     with auth.secrets(Path(".flnd"), "tlg") as secrets:
-        secrets["session"] = "1BVts…"
+        secrets["session"] = "..."
 """
 
 from __future__ import annotations
@@ -37,7 +27,7 @@ from http.cookiejar import Cookie
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# A source's own login (tlg) raises it too, so it lives in base; `auth.LoginError` is the same class.
+# A source's own login (tlg) raises it too; `auth.LoginError` is the same class.
 from flnd.common import paths
 from flnd.source import LoginError
 from shared import cookies, crypto, fmt, kv, log
@@ -45,8 +35,11 @@ from shared import cookies, crypto, fmt, kv, log
 if TYPE_CHECKING:
     from flnd.source import Source
 
-# The browsers `from_browser` reads cookies from, by `shared.cookies` name, with the name a person knows.
-BROWSERS = {"chrome": "Chrome", "firefox": "Firefox", "edge": "Edge", "brave": "Brave", "chromium": "Chromium"}
+# Browsers `from_browser` reads cookies from, by `shared.cookies` name with display name.
+BROWSERS = {
+    "chrome": "Chrome", "firefox": "Firefox", "edge": "Edge",
+    "brave": "Brave", "chromium": "Chromium",
+}
 # The folder of the plain cookie files of earlier versions, moved into the vault on first use.
 COOKIE_FOLDER = "cookies"
 # A plain cookie file was `<code>.txt`, or `<code>.json`, the older form; the first one found wins.
@@ -85,11 +78,12 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
     """
     try:
         return _own(source, cookies.from_browser(browser, profile=profile))
-    # Every way reading a browser fails: a missing file (OSError), the platform refusing
-    # (RuntimeError), a value that won't decrypt (cookies.Error is a ValueError), or no `cryptography`.
+    # Every way reading a browser fails: missing file, platform refusal, bad decrypt, or no crypto.
     except (OSError, RuntimeError, ValueError, ImportError) as error:
-        raise LoginError(f"{source.code}: can't read {BROWSERS.get(browser, browser)}'s cookies: {error}; "
-                         "try a cookie file instead") from None
+        raise LoginError(
+            f"{source.code}: can't read {BROWSERS.get(browser, browser)}'s cookies: {error}; "
+            "try a cookie file instead"
+        ) from None
 
 
 def from_file(source: Source, path: Path) -> cookies.Jar:
@@ -108,9 +102,9 @@ def from_file(source: Source, path: Path) -> cookies.Jar:
 
 
 def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
-    """Check that the jar proves a login, seal it in the source's vault, and say so.
+    """Check that the jar proves a login, seal it in the source's vault, and return summary.
 
-        auth.store(Instagram(), jar, home=Path(".flnd"), origin="Chrome")   # "ins: logged in from Chrome (14 cookies)"
+        auth.store(Instagram(), jar, home=Path(".flnd"), origin="Chrome")
 
     Args:
         source: the source logging in; one of its `needs` cookies must be in the jar.
@@ -127,8 +121,10 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     for the source is deleted once the new login is sealed, so it can never come back.
     """
     if source.needs and not any(name in jar for name in source.needs):
-        raise LoginError(f"{source.code}: no {' or '.join(source.needs)} for {source.domains[0]} in {origin}; "
-                         "log in there first")
+        raise LoginError(
+            f"{source.code}: no {' or '.join(source.needs)} for {source.domains[0]} in {origin}; "
+            "log in there first"
+        )
     save(home, source.code, jar, origin=origin)
     for path in _cookie_files(home, source.code):
         path.unlink(missing_ok=True)
@@ -137,7 +133,7 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
 
 
 def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) -> None:
-    """Seal a source's cookie jar in its vault as `cookies`, `fix_domains` applied, replacing the one there.
+    """Seal a source's cookie jar in its vault as `cookies`, replacing existing ones.
 
         auth.save(Path(".flnd"), "ins", jar)
 
@@ -183,13 +179,7 @@ def origin(home: Path, code: str) -> str:
 
 
 def expiring(home: Path, source: Source, *, within: float = 24 * 3600) -> list[tuple[str, float]]:
-    """Login cookies of `source.needs` that have expired or will within `within` seconds, as `(name, remaining)`.
-
-    Args:
-        home: flnd's folder, `.flnd`.
-        source: the source whose `needs` cookies are checked.
-        within: horizon in seconds from now; defaults to 24 hours.
-    """
+    """Login cookies of `source.needs` expiring within `within` seconds, as `(name, remaining)`."""
     if not source.needs or not logged_in(home, source.code):
         return []
     now = time.time()
@@ -204,7 +194,7 @@ def expiring(home: Path, source: Source, *, within: float = 24 * 3600) -> list[t
 
 
 def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
-    """Save the cookies the site refreshed during a run into the vault's jar, for the names already in it.
+    """Save refreshed site cookies into the vault's jar for names already present.
 
         auth.write_back(Path(".flnd"), "twt", run.web.raw.cookies.jar)     # ["ct0"]
 
@@ -229,10 +219,17 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
         changed: list[str] = []
         for cookie in saved:
             domain, path = str(cookie.get("domain", "")).lstrip("."), cookie.get("path") or "/"
-            same = [found for found in fresh if found.name == cookie["name"]
-                    and (found.domain.lstrip(".") == domain or found.domain.lstrip(".").endswith("." + domain))]
-            exact = [found for found in same if found.domain.lstrip(".") == domain and found.path == path]
-            if (exact or same) and (new := (exact or same)[-1]).value not in (None, "", cookie["value"]):
+            same = [
+                found for found in fresh if found.name == cookie["name"]
+                and (found.domain.lstrip(".") == domain
+                     or found.domain.lstrip(".").endswith("." + domain))
+            ]
+            exact = [
+                found for found in same
+                if found.domain.lstrip(".") == domain and found.path == path
+            ]
+            matched = exact or same
+            if matched and (new := matched[-1]).value not in (None, "", cookie["value"]):
                 cookie["value"] = new.value
                 if new.expires is not None and isinstance(cookie.get("expires"), (int, float)):
                     cookie["expires"] = new.expires
@@ -242,12 +239,15 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
             log.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
         return changed
     except (OSError, ValueError) as error:
-        log.warn("{code}: could not save refreshed cookies ({kind})", code=code, kind=type(error).__name__)
+        log.warn(
+            "{code}: could not save refreshed cookies ({kind})",
+            code=code, kind=type(error).__name__,
+        )
         return []
 
 
 def load(home: Path, code: str) -> cookies.Jar:
-    """The source's saved cookies, ready for a browser or a client, or an empty jar when it never logged in.
+    """The source's saved cookies, or an empty jar when it never logged in.
 
         jar = auth.load(Path(".flnd"), "ins")
 
@@ -272,14 +272,7 @@ def load(home: Path, code: str) -> cookies.Jar:
 
 
 def logged_in(home: Path, code: str) -> bool:
-    """Whether the source has a saved login in the vault: its cookie jar, or the `LOGIN_SECRET` secret.
-
-        auth.logged_in(Path(".flnd"), "tlg")    # True after `flnd login` for Telegram
-
-    Other secrets don't count: tlg's `api_id` and `api_hash` alone are an API key, not a login
-    (see `api_key_saved`). It creates neither `secrets.db` nor the key file, unless it moves a
-    plain cookie file of an earlier version into the vault.
-    """
+    """Whether the source has a saved login in the vault: cookies or session."""
     _move(home, code)
     return bool(LOGIN_SECRETS & _secret_names(home, code))
 
@@ -293,13 +286,9 @@ def api_key_saved(home: Path, code: str) -> bool:
 
 
 def logout(home: Path, code: str) -> bool:
-    """Remove every secret of the source, its cookie jar and API key included, and return whether there was anything to remove.
+    """Remove every secret of the source, returning whether anything was removed.
 
         auth.logout(Path(".flnd"), "ins")       # False when ins never logged in
-
-    A source left with only its API key counts as something to remove: it is deleted, and the
-    result is True, so the next `flnd login` asks for the key again. A plain cookie file that
-    couldn't be moved into the vault is deleted too, or that login would outlive the logout.
     """
     removed = logged_in(home, code) or api_key_saved(home, code)
     # Opening the database would create it, so a home that has none is left without one.
@@ -323,12 +312,12 @@ def _secret_names(home: Path, code: str) -> set[str]:
 
 
 def _cookie_files(home: Path, code: str) -> list[Path]:
-    """The plain cookie files an earlier version may have left for a source, in the order they are read."""
+    """Plain cookie files an earlier version may have left for a source."""
     return [home / COOKIE_FOLDER / f"{code}{suffix}" for suffix in COOKIE_SUFFIXES]
 
 
 def _move(home: Path, code: str) -> None:
-    """Move a source's plain cookie file of an earlier version into its vault, once (B7's one-time move).
+    """Move a source's plain cookie file into its vault on first access.
 
     The first file found (`.txt`, then `.json`) is sealed as `cookies`, unless the vault holds a
     jar already, which is the newer login. Each file is deleted only after that, so a vault write
@@ -352,8 +341,10 @@ def _move(home: Path, code: str) -> None:
         # sqlite3.Error): the plain file is the only copy of the login, so it stays. Each of these
         # names the file or the key, never a cookie's value.
         except (OSError, ValueError, kv.Error, sqlite3.Error) as error:
-            log.warn("{code}: can't move {name} into the vault: {error}; kept it", code=code, name=path.name,
-                     error=error)
+            log.warn(
+                "{code}: can't move {name} into the vault: {error}; kept it",
+                code=code, name=path.name, error=error,
+            )
             continue
         path.unlink(missing_ok=True)
     _remove_if_empty(folder)
@@ -370,9 +361,15 @@ def _remove_if_empty(folder: Path) -> None:
 
 def fix_domains(jar: cookies.Jar) -> cookies.Jar:
     """flnd's legacy fix-up: every domain gets a leading dot, and every path defaults to `/`."""
-    # Exported files often hold host-only domains; the dot lets every subdomain see the cookie, as flnd always did.
-    return cookies.Jar({**cookie, "domain": "." + cookie.get("domain", "").lstrip("."), "path": cookie.get("path") or "/"}
-                       for cookie in jar)
+    # Exported files often hold host-only domains; dot lets every subdomain see the cookie.
+    return cookies.Jar(
+        {
+            **cookie,
+            "domain": "." + cookie.get("domain", "").lstrip("."),
+            "path": cookie.get("path") or "/",
+        }
+        for cookie in jar
+    )
 
 
 def _own(source: Source, jar: cookies.Jar) -> cookies.Jar:
@@ -394,7 +391,7 @@ def secrets(home: Path, code: str) -> Vault:
 
 
 class Vault(MutableMapping[str, str]):
-    """One source's secrets; see `secrets`. The key file is created on the first read or write of a value.
+    """One source's secrets. Key file is created on first read or write of a value.
 
     Each value is stored as base64 of its AES-GCM sealing under the slot `<code>:<name>`, with
     `<code>\\0<name>` as the associated data: a value moved to another slot fails to decrypt.
@@ -408,7 +405,8 @@ class Vault(MutableMapping[str, str]):
 
     def __getitem__(self, name: str) -> str:
         sealed = base64.b64decode(self._db[self._slot(name)])
-        return crypto.decrypt(sealed, self._secret_key(), context=self._context(name)).decode("utf-8")
+        decrypted = crypto.decrypt(sealed, self._secret_key(), context=self._context(name))
+        return decrypted.decode("utf-8")
 
     def __setitem__(self, name: str, value: str) -> None:
         sealed = crypto.encrypt(value, self._secret_key(), context=self._context(name))
@@ -476,43 +474,36 @@ def key(home: Path) -> bytes:
             created = _create_key(path)
             if created is not None:
                 return created
-            # Lost the race: the winner's file exists now, maybe still short, so read it again. A
-            # path that exists but can't be read, such as a dangling symlink (O_EXCL refuses it,
-            # read_bytes finds nothing), loses every time, so it too gives up at the deadline
-            # instead of spinning forever.
+            # Lost the race: winner's file exists now, maybe still short, so read it again.
             if time.monotonic() >= deadline:
-                raise ValueError(f"{path} is damaged: it exists but can't be read, such as a broken link; "
-                                 "delete it, then log in again")
+                raise ValueError(
+                    f"{path} is damaged: exists but cannot be read (e.g. broken link); "
+                    "delete it, then log in again"
+                )
             time.sleep(KEY_POLL)
             continue
         if len(secret) == KEY_SIZE:
             return secret
-        # A run killed between creating the file and writing it leaves it empty for good, so the
-        # message says how to get out: without the key, the secrets it sealed can't be read anyway.
+        # A run killed between creating the file and writing it leaves it empty for good.
         if len(secret) > KEY_SIZE or time.monotonic() >= deadline:
-            raise ValueError(f"{path} is damaged: it should hold {KEY_SIZE} bytes, not {len(secret)}; "
-                             "delete it, then log in again")
+            raise ValueError(
+                f"{path} is damaged: it should hold {KEY_SIZE} bytes, not {len(secret)}; "
+                "delete it, then log in again"
+            )
         time.sleep(KEY_POLL)
 
 
 def _create_key(path: Path) -> bytes | None:
-    """Create the key file with a new key, and return the key, or None when another run created it first."""
+    """Create key file with new key, returning key or None when another run won."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # O_EXCL makes "first creator wins" without a hard link: `os.link`, used before 2026-11, is
-    # refused with a plain OSError on FAT, exFAT and some network drives, so logging in to tlg
-    # failed there. O_BINARY (Windows only, 0 elsewhere) keeps the C runtime from turning a
-    # 0x0A byte of the key into 0x0D 0x0A. Mode 0600: the key is as private as the cookie paths.
+    # O_EXCL makes "first creator wins" without hard link.
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     try:
         handle = os.open(path, flags, 0o600)
     except FileExistsError:
         return None
-    # The winner writes into the published file, so a reader can see it empty or short for a
-    # moment. That is safe because the key is only 32 bytes, written in one write of a fresh
-    # file, and every reader (key() above) treats a short file as "not written yet" and reads
-    # again until KEY_WAIT has passed, never using a short key. A key that fails to be written
-    # is removed, so no run is left with a damaged file.
-    # The stdlib's CSPRNG makes the key; `shared.crypto` leaves keys to it (redesign C2).
+    # Safe because key is 32 bytes, written in one write, and readers wait up to KEY_WAIT.
+    # The stdlib's CSPRNG makes the key; `shared.crypto` leaves keys to it.
     secret = token_bytes(KEY_SIZE)
     try:
         try:

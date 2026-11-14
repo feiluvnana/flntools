@@ -23,10 +23,10 @@ import ply.yacc
 from luqum.exceptions import ParseError
 from luqum.visitor import TreeVisitor
 
-from flnd import source as _source
+from flnd import source
 from flnd.source import Range
 
-_source._query_check = None  # initialized below once `check` is defined
+source._query_check = None  # initialized below once `check` is defined
 
 __all__ = ["Choice", "Date", "Error", "Kind", "Lookup", "MAX_SEARCHES", "Name", "Number",
            "Param", "Query", "QueryError", "Term", "Text", "Value", "check", "plan"]
@@ -192,27 +192,16 @@ def check(text: str, params: Mapping[str, Param]) -> Any:
     return shape
 
 
-_source._query_check = check
+source._query_check = check
 
 
 def plan(text: str, params: Mapping[str, Param], *, site: Any = None,
          cache: MutableMapping[str, str] | None = None, time: Range | None = None) -> list[Query]:
-    """The searches that together find what `text` asks for, in the order the query gives them.
+    """The searches that together find what `text` asks for, in query order.
 
         plan("author:example_creator chapters:1", params, site=site, cache=ids)
 
-    Args:
-        text: the query, in Lucene's syntax.
-        params: the finder's parameters, by name.
-        site: what each param's `lookup` is called with.
-        cache: ids found by lookups, by `<param>:<name folded>`, read and filled here; the caller
-            keeps one per site. None keeps them for this call only.
-        time: `--time`, set on every search.
-
-    Raises:
-        QueryError: the query doesn't parse, names a parameter the site doesn't take, gives a
-            value of the wrong kind, asks what the site can't send, needs more than
-            `MAX_SEARCHES` searches, or names a thing its lookup doesn't find once.
+    Raises QueryError when the query cannot be planned.
     """
     shape = check(text, params)
     names = _Names(params, site, {} if cache is None else cache)

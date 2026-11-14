@@ -1,23 +1,18 @@
-"""Write a file so that a reader sees either the old file or the whole new one, never half.
+"""Write a file atomically so a reader sees either the old or whole new file.
 
-How it works: every write goes to a hidden `.<name>.<random>.part` in the destination's own
-folder, and `os.replace` then moves it onto the destination in one step, which every system does
-atomically within one disk. `writing` hands the part path to the caller's block, for anything that
-writes a file by path (ffmpeg, Pillow, an archive library); `write` is the same for bytes already
-in memory. The part is deleted on any error, Ctrl-C included, so the only leftovers a killed
-process can leave match `.*.part`, which flnd's `sync` repair deletes. It wraps nothing but the
-stdlib, so there is no `.raw`. Every write in `shared` goes through it (`cookies`, `archive`,
-`media`), and a test checks that no other module opens a file for writing.
+Every write goes to a hidden `.<name>.<random>.part` in the destination folder,
+and `os.replace` moves it onto the destination in one step. `writing` yields the
+part path for external tools (ffmpeg, Pillow, zip); `write` writes bytes from memory.
+The part file is deleted on any error, so failed runs leave only `.*.part`.
 
     from shared import atomic
 
     with atomic.writing(Path("out/clip.mp4")) as part:
-        run_ffmpeg(output=part)                 # out/clip.mp4 appears only if ffmpeg finished
+        run_ffmpeg(output=part)
     atomic.write(Path("cookies.txt"), text.encode("utf-8"), mode=0o600)
 
-Both functions may be called from several threads and processes at once, even for one file:
-each call gets its own part, so two writers never write into each other's file, and the last
-rename wins, whole.
+Calls from multiple threads or processes each get a unique part path, so writers
+never interfere; the last rename wins.
 """
 
 from __future__ import annotations
@@ -59,25 +54,18 @@ def writing(dest: PathLike, *, replace: bool = False) -> Iterator[Path]:
 
         with atomic.writing(Path("a.jpg")) as part:
             image.save(part)
-        with atomic.writing(Path("a.jpg"), replace=True) as part:     # over an existing a.jpg
+        with atomic.writing(Path("a.jpg"), replace=True) as part:
             image.save(part)
 
     Args:
         dest: the file to write; its folder must exist.
-        replace: True writes over an existing `dest`; False (the default) refuses one, so a
-            caller that must never lose a file, such as `Media.save` to a new name, says so.
+        replace: True writes over an existing `dest`; False (the default) refuses one.
 
     Returns:
-        The part path, `.<dest name>.<8 hex digits>.part` in `dest`'s folder. It doesn't exist
-        yet: the block creates it, in whatever way it writes files.
+        The part path, `.<dest name>.<8 hex digits>.part` in `dest`'s folder.
 
     Raises:
         FileExistsError: `dest` exists and `replace` is False, checked before the block runs.
-            Another writer can still create `dest` while the block runs; the rename then
-            replaces it, so the check guards against mistakes, not against races.
-
-    A block that leaves no file at the part path (it deleted it, moved it elsewhere, or never
-    wrote one) leaves `dest` as it was. The part is deleted however the block ends.
     """
     dest = Path(dest)
     if dest.exists() and not replace:
@@ -118,14 +106,14 @@ def write(dest: PathLike, data: bytes, *, mode: int = 0o666) -> None:
             even for a moment.
 
     Raises:
-        OSError: the folder or the file can't be written. No part is left, and an old `dest` is kept.
+        OSError: the folder or file can't be written. No part is left, and an old `dest` is kept.
     """
     with writing(dest, replace=True) as part:
         # O_EXCL: the part name is new, so an existing file there would be someone else's.
         handle = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | BINARY, mode)
         try:
             file = os.fdopen(handle, "wb")
-        # Until fdopen owns the handle, it's ours to close: an open handle keeps Windows from deleting the part.
+        # Until fdopen owns the handle, close it: open handle prevents Windows from deleting part.
         except BaseException:
             os.close(handle)
             raise

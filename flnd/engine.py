@@ -1,24 +1,15 @@
-"""The engine: flnd's five commands as methods, each giving the CLI or a script what it printed before.
+"""The engine: flnd's five commands as methods for CLI or scripts.
 
-`Engine` is the whole engine API (plan/phase-6/redesign.md, B1): `resolve` reads targets,
-`download` and `sync` run them and return a `Report`, `login` and `logout` keep the logins. Every
-decision a command makes is here, where a test reaches it without a terminal: reading the options'
-text (`Range.parse`), refusing `--from` for a single post, each target's saved
-settings (flnd/targets.py) and applying a changed one to the files already saved, `sync`'s repair
-and tally (flnd/repair.py). flnd/cli.py only parses, asks `login`'s questions and prints.
+`Engine` is the engine API: `resolve` reads targets, `download` and `sync` run them
+and return a `Report`, while `login` and `logout` manage credentials.
 
-How a run goes: targets are grouped by source only; each source gets one worker and its HTTP
-clients, and runs its targets one after another through the job (flnd/job.py), each with its own
-saved settings, while different sources run at the same time. It never asks a question, except
-`shared.browser`'s one, to download Chromium, before any work starts.
-
-Every `download` and `sync` writes a log of its own, `.flnd/log/<date>_<time>_<command>.log`, at
-debug whatever the screen shows (plan/phase-7/layout.md): its start, each target's phases, every
-line and row, the totals and the exit status. Logs older than `LOG_DAYS` are deleted as a run starts.
+Targets are grouped by source; each source runs sequentially while different sources
+run concurrently. Each run writes a timestamped log in `.flnd/log/`.
 
     engine = Engine(home=Path(".flnd"))
-    report = engine.download(["ins:example_user", "https://x.com/example_handle"], categories="reels,tagged",
-                             time="2026-01-01,", shrink=True)
+    report = engine.download(
+        ["ins:example_user"], categories="reels", time="2026-01-01,", shrink=True
+    )
     report = engine.sync()
     exit_status = 0 if report.ok else 1
 """
@@ -66,7 +57,7 @@ MAX_SYNC_NEW = 25
 
 @dataclass(frozen=True)
 class Report:
-    """What `download` or `sync` did, one `TargetReport` per target in the order given: `0 if report.ok else 1`.
+    """What `download` or `sync` did, one `TargetReport` per target in run order.
 
         report = engine.download(["ins:example_user"])
         print(report.files, [str(target) for target in report.failed])
@@ -82,12 +73,12 @@ class Report:
 
     @property
     def failed(self) -> tuple[Target, ...]:
-        """The targets that failed, in order: their route or a category raised, or their source couldn't start."""
+        """The targets that failed, in order: route or category error, or missing files."""
         return tuple(target.target for target in self.targets if target.error is not None)
 
     @property
     def ok(self) -> bool:
-        """Whether no target failed: the command's exit status is 0 when it is, and 1 otherwise."""
+        """Whether no target failed: exit status is 0 when True, and 1 otherwise."""
         return not self.failed
 
 
@@ -102,11 +93,16 @@ class Engine:
     `download` and `sync` never ask questions; a source's own `login` asks through its `Login`.
     """
 
-    def __init__(self, *, home: Path = Path(".flnd"), sources: Mapping[str, type[Source]] = SOURCES):
+    def __init__(
+        self,
+        *,
+        home: Path = Path(".flnd"),
+        sources: Mapping[str, type[Source]] = SOURCES,
+    ):
         """Make an engine; nothing is read or started until a method is called.
 
         Args:
-            home: flnd's folder, which holds the downloads, the history, the logins and the saved targets.
+            home: flnd's folder holding downloads, history, logins and saved targets.
             sources: the sources by code; tests give their own.
 
         A run has no download limit: it ends when the sources have nothing more, or on Ctrl-C.
@@ -114,28 +110,28 @@ class Engine:
         self.home, self.sources = home, sources
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
-        """Every target as its source reads it, stopping at the first bad one with `TargetError`.
+        """Resolve every target as its source reads it, raising TargetError on failure.
 
             targets = engine.resolve(["ins:@example_user", "https://vm.tiktok.com/ZMabc/"])
-
-        Args:
-            texts: the targets as people write them: `code:value`, or a link.
-
-        Raises:
-            TargetError: a text is empty, names no source, or its source can't read it; it is a
-                `ValueError`, with what to write instead.
-
-        Only short links make a request, one HEAD each.
         """
         return [resolve(text, self.sources, follow=_follow) for text in texts]
 
-    def download(self, targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None,
-                 time: Range | str = Range(), shrink: bool | None = None,
-                 limit: int | None = None, dry: bool = False, sync: bool = False) -> Report:
+    def download(
+        self,
+        targets: Sequence[Target | str],
+        *,
+        categories: str | Sequence[str] | None = None,
+        time: Range | str = Range(),
+        shrink: bool | None = None,
+        limit: int | None = None,
+        dry: bool = False,
+        sync: bool = False,
+    ) -> Report:
         """Download each target, with its saved `--shrink` or the one given, and say what was done.
 
-            report = engine.download(["ins:example_user"], categories="reels,tagged", time="2026-01-01,",
-                                     shrink=True)
+            report = engine.download(
+                ["ins:example_user"], categories="reels,tagged", time="2026-01-01,", shrink=True
+            )
 
         Args:
             targets: `Target`s, or texts that `resolve` reads; a text that can't be read raises
@@ -158,7 +154,7 @@ class Engine:
             ValueError: an option's text can't be read, `--from` names no category of these
                 targets' sources or is given for a single post, or a target
                 can't be read (`TargetError`); each message is what the CLI shows as a usage error.
-                Raised before any file but the run log is read or written, and before any request but a short link's.
+                Raised before any file but the run log is read or written.
             OSError: `targets.db` or the history can't be read or written.
 
         `--shrink` given here is saved for each target, and used by every later `download` and
@@ -168,8 +164,10 @@ class Engine:
         that is done, so a shrink cut short (Ctrl-C, a crash, a full disk) is finished by the
         next `download --shrink`. Turning it off touches no file.
         """
-        with self._logged("download", targets=targets, categories=categories, time=time, shrink=shrink,
-                          limit=limit, dry=dry, sync=sync):
+        with self._logged(
+            "download", targets=targets, categories=categories, time=time, shrink=shrink,
+            limit=limit, dry=dry, sync=sync,
+        ):
             # Every option is read before anything starts, in the CLI's order, so the first bad
             # one is the error.
             if limit is not None and limit < 1:
@@ -185,13 +183,19 @@ class Engine:
                 return report
             log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
             if any(self._is_query(target) for target in resolved):
-                reports = self._download_mixed(resolved, options, shrink=shrink, span=span, sync=sync)
+                reports = self._download_mixed(
+                    resolved, options, shrink=shrink, span=span, sync=sync
+                )
                 _end_if_stopped()
                 if not sync:
                     rows = flnd.targets.rows(self.home)
-                    if any(not flnd.targets.sync_enabled(rows.get(flnd.targets.key(t), {"sync": False}))
-                           for t in resolved if not self._is_query(t)) or any(
-                               self._is_query(t) for t in resolved):
+                    has_unsynced = any(
+                        not flnd.targets.sync_enabled(
+                            rows.get(flnd.targets.key(t), {"sync": False})
+                        )
+                        for t in resolved if not self._is_query(t)
+                    ) or any(self._is_query(t) for t in resolved)
+                    if has_unsynced:
                         log.info("not synced; add --sync to keep it up to date")
                 report = Report(tuple(reports))
                 _log_totals(report)
@@ -207,14 +211,18 @@ class Engine:
                 chosen.append((target, replace(options, shrink=given)))
                 if shrink and not saved:
                     turned_on.append(target)
-            flnd.targets.record(self.home, [pair for pair in chosen if pair[0] not in turned_on], sync=sync)
+            to_record = [pair for pair in chosen if pair[0] not in turned_on]
+            flnd.targets.record(self.home, to_record, sync=sync)
             if turned_on:
                 self._apply(turned_on, dict(chosen), sync=sync)
             reports = self._run(chosen)
             _end_if_stopped()
             if not sync:
                 after = flnd.targets.rows(self.home)
-                if any(not flnd.targets.sync_enabled(after.get(flnd.targets.key(t), {})) for t in resolved):
+                if any(
+                    not flnd.targets.sync_enabled(after.get(flnd.targets.key(t), {}))
+                    for t in resolved
+                ):
                     log.info("not synced; add --sync to keep it up to date")
             report = Report(tuple(replace(report, settings=text)
                                   for report, text in zip(reports, shown)))
@@ -244,19 +252,27 @@ class Engine:
                 log.info("nothing to sync")
                 return Report(())
             query_indices = [i for i, (target, _) in enumerate(chosen) if self._is_query(target)]
-            normal_indices = [i for i, (target, _) in enumerate(chosen) if not self._is_query(target)]
+            normal_indices = [
+                i for i, (target, _) in enumerate(chosen) if not self._is_query(target)
+            ]
             results: dict[int, TargetReport] = {}
             if normal_indices:
                 normal_chosen = [chosen[i] for i in normal_indices]
                 flnd.targets.record(self.home, normal_chosen)
-                shown = [flnd.targets.announce(target, options.shrink) for target, options in normal_chosen]
+                shown = [
+                    flnd.targets.announce(target, options.shrink)
+                    for target, options in normal_chosen
+                ]
                 folders = [paths.target_folder(self.home, target) for target, _ in normal_chosen]
                 with self._history() as history:
                     index = repair.index(history, folders)
                 tallies = [repair.Tally(str(target), folder, index[folder])
                            for (target, _), folder in zip(normal_chosen, folders)]
                 log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
-                normal_run = [(target, replace(options, stop_at_saved=True)) for target, options in normal_chosen]
+                normal_run = [
+                    (target, replace(options, stop_at_saved=True))
+                    for target, options in normal_chosen
+                ]
                 reports = self._run(normal_run, tallies=tallies)
                 _end_if_stopped()
                 with self._history() as history:
@@ -264,7 +280,9 @@ class Engine:
                         repair.count(history, tally)
                 repair.summary(tallies)
                 for pos, rep, tally, text in zip(normal_indices, reports, tallies, shown):
-                    results[pos] = replace(rep, repaired=tally.repaired, missing=tally.missing, settings=text)
+                    results[pos] = replace(
+                        rep, repaired=tally.repaired, missing=tally.missing, settings=text
+                    )
             if query_indices:
                 query_chosen = [chosen[i] for i in query_indices]
                 flnd.targets.record(self.home, query_chosen)
@@ -276,7 +294,7 @@ class Engine:
             return report
 
     def sync_ls(self) -> list[dict[str, Any]]:
-        """Every known target with its sync state, saved settings, disk size, and category status."""
+        """Every known target with sync state, saved settings, disk size, and category status."""
         rows = flnd.targets.rows(self.home)
         recorded = [Target(code, row["kind"], value) for key, row in rows.items()
                     for code, value in [key.split(":", 1)]
@@ -286,11 +304,15 @@ class Engine:
         for target in all_targets:
             row = rows.get(flnd.targets.key(target), {})
             is_query = self._is_query(target)
-            files, size = (0, 0) if is_query else _folder_stats(paths.target_folder(self.home, target))
+            folder = paths.target_folder(self.home, target)
+            files, size = (0, 0) if is_query else _folder_stats(folder)
             complete = flnd.targets.listed(rows, target)
             cursors = flnd.targets.cursors(rows, target)
             categories = ({} if is_query else {
-                cat: ("complete" if cat in complete else ("interrupted" if cat in cursors else "incomplete"))
+                cat: (
+                    "complete" if cat in complete
+                    else ("interrupted" if cat in cursors else "incomplete")
+                )
                 for cat in self.sources[target.source].categories
             })
             items.append({
@@ -335,13 +357,15 @@ class Engine:
             })
         return items
 
-    def login(self, code: str, method: str, *, browser: str | None = None, profile: str | None = None,
-              path: Path | str | None = None) -> str:
+    def login(
+        self, code: str, method: str, *, browser: str | None = None,
+        profile: str | None = None, path: Path | str | None = None,
+    ) -> str:
         """Log in to a source by one of its `login_methods`, and return the "logged in" message.
 
-            engine.login("ins", "browser", browser="chrome")      # "ins: logged in from Chrome (14 cookies)"
+            engine.login("ins", "browser", browser="chrome")      # "ins: logged in from Chrome"
             engine.login("ins", "file", path="~/Downloads/cookies.txt")
-            engine.login("tlg", "qr")                              # asks through the source's `Login`
+            engine.login("tlg", "qr")                              # asks through `Login`
 
         Args:
             code: the source's code.
@@ -359,7 +383,7 @@ class Engine:
             LoginError: the login didn't work, with what to do instead (`flnd.LoginError`).
             ValueError: the source or method is unknown, or the method's answer is missing.
 
-        Every credential is sealed in the vault, `.flnd/metadata/secrets.db`; nothing else is written.
+        Credentials are encrypted in `.flnd/metadata/secrets.db`; nothing else is written.
         """
         if code not in self.sources:
             raise ValueError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
@@ -377,14 +401,16 @@ class Engine:
             if path is None:
                 raise ValueError("a file login needs the cookie file's path")
             file = Path(path).expanduser()
-            return auth.store(source, auth.from_file(source, file), home=self.home, origin=file.name)
+            return auth.store(
+                source, auth.from_file(source, file), home=self.home, origin=file.name
+            )
         if browser is None:
             raise ValueError("a browser login needs the browser to read cookies from")
         jar = auth.from_browser(source, browser=browser, profile=profile)
         return auth.store(source, jar, home=self.home, origin=auth.BROWSERS.get(browser, browser))
 
     def logout(self, codes: Iterable[str]) -> list[str]:
-        """Remove the logins of these sources, or of every one for `["all"]`, and return the codes that had one.
+        """Remove logins of these sources (or all for `["all"]`), returning codes that had one.
 
             engine.logout(["ins", "tik"])        # ["ins"] when only ins was logged in
             engine.logout(["all"])
@@ -408,7 +434,7 @@ class Engine:
 
     @property
     def logins(self) -> dict[str, str]:
-        """Each source with something saved, by code: "logged in", or "api key saved" for an API key alone.
+        """Each source with something saved: "logged in" or "api key saved".
 
             engine.logins          # {"ins": "logged in", "tlg": "api key saved"}
 
@@ -424,7 +450,7 @@ class Engine:
 
     @property
     def browsers(self) -> dict[str, str]:
-        """The browsers a cookie login reads, by `login`'s `browser=` name, each with the name a person knows.
+        """The browsers a cookie login reads, by `login`'s `browser=` name with display name.
 
             engine.browsers        # {"chrome": "Chrome", "firefox": "Firefox", …}
         """
@@ -432,7 +458,7 @@ class Engine:
 
     @property
     def cookie_logins(self) -> tuple[str, ...]:
-        """The codes of the sources that log in with cookies (`browser` or `file`), not with their own login.
+        """The codes of the sources that log in with cookies (`browser` or `file`).
 
             engine.cookie_logins   # ("tik", "fbk", "ins", "twt", "loi")
 
@@ -442,7 +468,8 @@ class Engine:
 
     def _is_query(self, target: Target) -> bool:
         """Whether `target` resolves to a `?{query}` route."""
-        route = next((r for r in self.sources[target.source].routes if r.kind == target.kind), None)
+        source = self.sources[target.source]
+        route = next((r for r in source.routes if r.kind == target.kind), None)
         return route is not None and route.is_query
 
     def _dry_run(self, resolved: Sequence[Target], options: Options, span: Range) -> Report:
@@ -458,17 +485,23 @@ class Engine:
                     account = TargetSite(run, Target(source.code, ACCOUNT, ""))
                     if not source.logged_in(account) and source.requires_login:
                         log.error("{target}: not logged in; run flnd login", target=str(target))
-                        reports.append(TargetReport(target, (), 0, error="not logged in; run flnd login"))
+                        reports.append(
+                            TargetReport(target, (), 0, error="not logged in; run flnd login")
+                        )
                         continue
                     try:
                         with _connected(run, account):
                             if self._is_query(target):
-                                with closing(job.discover(run, target, limit=options.limit, time_range=span)) as found:
+                                with closing(
+                                    job.discover(run, target, limit=options.limit, time_range=span)
+                                ) as found:
                                     for item in found:
                                         log.info("{target}", target=str(item))
                             else:
                                 for placed in job.plan(run, target, options):
-                                    log.info("{target}: {path}", target=str(target), path=placed.path)
+                                    log.info(
+                                        "{target}: {path}", target=str(target), path=placed.path
+                                    )
                     except KeyboardInterrupt:
                         if not net.stopping.is_set() or net.stopping_now.is_set():
                             raise
@@ -487,7 +520,9 @@ class Engine:
         reports: list[TargetReport] = []
         for target in resolved:
             if self._is_query(target):
-                reports.extend(self._run_query(target, options, shrink=shrink, span=span, sync=sync))
+                reports.extend(
+                    self._run_query(target, options, shrink=shrink, span=span, sync=sync)
+                )
                 continue
             rows = flnd.targets.rows(self.home)
             saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
@@ -513,9 +548,11 @@ class Engine:
         if sync:
             saved_query_shrink = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
             query_shrink = saved_query_shrink if shrink is None else shrink
-            flnd.targets.record(self.home, [(target, replace(options, shrink=query_shrink))], sync=True)
-        with self._history() as history, self._targets() as saved_targets, _stop_waits_on_ctrl_c(), \
-                log.group() as log_rows:
+            flnd.targets.record(
+                self.home, [(target, replace(options, shrink=query_shrink))], sync=True
+            )
+        with self._history() as history, self._targets() as saved_targets, \
+                _stop_waits_on_ctrl_c(), log.group() as log_rows:
             run_settings = RunShared(home=self.home, history=history, targets=saved_targets)
             board = job.Board(log_rows, subject_width=len(str(target)),
                               label_width=self._label_width([(target, options)]))
@@ -525,24 +562,38 @@ class Engine:
                     log.error("{target}: not logged in; run flnd login", target=str(target))
                     return [TargetReport(target, (), 0, error="not logged in; run flnd login")]
                 if not source.logged_in(account):
-                    log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
+                    log.warn(
+                        "{code}: not logged in, using public access; run flnd login",
+                        code=source.code,
+                    )
                 try:
                     with _written_back(run), _connected(run, account):
-                        with closing(job.discover(run, target, limit=options.limit, time_range=span)) as found:
+                        with closing(
+                            job.discover(run, target, limit=options.limit, time_range=span)
+                        ) as found:
                             for child in found:
                                 if net.stopping.is_set():
                                     break
-                                saved_shrink = flnd.targets.shrink(rows.get(flnd.targets.key(child), {}))
-                                shown = flnd.targets.announce(child, saved_shrink) if shrink is None else ""
+                                saved_shrink = flnd.targets.shrink(
+                                    rows.get(flnd.targets.key(child), {})
+                                )
+                                shown = (
+                                    flnd.targets.announce(child, saved_shrink)
+                                    if shrink is None else ""
+                                )
                                 child_shrink = saved_shrink if shrink is None else shrink
                                 child_options = replace(options, shrink=child_shrink, limit=None)
-                                flnd.targets.record(self.home, [(child, child_options)], sync=False)
+                                flnd.targets.record(
+                                    self.home, [(child, child_options)], sync=False
+                                )
                                 if child.source == target.source:
                                     report = job.download(run, child, board, child_options)
                                 else:
                                     [report] = self._run([(child, child_options)])
                                 if sync and report.error is None:
-                                    flnd.targets.mark_seen(self.home, target, [flnd.targets.key(child)])
+                                    flnd.targets.mark_seen(
+                                        self.home, target, [flnd.targets.key(child)]
+                                    )
                                 reports.append(replace(report, settings=shown))
                                 if net.stopping.is_set():
                                     break
@@ -557,7 +608,7 @@ class Engine:
         return reports
 
     def _sync_query(self, target: Target, options: Options) -> TargetReport:
-        """Run one synced query target: skip known targets, cap at `MAX_SYNC_NEW`, and update `seen`."""
+        """Run one synced query target: skip known targets and update `seen`."""
         source_cls = self.sources[target.source]
         if needs_browser(source_cls):
             _offer_browser()
@@ -569,8 +620,8 @@ class Engine:
         skipped = 0
         child_failed: str | None = None
         new_count = 0
-        with self._history() as history, self._targets() as saved_targets, _stop_waits_on_ctrl_c(), \
-                log.group() as log_rows:
+        with self._history() as history, self._targets() as saved_targets, \
+                _stop_waits_on_ctrl_c(), log.group() as log_rows:
             run_settings = RunShared(home=self.home, history=history, targets=saved_targets)
             board = job.Board(log_rows, subject_width=len(str(target)),
                               label_width=self._label_width([(target, options)]))
@@ -580,10 +631,15 @@ class Engine:
                     log.error("{target}: not logged in; run flnd login", target=str(target))
                     return TargetReport(target, (), 0, error="not logged in; run flnd login")
                 if not source.logged_in(account):
-                    log.warn("{code}: not logged in, using public access; run flnd login", code=source.code)
+                    log.warn(
+                        "{code}: not logged in, using public access; run flnd login",
+                        code=source.code,
+                    )
                 try:
                     with _written_back(run), _connected(run, account):
-                        with closing(job.discover(run, target, time_range=Range(), seen=seen_keys)) as found:
+                        with closing(
+                            job.discover(run, target, time_range=Range(), seen=seen_keys)
+                        ) as found:
                             for child in found:
                                 if net.stopping.is_set():
                                     break
@@ -625,13 +681,16 @@ class Engine:
         resolved = []
         for given in targets:
             target = given if isinstance(given, Target) else self.resolve([given])[0]
-            log.debug("resolve {given}: {target} ({kind})", given=given, target=target, kind=target.kind)
+            log.debug(
+                "resolve {given}: {target} ({kind})",
+                given=given, target=target, kind=target.kind,
+            )
             resolved.append(target)
         return resolved
 
     @contextmanager
     def _logged(self, command: str, **given: Any) -> Iterator[None]:
-        """Write the block's run to its own log in `.flnd/log/`, after deleting the logs older than `LOG_DAYS`.
+        """Write the block's run to a log in `.flnd/log/`, deleting logs older than `LOG_DAYS`.
 
         The log opens with the version, the command and the options as given, and ends with the
         exit status the CLI gives: 2 for a usage error (`ValueError`), 130 for Ctrl-C, 1 for any
@@ -642,12 +701,17 @@ class Engine:
         folder = self.home / paths.LOGS
         _prune(folder)
         stem = f"{datetime.now():%Y-%m-%d_%H%M%S}_{command}"
-        # Two runs started in one second each get a log of their own: the second is `…_download-2.log`.
-        path = next(path for number in itertools.count(1)
-                    if not (path := folder / (f"{stem}.log" if number == 1 else f"{stem}-{number}.log")).exists())
+        path = next(
+            folder / (f"{stem}.log" if n == 1 else f"{stem}-{n}.log")
+            for n in itertools.count(1)
+            if not (folder / (f"{stem}.log" if n == 1 else f"{stem}-{n}.log")).exists()
+        )
         with log.record(path):
-            options = ", ".join(f"{name}={value!r}" for name, value in given.items()
-                                if value not in (None, (), Range()) and not (name in ("dry", "sync") and value is False))
+            options = ", ".join(
+                f"{name}={value!r}" for name, value in given.items()
+                if value not in (None, (), Range())
+                and not (name in ("dry", "sync") and value is False)
+            )
             log.debug("flnd {version} {command}: {options}", version=__version__, command=command,
                       options=options or "no options")
             try:
@@ -662,7 +726,9 @@ class Engine:
                 log.debug("exit 1: {chain}", chain=job.causes(error))
                 raise
 
-    def _categories(self, categories: str | Sequence[str] | None, targets: Sequence[Target]) -> tuple[str, ...] | None:
+    def _categories(
+        self, categories: str | Sequence[str] | None, targets: Sequence[Target],
+    ) -> tuple[str, ...] | None:
         """`--from`'s names, each once, checked against these targets; None without `--from`.
 
         Raises:
@@ -671,14 +737,21 @@ class Engine:
         if categories is None:
             return None
         items = [categories] if isinstance(categories, str) else list(categories)
-        names = tuple(dict.fromkeys(name.strip() for item in items for name in item.split(",") if name.strip()))
-        sources = list(dict.fromkeys(self.sources[target.source] for target in targets)) or list(self.sources.values())
+        names = tuple(
+            dict.fromkeys(
+                name.strip() for item in items for name in item.split(",") if name.strip()
+            )
+        )
+        sources = (
+            list(dict.fromkeys(self.sources[target.source] for target in targets))
+            or list(self.sources.values())
+        )
         if problem := unknown_categories(names, sources) or single_targets(targets, self.sources):
             raise ValueError(problem)
         return names
 
     def _plan(self, targets: Sequence[Target]) -> list[tuple[Target, Options]]:
-        """Each target to sync, with its saved settings and each source's default categories; nothing is written.
+        """Each target to sync with saved settings and default categories; nothing is written.
 
         Args:
             targets: only these; when empty, every recorded target and every unrecorded folder
@@ -693,11 +766,17 @@ class Engine:
             targets = [Target(code, row["kind"], value) for key, row in synced_rows.items()
                        for code, value in [key.split(":", 1)] if code in self.sources]
             targets += list(self._unrecorded(recorded))
-        return [(target, Options(shrink=flnd.targets.shrink(rows.get(flnd.targets.key(target), {})))) for target in targets]
+        return [
+            (target, Options(shrink=flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))))
+            for target in targets
+        ]
 
     def _unrecorded(self, known: Sequence[Target]) -> Iterator[Target]:
-        """Folders under `media/<code>/` no row names: downloaded before Phase 5 recorded targets."""
-        seen = {paths.target_folder(self.home, target) for target in known if not self._is_query(target)}
+        """Folders under `media/<code>/` not recorded in targets database."""
+        seen = {
+            paths.target_folder(self.home, target)
+            for target in known if not self._is_query(target)
+        }
         media = self.home / paths.MEDIA
         for code in self.sources:
             for folder in sorted((media / code).iterdir()) if (media / code).is_dir() else ():
@@ -705,11 +784,14 @@ class Engine:
                     try:
                         yield self.resolve([f"{code}:{folder.name}"])[0]
                     except TargetError as error:
-                        log.warn("{folder}: not synced: {error}", folder=f"{code}/{folder.name}", error=error)
+                        log.warn(
+                            "{folder}: not synced: {error}",
+                            folder=f"{code}/{folder.name}", error=error,
+                        )
 
     def _apply(self, targets: Sequence[Target], chosen: Mapping[Target, Options], *,
                sync: bool | None = None) -> None:
-        """Shrink the files already saved of each target `download --shrink` turns it on for, then save its setting.
+        """Shrink saved files for targets with `--shrink` enabled, then save target settings.
 
         Args:
             targets: the targets whose `--shrink` this download turns on.
@@ -725,8 +807,7 @@ class Engine:
             index = repair.index(history, list(folders.values()))
             for target, folder in folders.items():
                 compress.apply(history, index[folder], compressor, label=str(target))
-                # Saved only now that every file is shrunk: saved before, a shrink cut short would never
-                # be finished, since the next `download --shrink` would see no change.
+                # Saved only now that every file is shrunk so interrupted shrinks resume next run.
                 flnd.targets.record(self.home, [(target, chosen[target])], sync=sync)
 
     def _run(self, chosen: Sequence[tuple[Target, Options]], *,
@@ -811,9 +892,11 @@ def _end_if_stopped() -> None:
 
 def _log_totals(report: Report) -> None:
     """Write a finished run's totals and exit status to its log: 1 when a target failed, else 0."""
-    log.debug("totals: {files} written, {skipped} skipped, {failed} of {targets} failed; exit {status}",
-              files=report.files, skipped=sum(target.skipped for target in report.targets),
-              failed=len(report.failed), targets=len(report.targets), status=0 if report.ok else 1)
+    log.debug(
+        "totals: {files} written, {skipped} skipped, {failed} of {targets} failed; exit {status}",
+        files=report.files, skipped=sum(target.skipped for target in report.targets),
+        failed=len(report.failed), targets=len(report.targets), status=0 if report.ok else 1,
+    )
 
 
 def _prune(folder: Path) -> None:
@@ -828,11 +911,13 @@ def _prune(folder: Path) -> None:
             pass
 
 
-def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[[str], str] | None = None) -> Target:
+def resolve(
+    text: str, sources: Mapping[str, type[Source]], *, follow: Callable[[str], str] | None = None
+) -> Target:
     """Read one target as people write it, and return it resolved by its source.
 
-        resolve("ins:@example_user", SOURCES)                     # Target("ins", "user", "example_user")
-        resolve("https://x.com/example_handle", SOURCES)          # Target("twt", "user", "example_handle")
+        resolve("ins:@example_user", SOURCES)             # Target("ins", "user", "example_user")
+        resolve("https://x.com/example_handle", SOURCES)  # Target("twt", "user", "example_handle")
 
     `code:value` goes to that source's `resolve`. A bare URL finds its source by domain. Anything
     else is refused, because it could belong to any source.
@@ -865,7 +950,9 @@ def resolve(text: str, sources: Mapping[str, type[Source]], *, follow: Callable[
                 raise TargetError(f"unknown source '{code}'. Sources: {', '.join(sources)}")
             source, cleaned = sources[code](), value.strip()
             if not cleaned:
-                raise TargetError(f"{source.code}: can't read {value!r}; write it like {', '.join(source.forms)}")
+                raise TargetError(
+                    f"{source.code}: can't read {value!r}; write it like {', '.join(source.forms)}"
+                )
         else:
             source = _owner_source(cleaned, sources)
     else:
@@ -891,7 +978,9 @@ def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
 
 
 def owner(text: str, sources: Mapping[str, type[Source]]) -> type[Source] | None:
-    """The source whose domains a URL belongs to, or None: `owner("https://x.com/example_handle", SOURCES)` is Twitter.
+    """The source whose domains a URL belongs to, or None.
+
+    For example, `owner("https://x.com/example_handle", SOURCES)` is Twitter.
 
     Args:
         text: the text as typed; only a URL, with or without a scheme, can have an owner.
@@ -901,8 +990,8 @@ def owner(text: str, sources: Mapping[str, type[Source]]) -> type[Source] | None
 
 
 def _on(text: str, domains: Sequence[str]) -> bool:
-    """Whether `text` is a URL, with or without a scheme, on one of `domains` or their subdomains."""
-    # Without a scheme, only a slash tells a link (instagram.com/example_user) from a name (example.user).
+    """Whether `text` is a URL on one of `domains` or their subdomains."""
+    # Without a scheme, only a slash tells a link (instagram.com/example_user) from a name.
     if not domains or ("/" not in text and not _is_url(text)):
         return False
     host = (urlsplit(text if _is_url(text) else f"https://{text}").hostname or "").lower()
@@ -915,7 +1004,7 @@ def _is_url(text: str) -> bool:
 
 @contextmanager
 def _stop_waits_on_ctrl_c() -> Iterator[None]:
-    """Make the first Ctrl-C a graceful stop and the second an immediate one, in every thread (D8).
+    """Make the first Ctrl-C a graceful stop and the second an immediate one, in every thread.
 
     The first sets `net.stopping` and raises nothing: every rate-limit wait ends at once, each job
     stops listing and lets its running downloads finish (flnd/job.py), and the command raises
@@ -924,8 +1013,8 @@ def _stop_waits_on_ctrl_c() -> Iterator[None]:
     """
     net.stopping.clear()
     net.stopping_now.clear()
-    # Python sets signal handlers only on the main thread, so from any other thread (a script's worker)
-    # Ctrl-C keeps its default behaviour rather than raising here.
+    # Python sets signal handlers only on the main thread, so from any other thread
+    # (a script's worker) Ctrl-C keeps its default behaviour rather than raising here.
     if threading.current_thread() is not threading.main_thread():
         yield
         return
@@ -938,8 +1027,8 @@ def _stop_waits_on_ctrl_c() -> Iterator[None]:
             net.stopping.set()
             return
         net.stopping_now.set()
-        # A Python handler is callable and is called as it would have been; SIG_DFL and SIG_IGN are not,
-        # so the Ctrl-C raises KeyboardInterrupt itself, as it does by default.
+        # A Python handler is callable and is called as it would have been; SIG_DFL and SIG_IGN
+        # are not, so the Ctrl-C raises KeyboardInterrupt itself, as it does by default.
         if callable(previous):
             previous(number, frame)
         else:
@@ -978,8 +1067,11 @@ def _check_browser() -> None:
 
 
 def _follow(url: str) -> str:
-    """Where a short link leads, from one HEAD request; a network failure is a `TargetError` naming the link."""
-    # Only a network failure is turned into the target's message; any other error is a bug and propagates.
+    """Where a short link leads, from one HEAD request.
+
+    A network failure is a `TargetError` naming the link.
+    """
+    # Only a network failure is turned into the target's message; any other error propagates.
     try:
         return net.follow(url)
     except httpx.HTTPError as error:
@@ -1066,8 +1158,8 @@ def _connected(run: SourceRun, account: Any) -> Iterator[None]:
     run.client = run.run_async(manager.__aenter__())
     try:
         yield
-    # Every error, Ctrl-C included, goes to the source's `__aexit__` first, which may suppress it by returning
-    # true; if it doesn't, the error is raised again unchanged.
+    # Every error, Ctrl-C included, goes to the source's `__aexit__` first, which may suppress it
+    # by returning true; if it doesn't, the error is raised again unchanged.
     except BaseException as error:
         if not run.run_async(manager.__aexit__(type(error), error, error.__traceback__)):
             raise

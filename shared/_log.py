@@ -1,31 +1,18 @@
 """Five log levels and progress rows, drawn through `theme.screen`.
 
-A line (`log.info`, `log.warn`, …) is formatted, dropped when it's below `log.level`, drawn by
-the theme and written above the live area: the open rows at the bottom of the screen. A
-`log.progress` or `log.group` block opens rows there. Changing a row only marks it: one drawing
-thread per screen, alive while a block is open, redraws the rows that changed (at most every
-0.1 s, one write inside synchronized output, over the old rows rather than after erasing them),
-and the lines written meanwhile go out above the area in that same frame. A row is drawn once it
-has run for 0.5 s, so a burst of small files never flickers. When the block ends each row is
-written once more as a final line. Off a terminal there is no live area and no thread: only the
-final lines are written. `log.record` adds a file that takes every line and final row at debug,
-whatever `log.level` is, unpainted and timed, with each URL's query string cut off. How a line or row looks is the theme's (`shared.theme`); this module
-decides when and where.
+Lines (`log.info`, `log.warn`, etc.) are formatted, filtered by `log.level`,
+and written above the live progress area. `log.progress` and `log.group` manage
+live progress rows at the bottom of the screen.
 
     log.level = "debug"
     log.ok("{n} saved", n=3)
     with log.progress("photos", total=len(links)) as bar:
         for link in links:
             bar.advance()
-    with log.group("download") as rows:
-        row = rows.add("ins:example")
-        row.total = 12
-    with log.record(Path(".flnd/log/run.log")):
-        log.debug("written to the file only")
+    with log.record(Path("run.log")):
+        log.debug("written to file only")
 
-Every function and property here may be called from several threads at once: `advance` and the
-row setters take no screen lock (a download thread may call them on every chunk), lines go
-through the screen's lock, and `prompt` holds other threads' lines while it asks.
+Thread-safe: calls may come from multiple threads concurrently.
 """
 
 from __future__ import annotations
@@ -96,7 +83,7 @@ class Log:
 
     @property
     def level(self) -> Level:
-        """The lowest level written: `debug`, `info` (the default), `ok`, `warn`, `error` or `quiet`.
+        """The lowest level written: `debug`, `info`, `ok`, `warn`, `error` or `quiet`.
 
         `quiet` writes errors only, and draws no running rows; a row that ends at error is still
         written. Setting anything else raises `ValueError`.
@@ -114,15 +101,6 @@ class Log:
         """Write a debug line, shown under `log.level = "debug"` only.
 
             log.debug("{path}: {size} bytes", path=path, size=size)
-
-        Args:
-            message: a `str.format` template; "" writes the level's glyph alone.
-            *args: positional values for the template's numbered fields.
-            **fields: values for its named fields. A name the template does not use raises
-                TypeError, even when the level drops the line.
-
-        Raises:
-            TypeError: a keyword has no field in `message`.
         """
         self._line("debug", message, args, fields)
 
@@ -130,15 +108,6 @@ class Log:
         """Write an info line.
 
             log.info("{n} files in {folder}", n=count, folder=folder)
-
-        Args:
-            message: a `str.format` template; "" writes the level's glyph alone.
-            *args: positional values for the template's numbered fields.
-            **fields: values for its named fields. A name the template does not use raises
-                TypeError, even when the level drops the line.
-
-        Raises:
-            TypeError: a keyword has no field in `message`.
         """
         self._line("info", message, args, fields)
 
@@ -146,15 +115,6 @@ class Log:
         """Write a line saying something succeeded.
 
             log.ok("{n} saved", n=3)
-
-        Args:
-            message: a `str.format` template; "" writes the level's glyph alone.
-            *args: positional values for the template's numbered fields.
-            **fields: values for its named fields. A name the template does not use raises
-                TypeError, even when the level drops the line.
-
-        Raises:
-            TypeError: a keyword has no field in `message`.
         """
         self._line("ok", message, args, fields)
 
@@ -162,15 +122,6 @@ class Log:
         """Write a warning line.
 
             log.warn("{source}: {error}", source="ins", error=error)
-
-        Args:
-            message: a `str.format` template; "" writes the level's glyph alone.
-            *args: positional values for the template's numbered fields.
-            **fields: values for its named fields. A name the template does not use raises
-                TypeError, even when the level drops the line.
-
-        Raises:
-            TypeError: a keyword has no field in `message`.
         """
         self._line("warn", message, args, fields)
 
@@ -178,15 +129,6 @@ class Log:
         """Write an error line, shown at every level, `quiet` included.
 
             log.error("{url} failed: {reason}", url=url, reason=reason)
-
-        Args:
-            message: a `str.format` template; "" writes the level's glyph alone.
-            *args: positional values for the template's numbered fields.
-            **fields: values for its named fields. A name the template does not use raises
-                TypeError, even when the level drops the line.
-
-        Raises:
-            TypeError: a keyword has no field in `message`.
         """
         self._line("error", message, args, fields)
 
@@ -213,21 +155,19 @@ class Log:
     @contextmanager
     def progress(self, label: str, *, total: float | None = None,
                  show: Callable[[Any], str] = str, wait: bool = False) -> Iterator[Progress]:
-        """One row for the length of the block, ending at ok on a clean exit and at error on an exception.
+        """One progress row for the block, ending at ok on clean exit and error on exception.
 
             with log.progress("clip.mp4", total=size, show=fmt.size) as bar:
                 bar.advance(len(chunk))
 
         Args:
             label: the row's text.
-            total: how much there is to do, in the caller's unit; None draws a spinner and the count.
-            show: how a count and the total are written, such as `fmt.size`.
-            wait: True for a wait (a rate limit, a block): drawn steady in the wait color, and
-                shown even under a status row whose other nested rows only `debug` shows.
+            total: how much to do, or None for spinner.
+            show: formatting function for counts (e.g. `fmt.size`).
+            wait: True for a wait row drawn in wait color.
 
         Returns:
-            The row, a `Progress`. An exception, `KeyboardInterrupt` included, is re-raised after
-            the row ends at error. The block may be used from one thread while others advance the row.
+            The `Progress` bar instance.
         """
         group = Group(_theme.theme, title="", parent=getattr(_nest, "row", None))
         bar = group.add(label, total=total, show=show, wait=wait)
@@ -236,7 +176,7 @@ class Log:
 
     @contextmanager
     def under(self, row: Progress | StatusRow | None) -> Iterator[None]:
-        """Nest the rows `log.progress` opens on this thread under `row`, for the length of the block.
+        """Nest rows `log.progress` opens on this thread under `row`, for the block.
 
             with log.under(target_row):
                 download(url)       # its bar is drawn indented under `target_row`
@@ -257,7 +197,7 @@ class Log:
 
     @contextmanager
     def group(self, title: str = "") -> Iterator[Group]:
-        """Rows added for the length of the block under one title row, which ends as `progress` does.
+        """Rows added for block under one title row, which ends as `progress` does.
 
             with log.group("download") as rows:
                 row = rows.add("ins:example")
@@ -268,7 +208,7 @@ class Log:
 
         Returns:
             The `Group`, whose `add` opens a row. Unfinished rows end with the block, at ok on a
-            clean exit and at error on an exception. Rows may be added and advanced from several threads.
+            clean exit and at error on exception. Rows may be added from several threads.
         """
         group = Group(_theme.theme, title=title)
         with _ending(group):
@@ -341,7 +281,7 @@ class _Record:
         self.lock = threading.Lock()
 
     def write(self, text: str) -> None:
-        """Append `text` and flush it, so a killed run's file still holds every line written so far."""
+        """Append `text` and flush, so a killed run's file holds every line written."""
         with self.lock:
             try:
                 self.file.write(text)
@@ -366,7 +306,7 @@ class Progress:
 
     def __init__(self, label: str, total: float | None, show: Callable[[Any], str], _group: Group,
                  *, wait: bool = False):
-        """Make a row that is not yet drawn; `Group.add` and `log.progress` are the ways to open one.
+        """Make a row that is not yet drawn; `Group.add` and `progress` open one.
 
         Args:
             label: the row's text.
@@ -385,12 +325,12 @@ class Progress:
         self._count: float = 0
         self._group = _group
         self._outcome: str | None = None
-        # Guards `_count` and `_outcome` against two threads; it is this row's own, never the screen's.
+        # Guards `_count` and `_outcome` against threads; this row's own, not the screen's.
         self._lock = threading.Lock()
         self._created = clock.now()
         # Whether the row has been drawn: a row that ends before it is old enough never is.
         self._seen = False
-        # What the row's last drawn line showed, so an unchanged row is neither rendered nor cut again.
+        # Last drawn line, so an unchanged row is neither rendered nor cut again.
         self._drawn: tuple = ()
         self._line = ""
 
@@ -401,7 +341,7 @@ class Progress:
 
     @count.setter
     def count(self, value: float) -> None:
-        """Set how much is done; a value below 0 is stored as 0, and the live area is marked to redraw.
+        """Set how much is done; value below 0 stored as 0, live area marked to redraw.
 
         This is a plain assignment with no lock, so setting the count while another thread calls
         `advance` can drop that advance. Use `advance` when several threads move one row.
@@ -432,7 +372,7 @@ class Progress:
 
     @property
     def caption(self) -> str:
-        """A note drawn after the count, such as "part 3"; `finish` clears it and `fail` keeps it."""
+        """A note drawn after count, like "part 3"; `finish` clears it, `fail` keeps it."""
         return self._caption
 
     @caption.setter
@@ -464,7 +404,7 @@ class Progress:
             if self._outcome is not None:
                 return
             self._outcome = outcome
-        # A finished row drops its caption, but a failed one keeps it, so the reason stays on screen.
+        # A finished row drops caption, but a failed one keeps it, so reason stays on screen.
         if outcome == "ok":
             self._caption = ""
         self._group._live.mark()
@@ -475,12 +415,12 @@ class Progress:
         return level, render(self._group._theme, LogRecord(level, self.label, self._view(None)))
 
     def _view(self, now: float | None) -> Bar:
-        """What the theme draws; `now` fixes the spinner's frame, None leaves it to the theme's clock."""
+        """What theme draws; `now` fixes spinner frame, None leaves to theme clock."""
         return Bar(self.label, self._count, self._total, self._caption, self.finished, self._show,
                    None if now is None else int(now * 10), self.wait)
 
     def _area_line(self, now: float, width: int) -> str | None:
-        """The row as drawn in the live area, cut to `width`; None while it is too young or ended unseen."""
+        """The row as drawn in live area, cut to `width`; None while too young or unseen."""
         # A row is shown only after SHOW_AFTER, so a fast file never flickers in and out. Once shown
         # it stays shown, even if it finishes later.
         if not self._seen:
@@ -501,7 +441,7 @@ class Progress:
         return self._line
 
     def _waiting(self, now: float) -> bool:
-        """Whether the row changes with the clock alone: a spinner, or a row not yet old enough to draw."""
+        """Whether row changes with clock alone: a spinner, or row not old enough to draw."""
         if self.finished:
             return False
         young = not self._seen and now - self._created < SHOW_AFTER
@@ -616,7 +556,7 @@ class Group:
 
         Args:
             label: the row's text.
-            total: how much there is to do, in the caller's unit; None draws a spinner and the count.
+            total: how much to do, in caller unit; None draws spinner and count.
             show: how a count and the total are written, such as `fmt.size`.
             wait: whether the row is a wait, drawn steady in the wait color.
         """
@@ -667,7 +607,7 @@ class Group:
         return rows
 
     def _area_rows(self, now: float, width: int) -> list[tuple[Progress | StatusRow | None, str]]:
-        """The rows to draw now, each with its bar (None for the title), reusing the lines of unchanged rows."""
+        """The rows to draw now, each with bar (None for title), reusing unchanged rows."""
         rows: list[tuple[Progress | StatusRow | None, str]] = []
         if self._title:
             drawn = (self._outcome, width, self._theme.color)
@@ -718,9 +658,9 @@ class LiveArea:
         self.asking_thread: int | None = None
         # Held for a whole question, so two questions never interleave. It is its own lock, not the
         # screen's, because the screen lock must be free while the question waits for keys. It is
-        # re-entrant so that a question asked from inside another on the same thread does not deadlock.
+        # Re-entrant so question asked inside another on same thread does not deadlock.
         self.question_lock = threading.RLock()
-        # Set by every change, from any thread; the drawing thread sleeps on `wake` while it is clear.
+        # Set by every change from any thread; drawing thread sleeps on `wake` while clear.
         # `dirty` lets a thread skip the set when it is already set, which keeps `mark` cheap.
         self.dirty = False
         self.wake = threading.Event()
@@ -732,7 +672,7 @@ class LiveArea:
         # A slow write (an SSH session) skips the next frame instead of queueing it.
         self.skip = False
         self.frames = 0
-        # When the last frame was written, by `time.perf_counter`, which spaces the drawing thread's frames.
+        # Last frame time by `time.perf_counter`, which spaces drawing thread's frames.
         self.drawn_at = 0.0
         # The screen's width when the last frame was written; a change redraws the area whole.
         self.drawn_width = 0
@@ -822,7 +762,7 @@ class LiveArea:
                         self.mark()
 
     def tick(self) -> None:
-        """Draw one frame of what changed since the last, unless a question is open or the last write was slow."""
+        """Draw one frame of changes, unless a question is open or last write was slow."""
         with self.screen.lock:
             if not self.screen.tty or self.asking_thread is not None:
                 return
@@ -840,7 +780,7 @@ class LiveArea:
             self.skip = time.perf_counter() - started > REDRAW_INTERVAL
 
     def _start(self) -> None:
-        """Start the drawing thread if it isn't running; called under the lock when a group opens."""
+        """Start drawing thread if not running; called under lock when group opens."""
         self.closing.clear()
         if self.threaded and self.thread is None:
             self.thread = threading.Thread(target=self._run, name="shared-log-draw", daemon=True)
@@ -872,15 +812,15 @@ class LiveArea:
                 timeout = REDRAW_INTERVAL if any(
                     bar._waiting(now) for group in self.groups for bar in group._bars) else None
             self.wake.wait(timeout)
-            # At most one frame per interval: a change that comes right after a frame waits for the rest of it.
+            # At most one frame per interval: change right after a frame waits for rest of it.
             remaining = REDRAW_INTERVAL - (time.perf_counter() - self.drawn_at)
             if remaining > 0:
-                # `closing` ends this wait at once, so the last group's close is not held for the interval.
+                # `closing` ends wait at once, so last group close is not held for interval.
                 self.closing.wait(remaining)
             self.tick()
 
     def _finish(self) -> None:
-        """Called under the lock when the last group has closed: the final frame at once, then the cursor back."""
+        """Called under lock when last group closed: final frame at once, cursor back."""
         self._draw([])
         self.closing.set()
         self.wake.set()
@@ -888,7 +828,7 @@ class LiveArea:
             show_cursor(self.screen)
 
     def _rows(self, now: float) -> list[str]:
-        """The rows to show now: groups in the order they opened, a nested group's rows under its row."""
+        """The rows to show now: groups in open order, nested group rows under its row."""
         # Under log.level "quiet", running bars are not drawn at all.
         if log.level == "quiet":
             return []
@@ -932,7 +872,7 @@ class LiveArea:
         return _cap_rows(rows, self.screen.height)
 
     def _draw(self, rows: list[str]) -> None:
-        """Write the frame that turns the shown rows into `rows`, with the pending lines above them."""
+        """Write frame turning shown rows into `rows`, with pending lines above them."""
         frame = self._frame(rows)
         if frame:
             self.frames += 1
@@ -940,7 +880,7 @@ class LiveArea:
             self.drawn_at = time.perf_counter()
 
     def _frame(self, rows: list[str]) -> str:
-        """The text that makes the terminal show `rows` under the pending lines; "" when nothing changed.
+        """Text making terminal show `rows` under pending lines; "" when nothing changed.
 
         Rows are overwritten, each followed by `\\x1b[K` (clear to the end of that line), never
         erased first, so no moment shows an empty area; `\\x1b[J` (clear below) comes last, and
@@ -969,7 +909,7 @@ class LiveArea:
             out.append("\r" + (f"\x1b[{len(old)}A" if old else ""))
             for line in pending + rows:
                 out.append(line + "\x1b[K\n")
-            # ED 0 (`ESC [ J`) clears below, but only when the new frame is shorter than the old one.
+            # ED 0 (`ESC [ J`) clears below, but only when new frame is shorter than old.
             if len(old) > len(pending) + len(rows):
                 out.append("\x1b[J")
         else:
@@ -988,10 +928,10 @@ class LiveArea:
             for number, row in enumerate(rows[:len(old)]):
                 if row != old[number]:
                     goto(number)
-                    # EL 0 (`ESC [ K`) clears the rest of the line, so a shorter row leaves no tail of the old one.
+                    # EL 0 (`ESC [ K`) clears rest of line, so shorter row leaves no tail.
                     out.append("\r" + row + "\x1b[K")
             if len(rows) > len(old):
-                # New rows go below the old ones with a newline each, which scrolls at the screen's bottom.
+                # New rows go below old ones with newline each, which scrolls at bottom.
                 goto(len(old))
                 out.append("\r")
                 for row in rows[len(old):]:
@@ -1088,7 +1028,7 @@ def _keep_path(match: re.Match[str]) -> str:
 
 
 def _field_names(message: str) -> set[str]:
-    """The names of the fields a `str.format` template uses, such as "x" for "{x.y}" and "{x[0]}"."""
+    """Field names a `str.format` template uses, such as "x" for "{x.y}" and "{x[0]}"."""
     names = set()
     for _, field_name, _, _ in string.Formatter().parse(message):
         if field_name:

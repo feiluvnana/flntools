@@ -1,10 +1,9 @@
-"""A dry run of one target: the real listing, and what it would save, with nothing downloaded or recorded.
+"""A dry run of one target: list what it would save without downloading or recording.
 
-This is gallery-dl's `--simulate` and `--get-urls` (plan/phase-6/redesign.md, A11, B5). It is the
-developer task `scripts/dev.py try`, not a `flnd` option: the source runs for real (network,
-browser, login) with the saved login of the `.flnd` it is given, and the post tree comes out as
-text. No file is written, no history row or setting is recorded, no cookie is written back, and a
-URL is printed without its query, so no signed token reaches a terminal or a log.
+This is the developer task `scripts/dev.py try`, not a `flnd` option: the source runs
+for real (network, browser, login) with the saved login of the `.flnd` folder, and the
+post tree comes out as text. No file is written, no history row or setting is recorded,
+no cookie is written back, and URLs are printed without query parameters so tokens stay safe.
 
     python -m flnd.dry ins:example_user --from reels --time 2026-01-01,
     for line in tree(plan(Path(".flnd"), "ins:example_user")): print(line)
@@ -29,7 +28,8 @@ __all__ = ["main", "plan", "tree"]
 
 
 def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None,
-         time: Range | str = Range(), sources: Mapping[str, type[Source]] = SOURCES) -> Iterator[job.Placed]:
+         time: Range | str = Range(),
+         sources: Mapping[str, type[Source]] = SOURCES) -> Iterator[job.Placed]:
     """Every file a download of one target would save, listed for real and not downloaded.
 
         for placed in plan(Path(".flnd"), "ins:example_user", categories="reels"):
@@ -49,9 +49,13 @@ def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None
     engine = Engine(home=home, sources=sources)
     target = engine.resolve([text])[0]
     items = [categories] if isinstance(categories, str) else list(categories or ())
-    names = tuple(dict.fromkeys(name.strip() for item in items for name in item.split(",") if name.strip())) or None
+    names = tuple(
+        dict.fromkeys(name.strip() for item in items for name in item.split(",") if name.strip())
+    ) or None
     source = engine.sources[target.source]
-    if names and (problem := unknown_categories(names, [source]) or single_targets([target], engine.sources)):
+    if names and (
+        problem := unknown_categories(names, [source]) or single_targets([target], engine.sources)
+    ):
         raise ValueError(problem)
     span = Range.parse(time) if isinstance(time, str) else time
     options = Options(categories=names, since=span.since, until=span.until)
@@ -68,14 +72,14 @@ def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None
 
 
 def tree(placed: Iterable[job.Placed]) -> Iterator[str]:
-    """The files as a tree, one line each as they come: the category, then each post, then its paths.
+    """The files as a tree: the category, then each post, then its paths.
 
         ins:example_user
           reels
             C1abc  2026-01-02
               reels/2026-01-02_C1abc_0.jpg  https://cdn.example.com/a.jpg
 
-    Every URL is shown by `fmt.url`, without its query, and a source's own fetch function or a text file is named as such.
+    URLs are formatted by `fmt.url` without query parameters.
     """
     category = post = None
     for item in placed:
@@ -95,7 +99,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         main(["ins:example_user", "--from", "reels", "--time", "2026-01-01,"])
     """
-    parser = argparse.ArgumentParser(prog="dev.py try", description="List what a download would save, without downloading.")
+    parser = argparse.ArgumentParser(
+        prog="dev.py try", description="List what a download would save, without downloading."
+    )
     parser.add_argument("target")
     parser.add_argument("--from", dest="categories", default=None, metavar="CATEGORIES")
     parser.add_argument("--time", default="", metavar="SINCE,UNTIL")
@@ -108,20 +114,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    except Exception as error:  # a source's own failure (FetchError, LoginError): shown, not a traceback
+    except Exception as error:  # source failure (FetchError, LoginError): shown, not a traceback
         print(f"error: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     return 0
 
 
 def _where(file: File) -> str:
-    """Where a file comes from, for the tree: its URL without the query, its mirrors counted, or what else it is."""
+    """Where a file comes from, for tree output: URL without query, mirror count, or source info."""
     if file.content is not None:
         return f"(text, {len(file.content)} characters)"
     if isinstance(file.url, str):
         found = fmt.url(file.url)
-    elif isinstance(file.url, tuple):
-        found = fmt.url(file.url[0]) + (f" (+{len(file.url) - 1} mirrors)" if len(file.url) > 1 else "")
+    elif isinstance(file.url, tuple) and len(file.url) > 0:
+        found = fmt.url(file.url[0])
+        if len(file.url) > 1:
+            found += f" (+{len(file.url) - 1} mirrors)"
     else:
         found = "(fetched by the source)"
     return f"{found} + audio {fmt.url(file.audio)}" if file.audio else found

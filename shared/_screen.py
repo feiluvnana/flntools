@@ -1,20 +1,15 @@
 """The terminal: where `log` and `prompt` write, and where keys are read from.
 
-`Screen` wraps an output stream (`dest`, stderr by default) and an input stream (`inp`, the
-terminal itself by default). `write` drops colour codes when the theme has colour off, takes
-`Screen.lock` so that output from different threads never interleaves, and flushes. `readkey`
-returns a key name such as "enter" or "ctrl+c", reading with termios on POSIX and msvcrt on
-Windows; `reading()` holds the terminal in raw mode while a prompt waits for keys. Cursor hiding
-and the synchronized-output markers also live here, because `shared._log` and `shared._prompt`
-both draw with them. The process theme is looked up from `shared._theme` at write time, since
-that module imports this one.
+`Screen` wraps an output stream (`dest`, stderr by default) and an input stream
+(`inp`, terminal by default). `write` drops colour codes when colour is off,
+takes `Screen.lock` so output never interleaves, and flushes. `readkey` returns a
+key name, reading with termios on POSIX and msvcrt on Windows; `reading()` holds
+the terminal in raw mode while waiting for keys.
 
-Example:
-
-    screen = Screen()                       # stderr for output, the terminal for keys
+    screen = Screen()
     screen.write("\\x1b[1mhello\\x1b[0m\\n")
     with screen.reading():
-        key = screen.readkey()              # "a", "enter", "up", or a Paste for a pasted text
+        key = screen.readkey()
 """
 
 from __future__ import annotations
@@ -48,7 +43,8 @@ class Paste(str):
 class Screen:
     """The terminal that `log` and `prompt` write to and read keys from.
 
-        screen = Screen(dest=io.StringIO(), width=80, tty=False, interactive=False)  # a fake, for tests
+        # Test fake:
+        screen = Screen(dest=io.StringIO(), width=80, tty=False, interactive=False)
 
     Args:
         dest: the text stream output goes to; None is `sys.stderr`, looked up at each write.
@@ -141,7 +137,7 @@ class Screen:
 
     @contextmanager
     def reading(self) -> Iterator[None]:
-        """Hold the terminal for reading keys: raw mode, and bracketed paste on, until the block ends.
+        """Hold the terminal for reading keys: raw mode and bracketed paste until block ends.
 
         Raw mode is held across keys, so characters that arrive together (a paste, or fast typing)
         stay in the input queue instead of being dropped between two reads. Both are restored on
@@ -203,7 +199,7 @@ class Screen:
         return _readkey_windows() if os.name == "nt" else _readkey_posix(fd, self._raw)
 
     def write(self, text: str) -> None:
-        """Write `text` to `dest` under `lock` and flush it, dropping colour codes when colour is off.
+        """Write `text` under `lock` and flush, dropping colour codes when colour is off.
 
         Safe to call from any thread, and from inside `with screen.lock:`. The first write on
         Windows also turns on virtual-terminal output, so ANSI escapes are understood there.
@@ -282,7 +278,7 @@ def isatty(stream) -> bool:
         return False
 
 
-# Keys by the bytes a terminal sends for them. Each arrow, Home and End key appears twice: "\x1b[" is the normal
+# Keys by terminal bytes. Each arrow, Home and End key appears twice: "\x1b[" is normal
 # form, and "\x1bO" is the form the terminal sends in application cursor-key mode, which some
 # programs switch on. Backspace appears as DEL ("\x7f") and as BS ("\x08"), because terminals
 # differ on which one the Backspace key sends.
@@ -294,7 +290,9 @@ KEY_NAMES = {
 }
 # On Windows, `msvcrt.getwch` sends an arrow or edit key as a \x00 or \xe0 prefix followed by one
 # of these letters (the console's scan codes), so the letter alone names the key.
-WINDOWS_KEY_NAMES = {"H": "up", "P": "down", "K": "left", "M": "right", "G": "home", "O": "end", "S": "delete"}
+WINDOWS_KEY_NAMES = {
+    "H": "up", "P": "down", "K": "left", "M": "right", "G": "home", "O": "end", "S": "delete",
+}
 
 
 def key_name(sequence: str) -> str:
@@ -317,7 +315,7 @@ def key_name(sequence: str) -> str:
 
 
 def _readkey_from_stream(stream) -> str:
-    """Read one character from a stream that has no descriptor, and name it. Raises EOFError at its end."""
+    """Read one character from stream without descriptor, and name it. Raises EOFError at end."""
     char = stream.read(1)
     if not char:
         raise EOFError("no more keys")
@@ -326,14 +324,14 @@ def _readkey_from_stream(stream) -> str:
 
 
 def _keep_output_processing(fd: int) -> None:
-    """Undo what `tty.setraw` does to output: with OPOST off a newline no longer returns to column 0."""
+    """Undo what `tty.setraw` does to output: restore OPOST so newlines return to column 0."""
     if sys.platform == "win32":
         return
     import termios
 
     attrs = termios.tcgetattr(fd)
     attrs[1] |= termios.OPOST | termios.ONLCR
-    # TCSANOW, not TCSADRAIN: this runs right after raw mode is set, and nothing is waiting to drain.
+    # TCSANOW: this runs right after raw mode is set, and nothing is waiting to drain.
     termios.tcsetattr(fd, termios.TCSANOW, attrs)
 
 
@@ -381,7 +379,7 @@ def _readkey_posix(fd: int, raw: bool = False) -> str:
 
 
 def _read_paste(fd: int) -> Paste:
-    """Read a bracketed paste up to its end marker, as text without newlines or control characters."""
+    """Read a bracketed paste up to its end marker, without newlines or control characters."""
     data = b""
     # One byte at a time, so the keys typed right after the paste are left for the next read.
     while not data.endswith(PASTE_END):
@@ -442,5 +440,5 @@ def _enable_windows_vt(dest) -> None:
             # 0x0004 is ENABLE_VIRTUAL_TERMINAL_PROCESSING; the mode is kept and this bit added.
             kernel32.SetConsoleMode(handle, mode.value | 0x0004)
     except (AttributeError, OSError):
-        # No ctypes console API (not really a console, or an old Windows): the escapes print as text.
+        # No ctypes console API: the escapes print as text.
         pass

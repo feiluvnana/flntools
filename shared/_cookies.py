@@ -1,42 +1,9 @@
-"""Cookie jars: read them from a file or a browser, narrow and combine them, send or save them.
+"""Cookie jars: read them from a file or a browser, narrow, combine, send or save them.
 
-How it works: every entry point gives a `Jar`, an immutable collection of cookies, and every
-change to one (`filter`, `merge`) gives a new `Jar`. A cookie is a dict in Playwright's shape,
-with the keys `name`, `value`, `domain`, `path`, `expires` (Unix seconds, -1 for a session
-cookie), `secure`, `httpOnly` and `sameSite`, so a jar moves between a file, an installed
-browser, a live `shared.browser` and an HTTP header without conversion.
-
-- **Files.** `load` reads both formats people export, telling them apart by content: a Netscape
-  `cookies.txt` (seven tab-separated fields a line; curl and browser exports mark an HttpOnly
-  cookie by prefixing its domain with `#HttpOnly_`), or a JSON list of cookie objects, as
-  Playwright and the browser extensions write them. `Jar.save` writes a Netscape file, through
-  `shared.atomic` with mode 0600, since a cookie file is a login.
-- **Installed browsers.** `from_browser` copies the profile's cookie database (a running
-  browser locks it) and reads it with `sqlite3`. The Chromium family (Chrome, Chromium, Edge,
-  Brave) encrypts each value with AES-128-CBC under a key derived from a password the OS keeps:
-  macOS's Keychain, or the Linux desktop keyring (or Chromium's fixed "peanuts" without one).
-  The CBC decryption is private to this module, as Chromium's store is its one user, and needs
-  `cryptography`. Since Chromium 130 (database version 24) each value starts with a SHA-256 of
-  its host, which also proves the key was right. Windows' Chromium uses app-bound encryption
-  that only the browser can undo, so there it is refused, pointing to `browser.open(cdp=…)`.
-  Firefox stores its values in plain text in `cookies.sqlite`, and `profiles.ini` names its
-  profiles.
-
-Everything but the Chromium family's `from_browser` uses only the stdlib.
-
-    from shared import cookies
-
-    jar = cookies.from_browser("chrome").filter(domain="example.com")
-    headers = {"Cookie": jar.header}                   # "sessionid=…; csrftoken=…"
-    if "sessionid" in jar:
-        jar.merge(cookies.load("refreshed.txt")).save("example-cookies.txt")
-
-`.raw` is the jar's cookies as a new list of dicts, for code that wants the plain data, such as
-Playwright's `BrowserContext.add_cookies`.
-
-No error or log line here ever holds a cookie's value: messages name the file, the line, the
-browser, or the cookie's name and domain, and a `Jar`'s `repr` shows only names. Every function
-may be called from several threads at once, and a `Jar` never changes once made.
+A `Jar` is an immutable collection of cookies in Playwright's dictionary shape.
+`load` reads Netscape or JSON cookie files; `Jar.save` writes Netscape files.
+`from_browser` reads installed browser cookies; `Jar.filter` narrows them by domain.
+Values are never printed, logged, or included in error messages.
 """
 
 from __future__ import annotations
@@ -77,9 +44,9 @@ _CHROMIUM = {
     "brave": ("Brave", "BraveSoftware/Brave-Browser", "BraveSoftware/Brave-Browser", "brave"),
 }
 _BROWSERS = (*_CHROMIUM, "firefox")
-# Chromium's and Firefox's `samesite` column: 0 none, 1 lax, 2 strict; -1 (unspecified) reads as Lax.
+# Chromium and Firefox `samesite`: 0 none, 1 lax, 2 strict; -1 (unspecified) is Lax.
 _SAME_SITE = {0: "None", 1: "Lax", 2: "Strict"}
-# The spellings JSON exports use: Playwright's, and the extensions' (Chrome's API says "no_restriction").
+# The spellings JSON exports use: Playwright and extensions ("no_restriction" in Chrome).
 _JSON_SAME_SITE = {"none": "None", "no_restriction": "None", "lax": "Lax", "strict": "Strict"}
 _HTTP_ONLY = "#HttpOnly_"
 # Seconds from 1601-01-01 (Chromium's epoch, Windows' FILETIME) to 1970-01-01.
@@ -89,10 +56,9 @@ _HOST_HASH_VERSION = 24
 _HOST_HASH_SIZE = 32
 
 
-# Still a ValueError, as `CookieError` was before the error tree: flnd's auth catches a broken
-# cookie file or a value that won't decrypt as a ValueError.
+# A ValueError so callers catching ValueError also catch cookie errors.
 class Error(shared.Error, ValueError):
-    """A cookie file is broken, a cookie can't be written or read, or a browser's value can't be decrypted."""
+    """A cookie file is broken, unreadable, or cannot be decrypted."""
 
 
 class MissingError(Error, shared.MissingError):
@@ -135,7 +101,7 @@ class Jar:
     def filter(self, *, domain: str | None = None, names: Iterable[str] | None = None) -> Jar:
         """A jar of only the cookies for `domain` and its subdomains, and of only those `names`.
 
-            jar.filter(domain="example.com")                 # example.com, .example.com, www.example.com
+            jar.filter(domain="example.com")                 # matches subdomains too
             jar.filter(names=["sessionid", "csrftoken"])
 
         Args:
@@ -150,23 +116,7 @@ class Jar:
                    and (wanted is None or cookie["name"] in wanted))
 
     def merge(self, other: Jar | Iterable[Cookie]) -> Jar:
-        """This jar with `other`'s cookies added, where `other`'s cookie wins over the same one here.
-
-            saved.merge(refreshed)          # refreshed: what the site set during a run
-
-        "Newer" is `other`: the argument is the jar read later, such as the cookies a site rotated
-        during a run. Expiry isn't used, since a site often rotates a token with the same or a
-        shorter expiry, and a session cookie has none. Two cookies are the same one when their
-        name, their domain (ignoring case and a leading dot) and their path (`/` when missing)
-        match, as a browser keys them.
-
-        Args:
-            other: the newer cookies, as a `Jar` or any iterable of cookie dicts.
-
-        Returns:
-            A new jar: this jar's cookies in their order, each replaced in place by `other`'s same
-            cookie, then `other`'s other cookies in its order.
-        """
+        """Return a new jar with `other`'s cookies added, overriding matching ones."""
         newer = other if isinstance(other, Jar) else Jar(other)
         by_key = {_identity(cookie): cookie for cookie in newer._cookies}
         merged = [by_key.pop(_identity(cookie), cookie) for cookie in self._cookies]
@@ -179,10 +129,7 @@ class Jar:
 
     @property
     def header(self) -> str:
-        """The value of a `Cookie:` request header for the whole jar, in the jar's order; "" when empty.
-
-            headers = {"Cookie": jar.filter(domain="example.com").header}    # "sessionid=…; csrftoken=…"
-        """
+        """The value of a `Cookie:` request header for the whole jar, in the jar's order."""
         return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in self._cookies)
 
     @property
@@ -191,7 +138,7 @@ class Jar:
         return [dict(cookie) for cookie in self._cookies]
 
     def save(self, dest: PathLike) -> Path:
-        """Write the jar as a Netscape `cookies.txt` that only its owner can read, and return its path.
+        """Write the jar as a Netscape `cookies.txt` with owner-only access, returning path.
 
             jar.save(".cookies/example.txt")
 
@@ -215,7 +162,7 @@ class Jar:
         return path
 
     def __getitem__(self, name: str) -> str:
-        """The value of the first cookie named `name`; KeyError, naming only `name`, when there is none."""
+        """The value of the first cookie named `name`; KeyError when there is none."""
         for cookie in self._cookies:
             if cookie["name"] == name:
                 return str(cookie["value"])
@@ -276,38 +223,7 @@ def load(path: PathLike) -> Jar:
 
 
 def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
-    """Read every cookie of an installed browser's profile.
-
-        jar = cookies.from_browser("firefox").filter(domain="example.com")
-
-    Args:
-        browser: "chrome", "chromium", "edge", "brave" or "firefox".
-        profile: the profile, as `profiles` lists it: a folder name such as "Profile 1" for the
-            Chromium family, or a `Path` of `profiles.ini` for Firefox. None reads `Default` for
-            the Chromium family, and the profile Firefox opens first.
-
-    Raises:
-        ValueError: `browser` isn't one of those.
-        FileNotFoundError: there is no such profile, or it has no cookie database.
-        MissingError: a Chromium-family browser on Windows (see below).
-        Error: the OS refused the key (a denied Keychain prompt), or not one encrypted value can
-            be decrypted (a wrong key); the message names a cookie, never its value.
-        ImportError: a Chromium-family browser without `cryptography`.
-
-    The database is copied first, since a running browser may lock it. Every row is read, so a
-    profile's cookies come back whole and the caller filters them.
-
-    A Chromium-family cookie whose value can't be decrypted (a newer scheme such as Chrome's
-    app-bound "v20", or a damaged row) is skipped, and the count of skipped cookies is logged at
-    debug level, without names or values. When every encrypted value fails, the key itself is
-    wrong, and that raises `Error`.
-
-    - macOS: the first read of a Chromium-family browser shows a Keychain prompt ("Chrome Safe
-      Storage"). Allow it once.
-    - Linux: the browser's key comes from the desktop keyring through `secret-tool`.
-    - Windows: only Firefox. For the Chromium family, use `browser.open(cdp=…)`, then
-      `b.cookies`: a running browser's cookies need no decryption.
-    """
+    """Read every cookie of an installed browser's profile."""
     if browser == "firefox":
         return Jar(_load_firefox(profile))
     if browser not in _CHROMIUM:
@@ -321,21 +237,7 @@ def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
 
 
 def profiles(browser: str = "chrome") -> list[str]:
-    """The installed browser's profiles, as `from_browser`'s `profile=` takes them, the default first.
-
-        cookies.profiles("chrome")      # ["Default", "Profile 1"]
-
-    Args:
-        browser: "chrome", "chromium", "edge", "brave" or "firefox".
-
-    Returns:
-        For the Chromium family, each profile folder with a cookie database, `Default` first;
-        for Firefox, each `Path` in `profiles.ini`, the one Firefox opens first. `[]` when the
-        browser isn't installed or has no profile.
-
-    Raises:
-        ValueError: `browser` isn't one of those.
-    """
+    """The installed browser's profiles, default first."""
     if browser == "firefox":
         try:
             return _firefox_paths(_firefox_root())
@@ -354,19 +256,22 @@ def profiles(browser: str = "chrome") -> list[str]:
 
 def _identity(cookie: Cookie) -> tuple[str, str, str]:
     """What makes two cookies the same one for `merge`: name, domain without case or dot, path."""
-    return (str(cookie["name"]), str(cookie.get("domain", "")).lstrip(".").lower(), str(cookie.get("path") or "/"))
+    domain = str(cookie.get("domain", "")).lstrip(".").lower()
+    return (str(cookie["name"]), domain, str(cookie.get("path") or "/"))
 
 
 def _load_firefox(profile: str | None) -> list[Cookie]:
     with _open_copy(_firefox_profile(profile) / "cookies.sqlite") as connection:
         rows = connection.execute(
-            "SELECT host, name, value, path, expiry, isSecure, isHttpOnly, sameSite FROM moz_cookies"
+            "SELECT host, name, value, path, expiry, isSecure, isHttpOnly, sameSite "
+            "FROM moz_cookies"
         ).fetchall()
     jar = []
     for host, name, value, path, expiry, secure, http_only, same_site in rows:
-        # Newer Firefox versions store the expiry in milliseconds; seconds stay below 10**11 until 5138.
+        # Firefox stores expiry in ms in newer versions; seconds stay below 10**11 until 5138.
         expires = expiry // 1000 if expiry > 10**11 else expiry
-        jar.append(_cookie(name, value, host, path, expires or -1, secure, http_only, _SAME_SITE.get(same_site, "Lax")))
+        same = _SAME_SITE.get(same_site, "Lax")
+        jar.append(_cookie(name, value, host, path, expires or -1, secure, http_only, same))
     return jar
 
 
@@ -391,8 +296,14 @@ def _firefox_paths(root: Path) -> list[str]:
     if not ini.read(root / "profiles.ini", encoding="utf-8"):
         raise FileNotFoundError(f"no Firefox profiles.ini in {root}")
     # The [Install…] section names the profile Firefox really opens; Default=1 is older.
-    installs = [ini[name]["Default"] for name in ini.sections() if name.startswith("Install") and "Default" in ini[name]]
-    profiles = [ini[name] for name in ini.sections() if name.startswith("Profile") and "Path" in ini[name]]
+    installs = [
+        ini[name]["Default"] for name in ini.sections()
+        if name.startswith("Install") and "Default" in ini[name]
+    ]
+    profiles = [
+        ini[name] for name in ini.sections()
+        if name.startswith("Profile") and "Path" in ini[name]
+    ]
     marked = [section["Path"] for section in profiles if section.get("Default") == "1"]
     return list(dict.fromkeys(installs + marked + [section["Path"] for section in profiles]))
 
@@ -402,13 +313,14 @@ def _firefox_root() -> Path:
     if _PLATFORM == "darwin":
         return Path.home() / "Library" / "Application Support" / "Firefox"
     if _PLATFORM == "win32":
-        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Mozilla" / "Firefox"
+        appdata = os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / "Mozilla" / "Firefox"
     return Path.home() / ".mozilla" / "firefox"
 
 
 @contextmanager
 def _open_copy(database: Path) -> Iterator[sqlite3.Connection]:
-    """A connection to a temporary copy of `database` and its write-ahead log, deleted afterwards."""
+    """A connection to a temporary copy of `database` and its WAL, deleted afterwards."""
     if not database.is_file():
         raise FileNotFoundError(f"no cookie database at {database}")
     with tempfile.TemporaryDirectory() as folder:
@@ -449,8 +361,8 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
     with _open_copy(database) as connection:
         version_row = connection.execute("SELECT value FROM meta WHERE key = 'version'").fetchone()
         rows = connection.execute(
-            "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, samesite"
-            " FROM cookies"
+            "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, "
+            "is_httponly, samesite FROM cookies"
         ).fetchall()
     has_host_hash = int(version_row[0]) >= _HOST_HASH_VERSION if version_row else False
     # The key is read only when a value needs it, so a profile of plain values shows no prompt.
@@ -463,21 +375,29 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
             encrypted_count += 1
             # A whole profile holds every site's cookies, and some use a scheme this reader can't
             # undo (Chrome's app-bound "v20" values, a damaged row), so one such cookie is skipped
-            # rather than failing every login. Only when every encrypted value fails is the key wrong.
+            # rather than failing. Only when every encrypted value fails is key wrong.
             try:
-                value = _decrypt_chromium(bytes(encrypted), keys, host, has_host_hash, f"{browser} cookie {name} for {host}")
+                what = f"{browser} cookie {name} for {host}"
+                value = _decrypt_chromium(bytes(encrypted), keys, host, has_host_hash, what)
             except Error as error:
                 failures.append(error)
                 continue
         # Chromium counts microseconds from 1601; 0 marks a session cookie.
         expires = expires_utc // 1_000_000 - _WINDOWS_EPOCH_OFFSET if expires_utc else -1
-        jar.append(_cookie(name, value, host, path, expires, secure, http_only, _SAME_SITE.get(same_site, "Lax")))
+        same = _SAME_SITE.get(same_site, "Lax")
+        jar.append(_cookie(name, value, host, path, expires, secure, http_only, same))
     if failures and len(failures) == encrypted_count:
-        raise Error(f"can't decrypt any of {encrypted_count} {browser} cookies, so the key is wrong "
-                    f"or the format unknown; the first: {failures[0]}")
+        raise Error(
+            f"can't decrypt any of {encrypted_count} {browser} cookies: wrong key or unknown "
+            f"format; first: {failures[0]}"
+        )
     if failures:
         # The count only: a cookie's name or host says which sites a person uses.
-        log.debug("skipped {count} {browser} cookies that can't be decrypted", count=len(failures), browser=browser)
+        log.debug(
+            "skipped {count} {browser} cookies that can't be decrypted",
+            count=len(failures),
+            browser=browser,
+        )
     return jar
 
 
@@ -496,23 +416,31 @@ def _chromium_keys(browser: str) -> dict[bytes, bytes]:
         return {b"v10": _derive_key(_read_keychain_password(f"{keychain_name} Safe Storage"), 1003)}
     # Linux writes v10 with the fixed password, and v11 with the keyring's when there is one.
     keyring_password = _read_keyring_password(application)
-    return {b"v10": _derive_key("peanuts", 1), b"v11": _derive_key(keyring_password or "peanuts", 1)}
+    v11_pw = keyring_password or "peanuts"
+    return {b"v10": _derive_key("peanuts", 1), b"v11": _derive_key(v11_pw, 1)}
 
 
 def _read_keychain_password(service: str) -> str:
     result = subprocess.run(
-        ["security", "find-generic-password", "-w", "-s", service], capture_output=True, text=True, check=False
+        ["security", "find-generic-password", "-w", "-s", service],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if result.returncode != 0:
-        raise Error(f"can't read the Keychain item {service!r}: {result.stderr.strip() or 'denied'}")
+        err = result.stderr.strip() or "denied"
+        raise Error(f"can't read the Keychain item {service!r}: {err}")
     return result.stdout.strip()
 
 
 def _read_keyring_password(application: str) -> str | None:
-    # No `secret-tool` (FileNotFoundError) or no entry both mean no keyring: Chromium then uses "peanuts".
+    # No `secret-tool` or no entry means no keyring: Chromium uses "peanuts".
     try:
         result = subprocess.run(
-            ["secret-tool", "lookup", "application", application], capture_output=True, text=True, check=False
+            ["secret-tool", "lookup", "application", application],
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except FileNotFoundError:
         return None
@@ -526,12 +454,14 @@ def _derive_key(password: str, iterations: int) -> bytes:
     return hashlib.pbkdf2_hmac("sha1", password.encode("utf-8"), b"saltysalt", iterations, 16)
 
 
-def _decrypt_chromium(encrypted: bytes, keys: dict[bytes, bytes], host: str, has_host_hash: bool, what: str) -> str:
-    """One Chromium value, decrypted; `what` names the cookie in an error, which never shows the value."""
+def _decrypt_chromium(
+    encrypted: bytes, keys: dict[bytes, bytes], host: str, has_host_hash: bool, what: str
+) -> str:
+    """One Chromium value, decrypted; errors name `what`, never the value."""
     key = keys.get(encrypted[:3])
     if key is None:
         raise Error(f"can't decrypt {what}: unknown format {encrypted[:3]!r}")
-    # A ValueError here is a bad padding, a bad host hash or bad UTF-8: all a wrong key or a damaged value.
+    # ValueError: bad padding, bad host hash, or bad UTF-8 (wrong key or damaged value).
     try:
         plain = _decrypt_aes_cbc(key, encrypted[3:])
         if has_host_hash:
@@ -545,12 +475,14 @@ def _decrypt_chromium(encrypted: bytes, keys: dict[bytes, bytes], host: str, has
 
 
 def _decrypt_aes_cbc(key: bytes, ciphertext: bytes) -> bytes:
-    """AES-CBC with Chromium's fixed IV of 16 spaces, then PKCS#7 unpadding; private, for Chromium only."""
+    """AES-CBC with Chromium's fixed IV of 16 spaces, then PKCS#7 unpadding."""
     try:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives.padding import PKCS7
     except ImportError:
-        raise ImportError("shared.cookies needs cryptography: pip install 'flntools[browser]'") from None
+        raise ImportError(
+            "shared.cookies needs cryptography: pip install 'flntools[browser]'"
+        ) from None
     decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
     unpadder = PKCS7(128).unpadder()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
@@ -576,7 +508,8 @@ def _parse_netscape(text: str) -> list[Cookie]:
             expiry = int(expires)
         except ValueError:
             raise ValueError(f"line {number}: expiry {expires!r} is not a whole number") from None
-        jar.append(_cookie(name, value, domain, path, expiry or -1, secure.upper() == "TRUE", http_only, "Lax"))
+        is_sec = secure.upper() == "TRUE"
+        jar.append(_cookie(name, value, domain, path, expiry or -1, is_sec, http_only, "Lax"))
     return jar
 
 
@@ -598,12 +531,15 @@ def _json_cookie(entry: Any, index: int) -> Cookie:
     except (TypeError, ValueError, OverflowError):
         raise ValueError(f"cookie {index}: expiry {expires!r} is not a number") from None
     same_site = _JSON_SAME_SITE.get(str(entry.get("sameSite", "")).lower(), "Lax")
-    return _cookie(str(entry["name"]), str(entry["value"]), str(entry["domain"]), str(entry.get("path") or "/"),
-                   expiry if expiry > 0 else -1, entry.get("secure"), entry.get("httpOnly"), same_site)
+    exp = expiry if expiry > 0 else -1
+    return _cookie(
+        str(entry["name"]), str(entry["value"]), str(entry["domain"]),
+        str(entry.get("path") or "/"), exp, entry.get("secure"), entry.get("httpOnly"), same_site,
+    )
 
 
 def _netscape_text(jar: Iterable[Cookie]) -> str:
-    """The jar as a Netscape file; an `Error` naming the cookie (not its value) when one can't be written."""
+    """The jar as a Netscape file; an Error names the cookie if one cannot be written."""
     lines = ["# Netscape HTTP Cookie File"]
     for cookie in jar:
         domain = str(cookie.get("domain", ""))
@@ -619,7 +555,10 @@ def _netscape_text(jar: Iterable[Cookie]) -> str:
             str(cookie["value"]),
         ]
         # A tab before the value or any line break would make the file read back differently.
-        if any("\t" in field for field in fields[:-1]) or any(mark in "".join(fields) for mark in "\r\n"):
-            raise Error(f"cookie {cookie['name']!r} for {domain} has a tab or line break that Netscape files can't hold")
+        if any("\t" in field for field in fields[:-1]) or any(m in "".join(fields) for m in "\r\n"):
+            name = cookie["name"]
+            raise Error(
+                f"cookie {name!r} for {domain} has a tab or newline Netscape cannot hold"
+            )
         lines.append("\t".join(fields))
     return "\n".join(lines) + "\n"

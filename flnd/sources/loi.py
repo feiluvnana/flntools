@@ -1,31 +1,17 @@
-"""LOIBUS (loix.cc): one post's info, preview images and, for VIP accounts, its archives.
+"""LOIBUS (loix.cc): one post's info, preview images and, for VIP accounts, archives.
 
-The `post` route reads the post's JSON once. `photo` yields its info.md and preview images.
-`archive` decrypts the download links, counts the post against the day's VIP quota, and yields
-info.md again, now with the links, and the archives:
+The `post` route reads the post JSON. `photo` yields info.md and preview images.
+`archive` decrypts download links, consumes daily VIP quota, and yields archives:
 
     flnd download loi:5930 --from archive
 
-The site's quirks:
-  - Every API request is signed with a fresh timestamp, and carries the `access-token` cookie as
-    a Bearer token. `prepare` does both for api.moegoat.com on every attempt. A file on another
-    host gets neither, and gets the site's referer and origin from its post instead.
-  - The download links come AES-128-CBC encrypted, with the site's own key and IV, which its
-    JavaScript holds. The unzip password comes in the clear.
-  - Archives count against the account's daily VIP quota. The site says how many an account has
-    taken today, and counts a post taken twice in a day once, so `state` remembers which posts
-    this tool took.
-  - Archives are saved as the server sends them, under the name in their URL, whatever their
-    extension says; info.md's unzip password opens them with any archive tool.
+API requests carry signed timestamps and Bearer tokens for api.moegoat.com. Download
+links use AES-128-CBC encryption. Archives are saved under their URL filenames.
 
-Folder layout, under `.flnd/media/loi/<id>/<author>/<id> <title>/`:
-  info.md         the post's fields, its download links and the unzip password
-  images/         the preview images, 01.jpg, 02.jpg, …
-  loi-<hash>.7z   the archives (--from archive), saved as the server sends them and named as it
-                  names them
-
-Every file's history key is its path, as it was before the categories became methods, so a file
-saved then is not downloaded again.
+Folder layout under `.flnd/media/loi/<id>/<author>/<id> <title>/`:
+  info.md         post fields, download links, unzip password
+  images/         preview images (01.jpg, 02.jpg, …)
+  loi-<hash>.7z   archives (--from archive)
 """
 
 from __future__ import annotations
@@ -56,27 +42,24 @@ SALT = "loibus-sec-decoy-salt-v1"
 REQUEST_ID_PREFIX = "loibus-web-request-id-v1"
 # Where the request id hides the digest's five characters.
 DIGEST_POSITIONS = frozenset({1, 9, 19, 24, 30})
-# The site's own AES-128 key and IV, from its JavaScript; `_decrypt_aes_cbc` decrypts its links with them.
+# The site's own AES-128 key and IV, from its JavaScript; `_decrypt_aes_cbc` decrypts links.
 SITE_KEY = b"7811595744111520"
 SITE_IV = b"RgaXNyE5aWckBwI7"
 # Archives a day per VIP level; an SVIP account gets twice as many.
 VIP_DAILY_LIMITS = {1: 15, 2: 25, 3: 40, 4: 60}
-# The characters Markdown reads as syntax in a heading, a table cell or a link; `markdown` escapes them.
+# The characters Markdown reads as syntax in a heading, table cell, or link.
 MARKDOWN_SPECIAL = set("\\`*_[]<>|#")
 # Tag group ids in LOIBUS's catalogue API: play (1), clothing (2), character (3).
 TAG_GROUPS = (1, 2, 3)
 # Maps flnd's `sort` choices to LOIBUS's API sort names.
-SORT_MAP = {"date": "latest", "views": "popular", "likes": "choicest",
-            "bookmarks": "choicest", "comments": "choicest"}
+SORT_MAP = {
+    "date": "latest", "views": "popular", "likes": "choicest",
+    "bookmarks": "choicest", "comments": "choicest",
+}
 
 
 def lookup_authors(site: Site, name: str) -> Iterator[tuple[str, str]]:
-    """Yield `(name, id)` pairs for every author in LOIBUS's catalogue.
-
-    Args:
-        site: the target's site.
-        name: the author name being looked up.
-    """
+    """Yield `(name, id)` pairs for every author in LOIBUS's catalogue."""
     for item in _paged(site, f"{API}user/library/loiers"):
         label = str(item.get("name") or item.get("title") or "")
         if label and "id" in item:
@@ -84,12 +67,7 @@ def lookup_authors(site: Site, name: str) -> Iterator[tuple[str, str]]:
 
 
 def lookup_tags(site: Site, name: str) -> Iterator[tuple[str, str]]:
-    """Yield `(name, id)` pairs for every tag across LOIBUS's three tag groups.
-
-    Args:
-        site: the target's site.
-        name: the tag name being looked up.
-    """
+    """Yield `(name, id)` pairs for every tag across LOIBUS's three tag groups."""
     for group_id in TAG_GROUPS:
         for item in _paged(site, f"{API}user/library/tags", params={"group_id": group_id}):
             label = str(item.get("name") or item.get("title") or "")
@@ -97,7 +75,9 @@ def lookup_tags(site: Site, name: str) -> Iterator[tuple[str, str]]:
                 yield label, str(item["id"])
 
 
-def _paged(site: Site, url: str, *, params: Mapping[str, Any] | None = None) -> Iterator[dict[str, Any]]:
+def _paged(
+    site: Site, url: str, *, params: Mapping[str, Any] | None = None,
+) -> Iterator[dict[str, Any]]:
     """Yield items from a `{data: [...], pagination: {total}}` endpoint, page 1 onward."""
     page = 1
     seen = 0
@@ -116,7 +96,9 @@ def _paged(site: Site, url: str, *, params: Mapping[str, Any] | None = None) -> 
         page += 1
 
 
-def _matches_extra(item: Mapping[str, Any], authors: set[str], tags: set[str], text: str) -> bool:
+def _matches_extra(
+    item: Mapping[str, Any], authors: set[str], tags: set[str], text: str,
+) -> bool:
     """Return whether `item` satisfies additional combined filters."""
     if authors:
         cat = item.get("category")
@@ -152,18 +134,7 @@ class Loibus(Source):
 
     @target(r"{id:\d+}", r"loix.cc/lois/{id:\d+}", r"moegoat.com/lois/{id:\d+}")
     def post(self, site: Site, id: str) -> dict[str, Any]:
-        """One post, by its id: `Target("loi", "post", "5930")`, or a post's URL on either site.
-
-        Args:
-            site: the target's site.
-            id: the post's id.
-
-        Returns:
-            The post's JSON, which both categories receive.
-
-        Raises:
-            FetchError: the site has no post with this id.
-        """
+        """One post by id, or a post URL on either site."""
         body = site.fetch(f"{API}lois/{id}").json
         post = body.get("data") if isinstance(body, dict) else None
         if not isinstance(post, dict) or not post.get("loi_title"):
@@ -172,30 +143,23 @@ class Loibus(Source):
 
     @post.category
     def photo(self, site: Site, post: dict[str, Any]) -> Iterator[Post]:
-        """The post's info.md, without links, and its preview images.
-
-        Args:
-            site: the target's site.
-            post: the post's JSON, as `post` returned it.
-        """
-        yield Post(post["id"], [File.text("info.md", info_md(post, None))], date=post.get("date"), **fields_of(post))
+        """The post's info.md, without links, and its preview images."""
+        info_file = File.text("info.md", info_md(post, None))
+        yield Post(post["id"], [info_file], date=post.get("date"), **fields_of(post))
         if post.get("images"):
-            files = [File(url, name=image_name(number, url)) for number, url in enumerate(post["images"], start=1)]
-            yield Post(post["id"], files, date=post.get("date"), headers=SITE_HEADERS, part="images",
-                       **fields_of(post))
+            files = [
+                File(url, name=image_name(number, url))
+                for number, url in enumerate(post["images"], start=1)
+            ]
+            yield Post(
+                post["id"], files, date=post.get("date"), headers=SITE_HEADERS, part="images",
+                **fields_of(post),
+            )
 
     @post.category
     def archive(self, site: Site, post: dict[str, Any]) -> Iterator[Post]:
-        """The post's info.md, now with its download links, and its archives; each post counts once against the VIP quota.
-
-        Without a login, with the quota used up, or when the site gives this account no links, it
-        yields info.md without links and warns why.
-
-        Args:
-            site: the target's site, whose login and saved state decide the quota.
-            post: the post's JSON, as `post` returned it.
-        """
-        # The job skips a post outside `--time` too, but only after its links were fetched and counted.
+        """The post's info.md, now with download links, and its archives (VIP quota applies)."""
+        # The job skips a post outside `--time` too, but only after links were fetched and counted.
         if day(post.get("date")) not in site.time:
             return
         links = self._links(site, post)
@@ -204,9 +168,16 @@ class Loibus(Source):
         # come after the yield, and can't be told from here.
         if archives:
             count_download(site, post["id"])
-        yield Post(post["id"], [File.text("info.md", info_md(post, links)),
-                                *(File(mirrors, name=name) for name, mirrors in archives)],
-                   date=post.get("date"), headers=SITE_HEADERS, **fields_of(post))
+        yield Post(
+            post["id"],
+            [
+                File.text("info.md", info_md(post, links)),
+                *(File(mirrors, name=name) for name, mirrors in archives),
+            ],
+            date=post.get("date"),
+            headers=SITE_HEADERS,
+            **fields_of(post),
+        )
 
     @target("?{query}", params={
         "tag": Param(Name, "a tag", lookup=lookup_tags),
@@ -214,23 +185,22 @@ class Loibus(Source):
         "sort": Param(Choice("date", "views", "likes", "bookmarks", "comments"), "sort order"),
     })
     def query(self, site: Site, query: Query) -> Iterator[Target]:
-        """Yield `loi:<id>` post targets matching `query`.
-
-        Args:
-            site: the target's site.
-            query: one planned search from `flnd.query.plan`.
-        """
+        """Yield `loi:<id>` post targets matching `query`."""
         authors = [str(v) for term in query.terms if term.param == "author" for v in term.values]
         tags = [str(v) for term in query.terms if term.param == "tag" for v in term.values]
         sorts = [str(v) for term in query.terms if term.param == "sort" for v in term.values]
         sort = SORT_MAP[sorts[-1]] if sorts else "latest"
         if authors:
-            items = _paged(site, f"{API}user/library/loier/id",
-                           params={"category_id": authors[0], "sort": sort})
+            items = _paged(
+                site, f"{API}user/library/loier/id",
+                params={"category_id": authors[0], "sort": sort},
+            )
             extra_authors, extra_tags = set(authors[1:]), set(tags)
         elif tags:
-            items = _paged(site, f"{API}user/library/tag/id",
-                           params={"tag_id": tags[0], "sort": sort})
+            items = _paged(
+                site, f"{API}user/library/tag/id",
+                params={"tag_id": tags[0], "sort": sort},
+            )
             extra_authors, extra_tags = set(), set(tags[1:])
         elif query.text:
             items = _paged(site, f"{API}user/loi/search/{quote(query.text, safe='')}/{sort}")
@@ -238,23 +208,17 @@ class Loibus(Source):
         else:
             raise TargetError("loi: give a tag, author, or search words")
         for item in items:
-            if _matches_extra(item, extra_authors, extra_tags,
-                              query.text if (authors or tags) else ""):
+            if _matches_extra(
+                item, extra_authors, extra_tags,
+                query.text if (authors or tags) else "",
+            ):
                 yield Target(self.code, "post", str(item["id"]))
 
     def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
-        """Give a request to the source's domains the site's referer and origin, and sign an API request with the token.
-
-        Args:
-            request: the request about to be sent.
-            cookies: the login's cookies, whose `access-token` becomes the Bearer token.
-
-        Returns:
-            The same request. It runs again for each retry, so every attempt has a fresh signature.
-        """
+        """Set referer and origin for source domains, signing API requests with token."""
         request.headers.setdefault("referer", SITE_HEADERS["referer"])
         request.headers.setdefault("origin", SITE_HEADERS["origin"])
-        # Only the API is signed and given the token; the image and archive hosts take the referer and origin alone.
+        # Only the API is signed and given the token; other hosts take referer and origin alone.
         if request.url.host != API_HOST:
             return request
         token = decode_token(cookies.get("access-token", ""))
@@ -263,45 +227,53 @@ class Loibus(Source):
         return sign_request(request, now_ms=_clock_ms())
 
     def _links(self, site: Site, post: dict[str, Any]) -> dict[str, Any] | None:
-        """The post's decrypted download links, or None (with a warning) when there are none for this login."""
+        """The post's decrypted download links, or None with a warning when unavailable."""
         if not decode_token(site.cookies.get("access-token", "")):
             site.warn("archives need a login; run flnd login")
             return None
         used, limit = quota(site, post["id"])
-        # A limit of 0 means unknown (see `quota`), so only a known, used-up quota stops the links here.
+        # A limit of 0 means unknown (see `quota`), so only a known, used-up quota stops links.
         if limit and used >= limit:
-            site.warn("the daily VIP quota is used up ({used} of {limit}); archives skipped", used=used, limit=limit)
+            site.warn(
+                "the daily VIP quota is used up ({used} of {limit}); archives skipped",
+                used=used, limit=limit,
+            )
             return None
         body = _json(site, f"{API}user/loi/download_v6/{post['id']}")
         data = body.get("data") if isinstance(body, dict) else None
-        # The site sends no links to an account that can't take the post; the warning names the level it needs.
+        # The site sends no links to an account that can't take the post; the warning names needed.
         if not isinstance(data, dict) or not data.get("sv_list"):
             needed = f"VIP{post['vip_requirement']}" if post.get("vip_requirement") else "a login"
-            site.warn("the site gives no download links for this post ({needed} needed)", needed=needed)
+            site.warn(
+                "the site gives no download links for this post ({needed} needed)", needed=needed,
+            )
             return None
-        return {"servers": [(str(server.get("sv_name") or "Server"), decrypt_field(server.get("sv_url")))
-                            for server in data["sv_list"] if isinstance(server, dict) and server.get("sv_url")],
-                "pan": decrypt_field(data.get("bdp")), "pan_key": decrypt_field(data.get("bdp_key"))}
+        servers = [
+            (str(server.get("sv_name") or "Server"), decrypt_field(server.get("sv_url")))
+            for server in data["sv_list"]
+            if isinstance(server, dict) and server.get("sv_url")
+        ]
+        return {
+            "servers": servers,
+            "pan": decrypt_field(data.get("bdp")),
+            "pan_key": decrypt_field(data.get("bdp_key")),
+        }
 
 
 def fields_of(post: dict[str, Any]) -> dict[str, Any]:
-    """The post's fields for the folder format: its `author`, `misc` when it has none, and its `title`."""
-    return {"author": (post.get("category") or {}).get("name") or "misc", "title": post["loi_title"]}
+    """Folder fields: `author` (`misc` when absent) and `title`."""
+    category = post.get("category") or {}
+    return {"author": category.get("name") or "misc", "title": post["loi_title"]}
 
 
 def image_name(number: int, url: str) -> str:
-    """A preview image's name, `01.jpg`; the site's image URLs have no extension, and serve JPEG.
-
-    Args:
-        number: the image's place in the post, counted from 1.
-        url: the image's URL, whose extension is kept when it has one.
-    """
+    """A preview image's name, `01.jpg`."""
     suffix = PurePosixPath(urlsplit(url).path).suffix
     return f"{number:02d}{suffix or '.jpg'}"
 
 
 def group_mirrors(links: dict) -> list[tuple[str, list[str]]]:
-    """Each archive's name, from its URL, and the mirror URLs that serve it, in the site's order."""
+    """Each archive's name, from its URL, and the mirror URLs that serve it."""
     groups: dict[str, list[str]] = {}
     for _, url in links["servers"]:
         name = unquote(PurePosixPath(urlsplit(url).path).name) or "archive.zip"
@@ -311,21 +283,13 @@ def group_mirrors(links: dict) -> list[tuple[str, list[str]]]:
 
 def _json(site: Site, url: str) -> Any:
     """A URL's JSON, or None when the site refuses this login (401, 403 or 404)."""
-    # `try_fetch` returns None for a refusal instead of raising, so the caller can warn about the login rather than fail.
+    # `try_fetch` returns None for refusal, allowing callers to warn rather than fail.
     response = site.try_fetch(url)
     return None if response is None else response.json
 
 
 def quota(site: Site, post_id: int) -> tuple[int, int]:
-    """Archives taken today and the account's daily VIP limit, 0 when unknown; a post taken today is free again.
-
-    Args:
-        site: the target's site, whose login and saved state are read.
-        post_id: the post's id; a post already counted today is free to take again.
-
-    Returns:
-        `(taken today, the daily limit)`; the limit is 0 when the account or its level is unknown.
-    """
+    """Archives taken today and daily VIP limit, 0 when unknown."""
     taken = today_posts(site)
     user = _json(site, f"{API}user/info")
     data = user.get("data") if isinstance(user, dict) else None
@@ -339,47 +303,48 @@ def quota(site: Site, post_id: int) -> tuple[int, int]:
 
 
 def count_download(site: Site, post_id: int) -> None:
-    """Count a post against today's quota, once.
-
-    Args:
-        site: the target's site, whose saved state holds today's count.
-        post_id: the post whose archives were just taken.
-    """
+    """Count a post against today's quota, once."""
     taken = today_posts(site)
     if post_id not in taken:
-        site.state["quota"] = {"day": datetime.date.today().isoformat(), "posts": [*taken, post_id]}
+        site.state["quota"] = {
+            "day": datetime.date.today().isoformat(), "posts": [*taken, post_id],
+        }
 
 
 def today_posts(site: Site) -> list[int]:
     """The posts whose archives were taken today; yesterday's list no longer counts."""
     record = site.state.get("quota") or {}
-    return list(record.get("posts", [])) if record.get("day") == datetime.date.today().isoformat() else []
+    today = datetime.date.today().isoformat()
+    return list(record.get("posts", [])) if record.get("day") == today else []
 
 
 def info_md(post: dict, links: dict | None) -> str:
-    """The post as Markdown: its fields, unzip password, description, download links and preview images.
-
-    Args:
-        post: the post's JSON.
-        links: the decrypted links from `_links`, or None for an info.md without them.
-    """
+    """The post as Markdown: fields, unzip password, description, links, and preview images."""
     author = post.get("category") or {}
+    author_name = markdown(author.get("name", ""))
+    author_id = author.get("id", "")
+    author_link = f"[{author_name} (#{author_id})]({SITE}library/loier/{author_id})"
     tags = " ".join(f"`{markdown(tag.get('name', ''))}`" for tag in post.get("tags") or [])
+    vip_req = f"VIP{post['vip_requirement']}" if post.get("vip_requirement") else "Free"
+    media_cnt = f"pictures {post.get('pic_count', 0)} · videos {post.get('video_count', 0)}"
+    stats = (
+        f"likes {post.get('like_count', 0)} · views {post.get('viewer_count', 0)} · "
+        f"downloads {post.get('download_count', 0)}"
+    )
     # The fields as a two-column table: each row is (name, value), already escaped for Markdown.
     rows = [
         ("ID", f"`{post['id']}`"),
-        ("Author", f"[{markdown(author.get('name', ''))} (#{author.get('id', '')})]({SITE}library/loier/{author.get('id', '')})"),
+        ("Author", author_link),
         ("Date", str(post.get("date") or "")),
         ("URL", f"[{post['id']}]({SITE}lois/{post['id']})"),
         ("File Size", str(post.get("file_size") or "N/A")),
-        ("VIP Requirement", f"VIP{post['vip_requirement']}" if post.get("vip_requirement") else "Free"),
-        ("Media Count", f"pictures {post.get('pic_count', 0)} · videos {post.get('video_count', 0)}"),
-        ("Stats", f"likes {post.get('like_count', 0)} · views {post.get('viewer_count', 0)} · "
-                  f"downloads {post.get('download_count', 0)}"),
+        ("VIP Requirement", vip_req),
+        ("Media Count", media_cnt),
+        ("Stats", stats),
         *([("Unzip Password", f"`{markdown(post['open_key'])}`")] if post.get("open_key") else []),
         *([("Tags", tags)] if tags else []),
     ]
-    # The title, then the table, then each optional section in turn; a section a post lacks is left out.
+    # Title, table, then each optional section in turn; omitted when absent.
     lines = [f"# {markdown(post['loi_title'])}", "", "| Property | Value |", "| --- | --- |",
              *(f"| {name} | {value} |" for name, value in rows)]
     # The description is quoted line by line, so a blank line stays inside the quote.
@@ -387,40 +352,39 @@ def info_md(post: dict, links: dict | None) -> str:
         lines += ["", "## Description", "",
                   *(f"> {line}" if line else ">" for line in post["loi_description"].splitlines())]
     if links:
-        lines += ["", "## Download Sources", "",
-                  *(f"- **Server [{markdown(name)}]**: [Download]({url})" for name, url in links["servers"])]
-        # The Baidu link is the one with its own password, which is shown beside it when there is one.
+        server_lines = [
+            f"- **Server [{markdown(name)}]**: [Download]({url})"
+            for name, url in links["servers"]
+        ]
+        lines += ["", "## Download Sources", "", *server_lines]
+        # The Baidu link has its own password, shown beside it when present.
         if links["pan"]:
             key = f" (Password: `{markdown(links['pan_key'])}`)" if links["pan_key"] else ""
             lines.append(f"- **Baidu**: [Link]({links['pan']}){key}")
     if post.get("images"):
-        lines += ["", "## Preview Images", "",
-                  *(f"{number}. ![Preview {number}]({url})" for number, url in enumerate(post["images"], start=1))]
+        lines += [
+            "", "## Preview Images", "",
+            *(f"{number}. ![Preview {number}]({url})"
+              for number, url in enumerate(post["images"], start=1)),
+        ]
     return "\n".join(lines) + "\n"
 
 
 def markdown(text: str) -> str:
     """Text with the characters Markdown would read escaped."""
-    return "".join(f"\\{character}" if character in MARKDOWN_SPECIAL else character for character in str(text))
+    return "".join(
+        f"\\{character}" if character in MARKDOWN_SPECIAL else character for character in str(text)
+    )
 
 
-def sign_request(request: httpx.Request, *, now_ms: int, pick: Callable[[Sequence[str]], str] = secrets.choice,
-                 noise: Callable[[int], str] = secrets.token_hex) -> httpx.Request:
-    """Add LOIBUS's signature headers to an API request, for the time `now_ms`.
-
-        sign_request(httpx.Request("GET", API + "lois/5930"), now_ms=1_700_000_000_000)
-
-    `pick` and `noise` are the random parts, replaced in tests.
-
-    Args:
-        request: the API request, whose headers are set in place.
-        now_ms: the time in milliseconds, which the signature and the request id both use.
-        pick: chooses the variant character of the request id; replaced in tests.
-        noise: returns that many random hex characters; replaced in tests.
-
-    Returns:
-        The same request, with the five signature headers set.
-    """
+def sign_request(
+    request: httpx.Request,
+    *,
+    now_ms: int,
+    pick: Callable[[Sequence[str]], str] = secrets.choice,
+    noise: Callable[[int], str] = secrets.token_hex,
+) -> httpx.Request:
+    """Add LOIBUS's signature headers to an API request for now_ms."""
     where = urlsplit(str(request.url)).path.removeprefix("/").removeprefix("api/")
     method, at = request.method.lower(), str(now_ms)
     request.headers.update({
@@ -432,21 +396,16 @@ def sign_request(request: httpx.Request, *, now_ms: int, pick: Callable[[Sequenc
     return request
 
 
-def request_id(method: str, where: str, *, now_ms: int, pick: Callable[[Sequence[str]], str],
-               noise: Callable[[int], str]) -> str:
-    """A UUID-shaped id: the five-minute slot and random hex, with a digest of the request hidden inside.
-
-    Args:
-        method: the request's lower-case HTTP method.
-        where: the request's path, without its `/api/` prefix.
-        now_ms: the time in milliseconds; the id changes every five minutes.
-        pick: chooses the variant character; replaced in tests.
-        noise: returns that many random hex characters; replaced in tests.
-
-    Returns:
-        The id as `8-4-4-4-12` hex, with a version nibble of 4 and a variant of 8, 9, a or b.
-    """
-    # The slot is the time in five-minute units, so one slot's ids share a prefix; random hex fills the rest.
+def request_id(
+    method: str,
+    where: str,
+    *,
+    now_ms: int,
+    pick: Callable[[Sequence[str]], str],
+    noise: Callable[[int], str],
+) -> str:
+    """A UUID-shaped id: slot and random hex with a request digest inside."""
+    # The slot is the time in five-minute units (one prefix per slot); random hex fills the rest.
     seed = format(now_ms // 300_000, "x").zfill(8)[-8:] + noise(9)[:17]
     # The digest covers the prefix, the request, and the digest of an empty `{}` body.
     digest = crypto.sha256(f"{REQUEST_ID_PREFIX}|{seed}|{method}|{where}|{crypto.sha256('{}')}")[:5]
@@ -465,27 +424,19 @@ def request_id(method: str, where: str, *, now_ms: int, pick: Callable[[Sequence
 
 
 def decrypt_field(text: str | None) -> str:
-    """Decrypt one of the site's AES fields (a link, a password); an empty one stays empty.
-
-    Raises `ValueError` when it doesn't decrypt: the site has changed its key.
-    """
+    """Decrypt one of the site's AES fields (a link, a password); an empty one stays empty."""
     text = (text or "").strip()
     if not text:
         return ""
     try:
         return _decrypt_aes_cbc(base64.b64decode(text)).decode("utf-8", "replace")
-    # Bad base64, or bytes the key doesn't decrypt to valid padding; the site's key change is the likely cause.
+    # Bad base64 or invalid padding; site key change is the likely cause.
     except (binascii.Error, ValueError):
         raise ValueError(f"loi: can't decrypt {text[:16]!r}…; the site changed its key") from None
 
 
 def _decrypt_aes_cbc(blob: bytes) -> bytes:
-    """`blob` decrypted with the site's AES-128-CBC key and IV, its PKCS7 padding removed.
-
-    CBC is the site's choice, not ours: `shared.crypto` offers only authenticated AES-GCM, so the
-    site's format is read here with `cryptography` directly. A blob that isn't whole blocks, or
-    whose padding is wrong, raises ValueError, as `cryptography` does.
-    """
+    """`blob` decrypted with the site's AES-128-CBC key and IV, its PKCS7 padding removed."""
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.padding import PKCS7
 
@@ -496,7 +447,7 @@ def _decrypt_aes_cbc(blob: bytes) -> bytes:
 
 
 def decode_token(raw: str) -> str:
-    """The Bearer token in an `access-token` cookie, which the site stores %-encoded with its `Bearer ` prefix."""
+    """The Bearer token from access-token cookie (%-decoded without prefix)."""
     return unquote(raw).removeprefix("Bearer ").removeprefix("bearer ").strip()
 
 

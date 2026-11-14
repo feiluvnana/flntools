@@ -295,13 +295,17 @@ def _advanced_params(query: Query) -> tuple[dict[str, str], list[set[int]]]:
 
 
 def _search_pages(site: Site, url: str, params: Mapping[str, str]) -> Iterator[dict[str, Any]]:
+    """Fetch items across paginated search results."""
     def fetch(cursor: str | None) -> Any:
         request_params = {**params, "cursor_res": "true"}
         if cursor:
             request_params["cursor"] = cursor
         return site.fetch(url, params=request_params).json
 
-    for page in pages(fetch, lambda body: str(body.get("next_cursor") or "") if isinstance(body, dict) else None):
+    def next_cursor(body: Any) -> str | None:
+        return str(body.get("next_cursor") or "") if isinstance(body, dict) else None
+
+    for page in pages(fetch, next_cursor):
         items = page.get("items") if isinstance(page, dict) else None
         if not isinstance(items, list):
             continue

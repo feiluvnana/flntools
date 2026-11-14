@@ -1,49 +1,16 @@
-"""HTTP for scripts: `http.fetch(url)` gives a `Response`, and `http.download(url, dest)` saves a file.
+"""HTTP for scripts: `http.fetch(url)` and `http.download(url, dest)`.
 
-How it works: `fetch` sends one request through httpx, on the caller's `httpx.Client` or on a
-module-level one made on first use, and reads the whole body. Each attempt first takes one of the
-6 slots its host has in this process, and gives it back as soon as the body is read, so no more
-than 6 requests to one host are ever in flight, whichever thread or client sends them. A dead
-connection or a 5xx is sent again, up to `attempts` tries in all, after a short wait; a 429 is
-raised at once as `RateLimitedError`, never slept on, so the caller's back-off decides how long
-to wait. Any other 4xx raises `RefusedError`, or with `soft=True` a 401, 403 or 404 returns
-None. What a request carries (cookies, signing, pacing, back-off) is left to the caller's client.
+`fetch` sends requests through httpx, with per-host concurrency limits, retries,
+and soft 401/403/404 handling. `download` streams files into atomic part files
+with resume support and hash/media validation.
 
     from shared import http
 
     page = http.fetch("https://example.com/items", params={"page": 2})
-    page.status, page.headers["content-type"], page.json["items"]
     page.html.css("a::attr(href)").all
-    if (profile := http.fetch("https://example.com/example_user", soft=True)) is None:
-        ...                                     # a 401, 403 or 404
+    http.download("https://cdn.example.com/v.mp4", "videos/")
 
-    with httpx.Client(cookies=jar, headers={"User-Agent": "..."}) as client:
-        http.fetch("https://example.com/api", client=client, method="POST", json={"id": 1})
-
-A `Response` is a frozen value made from the body already read: it holds no connection, so
-there is nothing to close, and it has no `.raw`, since `browser.Page.fetch` (and later flnd's
-`site.fetch`) returns the same type from other libraries. This module wraps httpx; the `http`
-extra brings it, and parsel for `Response.html`.
-
-`download` streams one file into a hidden `.<name>.<random>.part` beside `dest`, checks its
-size, the server's digest and then the caller's `check`, and renames it onto `dest` through
-`atomic`. The part's small `.part.json` (the URL, the validator, the size and the pieces
-written) is kept through a dropped connection, a Ctrl-C or a crash, and the next attempt, or
-the next call for the same `dest`, asks only for the rest. A file of 4 MB or more is fetched in
-2–4 MB pieces on up to 8 connections (`shared._download` holds how).
-
-    http.download("https://cdn.example/v.mp4", "videos/")               # videos/v.mp4
-    http.download([mirror_a, mirror_b], "f.7z",
-                  transfer=http.Transfer(client=client, progress=bar.update,
-                                         check=lambda path: media.open(path).check()))
-
-No message or log line here holds a cookie or an `Authorization` value: messages name the method,
-the URL without its query, and the status, and any text from httpx is scrubbed of the request's
-secret header values first.
-
-Threads: `fetch` and `download` may be called from many threads at once, sharing the module's client
-or one of the caller's (httpx's `Client` is safe to share between threads). `fetch`'s per-host slots
-are one `threading.BoundedSemaphore` per host, made under a lock, so every thread sees the same 6.
+Thread-safe and scrubs credentials and signed tokens from logs and errors.
 """
 
 from __future__ import annotations
@@ -70,7 +37,7 @@ try:
 except ImportError:
     raise ImportError("shared.http needs httpx: pip install 'flntools[http]'") from None
 
-if TYPE_CHECKING:  # `selector` loads on the first `html`, so a JSON-only script never imports parsel
+if TYPE_CHECKING:  # `selector` loads on first `html`; JSON scripts skip parsel
     from shared._selector import Selection
 
 __all__ = [
@@ -173,7 +140,7 @@ class StoppedError(Error):
 
 
 class IncompleteError(Error, shared.BrokenError):
-    """A download whose body ended before its `Content-Length`, or whose file isn't the size it should be.
+    """A download ending before `Content-Length`, or file not the expected size.
 
     `http.download` tries again, resuming, up to its `attempts`, and raises it only after the last.
     """
@@ -201,21 +168,21 @@ class ChangedError(Error, shared.BrokenError):
 
 @dataclass(frozen=True, eq=False)
 class Response:
-    """One HTTP response with its whole body read: status, URL, headers, and the body as text, JSON or HTML.
+    """One HTTP response: status, URL, headers, and body as text, JSON or HTML.
 
         page = http.fetch("https://example.com/items")
         page.ok, page.status, page.url            # True, 200, "https://example.com/items"
         page.headers["Content-Type"]              # names are looked up in any case
         page.json["items"], page.html.css("h1::text").first
 
-    The same type comes from `http.fetch` and `browser.Page.fetch`, and later from flnd's `site.fetch`.
+    The same type comes from `http.fetch` and `browser.Page.fetch`.
     It never changes once made and holds no connection, so it may be kept and passed between
     threads. `text`, `json` and `html` are worked out on first read and kept, so reading one twice
     costs nothing and a response never fetched as HTML never loads parsel. Two threads reading the
     same one for the first time at once may each work it out; they get equal values.
 
     Two responses are equal only when they are the same object, and a response hashes by identity,
-    so it can be a dict key or a set member. The headers are an unhashable mapping, so a field-by-field
+    so it can be a dict key or set member. The headers are unhashable, so a field-by-field
     hash isn't possible; compare `status`, `url` or `content` when that is what you mean.
 
     Args:
@@ -244,13 +211,13 @@ class Response:
 
     @property
     def text(self) -> str:
-        """The body as text, in the charset its `Content-Type` names, or UTF-8; bad bytes become U+FFFD."""
-        return self._cached("text", lambda: self.content.decode(_charset(self.headers.get("content-type", "")),
-                                                                "replace"))
+        """The body as text, in charset `Content-Type` names, or UTF-8."""
+        charset = _charset(self.headers.get("content-type", ""))
+        return self._cached("text", lambda: self.content.decode(charset, "replace"))
 
     @property
     def json(self) -> Any:
-        """The body parsed as JSON. Raises `http.Error` when it isn't JSON, naming its first characters."""
+        """The body parsed as JSON. Raises `http.Error` when not JSON."""
         return self._cached("json", self._json)
 
     @property
@@ -265,7 +232,7 @@ class Response:
         return self._cached("html", lambda: _selector.parse(self.text))
 
     def _cached(self, name: str, compute: Callable[[], Any]) -> Any:
-        """`compute()`, worked out on the first read of `name` and kept in the instance's `__dict__`.
+        """`compute()`, computed on first read of `name` and cached in `__dict__`.
 
         Kept there directly, past the frozen `__setattr__`, as `functools.cached_property` does;
         a plain property instead of that one, so the API snapshot shows each read's type.
@@ -280,7 +247,8 @@ class Response:
         try:
             return jsonlib.loads(self.text)
         except ValueError as error:  # json's JSONDecodeError; only a body that isn't JSON raises it
-            raise Error(f"expected JSON from {_where(self.url)}, got {self.text[:80]!r}: {error}") from None
+            msg = f"expected JSON from {_where(self.url)}, got {self.text[:80]!r}: {error}"
+            raise Error(msg) from None
 
 
 @dataclass(frozen=True)
@@ -364,28 +332,32 @@ def fetch(url: str, *, method: str = "GET", client: httpx.Client | None = None,
         raise ValueError(f"attempts must be at least 1, not {attempts}")
     # Built once, so every attempt sends the same method, URL, headers and body.
     sender = client if client is not None else _client()
-    request = sender.build_request(method, url, headers=headers, params=params, data=data, json=json,
-                                   timeout=timeout)
-    # One pass per attempt: a dead connection or a 5xx waits and goes round again; anything else returns or raises.
+    request = sender.build_request(
+        method, url, headers=headers, params=params, data=data, json=json, timeout=timeout
+    )
+    # One pass per attempt: a dead connection or 5xx retries; anything else returns or raises.
     attempt = 1
     while True:
         try:
             response = _send(sender, request, redirects)
         except CONNECTION_ERRORS as error:
             if attempt >= attempts:
-                raise Error(_scrub(f"{request.method} {_where(request.url)}: {type(error).__name__}: {error} "
-                                   f"(after {attempts} attempts)", request)) from error
+                msg = (f"{request.method} {_where(request.url)}: {type(error).__name__}: {error} "
+                       f"(after {attempts} attempts)")
+                raise Error(_scrub(msg, request)) from error
             reason = type(error).__name__
-        except httpx.HTTPError as error:  # an invalid URL, too many redirects: another try fails the same way
-            raise Error(_scrub(f"{request.method} {_where(request.url)}: {type(error).__name__}: {error}",
-                               request)) from error
+        except httpx.HTTPError as error:  # invalid URL, too many redirects
+            msg = f"{request.method} {_where(request.url)}: {type(error).__name__}: {error}"
+            raise Error(_scrub(msg, request)) from error
         else:
             if response.status < 500 or attempt >= attempts:
                 return _checked(response, request.method, soft=soft)
             reason = f"HTTP {response.status}"
         seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
-        log.debug("retry {n} of {url} in {seconds:g} s: {reason}", n=attempt, url=_where(request.url),
-                  seconds=seconds, reason=_scrub(reason, request))
+        log.debug(
+            "retry {n} of {url} in {seconds:g} s: {reason}",
+            n=attempt, url=_where(request.url), seconds=seconds, reason=_scrub(reason, request),
+        )
         clock.sleep(seconds)
         attempt += 1
 
@@ -636,17 +608,14 @@ class Client:
 
     def back_off(self, url: str, *, reason: str = "rate limited",
                  retry_after: float | None = None) -> None:
-        """Count a throttle seen on `url`'s host some other way, such as a block page; wait it out.
+        """Count a throttle seen on `url`'s host some other way; wait it out.
 
-            client.back_off("https://example.com/", reason="asked to wait", retry_after=120)
-
-        A second call while the host is held adds nothing and waits with the first.
+            client.back_off("https://example.com/", reason="wait", retry_after=120)
 
         Args:
             url: a URL of the host that throttled.
-            reason: what the host did, for the warning.
-            retry_after: the seconds the host asked for; None takes the back-off's next step,
-                30 s doubling up to 15 min.
+            reason: what the host did, for warning.
+            retry_after: seconds host asked for; None doubles up to 15 min.
 
         Raises:
             StoppedError: `stop` was set during the wait.
@@ -772,7 +741,7 @@ _slots_lock = threading.Lock()
 
 
 def _client() -> httpx.Client:
-    """The module's own client, made on first use: it follows redirects and keeps no cookies between calls."""
+    """Module's own client, made on first use: follows redirects and keeps no cookies."""
     global _default
     with _client_lock:
         if _default is None:
@@ -813,7 +782,7 @@ def _slot(url: httpx.URL) -> threading.BoundedSemaphore:
 
 
 def _send(client: httpx.Client, request: httpx.Request, redirects: bool | None = None) -> Response:
-    """Send one attempt while holding a slot of its host, and read the whole body into a `Response`."""
+    """Send one attempt holding a host slot, and read the whole body into `Response`."""
     with _slot(request.url):
         follow = httpx.USE_CLIENT_DEFAULT if redirects is None else redirects
         response = client.send(request, follow_redirects=follow)
@@ -826,7 +795,7 @@ def _send(client: httpx.Client, request: httpx.Request, redirects: bool | None =
 
 
 def _checked(response: Response, method: str, *, soft: bool) -> Response | None:
-    """The response when it is a success or a redirect; None for a soft 401/403/404; an error otherwise."""
+    """The response for success or redirect; None for soft 401/403/404; error otherwise."""
     status = response.status
     where = f"{method} {_where(response.url)}"
     if status < 400:
@@ -845,7 +814,7 @@ def _checked(response: Response, method: str, *, soft: bool) -> Response | None:
 
 
 def _retry_after(value: str | None) -> float | None:
-    """A `Retry-After` header in seconds: a number of seconds, or an HTTP date from now; None without one."""
+    """A `Retry-After` header in seconds: seconds, or HTTP date from now; None without one."""
     if not value:
         return None
     try:

@@ -1,11 +1,10 @@
-"""Each target's saved settings in `.flnd/metadata/targets.db`: `--shrink`, and its complete categories.
+"""Each target's saved settings in `.flnd/metadata/targets.db`: `--shrink` and categories.
 
 A row is keyed `<code>:<value>` and holds the target's kind (so `flnd sync` can rebuild it without
 resolving it again), `shrink` (true or false), the time it was recorded, and `complete`: each
-category whose listing last reached its end by itself, with the day it did
-(plan/phase-6/redesign.md, A9 rule 3; `sync` stops at saved posts only with that record). `--from`
-and `--time` describe one run, so they are never saved. `Engine.download` and `Engine.sync` decide
-what to save; this module only reads and writes.
+category whose listing last reached its end by itself, with the day it did (`sync` stops at saved
+posts only with that record). `--from` and `--time` describe one run, so they are never saved.
+`Engine.download` and `Engine.sync` decide what to save; this module only reads and writes.
 
     saved = targets.shrink(targets.rows(home).get(targets.key(target), {}))
     targets.record(home, [(target, Options(shrink=True))])
@@ -37,7 +36,7 @@ CURSORS = "cursors"
 
 
 def rows(home: Path) -> dict[str, Any]:
-    """Every `targets.db` row by its `<code>:<value>` key; empty, without creating the file, when there is none.
+    """Every `targets.db` row by its `<code>:<value>` key; empty when file does not exist.
 
         row = targets.rows(Path(".flnd")).get("ins:example_user", {})
     """
@@ -53,7 +52,7 @@ def key(target: Target) -> str:
 
 
 def shrink(row: Mapping[str, Any]) -> bool:
-    """Whether a `targets.db` row saved `--shrink` on; False for a row without it, or {} for a target with none.
+    """Whether a `targets.db` row saved `--shrink` on; False when absent or disabled.
 
         targets.shrink({"shrink": True})      # True
     """
@@ -74,8 +73,10 @@ def sync_enabled(row: Mapping[str, Any]) -> bool:
     return row.get(SYNC, True) is True
 
 
-def record(home: Path, chosen: Sequence[tuple[Target, Options]], *, sync: bool | None = None) -> None:
-    """Save each target's `--shrink` and `--sync` in `targets.db`, replacing its row in today's form.
+def record(
+    home: Path, chosen: Sequence[tuple[Target, Options]], *, sync: bool | None = None
+) -> None:
+    """Save each target's `--shrink` and `--sync` in `targets.db`, replacing its row.
 
         targets.record(Path(".flnd"), [(target, Options(shrink=True))], sync=True)
 
@@ -121,7 +122,10 @@ def toggle(home: Path, target: Target) -> bool:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         old = saved.get(key(target))
-        row = dict(old) if isinstance(old, dict) else {"kind": target.kind, SHRINK: False, "at": now}
+        row = (
+            dict(old) if isinstance(old, dict)
+            else {"kind": target.kind, SHRINK: False, "at": now}
+        )
         new_state = not (row.get(SYNC, True) is True)
         row[SYNC] = new_state
         saved[key(target)] = row
@@ -153,7 +157,10 @@ def mark_seen(home: Path, target: Target, keys: Iterable[str]) -> None:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         old = saved.get(key(target))
-        row = dict(old) if isinstance(old, dict) else {"kind": target.kind, SHRINK: False, SYNC: True, "at": now}
+        row = (
+            dict(old) if isinstance(old, dict)
+            else {"kind": target.kind, SHRINK: False, SYNC: True, "at": now}
+        )
         existing = row.get(SEEN)
         current = [str(x) for x in existing] if isinstance(existing, list) else []
         merged = list(dict.fromkeys([*current, *items]))
@@ -162,13 +169,7 @@ def mark_seen(home: Path, target: Target, keys: Iterable[str]) -> None:
 
 
 def complete(saved: MutableMapping[str, Any], target: Target, categories: Iterable[str]) -> None:
-    """Record that each of a target's categories listed to its end today, for `sync`'s saved-run stop.
-
-    Args:
-        saved: `targets.db`'s rows, as the run opened them.
-        target: the target whose categories ended by themselves, not by Ctrl-C, an error or an early stop.
-        categories: their names; nothing is written when there is none.
-    """
+    """Record that target categories listed to their end today, for `sync` stop."""
     names = list(categories)
     if not names:
         return
@@ -226,17 +227,7 @@ def keep_cursors(saved: MutableMapping[str, Any], target: Target,
 
 
 def announce(target: Target, shrink: bool) -> str:
-    """Say when a run of this target shrinks by its saved setting, so it never applies by surprise, and return what was said.
-
-        targets.announce(target, True)   # logs "ins:example_user: --shrink (saved)" and returns "--shrink (saved)"
-
-    Args:
-        target: the target, named at the start of the line.
-        shrink: whether the saved `--shrink` this run uses is on.
-
-    Returns:
-        The setting as the line shows it, "" (and nothing logged) when it is off.
-    """
+    """Announce saved `--shrink` setting when active, returning the logged message."""
     if not shrink:
         return ""
     log.info("{target}: --shrink (saved)", target=str(target))

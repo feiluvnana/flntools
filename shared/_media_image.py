@@ -1,4 +1,6 @@
-"""What `Media.resize` and `Media.crop` do to a still photo, through Pillow. Private: callers use `media`.
+"""What `Media.resize` and `Media.crop` do to a still photo, through Pillow.
+
+Private: callers use `media`.
 
 Each function takes a Pillow image already turned upright (as displayed) and returns a new one;
 `Media._edit` opens the photo, calls one, and saves the result into the chain's temporary file.
@@ -19,7 +21,7 @@ __all__ = ["cut", "fitted"]
 
 
 def fitted(photo: Any, width: int | None, height: int | None) -> Any:
-    """`photo` scaled to fit inside `width` x `height` (either may be None), keeping its aspect ratio, up or down.
+    """`photo` scaled to fit inside `width` x `height` (either may be None), keeping aspect ratio.
 
     Args:
         photo: the upright Pillow image; it is not changed.
@@ -30,8 +32,11 @@ def fitted(photo: Any, width: int | None, height: int | None) -> Any:
         A resized copy; both sides are at least 1 pixel.
     """
     # An absent side is an infinite limit, so the other side alone decides the scale.
-    scale = min(width / photo.width if width else float("inf"), height / photo.height if height else float("inf"))
-    return _pillow.resized(photo, (max(1, round(photo.width * scale)), max(1, round(photo.height * scale))))
+    w_scale = width / photo.width if width else float("inf")
+    h_scale = height / photo.height if height else float("inf")
+    scale = min(w_scale, h_scale)
+    size = (max(1, round(photo.width * scale)), max(1, round(photo.height * scale)))
+    return _pillow.resized(photo, size)
 
 
 def cut(photo: Any, box: tuple[int, int, int, int]) -> Any:
@@ -39,7 +44,7 @@ def cut(photo: Any, box: tuple[int, int, int, int]) -> Any:
 
     Args:
         photo: the upright Pillow image; it is not changed.
-        box: (left, top, right, bottom) in pixels, with left < right and top < bottom, inside the photo.
+        box: (left, top, right, bottom) in pixels, with left < right and top < bottom.
 
     Returns:
         A new image of the box's size.

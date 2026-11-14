@@ -1,26 +1,16 @@
-"""A key-value store in one sqlite file, used like a dict: `kv.open(path)` gives a `Store`.
+"""A key-value store in one sqlite file, used like a dict: `kv.open(path)`.
 
-How it works: `open` connects to the file with the stdlib's `sqlite3`, creating the file and its
-folder, and returns a `Store`, a `MutableMapping[str, Any]` over one table. Every table lives in
-one sqlite table `kv` as rows of (table, key, JSON value, expiry time), so several tables share a
-file, and `Store.table(name)` reaches another one on the same connection. Values go in and come
-out through `json`, and a key set with `ttl=` disappears once its time has passed: it reads as
-missing at once, and its row is deleted on the next read of it or the next `open`. The file is in
-WAL mode with a busy timeout, so two processes can use it at once. `.raw` is the
-`sqlite3.Connection`, for anything a `Store` doesn't do; nothing else is wrapped.
+`open` connects to the file with `sqlite3` and returns a `Store`
+(`MutableMapping[str, Any]`) over one table. Tables share one sqlite table `kv` as
+(table, key, JSON value, expiry time). `Store.table(name)` accesses another table
+on the same connection. Keys support TTL.
 
     from shared import kv
 
     with kv.open(".cache.db", table="downloads") as store:
         store["ins:1"] = {"path": "ins/a.jpg"}
         store.set("loi:quota", 3, ttl=86_400)
-        store.keys(prefix="ins:")          # a live view: ["ins:1"]
-        quotas = store.table("quotas")     # same file, same connection
-        store.raw.execute("VACUUM")
-
-Many threads may share one `Store`, and the `Store`s made from it with `table`: they share one
-connection behind one lock. Stores opened separately on one file, in this process or another,
-wait for each other through sqlite's busy timeout.
+        quotas = store.table("quotas")
 """
 
 from __future__ import annotations
@@ -41,8 +31,7 @@ __all__ = ["ClosedError", "Error", "Store", "UnstorableError", "open"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
-# The row format every `.flnd/*.db` (history, targets, sources, secrets) has been written in since
-# Phase 4. It is fixed: Phase 6 rules out migrating those files, so it must keep reading them.
+# The row format every `.flnd/*.db` uses; must keep reading them.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS kv (
   tbl TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires REAL,
@@ -54,7 +43,7 @@ LIVE = "(expires IS NULL OR expires > ?)"
 # How long a call waits for another connection's write to finish before it fails, in seconds:
 # long enough for any one flnd write, short enough that a stuck process shows up as an error.
 BUSY_TIMEOUT = 5.0
-# How long `open` waits before trying the switch to WAL mode again, in seconds; a switch takes microseconds.
+# Wait before trying switch to WAL mode again, in seconds; switch takes microseconds.
 WAL_RETRY = 0.01
 
 
@@ -62,20 +51,18 @@ class Error(shared.Error):
     """The base of every error `shared.kv` raises."""
 
 
-# Still a RuntimeError, as it was before the error tree: using a closed store is a mistake in the
-# caller, never bad data.
+# A RuntimeError: using a closed store is a caller mistake, never bad data.
 class ClosedError(Error, RuntimeError):
-    """The `Store` was used after `close()`, or after the `Store` that opened its connection closed."""
+    """The Store was used after `close()`, or after connection closed."""
 
 
-# Still a TypeError, as it was before the error tree, so `store[1] = ...` fails the way a typed
-# mapping's would.
+# A TypeError, so `store[1] = ...` fails the way a typed mapping would.
 class UnstorableError(Error, TypeError):
     """A key that isn't a `str`, or a value `json.dumps` can't write."""
 
 
 def open(path: PathLike, *, table: str = "default", timeout: float = BUSY_TIMEOUT) -> Store:
-    """Open or create the store at `path`, creating its folder, and sweep out `table`'s expired keys.
+    """Open or create store at `path`, and sweep out `table`'s expired keys.
 
         with kv.open(".flnd/metadata/history.db", table="downloads") as history:
             history["ins:1"] = {"path": "ins/a.jpg"}
@@ -104,7 +91,9 @@ def open(path: PathLike, *, table: str = "default", timeout: float = BUSY_TIMEOU
     # write holds the file's lock while waiting on another thread, and nothing needs a commit.
     # `timeout` is sqlite's busy timeout: a write that finds the file locked by another process
     # retries for that long instead of failing at once, so two flnd commands can run together.
-    connection = sqlite3.connect(file, timeout=timeout, check_same_thread=False, isolation_level=None)
+    connection = sqlite3.connect(
+        file, timeout=timeout, check_same_thread=False, isolation_level=None
+    )
     try:
         # WAL: readers never block the writer or each other, so a long `flnd sync` reading the
         # history doesn't stop a `flnd download` writing to it. Files written before were in WAL
@@ -120,7 +109,7 @@ def open(path: PathLike, *, table: str = "default", timeout: float = BUSY_TIMEOU
 
 
 def _wal(connection: sqlite3.Connection, timeout: float) -> None:
-    """Switch the file to WAL mode, waiting up to `timeout` seconds while another connection is switching it too.
+    """Switch file to WAL mode, waiting up to `timeout` seconds while switching.
 
     Changing the journal mode takes the file's exclusive lock, and sqlite doesn't always wait out
     its busy timeout for it: two threads or processes opening a new file at once (two sources'
@@ -205,7 +194,7 @@ class Store(MutableMapping[str, Any]):
         return default if text is None else json.loads(text)
 
     def set(self, key: str, value: Any, *, ttl: float | None = None) -> None:
-        """Store `value` under `key`, like `store[key] = value`, optionally expiring after `ttl` seconds.
+        """Store `value` under `key`, like `store[key] = value`, expiring after `ttl` seconds.
 
             store.set("loi:quota", 3, ttl=86_400)
 
@@ -245,27 +234,23 @@ class Store(MutableMapping[str, Any]):
         return _Keys(self, prefix)
 
     def table(self, name: str) -> Store:
-        """Another table of the same file, on this store's connection, with its expired keys swept.
+        """Another table of the same file, on this store's connection.
 
             with kv.open(".flnd/state.db") as store:
                 downloads = store.table("downloads")
 
         Args:
-            name: the table, any `str`; it is created by the first key set in it.
+            name: table name; created on first key set.
 
         Raises:
             ClosedError: this store is closed.
-
-        The new `Store` shares the connection and its lock, so it may be used from any thread
-        with this one. Closing it closes only it. Closing the `Store` that `kv.open` returned
-        closes the connection, and so every table made from it.
         """
         self._check_open()
         return Store(self._link, name)
 
     @property
     def raw(self) -> sqlite3.Connection:
-        """The `sqlite3.Connection`, shared with every `table` of this store, for anything `Store` doesn't do.
+        """The `sqlite3.Connection`, shared with every table of this store.
 
             store.raw.execute("VACUUM")
 
@@ -290,7 +275,8 @@ class Store(MutableMapping[str, Any]):
     def _keys(self, prefix: str) -> list[str]:
         """A sorted snapshot of the live keys that start with `prefix`."""
         where, parameters = self._prefix_where(prefix)
-        return [key for (key,) in self._execute(f"SELECT key FROM kv WHERE {where} ORDER BY key", parameters)]
+        query = f"SELECT key FROM kv WHERE {where} ORDER BY key"
+        return [key for (key,) in self._execute(query, parameters)]
 
     def _count(self, prefix: str) -> int:
         """How many live keys start with `prefix`."""
@@ -298,7 +284,7 @@ class Store(MutableMapping[str, Any]):
         return self._execute(f"SELECT COUNT(*) FROM kv WHERE {where}", parameters)[0][0]
 
     def _prefix_where(self, prefix: str) -> tuple[str, tuple[Any, ...]]:
-        """The WHERE clause, and its parameters, for this table's live keys that start with `prefix`."""
+        """WHERE clause and parameters for live keys that start with `prefix`."""
         # A range on the primary key uses the index, where LIKE would scan every row.
         where = f"tbl = ? AND key >= ? AND {LIVE}"
         parameters: tuple[Any, ...] = (self._table, prefix, clock.wall())
@@ -309,9 +295,10 @@ class Store(MutableMapping[str, Any]):
         return where, parameters
 
     def _read(self, key: str) -> str | None:
-        """The stored JSON for `key`, or None when it is missing or expired; an expired row is deleted."""
+        """The stored JSON for `key`, or None when missing or expired."""
         with self._link.lock:
-            rows = self._execute("SELECT value, expires FROM kv WHERE tbl = ? AND key = ?", (self._table, key))
+            stmt = "SELECT value, expires FROM kv WHERE tbl = ? AND key = ?"
+            rows = self._execute(stmt, (self._table, key))
             if not rows:
                 return None
             text, expires = rows[0]
@@ -338,7 +325,7 @@ class _Link:
 
     def __init__(self, connection: sqlite3.Connection):
         self.connection = connection
-        # Reentrant, because `_read` and `__delitem__` hold it around `_execute`, which takes it too.
+        # Reentrant, because `_read` holds it around `_execute`, which takes it too.
         self.lock = threading.RLock()
         self.closed = False
         # The `Store` that `kv.open` returned; only its `close()` closes the connection.
