@@ -19,11 +19,12 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import threading
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING, Any, Callable, Coroutine, Iterator, Mapping, MutableMapping, TypeVar,
+    TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping, TypeVar,
 )
 from urllib.parse import urlencode
 
@@ -46,8 +47,10 @@ T = TypeVar("T")
 ATTEMPTS = 4
 # The key of the learned speed in a source's `state`.
 STATE_KEY = "pace.speed"
-# The least seconds between two scrolls at 1x, which the learned speed scales.
-SCROLL_FLOOR = 0.3
+# The least seconds between two bottom scrolls at 1x, which the learned speed scales.
+SCROLL_FLOOR = 0.05
+# Most open tabs kept in a single target browser window when warming or nesting watches.
+MAX_TABS = 6
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
 # `flnd sync` warns the run before the one that meets the login wall.
 EXPIRY_WARNING = 24 * 3600
@@ -190,6 +193,11 @@ class TargetSite:
         self._source = run.source
         self._browser: browser.Browser | None = None
         self._page: _PacedPage | None = None
+        self._stack: list[_PacedPage] = []
+        self._idle_tabs: deque[_PacedPage] = deque()
+        self._warmed: dict[str, tuple[_PacedPage, browser.Visit | None]] = {}
+        self._pending_warm: deque[str] = deque()
+        self._active_watches: list[tuple[Any, bool, bool]] = []
         # Any URL on the source's own domains names its pace, for a throttle seen on a page.
         self._home = f"https://{run.source.domains[0]}/"
 
@@ -245,9 +253,21 @@ class TargetSite:
 
         See `flnd.source.Site.goto`.
         """
-        page = self.page
+        if url in self._pending_warm:
+            self._pending_warm.remove(url)
+        warmed = self._warmed.pop(url, None)
+        if warmed is not None:
+            page, pre_visit = warmed
+            self._switch_tab(page)
+            self._fill_warm_tabs()
+        else:
+            page, pre_visit = self.page, None
         with _stoppable():
-            visit = self._run.web.call(url, lambda: page.goto(url, idle=idle, timeout=timeout))
+            visit = self._run.web.call(
+                url,
+                lambda: self._visit_tab(page, url=url, pre_visit=pre_visit,
+                                        idle=idle, timeout=timeout),
+            )
         if visit is None:
             return False
         if visit.status >= 400:
@@ -267,12 +287,118 @@ class TargetSite:
     @property
     def page(self) -> browser.Page:
         """See `flnd.source.Site.page`."""
+        if self._stack:
+            return self._stack[-1]
         if self._page is None:
-            if self._browser is None:
-                self._browser = self._connect()
-            opened = self._browser.open()
-            self._page = _PacedPage(opened.raw, opened.browser, speed=lambda: self._run.speed)
+            self._page = self._new_tab()
         return self._page
+
+    @property
+    def _current_watch(self) -> Any | None:
+        """The innermost active response watcher, if any."""
+        return self._active_watches[-1][0] if self._active_watches else None
+
+    def _new_tab(self) -> _PacedPage:
+        """Return an idle tab in this browser window, or open a new tab."""
+        if self._idle_tabs:
+            return self._idle_tabs.popleft()
+        if self._browser is None:
+            self._browser = self._connect()
+        opened = self._browser.open()
+        return _PacedPage(opened.raw, opened.browser, speed=lambda: self._run.speed)
+
+    def _recycle_tab(self, tab: _PacedPage) -> None:
+        """Keep `tab` in `_idle_tabs` for reuse without opening another window."""
+        if tab not in self._idle_tabs:
+            self._idle_tabs.append(tab)
+
+    def _switch_tab(self, tab: _PacedPage) -> None:
+        """Make `tab` active for `self.page`, recycle the old tab, and rebind any watcher."""
+        if self._stack:
+            old = self._stack[-1]
+            self._stack[-1] = tab
+        else:
+            old = self._page
+            self._page = tab
+        if old is not None and old is not tab:
+            self._recycle_tab(old)
+        watch = self._current_watch
+        if watch is not None:
+            watch._adopt(tab)
+
+    def _push_tab(self, watch: Any, *, scroll: bool = False) -> None:
+        """Register `watch`, opening another tab in the same window when nested scrolling."""
+        pushed = scroll and any(active_scroll for _, _, active_scroll in self._active_watches)
+        if pushed:
+            _ = self.page
+            self._stack.append(self._new_tab())
+        self._active_watches.append((watch, pushed, scroll))
+
+    def _pop_tab(self, watch: Any) -> None:
+        """Unregister `watch` and recycle any nested tab slot it pushed."""
+        for index in range(len(self._active_watches) - 1, -1, -1):
+            if self._active_watches[index][0] is watch:
+                _, pushed, _ = self._active_watches.pop(index)
+                if pushed and self._stack:
+                    self._recycle_tab(self._stack.pop())
+                return
+
+    def _warm_tabs(self, urls: Iterable[str]) -> None:
+        """Queue `urls` and open background tabs in the same window up to `MAX_TABS`."""
+        for url in urls:
+            if url not in self._warmed and url not in self._pending_warm:
+                self._pending_warm.append(url)
+        self._fill_warm_tabs()
+
+    def _fill_warm_tabs(self) -> None:
+        """Start loading queued warm URLs into idle or new tabs up to `MAX_TABS`."""
+        _ = self.page
+        while self._pending_warm:
+            held = (1 if self._page is not None else 0) + len(self._stack) + len(self._warmed)
+            if held >= MAX_TABS:
+                return
+            url = self._pending_warm.popleft()
+            if url in self._warmed:
+                continue
+            tab = self._new_tab()
+            ok, visit = self._start_warm(tab, url)
+            if not ok:
+                self._recycle_tab(tab)
+                continue
+            self._warmed[url] = (tab, visit)
+
+    def _start_warm(self, tab: _PacedPage, url: str) -> tuple[bool, browser.Visit | None]:
+        """Begin non-blocking navigation on `tab`, returning `(ok, pre_visit)`."""
+        raw_goto = getattr(tab.raw, "goto", None)
+        if not callable(raw_goto):
+            return True, None
+        try:
+            response: Any = raw_goto(url, wait_until="commit", timeout=15_000)
+        # Network errors shouldn't break warming; `goto` falls back to loading normally.
+        except Exception:
+            return False, None
+        if response is not None and isinstance(getattr(response, "status", None), int):
+            return True, browser.Visit(response.status, response.url, dict(response.headers))
+        return True, None
+
+    def _visit_tab(
+        self,
+        page: browser.Page,
+        *,
+        url: str,
+        pre_visit: browser.Visit | None,
+        idle: bool,
+        timeout: float,
+    ) -> browser.Visit | None:
+        """Finish waiting for a pre-warmed tab, or navigate `page` normally."""
+        if pre_visit is None:
+            return page.goto(url, idle=idle, timeout=timeout)
+        try:
+            page.wait(idle=idle, timeout=timeout)
+        except browser.WaitError as error:
+            self.warn("could not open {url}: {error}", url=url, error=error)
+            return None
+        return pre_visit
 
     @property
     def client(self) -> Any:
@@ -318,6 +444,11 @@ class TargetSite:
             self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies))
             self._browser.close()
         self._browser = self._page = None
+        self._stack.clear()
+        self._idle_tabs.clear()
+        self._warmed.clear()
+        self._pending_warm.clear()
+        self._active_watches.clear()
 
     def _fetch_in_page(self, url: str, method: str, headers: Mapping[str, str] | None, soft: bool,
                        request: dict[str, Any]) -> http.Response | None:
@@ -398,7 +529,7 @@ class LoginSite:
 
 
 class _PacedPage(browser.Page):
-    """The target's tab: a `Page` whose scrolls are at least 0.3 s times the learned speed apart."""
+    """The target's tab: a `Page` whose bottom scrolls wait at least `SCROLL_FLOOR` * speed."""
 
     def __init__(self, raw: Any, owner: browser.Browser, *, speed: Callable[[], float]):
         super().__init__(raw, owner)
@@ -407,7 +538,7 @@ class _PacedPage(browser.Page):
     def scroll(
         self, *, within: Any = None, until: Callable[[], bool] | None = None,
         count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0,
-        pause: float = 0.3, on_step: Callable[[], Any] | None = None,
+        pause: float = 0.05, on_step: Callable[[], Any] | None = None,
     ) -> int:
         """`Page.scroll`, its `pause` raised to the source's scroll floor; see `Page.scroll`."""
         return super().scroll(within=within, until=until, count=count, idle=idle, wait=wait,

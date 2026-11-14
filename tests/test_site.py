@@ -24,7 +24,7 @@ from flnd.options import Options, RunShared
 from flnd.site import STATE_KEY, TargetSite, source_run
 from flnd.source import FetchError, File, Site, Target
 from flnd.sources.common.relay import meta_results
-from flnd.sources.common.watch import watch_responses
+from flnd.sources.common.watch import warm_tabs, watch_responses
 from shared import clock, cookies, http, kv, theme
 from shared._browser import Page, Subscription
 from shared._theme import Screen
@@ -201,7 +201,7 @@ class PaceTest(SiteCase):
         self.assertGreaterEqual(self.now - before, 1.0)
         with mock.patch.object(Page, "scroll", return_value=3) as scroll:
             self.assertEqual(site.page.scroll(count=lambda: 0), 3)
-            self.assertAlmostEqual(scroll.call_args.kwargs["pause"], 0.6)
+            self.assertAlmostEqual(scroll.call_args.kwargs["pause"], 0.1)
 
     def test_the_speed_is_loaded_from_state_and_saved_back(self):
         run, site = self.open(state={STATE_KEY: 4.0})
@@ -374,6 +374,117 @@ class WatchTest(unittest.TestCase):
             page.handler({"n": 1}, None)
             self.assertEqual([data["n"] for data in responses], [1, 2])
         self.assertEqual((page.scrolls, page.waits, page.stopped), (0, 1, True))
+
+
+class TabRaw(FakeRaw):
+    """Fake Playwright tab tracking listeners, wait states, and navigation wait_until modes."""
+
+    def __init__(self, status=200):
+        super().__init__([status] * 20)
+        self.wait_until_calls = []
+        self.waits = []
+        self.events = {}
+
+    def on(self, event, listener):
+        self.events.setdefault(event, []).append(listener)
+
+    def remove_listener(self, event, listener):
+        listeners = self.events.get(event, [])
+        if listener in listeners:
+            listeners.remove(listener)
+
+    def goto(self, url, wait_until="load", timeout=30000):
+        self.wait_until_calls.append((url, wait_until))
+        self.loaded.append(url)
+        return SimpleNamespace(status=200, url=url, headers={})
+
+    def wait_for_load_state(self, state, timeout=30000):
+        self.waits.append(state)
+
+    def emit(self, url, body):
+        """Deliver a JSON response event on this tab to active response listeners."""
+        request = SimpleNamespace(is_navigation_request=lambda: False, frame=object())
+        response = SimpleNamespace(url=url, headers={}, request=request, text=lambda: body)
+        for listener in list(self.events.get("response", ())):
+            listener(response)
+
+
+class MultiTabBrowser:
+    """Fake single-window `Browser` opening a distinct `TabRaw` on each `open()` call."""
+
+    def __init__(self):
+        self.opened = []
+        self.cookies = []
+        self.closed = False
+
+    def add_cookies(self, jar):
+        pass
+
+    def open(self):
+        raw = TabRaw()
+        self.opened.append(raw)
+        return SimpleNamespace(raw=raw, browser=self)
+
+    def close(self):
+        self.closed = True
+
+
+class TabTest(SiteCase):
+    def _open_multi_browser(self):
+        browsers = []
+
+        def connect(**options):
+            browser = MultiTabBrowser()
+            browsers.append(browser)
+            return browser
+
+        patcher = mock.patch("shared._browser.open", connect)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        _, site = self.open()
+        self.addCleanup(site.close)
+        return browsers, site
+
+    def test_warm_tabs_preloads_in_one_window_and_rebinds_active_watch(self):
+        browsers, site = self._open_multi_browser()
+        urls = [f"{API}/item/{i}" for i in range(8)]
+        warm_tabs(site, urls)
+        self.assertEqual(len(browsers), 1)
+        browser = browsers[0]
+        self.assertEqual(len(browser.opened), site_module.MAX_TABS)
+        warmed_calls = [call for tab in browser.opened[1:] for call in tab.wait_until_calls]
+        self.assertEqual(warmed_calls, [(url, "commit") for url in urls[:site_module.MAX_TABS - 1]])
+
+        with watch_responses(site, "graphql", scroll=False) as responses:
+            self.assertTrue(site.goto(urls[0]))
+            adopted = site.page.raw
+            self.assertIn((urls[0], "commit"), adopted.wait_until_calls)
+            self.assertEqual(adopted.waits, ["load"])
+            adopted.emit(f"{API}/graphql", '{"n": 42}')
+            self.assertEqual([item["n"] for item in responses], [42])
+        # Adopting urls[0] recycled the displaced tab and queued the next URL in the same window.
+        self.assertEqual(len(browsers), 1)
+        self.assertEqual(len(browser.opened), site_module.MAX_TABS)
+        self.assertTrue(site.goto(urls[1]))
+        self.assertEqual(len(browsers), 1)
+
+    def test_nested_scrolling_watch_opens_second_tab_while_passive_watch_shares_tab(self):
+        browsers, site = self._open_multi_browser()
+        main = site.page
+        with watch_responses(site, "videos", scroll=True):
+            self.assertIs(site.page, main)
+            with watch_responses(site, "stories", scroll=False):
+                self.assertIs(site.page, main)
+                self.assertEqual(len(browsers[0].opened), 1)
+            with watch_responses(site, "comments", scroll=True):
+                nested = site.page
+                self.assertIsNot(nested, main)
+                self.assertEqual((len(browsers), len(browsers[0].opened)), (1, 2))
+            self.assertIs(site.page, main)
+            with watch_responses(site, "replies", scroll=True):
+                self.assertIs(site.page, nested)
+                self.assertEqual(len(browsers[0].opened), 2)
+        self.assertIs(site.page, main)
 
 
 class MetaResultsTest(unittest.TestCase):

@@ -1,9 +1,8 @@
 """Instagram: posts, reels, tagged posts, reposts, stories, highlights, and profile pictures.
 
 Reads data with saved cookies, using REST API endpoints first and page scraping as fallback.
-A profile tab is loaded in the browser for the embedded initial GraphQL page, then
-scrolled to capture next-page requests for pagination via Replay. Incomplete grid items
-resolve full files lazily via API or post pages.
+A profile tab streams complete posts while scrolling to the end, then resolves incomplete grid
+items via API or post pages.
 
 Stories and highlights are fetched via the reels API, falling back to story pages.
 Rate limits and challenges are handled with back_off.
@@ -18,15 +17,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Generator, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Iterator, Mapping
 from urllib.parse import urlsplit
 
-from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, pages, target
+from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import embedded_results
-from flnd.sources.common.replay import Replay
-from flnd.sources.common.watch import watch_responses
+from flnd.sources.common.watch import caught_up, warm_tabs, watch_responses
 from shared import fmt, http, selector
 
 if TYPE_CHECKING:
@@ -65,8 +64,8 @@ ASBD_ID = "129477"
 # login wall or challenge it puts up while it throttles (waited out).
 SUSPENDED = "/accounts/suspended"
 WALLS = ("/accounts/login", "/challenge")
-# The cursor variable of every profile tab's GraphQL pagination query.
-CURSOR = "after"
+# Consecutive posts older than `since` before stopping scroll early (more than 3 pinned posts).
+OLD_STREAK = 5
 # Seconds a refused API is left alone: Instagram's refusals last, and asking again each run only
 # costs a request and its retries before the story pages are read anyway.
 REFUSAL_LIFETIME = 24 * 60 * 60
@@ -199,6 +198,8 @@ class Instagram(Source):
             chunk = found[start:start + REELS_PER_CALL]
             ids = [f"highlight:{hid}" for hid, _ in chunk]
             reels = self.api.reels(site, ids, "highlights")
+            if reels is None:
+                warm_tabs(site, [f"{SITE}/stories/highlights/{hid}/" for hid, _ in chunk])
             for highlight_id, title in chunk:
                 folder = f"highlights/{fmt.filename(title)}"
                 if reels is None:
@@ -452,58 +453,39 @@ class Profile:
     listed: dict[str, set[str]] = field(default_factory=lambda: {tab: set() for tab in TABS})
 
     def read_tab(self, site: Site, api: Api, tab: str) -> Iterator[Post]:
-        """Read one tab to its end via embedded first page and replayed pagination.
+        """Stream complete posts while scrolling `tab`, then yield deferred lazy posts."""
+        deferred: list[Post] = []
+        for result in self._scroll_tab(site, tab):
+            yield from self._posts(site, api, result, tab, deferred=deferred)
+        yield from deferred
 
-        Args:
-            site: the target's site.
-            api: the run's API, for the lazy posts' files.
-            tab: one of `TABS`.
-
-        The responses are watched from before the page loads. Scrolling stops at the first response
-        that carries the tab's next page, whose request is then replayed with each cursor. When the
-        tab has no further page, or no request can be replayed, scrolling reads it to the end.
-        """
-        replay = cursor = None
-        ended = False
-        # Watching starts before the tab loads, so the first page's own request is not missed.
+    def _scroll_tab(self, site: Site, tab: str) -> Iterator[Any]:
+        """Scroll one profile tab until it ends or hits `OLD_STREAK`, yielding results live."""
+        since = site.time.since if tab in ("posts", "reels") else None
+        ended, old = False, 0
         with watch_responses(site, GRAPHQL, scroll=True) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
-                # Raised, not returned: a tab that ended here would be recorded complete, and every
-                # later `sync` would stop at its first saved posts.
+                # Raised, not returned: a tab that ended here would be recorded complete.
                 raise FetchError(f"{tab}: the page didn't load")
-            # 1. The first page is embedded in the HTML, so it is read before any scrolling.
             for result in embedded_results(site.page.document):
-                yield from self._posts(site, api, result, tab)
+                yield result
+                old = older_streak(result, tab, since, old)
+                if (state := page_state(result, tab)) is not None:
+                    ended = not state[0]
+                if _hit_saved(result, tab):
+                    return
+            if ended or old >= OLD_STREAK:
+                return
+            for result in responses:
+                if throttled(result):
+                    site.back_off("Instagram asked to wait a few minutes")
+                    continue
+                yield result
+                old = older_streak(result, tab, since, old)
                 state = page_state(result, tab)
-                if state is not None:
-                    ended, cursor = not state[0], state[1]
-            # 2. Scroll until response carries next page cursor; replay its request.
-            if not ended:
-                for result in responses:
-                    if throttled(result):
-                        # Waited out here; the scroll's 10 s without progress start again after it.
-                        site.back_off("Instagram asked to wait a few minutes")
-                        continue
-                    yield from self._posts(site, api, result, tab)
-                    state = page_state(result, tab)
-                    if state is None:
-                        continue
-                    ended, cursor = not state[0], state[1]
-                    replay = None if ended else Replay.of(responses.request, cursor=CURSOR)
-                    if ended or replay is not None:
-                        break
-        # 3. The rest of the pages, by replaying the page's own request with each cursor.
-        if replay is not None and cursor:
-            refused = yield from self._replayed(site, api, tab, replay, cursor)
-            # 4. Refused replay: scrolling reads rest; already-read posts skipped by code.
-            if refused:
-                # Tab is where scroll left it; scrolling on reads rest, skipping repeats.
-                with watch_responses(site, GRAPHQL, scroll=True) as responses:
-                    for result in responses:
-                        if throttled(result):
-                            site.back_off("Instagram asked to wait a few minutes")
-                            continue
-                        yield from self._posts(site, api, result, tab)
+                no_more = state is not None and not state[0]
+                if no_more or old >= OLD_STREAK or _hit_saved(result, tab):
+                    return
 
     def describe(self, site: Site) -> None:
         """Load profile page for id, picture and highlights if not yet known.
@@ -534,31 +516,10 @@ class Profile:
         new_hl = [h for h in listed_highlights(result) if h not in self.highlights]
         self.highlights += new_hl
 
-    def _replayed(
-        self, site: Site, api: Api, tab: str, replay: Replay, cursor: str,
-    ) -> Generator[Post, None, bool]:
-        """The tab's pages from cursor on via replay; yields True if refused.
-
-        A rate limit is waited out and the same page asked again (`replay_page`); anything else that
-        goes wrong (a refusal, an answer that isn't JSON or doesn't hold the tab) is a refusal, and
-        the caller scrolls instead, warning once.
-        """
-        try:
-            fetch_page = lambda following: replay_page(site, replay, following or cursor, tab)
-            for result in pages(fetch_page,
-                                lambda result: next_cursor(result, tab)):
-                yield from self._posts(site, api, result, tab)
-        # Refusal ends replays; rate limits are waited out in replay_page.
-        except FetchError as error:
-            site.warn(
-                "{tab}: the page's API refused a replay ({error}); scrolling instead",
-                tab=tab, error=error,
-            )
-            return True
-        return False
-
-    def _posts(self, site: Site, api: Api, result: Any, tab: str) -> Iterator[Post]:
-        """Yield posts from result not listed before (whole or lazy)."""
+    def _posts(
+        self, site: Site, api: Api, result: Any, tab: str, *, deferred: list[Post] | None = None,
+    ) -> Iterator[Post]:
+        """Yield complete posts live and append incomplete ones to `deferred` when given."""
         if not isinstance(result, dict):
             return
         self.note(result)
@@ -574,8 +535,11 @@ class Profile:
             pk = media_pk(media)
             # Dated by pk so engine skips by `--time` before request, and by key when saved.
             fetch_files = lambda code=code, pk=pk: lazy_files(site, api, code, pk)
-            yield Post(code, fetch_files, date=pk_stamp(pk),
-                       headers=CDN_HEADERS)
+            lazy = Post(code, fetch_files, date=pk_stamp(pk), headers=CDN_HEADERS)
+            if deferred is None:
+                yield lazy
+            else:
+                deferred.append(lazy)
 
 
 def load(site: Site, url: str) -> bool:
@@ -612,43 +576,6 @@ def load(site: Site, url: str) -> bool:
 def suspended() -> LoginError:
     """The hard stop for an account Instagram suspended or locked."""
     return LoginError("ins: Instagram suspended or locked this account; check it in a browser")
-
-
-def replay_page(site: Site, replay: Replay, cursor: str, tab: str) -> Any:
-    """One page of a tab by replay, a throttle waited out and the same page asked again.
-
-    Args:
-        site: the target's site.
-        replay: the tab's pagination request, as the page sent it.
-        cursor: the cursor of the page to ask for.
-        tab: one of `TABS`.
-
-    Raises:
-        FetchError: the replay was refused, its answer isn't JSON, or it doesn't hold the tab.
-        LoginError: it landed on `/accounts/suspended/`.
-    """
-    while True:
-        try:
-            response = replay.send(site, cursor)
-        # Check refused replay answer for throttle or suspended page.
-        except FetchError as error:
-            err_url = urlsplit(error.response.url).path if error.response is not None else ""
-            if err_url.startswith(SUSPENDED):
-                raise suspended() from None
-            if throttled(_json(error.response)):
-                site.back_off("Instagram asked to wait a few minutes")
-                continue
-            raise
-        if urlsplit(response.url).path.startswith(SUSPENDED):
-            raise suspended()
-        data = _json(response)
-        if throttled(data):
-            site.back_off("Instagram asked to wait a few minutes")
-            continue
-        # Answer without tab connection is a refusal: holds none of desired posts.
-        if not isinstance(data, dict) or connection_of(data, tab) is None:
-            raise FetchError("its answer doesn't hold the tab's posts")
-        return data
 
 
 def lazy_files(site: Site, api: Api, code: str, pk: str | None) -> list[File]:
@@ -865,29 +792,43 @@ def page_state(result: Any, tab: str) -> tuple[bool, str | None] | None:
     return bool(info.get("has_next_page") and cursor), str(cursor) if cursor else None
 
 
-def next_cursor(result: Any, tab: str) -> str | None:
-    """The cursor of the page after this one; None when it is the last.
+def _hit_saved(result: Any, tab: str) -> bool:
+    """Whether a `newest_first` tab result hits the 5-saved-post early-stop streak."""
+    if tab not in ("posts", "reels") or not isinstance(result, dict):
+        return False
+    for media in tab_media(result, tab):
+        code = post_name(media)
+        posted = media.get("taken_at") or pk_stamp(media_pk(media))
+        if code and caught_up(code, posted=posted):
+            return True
+    return False
 
-        cursor = next_cursor(result, "posts")
 
-    Args:
-        result: one JSON result of the tab.
-        tab: one of `TABS`.
-    """
-    state = page_state(result, tab)
-    return state[1] if state is not None and state[0] else None
+def older_streak(result: Any, tab: str, since: date | None, streak: int) -> int:
+    """Count consecutive posts in `result` older than `since`, carrying `streak` forward."""
+    if since is None or not isinstance(result, dict):
+        return streak
+    for media in tab_media(result, tab):
+        posted = day(media.get("taken_at") or pk_stamp(media_pk(media)))
+        if posted is None:
+            continue
+        streak = streak + 1 if posted < since else 0
+    return streak
 
 
 def is_complete(media: dict) -> bool:
-    """Whether a grid item is the whole post, to be saved as listed.
-
-    It must be a plain feed post (`product_type` "feed": not a reel, a carousel or an IGTV video),
-    have its date, and each of its items must be whole: a video with its video files, an image
-    within 10% of its `original_width`. Anything else is read through the media API.
-    """
-    if media.get("product_type") != "feed" or not media.get("taken_at"):
+    """Whether a grid item is the whole post, to be saved as listed."""
+    if not media.get("taken_at"):
         return False
-    return all(full_size(child) for child in media.get("carousel_media") or [media])
+    kind = media.get("product_type")
+    if kind == "carousel_container":
+        children = media.get("carousel_media")
+        return bool(children) and all(full_size(child) for child in children)
+    if kind == "clips":
+        return bool(media.get("video_versions") or media.get("video_dash_manifest"))
+    if kind == "feed":
+        return all(full_size(child) for child in media.get("carousel_media") or [media])
+    return False
 
 
 def full_size(item: dict) -> bool:

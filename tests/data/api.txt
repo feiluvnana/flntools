@@ -3,7 +3,7 @@ flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] =
 flnd.Engine.auth_ls() -> list[dict[str, Any]]
 flnd.Engine.browsers: property -> dict[str, str]
 flnd.Engine.cookie_logins: property -> tuple[str, ...]
-flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None, limit: int | None = None, dry: bool = False, sync: bool = False) -> Report
+flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None, limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False) -> Report
 flnd.Engine.home: attribute
 flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
 flnd.Engine.logins: property -> dict[str, str]
@@ -233,7 +233,7 @@ shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, poll: fl
 shared.browser.Page.on_request(match: Match, handler: Callable[[Request], Any]) -> Subscription
 shared.browser.Page.on_response(match: Match, handler: Callable[[Any, Response], Any], *, lines: bool = False) -> Subscription
 shared.browser.Page.raw: attribute
-shared.browser.Page.scroll(*, within: str | Locator | None = None, until: Callable[[], bool] | None = None, count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0, pause: float = 0.3, on_step: Callable[[], Any] | None = None) -> int
+shared.browser.Page.scroll(*, within: str | Locator | None = None, until: Callable[[], bool] | None = None, count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0, pause: float = 0.05, on_step: Callable[[], Any] | None = None) -> int
 shared.browser.Page.title: property -> str
 shared.browser.Page.url: property -> str
 shared.browser.Page.wait(css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None, idle: bool = False, timeout: float = 30.0) -> None

@@ -36,6 +36,8 @@ class Options:
     stop_at_saved: bool = False
     # `--limit`: max discovered targets on a target-yielding route, or max posts on a normal target.
     limit: int | None = None
+    # `--again`: ignore the new-post-only check and saved cursors, running from start to finish.
+    again: bool = False
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:

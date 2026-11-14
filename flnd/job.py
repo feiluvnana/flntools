@@ -740,6 +740,25 @@ class Ledger:
         key = fill(template, values, safe=False)
         return f"{self.source.code}:{key}" if key else None
 
+    def is_saved(
+        self, post_id: str, category: Category | None, posted: datetime.date | None = None,
+    ) -> bool:
+        """Whether `post_id` is already saved in history or on disk, not just queued this run."""
+        name = category.name if category is not None else ""
+        if self._saved_first(Post(post_id, date=posted, category=name), category) is Outcome.SAVED:
+            return True
+        template = _format(self.source, category, "key")
+        if not template or _fields(template) & LISTED_FIELDS:
+            return False
+        if not (_fields(template) - {"id", "date", "category", "num"}):
+            return False
+        # Keys using source-specific item indices (such as `{n}` or `{idx}`) match `_0` or `_1`.
+        for index in (0, 1):
+            key = f"{self.source.code}:{post_id}_{index}"
+            if key not in self._queued and self._held(None, key) is not None:
+                return True
+        return False
+
     def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
         """Whether every file of a lazy post is saved, by its keys alone.
 
@@ -1202,7 +1221,7 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     work = _Work(ledger, downloads)
     complete: list[str] = []
     saved = run.settings.targets
-    listed = targets.listed(saved, target) if options.stop_at_saved else {}
+    listed = {} if options.again else targets.listed(saved, target)
     resumes: dict[str, Resume] = {}
     error: BaseException | None = None
     try:
@@ -1628,7 +1647,7 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
             board.listed(target, "")
         return
     context = _context(run.source, route, site, target, run_async)
-    cursors = targets.cursors(run.settings.targets, target)
+    cursors = {} if options.again else targets.cursors(run.settings.targets, target)
     remaining = options.limit
     for category in categories:
         if remaining is not None and remaining <= 0:
@@ -1637,14 +1656,20 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
         log.debug("{target}: list {category}", target=str(target), category=category.name)
         board.start(target, category.name, slots=slots)
         start = cursors.get(category.name) if category.newest_first else None
-        resume = resumes[category.name] = Resume(start, label=f"{target}: {category.name}")
+        stop_at_saved = category.newest_first and category.name in listed and not start
+        saved_check = (
+            (lambda post_id, posted=None, cat=category: work.ledger.is_saved(post_id, cat, posted))
+            if stop_at_saved else None
+        )
+        resume = resumes[category.name] = Resume(
+            start, label=f"{target}: {category.name}", saved=saved_check,
+        )
         if start:
             log.info("{target}: {category}: going on where an interrupted run stopped",
                      target=str(target), category=category.name)
         method = getattr(run.source, category.name)
         kept = _Kept(method(site, context), category.name, newest_first=category.newest_first,
                      time=span, run_async=run_async)
-        stop_at_saved = category.newest_first and category.name in listed and not start
         with listing(resume):
             ended, taken = _queue_all(work, kept, stop_at_saved=stop_at_saved, limit=remaining)
         if remaining is not None:
@@ -1653,7 +1678,7 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
             return
         if ended is Ended.RAN_OUT:
             complete.append(category.name)
-        if ended is Ended.RAN_OUT and start and not resume.refused:
+        if ended is Ended.RAN_OUT and start and resume.taken and not resume.refused:
             # The newest posts came after the interrupted run began: read down to where it started,
             # which 5 saved posts in a row mark.
             log.debug("{target}: list {category} from the newest", target=str(target),

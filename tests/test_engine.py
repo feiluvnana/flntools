@@ -871,6 +871,22 @@ class QueryAndLimitDryTest(EngineCase):
         self.assertEqual(len(report.targets), 1)
         self.assertEqual(closed, [True])
 
+    def test_again_preserves_flag_for_normal_and_query_targets(self):
+        seen_options: list[Options] = []
+        src = self._query_source(closed=[], lookup_calls=[])
+        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        engine = Engine(home=self.home, sources={"srch": src})
+        orig_download = job.download
+
+        def spy(run, target, board, options):
+            seen_options.append(options)
+            return orig_download(run, target, board, options)
+
+        with mock.patch("flnd.job.download", side_effect=spy):
+            engine.download(["srch:1", "srch?words"], categories="photo", limit=1, again=True)
+        self.assertTrue(seen_options)
+        self.assertTrue(all(opt.again for opt in seen_options))
+
     def test_dry_run_on_query_and_normal_target_writes_nothing(self):
         closed, calls = [], []
         src = self._query_source(closed=closed, lookup_calls=calls)

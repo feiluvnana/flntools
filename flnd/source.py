@@ -64,6 +64,8 @@ TIME_USAGE = (
     "--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
     "for no limit"
 )
+# Consecutive already-saved posts that end a `newest_first` listing early.
+SAVED_STREAK = 5
 
 # A file without a URL: `fetch(dest, progress)` writes to `dest`, reporting `progress(done, total)`
 # in bytes. It may return a coroutine (tlg's SDK), which the engine runs on the source's loop.
@@ -818,7 +820,14 @@ class Resume:
             ...
     """
 
-    def __init__(self, start: str | None = None, *, label: str = ""):
+    def __init__(
+        self,
+        start: str | None = None,
+        *,
+        label: str = "",
+        saved: Callable[[str, datetime.date | None], bool] | None = None,
+    ):
+        """Set up a category listing's resume cursor, label, and saved-post predicate."""
         # The cursor an interrupted run saved; None starts from the newest.
         self.start = start
         # Names the listing in the line that says a saved cursor was refused.
@@ -829,6 +838,24 @@ class Resume:
         self.taken = False
         # Whether the site refused `start`, so the listing began again from the newest.
         self.refused = False
+        self._saved = saved
+        self._streak = 0
+
+    def caught_up(self, post_id: str, *, posted: Any = None) -> bool:
+        """Whether `post_id` completes a streak of 5 already-saved posts for this listing."""
+        if self._saved is None:
+            return False
+        if self._saved(post_id, day(posted)):
+            self._streak += 1
+        else:
+            self._streak = 0
+        return self._streak >= SAVED_STREAK
+
+
+def caught_up(post_id: str, *, posted: Any = None) -> bool:
+    """Whether `post_id` hits the current listing's 5-saved-post early-stop streak."""
+    resume = getattr(_listing, "resume", None)
+    return False if resume is None else resume.caught_up(post_id, posted=posted)
 
 
 @contextmanager

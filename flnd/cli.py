@@ -88,6 +88,7 @@ def download(
     # `--shrink` alone is on; `--shrink off` turns a saved one off; not given keeps the saved one.
     shrink: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None,
     sync: Annotated[bool, cli.opt("--sync")] = False,
+    again: Annotated[bool, cli.opt("--again")] = False,
     limit: Annotated[Optional[int], cli.opt("--limit", metavar="N")] = None,
     dry: Annotated[bool, cli.opt("--dry")] = False,
     verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
@@ -107,6 +108,7 @@ def download(
         shrink: compress each photo, video and audio file to a balanced quality in its own format,
             replacing it when smaller, metadata (GPS too) stripped; off stops it.
         sync: keep these targets up to date with `flnd sync`.
+        again: ignore the new-post-only check and saved cursors, running from start to finish.
         limit: cap how many results a query target downloads, or how many posts a normal target
             downloads.
         dry: list the targets or files it would download, and download none.
@@ -121,7 +123,7 @@ def download(
         report = Engine(home=HOME).download(
             targets, categories=categories, time=Range() if time is None else time,
             shrink=None if shrink is None else shrink == "on",
-            limit=limit, dry=dry, sync=sync,
+            limit=limit, dry=dry, sync=sync, again=again,
         )
     except ValueError as error:
         raise cli.UsageError(str(error)) from None

@@ -529,12 +529,16 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, self.ids)
         self.assertIsNotNone(self.record())
 
-    def test_download_never_stops_at_saved_posts(self):
+    def test_download_stops_at_saved_posts_by_default_and_again_lists_all(self):
         self.engine.download(["fed:example_user"])
         self.listed.clear()
         report = self.engine.download(["fed:example_user"])
+        self.assertEqual(self.listed, self.ids[:5])
+        self.assertEqual((report.files, report.targets[0].skipped), (0, 5))
+        self.listed.clear()
+        report_again = self.engine.download(["fed:example_user"], again=True)
         self.assertEqual(self.listed, self.ids)
-        self.assertEqual((report.files, report.targets[0].skipped), (0, 8))
+        self.assertEqual((report_again.files, report_again.targets[0].skipped), (0, 8))
 
     def test_a_feed_that_is_not_newest_first_is_never_stopped(self):
         class Plain(Source):
@@ -1035,6 +1039,17 @@ class ResumeTest(JobCase):
         self.assertIn("• pgd:example_user: posts: the cursor an interrupted run saved was refused; "
                       "listing from the newest", self.lines())
         self.assertNotIn("cursors", self.row())
+
+    def test_again_ignores_saved_cursors_and_complete_listing_from_newest(self):
+        self.interrupted()
+        report = self.engine.download(["pgd:example_user"], again=True)
+        self.assertTrue(report.ok)
+        self.assertEqual(self.fetched, [None, "c1", "c2"])
+        self.assertNotIn("cursors", self.row())
+        self.assertIn("posts", self.row()["complete"])
+        self.fetched.clear()
+        self.engine.download(["pgd:example_user"], again=True)
+        self.assertEqual(self.fetched, [None, "c1", "c2"])
 
 
 class MemoryTest(JobCase):

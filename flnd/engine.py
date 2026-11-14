@@ -126,6 +126,7 @@ class Engine:
         limit: int | None = None,
         dry: bool = False,
         sync: bool = False,
+        again: bool = False,
     ) -> Report:
         """Download each target, with its saved `--shrink` or the one given, and say what was done.
 
@@ -146,6 +147,8 @@ class Engine:
                 target; None for no limit.
             dry: `--dry`: list what would be downloaded without downloading or recording anything.
             sync: `--sync`: mark targets to be updated by `flnd sync`.
+            again: `--again`: ignore the new-post-only check and saved cursors, running from start
+                to finish.
 
         Returns:
             One `TargetReport` per target, in the order given, each with the saved setting it used.
@@ -166,7 +169,7 @@ class Engine:
         """
         with self._logged(
             "download", targets=targets, categories=categories, time=time, shrink=shrink,
-            limit=limit, dry=dry, sync=sync,
+            limit=limit, dry=dry, sync=sync, again=again,
         ):
             # Every option is read before anything starts, in the CLI's order, so the first bad
             # one is the error.
@@ -175,7 +178,9 @@ class Engine:
             span = Range.parse(time) if isinstance(time, str) else time
             resolved = self._resolved(targets)
             names = self._categories(categories, resolved)
-            options = Options(categories=names, since=span.since, until=span.until, limit=limit)
+            options = Options(
+                categories=names, since=span.since, until=span.until, limit=limit, again=again,
+            )
             if dry:
                 report = self._dry_run(resolved, options, span)
                 _end_if_stopped()
@@ -569,7 +574,9 @@ class Engine:
                 try:
                     with _written_back(run), _connected(run, account):
                         with closing(
-                            job.discover(run, target, limit=options.limit, time_range=span)
+                            job.discover(
+                                run, target, limit=options.limit, time_range=span, seen=(),
+                            )
                         ) as found:
                             for child in found:
                                 if net.stopping.is_set():
@@ -710,7 +717,7 @@ class Engine:
             options = ", ".join(
                 f"{name}={value!r}" for name, value in given.items()
                 if value not in (None, (), Range())
-                and not (name in ("dry", "sync") and value is False)
+                and not (name in ("dry", "sync", "again") and value is False)
             )
             log.debug("flnd {version} {command}: {options}", version=__version__, command=command,
                       options=options or "no options")
@@ -1122,7 +1129,11 @@ def _repaired(history: MutableMapping[str, Any], planned: _Planned) -> Options:
     repair.repair(history, tally)
     # A target with a lost or broken file lists to the end, so a file deeper than the saved-run
     # stop is reached and saved again; the others stop at saved posts.
-    return replace(planned.options, stop_at_saved=planned.options.stop_at_saved and not tally.lost)
+    return replace(
+        planned.options,
+        stop_at_saved=planned.options.stop_at_saved and not tally.lost,
+        again=planned.options.again or bool(tally.lost),
+    )
 
 
 def _fail_unreached(work: tuple[Source, list[_Planned]], error: BaseException | None,

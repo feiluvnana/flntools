@@ -121,9 +121,12 @@ class DownloadTest(RunsCase):
     def test_defaults(self):
         self.assertEqual(self.run_app("download", "tik:a")[0], 0)
         self.assertEqual(self.runs[0][2], Options())
+        self.assertFalse(Options().again)
         self.assertIsNone(Options().categories)
         self.assertEqual(self.run_app("download", "tik:a", "ins:b", "--from", "all")[0], 0)
         self.assertEqual(self.runs[1][2].categories, ("all",))
+        self.assertEqual(self.run_app("download", "tik:a", "--again")[0], 0)
+        self.assertEqual(self.runs[2][2], Options(again=True))
 
     def test_from_with_a_single_post_is_a_usage_error(self):
         message = ("✗ --from applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
@@ -203,7 +206,7 @@ class DownloadTest(RunsCase):
         self.assertEqual(self.run_app("login")[0], 2)
         self.assertEqual(self.run_app("logout", "all")[0], 2)
         download_help = self.run_app("download", "--help")[1]
-        for option in ("--from CATEGORIES", "--time SINCE,UNTIL", "--[no-]sync"):
+        for option in ("--from CATEGORIES", "--time SINCE,UNTIL", "--[no-]sync", "--[no-]again"):
             self.assertIn(f"  {option}  ", download_help)
         for gone in ("--since", "--until", "unpack", "--zip", "--locale", "--timezone", "--compress", "--format-"):
             self.assertNotIn(gone, download_help)

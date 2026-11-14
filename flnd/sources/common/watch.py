@@ -16,14 +16,15 @@ or the feed ends (10 s at the bottom with nothing new). Closing it stops the sub
 from __future__ import annotations
 
 from collections import deque
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterable, Iterator
 
+from flnd.source import caught_up
 from shared import browser
 
 if TYPE_CHECKING:
     from flnd.source import Site
 
-__all__ = ["Responses", "watch_responses"]
+__all__ = ["Responses", "caught_up", "warm_tabs", "watch_responses"]
 
 # The longest wait, in seconds, for the network to go quiet when not scrolling: a page's own
 # requests settle well within it, and a page that never settles has sent what it will.
@@ -43,15 +44,32 @@ class Responses:
     ):
         """Subscribe to matching responses on the target's page."""
         self._site = site
+        self._match = match
         self._scroll = scroll
+        self._lines = lines
+        self._closed = False
         # (data, Playwright response) pairs, oldest first; the handler runs inside Playwright's
         # waits on this same thread, so no lock is needed.
         self._waiting: deque[tuple[Any, Any]] = deque()
         # The request of the response last yielded; None before the first.
         self.request: Any = None
-        self._subscription = site.page.on_response(
-            match, lambda data, response: self._waiting.append((data, response)), lines=lines)
+        push = getattr(site, "_push_tab", None)
+        if callable(push):
+            push(self, scroll=scroll)
+        self._page = site.page
+        self._subscription = self._page.on_response(match, self._on_match, lines=lines)
         self._items = self._iterate()
+
+    def _on_match(self, data: Any, response: Any) -> None:
+        self._waiting.append((data, response))
+
+    def _adopt(self, page: browser.Page) -> None:
+        """Move the active response subscription onto `page` after a tab switch."""
+        if self._closed or page is self._page:
+            return
+        self._subscription.stop()
+        self._page = page
+        self._subscription = page.on_response(self._match, self._on_match, lines=self._lines)
 
     def __iter__(self) -> Iterator[Any]:
         return self
@@ -67,24 +85,29 @@ class Responses:
 
     def close(self) -> None:
         """Stop watching; a second call does nothing."""
+        if self._closed:
+            return
+        self._closed = True
         self._subscription.stop()
+        pop = getattr(self._site, "_pop_tab", None)
+        if callable(pop):
+            pop(self)
 
     def _iterate(self) -> Iterator[Any]:
         """Yield arrived responses, scrolling or waiting for network quiet as configured."""
-        page = self._site.page
         try:
             while True:
                 yield from self.arrived()
                 if not self._scroll:
                     try:
-                        page.wait(idle=True, timeout=QUIET)
+                        self._page.wait(idle=True, timeout=QUIET)
                     # A page that never goes quiet (polling, live feed) has sent its responses.
                     except browser.WaitError:
                         pass
                     yield from self.arrived()
                     return
                 # Stops as soon as a response is waiting; returns with none when the feed ended.
-                page.scroll(until=lambda: bool(self._waiting))
+                self._page.scroll(until=lambda: bool(self._waiting))
                 if not self._waiting:
                     return
         finally:
@@ -97,6 +120,13 @@ class Responses:
             # A fake tab in the tests hands no response; a real one always does.
             self.request = getattr(response, "request", None)
             yield data
+
+
+def warm_tabs(site: Site, urls: Iterable[str]) -> None:
+    """Open and begin loading `urls` in background tabs inside `site`'s browser window."""
+    warm = getattr(site, "_warm_tabs", None)
+    if callable(warm):
+        warm(urls)
 
 
 def watch_responses(

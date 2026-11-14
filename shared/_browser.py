@@ -50,9 +50,16 @@ if TYPE_CHECKING:
 __all__ = ["Browser", "Error", "Match", "MissingError", "Page", "RawError", "Subscription", "Visit",
            "WaitError", "check", "open"]
 
-# Switches that hide the automation Chrome would otherwise show: AutomationControlled is the blink
-# feature that sets `navigator.webdriver`, and infobars is the automated-software info bar.
-LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled", "--disable-infobars"]
+# Switches that hide the automation Chrome would otherwise show (AutomationControlled sets
+# `navigator.webdriver`; infobars shows the automated-software bar) and prevent Chrome from
+# throttling background tabs when multiple tabs run inside one browser window.
+LAUNCH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+]
 # `navigator.webdriver` is removed rather than set to false, matching how an ordinary browser acts.
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHeight"
@@ -738,18 +745,17 @@ class Page:
 
     def scroll(self, *, within: str | Locator | None = None,
                until: Callable[[], bool] | None = None, count: Callable[[], int] | None = None,
-               idle: float = 10.0, wait: float = 3.0, pause: float = 0.3,
+               idle: float = 10.0, wait: float = 3.0, pause: float = 0.05,
                on_step: Callable[[], Any] | None = None) -> int:
         """Scroll like a person until the feed ends, and return the number of scrolls.
 
             tab.scroll(count=lambda: len(posts), until=lambda: len(posts) >= 500)
             tab.scroll(within="[role=dialog] .list")      # a list that scrolls inside the page
 
-        Each scroll moves the mouse and turns the wheel in uneven steps. It then waits for the
-        page's progress, checked every 50 ms: the page (or `within`) grew, `count()` rose, or an
-        `on_response` handler's response arrived. Then it pauses `pause` seconds plus 0 to 40%,
-        so two scrolls never come back to back, and scrolls again. A fast page is scrolled two or
-        three times a second; a slow one is waited out.
+        Each scroll moves the mouse and turns the wheel in fast uneven steps straight through
+        loaded content. Once at the bottom, it waits for the page's progress (checked every 50 ms:
+        the page or `within` grew, `count()` rose, or an `on_response` handler's response arrived),
+        then pauses `pause` seconds plus 0 to 40% before the next scroll.
 
         Args:
             within: the element that scrolls, as a CSS selector (its first match) or a Playwright
@@ -760,10 +766,10 @@ class Page:
                 the caller watches. None leaves it out.
             idle: seconds at the end with no progress after which the feed has ended, however
                 many scrolls that takes.
-            wait: the longest wait for progress after one scroll, in seconds.
-            pause: the least seconds between the end of that wait and the next scroll: the floor,
+            wait: the longest wait for progress after one scroll at the bottom, in seconds.
+            pause: the least seconds after a bottom wait before the next scroll: the floor,
                 which a caller raises when the site has asked it to slow down.
-            on_step: called after each scroll's pause, such as a spinner's advance.
+            on_step: called after each scroll, such as a spinner's advance.
 
         Returns:
             The number of scrolls done.
@@ -794,7 +800,8 @@ class Page:
             else:
                 longest = min(wait, quiet_since + idle - clock.now())
             previous, marker = marker, self._wait_for_progress(target, marker, count, longest)
-            self._pause(pause)
+            if at_bottom:
+                self._pause(pause)
             if on_step is not None:
                 on_step()
             if any(now > before for now, before in zip(marker, previous)) or not at_bottom:
@@ -950,26 +957,23 @@ class Page:
         return left, top, right - left, bottom - top
 
     def _move(self, target: Locator | None) -> None:
-        """One scroll: move mouse over the area, wheel down most of its height, maybe back up."""
+        """One scroll: move mouse over the area and wheel down in a fast burst."""
         left, top, width, height = self._area(target)
         jitter = clock.random()
         # The mouse lands somewhere in the middle of the area, never on one pixel each time.
         self.raw.mouse.move(left + width * jitter.uniform(0.25, 0.75),
-                            top + height * jitter.uniform(0.3, 0.7), steps=jitter.randint(2, 6))
-        self._wheel(height * jitter.uniform(0.6, 0.9))
-        # One scroll in eight goes a little back up; the odds are a design choice, not measured.
-        if jitter.random() < 1 / 8:
-            self._wheel(-height * jitter.uniform(0.1, 0.25))
+                            top + height * jitter.uniform(0.3, 0.7), steps=jitter.randint(1, 3))
+        self._wheel(height * jitter.uniform(1.2, 1.8))
 
     def _wheel(self, distance: float) -> None:
-        """Turn the wheel by `distance` pixels in 3 to 6 uneven steps, pausing between them."""
-        # Uneven steps and pauses, so the wheel doesn't tick at one fixed rate.
+        """Turn the wheel by `distance` pixels in 4 to 7 uneven frame-rate steps."""
+        # Uneven frame-rate steps, so the wheel glides smoothly without ticking at one fixed rate.
         jitter = clock.random()
-        weights = [jitter.uniform(0.5, 1.5) for _ in range(jitter.randint(3, 6))]
+        weights = [jitter.uniform(0.6, 1.4) for _ in range(jitter.randint(4, 7))]
         total = sum(weights)
         for weight in weights:
             self.raw.mouse.wheel(0, distance * weight / total)
-            self.raw.wait_for_timeout(jitter.uniform(20, 60))
+            self.raw.wait_for_timeout(jitter.uniform(5, 15))
 
     def _pause(self, floor: float) -> None:
         # Jitter only adds: a floor is the least a site is given, so it is never cut short.

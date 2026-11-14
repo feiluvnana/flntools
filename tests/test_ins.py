@@ -1,9 +1,9 @@
-"""Instagram: tabs and their replayed pagination, posts read through the media API (or their page), stories,
+"""Instagram: tabs scrolled to the end, posts read through the media API (or their page), stories,
 highlights, the picture, one post, and every throttle waited out.
 
 What is faked: the site's answers (`FakeSite` through `collect`), and the tab's scrolling, by `FakeWatch`,
-which hands out the GraphQL responses scrolling a tab would bring, each with the request a replay
-would send again. No network, no browser, no wait is slept: `back_off` only records.
+which hands out the GraphQL responses scrolling a tab would bring. No network, no browser, no wait
+is slept: `back_off` only records.
 """
 
 import json
@@ -11,10 +11,8 @@ import os
 import time
 import unittest
 from datetime import date
-from types import SimpleNamespace
-from typing import Any, NamedTuple
+from typing import Any
 from unittest import mock
-from urllib.parse import parse_qsl, urlencode
 
 import httpx
 from fakes import FakeSite, Seen, collect
@@ -23,7 +21,6 @@ from test_dash import INSTAGRAM
 from flnd.options import Options
 from flnd.source import FetchError, LoginError, Target, TargetError, day
 from flnd.sources.common.relay import embedded_results
-from flnd.sources.common.replay import Replay
 from flnd.sources.ins import (APP_ID, Instagram, best_file, files_of, full_size, is_complete, pk_of_code, pk_stamp,
                               post_files, reel_posts, tab_media)
 from shared import http, selector
@@ -284,29 +281,8 @@ PAGES = {
 }
 
 
-class Sent(NamedTuple):
-    """A response scrolling brings, with the request the page sent for it."""
-
-    data: Any
-    request: Any
-
-
-def pagination_request(after="c1", **headers):
-    """The posts tab's next-page request as Playwright shows it: a form POST with its tokens."""
-    body = urlencode({"doc_id": "7950326061742207", "fb_dtsg": "token",
-                      "variables": json.dumps({"after": after, "before": None, "first": 12, "id": "42"})})
-    return SimpleNamespace(url=GRAPHQL, method="POST", post_data=body,
-                           headers={"content-type": "application/x-www-form-urlencoded", "x-fb-lsd": "lsd",
-                                    "x-fb-friendly-name": "PolarisProfilePostsTabContentQuery_connection",
-                                    "x-csrftoken": "tok", "user-agent": "Chrome", "cookie": "sessionid=s", **headers})
-
-
 class FakeWatch:
-    """`watch_responses` over a fake tab: scrolling gives the responses held for the URL last loaded.
-
-    Each URL's responses are one queue, so a second watcher of the same tab (the scroll a refused
-    replay falls back to) goes on where the first one stopped, as a real tab's scrolling would.
-    """
+    """`watch_responses` over a fake tab: scrolling gives the responses held for the URL last loaded."""
 
     def __init__(self, batches):
         self.batches = {url: list(entries) for url, entries in batches.items()}
@@ -329,9 +305,7 @@ class FakeWatch:
                 # Read once the page is loaded, as the first scroll would.
                 queue = batches.get(site.page.url, [])
                 while queue:
-                    entry = queue.pop(0)
-                    self.request = entry.request if isinstance(entry, Sent) else None
-                    yield entry.data if isinstance(entry, Sent) else entry
+                    yield queue.pop(0)
 
         return Responses()
 
@@ -411,11 +385,6 @@ class NamesAndKeysTest(unittest.TestCase):
         saved = read(options=Options(categories=("stories", "highlights")), json=refused)
         self.assertEqual(sorted((item.path, item.key) for item in saved),
                          [pair for pair in OLD_PROFILE if pair[0].startswith(("stories/", "highlights/"))])
-
-    def test_a_replayed_tab_is_named_and_keyed_as_a_scrolled_one(self):
-        site = replay_site()
-        self.assertEqual(sorted((item.path, item.key) for item in site.saved),
-                         [(f"posts/{DAY}_P1.jpg", "P1_0"), (f"posts/{DAY}_P2.jpg", "P2_0"), (f"posts/{DAY}_P3.jpg", "P3_0")])
 
     def test_a_post_is_named_and_keyed_as_before_routes(self):
         saved = read("https://www.instagram.com/p/SINGLE/")
@@ -585,68 +554,27 @@ class ProfileTest(unittest.TestCase):
         self.assertIn(f"posts/{DAY}_P1.jpg", [item.path for item in saved])
 
 
-def replay_site(*, answers=None, watch_tail=()):
-    """The posts tab read by replay: page 1 embedded, page 2 scrolled with its request, page 3 by replay.
+class ScrollTest(unittest.TestCase):
+    def test_multi_page_scroll_collects_all_pages_before_resolving_lazy_posts(self):
+        page_1 = grid({"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP},
+                      more="c1")
+        page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="c2")
+        page_3 = grid({"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP}, more="")
+        watch = FakeWatch({f"{SITE}/someone/": [page_2, page_3]})
+        scroll_left_when_api_called = []
 
-    Args:
-        answers: what the replayed request gets, in order, before page 3; nothing more by default.
-        watch_tail: responses scrolling brings after page 2, which only a fallback reads.
+        def car_info(url, request):
+            scroll_left_when_api_called.append(len(watch.batches[f"{SITE}/someone/"]))
+            return JSON[f"{API}/media/{PK['CAR']}/info/"]
 
-    Returns:
-        A namespace with the `seen` record, the replayed requests and the `saved` paths.
-    """
-    page_1 = grid(feed("P1", **image("https://cdn.example/p1.jpg")), more="c1")
-    page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="c2")
-    page_3 = grid(feed("P3", **image("https://cdn.example/p3.jpg")), more="")
-    pending = list(answers or ())
-    sent = []
-
-    def graphql(url, request):
-        form = dict(parse_qsl(request["data"]))
-        sent.append(json.loads(form["variables"])["after"])
-        answer = pending.pop(0) if pending else page_3
-        return answer
-
-    seen = Seen()
-    watch = FakeWatch({f"{SITE}/someone/": [Sent(page_2, pagination_request()), *watch_tail]})
-    saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen,
-                 pages={f"{SITE}/someone/": embedded(PROFILE, page_1)}, json={GRAPHQL: graphql})
-    return SimpleNamespace(seen=seen, sent=sent, saved=saved, watch=watch)
-
-
-class ReplayTest(unittest.TestCase):
-    def test_the_tabs_own_request_is_replayed_with_the_next_cursor(self):
-        site = replay_site()
-        self.assertEqual(site.sent, ["c2"])
-        method, url, options = site.seen.requests[0]
-        self.assertEqual((method, url, options["in_page"]), ("POST", GRAPHQL, True))
-        # The page's tokens go with it; what the browser sets itself doesn't.
-        self.assertEqual(options["headers"], {"content-type": "application/x-www-form-urlencoded", "x-fb-lsd": "lsd",
-                                              "x-fb-friendly-name": "PolarisProfilePostsTabContentQuery_connection",
-                                              "x-csrftoken": "tok"})
-        form = dict(parse_qsl(options["data"]))
-        self.assertEqual((form["doc_id"], form["fb_dtsg"]), ("7950326061742207", "token"))
-        self.assertEqual(json.loads(form["variables"]), {"after": "c2", "before": None, "first": 12, "id": "42"})
-
-    def test_a_throttled_replay_waits_and_asks_the_same_page_again(self):
-        site = replay_site(answers=[THROTTLE, FetchError("HTTP 400", status=400, response=http.Response(
-            400, GRAPHQL, {"content-type": "application/json"}, json.dumps(THROTTLE).encode()))])
-        self.assertEqual(site.sent, ["c2", "c2", "c2"])
-        self.assertEqual(site.seen.back_offs, ["Instagram asked to wait a few minutes"] * 2)
-        self.assertIn(f"posts/{DAY}_P3.jpg", [item.path for item in site.saved])
-
-    def test_a_refused_replay_warns_once_and_scrolls_on(self):
-        page_3 = grid(feed("P3", **image("https://cdn.example/p3.jpg")))
-        site = replay_site(answers=[FetchError("HTTP 400", status=400)], watch_tail=[page_3])
-        self.assertEqual(site.sent, ["c2"])
-        self.assertEqual([message for message in site.seen.messages if message.startswith("!")],
-                         ["! posts: the page's API refused a replay (HTTP 400); scrolling instead"])
-        self.assertEqual(site.watch.opened, 2)
-        self.assertIn(f"posts/{DAY}_P3.jpg", [item.path for item in site.saved])
-
-    def test_an_answer_without_the_tab_is_a_refusal(self):
-        site = replay_site(answers=[{"data": {"something_else": {}}}])
-        self.assertTrue(any("refused a replay" in message for message in site.seen.messages))
+        seen = Seen()
+        saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen,
+                     pages={f"{SITE}/someone/": embedded(PROFILE, page_1)},
+                     json={**JSON, f"{API}/media/{PK['CAR']}/info/": car_info})
+        self.assertEqual(scroll_left_when_api_called, [0])
+        self.assertEqual(sorted(item.path for item in saved), [
+            f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4", f"posts/{DAY}_P2.jpg", f"posts/{DAY}_R1.mp4",
+        ])
 
     def test_a_tab_whose_embedded_page_is_its_last_is_not_scrolled(self):
         watch = FakeWatch({})
@@ -655,22 +583,43 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
         self.assertEqual(watch.batches, {})
 
-    def test_a_request_without_the_cursor_is_not_replayed(self):
-        request = SimpleNamespace(url=GRAPHQL, method="POST", post_data=urlencode({"variables": json.dumps({"id": 1})}),
-                                  headers={})
-        self.assertIsNone(Replay.of(request, cursor="after"))
-        self.assertIsNone(Replay.of(None, cursor="after"))
-        get = SimpleNamespace(url=f"{GRAPHQL}?variables=%7B%22after%22%3A%22c%22%7D&doc_id=1", method="GET",
-                              post_data=None, headers={"X-IG-App-ID": "1"})
-        replay = Replay.of(get, cursor="after")
-        self.assertIsNotNone(replay)
-        site = FakeSite(Target("ins", "user", "someone"), json={GRAPHQL: {"ok": True}})
-        assert replay is not None
-        replay.send(site, "next")
-        _, url, options = site._seen.requests[0]
-        query = dict(parse_qsl(url.split("?", 1)[1]))
-        self.assertEqual((json.loads(query["variables"]), query["doc_id"]), ({"after": "next"}, "1"))
-        self.assertEqual(options["headers"], {"X-IG-App-ID": "1"})
+    def test_early_stop_on_posts_after_five_consecutive_old_posts(self):
+        old_stamp = STAMP - 10 * 86400
+        old_posts = [feed(f"OLD{i}", taken_at=old_stamp, **image(f"https://cdn.example/o{i}.jpg")) for i in range(5)]
+        page_1 = grid(feed("NEW", taken_at=STAMP, **image("https://cdn.example/new.jpg")), more="c1")
+        page_2 = grid(*old_posts, more="c2")
+        page_3 = grid(feed("LATER", taken_at=old_stamp, **image("https://cdn.example/later.jpg")), more="")
+        watch = FakeWatch({f"{SITE}/someone/": [page_2, page_3]})
+        saved = read(options=Options(categories=("posts",), since=date(2023, 11, 14)), watch=watch,
+                     pages={f"{SITE}/someone/": embedded(PROFILE, page_1)})
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_NEW.jpg"])
+        self.assertEqual(watch.batches[f"{SITE}/someone/"], [page_3])
+
+    def test_early_stop_on_posts_when_caught_up(self):
+        page_1 = grid(feed("P1", **image("https://cdn.example/p1.jpg")), more="c1")
+        page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="c2")
+        page_3 = grid(feed("P3", **image("https://cdn.example/p3.jpg")), more="")
+        watch = FakeWatch({f"{SITE}/someone/": [page_2, page_3]})
+        with mock.patch("flnd.sources.ins.caught_up", side_effect=lambda code, **_: code == "P2"):
+            saved = read(options=Options(categories=("posts",)), watch=watch,
+                         pages={f"{SITE}/someone/": embedded(PROFILE, page_1)})
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg", f"posts/{DAY}_P2.jpg"])
+        self.assertEqual(watch.batches[f"{SITE}/someone/"], [page_3])
+
+    def test_complete_carousel_and_clips_in_grid_skip_lazy_api(self):
+        car = {
+            "code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP,
+            "carousel_media": [image("https://cdn.example/c0.jpg"), video("https://cdn.example/c1.mp4")],
+        }
+        reel = {"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP,
+                **video("https://cdn.example/r1.mp4")}
+        seen = Seen()
+        saved = read(options=Options(categories=("posts",)), watch=FakeWatch({}), seen=seen,
+                     pages={f"{SITE}/someone/": embedded(PROFILE, grid(car, reel))})
+        self.assertEqual(seen.requests, [])
+        self.assertEqual([item.path for item in saved], [
+            f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4", f"posts/{DAY}_R1.mp4",
+        ])
 
 
 class Landing(FakeSite):
@@ -706,7 +655,10 @@ class ThrottleTest(unittest.TestCase):
                      seen=seen)
         self.assertEqual(len(calls), 3)
         self.assertEqual(seen.back_offs, ["Instagram asked to wait a few minutes"] * 2)
-        self.assertEqual([item.path for item in saved][:2], [f"tagged/{DAY}_T1_0.jpg", f"tagged/{DAY}_T1_1.jpg"])
+        self.assertEqual(
+            [item.path for item in saved],
+            [f"tagged/{DAY}_P1.jpg", f"tagged/{DAY}_T1_0.jpg", f"tagged/{DAY}_T1_1.jpg"],
+        )
 
     def test_a_refusal_of_flnds_client_moves_the_calls_into_the_page(self):
         seen = Seen()

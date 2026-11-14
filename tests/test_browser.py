@@ -1042,15 +1042,15 @@ class ScrollTimingTest(BrowserCase):
     def test_a_page_that_grows_quickly_is_scrolled_again_after_the_floor_not_the_wait(self):
         feed, page = self.feed(after=0.1, grows=20)
         page.scroll(wait=3.0, until=upto(20))
-        # 0.1 s for the page, then the 0.3 s floor plus at most 40%, give or take one 50 ms check.
+        # 0.1 s for the page, then the 0.05 s floor plus at most 40%, give or take one 50 ms check.
         gaps = self.gaps(feed)
-        self.assertGreaterEqual(min(gaps), 0.1 + 0.3)
-        self.assertLessEqual(max(gaps), 0.1 + 0.05 + 0.3 * 1.4 + 1e-9)
+        self.assertGreaterEqual(min(gaps), 0.1 + 0.05)
+        self.assertLessEqual(max(gaps), 0.1 + 0.05 + 0.05 * 1.4 + 1e-9)
 
     def test_a_slow_page_is_waited_for(self):
         feed, page = self.feed(after=2.0, grows=5)
         page.scroll(wait=3.0, until=upto(5))
-        self.assertTrue(all(2.0 + 0.3 <= gap < 3.0 for gap in self.gaps(feed)))
+        self.assertTrue(all(2.0 + 0.05 <= gap < 3.0 for gap in self.gaps(feed)))
         self.assertEqual(feed.height, 1000 + 900 * 5)
 
     def test_a_page_that_stops_growing_ends_after_10_s_whatever_the_wait(self):
@@ -1077,12 +1077,12 @@ class ScrollTimingTest(BrowserCase):
             return sum(1 for when in feed.scrolled_at if when + 0.2 <= feed.now)
 
         page.scroll(wait=3.0, until=upto(6), count=counter)
-        self.assertTrue(all(0.2 + 0.3 <= gap < 1.0 for gap in self.gaps(feed)))
+        self.assertTrue(all(0.2 + 0.05 <= gap < 1.0 for gap in self.gaps(feed)))
 
     def test_away_from_the_bottom_there_is_nothing_to_wait_for(self):
         feed, page = self.feed(grows=0, bottom=False)
         self.assertEqual(page.scroll(wait=3.0, until=upto(10)), 10)
-        self.assertTrue(all(0.3 <= gap <= 0.3 * 1.4 + 1e-9 for gap in self.gaps(feed)))
+        self.assertTrue(all(gap == 0.0 for gap in self.gaps(feed)))
 
     def test_the_floor_is_the_pause(self):
         feed, page = self.feed(after=0.0, grows=10)

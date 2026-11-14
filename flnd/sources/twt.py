@@ -1,9 +1,8 @@
 """Twitter / X: a user's posts, media, highlights, reposts, replies and profile pictures.
 
-The user route reads the profile once and hands it to each category. A timeline
-pages the GraphQL API to its end and yields one Post per photo or video of each
-tweet. When the API refuses a timeline, the category scrolls that tab in a
-browser. A post link reads one tweet and yields its media.
+The user route reads profile metadata once from GraphQL and hands it to each category.
+Every timeline category streams posts while scrolling its tab to the end in a browser.
+A post link reads one tweet from GraphQL and yields its media.
 
     flnd download twt:example_handle --from posts,profile
     flnd download https://x.com/example_handle/status/1790000000000000000
@@ -19,13 +18,13 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Generator, Iterator, Mapping, NamedTuple
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
-from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, pages, target
-from flnd.sources.common.watch import watch_responses
+from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
+from flnd.sources.common.watch import caught_up, watch_responses
 from shared import fmt, http, selector
 
 if TYPE_CHECKING:
@@ -78,15 +77,8 @@ SWITCH = re.compile(r'"(?P<name>[a-z0-9_]+)":\{"value":(?P<value>true|false)\b')
 STALE = frozenset({400, 404})
 # Where the refreshed table is kept in the source's `state`.
 STATE_KEY = "graphql.queries"
-# Tweets asked for per page: what the web app itself asks for, 2.5 times fewer requests than 20.
-PAGE_SIZE = 50
-# The search each timeline goes on with past its cap, added to `from:<name> max_id:<id>`:
-# `posts` is the user's own tweets, as `UserOriginalsTimeline` is; `media` those with a link, which
-# every photo and video tweet has (gallery-dl's `filter:links`).
-SEARCHES = {"posts": " -filter:retweets -filter:replies", "media": " filter:links -filter:retweets"}
-# Search pages in a row with nothing new before the search stops, and the smallest `count` it asks.
-EMPTY_SEARCHES = 3
-MIN_SEARCH_COUNT = 10
+# Consecutive tweets older than `since` before stopping scroll early (covers pinned tweets).
+OLD_STREAK = 5
 # A tweet's `created_at`, as Twitter writes it: `Mon Nov 09 10:00:00 +0000 2026`, always UTC.
 CREATED_AT = "%a %b %d %H:%M:%S %z %Y"
 # The largest banner size the CDN serves, as the `/<size>` suffix of a banner's URL.
@@ -121,8 +113,6 @@ class Account:
     handle: str
     # The API's user object; None when the API can't find them, and the browser reads everything.
     user: dict | None
-    # Set once a timeline was refused, so the categories after it go straight to the browser.
-    browser: bool = False
 
     @property
     def id(self) -> str | None:
@@ -231,27 +221,27 @@ class Twitter(Source):
     @user.category(newest_first=True)
     def posts(self, site: Site, account: Account) -> Iterator[Post]:
         """The user's own tweets (retweets left out)."""
-        yield from self.timeline(site, account, TIMELINES["posts"])
+        yield from self.read_browser(site, account, TIMELINES["posts"])
 
     @user.category(newest_first=True)
     def media(self, site: Site, account: Account) -> Iterator[Post]:
         """The Media tab: every photo and video, filed in images/ or videos/."""
-        yield from self.timeline(site, account, TIMELINES["media"])
+        yield from self.read_browser(site, account, TIMELINES["media"])
 
     @user.category
     def highlights(self, site: Site, account: Account) -> Iterator[Post]:
         """The tweets the user highlighted."""
-        yield from self.timeline(site, account, TIMELINES["highlights"])
+        yield from self.read_browser(site, account, TIMELINES["highlights"])
 
     @user.category
     def reposts(self, site: Site, account: Account) -> Iterator[Post]:
         """The media of the tweets the user retweeted, dated by the original tweet."""
-        yield from self.timeline(site, account, TIMELINES["reposts"])
+        yield from self.read_browser(site, account, TIMELINES["reposts"])
 
     @user.category(newest_first=True)
     def replies(self, site: Site, account: Account) -> Iterator[Post]:
         """The user's own replies; the tweets they answered are left out."""
-        yield from self.timeline(site, account, TIMELINES["replies"])
+        yield from self.read_browser(site, account, TIMELINES["replies"])
 
     # The pictures are named after the picture's own id and keyed by their path, as always.
     @user.category(folder="profile", key="")
@@ -277,118 +267,40 @@ class Twitter(Source):
             banner_name = f"banner_{banner.rstrip('/').rsplit('/', 1)[-1]}.jpg"
             yield Post(user["rest_id"], [File(f"{banner}/{BANNER_SIZE}", name=banner_name)])
 
-    def timeline(self, site: Site, account: Account, timeline: Timeline) -> Iterator[Post]:
-        """One timeline's posts: from the API, and from the browser when the API can't give it."""
-        if account.id is not None and not account.browser:
-            refused = yield from self.api(site, account.id, timeline, name=screen_name(account))
-            if not refused:
-                return
-            account.browser = True
-        yield from self.read_browser(site, account, timeline)
-
-    def api(self, site: Site, user_id: str, timeline: Timeline, *,
-            name: str | None = None) -> Generator[Post, None, bool]:
-        """Read one timeline from the API to its end; True when the API refused it."""
-        seen: set[str] = set()
-
-        def fetch(cursor: str | None) -> tuple[list[dict], str | None]:
-            variables = {
-                "userId": user_id, "count": PAGE_SIZE,
-                "includePromotedContent": False, "withVoice": True,
-            }
-            if cursor:
-                variables["cursor"] = cursor
-            tweets, following = read_timeline_page(self.graph.get(site, timeline.query, variables))
-            # Every page repeats the pinned tweet, and the last one still has a bottom cursor,
-            # so the end is the first page with no tweet not seen before.
-            new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen]
-            seen.update(tweet_id_of(tweet) for tweet in new)
-            return new, following if new else None
-
-        count = 0
-        try:
-            for new, _ in pages(fetch, lambda page: page[1]):
-                count += 1
-                for tweet in new:
-                    yield from tweet_posts(tweet, timeline.category, user_id)
-        except FetchError as error:
-            # Only the answer's status tells a refusal from a connection that failed.
-            if error.status is None:
-                raise
-            site.warn(
-                "{category}: {error}; reading it in the browser",
-                category=timeline.category, error=error,
-            )
-            return True
-        # A non-JSON page: the browser gets the same answer, so it isn't a refusal either.
-        except http.Error as error:
-            raise FetchError(f"{timeline.category}: {error}") from error
-        site.info(
-            "{category}: {pages} read",
-            category=timeline.category, pages=fmt.count(count, "page"),
-        )
-        if name and timeline.category in SEARCHES and seen:
-            yield from self.search(site, timeline, name, user_id, seen)
-        return False
-
-    def search(self, site: Site, timeline: Timeline, name: str, user_id: str,
-               seen: set[str]) -> Iterator[Post]:
-        """Read past the timeline's cap with `SearchTimeline`, moving `max_id` down."""
-        oldest = min((int(tweet_id) for tweet_id in seen if tweet_id.isdigit()), default=0)
-        if not oldest:
-            return
-        empty, count, pages_read = 0, PAGE_SIZE, 0
-        while empty < EMPTY_SEARCHES:
-            query = f"from:{name} max_id:{oldest - 1}{SEARCHES[timeline.category]}"
-            variables = {"rawQuery": query, "count": count, "querySource": "typed_query",
-                         "product": "Latest"}
-            try:
-                tweets, _ = read_timeline_page(self.graph.get(site, "SearchTimeline", variables))
-            except FetchError as error:
-                if error.status is None:
-                    raise
-                site.warn("{category}: the search past the timeline's cap was refused ({error}); "
-                          "older posts aren't listed", category=timeline.category, error=error)
-                return
-            except http.Error as error:
-                raise FetchError(f"{timeline.category}: {error}") from error
-            new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen]
-            ids = [int(tweet_id_of(tweet)) for tweet in tweets if tweet_id_of(tweet).isdigit()]
-            if not new:
-                # An empty page may be X's, not the end: asked again smaller, a few times.
-                empty, count = empty + 1, max(count // 2, MIN_SEARCH_COUNT)
-                if ids:
-                    oldest = min(ids)
-                continue
-            empty, pages_read = 0, pages_read + 1
-            seen.update(tweet_id_of(tweet) for tweet in new)
-            oldest = min(ids)
-            for tweet in new:
-                yield from tweet_posts(tweet, timeline.category, user_id)
-        if pages_read:
-            site.info("{category}: {pages} past the timeline's cap", category=timeline.category,
-                      pages=fmt.count(pages_read, "search page"))
-
     def read_browser(self, site: Site, account: Account, timeline: Timeline) -> Iterator[Post]:
-        """Scroll one timeline's tab to its end, reading GraphQL responses the API gives."""
-        # A number is opened by its id under `/i/user/`; a screen name is opened under its own path.
+        """Scroll one timeline's tab to its end, streaming its posts."""
+        # A number is opened by its id under `/i/user/`; a screen name under its own path.
         profile = (
             f"https://x.com/i/user/{account.handle}"
             if account.handle.isdigit()
             else f"https://x.com/{account.handle}"
         )
-        # Watching starts before `goto`, so nothing of the first load is missed.
+        for tweet in self._scroll_timeline(site, profile, timeline):
+            yield from tweet_posts(tweet, timeline.category, account.id)
+
+    def _scroll_timeline(self, site: Site, profile: str, timeline: Timeline) -> Iterator[dict]:
+        """Scroll one timeline tab until no new tweets arrive, `OLD_STREAK`, or `caught_up`."""
+        since = site.time.since if timeline.category in ("posts", "media", "replies") else None
+        seen: set[str] = set()
+        old = 0
         with watch_responses(site, f"/{timeline.query}", scroll=True) as responses:
-            if site.goto(profile + timeline.tab):
-                if urlsplit(site.page.url).path.startswith(WALLS):
-                    raise LoginError(
-                        "twt: X asked for a login or locked this account; "
-                        "check it in a browser or run flnd auth login twt"
-                    )
-                for data in responses:
-                    tweets, _ = read_timeline_page(data)
-                    for tweet in tweets:
-                        yield from tweet_posts(tweet, timeline.category, account.id)
+            if not site.goto(profile + timeline.tab):
+                return
+            if urlsplit(site.page.url).path.startswith(WALLS):
+                raise LoginError(
+                    "twt: X asked for a login or locked this account; "
+                    "check it in a browser or run flnd auth login twt"
+                )
+            for data in responses:
+                tweets, _ = read_timeline_page(data)
+                new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen]
+                if not new:
+                    break
+                seen.update(tweet_id_of(tweet) for tweet in new)
+                yield from new
+                old = older_streak(new, since, old)
+                if old >= OLD_STREAK or _hit_saved(new, timeline.category):
+                    break
 
 
 class Graph:
@@ -504,18 +416,39 @@ def unwrap(tweet: dict) -> dict:
     return inner if isinstance(inner, dict) else tweet
 
 
-def screen_name(account: Account) -> str | None:
-    """The user's screen name: the API's, else the target's handle unless it is a number."""
-    found = selector.parse(account.user or {}).jmespath(
-        "core.screen_name || legacy.screen_name"
-    ).first
-    return found or (None if account.handle.isdigit() else account.handle)
-
-
 def tweet_id_of(tweet: dict) -> str:
     """A tweet's id, inside its visibility wrapper or not."""
     tweet = unwrap(tweet)
     return str(tweet.get("rest_id") or selector.parse(tweet).jmespath("legacy.id_str").first or "")
+
+
+def tweet_date(tweet: dict) -> datetime | None:
+    """A tweet's `created_at` timestamp as a datetime, or None."""
+    created_at = (unwrap(tweet).get("legacy") or {}).get("created_at")
+    return datetime.strptime(created_at, CREATED_AT) if created_at else None
+
+
+def older_streak(tweets: list[dict], since: date | None, streak: int) -> int:
+    """Count consecutive tweets older than `since`, carrying `streak` forward."""
+    if since is None:
+        return streak
+    for tweet in tweets:
+        posted = day(tweet_date(tweet))
+        if posted is None:
+            continue
+        streak = streak + 1 if posted < since else 0
+    return streak
+
+
+def _hit_saved(tweets: list[dict], category: str) -> bool:
+    """Whether a `newest_first` timeline batch hits the 5-saved-post early-stop streak."""
+    if category not in ("posts", "media", "replies"):
+        return False
+    for tweet in tweets:
+        tid = tweet_id_of(tweet)
+        if tid and caught_up(tid, posted=tweet_date(tweet)):
+            return True
+    return False
 
 
 def tweet_posts(

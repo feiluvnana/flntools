@@ -1,8 +1,8 @@
 """TikTok: its routes, the names and keys of every file it saves, the captcha, the tabs, and one video from its embed page.
 
-What is faked: the site's answers (`FakeSite` through `collect`): the profile's HTML and its list APIs,
-asked for directly, and the browser's tab, by `FakeTab`, which hands the profile's JSON responses to
-whoever watches for them when the source scrolls, the fallback. No network, no browser, no wait is slept.
+What is faked: the site's answers (`FakeSite` through `collect`), and the browser's tab, by `FakeTab`,
+which hands the profile's JSON responses to whoever watches for them when the source scrolls.
+No network, no browser, no wait is slept.
 """
 
 import json
@@ -428,96 +428,51 @@ class far_off_timezone:
             os.environ["TZ"] = self.previous
         time.tzset()
 
-SEC_UID = "MS4wLjABAAAAexample"
-# The profile's HTML as flnd's own client gets it: its data with the secUid the list APIs take.
-DIRECT_HTML = {PROFILE: profile_page(video_count=8, sec_uid=SEC_UID)}
-# Each list API's answers, as the page's scrolling gets them: the same data, asked for directly.
-LISTS = {f"{API}/api/post/item_list/": POSTS, f"{API}/api/story/item_list/": {**STORIES, **STORIES_2},
-         f"{API}/api/repost/item_list/": REPOSTS, f"{API}/api/user/collect/item_list/": FAVORITES,
-         f"{API}/api/favorite/item_list/": LIKED}
+class ScrollTest(unittest.TestCase):
+    def test_multi_page_scroll_collects_all_pages_before_yielding_videos_and_playlists(self):
+        p1 = {"hasMore": True, "itemList": [video("7300000000000000001", f"{CDN}/v1", createTime=1700000000)]}
+        p2 = {"hasMore": False, "itemList": [
+            video("7300000000000000002", f"{CDN}/v2", createTime=1700000001, playlist={"name": "Mix"}),
+        ]}
+        feeds = [(f"{API}/api/post/item_list/?p=1", p1), (f"{API}/api/post/item_list/?p=2", p2)]
+        saved, seen, _ = run("tik:someone", feeds=feeds, html=profile_page(),
+                             options=Options(categories=("videos", "playlists")))
+        self.assertEqual(sorted((item.path, item.key) for item in saved), [
+            (f"albums/Mix/{DAY}_7300000000000000002.mp4", "7300000000000000002"),
+            (f"videos/{DAY}_7300000000000000001.mp4", "7300000000000000001"),
+        ])
+        self.assertEqual(seen.visited, [PROFILE])
 
+    def test_early_stop_on_videos_after_five_consecutive_old_items(self):
+        old_ts = 1699000000
+        old_items = [video(f"730000000000000001{i}", f"{CDN}/o{i}.mp4", createTime=old_ts) for i in range(5)]
+        p1 = {"hasMore": True, "itemList": [video("7300000000000000001", f"{CDN}/new.mp4", createTime=1700000000)]}
+        p2 = {"hasMore": True, "itemList": old_items}
+        p3 = {"hasMore": False, "itemList": [video("7300000000000000099", f"{CDN}/later.mp4", createTime=old_ts)]}
+        feeds = [(f"{API}/api/post/item_list/?p=1", p1), (f"{API}/api/post/item_list/?p=2", p2),
+                 (f"{API}/api/post/item_list/?p=3", p3)]
+        saved, _, _ = run("tik:someone", feeds=feeds, html=profile_page(),
+                          options=Options(categories=("videos",), since=datetime(2023, 11, 14, tzinfo=timezone.utc).date()))
+        self.assertEqual([item.key for item in saved], ["7300000000000000001"])
 
-class ListApiTest(unittest.TestCase):
-    """simplify.md §4: the list APIs directly first, so a profile run needs no page; scrolling only as the fallback."""
-
-    def test_a_profile_is_read_without_the_page_and_named_and_keyed_as_before(self):
-        stories = {"storyList": STORIES["storyList"] + [{"id": "7310000000000000003", "createTime": 1700001002,
-                                                          "video": {"playAddr": f"{CDN}/s3"}}]}
-        saved, seen, tab = run("tik:someone", pages=DIRECT_HTML, json={**LISTS, f"{API}/api/story/item_list/": stories},
-                               options=Options(categories=("all",)))
-        self.assertEqual(sorted(pairs(saved)), sorted(PROFILE_PAIRS))
-        self.assertEqual(seen.visited, [])
-        self.assertEqual(seen.back_offs, [])
-
-    def test_each_list_is_asked_with_the_web_clients_parameters(self):
-        _, seen, _ = run("tik:someone", pages=DIRECT_HTML, json=LISTS, options=Options(categories=("videos", "stories")))
-        lists = [(url, options["params"]) for _, url, options in seen.requests if "/api/" in url]
-        self.assertEqual([url for url, _ in lists], [f"{API}/api/post/item_list/", f"{API}/api/story/item_list/"])
-        posts, stories = (params for _, params in lists)
-        self.assertEqual((posts["secUid"], posts["cursor"], posts["aid"], posts["app_name"]),
-                         (SEC_UID, "0", "1988", "tiktok_web"))
-        self.assertEqual(stories["authorId"], "6800000000000000001")
-        self.assertRegex(posts["device_id"], r"^\d{19}$")
-
-    def test_pages_follow_the_cursor_and_a_repeated_page_gets_a_new_device(self):
-        first = {"hasMore": True, "cursor": "1700000500000",
-                 "itemList": [video("7300000000000000001", f"{CDN}/v1", createTime=1700000000)]}
-        last = {"hasMore": False, "cursor": "0",
-                "itemList": [video("7300000000000000002", f"{CDN}/v2", createTime=1700000001)]}
-        answers = [first, first, last]
-        saved, seen, _ = run("tik:someone", pages=DIRECT_HTML, options=Options(categories=("videos",)),
-                             json={f"{API}/api/post/item_list/": lambda url, request: answers.pop(0)})
-        params = [options["params"] for _, url, options in seen.requests if "/api/" in url]
-        self.assertEqual([p["cursor"] for p in params], ["0", "1700000500000", "1700000500000"])
-        self.assertEqual(params[0]["device_id"], params[1]["device_id"])
-        self.assertNotEqual(params[1]["device_id"], params[2]["device_id"])
+    def test_early_stop_on_videos_when_caught_up(self):
+        p1 = {"hasMore": True, "itemList": [video("7300000000000000001", f"{CDN}/v1", createTime=1700000000)]}
+        p2 = {"hasMore": True, "itemList": [video("7300000000000000002", f"{CDN}/v2", createTime=1700000000)]}
+        p3 = {"hasMore": False, "itemList": [video("7300000000000000003", f"{CDN}/v3", createTime=1700000000)]}
+        feeds = [(f"{API}/api/post/item_list/?p=1", p1), (f"{API}/api/post/item_list/?p=2", p2),
+                 (f"{API}/api/post/item_list/?p=3", p3)]
+        with mock.patch("flnd.sources.tik.caught_up", side_effect=lambda pid, **_: pid == "7300000000000000002"):
+            saved, _, _ = run("tik:someone", feeds=feeds, html=profile_page(),
+                              options=Options(categories=("videos",)))
         self.assertEqual([item.key for item in saved], ["7300000000000000001", "7300000000000000002"])
 
-    def test_a_refused_list_falls_back_to_scrolling_with_one_warning(self):
-        for refusal in (FetchError("HTTP 403", status=403), {"statusCode": 10201, "itemList": []}):
-            with self.subTest(refusal=refusal):
-                saved, seen, tab = run("tik:someone", pages=DIRECT_HTML, feeds=FEEDS[:1], html=profile_page(),
-                                       json={f"{API}/api/post/item_list/": refusal},
-                                       options=Options(categories=("videos",)))
-                self.assertEqual(len(saved), 6)
-                self.assertEqual(seen.visited, [PROFILE])
-                warnings = [m for m in seen.messages if m.startswith("!")]
-                self.assertEqual(len(warnings), 1)
-                self.assertIn("videos: the list API refused", warnings[0])
-
-    def test_an_answer_that_isnt_json_falls_back_too(self):
-        saved, seen, _ = run("tik:someone", pages={**DIRECT_HTML, f"{API}/api/post/item_list/": ""}, feeds=FEEDS[:1],
-                             html=profile_page(), options=Options(categories=("videos",)))
-        self.assertEqual(len(saved), 6)
-        self.assertTrue(any("isn't JSON" in m for m in seen.messages))
-
-    def test_an_empty_list_of_a_profile_with_videos_is_a_wall(self):
-        """gallery-dl #9718: TikTok's first page can come back empty; the page is read instead."""
-        saved, seen, _ = run("tik:someone", pages=DIRECT_HTML, feeds=FEEDS[:1], html=profile_page(),
-                             json={f"{API}/api/post/item_list/": {"hasMore": False, "itemList": []}},
-                             options=Options(categories=("videos",)))
-        self.assertEqual(len(saved), 6)
-        self.assertTrue(any("gave none of the 8 videos" in m for m in seen.messages))
-
-    def test_a_private_tab_says_so_without_the_page(self):
-        _, seen, _ = run("tik:someone", pages=DIRECT_HTML, options=Options(categories=("liked",)),
-                         json={f"{API}/api/favorite/item_list/": {"hasMore": False, "itemList": []}})
-        self.assertIn("liked: nothing public on this account", seen.messages)
-        self.assertEqual(seen.visited, [])
-
-    def test_a_refused_tab_is_read_by_its_click(self):
-        saved, seen, _ = run("tik:someone", pages=DIRECT_HTML, feeds=[FEEDS[3]], html=TABS,
-                             json={f"{API}/api/repost/item_list/": FetchError("HTTP 403", status=403)},
-                             options=Options(categories=("reposts",)))
-        self.assertEqual(len(saved), 4)
+    def test_clicked_tabs_collect_all_batches_before_yielding(self):
+        r1 = {"hasMore": True, "itemList": [video("7300000000000000010", f"{CDN}/r1.mp4", createTime=1700000000)]}
+        r2 = {"hasMore": False, "itemList": [video("7300000000000000011", f"{CDN}/r2.mp4", createTime=1700000001)]}
+        feeds = [(f"{API}/api/repost/item_list/?p=1", r1), (f"{API}/api/repost/item_list/?p=2", r2)]
+        saved, seen, _ = run("tik:someone", feeds=feeds, html=TABS, options=Options(categories=("reposts",)))
+        self.assertEqual([item.key for item in saved], ["7300000000000000010", "7300000000000000011"])
         self.assertEqual(seen.visited, [PROFILE])
-
-    def test_html_without_a_sec_uid_reads_everything_in_the_browser(self):
-        _, seen, _ = run("tik:someone", pages={PROFILE: profile_page()}, feeds=FEEDS, html=TABS,
-                         options=Options(categories=("all",)))
-        self.assertEqual([url for _, url, _ in seen.requests], [PROFILE])
-        self.assertEqual(seen.visited, [PROFILE])
-
 
     def test_unsolved_captcha_after_limit_raises_fetch_error(self):
         captcha = "<body><div id='captcha_container'>Drag the slider</div></body>"
