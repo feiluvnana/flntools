@@ -108,6 +108,7 @@ class Instagram(Source):
     pace = http.Pace(0.2, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
     # Post category or highlight title: "posts", "highlights/<title>", or "".
     folder = "{category}/{album}"
+    fields = ("album",)
     # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.
     unsupported = {
         "instagram.com/stories": (

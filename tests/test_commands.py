@@ -325,18 +325,40 @@ class SyncCommandTest(RunsCase):
             self.assertIn("✗ unrecognized arguments", out)
         self.assertEqual(self.synced, [])
 
-    def test_sync_ls_and_toggle(self):
+    def test_target_ls_sync_on_off_and_del(self):
         self.run_app("download", "ins:example_user", "--from", "all", "--shrink")
-        code, _, out = self.run_app("sync", "ls")
+        code, _, out = self.run_app("target", "ls")
         self.assertEqual(code, 0)
         self.assertIn("ins:example_user: sync off, --shrink", out)
-        self.assertEqual(self.run_app("sync", "ls", "extra")[0], 2)
-        code, _, out = self.run_app("sync", "toggle", "ins:example_user")
+        self.assertEqual(self.run_app("target", "ls", "extra")[0], 2)
+        code, _, out = self.run_app("target", "sync-on", "ins:example_user")
         self.assertEqual(code, 0)
         self.assertIn("✓ ins:example_user: sync on", out)
-        code, _, out = self.run_app("sync", "toggle", "ins:unknown")
+        code, _, out = self.run_app("target", "sync-off", "ins:example_user")
+        self.assertEqual(code, 0)
+        self.assertIn("✓ ins:example_user: sync off", out)
+        code, _, out = self.run_app("target", "del", "ins:example_user")
+        self.assertEqual(code, 0)
+        self.assertIn("✓ ins:example_user: removed", out)
+        code, _, out = self.run_app("target", "sync-on", "ins:unknown")
         self.assertEqual(code, 2)
         self.assertIn("not a known target", out)
+
+    def test_per_source_from_folder_and_fields(self):
+        code, _, _ = self.run_app(
+            "download", "mht:70982", "ins:example_user",
+            "--from", "mht:cover", "--from", "ins:reels,posts",
+            "--folder", "mht:cover:mht/{id}_{title}/{name}",
+            "--folder", "ins:reels:ins/{target}/{id}_{name}",
+        )
+        self.assertEqual(code, 0)
+        # `{title}` is valid on mht, but rejected on ins.
+        code, _, out = self.run_app(
+            "download", "ins:example_user", "--from", "reels",
+            "--folder", "ins:reels:ins/{title}/{name}",
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("unknown field {title} for ins", out)
 
     def test_a_short_link_is_resolved_once(self):
         # Fix 11: cli.sync and sync.plan each resolved the targets, so a short link made two HEAD requests.

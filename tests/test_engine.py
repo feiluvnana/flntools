@@ -25,7 +25,7 @@ import httpx
 from media_samples import needs_pillow
 
 from flnd import engine as engine_module
-from flnd import job
+from flnd import job, targets as targets_mod
 from flnd.common import auth, net, paths
 from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.options import Options
@@ -1099,12 +1099,14 @@ class SyncedQueryTest(EngineCase):
             sync=True,
         )
         self.assertTrue(report.ok)
+        self.assertEqual(list(targets_mod.rows(self.home)), ["pgd:cats"])
         self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "1_1.jpg").is_file())
         self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "2_2.jpg").is_file())
 
         pages.insert(0, [3])
         sync_report = engine.sync()
         self.assertTrue(sync_report.ok)
+        self.assertEqual(list(targets_mod.rows(self.home)), ["pgd:cats"])
         self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "3_3.jpg").is_file())
 
 

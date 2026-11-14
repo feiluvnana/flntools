@@ -5,11 +5,9 @@ Usage:
   cat list.txt | flnd download
   flnd download ins:example_user --shrink --sync
   flnd sync
-  flnd sync ls
-  flnd sync toggle ins:example_user
-  flnd auth login
-  flnd auth logout ins tik
-  flnd auth ls
+  flnd target ls
+  flnd target sync-on ins:example_user | flnd target del ins:example_user
+  flnd auth login | flnd auth logout ins tik | flnd auth ls
 
 It parses arguments, invokes `flnd.Engine`, and formats reports and errors.
 """
@@ -68,8 +66,10 @@ Examples:
   flnd download twt:example_handle --time 2026-01-01,2026-06-30
   cat list.txt | flnd download
   flnd sync
-  flnd sync ls
-  flnd sync toggle ins:example_user
+  flnd target ls
+  flnd target sync-on ins:example_user
+  flnd target sync-off ins:example_user
+  flnd target del ins:example_user
   flnd auth login
   flnd auth logout all
   flnd auth ls
@@ -139,6 +139,7 @@ def download(
     return 0 if report.ok else 1
 
 
+@app.command("sync")
 def sync(
     targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)],
     *,
@@ -165,13 +166,13 @@ def sync(
     return 0 if report.ok else 1
 
 
-sync_group = app.group("sync", default=sync)
+target_group = app.group("target", description="Saved targets and their sync state.")
 
 
-@sync_group.command("ls")
-def sync_ls() -> int:
+@target_group.command("ls")
+def target_ls() -> int:
     """List every known target with sync state, settings, disk size and category status."""
-    items = Engine(home=HOME).sync_ls()
+    items = Engine(home=HOME).target_ls()
     if not items:
         log.info("no targets")
         return 0
@@ -191,19 +192,51 @@ def sync_ls() -> int:
     return 0
 
 
-@sync_group.command("toggle")
-def sync_toggle(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
-    """Flip each target between synced and not, keeping all saved settings and history.
+@target_group.command("sync-on")
+def target_sync_on(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
+    """Enable syncing for each known target, keeping all saved settings and history.
 
     Args:
-        targets: the targets to toggle, as in flnd download.
+        targets: the targets to enable sync for, as in flnd download.
     """
     try:
-        toggled = Engine(home=HOME).sync_toggle(targets)
+        updated = Engine(home=HOME).target_sync(targets, enabled=True)
     except ValueError as error:
         raise cli.UsageError(str(error)) from None
-    for target, state in toggled:
-        log.ok("{target}: sync {state}", target=str(target), state="on" if state else "off")
+    for target in updated:
+        log.ok("{target}: sync on", target=str(target))
+    return 0
+
+
+@target_group.command("sync-off")
+def target_sync_off(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
+    """Disable syncing for each known target, keeping all saved settings and history.
+
+    Args:
+        targets: the targets to disable sync for, as in flnd download.
+    """
+    try:
+        updated = Engine(home=HOME).target_sync(targets, enabled=False)
+    except ValueError as error:
+        raise cli.UsageError(str(error)) from None
+    for target in updated:
+        log.ok("{target}: sync off", target=str(target))
+    return 0
+
+
+@target_group.command("del")
+def target_del(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
+    """Remove saved targets from `targets.db` (downloaded files are kept).
+
+    Args:
+        targets: the targets to remove, as in flnd download.
+    """
+    try:
+        removed = Engine(home=HOME).target_del(targets)
+    except ValueError as error:
+        raise cli.UsageError(str(error)) from None
+    for target in removed:
+        log.ok("{target}: removed", target=str(target))
     return 0
 
 

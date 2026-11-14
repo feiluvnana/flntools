@@ -153,6 +153,7 @@ class Twitter(Source):
     # A post is one photo or video of a tweet, so a file is <date>_<tweet id>_<n> whatever the
     # tweet's media count; part is the category folder, images/videos for Media, "" for a tweet.
     folder = "{part}"
+    fields = ("part", "n")
     filename = "{date}_{id}_{n}"
     key = "{id}_{n}"
 

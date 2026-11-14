@@ -20,9 +20,12 @@ from flnd.source import Source, Target
 
 # `--from all` takes every category of every source.
 ALL = "all"
-FOLDER_FIELDS = frozenset({
+COMMON_FIELDS = frozenset({
     "source", "query", "target", "id", "category", "path", "name",
-    "title", "order", "date", "extension", "num", "count", "index",
+    "date", "extension", "num", "count", "index",
+})
+FOLDER_FIELDS = COMMON_FIELDS | frozenset({
+    "title", "order", "author", "genres", "chapters", "album", "part", "chat", "n",
 })
 _FORMATTER = Formatter()
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -98,31 +101,82 @@ def parse_categories(
     sources: Mapping[str, type[Source]],
 ) -> tuple[str, ...] | None:
     """Validate and normalize `--from` against `targets`, requiring it for non-single targets."""
+    by_source = categories_by_source(categories, targets, sources)
+    merged = tuple(dict.fromkeys(cat for cats in by_source.values() if cats for cat in cats))
+    return merged or None if categories is None else merged
+
+
+def categories_by_source(
+    categories: str | Sequence[str] | None,
+    targets: Sequence[Target],
+    sources: Mapping[str, type[Source]],
+) -> dict[str, tuple[str, ...] | None]:
+    """Validate `--from` (plain or `<source>:<cats>`) and return categories per target source."""
     target_sources = (
         list(dict.fromkeys(sources[target.source] for target in targets))
         or list(sources.values())
     )
+    by_code = {s.code: s for s in target_sources}
     if categories is None:
         if any(t.kind not in sources[t.source].single_kinds for t in targets):
             lists = "; ".join(f"{s.code}: {', '.join(s.categories)}" for s in target_sources)
             raise ValueError(f"--from is required (use all, or {lists})")
-        return None
+        return {s.code: None for s in target_sources}
     items = [categories] if isinstance(categories, str) else list(categories)
-    names = tuple(
-        dict.fromkeys(name.strip() for item in items for name in item.split(",") if name.strip())
-    )
-    if not names:
+    plain, scoped = _split_category_items(items, by_code, sources)
+    if not plain and not scoped:
         raise ValueError("--from must name at least one category, or all")
-    if problem := unknown_categories(names, target_sources) or single_targets(targets, sources):
+    if problem := single_targets(targets, sources):
         raise ValueError(problem)
-    if ALL not in names:
-        for source in target_sources:
-            if not any(cat in names for cat in source.categories):
-                raise ValueError(
-                    f"{source.code} has none of {', '.join(map(repr, names))}: "
-                    f"use all, or {source.code}: {', '.join(source.categories)}"
-                )
-    return names
+    if plain and (problem := unknown_categories(plain, target_sources)):
+        raise ValueError(problem)
+    return _resolve_source_categories(target_sources, plain, scoped)
+
+
+def _split_category_items(
+    items: Sequence[str], by_code: Mapping[str, type[Source]], sources: Mapping[str, type[Source]],
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Split `--from` tokens into plain names and `<source>:<cat>` buckets."""
+    plain: list[str] = []
+    scoped: dict[str, list[str]] = {}
+    for item in items:
+        code, sep, rest = item.partition(":")
+        if sep and code.strip() in sources:
+            src_code = code.strip()
+            if src_code not in by_code:
+                raise ValueError(f"--from {item!r}: no target from source {src_code!r}")
+            cats = [c.strip() for c in rest.split(",") if c.strip()]
+            if not cats:
+                raise ValueError(f"--from {item!r} must name at least one category, or all")
+            scoped.setdefault(src_code, []).extend(cats)
+        else:
+            plain.extend(c.strip() for c in item.split(",") if c.strip())
+    return plain, scoped
+
+
+def _resolve_source_categories(
+    target_sources: Sequence[type[Source]],
+    plain: Sequence[str],
+    scoped: Mapping[str, Sequence[str]],
+) -> dict[str, tuple[str, ...] | None]:
+    """Assign validated categories to each target source."""
+    result: dict[str, tuple[str, ...] | None] = {}
+    for source in target_sources:
+        own_scoped = tuple(dict.fromkeys(scoped.get(source.code, ())))
+        if own_scoped and (problem := unknown_categories(own_scoped, [source])):
+            raise ValueError(problem)
+        names = tuple(dict.fromkeys([*plain, *own_scoped]))
+        if not names:
+            raise ValueError(
+                f"--from is required for {source.code} (use all, or {', '.join(source.categories)})"
+            )
+        if ALL not in names and not any(cat in names for cat in source.categories):
+            raise ValueError(
+                f"{source.code} has none of {', '.join(map(repr, names))}: "
+                f"use all, or {source.code}: {', '.join(source.categories)}"
+            )
+        result[source.code] = names
+    return result
 
 
 def parse_folders(
@@ -132,8 +186,25 @@ def parse_folders(
     selected_categories: tuple[str, ...] | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Validate `--folder <category>:<template>` entries before any run starts."""
+    by_source = folders_by_source(
+        folders, targets, sources,
+        {sources[t.source].code: selected_categories for t in targets},
+    )
+    merged: dict[str, str] = {}
+    for pairs in by_source.values():
+        merged.update(pairs)
+    return tuple(merged.items())
+
+
+def folders_by_source(
+    folders: str | Sequence[str] | None,
+    targets: Sequence[Target],
+    sources: Mapping[str, type[Source]],
+    selected_by_source: Mapping[str, tuple[str, ...] | None] | None = None,
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Validate `--folder` (`<cat>:<tpl>` or `<source>:<cat>:<tpl>`) per target source."""
     if not folders:
-        return ()
+        return {}
     for target in targets:
         if target.kind in sources[target.source].single_kinds:
             raise ValueError(
@@ -144,30 +215,54 @@ def parse_folders(
         list(dict.fromkeys(sources[target.source] for target in targets))
         or list(sources.values())
     )
-    known = {category for source in target_sources for category in source.categories}
+    by_code = {s.code: s for s in target_sources}
     items = [folders] if isinstance(folders, str) else list(folders)
-    parsed: dict[str, str] = {}
+    parsed: dict[str, dict[str, str]] = {s.code: {} for s in target_sources}
+    selected_map = selected_by_source or {}
     for raw in items:
-        category, sep, template = raw.partition(":")
-        category, template = category.strip(), template.strip()
-        if not sep or not category or not template:
-            raise ValueError(f"--folder {raw!r} must use <category>:<template> syntax")
-        if category != ALL and category not in known:
-            lists = "; ".join(f"{s.code}: {', '.join(s.categories)}" for s in target_sources)
-            raise ValueError(f"--folder: no source here has {category!r}: use all, or {lists}")
-        if (
-            selected_categories is not None
-            and ALL not in selected_categories
-            and category != ALL
-            and category not in selected_categories
-        ):
+        _add_folder_rule(raw, target_sources, by_code, sources, selected_map, parsed)
+    return {code: tuple(rules.items()) for code, rules in parsed.items() if rules}
+
+
+def _add_folder_rule(
+    raw: str,
+    target_sources: Sequence[type[Source]],
+    by_code: Mapping[str, type[Source]],
+    sources: Mapping[str, type[Source]],
+    selected_by_source: Mapping[str, tuple[str, ...] | None],
+    parsed: dict[str, dict[str, str]],
+) -> None:
+    """Parse one `--folder` rule and validate it against its target source(s)."""
+    first, sep, rest = raw.partition(":")
+    first = first.strip()
+    if sep and first in sources:
+        if first not in by_code:
+            raise ValueError(f"--folder {raw!r}: no target from source {first!r}")
+        category, sep2, template = rest.partition(":")
+        matching = [by_code[first]]
+        syntax = "<source>:<category>:<template>"
+    else:
+        category, sep2, template = first, sep, rest
+        matching = target_sources
+        syntax = "<category>:<template>"
+    category, template = category.strip(), template.strip()
+    if not sep2 or not category or not template:
+        raise ValueError(f"--folder {raw!r} must use {syntax} syntax")
+    known = {cat for src in matching for cat in src.categories}
+    if category != ALL and category not in known:
+        lists = "; ".join(f"{s.code}: {', '.join(s.categories)}" for s in matching)
+        raise ValueError(f"--folder: no source here has {category!r}: use all, or {lists}")
+    for source in matching:
+        if category != ALL and category not in source.categories:
+            continue
+        chosen = selected_by_source.get(source.code)
+        if chosen is not None and ALL not in chosen and category != ALL and category not in chosen:
             raise ValueError(f"--folder {category!r} is excluded by --from")
-        _validate_template(template)
-        parsed[category] = template
-    return tuple(parsed.items())
+        _validate_template(template, source)
+        parsed[source.code][category] = template
 
 
-def _validate_template(template: str) -> None:
+def _validate_template(template: str, source: type[Source] | None = None) -> None:
     """Ensure `template` is a strict relative path under `media/` with valid placeholders."""
     if "\\" in template or template.startswith("/") or _DRIVE_RE.match(template):
         raise ValueError(f"--folder template {template!r} must be relative using '/' separators")
@@ -178,6 +273,9 @@ def _validate_template(template: str) -> None:
         fields_iter = list(_FORMATTER.parse(template))
     except ValueError as error:
         raise ValueError(f"--folder template {template!r} is invalid: {error}") from None
+    allowed_fields = (
+        COMMON_FIELDS | frozenset(source.fields) if source is not None else FOLDER_FIELDS
+    )
     for _, field_name, format_spec, conversion in fields_iter:
         if field_name is None:
             continue
@@ -185,10 +283,11 @@ def _validate_template(template: str) -> None:
             raise ValueError(
                 f"--folder template {template!r} has invalid placeholder {{{field_name}}}"
             )
-        if field_name not in FOLDER_FIELDS:
-            allowed = ", ".join(sorted(FOLDER_FIELDS))
+        if field_name not in allowed_fields:
+            allowed = ", ".join(sorted(allowed_fields))
+            who = f" for {source.code}" if source is not None else ""
             raise ValueError(
-                f"--folder template {template!r} has unknown field {{{field_name}}}; "
+                f"--folder template {template!r} has unknown field {{{field_name}}}{who}; "
                 f"use one of: {allowed}"
             )
 

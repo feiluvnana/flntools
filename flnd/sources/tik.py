@@ -322,6 +322,7 @@ class TikTok(Source):
     # empty for a video, so the `_` before it goes. A post's `part` is its folder (videos, images,
     # a category, or albums), and its `album` the playlist, under albums.
     folder = "{part}/{album}"
+    fields = ("part", "album")
     filename = "{date}_{id}_{idx}"
     key = "{id}_{idx}"
 

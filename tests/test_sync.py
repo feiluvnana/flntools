@@ -518,20 +518,26 @@ class SyncOptInTest(SyncCase):
             targets["aaa:a"] = row
         self.assertEqual([t for t, _ in self.plan()], [Target("aaa", "user", "a")])
 
-    def test_sync_toggle_and_ls(self):
+    def test_target_sync_ls_and_del(self):
         self.download(sync=False)
-        self.assertEqual(self.engine().sync_toggle(["aaa:a"]), [(Target("aaa", "user", "a"), True)])
+        self.assertEqual(
+            self.engine().target_sync(["aaa:a"], enabled=True), [Target("aaa", "user", "a")]
+        )
         self.assertEqual([t for t, _ in self.plan()], [Target("aaa", "user", "a")])
         # Re-downloading without --sync preserves sync=True.
         self.download(sync=False, shrink=True)
         self.assertIs(self.saved()["aaa:a"]["sync"], True)
-        items = self.engine().sync_ls()
+        items = self.engine().target_ls()
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0]["sync"])
         self.assertTrue(items[0]["shrink"])
         self.assertEqual(items[0]["files"], 3)
-        self.assertEqual(self.engine().sync_toggle(["aaa:a"]), [(Target("aaa", "user", "a"), False)])
+        self.assertEqual(
+            self.engine().target_sync(["aaa:a"], enabled=False), [Target("aaa", "user", "a")]
+        )
         self.assertEqual(self.plan(), [])
+        self.assertEqual(self.engine().target_del(["aaa:a"]), [Target("aaa", "user", "a")])
+        self.assertNotIn("aaa:a", self.saved())
 
 
 if __name__ == "__main__":

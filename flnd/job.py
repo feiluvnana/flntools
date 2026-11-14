@@ -613,7 +613,8 @@ class Ledger:
             self._later.append((dest, key, category))
             self.board.count(self.target, category, later=1)
         else:
-            self._link(dest, self.folder.joinpath(*held.split("/")), category)
+            candidate = self.folder.joinpath(*held.split("/"))
+            self._link(dest, candidate if candidate.is_file() else Path(held), category)
 
     def link_queued(self, written: Mapping[str, Path]) -> None:
         """Make the links to files queued this run, now at their final paths in `written`."""
@@ -626,16 +627,22 @@ class Ledger:
         self._later = []
 
     def _link(self, dest: Path, holder: Path, category: str) -> None:
-        """Link a file held in another category's folder at the path it would have had in this one.
+        """Link a file held in another folder at the path it would have had in this one.
 
         A relative symlink, so the target's folder moves as a whole; else a hard link; else
         nothing, warned of once per run. Within one category nothing is linked.
         """
-        if not holder.is_relative_to(self.folder):
+        if not holder.is_file():
             return
-        here, there = dest.relative_to(self.folder).parts, holder.relative_to(self.folder).parts
-        if len(here) < 2 or len(there) < 2 or here[0] == there[0] or not holder.is_file():
+        if dest.is_relative_to(self.folder) and holder.is_relative_to(self.folder):
+            here = dest.relative_to(self.folder).parts
+            there = holder.relative_to(self.folder).parts
+            if len(here) < 2 or len(there) < 2 or here[0] == there[0]:
+                return
+        elif not dest.is_relative_to(self._media) or dest.parent == holder.parent:
             return
+        else:
+            dest = dest.with_suffix(holder.suffix)
         if dest.exists() or dest.is_symlink():
             return
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -653,8 +660,7 @@ class Ledger:
                                    error=error)
                 return
         self.board.count(self.target, category, linked=1)
-        log.event("link", "{name} → {held}", name=dest.relative_to(self.folder).as_posix(),
-                  held=holder.relative_to(self.folder).as_posix())
+        log.event("link", "{name} → {held}", name=self._name(dest), held=self._name(holder))
 
     def release(self) -> list[Post]:
         """The undated posts held since the last call, each with any day the memory found meanwhile.
@@ -1292,8 +1298,9 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     # from; one that ended by itself has nothing to resume.
     cursors = {name: None if name in complete else resume.cursor
                for name, resume in resumes.items()}
-    targets.keep_cursors(saved, target, cursors)
-    targets.complete(saved, target, complete)
+    if not options.query:
+        targets.keep_cursors(saved, target, cursors)
+        targets.complete(saved, target, complete)
     report = TargetReport(target, written, board.totals(target).skipped)
     return _ended(board, report, error, complete=", ".join(complete) or "none")
 

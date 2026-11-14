@@ -158,6 +158,30 @@ def toggle(home: Path, target: Target) -> bool:
     return new_state
 
 
+def set_sync(home: Path, target: Target, *, enabled: bool) -> bool:
+    """Set `target`'s `sync` state in `targets.db` to `enabled`."""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+        old = saved.get(key(target))
+        row = (
+            dict(old) if isinstance(old, dict)
+            else {"kind": target.kind, SHRINK: False, "at": now}
+        )
+        row[SYNC] = enabled
+        saved[key(target)] = row
+    return enabled
+
+
+def delete(home: Path, target: Target) -> bool:
+    """Remove `target` from `targets.db`, returning True if it was present."""
+    with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+        target_key = key(target)
+        if target_key not in saved:
+            return False
+        del saved[target_key]
+        return True
+
+
 def seen(saved: Mapping[str, Any], target: Target) -> tuple[str, ...]:
     """The target keys already seen by a synced query target, in order.
 

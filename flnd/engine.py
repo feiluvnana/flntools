@@ -36,7 +36,7 @@ from flnd import job, repair
 from flnd.job import TargetReport
 from flnd.common import auth, compress, net, paths
 from flnd.common.compress import Compressor
-from flnd.options import Options, RunShared, parse_categories, parse_folders
+from flnd.options import Options, RunShared, categories_by_source, folders_by_source
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.source import Range, Source, Target, TargetError
 from flnd.sources import SOURCES
@@ -179,21 +179,26 @@ class Engine:
                 raise ValueError("--limit must be at least 1")
             span = Range.parse(time) if isinstance(time, str) else time
             resolved = self._resolved(targets)
-            names = parse_categories(categories, resolved, self.sources)
-            folder_rules = parse_folders(folders, resolved, self.sources, names)
-            options = Options(
-                categories=names, since=span.since, until=span.until, limit=limit, again=again,
-                folders=folder_rules,
-            )
+            cats_map = categories_by_source(categories, resolved, self.sources)
+            folders_map = folders_by_source(folders, resolved, self.sources, cats_map)
+            base_options = Options(since=span.since, until=span.until, limit=limit, again=again)
+            by_source = {
+                code: replace(
+                    base_options,
+                    categories=cats_map.get(code),
+                    folders=folders_map.get(code, ()),
+                )
+                for code in {t.source for t in resolved}
+            }
             if dry:
-                report = self._dry_run(resolved, options, span)
+                report = self._dry_run(resolved, by_source, span)
                 _end_if_stopped()
                 _log_totals(report)
                 return report
             log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
             if any(self._is_query(target) for target in resolved):
                 reports = self._download_mixed(
-                    resolved, options, shrink=shrink, span=span, sync=sync
+                    resolved, by_source, shrink=shrink, span=span, sync=sync
                 )
                 _end_if_stopped()
                 if not sync:
@@ -217,7 +222,7 @@ class Engine:
                 saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
                 shown.append(flnd.targets.announce(target, saved) if shrink is None else "")
                 given = saved if shrink is None else shrink
-                chosen.append((target, replace(options, shrink=given)))
+                chosen.append((target, replace(by_source[target.source], shrink=given)))
                 if shrink and not saved:
                     turned_on.append(target)
             to_record = [pair for pair in chosen if pair[0] not in turned_on]
@@ -308,11 +313,11 @@ class Engine:
             _log_totals(report)
             return report
 
-    def sync_ls(self) -> list[dict[str, Any]]:
+    def target_ls(self) -> list[dict[str, Any]]:
         """Every known target with sync state, saved settings, disk size, and category status."""
         rows = flnd.targets.rows(self.home)
         recorded = self._recorded(rows)
-        all_targets = recorded + list(self._unrecorded(recorded))
+        all_targets = recorded + list(self._unrecorded(recorded, rows))
         items: list[dict[str, Any]] = []
         for target in all_targets:
             row = rows.get(flnd.targets.key(target), {})
@@ -341,16 +346,31 @@ class Engine:
             })
         return items
 
-    def sync_toggle(self, targets: Sequence[Target | str]) -> list[tuple[Target, bool]]:
-        """Flip each known target between synced and not, returning `(target, new_sync_state)`."""
+    def target_sync(
+        self, targets: Sequence[Target | str], *, enabled: bool,
+    ) -> list[Target]:
+        """Enable or disable `sync` for each known target, returning resolved targets."""
         resolved = self._resolved(targets)
         rows = flnd.targets.rows(self.home)
         recorded = self._recorded(rows)
-        unrecorded = set(self._unrecorded(recorded))
+        unrecorded = set(self._unrecorded(recorded, rows))
         for target in resolved:
             if flnd.targets.key(target) not in rows and target not in unrecorded:
                 raise ValueError(f"{target}: not a known target; download it first")
-        return [(target, flnd.targets.toggle(self.home, target)) for target in resolved]
+        for target in resolved:
+            flnd.targets.set_sync(self.home, target, enabled=enabled)
+        return resolved
+
+    def target_del(self, targets: Sequence[Target | str]) -> list[Target]:
+        """Remove each saved target from `targets.db` (downloaded files are kept)."""
+        resolved = self._resolved(targets)
+        rows = flnd.targets.rows(self.home)
+        for target in resolved:
+            if flnd.targets.key(target) not in rows:
+                raise ValueError(f"{target}: not a saved target")
+        for target in resolved:
+            flnd.targets.delete(self.home, target)
+        return resolved
 
     def auth_ls(self) -> list[dict[str, Any]]:
         """Each source's login state, origin, and cookies expired or expiring within 24 hours."""
@@ -483,7 +503,9 @@ class Engine:
         route = next((r for r in source.routes if r.kind == target.kind), None)
         return route is not None and route.is_query
 
-    def _dry_run(self, resolved: Sequence[Target], options: Options, span: Range) -> Report:
+    def _dry_run(
+        self, resolved: Sequence[Target], by_source: Mapping[str, Options], span: Range,
+    ) -> Report:
         """List discovered targets or planned files without downloading or writing state."""
         if any(needs_browser(self.sources[target.source]) for target in resolved):
             _offer_browser()
@@ -491,6 +513,7 @@ class Engine:
         settings = RunShared(home=self.home, history={}, dry=True)
         with _stop_waits_on_ctrl_c(), shared_browser(settings):
             for target in resolved:
+                options = by_source[target.source]
                 source = self.sources[target.source]()
                 with source_run(settings, source) as run:
                     account = TargetSite(run, Target(source.code, ACCOUNT, ""))
@@ -527,13 +550,16 @@ class Engine:
                     reports.append(TargetReport(target, (), 0))
         return Report(tuple(reports))
 
-    def _download_mixed(self, resolved: Sequence[Target], options: Options, *,
-                        shrink: bool | None, span: Range, sync: bool = False) -> list[TargetReport]:
+    def _download_mixed(
+        self, resolved: Sequence[Target], by_source: Mapping[str, Options], *,
+        shrink: bool | None, span: Range, sync: bool = False,
+    ) -> list[TargetReport]:
         """Run a mix of query targets and normal targets, preserving target order."""
         reports: list[TargetReport] = []
         pool_settings = RunShared(home=self.home, history={})
         with shared_browser(pool_settings):
             for target in resolved:
+                options = by_source[target.source]
                 if self._is_query(target):
                     reports.extend(
                         self._run_query(
@@ -566,12 +592,11 @@ class Engine:
         source = source_cls()
         reports: list[TargetReport] = []
         rows = flnd.targets.rows(self.home)
-        if sync:
-            saved_query_shrink = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
-            query_shrink = saved_query_shrink if shrink is None else shrink
-            flnd.targets.record(
-                self.home, [(target, replace(options, shrink=query_shrink))], sync=True
-            )
+        saved_query_shrink = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
+        query_shrink = saved_query_shrink if shrink is None else shrink
+        flnd.targets.record(
+            self.home, [(target, replace(options, shrink=query_shrink))], sync=sync
+        )
         with self._history() as history, self._targets() as saved_targets, \
                 _stop_waits_on_ctrl_c(), log.group() as log_rows:
             run_settings = RunShared(
@@ -600,23 +625,9 @@ class Engine:
                             for child in found:
                                 if net.stopping.is_set():
                                     break
-                                saved_shrink = flnd.targets.shrink(
-                                    rows.get(flnd.targets.key(child), {})
-                                )
-                                shown = (
-                                    flnd.targets.announce(child, saved_shrink)
-                                    if shrink is None else ""
-                                )
-                                child_shrink = saved_shrink if shrink is None else shrink
                                 child_options = replace(
-                                    options, shrink=child_shrink, limit=None, query=target.value,
+                                    options, shrink=query_shrink, limit=None, query=target.value,
                                 )
-                                if shrink and not saved_shrink:
-                                    self._apply([child], {child: child_options}, sync=False)
-                                else:
-                                    flnd.targets.record(
-                                        self.home, [(child, child_options)], sync=False
-                                    )
                                 if child.source == target.source:
                                     report = job.download(run, child, board, child_options)
                                 else:
@@ -624,9 +635,9 @@ class Engine:
                                         [(child, child_options)],
                                         browser_pool=run_settings._browser_pool,
                                     )
-                                if sync and report.error is None:
+                                if report.error is None:
                                     seen_keys.append(flnd.targets.key(child))
-                                reports.append(replace(report, settings=shown))
+                                reports.append(report)
                                 if net.stopping.is_set():
                                     break
                 except KeyboardInterrupt:
@@ -638,7 +649,7 @@ class Engine:
                     log.debug("{target}: {chain}", target=str(target), chain=job.causes(error))
                     reports.append(TargetReport(target, (), 0, error=str(error)))
                 finally:
-                    if sync and seen_keys:
+                    if seen_keys:
                         flnd.targets.mark_seen(self.home, target, seen_keys)
         return reports
 
@@ -683,7 +694,7 @@ class Engine:
                                 if net.stopping.is_set():
                                     break
                                 child_key = flnd.targets.key(child)
-                                if child_key in known_keys:
+                                if child_key in seen_keys or child_key in known_keys:
                                     seen_to_mark.append(child_key)
                                     skipped += 1
                                     continue
@@ -691,8 +702,6 @@ class Engine:
                                     break
                                 new_count += 1
                                 child_options = replace(options, limit=None, query=target.value)
-                                flnd.targets.record(self.home, [(child, child_options)], sync=False)
-                                known_keys.add(child_key)
                                 if child.source == target.source:
                                     report = job.download(run, child, board, child_options)
                                 else:
@@ -830,7 +839,7 @@ class Engine:
                     try:
                         yield self.resolve([f"{code}:{folder.name}"])[0]
                     except TargetError as error:
-                        log.warn(
+                        log.debug(
                             "{folder}: not synced: {error}",
                             folder=f"{code}/{folder.name}", error=error,
                         )

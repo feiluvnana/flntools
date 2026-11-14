@@ -160,6 +160,7 @@ class Facebook(Source):
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"), `album`
     # the album's title when it has one. Each file is named by `post_of`.
     folder = "{part}/{album}"
+    fields = ("part", "album")
     filename = "{date}_{id}"
     key = "{id}"
     # Refused before any route. Each page is exact; `*/posts` also refuses `/posts/<id>`.

@@ -261,6 +261,18 @@ class MimiEngineTest(EngineCase):
         self.assertTrue(report2.ok)
         self.assertEqual(genre_calls, 1)
 
+    def test_cover_query_reuses_search_metadata_without_manga_api(self):
+        self.routes[f"{API}genres"] = httpx.Response(200, json=[{"id": 1, "name": "Vanilla"}])
+        self.routes[f"{API}manga/advanced-search"] = httpx.Response(200, json={
+            "items": [MANGA], "next_cursor": None,
+        })
+        self.routes[f"{CDN}/covers/70982.webp"] = httpx.Response(200, content=b"COVER1")
+
+        engine = Engine(home=self.home, sources={"mht": Mimi})
+        report = engine.download(["mht?genre:vanilla"], categories="cover", limit=1)
+        self.assertTrue(report.ok)
+        self.assertTrue((self.target_dir("mht", "70982") / "cover" / "cover.webp").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

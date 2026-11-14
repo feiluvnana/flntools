@@ -138,6 +138,7 @@ class Loibus(Source):
     needs = ("access-token",)
     # `<author>/<id> <title>/<part>`: `part` is "images" for the previews and empty for the rest.
     folder = "{author}/{id} {title}/{part}"
+    fields = ("author", "title", "part")
     # Every file is named by its post (`File.name`), so this format is never used.
     filename = "{id}"
     # Every key is the file's path, as the history has always had it, so this never changes.

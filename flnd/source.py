@@ -947,6 +947,7 @@ class Source:
     folder: ClassVar[str] = "{category}"
     filename: ClassVar[str] = "{date}_{id}{index}"
     key: ClassVar[str] = "{id}_{num}"
+    fields: ClassVar[tuple[str, ...]] = ()
     # For this source's HTTP requests only; the browser always keeps its own.
     user_agent: ClassVar[str | None] = None
     browser: ClassVar[bool] = False

@@ -1207,6 +1207,23 @@ class LinkTest(JobCase):
         link = folder / "reels" / "2026-01-02_V1.mp4"
         self.assertTrue(link.is_symlink() and link.exists())
 
+    def test_a_file_in_another_custom_folder_is_linked_without_crashing(self):
+        feed = self.feed([self.clip()], [])
+        engine = Engine(home=self.home, sources={"lnk": feed})
+        first = engine.download(
+            ["lnk:example_user"], categories="videos", folders=["videos:lnk/set_a/{id}_{name}"],
+        )
+        self.assertTrue(first.ok)
+        second = engine.download(
+            ["lnk:example_user"], categories="videos", folders=["videos:lnk/set_b/{id}_{name}"],
+        )
+        self.assertTrue(second.ok)
+        held = self.home / paths.MEDIA / "lnk" / "set_a" / "V1_2026-01-02_V1.mp4"
+        link = self.home / paths.MEDIA / "lnk" / "set_b" / "V1_2026-01-02_V1.mp4"
+        self.assertTrue(held.is_file())
+        self.assertTrue(link.is_file())
+        self.assertEqual(link.read_bytes(), held.read_bytes())
+
 
 class BoardTest(unittest.TestCase):
     """The run's status lines: one per target and category, ended once listed and done."""

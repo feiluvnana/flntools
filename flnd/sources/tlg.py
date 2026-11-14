@@ -70,6 +70,7 @@ class Telegram(Source):
     requires_login = True
     # A chat's folder, then the type; both are sanitized as file names.
     folder = "{chat}/{category}"
+    fields = ("chat",)
     # The chat's id and the message's id: a message id repeats from chat to chat.
     key = "{chat_id}:{id}"
     # Every download shares one MTProto client and its flood waits: more at once only meets the

@@ -65,6 +65,10 @@ class Mimi(Source):
     folder = "chapters/{order} {title}"
     filename = "{id}"
     key = "{id}_{num}"
+    fields = ("title", "order", "author", "genres", "chapters")
+
+    def __init__(self) -> None:
+        self._cached: dict[str, dict[str, Any]] = {}
 
     @target(r"mimihentai.moe/manga/*/chapter/{id:\d+}")
     def chapter(self, site: Site, id: str) -> Iterator[Post]:
@@ -89,6 +93,8 @@ class Mimi(Source):
             site: the target's site.
             id: the manga's id.
         """
+        if (cached := self._cached.get(id)) is not None:
+            return {**cached, "id": cached.get("id") or id}
         body = site.fetch(f"{API}manga/{id}").json
         if not isinstance(body, dict) or not body.get("title"):
             raise FetchError(f"manga {id} isn't there")
@@ -124,8 +130,10 @@ class Mimi(Source):
         """
         url = manga.get("cover_url")
         if url:
-            yield Post(manga["id"], [File(url, name=cover_name(url))],
-                       date=manga.get("last_updated"), title=manga.get("title") or "")
+            yield Post(
+                manga["id"], [File(url, name=cover_name(url))],
+                date=manga.get("last_updated"), **_manga_fields(manga),
+            )
 
     @target(r"mimihentai.moe/author/{author:[^/]+}", r"mimihentai.moe/authors/{author:[^/]+}")
     def author(self, site: Site, author: str) -> Iterator[Target]:
@@ -137,6 +145,7 @@ class Mimi(Source):
         """
         author_id = _resolve_id(site, "author", author, lookup_authors)
         for item in _search_pages(site, f"{API}manga/advanced-search", {"author": author_id}):
+            self._remember(item)
             yield Target(self.code, "manga", str(item["id"]))
 
     @target(r"mimihentai.moe/genre/{genre:[^/]+}", r"mimihentai.moe/genres/{genre:[^/]+}")
@@ -149,6 +158,7 @@ class Mimi(Source):
         """
         genre_id = _resolve_id(site, "genre", genre, lookup_genres)
         for item in _search_pages(site, f"{API}manga/advanced-search", {"genre": genre_id}):
+            self._remember(item)
             yield Target(self.code, "manga", str(item["id"]))
 
     @target("?{query}", params={
@@ -175,7 +185,36 @@ class Mimi(Source):
             items = _search_pages(site, f"{API}manga/advanced-search", params)
         for item in items:
             if all(item.get("chapter_count") in wanted for wanted in chapter_filters):
+                self._remember(item)
                 yield Target(self.code, "manga", str(item["id"]))
+
+    def _remember(self, item: Any) -> None:
+        """Cache search items that already carry cover metadata to skip per-manga API calls."""
+        if (
+            isinstance(item, dict)
+            and "id" in item
+            and item.get("title")
+            and item.get("cover_url")
+        ):
+            self._cached[str(item["id"])] = item
+
+
+def _manga_fields(manga: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract folder-template metadata from a manga summary or detail dict."""
+    authors = ", ".join(
+        str(a.get("name", "")) for a in (manga.get("authors") or ())
+        if isinstance(a, dict) and a.get("name")
+    )
+    genres = ", ".join(
+        str(g.get("name", "")) for g in (manga.get("genres") or ())
+        if isinstance(g, dict) and g.get("name")
+    )
+    return {
+        "title": manga.get("title") or "",
+        "author": authors or str(manga.get("author") or ""),
+        "genres": genres,
+        "chapters": manga.get("chapter_count") if manga.get("chapter_count") is not None else "",
+    }
 
 
 def format_order(value: Any) -> str:

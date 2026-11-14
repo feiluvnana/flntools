@@ -11,8 +11,9 @@ flnd.Engine.logout(codes: Iterable[str]) -> list[str]
 flnd.Engine.resolve(texts: Sequence[str]) -> list[Target]
 flnd.Engine.sources: attribute
 flnd.Engine.sync(targets: Sequence[Target | str] = ()) -> Report
-flnd.Engine.sync_ls() -> list[dict[str, Any]]
-flnd.Engine.sync_toggle(targets: Sequence[Target | str]) -> list[tuple[Target, bool]]
+flnd.Engine.target_del(targets: Sequence[Target | str]) -> list[Target]
+flnd.Engine.target_ls() -> list[dict[str, Any]]
+flnd.Engine.target_sync(targets: Sequence[Target | str], *, enabled: bool) -> list[Target]
 flnd.LoginError(flnd.source.Error)
 flnd.Range(since: datetime.date | None = None, until: datetime.date | None = None)
 flnd.Range.parse(text: str) -> Range
@@ -154,6 +155,7 @@ flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.concurrency: attribute -> ClassVar[int]
 flnd.source.Source.connect(site: Site, /) -> Any
 flnd.source.Source.date(site: Site, post: Post, /) -> DateLike
+flnd.source.Source.fields: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.filename: attribute -> ClassVar[str]
 flnd.source.Source.folder: attribute -> ClassVar[str]
 flnd.source.Source.forms: attribute -> ClassVar[tuple[str, ...]]
