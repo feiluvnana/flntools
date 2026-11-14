@@ -106,6 +106,12 @@ class ValueTest(StoreCase):
                 self.db["k"] = value
         self.assertNotIn("k", self.db)
 
+    def test_store_value_and_key_with_surrogate(self):
+        self.db["ok"] = {"name": "bad\udc80name"}
+        self.assertEqual(self.db["ok"], {"name": "bad\udc80name"})
+        with self.assertRaises(kv.UnstorableError):
+            self.db["bad\udc80key"] = 1
+
 
 class ExpiryTest(StoreCase):
     def test_ttl_expires_with_the_clock(self):

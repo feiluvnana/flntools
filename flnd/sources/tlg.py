@@ -112,7 +112,7 @@ class Telegram(Source):
         )
         if url is not None and is_tlg_domain:
             # Desktop, mobile and old mobile sites are t.me's; telegram.org names no chat.
-            for prefix in ("www.", "m.", "mobile."):
+            for prefix in ("www.", "m.", "mobile.", "web."):
                 host = host.removeprefix(prefix)
             # The `s` segment is web preview marker; only t.me has chat links.
             parts = (

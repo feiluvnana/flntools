@@ -186,8 +186,8 @@ class Facebook(Source):
         r"facebook.com/profile.php?id={user:\d+}", r"fb.com/profile.php?id={user:\d+}",
         r"facebook.com/people/*/{user:\d+}", r"fb.com/people/*/{user:\d+}",
         r"facebook.com/@{user}", r"fb.com/@{user}",
-        r"facebook.com/{user:(?!profile\.php$|people$)[\w.]+}",
-        r"fb.com/{user:(?!profile\.php$|people$)[\w.]+}",
+        r"facebook.com/{user:(?!profile\.php$|people$|share$)[\w.]+}",
+        r"fb.com/{user:(?!profile\.php$|people$|share$)[\w.]+}",
     )
     def user(self, site: Site, user: str) -> Profile:
         """A profile by user name or id: Target("fbk", "user", "example.page")."""

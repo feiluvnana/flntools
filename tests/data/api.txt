@@ -250,7 +250,9 @@ shared.browser.WaitError(shared.browser.Error)
 shared.browser.check() -> None
 shared.browser.open(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = False, viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser
 shared.bundler: module
+shared.bundler.BuildError(shared.bundler.Error, RuntimeError)
 shared.bundler.Error(shared.Error)
+shared.bundler.MissingError(shared.bundler.Error, ImportError)
 shared.bundler.build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Iterable[PathLike] = (), dest: PathLike = 'dist') -> Path
 shared.cli: module
 shared.cli.App(name: str, *, version: str | None = None, description: str = '', epilog: str = '')
@@ -322,8 +324,8 @@ shared.fmt.Error(shared.Error)
 shared.fmt.count(n: int, noun: str, *, plural: str | None = None) -> str
 shared.fmt.date(value: _datetime.date | float, *, pattern: str | None = None) -> str
 shared.fmt.duration(seconds: float) -> str
-shared.fmt.filename(text: str, *, fallback: str = 'untitled', maxlen: int = 200) -> str
-shared.fmt.size(n: int) -> str
+shared.fmt.filename(text: str, *, fallback: str = 'untitled', max_bytes: int = 200) -> str
+shared.fmt.size(n: float) -> str
 shared.fmt.url(text: str) -> str
 shared.http: module
 shared.http.ChangedError(shared.http.Error, shared.BrokenError)
@@ -390,12 +392,16 @@ shared.kv: module
 shared.kv.ClosedError(shared.kv.Error, RuntimeError)
 shared.kv.Error(shared.Error)
 shared.kv.Store(link: _Link, table: str)
+shared.kv.Store.clear() -> None
 shared.kv.Store.close() -> None
 shared.kv.Store.get(key: str, default: Any = None) -> Any
+shared.kv.Store.items() -> ItemsView[str, Any]
 shared.kv.Store.keys(prefix: str = '') -> KeysView[str]
 shared.kv.Store.raw: property -> sqlite3.Connection
 shared.kv.Store.set(key: str, value: Any, *, ttl: float | None = None) -> None
 shared.kv.Store.table(name: str) -> Store
+shared.kv.Store.update(other: Any = (), /, **kwargs: Any) -> None
+shared.kv.Store.values() -> ValuesView[Any]
 shared.kv.UnstorableError(shared.kv.Error, TypeError)
 shared.kv.open(path: PathLike, *, table: str = 'default', timeout: float = 5.0) -> Store
 shared.log: Log

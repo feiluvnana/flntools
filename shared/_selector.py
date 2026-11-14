@@ -65,7 +65,10 @@ def parse(source: Any) -> Selection:
     Returns:
         A Selection for querying HTML (css, xpath) or JSON (jmespath, jsonpath).
     """
-    return Selection(_selector(source))
+    raw, text = _selector(source)
+    made = Selection(raw)
+    made._source = text
+    return made
 
 
 class Selection:
@@ -84,6 +87,7 @@ class Selection:
     def __init__(self, raw: Raw):
         self._raw = raw
         self._matches = parsel.SelectorList([raw]) if isinstance(raw, parsel.Selector) else raw
+        self._source: str | None = None
 
     def css(self, query: str) -> Selection:
         """The HTML matches of a CSS selector, with parsel's `::text` and `::attr(name)`.
@@ -170,7 +174,8 @@ class Selection:
         if id is not None:
             found = self._matches.xpath("//script[@id=$id]/text()", id=id).get()
         else:
-            match = re.search(pattern or "", "".join(self._matches.getall()), re.DOTALL)
+            haystack = self._source if self._source is not None else "".join(self._matches.getall())
+            match = re.search(pattern or "", haystack, re.DOTALL)
             found = match.group(1) if match else None
         if found is None:
             return Selection(parsel.SelectorList())
@@ -233,10 +238,10 @@ class Selection:
         return f"Selection({self._matches!r})"
 
 
-def _selector(source: Any) -> parsel.Selector:
-    """The parsel selector for a source, as described in `parse`, refusing text over `MAX_SIZE`."""
+def _selector(source: Any) -> tuple[parsel.Selector, str | None]:
+    """The parsel selector for a source, plus raw HTML text when available."""
     if isinstance(source, (dict, list)):
-        return parsel.Selector(root=source, type="json")
+        return parsel.Selector(root=source, type="json"), None
     if isinstance(source, Path):
         # Checked before reading, so a huge file is never loaded at all.
         _check_size(source.stat().st_size, "bytes")
@@ -252,23 +257,23 @@ def _selector(source: Any) -> parsel.Selector:
                     "or a dict or list")
 
 
-def _response_selector(response: Any) -> parsel.Selector:
+def _response_selector(response: Any) -> tuple[parsel.Selector, str | None]:
     """The selector for an httpx or Playwright response: JSON when its content type says so."""
     # Playwright's `text` is a method and httpx's is an attribute; both have `headers`.
     text = response.text if isinstance(response.text, str) else response.text()
     if "json" in response.headers.get("content-type", "").lower():
-        return parsel.Selector(root=_loads(text), type="json")
+        return parsel.Selector(root=_loads(text), type="json"), None
     return _text_selector(text)
 
 
-def _text_selector(text: str) -> parsel.Selector:
-    """A JSON selector when `text` parses as JSON, else an HTML one."""
+def _text_selector(text: str) -> tuple[parsel.Selector, str | None]:
+    """A JSON selector when `text` parses as JSON, else an HTML one with its source text."""
     _check_size(len(text), "characters")
     try:
         value = json.loads(text)
     except ValueError:  # not JSON, so it is read as HTML, which never fails to parse
-        return parsel.Selector(text=text, type="html")
-    return parsel.Selector(root=value, type="json")
+        return parsel.Selector(text=text, type="html"), text
+    return parsel.Selector(root=value, type="json"), None
 
 
 def _loads(text: str) -> Any:

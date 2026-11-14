@@ -19,6 +19,7 @@ import atexit
 import email.utils
 import http.cookiejar
 import json as jsonlib
+import math
 import os
 import threading
 from dataclasses import dataclass, field, replace
@@ -821,14 +822,16 @@ def _retry_after(value: str | None) -> float | None:
     if not value:
         return None
     try:
-        return max(0.0, float(value))
+        seconds = float(value)
     except ValueError:  # not a number, so maybe an HTTP date
-        pass
-    try:
-        when = email.utils.parsedate_to_datetime(value)
-    except (TypeError, ValueError):  # neither form: treated as no header, as browsers do
+        try:
+            when = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):  # neither form: treated as no header, as browsers do
+            return None
+        seconds = when.timestamp() - clock.wall()
+    if not math.isfinite(seconds):
         return None
-    return max(0.0, when.timestamp() - clock.wall())
+    return min(max(0.0, seconds), MAX_RETRY_AFTER)
 
 
 def _reset(headers: Mapping[str, str]) -> float | None:
@@ -838,10 +841,12 @@ def _reset(headers: Mapping[str, str]) -> float | None:
             reset = float(headers[prefix + "reset"])
         except (KeyError, ValueError):  # missing or not a number: this spelling says nothing
             continue
+        if not math.isfinite(reset):
+            continue
         # A big number is a Unix time (X's), a small one seconds from now; the second is slack for
         # a clock a little behind the server's.
         seconds = reset - clock.wall() if reset > EPOCH else reset
-        return max(0.0, seconds) + 1.0
+        return min(max(0.0, seconds) + 1.0, MAX_RETRY_AFTER)
     return None
 
 

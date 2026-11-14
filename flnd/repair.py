@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import math
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, MutableMapping, Sequence
@@ -124,19 +125,34 @@ def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
                 history[key] = {**row, **stamped, CHECKED: today}
 
 
+def _scandir_walk(folder: Path) -> Iterator[os.DirEntry[str]]:
+    """Yield every entry under `folder` recursively without extra stat calls."""
+    stack = [str(folder)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    yield entry
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+        except OSError:
+            pass
+
+
 def _remove_leftovers(folder: Path) -> None:
     """Remove the parts and dangling links an interrupted run left in a target's folder."""
     if not folder.is_dir():
         return
     parts: list[Path] = []
     infos: list[Path] = []
-    for entry in folder.rglob("*"):
-        if entry.is_symlink() and not entry.exists():
-            entry.unlink()
-        elif entry.match(paths.PART_INFO_GLOB):
-            infos.append(entry)
-        elif entry.match(paths.PART_GLOB):
-            parts.append(entry)
+    for entry in _scandir_walk(folder):
+        path = Path(entry.path)
+        if entry.is_symlink() and not path.exists():
+            path.unlink(missing_ok=True)
+        elif path.match(paths.PART_INFO_GLOB):
+            infos.append(path)
+        elif path.match(paths.PART_GLOB):
+            parts.append(path)
     for stale in sorted(parts):
         if not paths.resumable(stale):
             stale.unlink(missing_ok=True)
@@ -205,9 +221,18 @@ def count(history: MutableMapping[str, Any], tally: Tally) -> None:
             )
     tally.missing = len(gone)
     # A link is a view of a file counted already, not a file of its own.
-    on_disk = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()
-               and not path.name.startswith(".")] if folder.is_dir() else []
-    tally.files, tally.size = len(on_disk), sum(path.stat().st_size for path in on_disk)
+    files = 0
+    size = 0
+    if folder.is_dir():
+        for entry in _scandir_walk(folder):
+            if (
+                not entry.name.startswith(".")
+                and not entry.is_symlink()
+                and entry.is_file(follow_symlinks=False)
+            ):
+                files += 1
+                size += entry.stat(follow_symlinks=False).st_size
+    tally.files, tally.size = files, size
 
 
 def summary(tallies: Sequence[Tally]) -> None:

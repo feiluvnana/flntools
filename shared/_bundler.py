@@ -29,7 +29,7 @@ from typing import Any, Union
 
 import shared
 
-__all__ = ["Error", "build"]
+__all__ = ["BuildError", "Error", "MissingError", "build"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -47,6 +47,14 @@ LAST_LINES = 15
 
 class Error(shared.Error):
     """The base of every error `shared.bundler` raises."""
+
+
+class MissingError(Error, ImportError):
+    """PyInstaller isn't installed (`uv sync --group dist`)."""
+
+
+class BuildError(Error, RuntimeError):
+    """PyInstaller failed to build the bundle."""
 
 
 def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Iterable[PathLike] = (),
@@ -78,7 +86,7 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Itera
     try:
         import PyInstaller.__main__ as pyinstaller
     except ImportError:
-        raise ImportError("shared.bundler needs pyinstaller: uv sync --group dist") from None
+        raise MissingError("shared.bundler needs pyinstaller: uv sync --group dist") from None
     folders = [Path(folder) for folder in data]
     for folder in folders:
         if not folder.is_dir():
@@ -128,7 +136,7 @@ def _run(pyinstaller: Any, argv: list[str], name: str) -> None:
         if not (isinstance(error, SystemExit) and error.code in (0, None)):
             lines = "\n".join(tail.lines)
             msg = f"PyInstaller could not build {name}: {error}\n{lines}".rstrip()
-            raise RuntimeError(msg) from None
+            raise BuildError(msg) from None
     finally:
         logger.removeHandler(tail)
 

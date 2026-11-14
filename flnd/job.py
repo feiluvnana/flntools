@@ -172,11 +172,13 @@ class Board:
     listing is done and nothing of it is pending; its last frame stays in the scrollback.
     """
 
-    def __init__(self, rows: Any, *, subject_width: int = 0, label_width: int = 0):
+    def __init__(self, rows: Any, *, subject_width: int = 0, label_width: int = 0,
+                 parent: Target | None = None):
         """Make the board of one run, drawing in the `log.Group` `rows`, its lines padded."""
-        self.rows, self.widths = rows, (subject_width, label_width)
+        self.rows, self.widths, self.parent = rows, (subject_width, label_width), parent
         self._lock = threading.Lock()
         self._lines: dict[tuple[Target, str], _Line] = {}
+        self._child_skipped: dict[Target, int] = {}
 
     def start(self, target: Target, category: str, *, slots: int) -> None:
         """Open the category's line as its listing starts, unless it is open.
@@ -186,10 +188,11 @@ class Board:
             category: the category's name; "" for a route's own posts, labelled by its kind.
             slots: how many of its files' rows `-v` draws under it at once.
         """
+        owner = self.parent or target
         with self._lock:
-            line = self._lines.get((target, category))
+            line = self._lines.get((owner, category))
             if line is None or line.row.finished:
-                line = self._open(target, category)
+                line = self._open(owner, category)
             line.row.slots = slots
 
     def count(self, target: Target, category: str, **steps: int) -> None:
@@ -201,10 +204,13 @@ class Board:
             **steps: a number to add to each named field of `Counts`, such as `queued=-1,
                 downloading=1`.
         """
+        owner = self.parent or target
         with self._lock:
-            line = self._lines.get((target, category)) or self._open(target, category)
+            line = self._lines.get((owner, category)) or self._open(owner, category)
             for name, step in steps.items():
                 setattr(line.counts, name, getattr(line.counts, name) + step)
+            if self.parent is not None and target != self.parent and "skipped" in steps:
+                self._child_skipped[target] = self._child_skipped.get(target, 0) + steps["skipped"]
         self._show(line)
 
     def listed(self, target: Target, category: str) -> None:
@@ -214,6 +220,8 @@ class Board:
             target: the target listed.
             category: the category whose listing ended by itself or was cut early.
         """
+        if self.parent is not None and target != self.parent:
+            return
         with self._lock:
             line = self._lines.get((target, category)) or self._open(target, category)
             line.listed = True
@@ -238,6 +246,8 @@ class Board:
             target: the target that ended.
             failed: whether it failed or was stopped, which ends its lines at error, not ok.
         """
+        if self.parent is not None and target != self.parent:
+            return
         for line in self._of(target):
             if failed:
                 line.row.fail()
@@ -254,14 +264,18 @@ class Board:
         Returns:
             The row, or None before the category's line opens.
         """
+        owner = self.parent or target
         with self._lock:
-            line = self._lines.get((target, category))
+            line = self._lines.get((owner, category))
         return None if line is None else line.row
 
     def totals(self, target: Target) -> Counts:
         """The target's counts over every category."""
         total = Counts()
         with self._lock:
+            if self.parent is not None and target != self.parent:
+                total.skipped = self._child_skipped.get(target, 0)
+                return total
             for line in self._lines.values():
                 if line.target == target:
                     for name in vars(total):
@@ -669,15 +683,17 @@ class Ledger:
         the history and every copy listed so far have had their say.
         """
         waiting, self._waiting = self._waiting, {}
+        nearest = self._nearest_dates() if waiting else {}
         released = []
         for key, post in waiting.items():
             found = self._dates.get(key) or self._ask(post)
             if found is None:
-                found = self._neighbour(key)
+                found = nearest.get(key)
                 if found is not None:
                     self._estimated.add(key)
             released.append(post if found is None else post.replace(date=found))
-        self._order = []
+        self._order.clear()
+        self._order_index.clear()
         return released
 
     def redate(self) -> int:
@@ -694,7 +710,11 @@ class Ledger:
             return 0
         dated = 0
         history = self.settings.history
-        undated = [(key, row) for key, row in list(history.items()) if self._undated(row)]
+        prefix = f"{self.target.source}:"
+        undated = [
+            (key, row) for key, row in list(history.items())
+            if key.startswith(prefix) and self._undated(row)
+        ]
         for key, row in undated:
             found = self._ask(Post(row[ID]))
             if found is None:
@@ -734,16 +754,30 @@ class Ledger:
                 log.debug("{post}: not dated: {error}", post=post.id, error=error)
             return None
 
-    def _neighbour(self, key: str) -> datetime.date | None:
-        """The day of the nearest dated post in listing order, the one before first on a tie."""
-        at = self._order_index.get(key)
-        if at is None:
-            return None
-        for distance in range(1, len(self._order)):
-            for index in (at - distance, at + distance):
-                if 0 <= index < len(self._order) and self._order[index][1] is not None:
-                    return self._order[index][1]
-        return None
+    def _nearest_dates(self) -> dict[str, datetime.date]:
+        """Nearest dated post in listing order for each key, earlier winning ties, in O(n)."""
+        order = self._order
+        n = len(order)
+        left: list[tuple[int, datetime.date] | None] = [None] * n
+        last: tuple[int, datetime.date] | None = None
+        for i, (_, known) in enumerate(order):
+            if known is not None:
+                last = (i, known)
+            else:
+                left[i] = last
+        nearest: dict[str, datetime.date] = {}
+        nxt: tuple[int, datetime.date] | None = None
+        for i in range(n - 1, -1, -1):
+            key, known = order[i]
+            if known is not None:
+                nxt = (i, known)
+                continue
+            prev = left[i]
+            if prev is not None and (nxt is None or i - prev[0] <= nxt[0] - i):
+                nearest.setdefault(key, prev[1])
+            elif nxt is not None:
+                nearest.setdefault(key, nxt[1])
+        return nearest
 
     def _dated(self, post: Post, category: Category | None, *, hold: bool) -> Post | None:
         """`post` with the day the memory knows, the memory told of its own; None while it waits.

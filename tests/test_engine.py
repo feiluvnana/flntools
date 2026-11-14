@@ -1100,6 +1100,8 @@ class SyncedQueryTest(EngineCase):
         )
         self.assertTrue(report.ok)
         self.assertEqual(list(targets_mod.rows(self.home)), ["pgd:cats"])
+        self.assertEqual(sum(line.startswith("✓ pgd?cats") for line in self.lines()), 1)
+        self.assertFalse(any(line.startswith("✓ pgd:1") for line in self.lines()))
         self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "1_1.jpg").is_file())
         self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "2_2.jpg").is_file())
 

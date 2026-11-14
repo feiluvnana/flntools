@@ -45,10 +45,16 @@ def url(text: str) -> str:
         reaches a screen, a log file or an exception message.
     """
     parts = urlsplit(text)
-    return f"{parts.scheme}://{parts.netloc}{parts.path}" if parts.netloc else parts.path
+    if not parts.netloc:
+        return parts.path
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = f"{host}:{parts.port}" if parts.port is not None else host
+    return f"{parts.scheme}://{netloc}{parts.path}"
 
 
-def size(n: int) -> str:
+def size(n: float) -> str:
     """Bytes in the largest unit under 1024, with one decimal: `1.5 KB`.
 
     >>> fmt.size(1536)
@@ -112,17 +118,17 @@ def date(value: _datetime.date | float, *, pattern: str | None = None) -> str:
     return value.strftime(pattern)
 
 
-def filename(text: str, *, fallback: str = "untitled", maxlen: int = 200) -> str:
+def filename(text: str, *, fallback: str = "untitled", max_bytes: int = 200) -> str:
     """Text as a file or folder name that is safe on Windows, macOS, and Linux.
 
     >>> fmt.filename("Summer: 2026 / day 1?")
     'Summer_2026_day_1'
 
-    The result is at most `maxlen` bytes of UTF-8, and `fallback` when nothing is left.
+    The result is at most `max_bytes` bytes of UTF-8, and `fallback` when nothing is left.
     """
     name = UNSAFE_CHARACTERS.sub("_", text)
     name = SEPARATOR_RUNS.sub("_", name).strip("._ ")
-    name = name.encode("utf-8")[:maxlen].decode("utf-8", "ignore").strip("._ ")
+    name = name.encode("utf-8")[:max_bytes].decode("utf-8", "ignore").strip("._ ")
     if not name:
         return fallback
     # Windows ignores the extension when it checks a reserved name, so "nul.txt" is refused too.

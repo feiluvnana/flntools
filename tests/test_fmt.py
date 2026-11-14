@@ -66,7 +66,7 @@ class FilenameTest(unittest.TestCase):
         self.assertEqual(fmt.filename("", fallback="x"), "x")
 
     def test_cut_never_splits_a_character(self):
-        name = fmt.filename("é" * 10, maxlen=5)
+        name = fmt.filename("é" * 10, max_bytes=5)
         self.assertEqual(name, "éé")
         self.assertLessEqual(len(name.encode()), 5)
         self.assertEqual(fmt.filename("a" * 300), "a" * 200)

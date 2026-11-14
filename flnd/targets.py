@@ -145,21 +145,16 @@ def toggle(home: Path, target: Target) -> bool:
 
         new_state = targets.toggle(Path(".flnd"), Target("ins", "user", "example_user"))
     """
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
-        old = saved.get(key(target))
-        row = (
-            dict(old) if isinstance(old, dict)
-            else {"kind": target.kind, SHRINK: False, "at": now}
-        )
-        new_state = not (row.get(SYNC, True) is True)
-        row[SYNC] = new_state
-        saved[key(target)] = row
-    return new_state
+    return _write_sync(home, target, enabled=None)
 
 
 def set_sync(home: Path, target: Target, *, enabled: bool) -> bool:
     """Set `target`'s `sync` state in `targets.db` to `enabled`."""
+    return _write_sync(home, target, enabled=enabled)
+
+
+def _write_sync(home: Path, target: Target, *, enabled: bool | None) -> bool:
+    """Update `target`'s `sync` state in `targets.db`, flipping it when `enabled` is None."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     with kv.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         old = saved.get(key(target))
@@ -167,9 +162,10 @@ def set_sync(home: Path, target: Target, *, enabled: bool) -> bool:
             dict(old) if isinstance(old, dict)
             else {"kind": target.kind, SHRINK: False, "at": now}
         )
-        row[SYNC] = enabled
+        new_state = not (row.get(SYNC, True) is True) if enabled is None else enabled
+        row[SYNC] = new_state
         saved[key(target)] = row
-    return enabled
+    return new_state
 
 
 def delete(home: Path, target: Target) -> bool:

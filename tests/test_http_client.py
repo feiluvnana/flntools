@@ -116,6 +116,20 @@ class BackOffTest(ClientCase):
         self.assertTrue(24 <= first <= 36, first)
         self.assertTrue(48 <= second <= 72, second)
 
+    def test_a_429_with_retry_after_zero_waits(self):
+        self.answers = [httpx.Response(429, headers={"Retry-After": "0"})]
+        client = self.client()
+        page = client.fetch(f"{SITE}/items")
+        self.assertEqual(page.status, 200)
+        self.assertTrue(24 <= self.gaps()[0] <= 36, self.gaps())
+
+    def test_retry_after_infinite_or_huge_is_clamped(self):
+        self.answers = [httpx.Response(429, headers={"Retry-After": "1e400"})]
+        client = self.client()
+        page = client.fetch(f"{SITE}/items")
+        self.assertEqual(page.status, 200)
+        self.assertTrue(24 <= self.gaps()[0] <= 36, self.gaps())
+
     def test_a_cdns_429_never_slows_the_site(self):
         self.answers = [httpx.Response(429, headers={"Retry-After": "60"})]
         client = self.client(pace=PACE)

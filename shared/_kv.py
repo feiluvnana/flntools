@@ -20,7 +20,7 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator, KeysView, MutableMapping
+from collections.abc import ItemsView, Iterator, KeysView, Mapping, MutableMapping, ValuesView
 from pathlib import Path
 from typing import Any, Union
 
@@ -99,6 +99,7 @@ def open(path: PathLike, *, table: str = "default", timeout: float = BUSY_TIMEOU
         # history doesn't stop a `flnd download` writing to it. Files written before were in WAL
         # already; on a new file it is set once and sqlite remembers it.
         _wal(connection, timeout)
+        connection.execute("PRAGMA synchronous=NORMAL")
         connection.execute(SCHEMA)
         link = _Link(connection)
         store = link.owner = Store(link, table)
@@ -207,13 +208,7 @@ class Store(MutableMapping[str, Any]):
         Raises:
             UnstorableError: `key` isn't a `str`, or `json.dumps` can't write `value`.
         """
-        if not isinstance(key, str):
-            raise UnstorableError(f"kv keys are str, not {type(key).__name__}")
-        try:
-            text = json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError) as error:
-            # TypeError for a type json can't write, ValueError for a circular value or NaN rules.
-            raise UnstorableError(f"kv values must be JSON: {error}") from None
+        text = _encode(key, value)
         expires = None if ttl is None else clock.wall() + ttl
         self._execute("INSERT OR REPLACE INTO kv (tbl, key, value, expires) VALUES (?, ?, ?, ?)",
                       (self._table, key, text, expires))
@@ -232,6 +227,39 @@ class Store(MutableMapping[str, Any]):
             prefix through the primary key's index, so it is quick on a big table.
         """
         return _Keys(self, prefix)
+
+    def items(self) -> ItemsView[str, Any]:
+        """Live view of `(key, value)` pairs, sorted by key, read in one query."""
+        return _Items(self)
+
+    def values(self) -> ValuesView[Any]:
+        """Live view of values, sorted by key, read in one query."""
+        return _Values(self)
+
+    def clear(self) -> None:
+        """Delete every key in this table in one statement."""
+        self._execute("DELETE FROM kv WHERE tbl = ?", (self._table,))
+
+    def update(self, other: Any = (), /, **kwargs: Any) -> None:
+        """Write every `(key, value)` pair from `other` and `kwargs` in one transaction."""
+        pairs = list(other.items()) if isinstance(other, Mapping) else list(other)
+        pairs.extend(kwargs.items())
+        if not pairs:
+            return
+        rows = [(self._table, key, _encode(key, value), None) for key, value in pairs]
+        with self._link.lock:
+            self._check_open()
+            conn = self._link.connection
+            conn.execute("BEGIN")
+            try:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO kv (tbl, key, value, expires) VALUES (?, ?, ?, ?)",
+                    rows,
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
 
     def table(self, name: str) -> Store:
         """Another table of the same file, on this store's connection.
@@ -271,6 +299,22 @@ class Store(MutableMapping[str, Any]):
             if self._link.owner is self:
                 self._link.closed = True
                 self._link.connection.close()
+
+    def _items(self) -> list[tuple[str, Any]]:
+        """A sorted snapshot of live `(key, value)` pairs in one query."""
+        rows = self._execute(
+            f"SELECT key, value FROM kv WHERE tbl = ? AND {LIVE} ORDER BY key",
+            (self._table, clock.wall()),
+        )
+        return [(key, json.loads(text)) for key, text in rows]
+
+    def _values(self) -> list[Any]:
+        """A sorted snapshot of live values in one query."""
+        rows = self._execute(
+            f"SELECT value FROM kv WHERE tbl = ? AND {LIVE} ORDER BY key",
+            (self._table, clock.wall()),
+        )
+        return [json.loads(text) for (text,) in rows]
 
     def _keys(self, prefix: str) -> list[str]:
         """A sorted snapshot of the live keys that start with `prefix`."""
@@ -351,6 +395,49 @@ class _Keys(KeysView[str]):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({list(self)!r})"
+
+
+class _Items(ItemsView[str, Any]):
+    """`Store.items()`: live view reading all pairs in one query."""
+
+    def __init__(self, store: Store):
+        super().__init__(store)
+        self._store = store
+
+    def __iter__(self) -> Iterator[tuple[str, Any]]:
+        return iter(self._store._items())
+
+
+class _Values(ValuesView[Any]):
+    """`Store.values()`: live view reading all values in one query."""
+
+    def __init__(self, store: Store):
+        super().__init__(store)
+        self._store = store
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._store._values())
+
+
+def _encode(key: Any, value: Any) -> str:
+    """Validate `key` and JSON-encode `value` for storage."""
+    if not isinstance(key, str):
+        raise UnstorableError(f"kv keys are str, not {type(key).__name__}")
+    try:
+        key.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise UnstorableError(f"kv keys must be valid UTF-8: {error}") from None
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError) as error:
+        # TypeError for a type json can't write, ValueError for a circular value or NaN rules.
+        raise UnstorableError(f"kv values must be JSON: {error}") from None
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # Lone surrogates (e.g. os.fsdecode on non-UTF-8 paths) cannot bind as UTF-8 text in SQLite.
+        return json.dumps(value, ensure_ascii=True)
+    return text
 
 
 def _after_prefix(prefix: str) -> str | None:

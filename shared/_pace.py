@@ -138,10 +138,11 @@ class Host:
             self.speed = min(self.speed * 2, SLOWEST)
             self._clean = 0
             self._prev_strikes = 0
-            seconds = retry_after
-            if seconds is None:
-                step = min(FIRST_BACKOFF * 2 ** (self.strikes - 1), MAX_BACKOFF)
+            step = min(FIRST_BACKOFF * 2 ** (self.strikes - 1), MAX_BACKOFF)
+            if retry_after is None or retry_after <= 0:
                 seconds = step * clock.random().uniform(1 - BACKOFF_JITTER, 1 + BACKOFF_JITTER)
+            else:
+                seconds = retry_after
             self._backoff_until = now + seconds
             self._blocked_until = max(self._blocked_until, self._backoff_until)
             return seconds

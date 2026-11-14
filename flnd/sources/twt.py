@@ -140,7 +140,7 @@ class Twitter(Source):
         for host in ("x.com", "twitter.com")
         for path in (
             "home", "explore", "search", "settings", "notifications", "messages",
-            "hashtag", "i",
+            "hashtag", "i", "intent", "compose", "login",
         )
     }
     needs = ("auth_token",)

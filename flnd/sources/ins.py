@@ -114,6 +114,9 @@ class Instagram(Source):
         "instagram.com/stories": (
             "story links aren't supported; give the profile, and its stories come with it"
         ),
+        "instagram.com/explore": "that's not a profile",
+        "instagram.com/accounts": "that's not a profile",
+        "instagram.com/direct": "that's not a profile",
     }
 
     def __init__(self) -> None:
@@ -139,7 +142,7 @@ class Instagram(Source):
         if media is not None:
             yield post_of(media)
 
-    @target("{user}", "instagram.com/{user}")
+    @target("{user}", r"instagram.com/{user:(?!share$)[\w.]+}")
     def user(self, site: Site, user: str) -> Profile:
         """A profile, by its user name; a tab's URL (/reels/, /tagged/) is its profile too.
 

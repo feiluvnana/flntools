@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType, MethodType
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Mapping,
                     MutableMapping, Protocol, Sequence, Union, overload)
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from shared import fmt, log
 
@@ -38,8 +38,8 @@ __all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Logi
 # import.
 _query_check: Callable[[str, Mapping[str, Any]], Any] | None = None
 
-# Hosts that are the same site as their bare domain: the desktop, mobile and old mobile sites.
-SITE_PREFIXES = ("www.", "m.", "mobile.")
+# Hosts that are the same site as their bare domain: desktop, mobile and web variants.
+SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 # What `{name}` matches without a regex: a user name, as the sites spell them, with one leading `@`
 # dropped since people paste names both ways.
 NAME = r"[\w.]+"
@@ -1122,7 +1122,8 @@ def _parse(text: str, domains: tuple[str, ...]) -> _Url | None:
     if not any(host == domain or host.endswith("." + domain) for domain in domains):
         return None
     query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
-    return _Url(_bare_host(host), tuple(part for part in parsed.path.split("/") if part), query)
+    parts = tuple(unquote(part) for part in parsed.path.split("/") if part)
+    return _Url(_bare_host(host), parts, query)
 
 
 def _bare_host(host: str) -> str:

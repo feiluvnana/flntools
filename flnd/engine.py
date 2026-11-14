@@ -202,15 +202,7 @@ class Engine:
                 )
                 _end_if_stopped()
                 if not sync:
-                    rows = flnd.targets.rows(self.home)
-                    has_unsynced = any(
-                        not flnd.targets.sync_enabled(
-                            rows.get(flnd.targets.key(t), {"sync": False})
-                        )
-                        for t in resolved
-                    )
-                    if has_unsynced:
-                        log.info("not synced; add --sync to keep it up to date")
+                    self._warn_unsynced(resolved)
                 report = Report(tuple(reports))
                 _log_totals(report)
                 return report
@@ -231,11 +223,8 @@ class Engine:
                 self._apply(turned_on, dict(chosen), sync=sync)
             reports = self._run(chosen)
             _end_if_stopped()
-            if not sync and any(
-                not flnd.targets.sync_enabled(rows.get(flnd.targets.key(t), {"sync": False}))
-                for t in resolved
-            ):
-                log.info("not synced; add --sync to keep it up to date")
+            if not sync:
+                self._warn_unsynced(resolved, rows=rows)
             report = Report(tuple(replace(report, settings=text)
                                   for report, text in zip(reports, shown)))
             _log_totals(report)
@@ -602,8 +591,10 @@ class Engine:
             run_settings = RunShared(
                 home=self.home, history=history, targets=saved_targets, _browser_pool=browser_pool,
             )
-            board = job.Board(log_rows, subject_width=len(str(target)),
-                              label_width=self._label_width([(target, options)]))
+            board = job.Board(
+                log_rows, subject_width=len(str(target)),
+                label_width=self._label_width([(target, options)]), parent=target,
+            )
             with shared_browser(run_settings), source_run(run_settings, source) as run:
                 account = TargetSite(run, Target(source.code, ACCOUNT, ""))
                 if not source.logged_in(account) and source.requires_login:
@@ -649,6 +640,7 @@ class Engine:
                     log.debug("{target}: {chain}", target=str(target), chain=job.causes(error))
                     reports.append(TargetReport(target, (), 0, error=str(error)))
                 finally:
+                    board.end(target, failed=any(r.error is not None for r in reports))
                     if seen_keys:
                         flnd.targets.mark_seen(self.home, target, seen_keys)
         return reports
@@ -672,8 +664,10 @@ class Engine:
             run_settings = RunShared(
                 home=self.home, history=history, targets=saved_targets, _browser_pool=browser_pool,
             )
-            board = job.Board(log_rows, subject_width=len(str(target)),
-                              label_width=self._label_width([(target, options)]))
+            board = job.Board(
+                log_rows, subject_width=len(str(target)),
+                label_width=self._label_width([(target, options)]), parent=target,
+            )
             with shared_browser(run_settings), source_run(run_settings, source) as run:
                 account = TargetSite(run, Target(source.code, ACCOUNT, ""))
                 if not source.logged_in(account) and source.requires_login:
@@ -685,6 +679,7 @@ class Engine:
                         code=source.code,
                     )
                 seen_to_mark: list[str] = []
+                failed = False
                 try:
                     with _written_back(run), _connected(run, account):
                         with closing(
@@ -720,25 +715,44 @@ class Engine:
                 except KeyboardInterrupt:
                     if not net.stopping.is_set() or net.stopping_now.is_set():
                         raise
+                    failed = True
                     return TargetReport(target, tuple(written), skipped, error=job.STOPPED)
                 except Exception as error:
+                    failed = True
                     log.error("{target}: {error}", target=str(target), error=error)
                     log.debug("{target}: {chain}", target=str(target), chain=job.causes(error))
                     return TargetReport(target, tuple(written), skipped, error=str(error))
                 finally:
+                    board.end(target, failed=failed or child_failed is not None)
                     if seen_to_mark:
                         flnd.targets.mark_seen(self.home, target, seen_to_mark)
         return TargetReport(target, tuple(written), skipped, error=child_failed)
 
+    def _warn_unsynced(
+        self, resolved: Sequence[Target], *, rows: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Remind the caller when any downloaded target has sync off."""
+        saved = flnd.targets.rows(self.home) if rows is None else rows
+        if any(
+            not flnd.targets.sync_enabled(saved.get(flnd.targets.key(t), {"sync": False}))
+            for t in resolved
+        ):
+            log.info("not synced; add --sync to keep it up to date")
+
     def _recorded(self, rows: Mapping[str, Any]) -> list[Target]:
         """Targets reconstructed from `targets.db` rows belonging to known sources."""
         return [
-            Target(code, row["kind"], value)
+            Target(code, row["kind"], value, query=self._is_query_kind(code, row["kind"]))
             for key, row in rows.items()
             if ":" in key and isinstance(row, dict) and "kind" in row
             for code, value in [key.split(":", 1)]
             if code in self.sources
         ]
+
+    def _is_query_kind(self, code: str, kind: str) -> bool:
+        """Whether `kind` on `code` is a `?{query}` route."""
+        route = next((r for r in self.sources[code].routes if r.kind == kind), None)
+        return route is not None and route.is_query
 
     def _resolved(self, targets: Sequence[Target | str]) -> list[Target]:
         """Each target, a text read by `resolve`, each written to the run log as it was read."""
@@ -797,11 +811,8 @@ class Engine:
         rows = flnd.targets.rows(self.home)
         if not targets:
             synced_rows = flnd.targets.synced(rows)
-            recorded = [Target(code, row["kind"], value) for key, row in rows.items()
-                        for code, value in [key.split(":", 1)]
-                        if code in self.sources and isinstance(row, dict)]
-            targets = [Target(code, row["kind"], value) for key, row in synced_rows.items()
-                       for code, value in [key.split(":", 1)] if code in self.sources]
+            recorded = self._recorded(rows)
+            targets = self._recorded(synced_rows)
             targets += list(self._unrecorded(recorded, rows))
         return [
             (target, Options(
@@ -1022,9 +1033,12 @@ def resolve(
         # Only a link no route matched carries `url`; a refusal (an `unsupported` link) is final.
         if follow is None or miss.url is None:
             raise
-        url = miss.url
-    # Followed once only: a second miss is the refusal, listing the forms.
-    return source.resolve(follow(url))
+        followed = follow(miss.url)
+        if not followed or followed == miss.url:
+            raise
+        redirected = owner(followed, sources)
+        # Followed once only: a second miss is the refusal, listing the forms.
+        return (redirected() if redirected is not None else source).resolve(followed)
 
 
 def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
