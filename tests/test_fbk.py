@@ -19,7 +19,7 @@ from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
 from flnd.options import Options
-from flnd.source import FetchError, Post, Target, TargetError
+from flnd.source import FetchError, LoginError, Post, Target, TargetError
 from flnd.sources.fbk import Facebook, image_extension, media_items
 from shared import browser
 
@@ -584,6 +584,20 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(page_info(info_line("c9")), (True, "c9"))
         self.assertEqual(page_info({"data": {"node": {"timeline_list_feed_units": {
             "page_info": {"has_next_page": False, "end_cursor": "z"}}}}}), (False, "z"))
+
+
+    def test_persistent_login_page_raises_login_error(self):
+        seen = Seen()
+        with self.assertRaisesRegex(LoginError, "flnd auth login fbk"):
+            read("fbk:a", pages={}, seen=seen, categories=("posts",),
+                 redirects={f"{SITE}/a": f"{SITE}/login/?next=%2Fa"})
+        self.assertEqual(len(seen.back_offs), 2)
+
+    def test_persistent_block_in_replay_raises_fetch_error_and_falls_back(self):
+        run = self.replayed(['{"__dr": "CometErrorRoot.react"}'] * 4, tail=[[photo("5", owner="42")]])
+        self.assertEqual(len(run.seen.back_offs), 3)
+        self.assertTrue(any("refused a replay" in m for m in run.seen.messages))
+        self.assertEqual([s.key for s in run.saved], ["1", "2", "5"])
 
 
 if __name__ == "__main__":

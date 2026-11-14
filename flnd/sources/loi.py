@@ -81,15 +81,26 @@ def _paged(
     """Yield items from a `{data: [...], pagination: {total}}` endpoint, page 1 onward."""
     page = 1
     seen = 0
+    seen_ids: set[Any] = set()
     while True:
         body = site.fetch(url, params={**(params or {}), "page": page}).json
         data = body.get("data") if isinstance(body, dict) else None
         if not isinstance(data, list) or not data:
             return
+        new = 0
         for item in data:
-            if isinstance(item, dict):
-                yield item
-                seen += 1
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            if item_id is not None and item_id in seen_ids:
+                continue
+            if item_id is not None:
+                seen_ids.add(item_id)
+            new += 1
+            yield item
+            seen += 1
+        if not new:
+            return
         total = (body.get("pagination") or {}).get("total") if isinstance(body, dict) else None
         if isinstance(total, int) and seen >= total:
             return

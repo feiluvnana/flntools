@@ -24,7 +24,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Generator, Iterator, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
-from flnd.source import FetchError, File, Post, Site, Source, day, pages, target
+from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, pages, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import meta_results
 from flnd.sources.common.replay import Replay
@@ -96,6 +96,8 @@ BLOCKED = "temporarily blocked"
 # What the countdown says while a block or a login wall is waited out.
 TEMPORARILY_BLOCKED = "Facebook says you've been temporarily blocked"
 LOGIN_WALL = "Facebook asked for a login (if it keeps asking, run `flnd login fbk` again)"
+WALL_ATTEMPTS = 2
+BLOCK_ATTEMPTS = 3
 # What a GraphQL answer holds instead of data when Facebook blocks it: Comet error page.
 COMET_ERROR = "CometErrorRoot.react"
 # The variable a profile tab's pagination query takes its cursor in.
@@ -301,6 +303,7 @@ class Facebook(Source):
 
 def read_page(site: Site, url: str) -> list[Any] | None:
     """Load a page and return its embedded results, or None."""
+    walls = blocks = 0
     while True:
         # Page results are embedded in HTML; initial load fetches nothing extra.
         results = meta_results(site, url)
@@ -309,9 +312,17 @@ def read_page(site: Site, url: str) -> list[Any] | None:
         # Check tab url to see if page failed to load vs refusal vs empty page.
         page = site.page
         if "/login" in urlsplit(page.url).path:
+            if walls >= WALL_ATTEMPTS:
+                raise LoginError(
+                    "fbk: Facebook kept asking for a login; run flnd auth login fbk"
+                )
+            walls, blocks = walls + 1, 0
             site.back_off(LOGIN_WALL)
             continue
         if BLOCKED in page.document.text.lower():
+            if blocks >= BLOCK_ATTEMPTS:
+                raise FetchError(TEMPORARILY_BLOCKED)
+            blocks, walls = blocks + 1, 0
             site.back_off(TEMPORARILY_BLOCKED)
             continue
         # Site.goto keeps tab where it was on failure; wrong URL means page didn't load.
@@ -392,19 +403,31 @@ def replayed(site: Site, replay: Replay, cursor: str,
 
 def replay_lines(site: Site, replay: Replay, cursor: str) -> list[Any]:
     """One page of a tab by replay; blocks and login walls are waited out."""
+    walls = blocks = 0
     while True:
         try:
             response = replay.send(site, cursor)
         # Refused calls carrying block page are waited out; anything else is raised.
         except FetchError as error:
             if error.response is not None and blocked(error.response):
+                if blocks >= BLOCK_ATTEMPTS:
+                    raise FetchError(TEMPORARILY_BLOCKED) from None
+                blocks, walls = blocks + 1, 0
                 site.back_off(TEMPORARILY_BLOCKED)
                 continue
             raise
         if "/login" in urlsplit(response.url).path:
+            if walls >= WALL_ATTEMPTS:
+                raise LoginError(
+                    "fbk: Facebook kept asking for a login; run flnd auth login fbk"
+                )
+            walls, blocks = walls + 1, 0
             site.back_off(LOGIN_WALL)
             continue
         if blocked(response):
+            if blocks >= BLOCK_ATTEMPTS:
+                raise FetchError(TEMPORARILY_BLOCKED)
+            blocks, walls = blocks + 1, 0
             site.back_off(TEMPORARILY_BLOCKED)
             continue
         found = json_lines(response.text)

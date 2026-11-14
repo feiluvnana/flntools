@@ -519,5 +519,13 @@ class ListApiTest(unittest.TestCase):
         self.assertEqual(seen.visited, [PROFILE])
 
 
+    def test_unsolved_captcha_after_limit_raises_fetch_error(self):
+        captcha = "<body><div id='captcha_container'>Drag the slider</div></body>"
+        attempts = []
+        with self.assertRaisesRegex(FetchError, "captcha"):
+            run("tik:someone", html=lambda tab: (attempts.append(len(tab.seen.back_offs)), captcha)[1])
+        self.assertEqual(attempts[-1], 3)
+
+
 if __name__ == "__main__":
     unittest.main()

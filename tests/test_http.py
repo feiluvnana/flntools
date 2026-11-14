@@ -395,5 +395,33 @@ class ThreadsTest(HttpTestCase):
 # one does, can cut a body short after some bytes, and counts the connections it has open.
 
 
+class BackOffEscalationTest(unittest.TestCase):
+    def test_soft_block_back_off_after_200_escalates_strikes(self):
+        now = [100.0]
+        with mock.patch("shared._pace.clock.now", side_effect=lambda: now[0]):
+            with mock.patch.object(http.Client, "_wait", side_effect=lambda h, s: now.__setitem__(0, now[0] + s)):
+                with http.Client(client(lambda r: httpx.Response(200, content=b"ok"))) as c:
+                    c.fetch("https://example.com/a")
+                    c.back_off("https://example.com/a", reason="wall")
+                    self.assertEqual(c._hosts["example.com"].strikes, 1)
+                    c.fetch("https://example.com/a")
+                    c.back_off("https://example.com/a", reason="wall")
+                    self.assertEqual(c._hosts["example.com"].strikes, 2)
+
+    def test_clean_200_turn_not_followed_by_back_off_leaves_strikes_zero(self):
+        now = [100.0]
+        with mock.patch("shared._pace.clock.now", side_effect=lambda: now[0]):
+            with mock.patch.object(http.Client, "_wait", side_effect=lambda h, s: now.__setitem__(0, now[0] + s)):
+                with http.Client(client(lambda r: httpx.Response(200, content=b"ok"))) as c:
+                    c.fetch("https://example.com/a")
+                    c.back_off("https://example.com/a", reason="wall")
+                    self.assertEqual(c._hosts["example.com"].strikes, 1)
+                    c.fetch("https://example.com/a")
+                    self.assertEqual(c._hosts["example.com"].strikes, 0)
+                    c.fetch("https://example.com/a")
+                    c.back_off("https://example.com/a", reason="wall")
+                    self.assertEqual(c._hosts["example.com"].strikes, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -196,7 +196,11 @@ class TargetSite:
     @property
     def cookies(self) -> Mapping[str, str]:
         """See `flnd.source.Site.cookies`."""
-        return MappingProxyType({cookie["name"]: cookie["value"] for cookie in self._run.jar})
+        merged = {cookie["name"]: cookie["value"] for cookie in self._run.jar}
+        merged.update(_names(self._run.web.raw.cookies))
+        if self._browser is not None:
+            merged.update({cookie["name"]: cookie["value"] for cookie in self._browser.cookies})
+        return MappingProxyType(merged)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
               in_page: bool = False, **request: Any) -> http.Response:

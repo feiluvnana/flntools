@@ -89,6 +89,10 @@ GRAPHQL = "graphql"
 # sticker's asset, or the story's own music metadata.
 STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_url || "
                "music_metadata.music_info.music_asset_info.progressive_download_url")
+CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+WALL_ATTEMPTS = 2
+CHECKPOINTS = ("checkpoint_required", "challenge_required", "login_required")
 
 
 class Instagram(Source):
@@ -98,10 +102,11 @@ class Instagram(Source):
     name = "Instagram"
     domains = ("instagram.com",)
     needs = ("sessionid",)
+    user_agent = CHROME
     browser = True
     # Instaloader's measured budgets set the ceiling; the floor only spaces a burst while a window
     # still has room.
-    pace = http.Pace(0.5, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
+    pace = http.Pace(1.5, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
     # Post category or highlight title: "posts", "highlights/<title>", or "".
     folder = "{category}/{album}"
     # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.
@@ -254,6 +259,7 @@ class Api:
             LoginError: Instagram sent the call to `/accounts/suspended/`.
         """
         # Each pass makes one call; throttles and login walls are waited out.
+        walls = 0
         while True:
             try:
                 response = site.fetch(url, params=params, in_page=self.in_page,
@@ -263,10 +269,16 @@ class Api:
             except FetchError as error:
                 if error.status == 404:
                     return None
-                if self._waited(site, error.response, refused=error.status in REFUSED_DIRECT):
+                next_walls = self._waited(
+                    site, error.response, refused=error.status in REFUSED_DIRECT, walls=walls,
+                )
+                if next_walls is not None:
+                    walls = next_walls
                     continue
                 raise
-            if self._waited(site, response, refused=False):
+            next_walls = self._waited(site, response, refused=False, walls=walls)
+            if next_walls is not None:
+                walls = next_walls
                 continue
             # Instagram rotates this claim and expects it echoed back on next calls.
             self.claim = response.headers.get("x-ig-set-www-claim") or self.claim
@@ -288,7 +300,14 @@ class Api:
         Raises:
             FetchError, LoginError: as `get`.
         """
-        data = self.get(site, f"{API}/media/{pk}/info/")
+        if "media" in self.refused:
+            return None
+        try:
+            data = self.get(site, f"{API}/media/{pk}/info/")
+        except FetchError:
+            if self.in_page:
+                self.refused.add("media")
+            raise
         items = data.get("items") if isinstance(data, dict) else None
         if isinstance(items, list) and items and isinstance(items[0], dict):
             return items[0]
@@ -381,29 +400,34 @@ class Api:
             what=what, api=api,
         )
 
-    def _waited(self, site: Site, response: http.Response | None, *, refused: bool) -> bool:
-        """Whether answer was a throttle (waited out) or refusal moving calls to tab."""
+    def _waited(
+        self, site: Site, response: http.Response | None, *, refused: bool, walls: int,
+    ) -> int | None:
+        """Next wall count if waited or moved to tab, else None."""
         # The suspended page is the hard stop: nothing is retried past it.
         where = urlsplit(response.url).path if response is not None else ""
         if where.startswith(SUSPENDED):
             raise suspended()
         data = _json(response)
+        msg = str(data.get("message", "")).lower() if isinstance(data, dict) else ""
         has_login = isinstance(data, dict) and data.get("require_login")
-        walled = any(where.startswith(wall) for wall in WALLS) or has_login
+        has_checkpoint = any(key in msg for key in CHECKPOINTS)
+        walled = any(where.startswith(wall) for wall in WALLS) or has_login or has_checkpoint
         if (refused or walled) and not self.in_page and not throttled(data):
             # Instagram may refuse httpx TLS fingerprint; tab fetch has Chrome's.
             self.in_page = True
             site.warn("Instagram refused flnd's own client; sending its API calls from the page")
-            return True
-        # A throttle or a login wall is waited out with back-off, then call is retried.
-        if throttled(data) or walled:
-            reason = (
-                "Instagram asked to wait a few minutes"
-                if throttled(data) else "Instagram showed a login wall"
-            )
-            site.back_off(reason)
-            return True
-        return False
+            return walls
+        if throttled(data):
+            site.back_off("Instagram asked to wait a few minutes")
+            return walls
+        if walled:
+            if walls >= WALL_ATTEMPTS:
+                who = response.url if response is not None else SITE
+                raise FetchError(f"{who}: Instagram showed a login wall")
+            site.back_off("Instagram showed a login wall")
+            return walls + 1
+        return None
 
 
 @dataclass
@@ -566,6 +590,7 @@ def load(site: Site, url: str) -> bool:
     Raises:
         LoginError: the page went to `/accounts/suspended/`.
     """
+    walls = 0
     while True:
         if not site.goto(url):
             return False
@@ -574,6 +599,12 @@ def load(site: Site, url: str) -> bool:
             raise suspended()
         if not any(where.startswith(wall) for wall in WALLS):
             return True
+        if walls >= WALL_ATTEMPTS:
+            raise LoginError(
+                "ins: Instagram kept showing a login wall or challenge; "
+                "check it in a browser or run flnd auth login ins"
+            )
+        walls += 1
         # Throttled session is sent to login wall or challenge; lifts after wait.
         site.back_off("Instagram showed a login wall")
 
@@ -657,17 +688,18 @@ def _json(response: http.Response | None) -> Any:
 
 
 def post_page(site: Site, code: str) -> dict | None:
-    """Open post page and return embedded post, or None with warning."""
-    if not load(site, f"{SITE}/p/{code}/"):
-        return None
-    found = [
-        media for result in embedded_results(site.page.document)
-        if (media := post_media(result))
-    ]
-    if not found:
-        site.warn("post {code}: its page holds no post; skipped", code=code)
-        return None
-    return found[0]
+    """Open post page and return embedded or GraphQL post, or None with warning."""
+    with watch_responses(site, GRAPHQL) as responses:
+        if not load(site, f"{SITE}/p/{code}/"):
+            return None
+        for result in embedded_results(site.page.document):
+            if media := post_media(result, code):
+                return media
+        for result in responses:
+            if media := post_media(result, code):
+                return media
+    site.warn("post {code}: its page holds no post; skipped", code=code)
+    return None
 
 
 def post_of(media: dict) -> Post:
@@ -869,10 +901,14 @@ def full_size(item: dict) -> bool:
     return (max(images, key=_area).get("width") or 0) >= FULL_SIZE * original
 
 
-def post_media(result: Any) -> dict | None:
+def post_media(result: Any, code: str | None = None) -> dict | None:
     """The post a post's own page shows, or None when this result isn't it."""
     media = selector.parse(result).jmespath(POST).first
-    return media if isinstance(media, dict) else None
+    if not isinstance(media, dict):
+        return None
+    if code is not None and media.get("code") and media.get("code") != code:
+        return None
+    return media
 
 
 def story_items(result: Any) -> list[dict]:

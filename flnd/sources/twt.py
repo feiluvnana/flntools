@@ -24,7 +24,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Generator, Iterator, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
-from flnd.source import FetchError, File, Post, Site, Source, day, pages, target
+from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, pages, target
 from flnd.sources.common.watch import watch_responses
 from shared import fmt, http, selector
 
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 # The user agent Twitter's API has always been sent: a desktop Chrome.
 CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
           "Chrome/128.0.0.0 Safari/537.36")
+WALLS = ("/i/flow/login", "/login", "/account/access")
 # The web client's public bearer token.
 TWITTER_BEARER = (
     "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
@@ -333,7 +334,9 @@ class Twitter(Source):
     def search(self, site: Site, timeline: Timeline, name: str, user_id: str,
                seen: set[str]) -> Iterator[Post]:
         """Read past the timeline's cap with `SearchTimeline`, moving `max_id` down."""
-        oldest = min(int(tweet_id) for tweet_id in seen if tweet_id.isdigit())
+        oldest = min((int(tweet_id) for tweet_id in seen if tweet_id.isdigit()), default=0)
+        if not oldest:
+            return
         empty, count, pages_read = 0, PAGE_SIZE, 0
         while empty < EMPTY_SEARCHES:
             query = f"from:{name} max_id:{oldest - 1}{SEARCHES[timeline.category]}"
@@ -377,6 +380,11 @@ class Twitter(Source):
         # Watching starts before `goto`, so nothing of the first load is missed.
         with watch_responses(site, f"/{timeline.query}", scroll=True) as responses:
             if site.goto(profile + timeline.tab):
+                if urlsplit(site.page.url).path.startswith(WALLS):
+                    raise LoginError(
+                        "twt: X asked for a login or locked this account; "
+                        "check it in a browser or run flnd auth login twt"
+                    )
                 for data in responses:
                     tweets, _ = read_timeline_page(data)
                     for tweet in tweets:

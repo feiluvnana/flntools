@@ -16,7 +16,7 @@ from test_engine import EngineCase
 
 from flnd.common import auth
 from flnd.options import Options
-from flnd.source import FetchError, Target, TargetError
+from flnd.source import FetchError, LoginError, Target, TargetError
 from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page, tweet_posts
 from shared import cookies
 
@@ -568,6 +568,20 @@ class LoginStaysAtHomeTest(EngineCase):
         self.assertIn("ct0=new", api[1].headers["cookie"])
         self.assertNotIn("ct0=old", api[1].headers["cookie"])
         self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "someone").rglob("*")))
+
+
+    def test_read_browser_login_wall_raises_login_error(self):
+        from fakes import FakeSite
+        from flnd.sources.twt import Account, Timeline
+
+        site = FakeSite(Target("twt", "user", "example_handle"),
+                        pages={"https://x.com/example_handle": "<html></html>"})
+        with mock.patch.object(FakeSite, "goto",
+                               side_effect=lambda url: (site._seen.visited.append("https://x.com/i/flow/login"), True)[1]):
+            with self.assertRaisesRegex(LoginError, "flnd auth login twt"):
+                list(Twitter().read_browser(
+                    site, Account("42", "example_handle"), Timeline("posts", "UserTweets", ""),
+                ))
 
 
 if __name__ == "__main__":

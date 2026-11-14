@@ -67,6 +67,7 @@ class Host:
         self.budgets = dict(pace.budgets) if pace is not None else {}
         self.speed = min(max(speed, 1.0), SLOWEST)
         self.strikes = 0
+        self._prev_strikes = 0
         # Whether a thread is drawing this host's countdown, so others waiting with it draw none.
         self.showing = False
         self._last: float | None = None
@@ -81,6 +82,8 @@ class Host:
     def turn(self, url: str) -> float:
         """Reserve the next request to `url`, and return the seconds to wait before sending it."""
         with self._lock:
+            if self._clean > 0:
+                self._prev_strikes = 0
             now = clock.now()
             ready = self._blocked_until
             if self._last is not None and self.floor:
@@ -129,9 +132,12 @@ class Host:
             # Requests running together see the same 429: that is one wait, not one each.
             if now < self._backoff_until:
                 return None
+            if self.strikes == 0 and self._prev_strikes > 0:
+                self.strikes = self._prev_strikes
             self.strikes += 1
             self.speed = min(self.speed * 2, SLOWEST)
             self._clean = 0
+            self._prev_strikes = 0
             seconds = retry_after
             if seconds is None:
                 step = min(FIRST_BACKOFF * 2 ** (self.strikes - 1), MAX_BACKOFF)
@@ -143,6 +149,7 @@ class Host:
     def clean(self) -> None:
         """Count a request that went through: a 429 waits 30 s again, and 50 ease the speed."""
         with self._lock:
+            self._prev_strikes = self.strikes
             self.strikes = 0
             self._clean += 1
             if self._clean >= CLEAN_STEP:

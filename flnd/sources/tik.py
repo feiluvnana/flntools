@@ -31,6 +31,7 @@ TIKTOK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
              "Chrome/128.0.0.0 Safari/537.36")
 
 # Captcha verification detection
+CAPTCHA_ATTEMPTS = 3
 CAPTCHA_CSS = ('#captcha-verify-container-main-page, #captcha_container, [id*="captcha-verify"], '
                '[class*="captcha_verify"], [class*="captcha-verify"]')
 CAPTCHA_TEXT = re.compile(
@@ -361,10 +362,14 @@ class Profile:
 
     def wait_out_captcha(self) -> None:
         """Until no captcha is left: solved by user or backed off and reloaded."""
+        attempts = 0
         while has_captcha(self.site):
             if self.site.handoff(until=lambda: not has_captcha(self.site), timeout=CAPTCHA_TIMEOUT,
                                  message="Solve the TikTok captcha in the browser window"):
                 return
+            if attempts >= CAPTCHA_ATTEMPTS:
+                raise FetchError("TikTok captcha wasn't solved")
+            attempts += 1
             # Unsolved captcha handled as rate limit: back off, then reload page.
             self.site.back_off("TikTok captcha")
             self.site.goto(self.url)

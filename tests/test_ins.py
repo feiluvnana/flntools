@@ -686,7 +686,7 @@ class Landing(FakeSite):
         url = self._seen.visited[-1] if self._seen.visited else "about:blank"
         visits = self._seen.visited.count(url)
         landings = self.lands.get(url, [])
-        page.raw.url = landings[visits - 1] if visits <= len(landings) else url
+        page.raw.url = landings[visits - 1] if 1 <= visits <= len(landings) else url
         return page
 
 
@@ -764,6 +764,44 @@ class ThrottleTest(unittest.TestCase):
         site = Claiming(Target("ins", "user", "someone"), json=JSON)
         source.api.media(site, PK["R1"])
         self.assertEqual(source.api.claim, "hmac.new")
+
+    def test_persistent_login_wall_in_load_raises_login_error(self):
+        site = Landing(Target("ins", "post", "SINGLE"), pages=PAGES,
+                       lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/login/?next=/p/SINGLE/"] * 4})
+        with self.assertRaisesRegex(LoginError, "login wall or challenge"):
+            list(Instagram().post(site, "SINGLE"))
+        self.assertEqual(site._seen.back_offs, ["Instagram showed a login wall"] * 2)
+
+    def test_persistent_login_wall_in_api_get_marks_media_refused_and_falls_back(self):
+        seen = Seen()
+        pages = {
+            **PAGES,
+            f"{SITE}/example_user/": embedded(PROFILE, grid(
+                {"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP},
+                {"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP},
+            )),
+            f"{SITE}/p/CAR/": shortcode_page({"code": "CAR", "taken_at": STAMP,
+                                              **image("https://cdn.example/car.jpg")}),
+            f"{SITE}/p/R1/": shortcode_page({"code": "R1", "taken_at": STAMP,
+                                             **video("https://cdn.example/r1.mp4")}),
+        }
+        walled = {"require_login": True, "status": "fail"}
+        bad_json = {**JSON, f"{API}/media/{PK['CAR']}/info/": walled, f"{API}/media/{PK['R1']}/info/": walled}
+        saved = read("ins:example_user", options=Options(categories=("posts",)), pages=pages,
+                     json=bad_json, watch=FakeWatch({}), seen=seen)
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_CAR.jpg", f"posts/{DAY}_R1.mp4"])
+        self.assertEqual(api_urls(seen).count(f"{API}/media/{PK['CAR']}/info/"), 4)
+        self.assertEqual(api_urls(seen).count(f"{API}/media/{PK['R1']}/info/"), 0)
+        self.assertEqual(seen.back_offs, ["Instagram showed a login wall"] * 2)
+
+    def test_post_page_reads_captured_graphql_when_embedded_is_empty(self):
+        pages = {f"{SITE}/p/SINGLE/": "<html></html>"}
+        watch = FakeWatch({f"{SITE}/p/SINGLE/": [
+            {"data": {"xig_fetch_media": {"code": "SINGLE", "taken_at": STAMP,
+                                          **image("https://cdn.example/g.jpg")}}}
+        ]})
+        saved = read("https://www.instagram.com/p/SINGLE/", pages=pages, watch=watch)
+        self.assertEqual([item.path for item in saved], [f"{DAY}_SINGLE.jpg"])
 
 
 class SinglePostTest(unittest.TestCase):
