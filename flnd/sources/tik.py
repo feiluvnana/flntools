@@ -562,10 +562,11 @@ def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
     """The URL of the video's best file with CDN mirrors: largest MP4 or playAddr."""
     # Each candidate is (pixels, bitrate, url): largest picture wins, bitrate breaks tie.
     candidates = [
-        (_pixels(entry), entry.get("Bitrate") or 0, mirrors(urls))
+        (_pixels(entry), entry.get("Bitrate") or 0, m)
         for entry in video.get("bitrateInfo") or []
         if isinstance(entry, dict) and not _is_dash(entry)
         and (urls := selector.parse(entry).jmespath("PlayAddr.UrlList").all)
+        and (m := mirrors(urls))
     ]
     if candidates:
         return max(candidates, key=lambda candidate: candidate[:2])[2]

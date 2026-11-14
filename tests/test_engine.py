@@ -305,7 +305,7 @@ class LoginStateTest(EngineCase):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",)), targets=["aaa:a"])
         self.assertEqual(len(ran), 1)
-        self.assertIn("! aaa: not logged in, using public access; run flnd login", self.lines())
+        self.assertIn("! aaa: not logged in, using public access; run flnd auth login", self.lines())
 
     def test_logged_in_has_no_hint_and_cookies_reach_the_client(self):
         self.log_in("aaa", sid="1", other="2")
@@ -346,8 +346,8 @@ class LoginStateTest(EngineCase):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
-        self.assertIn("✗ aaa:a: not logged in; run flnd login", self.lines())
-        self.assertIn("✗ aaa:b: not logged in; run flnd login", self.lines())
+        self.assertIn("✗ aaa:a: not logged in; run flnd auth login", self.lines())
+        self.assertIn("✗ aaa:b: not logged in; run flnd auth login", self.lines())
 
     def test_download_never_asks(self):
         # The `Site` a download gives has no `ask`, so a source can't stop to ask a question.
@@ -426,7 +426,7 @@ class HttpTest(EngineCase):
         source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json)
         engine = Engine(home=self.home, sources={"aaa": source})
         with self.assertRaises(KeyboardInterrupt):
-            engine.download(["aaa:a"])
+            engine.download(["aaa:a"], categories="all")
         self.assertIn("✗ aaa:a: stopped", self.lines())
 
 
@@ -599,14 +599,14 @@ class ApiTest(EngineCase):
                                                                                   name="b.jpg")]
 
         engine = self.engine(make_source("aaa", files=files))
-        report = engine.download(["aaa:one", "aaa:bad"])
+        report = engine.download(["aaa:one", "aaa:bad"], categories="all")
         one, bad = report.targets
         self.assertEqual((one.target, bad.target), (Target("aaa", "user", "one"), Target("aaa", "user", "bad")))
         self.assertEqual(sorted(path.name for path in one.written), ["a.jpg", "b.jpg"])
         self.assertTrue(all(path.is_file() for path in one.written))
         self.assertEqual((one.skipped, one.error, bad.error), (0, None, "blocked"))
         self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa", "user", "bad"),), False))
-        again = engine.download([Target("aaa", "user", "one")])
+        again = engine.download([Target("aaa", "user", "one")], categories="all")
         self.assertEqual((again.files, again.targets[0].skipped, again.ok), (0, 2, True))
 
     def test_a_category_that_lists_to_its_end_is_recorded_complete(self):
@@ -615,12 +615,12 @@ class ApiTest(EngineCase):
                 raise RuntimeError("cut short")
             return []
 
-        self.engine(make_source("aaa", files=files)).download(["aaa:whole", "aaa:cut"])
+        self.engine(make_source("aaa", files=files)).download(["aaa:whole", "aaa:cut"], categories="all")
         rows = self.saved()
         self.assertEqual(rows["aaa:whole"]["complete"], {"posts": datetime.date.today().isoformat()})
         self.assertNotIn("complete", rows["aaa:cut"])
         # A setting saved later keeps the record.
-        self.engine(make_source("aaa")).download(["aaa:whole"], shrink=True)
+        self.engine(make_source("aaa")).download(["aaa:whole"], categories="all", shrink=True)
         self.assertIn("complete", self.saved()["aaa:whole"])
 
     def test_text_and_values_are_read_alike(self):
@@ -642,18 +642,18 @@ class ApiTest(EngineCase):
 
     def test_off_turns_a_saved_setting_off_and_none_keeps_it(self):
         engine = self.engine(make_source("aaa"))
-        report = engine.download(["aaa:a"], shrink=True)
+        report = engine.download(["aaa:a"], categories="all", shrink=True)
         self.assertEqual(report.targets[0].settings, "")
         self.assertIs(self.saved()["aaa:a"]["shrink"], True)
         # None keeps the saved setting, and says it uses it.
-        report = engine.download(["aaa:a"])
+        report = engine.download(["aaa:a"], categories="all")
         self.assertEqual(report.targets[0].settings, "--shrink (saved)")
         self.assertIs(self.saved()["aaa:a"]["shrink"], True)
         # False turns it off, and nothing is shown as saved after that.
-        report = engine.download(["aaa:a"], shrink=False)
+        report = engine.download(["aaa:a"], categories="all", shrink=False)
         self.assertEqual(report.targets[0].settings, "")
         self.assertIs(self.saved()["aaa:a"]["shrink"], False)
-        self.assertEqual(engine.download(["aaa:a"]).targets[0].settings, "")
+        self.assertEqual(engine.download(["aaa:a"], categories="all").targets[0].settings, "")
         self.assertIs(self.saved()["aaa:a"]["shrink"], False)
 
     def test_bad_values_are_value_errors_before_anything_starts(self):
@@ -706,7 +706,7 @@ class ApiTest(EngineCase):
             return [File(f"{CDN}/{name}", name=name) for name in sorted(listed)]
 
         engine = self.engine(make_source("aaa", files=files))
-        engine.download(["aaa:a"], shrink=True, sync=True)
+        engine.download(["aaa:a"], categories="all", shrink=True, sync=True)
         folder = self.target_dir("aaa", "a")
         (folder / "a.jpg").unlink()
         (folder / "c.jpg").unlink()
@@ -774,7 +774,7 @@ class ApiLoginTest(EngineCase):
         seen = []
         self.engine = Engine(home=self.home, sources={"aaa": make_source("aaa", lambda site: seen.append(dict(site.cookies)),
                                                                          needs=("sid",))})
-        self.assertTrue(self.engine.download(["aaa:a"]).ok)
+        self.assertTrue(self.engine.download(["aaa:a"], categories="all").ok)
         self.assertEqual(seen, [{"sid": "s"}])
         self.assertFalse(any("not logged in" in line for line in self.lines()))
 
@@ -892,7 +892,7 @@ class QueryAndLimitDryTest(EngineCase):
         src = self._query_source(closed=closed, lookup_calls=calls)
         engine = Engine(home=self.home, sources={"srch": src})
 
-        report = engine.download(["srch?words"], limit=2, dry=True)
+        report = engine.download(["srch?words"], categories="photo", limit=2, dry=True)
         self.assertTrue(report.ok)
         output = "\n".join(self.lines())
         self.assertIn("srch:1", output)
@@ -922,7 +922,7 @@ class QueryAndLimitDryTest(EngineCase):
         for n in range(1, 5):
             self.routes[f"{CDN}/{n}.jpg"] = httpx.Response(200, content=str(n).encode())
         engine = Engine(home=self.home, sources={"mlt": Multi})
-        report = engine.download(["mlt:example_user"], limit=2)
+        report = engine.download(["mlt:example_user"], categories="all", limit=2)
         self.assertTrue(report.ok)
         self.assertEqual(len(report.targets[0].written), 2)
 
@@ -977,7 +977,9 @@ class SyncedQueryTest(EngineCase):
         # or download --sync with limit=0? No, download --sync with 1st item, or toggle after dry?
         # Even simpler: record the synced query via download --sync on an empty page, then sync with 30 results!
         empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(["pgd?cats"], sync=True)
+        Engine(home=self.home, sources={"pgd": empty_src}).download(
+            ["pgd?cats"], categories="photo", sync=True
+        )
 
         report1 = engine.sync()
         self.assertTrue(report1.ok)
@@ -1009,9 +1011,11 @@ class SyncedQueryTest(EngineCase):
         self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # User already downloaded pgd:1 (not synced).
-        engine.download(["pgd:1"])
+        engine.download(["pgd:1"], categories="photo")
         empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(["pgd?cats"], sync=True)
+        Engine(home=self.home, sources={"pgd": empty_src}).download(
+            ["pgd?cats"], categories="photo", sync=True
+        )
 
         self.requests.clear()
         report = engine.sync()
@@ -1026,7 +1030,7 @@ class SyncedQueryTest(EngineCase):
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
         engine = Engine(home=self.home, sources={"pgd": src})
-        report = engine.download(["pgd?cats"], dry=True, sync=True)
+        report = engine.download(["pgd?cats"], categories="photo", dry=True, sync=True)
         self.assertTrue(report.ok)
         self.assertFalse((self.home / paths.TARGETS).exists())
 
@@ -1039,7 +1043,7 @@ class SyncedQueryTest(EngineCase):
         self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # --limit 1 stops after page 0 and closes the generator without asking for page 1.
-        report = engine.download(["pgd?cats"], limit=1, sync=True)
+        report = engine.download(["pgd?cats"], categories="photo", limit=1, sync=True)
         self.assertTrue(report.ok)
         self.assertEqual(seen_pages, [0])
         self.assertEqual(closed, [True])
@@ -1057,7 +1061,7 @@ class SyncedQueryTest(EngineCase):
             return real_download(run, child, board, opts)
 
         with mock.patch("flnd.job.download", stop_on_second), self.assertRaises(KeyboardInterrupt):
-            engine.download(["pgd?dogs"], sync=True)
+            engine.download(["pgd?dogs"], categories="photo", sync=True)
         self.assertEqual(seen_pages, [0, 1])
         self.assertEqual(closed, [True])
         rows = targets_db.rows(self.home)
@@ -1069,13 +1073,39 @@ class SyncedQueryTest(EngineCase):
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages, fail_on="bad")
         self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
         empty_src = self._paged_source([], closed=[], seen_pages=[])
-        Engine(home=self.home, sources={"pgd": empty_src}).download(["pgd?bad", "pgd?good"], sync=True)
+        Engine(home=self.home, sources={"pgd": empty_src}).download(
+            ["pgd?bad", "pgd?good"], categories="photo", sync=True
+        )
 
         engine = Engine(home=self.home, sources={"pgd": src})
         report = engine.sync()
         self.assertFalse(report.ok)
         self.assertEqual([str(t) for t in report.failed], ["pgd?bad"])
         self.assertEqual([p.name for p in report.targets[1].written], ["1.jpg"])
+
+    def test_folder_template_groups_query_downloads_and_persists_for_sync(self):
+        pages = [[1, 2]]
+        closed, seen_pages = [], []
+        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
+        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
+        self.routes[f"{CDN}/3.jpg"] = httpx.Response(200, content=b"3")
+        engine = Engine(home=self.home, sources={"pgd": src})
+
+        report = engine.download(
+            ["pgd?cats"],
+            categories="photo",
+            folders=["photo:pgd/{query}/{target}_{name}"],
+            sync=True,
+        )
+        self.assertTrue(report.ok)
+        self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "1_1.jpg").is_file())
+        self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "2_2.jpg").is_file())
+
+        pages.insert(0, [3])
+        sync_report = engine.sync()
+        self.assertTrue(sync_report.ok)
+        self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "3_3.jpg").is_file())
 
 
 if __name__ == "__main__":

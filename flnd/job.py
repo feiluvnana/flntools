@@ -34,7 +34,7 @@ from flnd import targets
 from flnd.common import paths
 from flnd.common import net
 from flnd.common.compress import KINDS, ONE_AT_A_TIME
-from flnd.options import Options
+from flnd.options import Options, folder_for
 from flnd.site import SourceRun, TargetSite
 from flnd.source import (Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site,
                          Source, Target, day, fill, listing)
@@ -111,6 +111,8 @@ class Placed:
     kind: str | None
     # The format fields it was named from.
     values: Mapping[str, Any]
+    # True when `path` is relative to `media/` (`--folder`) rather than the target's folder.
+    custom: bool = False
 
 
 @dataclass(frozen=True)
@@ -406,14 +408,18 @@ def plan(run: SourceRun, target: Target, options: Options, *,
                 break
             taken += 1
             files = list(post.files()) if callable(post.files) else list(post.files)
-            yield from place(run.source, post, files, category=categories.get(post.category))
+            yield from place(
+                run.source, post, files, category=categories.get(post.category),
+                target=target, options=options,
+            )
     finally:
         stream.close()
         site.close()
 
 
 def place(
-    source: Source, post: Post, files: Sequence[File], *, category: Category | None = None
+    source: Source, post: Post, files: Sequence[File], *, category: Category | None = None,
+    target: Target | None = None, options: Options | None = None,
 ) -> list[Placed]:
     """Each file of a post named and keyed by the formats: the category's, else the source's.
 
@@ -424,6 +430,8 @@ def place(
         post: the post, its category set.
         files: its files, listed.
         category: the category it came from, whose own formats win; None for a route's own posts.
+        target: the target being downloaded, used by `--folder` (`{target}`, `{source}`).
+        options: run options holding `--folder` templates and parent `{query}`.
 
     The engine's fields (`ENGINE_FIELDS`) are set for each file: `num` from 0, `count`, `index` ""
     for a one-file post and `_<num>` otherwise, `extension` (".jpg": from the file's `name`, else
@@ -435,6 +443,7 @@ def place(
     folder, filename, key = (
         _format(source, category, name) for name in ("folder", "filename", "key")
     )
+    template = folder_for(options, post.category) if options is not None else None
     date = day(post.date)
     placed = []
     for num, file in enumerate(files):
@@ -453,12 +462,35 @@ def place(
             name = formatted + PurePosixPath(file.name).suffix
         else:
             name = fmt.filename(file.name)
-        path = "/".join(part for part in (fill(folder, values), name) if part)
+        default_path = "/".join(part for part in (fill(folder, values), name) if part)
+        if template is not None:
+            path = _custom_path(template, {
+                **values,
+                "source": target.source if target is not None else source.code,
+                "target": target.value if target is not None else "",
+                "query": (options.query or "") if options is not None else "",
+                "name": name,
+            }, default_path)
+            custom = True
+        else:
+            path = default_path
+            custom = False
         placed.append(Placed(
             post, file, num, path, fill(key, {**values, "path": path}, safe=False) or path, kind,
-            values,
+            values, custom=custom,
         ))
     return placed
+
+
+def _custom_path(template: str, fields: Mapping[str, Any], default_path: str) -> str:
+    """Resolve a `--folder` template relative to `media/`, keeping segments safe."""
+    parts: list[str] = []
+    for segment in template.split("/"):
+        if segment == "{path}":
+            parts.extend(part for part in default_path.split("/") if part)
+        elif rendered := fill(segment, fields, safe=True):
+            parts.append(rendered)
+    return "/".join(parts) or default_path
 
 
 
@@ -474,11 +506,14 @@ class Ledger:
     It runs on the listing's thread only, and counts on the board, which takes its own lock.
     """
 
-    def __init__(self, run: SourceRun, site: TargetSite, target: Target, board: Board):
+    def __init__(self, run: SourceRun, site: TargetSite, target: Target, board: Board, *,
+                 options: Options | None = None):
         """Make the ledger of one target, with nothing queued, skipped or remembered yet."""
         self.source, self.settings, self.site = run.source, run.settings, site
         self.target, self.board = target, board
+        self._options = options
         self.folder = paths.target_folder(self.settings.home, target)
+        self._media = self.settings.home / paths.MEDIA
         self._categories = {category.name: category for route in self.source.routes
                             for category in route.categories}
         # Every path and history key queued so far, each to the name it was queued as, so one file
@@ -500,6 +535,7 @@ class Ledger:
         # Links to files queued this run, by their key, made once the downloads are done: each
         # with the category whose folder it goes in.
         self._later: list[tuple[Path, str, str]] = []
+        self._order_index: dict[str, int] = {}
 
     def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
         """Each file of one post not saved or queued yet.
@@ -533,8 +569,11 @@ class Ledger:
         listed = list(post.files()) if callable(post.files) else list(post.files)
         found = 0
         todo: list[_Queued] = []
-        for placed in place(self.source, post, listed, category=category):
-            dest = self.folder.joinpath(*placed.path.split("/"))
+        for placed in place(
+            self.source, post, listed, category=category, target=self.target, options=self._options
+        ):
+            root = self._media if placed.custom else self.folder
+            dest = root.joinpath(*placed.path.split("/"))
             if placed.file.content is not None:
                 # A text file is the source's own, written each time downloaded, never keyed.
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -691,10 +730,9 @@ class Ledger:
 
     def _neighbour(self, key: str) -> datetime.date | None:
         """The day of the nearest dated post in listing order, the one before first on a tie."""
-        keys = [listed for listed, _ in self._order]
-        if key not in keys:
+        at = self._order_index.get(key)
+        if at is None:
             return None
-        at = keys.index(key)
         for distance in range(1, len(self._order)):
             for index in (at - distance, at + distance):
                 if 0 <= index < len(self._order) and self._order[index][1] is not None:
@@ -711,6 +749,7 @@ class Ledger:
             return post
         known = day(post.date)
         if hold:
+            self._order_index.setdefault(key, len(self._order))
             self._order.append((key, known))
         if known is not None:
             self._dates[key] = known
@@ -753,10 +792,13 @@ class Ledger:
         if not (_fields(template) - {"id", "date", "category", "num"}):
             return False
         # Keys using source-specific item indices (such as `{n}` or `{idx}`) match `_0` or `_1`.
+        values = {"id": post_id, "date": day(posted), "category": name}
         for index in (0, 1):
-            key = f"{self.source.code}:{post_id}_{index}"
-            if key not in self._queued and self._held(None, key) is not None:
-                return True
+            filled = fill(template, {**values, "num": index, "n": index, "idx": index}, safe=False)
+            for candidate in dict.fromkeys((filled, f"{post_id}_{index}")):
+                key = f"{self.source.code}:{candidate}"
+                if key not in self._queued and self._held(None, key) is not None:
+                    return True
         return False
 
     def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
@@ -1156,6 +1198,8 @@ class Downloads:
                 self._written[queued.key] = path
             self.settings.history[queued.key] = finished.row
         except BaseException:
+            with self._writing:
+                self._written.pop(queued.key, None)
             self._count(queued, **{state: -1}, failed=1)
             raise
         self._count(queued, **{state: -1}, saved=1, bytes=finished.row.get("size", 0))
@@ -1216,7 +1260,7 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
         return TargetReport(target, (), 0, error=STOPPED)
     # Target site and job: the site holds browser and pacing, the job its downloads.
     site = TargetSite(run, target, time=Range(options.since, options.until))
-    ledger = Ledger(run, site, target, board)
+    ledger = Ledger(run, site, target, board, options=options)
     downloads = Downloads(run, target, board, shrink=options.shrink)
     work = _Work(ledger, downloads)
     complete: list[str] = []
@@ -1572,8 +1616,13 @@ def _queue_all(work: _Work, kept: _Kept, *, stop_at_saved: bool,
         return ended, taken
     # The category is over: an undated post goes now, with the day the memory found, if any.
     for post in work.ledger.release():
-        if work.queue(post, hold=False) is Outcome.STOPPED:
+        if limit is not None and taken >= limit:
+            return Ended.CUT, taken
+        outcome = work.queue(post, hold=False)
+        if outcome is Outcome.STOPPED:
             return Ended.STOPPED, taken
+        if outcome is not Outcome.EMPTY:
+            taken += 1
     return ended, taken
 
 
@@ -1589,7 +1638,8 @@ def _queue_listed(work: _Work, kept: _Kept, *, stop_at_saved: bool,
             outcome = Outcome.STOPPED if net.stopping.is_set() else work.queue(post)
             if outcome is Outcome.STOPPED:
                 return Ended.STOPPED, taken
-            taken += 1
+            if outcome is not Outcome.EMPTY:
+                taken += 1
             if limit is not None and taken >= limit:
                 return Ended.CUT, taken
             if outcome is not Outcome.EMPTY:
@@ -1679,6 +1729,8 @@ def _read(work: _Work, run: SourceRun, site: Site, target: Target, options: Opti
         if ended is Ended.RAN_OUT:
             complete.append(category.name)
         if ended is Ended.RAN_OUT and start and resume.taken and not resume.refused:
+            if remaining is not None and remaining <= 0:
+                return
             # The newest posts came after the interrupted run began: read down to where it started,
             # which 5 saved posts in a row mark.
             log.debug("{target}: list {category} from the newest", target=str(target),

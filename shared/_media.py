@@ -692,7 +692,7 @@ class Media:
             raise FileExistsError(f"{target} already exists")
         if self._finalizer is not None and self._finalizer.alive:
             try:
-                os.replace(self._path, target)
+                _atomic._replace(self._path, target)
             except OSError as error:
                 if error.errno != errno.EXDEV:
                     raise

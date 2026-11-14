@@ -271,7 +271,7 @@ class Facebook(Source):
                 for media in selector.parse(card).jmespath("attachments[].media").all:
                     item = video_item(media, stamp) or photo_item(media, stamp)
                     if item is not None:
-                        yield post_of(item, "stories")
+                        yield post_of(item, "stories", headers=CDN_HEADERS)
             site.info("stories: {n} in {url}", n=len(cards), url=url)
 
     @user.category(folder="profile", key="")
@@ -341,8 +341,9 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
     upcoming = TABS[TABS.index(tab) + 1:]
     urls = [f"{profile.url}/{p}" for t in upcoming if (p := tab_path(t, profile.paths))]
     warm_tabs(site, urls)
+    seen: set[str] = set()
     for result, item_owner in _collect_tab(site, profile, path):
-        yield from media_posts(result, tab.category, owner=item_owner)
+        yield from media_posts(result, tab.category, seen=seen, owner=item_owner)
 
 
 def _collect_tab(site: Site, profile: Profile, path: str) -> Iterator[tuple[Any, str | None]]:
@@ -397,11 +398,12 @@ def page_info(line: Any) -> tuple[bool, str | None] | None:
 
 def media_posts(
     result: Any, tab: str, *, album: str | None = None, owner: str | None = None,
+    seen: set[str] | None = None,
 ) -> Iterator[Post]:
     """Each photo and video of owner in one result of a tab."""
     if not isinstance(result, dict):
         return
-    for item in media_items(result, owner=owner):
+    for item in media_items(result, seen=seen, owner=owner):
         if item.album or album:
             part, title = "albums", item.album or album
         elif item.kind == "video" and tab not in ("reels", "videos"):
@@ -416,7 +418,9 @@ def post_of(
 ) -> Post:
     """One item as a post of one file, named `<date>_<id>.<ext>`."""
     first = item.url if isinstance(item.url, str) else item.url[0]
-    extension = "mp4" if item.kind == "video" else image_extension(first)
+    extension = (
+        (item.extension or "mp4").lstrip(".") if item.kind == "video" else image_extension(first)
+    )
     date = day(item.date)
     name = f"{date}_{item.id}.{extension}" if date else f"{item.id}.{extension}"
     return Post(
@@ -486,6 +490,8 @@ class Item(NamedTuple):
     album: str | None = None
     # A DASH video's audio stream, merged into it.
     audio: str | None = None
+    # File extension when not the default mp4 (e.g. webm).
+    extension: str | None = None
 
 
 def media_items(
@@ -522,7 +528,10 @@ def video_item(node: dict, stamp: Any) -> Item | None:
         return None
     video_id = str(node.get("id") or node.get("video_id") or "")
     if video_id and (streams := dash.best(selector.parse(node).jmespath(MANIFEST).first)):
-        return Item(video_id, streams.video, "video", stamp, audio=streams.audio)
+        return Item(
+            video_id, streams.video, "video", stamp, audio=streams.audio,
+            extension=streams.extension,
+        )
     progressive = selector.parse(node).jmespath(PROGRESSIVE).all
     # The HD file comes first by its quality tag, then the other progressive files, then the node's
     # own URLs (HD before SD): every one a mirror, tried in order when one refuses.

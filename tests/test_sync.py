@@ -59,8 +59,10 @@ class SyncCase(EngineCase):
 
     def download(self, options=Options(), source=None, texts=("aaa:a",), shrink=None, sync=True):
         """`Engine.download` with `options`' --from and --time, and `shrink` as given: None keeps the saved one."""
-        report = self.engine(source).download(list(texts), categories=options.categories,
-                                              time=Range(options.since, options.until), shrink=shrink, sync=sync)
+        report = self.engine(source).download(
+            list(texts), categories=options.categories or "all",
+            time=Range(options.since, options.until), shrink=shrink, sync=sync,
+        )
         return report.files
 
     def sync(self, texts=(), source=None):
@@ -114,7 +116,8 @@ class SettingsTest(SyncCase):
         with mock.patch.object(Engine, "_run", recorded(runs.append)):
             self.download(texts=("aaa:a",), shrink=True)
             self.download(Options(categories=("posts",)), texts=("aaa:a", "aaa:b"))
-        self.assertEqual(runs[0], [(Target("aaa", "user", "a"), Options(shrink=True))])
+        self.assertEqual(runs[0], [(Target("aaa", "user", "a"),
+                                    Options(categories=("all",), shrink=True))])
         posts = Options(categories=("posts",))
         self.assertEqual(runs[1:], [[(Target("aaa", "user", "a"), replace(posts, shrink=True)),
                                      (Target("aaa", "user", "b"), posts)]])
@@ -484,7 +487,7 @@ class RepairListsToTheEndTest(SyncCase):
 
     def test_a_lost_and_a_broken_file_deep_in_a_complete_feed_are_saved_again(self):
         source = self.feed()
-        self.engine(source).download(["aaa:a"], sync=True)
+        self.engine(source).download(["aaa:a"], categories="all", sync=True)
         self.assertIn("posts", self.saved()["aaa:a"]["complete"])
         (self.folder() / "p10.jpg").unlink()
         # Empty is broken for every kind of file: a download that never got its bytes.
@@ -495,7 +498,7 @@ class RepairListsToTheEndTest(SyncCase):
 
     def test_a_target_with_nothing_lost_still_stops_at_saved_posts(self):
         source = self.feed()
-        self.engine(source).download(["aaa:a"], sync=True)
+        self.engine(source).download(["aaa:a"], categories="all", sync=True)
         self.requests.clear()
         self.sync(source=source)
         self.assertEqual(self.requests, [])

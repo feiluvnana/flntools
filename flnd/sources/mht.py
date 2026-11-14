@@ -237,16 +237,22 @@ def _lookup_search(site: Site, url: str, name: str) -> Iterator[tuple[str, str]]
 
 
 def _resolve_id(site: Site, kind: str, raw: str, lookup: Any) -> str:
+    """Resolve a tag, genre, author, or parody name (or numeric id) to its site id."""
     value = unquote(raw).strip()
     if value.isdigit():
         return value
-    candidates = [value, value.replace("-", " ")] if "-" in value else [value]
-    found = list(lookup(site, candidates[-1]))
+    candidates = [value.replace("-", " "), value] if "-" in value else [value]
     for candidate in candidates:
+        found = list(lookup(site, candidate))
         folded = _folded(candidate)
         matches = [item_id for label, item_id in found if _folded(label) == folded]
         if matches:
             return matches[0]
+        if candidate != value:
+            folded_raw = _folded(value)
+            matches = [item_id for label, item_id in found if _folded(label) == folded_raw]
+            if matches:
+                return matches[0]
     raise TargetError(f"mht: no {kind} named {value}")
 
 

@@ -91,6 +91,8 @@ ROUTES = [
     ("twt:x.com", ("user", "x.com")),
     ("twt:44196397", ("user", "44196397")),
     ("twt:1234567890123456789", ("user", "1234567890123456789")),
+    ("https://x.com/i/user/44196397", ("user", "44196397")),
+    ("https://twitter.com/i/user/44196397", ("user", "44196397")),
     ("https://x.com/example_handle", ("user", "example_handle")),
     ("x.com/example_handle", ("user", "example_handle")),
     ("twitter.com/example_handle", ("user", "example_handle")),

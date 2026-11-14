@@ -550,7 +550,7 @@ def _netscape_text(jar: Iterable[Cookie]) -> str:
             str(cookie.get("path") or "/"),
             "TRUE" if cookie.get("secure") else "FALSE",
             # Netscape files write a session cookie's expiry as 0.
-            str(max(int(cookie.get("expires", -1)), 0)),
+            str(max(int(-1 if (exp := cookie.get("expires")) is None else exp), 0)),
             str(cookie["name"]),
             str(cookie["value"]),
         ]

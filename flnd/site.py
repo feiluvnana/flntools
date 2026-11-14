@@ -207,6 +207,7 @@ class TargetSite:
         self._pending_warm: deque[str] = deque()
         self._active_watches: list[tuple[Any, bool, bool]] = []
         self._warm_buffers: dict[_PacedPage, tuple[list[tuple[Any, str]], Any]] = {}
+        self._warm_lock = threading.Lock()
         # Any URL on the source's own domains names its pace, for a throttle seen on a page.
         self._home = f"https://{run.source.domains[0]}/"
 
@@ -411,16 +412,20 @@ class TargetSite:
             if getattr(request, "resource_type", "xhr") in ASSET_TYPES:
                 return
             try:
-                buf.append((response, response.text()))
+                body = response.text()
             except Exception:
                 return
+            with self._warm_lock:
+                buf.append((response, body))
 
         tab.raw.on("response", collect)
-        self._warm_buffers[tab] = (buf, collect)
+        with self._warm_lock:
+            self._warm_buffers[tab] = (buf, collect)
 
     def _stop_warm_watch(self, tab: Any) -> list[tuple[Any, str]]:
         """Stop buffering background responses on `tab` and return what arrived."""
-        entry = self._warm_buffers.pop(tab, None)
+        with self._warm_lock:
+            entry = self._warm_buffers.pop(tab, None)
         if entry is None:
             return []
         buf, collect = entry
@@ -430,7 +435,8 @@ class TargetSite:
                 remove("response", collect)
             except Exception:
                 pass
-        return buf
+        with self._warm_lock:
+            return list(buf)
 
     def _take_warm_responses(self, page: Any) -> list[tuple[Any, str]]:
         """Stop warming listener on `page` and return its captured responses."""
@@ -517,7 +523,8 @@ class TargetSite:
         self._warmed.clear()
         self._pending_warm.clear()
         self._active_watches.clear()
-        self._warm_buffers.clear()
+        with self._warm_lock:
+            self._warm_buffers.clear()
 
     def _fetch_in_page(self, url: str, method: str, headers: Mapping[str, str] | None, soft: bool,
                        request: dict[str, Any]) -> http.Response | None:

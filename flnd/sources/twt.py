@@ -195,7 +195,8 @@ class Twitter(Source):
             return
         yield from tweet_posts(tweet, "posts", None, part="")
 
-    @target("{user}", "x.com/{user}", "twitter.com/{user}")
+    @target("{user}", "x.com/{user}", "twitter.com/{user}",
+            r"x.com/i/user/{user:\d+}", r"twitter.com/i/user/{user:\d+}")
     def user(self, site: Site, user: str) -> Account:
         """A profile by screen name, or numeric user id: read once for every category."""
         # A number is a user id, so it is asked by `UserByRestId`; anything else is a screen name.
@@ -448,6 +449,8 @@ def _hit_saved(tweets: list[dict], category: str) -> bool:
     if category not in ("posts", "media", "replies"):
         return False
     for tweet in tweets:
+        if not list(tweet_posts(tweet, category, None)):
+            continue
         tid = tweet_id_of(tweet)
         if tid and caught_up(tid, posted=tweet_date(tweet)):
             return True
@@ -476,7 +479,9 @@ def tweet_posts(
         return
     # A reply is kept only when it is the user's own and answers another tweet.
     if category == "replies" and (
-        legacy.get("user_id_str") != user_id or not legacy.get("in_reply_to_status_id_str")
+        user_id is None
+        or legacy.get("user_id_str") != user_id
+        or not legacy.get("in_reply_to_status_id_str")
     ):
         return
     tweet_id, created_at = tweet_id_of(tweet), legacy.get("created_at")

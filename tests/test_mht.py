@@ -248,7 +248,7 @@ class MimiEngineTest(EngineCase):
         self.routes[f"{CDN}/covers/70982.webp"] = httpx.Response(200, content=b"COVER1")
 
         engine = Engine(home=self.home, sources={"mht": Mimi})
-        report = engine.download(["mht?genre:vanilla"], limit=1)
+        report = engine.download(["mht?genre:vanilla"], categories="all", limit=1)
         self.assertTrue(report.ok)
         self.assertEqual(genre_calls, 1)
         folder = self.target_dir("mht", "70982")
@@ -257,7 +257,7 @@ class MimiEngineTest(EngineCase):
 
         # Second run: genre lookup is cached for 24h and saved chapter is not re-fetched.
         del self.routes[f"{API}chapters/1001"]
-        report2 = engine.download(["mht?genre:vanilla"], limit=1)
+        report2 = engine.download(["mht?genre:vanilla"], categories="all", limit=1)
         self.assertTrue(report2.ok)
         self.assertEqual(genre_calls, 1)
 

@@ -621,7 +621,7 @@ class DownloadTest(DownloadCase):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         self.assertEqual(self.download(), 0)
-        self.assertIn("✗ tlg:examplechannel: not logged in; run flnd login", self.lines())
+        self.assertIn("✗ tlg:examplechannel: not logged in; run flnd auth login", self.lines())
         self.assertEqual(self.telegram.clients, [])
 
     def test_many_files_on_the_async_loop(self):

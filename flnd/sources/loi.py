@@ -240,7 +240,7 @@ class Loibus(Source):
     def _links(self, site: Site, post: dict[str, Any]) -> dict[str, Any] | None:
         """The post's decrypted download links, or None with a warning when unavailable."""
         if not decode_token(site.cookies.get("access-token", "")):
-            site.warn("archives need a login; run flnd login")
+            site.warn("archives need a login; run flnd auth login")
             return None
         used, limit = quota(site, post["id"])
         # A limit of 0 means unknown (see `quota`), so only a known, used-up quota stops links.
@@ -260,9 +260,10 @@ class Loibus(Source):
             )
             return None
         servers = [
-            (str(server.get("sv_name") or "Server"), decrypt_field(server.get("sv_url")))
+            (str(server.get("sv_name") or "Server"), decrypted)
             for server in data["sv_list"]
             if isinstance(server, dict) and server.get("sv_url")
+            and (decrypted := decrypt_field(server.get("sv_url")))
         ]
         return {
             "servers": servers,
@@ -443,7 +444,9 @@ def decrypt_field(text: str | None) -> str:
         return _decrypt_aes_cbc(base64.b64decode(text)).decode("utf-8", "replace")
     # Bad base64 or invalid padding; site key change is the likely cause.
     except (binascii.Error, ValueError):
-        raise ValueError(f"loi: can't decrypt {text[:16]!r}…; the site changed its key") from None
+        raise FetchError(
+            f"loi: can't decrypt {text[:16]!r}…; the site changed its key"
+        ) from None
 
 
 def _decrypt_aes_cbc(blob: bytes) -> bytes:

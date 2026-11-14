@@ -518,8 +518,10 @@ class Profile:
         # Only the profile's first result describes its user; later pages may describe others.
         user = selector.parse(result).jmespath("data.user").first
         picture = profile_picture(result)
-        if picture and not self.described and isinstance(user, dict):
-            self.picture, self.described = picture, True
+        if not self.described and isinstance(user, dict):
+            self.described = True
+            if picture:
+                self.picture = picture
             found = user.get("pk") or user.get("id")
             self.id = str(found) if found else None
         new_hl = [h for h in listed_highlights(result) if h not in self.highlights]

@@ -93,10 +93,10 @@ class ShrinkCase(EngineCase):
 
 class EngineShrinkTest(ShrinkCase):
     def test_shrink_saves_on_and_shrinks_the_files_already_saved(self):
-        self.engine().download(["aaa:example_user"])
+        self.engine().download(["aaa:example_user"], categories="all")
         self.assertIs(self.row()["shrink"], False)
         with Shrinking().patched() as fake:
-            report = self.engine().download(["aaa:example_user"], shrink=True)
+            report = self.engine().download(["aaa:example_user"], categories="all", shrink=True)
         self.assertEqual(fake.calls, [("a.jpg", "mid", {"codec": None})])
         self.assertIs(self.row()["shrink"], True)
         self.assertEqual(self.history()["aaa:a.jpg"]["compressed"], "mid")
@@ -104,26 +104,26 @@ class EngineShrinkTest(ShrinkCase):
         self.assertIn("--shrink aaa:example_user", "\n".join(self.lines()))
 
     def test_the_saved_setting_is_announced_and_used(self):
-        self.engine().download(["aaa:example_user"], shrink=True)
+        self.engine().download(["aaa:example_user"], categories="all", shrink=True)
         self.listed.append("b.jpg")
         with Shrinking().patched() as fake:
-            report = self.engine().download(["aaa:example_user"])
+            report = self.engine().download(["aaa:example_user"], categories="all")
         self.assertEqual(report.targets[0].settings, "--shrink (saved)")
         self.assertIn("• aaa:example_user: --shrink (saved)", self.lines())
         self.assertEqual([name for name, _, _ in fake.calls], ["b.jpg"])
 
     def test_shrink_off_saves_off_and_touches_no_file(self):
-        self.engine().download(["aaa:example_user"], shrink=True)
+        self.engine().download(["aaa:example_user"], categories="all", shrink=True)
         self.listed.append("b.jpg")
         with Shrinking().patched() as fake:
-            self.engine().download(["aaa:example_user"], shrink=False)
+            self.engine().download(["aaa:example_user"], categories="all", shrink=False)
         self.assertEqual(fake.calls, [])
         self.assertIs(self.row()["shrink"], False)
         self.assertNotIn("compressed", self.history()["aaa:b.jpg"])
 
     def test_a_later_sync_shrinks_only_the_new_files(self):
         with Shrinking().patched():
-            self.engine().download(["aaa:example_user"], shrink=True, sync=True)
+            self.engine().download(["aaa:example_user"], categories="all", shrink=True, sync=True)
         self.listed.append("b.jpg")
         with Shrinking().patched() as fake:
             self.engine().sync()
@@ -132,18 +132,18 @@ class EngineShrinkTest(ShrinkCase):
 
     def test_turning_it_on_again_skips_the_files_already_shrunk(self):
         with Shrinking().patched():
-            self.engine().download(["aaa:example_user"], shrink=True, sync=True)
-        self.engine().download(["aaa:example_user"], shrink=False)
+            self.engine().download(["aaa:example_user"], categories="all", shrink=True, sync=True)
+        self.engine().download(["aaa:example_user"], categories="all", shrink=False)
         with Shrinking().patched() as fake:
-            self.engine().download(["aaa:example_user"], shrink=True)
+            self.engine().download(["aaa:example_user"], categories="all", shrink=True)
         self.assertEqual(fake.calls, [])
 
     def test_a_file_that_comes_out_bigger_keeps_its_original(self):
-        self.engine().download(["aaa:example_user"])
+        self.engine().download(["aaa:example_user"], categories="all")
         path = self.target_dir("aaa", "example_user") / "a.jpg"
         before = path.read_bytes()
         with Shrinking(ratio=2).patched():
-            self.engine().download(["aaa:example_user"], shrink=True)
+            self.engine().download(["aaa:example_user"], categories="all", shrink=True)
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(self.history()["aaa:a.jpg"]["compressed"], "none")
 

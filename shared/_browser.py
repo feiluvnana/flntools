@@ -33,6 +33,7 @@ from types import MappingProxyType
 from typing import (
     TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Sequence, Union, overload,
 )
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import shared
 from shared import _clock as clock
@@ -658,19 +659,19 @@ class Page:
 
     @overload
     def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              data: Any = ..., json: Any = ..., soft: Literal[False] = ...,
-              timeout: float = ...) -> http.Response: ...
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: Literal[False] = ..., timeout: float = ...) -> http.Response: ...
     @overload
     def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              data: Any = ..., json: Any = ..., soft: Literal[True],
-              timeout: float = ...) -> http.Response | None: ...
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: Literal[True], timeout: float = ...) -> http.Response | None: ...
     @overload
     def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              data: Any = ..., json: Any = ..., soft: bool,
-              timeout: float = ...) -> http.Response | None: ...
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: bool, timeout: float = ...) -> http.Response | None: ...
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              data: Any = None, json: Any = None, soft: bool = False,
-              timeout: float = 30.0) -> http.Response | None:
+              params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
+              soft: bool = False, timeout: float = 30.0) -> http.Response | None:
         """Send one request from the page itself via its `fetch()`, returning an `http.Response`.
 
             items = tab.fetch("/api/items?page=2", headers={"x-csrf": token}).json
@@ -683,6 +684,7 @@ class Page:
             method: the HTTP method, such as "GET" or "POST".
             headers: headers for this request, on top of the ones the browser adds; None adds none.
                 The browser refuses to set some itself (`Cookie`, `Host`, `User-Agent`, …).
+            params: query parameters to add to the URL.
             data: a form body (a dict, sent URL-encoded), text, or raw bytes; None sends none.
             json: a value to send as a JSON body, with `Content-Type: application/json` unless
                 `headers` names another; None sends none.
@@ -714,6 +716,11 @@ class Page:
 
         if data is not None and json is not None:
             raise ValueError("pass data or json, not both")
+        if params:
+            parts = urlsplit(url)
+            pairs = parse_qsl(parts.query, keep_blank_values=True)
+            pairs.extend((str(k), str(v)) for k, v in params.items() if v is not None)
+            url = urlunsplit(parts._replace(query=urlencode(pairs)))
         # Prepared here as bytes or form fields, then handed to the page's fetch() in one piece.
         sent = dict(headers or {})
         body = form = None

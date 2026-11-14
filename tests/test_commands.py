@@ -119,14 +119,15 @@ class DownloadTest(RunsCase):
                          [f"• Storage: {storage}", "• not synced; add --sync to keep it up to date", "✓ Complete. 3 files"])
 
     def test_defaults(self):
-        self.assertEqual(self.run_app("download", "tik:a")[0], 0)
-        self.assertEqual(self.runs[0][2], Options())
+        code, _, out = self.run_app("download", "tik:a")
+        self.assertEqual(code, 2)
+        self.assertIn("--from is required", out)
+        self.assertEqual(self.run_app("download", "tik:a", "ins:b", "--from", "all")[0], 0)
+        self.assertEqual(self.runs[0][2].categories, ("all",))
         self.assertFalse(Options().again)
         self.assertIsNone(Options().categories)
-        self.assertEqual(self.run_app("download", "tik:a", "ins:b", "--from", "all")[0], 0)
-        self.assertEqual(self.runs[1][2].categories, ("all",))
-        self.assertEqual(self.run_app("download", "tik:a", "--again")[0], 0)
-        self.assertEqual(self.runs[2][2], Options(again=True))
+        self.assertEqual(self.run_app("download", "tik:a", "--from", "all", "--again")[0], 0)
+        self.assertEqual(self.runs[1][2], Options(categories=("all",), again=True))
 
     def test_from_with_a_single_post_is_a_usage_error(self):
         message = ("✗ --from applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
@@ -148,7 +149,7 @@ class DownloadTest(RunsCase):
 
     def test_targets_from_stdin(self):
         self.pipe("ins:a\n\n# a comment\ntwt:b\n")
-        self.assertEqual(self.run_app("download")[0], 0)
+        self.assertEqual(self.run_app("download", "--from", "all")[0], 0)
         self.assertEqual([str(target) for target in self.runs[0][1]], ["ins:a", "twt:b"])
 
     def test_no_targets_is_a_usage_error_and_nothing_is_asked(self):
@@ -231,7 +232,7 @@ class TimeTest(RunsCase):
                                     ("2026-03-01,2026-03-01", date(2026, 3, 1), date(2026, 3, 1))):
             with self.subTest(value=value):
                 self.runs.clear()
-                self.assertEqual(self.run_app("download", "tik:a", "--time", value)[0], 0)
+                self.assertEqual(self.run_app("download", "tik:a", "--from", "all", "--time", value)[0], 0)
                 options = self.runs[0][2]
                 self.assertEqual((options.since, options.until), (since, until))
 
@@ -249,28 +250,28 @@ class TimeTest(RunsCase):
 
 class ShrinkOptionTest(RunsCase):
     def test_shrink_reaches_the_engine_and_is_saved_for_the_target(self):
-        code, _, out = self.run_app("download", "ins:example_user", "--shrink")
+        code, _, out = self.run_app("download", "ins:example_user", "--from", "all", "--shrink")
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[0][2], Options(shrink=True))
+        self.assertEqual(self.runs[0][2], Options(categories=("all",), shrink=True))
         with kv.open(Path(".flnd") / paths.TARGETS, table="targets") as targets:
             row = targets["ins:example_user"]
         self.assertEqual((row["kind"], row["shrink"]), ("user", True))
 
     def test_saved_shrink_is_used_again_and_off_turns_it_off(self):
-        self.run_app("download", "ins:example_user", "--shrink")
-        code, _, out = self.run_app("download", "ins:example_user")
+        self.run_app("download", "ins:example_user", "--from", "all", "--shrink")
+        code, _, out = self.run_app("download", "ins:example_user", "--from", "all")
         self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[1][2], Options(shrink=True))
+        self.assertEqual(self.runs[1][2], Options(categories=("all",), shrink=True))
         self.assertIn("• ins:example_user: --shrink (saved)", out)
-        self.run_app("download", "ins:example_user", "--shrink", "off")
-        self.assertEqual(self.runs[2][2], Options(shrink=False))
-        self.run_app("download", "ins:example_user")
-        self.assertEqual(self.runs[3][2], Options())
+        self.run_app("download", "ins:example_user", "--from", "all", "--shrink", "off")
+        self.assertEqual(self.runs[2][2], Options(categories=("all",), shrink=False))
+        self.run_app("download", "ins:example_user", "--from", "all")
+        self.assertEqual(self.runs[3][2], Options(categories=("all",)))
 
     def test_from_and_time_are_not_saved(self):
         self.run_app("download", "ins:example_user", "--from", "reels", "--time", "2026-01-01,")
-        self.run_app("download", "ins:example_user")
-        self.assertEqual(self.runs[1][2], Options())
+        self.run_app("download", "ins:example_user", "--from", "all")
+        self.assertEqual(self.runs[1][2], Options(categories=("all",)))
 
     def test_the_old_media_options_are_unknown(self):
         for args in (("--image", "webp,mid"), ("--video", "h265,low"), ("--audio", "opus")):
@@ -298,7 +299,7 @@ class SyncCommandTest(RunsCase):
 
     def test_every_recorded_target_with_its_saved_settings(self):
         self.run_app("download", "ins:example_user", "--shrink", "--from", "reels", "--sync")
-        self.run_app("download", "twt:example_handle", "--sync")
+        self.run_app("download", "twt:example_handle", "--from", "all", "--sync")
         code, _, out = self.run_app("sync")
         self.assertEqual(code, 0, out)
         self.assertEqual(dict(self.synced[0]), {Target("ins", "user", "example_user"): Options(shrink=True),
@@ -308,7 +309,7 @@ class SyncCommandTest(RunsCase):
 
     def test_sync_v_shows_every_line_and_changes_no_setting(self):
         self.addCleanup(setattr, log, "level", log.level)
-        self.run_app("download", "ins:example_user", "--shrink", "--sync")
+        self.run_app("download", "ins:example_user", "--from", "all", "--shrink", "--sync")
         self.assertEqual(log.level, "info")
         self.assertEqual(self.run_app("sync", "-v")[0], 0)
         self.assertEqual(log.level, "debug")
@@ -316,7 +317,7 @@ class SyncCommandTest(RunsCase):
                          {Target("ins", "user", "example_user"): Options(shrink=True)})
 
     def test_sync_takes_no_options(self):
-        self.run_app("download", "ins:example_user", "--sync")
+        self.run_app("download", "ins:example_user", "--from", "all", "--sync")
         for args in (("--only", "info"), ("--from", "reels"), ("--time", "2026-01-01,"), ("--shrink", "on"),
                      ("--compress-video", "small"), ("--since", "2026-01-01")):
             code, _, out = self.run_app("sync", *args)
@@ -325,7 +326,7 @@ class SyncCommandTest(RunsCase):
         self.assertEqual(self.synced, [])
 
     def test_sync_ls_and_toggle(self):
-        self.run_app("download", "ins:example_user", "--shrink")
+        self.run_app("download", "ins:example_user", "--from", "all", "--shrink")
         code, _, out = self.run_app("sync", "ls")
         self.assertEqual(code, 0)
         self.assertIn("ins:example_user: sync off, --shrink", out)
@@ -370,21 +371,66 @@ class ExitStatusTest(FlndCase):
         self.addCleanup(patcher.stop)
 
     def test_download_exits_1_when_a_target_failed(self):
-        code, _, out = self.run_app("download", "aaa:bad", "aaa:good")
+        code, _, out = self.run_app("download", "aaa:bad", "aaa:good", "--from", "all")
         self.assertEqual(code, 1, out)
         self.assertIn("✗ aaa:bad: blocked", out)
-        self.assertEqual(self.run_app("download", "aaa:good")[0], 0)
+        self.assertEqual(self.run_app("download", "aaa:good", "--from", "all")[0], 0)
 
     def test_download_exits_1_when_a_source_cant_start(self):
-        code, _, out = self.run_app("download", "bbb:good")
+        code, _, out = self.run_app("download", "bbb:good", "--from", "all")
         self.assertEqual(code, 1, out)
         self.assertNotIn("✓ bbb:good", out)
 
     def test_sync_exits_1_when_a_target_failed(self):
-        self.run_app("download", "aaa:bad", "aaa:good", "--sync")
+        self.run_app("download", "aaa:bad", "aaa:good", "--from", "all", "--sync")
         code, _, out = self.run_app("sync")
         self.assertEqual(code, 1, out)
         self.assertEqual(self.run_app("sync", "aaa:good")[0], 0)
+
+
+class FolderOptionTest(RunsCase):
+    def test_folder_rules_are_validated_and_passed_to_engine(self):
+        code, _, out = self.run_app(
+            "download", "mht:70982", "--from", "cover",
+            "--folder", "cover:mht/{query}/{target}_{name}",
+        )
+        self.assertEqual(code, 0, out)
+        self.assertEqual(
+            self.runs[0][2].folders,
+            (("cover", "mht/{query}/{target}_{name}"),),
+        )
+
+    def test_bad_folder_syntax_and_paths_are_usage_errors(self):
+        bad_cases = (
+            ("--from", "cover", "--folder", "mht/{query}/{name}"),
+            ("--from", "cover", "--folder", "cover:"),
+            ("--from", "cover", "--folder", ":mht/{name}"),
+            ("--from", "cover", "--folder", "unknown:mht/{name}"),
+            ("--from", "cover", "--folder", "chapters:mht/{name}"),
+            ("--from", "cover", "--folder", "cover:/abs/{name}"),
+            ("--from", "cover", "--folder", r"cover:mht\{name}"),
+            ("--from", "cover", "--folder", "cover:C:/mht/{name}"),
+            ("--from", "cover", "--folder", "cover:../escape/{name}"),
+            ("--from", "cover", "--folder", "cover:mht/./{name}"),
+            ("--from", "cover", "--folder", "cover:mht//{name}"),
+            ("--from", "cover", "--folder", "cover:mht/{}"),
+            ("--from", "cover", "--folder", "cover:mht/{unknown_field}"),
+            ("--from", "cover", "--folder", "cover:mht/{unclosed"),
+        )
+        for extra in bad_cases:
+            with self.subTest(extra=extra):
+                code, _, _ = self.run_app("download", "mht:70982", *extra)
+                self.assertEqual(code, 2, extra)
+        self.assertEqual(self.runs, [])
+
+    def test_folder_on_single_post_is_usage_error(self):
+        code, _, out = self.run_app(
+            "download", "https://www.instagram.com/p/C1abcDEFghi/",
+            "--folder", "all:ins/{name}",
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("--folder applies to profiles, chats, and queries", out)
+        self.assertEqual(self.runs, [])
 
 
 class LoginCase(FlndCase):

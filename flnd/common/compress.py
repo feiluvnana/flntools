@@ -170,8 +170,9 @@ def apply(
         return 0
     # Videos last: they take turns on the run's lock, so a pool thread holding one only waits.
     todo.sort(key=lambda item: paths.kind_of(item[1]["path"]) in ONE_AT_A_TIME)
+    lock = threading.Lock()
     with log.progress(f"--shrink {label}", total=len(todo)) as bar:
-        for result in worker.as_completed(partial(_shrink, history, compressor), todo,
+        for result in worker.as_completed(partial(_shrink, history, lock, compressor), todo,
                                           concurrency=AT_ONCE):
             bar.advance()
             if result.error is not None:
@@ -179,7 +180,7 @@ def apply(
     return len(todo)
 
 
-def _shrink(history: MutableMapping[str, Any], compressor: Compressor,
+def _shrink(history: MutableMapping[str, Any], lock: threading.Lock, compressor: Compressor,
             item: tuple[str, dict]) -> None:
     """Shrink one saved file and write its history row, on a pool thread."""
     key, row = item
@@ -190,7 +191,9 @@ def _shrink(history: MutableMapping[str, Any], compressor: Compressor,
     path = Path(fields.get("path", row["path"]))
     # Written here, not by caller: after Ctrl-C pool finishes files, and a file shrunk without
     # its row would be shrunk again, losing quality. Stamped so `sync` trusts smaller file.
-    history[key] = {**row, **fields, **(paths.stamp(path) if path.is_file() else {})}
+    updated = {**row, **fields, **(paths.stamp(path) if path.is_file() else {})}
+    with lock:
+        history[key] = updated
 
 
 def _warn(warned: set[type[Exception]], error: Exception, path: Path) -> None:

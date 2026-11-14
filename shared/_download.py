@@ -595,7 +595,11 @@ class _Transfer:
             part = self.dest.with_name(f".{self.dest.name}.{secrets.token_hex(4)}.part")
             _room(part.parent, total if total is not None else self.options.size)
             _open_part(part, create=True).close()
-            segments = [_Segment(0, end), *self._rest(end, total, validator)]
+            try:
+                segments = [_Segment(0, end), *self._rest(end, total, validator)]
+            except BaseException:
+                part.unlink(missing_ok=True)
+                raise
             self.state = _State(part, self.url, validator, total, segments, ranges)
             stream.segment = segments[0]
             if self._resumable():

@@ -358,4 +358,8 @@ def _after_prefix(prefix: str) -> str | None:
     stripped = prefix.rstrip(chr(0x10FFFF))
     if not stripped:
         return None
-    return stripped[:-1] + chr(ord(stripped[-1]) + 1)
+    nxt = ord(stripped[-1]) + 1
+    # Skip UTF-16 surrogates (0xD800..0xDFFF), which sqlite3 rejects on bind.
+    if 0xD800 <= nxt <= 0xDFFF:
+        nxt = 0xE000
+    return stripped[:-1] + chr(nxt)

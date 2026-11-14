@@ -208,6 +208,11 @@ async def find_chat(client: Any, value: str) -> Any:
                 raise FetchError(
                     f"the invite {value!r} isn't one of your chats; join it first"
                 ) from None
+    if value.lstrip("-").isdigit():
+        try:
+            return await client.get_entity(int(value))
+        except (ValueError, RPCError):
+            pass
     dialogs = await client.get_dialogs()
     if value.lstrip("-").isdigit():
         found = [dialog for dialog in dialogs if dialog.id == int(value)]
@@ -314,11 +319,18 @@ class _Download:
 
     async def _read(self, number: int, position: int, end: int) -> None:
         """Write the part's bytes from `position` up to `end`, as Telegram sends them."""
-        requests = -(-(end - position) // REQUEST)
+        offset = position - (position % REQUEST)
+        skip = position - offset
+        requests = -(-(end - offset) // REQUEST)
         before = self.done[number]
         async for chunk in self.site.client.iter_download(
-                self.document, offset=position, limit=requests, request_size=REQUEST,
+                self.document, offset=offset, limit=requests, request_size=REQUEST,
                 file_size=self.size):
+            if skip:
+                chunk = chunk[skip:]
+                skip = 0
+                if not chunk:
+                    continue
             # Each part's writes land at its own place, between two awaits of the one loop.
             self.file.seek(position)
             self.file.write(chunk)

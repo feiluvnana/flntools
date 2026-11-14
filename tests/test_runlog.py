@@ -37,7 +37,7 @@ class RunLogCase(EngineCase):
 class LayoutTest(RunLogCase):
     def test_files_land_under_media_and_stores_under_metadata(self):
         source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
-        self.engine(source).download(["aaa:example_user"], sync=True)
+        self.engine(source).download(["aaa:example_user"], categories="all", sync=True)
         self.assertTrue((self.home / "media" / "aaa" / "example_user" / "a.jpg").is_file())
         self.assertTrue((self.home / "metadata" / "history.db").is_file())
         self.assertTrue((self.home / "metadata" / "targets.db").is_file())
@@ -49,7 +49,7 @@ class LayoutTest(RunLogCase):
         old.mkdir(parents=True)
         (old / "a.jpg").write_bytes(b"old")
         source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
-        report = self.engine(source).download(["aaa:example_user"])
+        report = self.engine(source).download(["aaa:example_user"], categories="all")
         self.assertEqual(report.files, 1)
         self.assertEqual((old / "a.jpg").read_bytes(), b"old")
 
@@ -57,15 +57,15 @@ class LayoutTest(RunLogCase):
 class RunLogTest(RunLogCase):
     def test_a_download_logs_its_phases_at_debug_while_the_screen_shows_info(self):
         source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
-        self.engine(source).download(["aaa:example_user"])
-        self.engine(source).download(["aaa:example_user"])
+        self.engine(source).download(["aaa:example_user"], categories="all")
+        self.engine(source).download(["aaa:example_user"], categories="all")
         # Two runs in one second: the second has a log of its own, numbered.
         first, second = sorted(self.logs(), key=lambda path: "-2" in path.name)
         self.assertRegex(first.name, r"^\d{4}-\d\d-\d\d_\d{6}_download\.log$")
         if "-2" in second.name:
             self.assertEqual(second.name, first.name.replace(".log", "-2.log"))
         lines = [line[13:] for line in second.read_text(encoding="utf-8").splitlines()]
-        self.assertRegex(lines[0], r"^· flnd \S+ download: targets=\['aaa:example_user'\]$")
+        self.assertRegex(lines[0], r"^· flnd \S+ download: targets=\['aaa:example_user'\], categories='all'$")
         self.assertIn("· resolve aaa:example_user: aaa:example_user (user)", lines)
         self.assertIn("· aaa:example_user: list posts", lines)
         self.assertIn("↷ a.jpg", lines)
@@ -86,19 +86,19 @@ class RunLogTest(RunLogCase):
             except KeyError as cause:
                 raise RuntimeError("feed changed") from cause
 
-        self.engine(make_source("aaa", files=broken)).download(["aaa:example_user"])
+        self.engine(make_source("aaa", files=broken)).download(["aaa:example_user"], categories="all")
         lines = self.logged()
         self.assertIn("· aaa:example_user: RuntimeError: feed changed ← KeyError: 'cursor'", lines)
         self.assertEqual(lines[-1], "· totals: 0 written, 0 skipped, 1 of 1 failed; exit 1")
 
     def test_a_usage_error_logs_exit_2(self):
         with self.assertRaises(ValueError):
-            self.engine(make_source("aaa")).download(["aaa:example_user"], time="not a date")
+            self.engine(make_source("aaa")).download(["aaa:example_user"], categories="all", time="not a date")
         self.assertRegex(self.logged()[-1], r"^· exit 2: ")
 
     def test_a_sync_logs_its_repair(self):
         source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")])
-        self.engine(source).download(["aaa:example_user"], sync=True)
+        self.engine(source).download(["aaa:example_user"], categories="all", sync=True)
         for path in self.logs():
             path.unlink()
         self.engine(source).sync()
@@ -113,7 +113,7 @@ class RunLogTest(RunLogCase):
         self.routes[f"{CDN}/a.jpg"] = httpx.Response(403)
         with log.record(self.home / "extra.log"):
             log.debug("fetch {url}", url=f"{CDN}/a.jpg?sig=signed-token")
-        self.engine(source).download(["aaa:example_user"], sync=True)
+        self.engine(source).download(["aaa:example_user"], categories="all", sync=True)
         text = "\n".join(self.logged()) + (self.home / "extra.log").read_text(encoding="utf-8")
         self.assertIn(f"{CDN}/a.jpg", text)
         self.assertNotIn("signed-token", text)
@@ -127,7 +127,7 @@ class RunLogTest(RunLogCase):
             path.write_text("x")
         month = time.time() - 31 * 24 * 3600
         os.utime(old, (month, month))
-        self.engine(make_source("aaa")).download(["aaa:example_user"])
+        self.engine(make_source("aaa")).download(["aaa:example_user"], categories="all")
         self.assertFalse(old.exists())
         self.assertTrue(recent.exists())
         self.assertEqual(len(self.logs()), 2)

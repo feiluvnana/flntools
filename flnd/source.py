@@ -989,7 +989,12 @@ class Source:
                     f"{cls.__name__}: pattern {pattern.text!r} isn't on its domains {domains}"
                 )
             # Compared without www. and m., which matching drops anyway.
-            key = pattern.text if pattern.host is None else _bare_host(pattern.text.lower())
+            if pattern.host is None:
+                key = pattern.text
+            else:
+                head, sep, tail = pattern.text.partition("://")
+                host_part, slash, rest = (tail if sep else head).partition("/")
+                key = f"{_bare_host(host_part.lower())}{slash}{rest}"
             if key in seen:
                 raise TypeError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
             seen.add(key)
@@ -1051,7 +1056,6 @@ class Source:
                                 raise TargetError(f"{self.code}: {error}") from None
                         return Target(self.code, route.kind, value.strip(), query=True)
                     return Target(self.code, route.kind, value)
-                break
         if refused is not None:
             raise TargetError(f"{self.code}: {refused[1]}")
         link = None if url is None else text if _is_url(text) else f"https://{text}"
@@ -1122,9 +1126,12 @@ def _parse(text: str, domains: tuple[str, ...]) -> _Url | None:
 
 def _bare_host(host: str) -> str:
     """A host without prefixes that are the same site: `www.m.instagram.com` is `instagram.com`."""
-    for prefix in SITE_PREFIXES:
-        host = host.removeprefix(prefix)
-    return host
+    while True:
+        before = host
+        for prefix in SITE_PREFIXES:
+            host = host.removeprefix(prefix)
+        if host == before:
+            return host
 
 
 def _is_url(text: str) -> bool:
@@ -1137,8 +1144,14 @@ def _split(text: str, separator: str, *, once: bool = False) -> list[str]:
     With `once`, it splits at the first one only and returns `[before, separator, after]`, or
     `[text, "", ""]` when there's none, as `str.partition` does.
     """
-    parts, depth, start = [], 0, 0
+    parts, depth, start, escaped = [], 0, 0, False
     for index, character in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\":
+            escaped = True
+            continue
         depth += {"{": 1, "}": -1}.get(character, 0)
         if character == separator and depth == 0:
             if once:
@@ -1161,6 +1174,10 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
     tokens, index = [], 0
     while index < len(segment):
         character = segment[index]
+        if character == "\\" and index + 1 < len(segment):
+            tokens.append(("text", segment[index:index + 2], ""))
+            index += 2
+            continue
         if character == "}":
             raise TypeError(f"pattern {pattern!r}: a '}}' with no '{{'")
         if character == "*":
@@ -1171,8 +1188,14 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
             tokens.append(("text", character, ""))
             index += 1
             continue
-        depth, end = 0, index
+        depth, end, escaped = 0, index, False
         for end in range(index, len(segment)):
+            if escaped:
+                escaped = False
+                continue
+            if segment[end] == "\\":
+                escaped = True
+                continue
             depth += {"{": 1, "}": -1}.get(segment[end], 0)
             if depth == 0:
                 break

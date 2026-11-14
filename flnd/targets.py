@@ -29,6 +29,10 @@ SHRINK = "shrink"
 SYNC = "sync"
 # The row field of a synced query's seen target keys: ["src:1", ...].
 SEEN = "seen"
+# The row field of `--folder` templates: {category: template}.
+FOLDERS = "folders"
+# The row field of a target's parent query string, when discovered from a query.
+QUERY = "query"
 # The row field of the categories that last listed to their end: {category: "YYYY-MM-DD"}.
 COMPLETE = "complete"
 # The row field of the cursors interrupted listings saved, for the next run: {category: cursor}.
@@ -49,6 +53,20 @@ def rows(home: Path) -> dict[str, Any]:
 def key(target: Target) -> str:
     """A target's `targets.db` key: `ins:example_user`, the code and the value without the kind."""
     return f"{target.source}:{target.value}"
+
+
+def folders(row: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Saved `--folder` `(category, template)` pairs from a `targets.db` row."""
+    found = row.get(FOLDERS)
+    if not isinstance(found, dict):
+        return ()
+    return tuple((str(k), str(v)) for k, v in found.items())
+
+
+def query_name(row: Mapping[str, Any]) -> str | None:
+    """Saved parent query string from a `targets.db` row, or None."""
+    found = row.get(QUERY)
+    return str(found) if isinstance(found, str) and found else None
 
 
 def shrink(row: Mapping[str, Any]) -> bool:
@@ -104,6 +122,14 @@ def record(
             }
             if isinstance(old, dict) and isinstance(old.get(SEEN), list) and old[SEEN]:
                 kept[SEEN] = old[SEEN]
+            if options.folders:
+                kept[FOLDERS] = dict(options.folders)
+            elif isinstance(old, dict) and isinstance(old.get(FOLDERS), dict) and old[FOLDERS]:
+                kept[FOLDERS] = old[FOLDERS]
+            if options.query:
+                kept[QUERY] = options.query
+            elif isinstance(old, dict) and isinstance(old.get(QUERY), str) and old[QUERY]:
+                kept[QUERY] = old[QUERY]
             if sync is True:
                 is_sync = True
             elif isinstance(old, dict):

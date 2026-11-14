@@ -435,7 +435,7 @@ class SyncStopTest(JobCase):
             rows["fed:example_user"] = row
 
     def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
-        self.assertTrue(self.engine.download(["fed:example_user"]).ok)
+        self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
         self.assertEqual(self.record(), {"posts": datetime.date.today().isoformat()})
         self.ids = ["n1", "n2", *self.ids]
         self.listed.clear(), self.finished.clear()
@@ -472,7 +472,7 @@ class SyncStopTest(JobCase):
 
         self.deeper = []
         engine = Engine(home=self.home, sources={"two": Two})
-        self.assertTrue(engine.download(["two:example_user"]).ok)
+        self.assertTrue(engine.download(["two:example_user"], categories="all").ok)
         self.ids = [f"n{number}" for number in range(6)] + self.ids
         self.deeper = ["m1"]
         self.listed.clear()
@@ -482,7 +482,7 @@ class SyncStopTest(JobCase):
 
     def test_posts_with_no_files_or_only_text_neither_count_nor_break_the_saved_run(self):
         """A reply with nothing to save, between saved posts, must not reset the run of 5 (twt replies)."""
-        self.assertTrue(self.engine.download(["fed:example_user"]).ok)
+        self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
         text = File.text("note.txt", "a note")
         # Saved posts with a no-file post and a text-only post between them: 5 saved still end it.
         self.ids = ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4", "p5", "p6", "p7"]
@@ -493,7 +493,7 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.finished[-1], True)
 
     def test_a_saved_run_shorter_than_5_does_not_stop_it(self):
-        self.engine.download(["fed:example_user"])
+        self.engine.download(["fed:example_user"], categories="all")
         # Remove two saved files in the middle: the 4 saved ones before it never reach 5, then a new one resets.
         for name in ("p2", "p3"):
             next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
@@ -507,7 +507,7 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, self.ids)
 
     def test_without_a_record_sync_lists_to_the_end(self):
-        self.engine.download(["fed:example_user"])
+        self.engine.download(["fed:example_user"], categories="all")
         self.forget_record()
         self.listed.clear()
         self.engine.sync(["fed:example_user"])
@@ -520,7 +520,7 @@ class SyncStopTest(JobCase):
 
     def test_an_interrupted_listing_records_none_so_sync_lists_everything(self):
         self.fail_at = ["p6"]
-        report = self.engine.download(["fed:example_user"])
+        report = self.engine.download(["fed:example_user"], categories="all")
         self.assertFalse(report.ok)
         self.assertIsNone(self.record())
         self.fail_at, self.listed = [], []
@@ -530,13 +530,13 @@ class SyncStopTest(JobCase):
         self.assertIsNotNone(self.record())
 
     def test_download_stops_at_saved_posts_by_default_and_again_lists_all(self):
-        self.engine.download(["fed:example_user"])
+        self.engine.download(["fed:example_user"], categories="all")
         self.listed.clear()
-        report = self.engine.download(["fed:example_user"])
+        report = self.engine.download(["fed:example_user"], categories="all")
         self.assertEqual(self.listed, self.ids[:5])
         self.assertEqual((report.files, report.targets[0].skipped), (0, 5))
         self.listed.clear()
-        report_again = self.engine.download(["fed:example_user"], again=True)
+        report_again = self.engine.download(["fed:example_user"], categories="all", again=True)
         self.assertEqual(self.listed, self.ids)
         self.assertEqual((report_again.files, report_again.targets[0].skipped), (0, 8))
 
@@ -556,7 +556,7 @@ class SyncStopTest(JobCase):
 
         Plain.listed = []
         engine = Engine(home=self.home, sources={"pln": Plain})
-        engine.download(["pln:example_user"])
+        engine.download(["pln:example_user"], categories="all")
         Plain.listed.clear()
         engine.sync(["pln:example_user"])
         self.assertEqual(len(Plain.listed), 8)
@@ -993,7 +993,7 @@ class ResumeTest(JobCase):
 
     def interrupted(self):
         self.fail_on = "c2"
-        self.assertFalse(self.engine.download(["pgd:example_user"]).ok)
+        self.assertFalse(self.engine.download(["pgd:example_user"], categories="all").ok)
         self.assertEqual(self.row()["cursors"], {"posts": "c2"})
         self.assertNotIn("complete", self.row())
         self.fail_on, self.fetched = None, []
@@ -1003,7 +1003,7 @@ class ResumeTest(JobCase):
         # Two new posts arrived meanwhile, above the ones the first run saved.
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
-        report = self.engine.download(["pgd:example_user"])
+        report = self.engine.download(["pgd:example_user"], categories="all")
         self.assertTrue(report.ok)
         # c2 to the end first, then the newest. Which of p1..p7 the failed run saved depends on
         # which downloads had started, so only the posts this run must save are checked.
@@ -1018,7 +1018,7 @@ class ResumeTest(JobCase):
         self.interrupted()
         # Every post the failed run listed is saved meanwhile, as a later run would have.
         self.fail_on = "c2-unused"
-        self.engine.download(["pgd:example_user"])
+        self.engine.download(["pgd:example_user"], categories="all")
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
         with kv.open(self.home / paths.TARGETS, table="targets") as rows:
@@ -1026,14 +1026,14 @@ class ResumeTest(JobCase):
             row["cursors"] = {"posts": "c2"}
             rows["pgd:example_user"] = row
         self.fetched = []
-        self.engine.download(["pgd:example_user"])
+        self.engine.download(["pgd:example_user"], categories="all")
         self.assertEqual(self.fetched, ["c2", None, "c0"])
 
     def test_a_refused_cursor_is_dropped_and_the_listing_starts_over(self):
         self.interrupted()
         self.refuse = True
         self.feed = {None: (["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"], None)}
-        report = self.engine.download(["pgd:example_user"])
+        report = self.engine.download(["pgd:example_user"], categories="all")
         self.assertTrue(report.ok)
         self.assertEqual(self.fetched, ["c2", None])
         self.assertIn("• pgd:example_user: posts: the cursor an interrupted run saved was refused; "
@@ -1042,13 +1042,13 @@ class ResumeTest(JobCase):
 
     def test_again_ignores_saved_cursors_and_complete_listing_from_newest(self):
         self.interrupted()
-        report = self.engine.download(["pgd:example_user"], again=True)
+        report = self.engine.download(["pgd:example_user"], categories="all", again=True)
         self.assertTrue(report.ok)
         self.assertEqual(self.fetched, [None, "c1", "c2"])
         self.assertNotIn("cursors", self.row())
         self.assertIn("posts", self.row()["complete"])
         self.fetched.clear()
-        self.engine.download(["pgd:example_user"], again=True)
+        self.engine.download(["pgd:example_user"], categories="all", again=True)
         self.assertEqual(self.fetched, [None, "c1", "c2"])
 
 

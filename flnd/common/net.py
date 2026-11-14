@@ -12,6 +12,7 @@ function. `download` resumes every file and splits a big one into ranges only on
 from __future__ import annotations
 
 import os
+import atexit
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
@@ -138,11 +139,30 @@ def download(client: http.Client, file: File, dest: Path, *, label: str,
     raise ValueError("download needs a URL or a fetch function")
 
 
+_follow_client: httpx.Client | None = None
+_follow_lock = threading.Lock()
+
+
+def _close_follow() -> None:
+    global _follow_client
+    with _follow_lock:
+        if _follow_client is not None:
+            _follow_client.close()
+            _follow_client = None
+
+
 def follow(url: str) -> str:
     """Where a short link leads, from one HEAD request: `follow("https://vm.tiktok.com/ZM…")`."""
+    global _follow_client
     # HEAD, since only final URL is needed, not body. Plain transport without signing or retry.
-    with httpx.Client(follow_redirects=True, timeout=30.0, transport=_base_transport()) as http:
-        return str(http.head(url).url)
+    with _follow_lock:
+        if _follow_client is None:
+            _follow_client = httpx.Client(
+                follow_redirects=True, timeout=30.0, transport=_base_transport(),
+            )
+            atexit.register(_close_follow)
+        client = _follow_client
+    return str(client.head(url).url)
 
 
 def _base_transport() -> httpx.BaseTransport:
@@ -329,6 +349,7 @@ class _Row:
     def __init__(self, label: str):
         self.label, self.stack, self.base = label, ExitStack(), 0.0
         self.bar: Any = None
+        self._lock = threading.Lock()
 
     def __enter__(self) -> _Row:
         return self
@@ -337,20 +358,24 @@ class _Row:
         self.stack.__exit__(*error)
 
     def start(self, total: float | None) -> None:
-        if self.bar is None:
-            self.bar = self.stack.enter_context(
-                log.progress(self.label, total=total, show=fmt.size)
+        with self._lock:
+            if self.bar is None:
+                self.bar = self.stack.enter_context(
+                    log.progress(self.label, total=total, show=fmt.size)
+                )
+                return
+            self.base = self.bar.count
+            self.bar.total = (
+                self.base + total if total is not None and self.bar.total is not None else None
             )
-            return
-        self.base = self.bar.count
-        self.bar.total = (
-            self.base + total if total is not None and self.bar.total is not None else None
-        )
 
     def update(self, done: float, total: float | None = None) -> None:
-        if total:
-            self.bar.total = self.base + total
-        self.bar.count = self.base + done
+        with self._lock:
+            if self.bar is None:
+                return
+            if total:
+                self.bar.total = self.base + total
+            self.bar.count = self.base + done
 
     def stoppable(self, done: float, total: float | None = None) -> None:
         """`update`, for a source's `fetch` function, which a second Ctrl-C stops at next report."""
@@ -375,4 +400,6 @@ class _Row:
         return progress
 
     def caption(self, text: str) -> None:
-        self.bar.caption = text
+        with self._lock:
+            if self.bar is not None:
+                self.bar.caption = text

@@ -185,7 +185,7 @@ def check(text: str, params: Mapping[str, Param]) -> Any:
     """
     tree = _Reader(params).read(_tree(text))
     shape = _merged(_pushed(tree, negated=False, params=params), params)
-    count = _count(shape)
+    count = len(_groups(shape))
     if count > MAX_SEARCHES:
         raise QueryError(f"the query needs {count} searches and flnd runs at most {MAX_SEARCHES} "
                          "for one; narrow its ORs")
@@ -329,6 +329,8 @@ class _Reader(TreeVisitor):
         # A phrase's value keeps its quotes; the words inside are what is searched for.
         text = node.unescaped_value
         text = text.strip('"') if node.value.startswith('"') else text
+        if not text:
+            raise QueryError(f"'{part}': empty search term")
         param = context.get("param", "")
         value = self.value(param, text, part) if param else text
         yield _Atom(param, (value,), part=part)
@@ -365,6 +367,8 @@ class _Reader(TreeVisitor):
             raise QueryError(f"'{part}': this site can't compare {param}; give one value")
         first = self.bound(param, low, part, up=True)
         last = self.bound(param, high, part, up=False)
+        if first is None and last is None:
+            raise QueryError(f"'{part}': range needs at least one bound")
         if first is not None and last is not None and _after(first, last):
             raise QueryError(f"'{part}': the range is empty")
         return _Atom(param, low=first, high=last, part=part)
@@ -501,7 +505,8 @@ class _Names:
 
     def match(self, atom: _Atom, found: list[tuple[str, str]], name: str) -> str:
         """The one id whose name is `name`, ignoring case and accents; else a QueryError."""
-        exact = [(each, id_) for each, id_ in found if _folded(each) == _folded(name)]
+        target = _folded(name)
+        exact = [(each, id_) for each, id_ in found if _folded(each) == target]
         ids = list(dict.fromkeys(id_ for _, id_ in exact))
         if len(ids) == 1:
             return ids[0]
@@ -509,7 +514,7 @@ class _Names:
             listed = ", ".join(f"{each} ({id_})" for each, id_ in exact)
             raise QueryError(f"'{atom.part}': several of {atom.param} are named {name}: {listed}")
         # A lookup may list every name the site has (all its genres), so only near ones are shown.
-        near = [each for each, _ in found if _folded(name) in _folded(each)][:5]
+        near = [each for each, _ in found if target in _folded(each)][:5]
         like = f"; like it: {', '.join(near)}" if near else ""
         raise QueryError(f"'{atom.part}': this site has no {atom.param} named {name}{like}")
 

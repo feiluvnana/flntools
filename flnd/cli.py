@@ -56,7 +56,7 @@ Target format:
   Sources: {", ".join(SOURCES)}
 {forms}
 
-Categories (--from; without it, every one; not for a single post's link):
+Categories (--from; required for profiles, chats, and queries; not for a single post's link):
 {categories}{query_section}
 
 Examples:
@@ -84,6 +84,9 @@ def download(
     targets: Annotated[list[str], cli.arg(nargs="+")],
     *,
     categories: Annotated[Optional[list[str]], cli.opt("--from", metavar="CATEGORIES")] = None,
+    folders: Annotated[
+        Optional[list[str]], cli.opt("--folder", metavar="CATEGORY:TEMPLATE")
+    ] = None,
     time: Annotated[Optional[str], cli.opt(metavar="SINCE,UNTIL")] = None,
     # `--shrink` alone is on; `--shrink off` turns a saved one off; not given keeps the saved one.
     shrink: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None,
@@ -101,8 +104,10 @@ def download(
     Args:
         targets: source:value pairs, source?query targets, or URLs; read one per line from stdin
             when none are given.
-        categories: what to take from each source, such as posts,reels; a comma list or repeated.
-            Without it, every category. Not for a single post's link, which is downloaded whole.
+        categories: what to take from each source, such as posts,reels, or all; a comma list or
+            repeated. Required for profiles, chats, and queries; not for a single post's link.
+        folders: custom output path under media/ as <category>:<template> (repeatable; use all:
+            as fallback), using fields like {source}, {query}, {target}, {id}, {path}, {name}.
         time: only items dated from one day to another, both included, as 2026-01-01,2026-06-30;
             leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
         shrink: compress each photo, video and audio file to a balanced quality in its own format,
@@ -121,7 +126,7 @@ def download(
     try:
         # ValueError is a usage error: engine raises it for bad option/target with message.
         report = Engine(home=HOME).download(
-            targets, categories=categories, time=Range() if time is None else time,
+            targets, categories=categories, folders=folders, time=Range() if time is None else time,
             shrink=None if shrink is None else shrink == "on",
             limit=limit, dry=dry, sync=sync, again=again,
         )

@@ -127,6 +127,7 @@ class _Options(TypedDict, total=False):
     label: str | None
     progress: Callable[[int, int], Any] | None
     processes: bool
+    stop: threading.Event | None
 
 
 @overload
@@ -310,7 +311,7 @@ class Pool:
         self._run.__exit__(error_type, error, traceback)
 
     def __del__(self) -> None:
-        if not self._run.ended:
+        if not sys.is_finalizing() and not self._run.ended:
             unfinished = self._run.submitted - len(self._run.finished)
             log.warn("worker.pool was never joined; {n} tasks may not have finished", n=unfinished)
             self._run.close()
@@ -339,7 +340,7 @@ class _Run:
     def __init__(self, *, concurrency: int | None = None, retries: int = 0,
                  timeout: float | None = None, label: str | None = None,
                  progress: Callable[[int, int], Any] | None = None, processes: bool = False,
-                 total: int | None = None):
+                 total: int | None = None, stop: threading.Event | None = None):
         """Check options and set up an empty run; threads/processes start on the first submit."""
         # Step 1: check options before anything starts, so a bad one raises cleanly.
         if concurrency is not None and concurrency < 1:
@@ -366,7 +367,7 @@ class _Run:
         self.running = 0  # tries in progress
         self.runners = 0
         self.closed = self.ended = False
-        self.stop_requested = threading.Event()
+        self.stop_requested = stop if stop is not None else threading.Event()
         self.task_interrupt: BaseException | None = None
         # Step 4: what is started lazily, and what must be shut down on the way out.
         self.executor: concurrent.futures.ProcessPoolExecutor | None = None
@@ -428,6 +429,8 @@ class _Run:
         # Read inputs only as fast as runners take them to keep huge or endless inputs out of RAM.
         self.wait(self.has_room)
         with self.changed:
+            if self.closed:
+                raise RuntimeError("this pool was closed: no more tasks can be submitted")
             self._start_backend(fn)
             self.queued.append(_Job(fn, args, args[0] if len(args) == 1 else args, self.submitted))
             self.submitted += 1

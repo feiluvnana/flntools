@@ -89,10 +89,15 @@ def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
     trusted: list[tuple[str, dict]] = []
     for key, row in tally.rows:
         path = Path(row["path"])
+        try:
+            is_unchanged = path.is_file() and paths.unchanged(path, row)
+        except FileNotFoundError:
+            tally.lost[key] = path.name
+            continue
         if not path.is_file():
             tally.lost[key] = path.name
         else:
-            (trusted if paths.unchanged(path, row) else changed).append((key, row))
+            (trusted if is_unchanged else changed).append((key, row))
     # Checked longest ago first; a row never checked has no day, and sorts first.
     trusted.sort(key=lambda item: str(item[1].get(CHECKED, "")))
     due = changed + trusted[:math.ceil(len(trusted) / ROLLING)]
@@ -105,34 +110,40 @@ def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
             key, row = result.item
             path = Path(row["path"])
             if result.value:
-                path.unlink()
+                path.unlink(missing_ok=True)
                 del history[key]
                 tally.lost[key] = path.name
                 tally.broken.add(key)
             else:
-                history[key] = {**row, **paths.stamp(path), CHECKED: today}
+                try:
+                    stamped = paths.stamp(path)
+                except FileNotFoundError:
+                    del history[key]
+                    tally.lost[key] = path.name
+                    continue
+                history[key] = {**row, **stamped, CHECKED: today}
 
 
 def _remove_leftovers(folder: Path) -> None:
     """Remove the parts and dangling links an interrupted run left in a target's folder."""
     if not folder.is_dir():
         return
-    # Every temporary file flnd writes matches PART_GLOB (`shared.atomic`'s parts), and nothing is
-    # downloading into the folder yet. A resumable download's part (one with its `.part.json`) is
-    # kept while it is recent, since the fetch that follows resumes it; its sidecar goes with it,
-    # and a sidecar alone goes too.
-    for stale in sorted(folder.rglob(paths.PART_GLOB)):
+    parts: list[Path] = []
+    infos: list[Path] = []
+    for entry in folder.rglob("*"):
+        if entry.is_symlink() and not entry.exists():
+            entry.unlink()
+        elif entry.match(paths.PART_INFO_GLOB):
+            infos.append(entry)
+        elif entry.match(paths.PART_GLOB):
+            parts.append(entry)
+    for stale in sorted(parts):
         if not paths.resumable(stale):
             stale.unlink(missing_ok=True)
             paths.part_info(stale).unlink(missing_ok=True)
-    for info in folder.rglob(paths.PART_INFO_GLOB):
+    for info in infos:
         if not info.with_name(info.name[: -len(paths.PART_INFO_SUFFIX)]).is_file():
             info.unlink(missing_ok=True)
-    # A link into another category's folder whose file is gone: made again by the next run that
-    # lists the file, once the fetch has saved the file again.
-    for link in folder.rglob("*"):
-        if link.is_symlink() and not link.exists():
-            link.unlink()
 
 
 def _broken(item: tuple[str, dict]) -> bool:
@@ -142,7 +153,10 @@ def _broken(item: tuple[str, dict]) -> bool:
     path = Path(item[1]["path"])
     kind = paths.kind_of(path.name)
     # An empty file of any kind is a download that never got its bytes.
-    if path.stat().st_size == 0:
+    try:
+        if path.stat().st_size == 0:
+            return True
+    except FileNotFoundError:
         return True
     if kind is None:
         return False

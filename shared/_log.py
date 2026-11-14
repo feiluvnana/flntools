@@ -17,6 +17,7 @@ Thread-safe: calls may come from multiple threads concurrently.
 
 from __future__ import annotations
 
+import functools
 import re
 import string
 import threading
@@ -80,6 +81,7 @@ class Log:
         self._level: Level = "info"
         # The files `record` opened, each written under its own lock by any thread.
         self._records: list[_Record] = []
+        self._lock = threading.Lock()
 
     @property
     def level(self) -> Level:
@@ -236,19 +238,23 @@ class Log:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as file:
             sink = _Record(file)
-            self._records.append(sink)
+            with self._lock:
+                self._records.append(sink)
             try:
                 yield
             finally:
-                self._records.remove(sink)
+                with self._lock:
+                    self._records.remove(sink)
 
     def _recorded(self, lines: list[str]) -> None:
         """Write drawn lines to every `record` file, plain, timed and without query strings."""
-        if not self._records:
+        with self._lock:
+            records = list(self._records)
+        if not records:
             return
         stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         text = "".join(f"{stamp} {QUERY.sub(_keep_path, strip(line))}\n" for line in lines)
-        for sink in list(self._records):
+        for sink in records:
             sink.write(text)
 
     def _line(self, level: str, message: str, args: tuple, fields: dict, *, kind: str = "") -> None:
@@ -260,7 +266,9 @@ class Log:
         # The check above runs before the level filter, so a misspelled field is caught even on a
         # line that is then dropped.
         shown = LEVEL_RANKS[level] >= LEVEL_RANKS[self._level]
-        if not shown and not self._records:
+        with self._lock:
+            has_records = bool(self._records)
+        if not shown and not has_records:
             return
         # Without values the message is written as it is, so braces in a plain message stay braces.
         if args or fields:
@@ -391,6 +399,16 @@ class Progress:
             self._count = max(self._count + n, 0)
         self._group._live.mark()
 
+    def updater(self) -> Callable[[int, int], None]:
+        """Return a thread-safe `progress(done, total)` callback that updates this row."""
+        def update(done: int, total: int) -> None:
+            with self._lock:
+                self._total = total
+                self._count = max(done, 0)
+            self._group._live.mark()
+
+        return update
+
     def finish(self) -> None:
         """End this row at ok and clear its caption; a row already ended is left as it is."""
         self._end("ok")
@@ -404,15 +422,17 @@ class Progress:
             if self._outcome is not None:
                 return
             self._outcome = outcome
-        # A finished row drops caption, but a failed one keeps it, so reason stays on screen.
-        if outcome == "ok":
-            self._caption = ""
+            # A finished row drops caption, but a failed one keeps it, so reason stays on screen.
+            if outcome == "ok":
+                self._caption = ""
         self._group._live.mark()
 
     def _final(self) -> tuple[str, str]:
         """(level, drawn line) of the row's final line."""
-        level = "info" if self._outcome is None else self._outcome
-        return level, render(self._group._theme, LogRecord(level, self.label, self._view(None)))
+        with self._lock:
+            level = "info" if self._outcome is None else self._outcome
+            bar = self._view(None)
+        return level, render(self._group._theme, LogRecord(level, self.label, bar))
 
     def _view(self, now: float | None) -> Bar:
         """What theme draws; `now` fixes spinner frame, None leaves to theme clock."""
@@ -421,22 +441,23 @@ class Progress:
 
     def _area_line(self, now: float, width: int) -> str | None:
         """The row as drawn in live area, cut to `width`; None while too young or unseen."""
-        # A row is shown only after SHOW_AFTER, so a fast file never flickers in and out. Once shown
-        # it stays shown, even if it finishes later.
-        if not self._seen:
-            if self.finished or now - self._created < SHOW_AFTER:
-                return None
-            self._seen = True
         theme = self._group._theme
-        bar = self._view(now)
+        with self._lock:
+            # A row is shown only after SHOW_AFTER, so a fast file never flickers in and out.
+            if not self._seen:
+                if self.finished or now - self._created < SHOW_AFTER:
+                    return None
+                self._seen = True
+            bar = self._view(now)
+            outcome = self._outcome
         # A moving row (a gradient, a shaded spinner) changes with each tick as well.
         moving = bar.tick if self._moves(theme) else None
-        drawn = (self._outcome, bar.label, bar.caption, _bar_cells(theme, bar), _count(bar), width,
+        drawn = (outcome, bar.label, bar.caption, _bar_cells(theme, bar), _count(bar), width,
                  theme.color, moving)
         # Re-rendering is skipped when nothing the line shows has changed since the last frame.
         if drawn != self._drawn:
             self._drawn = drawn
-            record = LogRecord("info" if self._outcome is None else self._outcome, self.label, bar)
+            record = LogRecord("info" if outcome is None else outcome, self.label, bar)
             self._line = fit(render(theme, record), width)
         return self._line
 
@@ -585,7 +606,9 @@ class Group:
         """Whether the rows are a status row's detail, which only `debug` shows (a wait always)."""
         if not isinstance(self.parent, StatusRow) or log.level == "debug":
             return False
-        return not any(isinstance(bar, Progress) and bar.wait for bar in self._bars)
+        with self._live.screen.lock:
+            bars = list(self._bars)
+        return not any(isinstance(bar, Progress) and bar.wait for bar in bars)
 
     def _retire(self, row: StatusRow) -> None:
         """Write an ended status row's final line above the area, and take it out of the group."""
@@ -600,7 +623,9 @@ class Group:
 
     def _rows(self) -> list[tuple[str, str]]:
         """(level, drawn line) for the title row and each bar row: the final lines."""
-        rows = [bar._final() for bar in self._bars]
+        with self._live.screen.lock:
+            bars = list(self._bars)
+        rows = [bar._final() for bar in bars]
         if self._title:
             level = "info" if self._outcome is None else self._outcome
             rows.insert(0, (level, render(self._theme, LogRecord(level, self._title))))
@@ -664,6 +689,7 @@ class LiveArea:
         # `dirty` lets a thread skip the set when it is already set, which keeps `mark` cheap.
         self.dirty = False
         self.wake = threading.Event()
+        self._wake_lock = threading.Lock()
         # Set when the last group closes, so the drawing thread leaves at once.
         self.closing = threading.Event()
         self.thread: threading.Thread | None = None
@@ -678,10 +704,11 @@ class LiveArea:
         self.drawn_width = 0
 
     def mark(self) -> None:
-        """Say a row or line changed. No lock, no drawing: the drawing thread does that."""
-        if not self.dirty:
-            self.dirty = True
-            self.wake.set()
+        """Say a row or line changed. Lightweight lock, no drawing: the drawing thread does that."""
+        with self._wake_lock:
+            if not self.dirty:
+                self.dirty = True
+                self.wake.set()
 
     def open(self, group: Group) -> None:
         """Add a group's rows to the area, and start the drawing thread if it is not running.
@@ -772,9 +799,10 @@ class LiveArea:
                 self.skip = False
                 return
             now = clock.now()
-            # Cleared before the rows are read, so a change made while drawing marks the next frame.
-            self.dirty = False
-            self.wake.clear()
+            # Cleared under `_wake_lock` so `mark()` cannot lose a wakeup between dirty and clear.
+            with self._wake_lock:
+                self.dirty = False
+                self.wake.clear()
             started = time.perf_counter()
             self._draw(self._rows(now))
             self.skip = time.perf_counter() - started > REDRAW_INTERVAL
@@ -1027,13 +1055,14 @@ def _keep_path(match: re.Match[str]) -> str:
     return match.group(1)
 
 
-def _field_names(message: str) -> set[str]:
+@functools.lru_cache(maxsize=256)
+def _field_names(message: str) -> frozenset[str]:
     """Field names a `str.format` template uses, such as "x" for "{x.y}" and "{x[0]}"."""
     names = set()
     for _, field_name, _, _ in string.Formatter().parse(message):
         if field_name:
             names.add(field_name.split(".")[0].split("[")[0])
-    return names
+    return frozenset(names)
 
 
 log = Log()

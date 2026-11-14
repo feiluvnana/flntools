@@ -90,8 +90,8 @@ class RegistryTest(unittest.TestCase):
                 self.assertEqual(selected(Options(), source), source.categories)
                 self.assertEqual(selected(Options(categories=("all",)), source), source.categories)
         self.assertEqual(selected(Options(categories=("reels", "media")), Instagram), ("reels",))
-        # None of the names is this source's: every category, as without --from.
-        self.assertEqual(selected(Options(categories=("media",)), Instagram), Instagram.categories)
+        # None of the names is this source's: nothing is selected.
+        self.assertEqual(selected(Options(categories=("media",)), Instagram), ())
 
 
 class GuardTest(unittest.TestCase):

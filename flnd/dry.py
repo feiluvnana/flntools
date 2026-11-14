@@ -66,7 +66,7 @@ def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None
     with shared_browser(settings), source_run(settings, source()) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not run.source.logged_in(account) and run.source.requires_login:
-            raise ValueError(f"{source.code}: not logged in; run flnd login")
+            raise ValueError(f"{source.code}: not logged in; run flnd auth login")
         with _connected(run, account):
             yield from job.plan(run, target, options)
 

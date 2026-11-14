@@ -15,6 +15,7 @@ Thread-safe and scrubs credentials and signed tokens from logs and errors.
 
 from __future__ import annotations
 
+import atexit
 import email.utils
 import http.cookiejar
 import json as jsonlib
@@ -296,38 +297,26 @@ def fetch(url: str, *, method: str = "GET", client: httpx.Client | None = None,
         http.fetch("https://example.com/api", method="POST", json={"id": 1}, client=client)
         http.fetch("https://example.com/example_user", soft=True)      # None for 401, 403, 404
 
-    Args:
-        url: the URL to request; `params` are added to its query.
-        method: the HTTP method, such as "GET" or "POST".
-        client: an `httpx.Client` the caller owns and closes, with its cookies, headers, signing
-            and pacing; None uses this module's client, which follows redirects and sends no
-            cookies.
-        headers: headers for this request, over the client's own.
-        params: query parameters to add to the URL.
-        data: a form body (a dict) or raw bytes; None sends none.
-        json: a value to send as a JSON body; None sends none.
-        soft: True returns None for a 401, 403 or 404 instead of raising `RefusedError`.
-        attempts: how many tries in all for a dead connection or a 5xx, at least 1. Waits between
-            them are 1 s, 2 s, 4 s, … up to 8 s.
-        timeout: seconds each attempt may wait to connect, and between bytes read or written;
-            it overrides the client's own.
-        redirects: whether to follow redirects; None keeps the client's own choice.
-
-    Returns:
-        The response of a 1xx, 2xx or 3xx (without following redirects, the 3xx),
-        or None for a 401, 403 or 404 when `soft` is True.
-
     Raises:
         RateLimitedError: a 429, at once, with the `Retry-After` seconds.
         RefusedError: any other 4xx, or a 401, 403 or 404 without `soft`.
         ServerError: a 5xx on every attempt.
-        Error: the connection failed on every attempt, or the request couldn't be sent at all
-            (an invalid URL, too many redirects).
+        Error: connection failed on every attempt, or request couldn't be sent.
         ValueError: `attempts` is below 1.
-
-    It may be called from many threads at once. Each attempt waits for one of its host's 6
-    slots first, which a slow site can make wait for up to the others' `timeout`s.
     """
+    return _fetch(
+        url, method=method, client=client, headers=headers, params=params, data=data, json=json,
+        soft=soft, attempts=attempts, timeout=timeout, redirects=redirects,
+    )
+
+
+def _fetch(
+    url: str, *, method: str = "GET", client: httpx.Client | None = None,
+    headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None,
+    data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3,
+    timeout: float = 30.0, redirects: bool | None = None, stop: threading.Event | None = None,
+) -> Response | None:
+    """Send one HTTP request with retries, waking early if `stop` is set."""
     if attempts < 1:
         raise ValueError(f"attempts must be at least 1, not {attempts}")
     # Built once, so every attempt sends the same method, URL, headers and body.
@@ -358,7 +347,8 @@ def fetch(url: str, *, method: str = "GET", client: httpx.Client | None = None,
             "retry {n} of {url} in {seconds:g} s: {reason}",
             n=attempt, url=_where(request.url), seconds=seconds, reason=_scrub(reason, request),
         )
-        clock.sleep(seconds)
+        if clock.sleep(seconds, stop=stop):
+            raise StoppedError(f"{request.method} {_where(request.url)}: stopped")
         attempt += 1
 
 
@@ -515,10 +505,13 @@ class Client:
             StoppedError: `stop` was set during a wait.
             RefusedError, ServerError, Error: as `http.fetch` raises them.
         """
-        return self.call(url, lambda: fetch(url, method=method, client=self.raw, headers=headers,
-                                            params=params, data=data, json=json, soft=soft,
-                                            attempts=attempts, timeout=timeout,
-                                            redirects=redirects))
+        return self.call(
+            url, lambda: _fetch(
+                url, method=method, client=self.raw, headers=headers, params=params, data=data,
+                json=json, soft=soft, attempts=attempts, timeout=timeout, redirects=redirects,
+                stop=self.stop,
+            ),
+        )
 
     def download(self, url: str | Sequence[str], dest: PathLike, *,
                  transfer: Transfer | None = None) -> Download:
@@ -740,12 +733,22 @@ _slots: dict[tuple[str, str, int | None], threading.BoundedSemaphore] = {}
 _slots_lock = threading.Lock()
 
 
+def _close_default() -> None:
+    """Close the module's default client at interpreter shutdown."""
+    global _default
+    with _client_lock:
+        if _default is not None:
+            _default.close()
+            _default = None
+
+
 def _client() -> httpx.Client:
     """Module's own client, made on first use: follows redirects and keeps no cookies."""
     global _default
     with _client_lock:
         if _default is None:
             _default = _new_client()
+            atexit.register(_close_default)
         return _default
 
 

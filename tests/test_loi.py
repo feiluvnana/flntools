@@ -66,7 +66,7 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(decrypt_field(None), "")
 
     def test_a_field_that_doesnt_decrypt_raises(self):
-        with self.assertRaisesRegex(ValueError, "changed its key"):
+        with self.assertRaisesRegex(FetchError, "changed its key"):
             decrypt_field("bm90IGJsb2Nrcw==")
 
     def test_decode_token(self):
@@ -224,7 +224,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual([item.url for item in files[1:]], POST["images"])
         self.assertEqual(files[1].post.date, "2026-11-09 12:00:00")
         self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests], ["lois/5930"])
-        self.assertIn("! archives need a login; run flnd login", seen.messages)
+        self.assertIn("! archives need a login; run flnd auth login", seen.messages)
         info = texts(files)[f"{folder}/info.md"]
         self.assertIn("# Night city: set", info)
         self.assertIn("`pass-word`", info)
