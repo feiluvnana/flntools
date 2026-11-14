@@ -19,7 +19,7 @@ from typing import Iterable, Iterator, Mapping, Sequence
 from flnd import job
 from flnd.engine import ACCOUNT, Engine, _connected, _offer_browser, needs_browser
 from flnd.options import Options, RunShared, single_targets, unknown_categories
-from flnd.site import TargetSite, source_run
+from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import File, Range, Source, Target
 from flnd.sources import SOURCES
 from shared import fmt
@@ -63,7 +63,7 @@ def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None
         _offer_browser()
     # Never the real history: a file already saved still shows, and nothing is recorded.
     settings = RunShared(home=home, history={})
-    with source_run(settings, source()) as run:
+    with shared_browser(settings), source_run(settings, source()) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
         if not run.source.logged_in(account) and run.source.requires_login:
             raise ValueError(f"{source.code}: not logged in; run flnd login")

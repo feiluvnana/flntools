@@ -91,3 +91,5 @@ class RunShared:
     dry: bool = False
     # Shared across the run so videos encode sequentially and each error warns once.
     compressor: Compressor = field(default_factory=Compressor)
+    # Shared single-window browser pool entered by `site.shared_browser`, or None outside a run.
+    _browser_pool: Any = field(default=None, repr=False)

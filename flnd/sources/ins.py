@@ -105,7 +105,7 @@ class Instagram(Source):
     browser = True
     # Instaloader's measured budgets set the ceiling; the floor only spaces a burst while a window
     # still has room.
-    pace = http.Pace(1.5, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
+    pace = http.Pace(0.2, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
     # Post category or highlight title: "posts", "highlights/<title>", or "".
     folder = "{category}/{album}"
     # Every story link, a user's or a highlight's: a story expires, but the profile lists them all.
@@ -467,6 +467,15 @@ class Profile:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
                 # Raised, not returned: a tab that ended here would be recorded complete.
                 raise FetchError(f"{tab}: the page didn't load")
+            keys = list(TABS)
+            warm_tabs(
+                site,
+                [
+                    f"{SITE}/{self.user}/{TABS[name]}"
+                    for name in keys[keys.index(tab) + 1:]
+                    if not self.listed[name]
+                ],
+            )
             for result in embedded_results(site.page.document):
                 yield result
                 old = older_streak(result, tab, since, old)

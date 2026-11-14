@@ -39,7 +39,7 @@ class Site:
 
 def recorded(record):
     """An `Engine._run` that only calls `record(chosen)`, and reports each target done, empty."""
-    def run(engine, chosen, tallies=()):
+    def run(engine, chosen, tallies=(), browser_pool=None):
         record(chosen)
         return [TargetReport(target, (), 0) for target, _ in chosen]
 

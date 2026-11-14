@@ -156,7 +156,7 @@ class Facebook(Source):
     browser = True
     # No published limit: the learned gap doubles on a throttle and is saved, so the first block
     # teaches it; the floor only keeps a burst slower than the other sites'.
-    pace = 0.8
+    pace = 0.2
     # A file's folder is where it was found: `part` is its tab (or "videos" or "albums"), `album`
     # the album's title when it has one. Each file is named by `post_of`.
     folder = "{part}/{album}"
@@ -338,6 +338,9 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
     if path is None:
         site.info("{tab}: this profile has no such tab", tab=tab.category)
         return
+    upcoming = TABS[TABS.index(tab) + 1:]
+    urls = [f"{profile.url}/{p}" for t in upcoming if (p := tab_path(t, profile.paths))]
+    warm_tabs(site, urls)
     for result, item_owner in _collect_tab(site, profile, path):
         yield from media_posts(result, tab.category, owner=item_owner)
 

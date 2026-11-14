@@ -15,6 +15,8 @@ or the feed ends (10 s at the bottom with nothing new). Closing it stops the sub
 
 from __future__ import annotations
 
+import json
+import re
 from collections import deque
 from typing import TYPE_CHECKING, Any, Iterable, Iterator
 
@@ -69,7 +71,24 @@ class Responses:
             return
         self._subscription.stop()
         self._page = page
+        take_warm = getattr(self._site, "_take_warm_responses", None)
+        if callable(take_warm):
+            captured: Any = take_warm(page)
+            for response, body in captured:
+                self._replay(response, body)
         self._subscription = page.on_response(self._match, self._on_match, lines=self._lines)
+
+    def _replay(self, response: Any, body: str) -> None:
+        """Queue matching JSON parsed from a response captured while the tab warmed."""
+        if not _matches(self._match, response.url):
+            return
+        pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
+        for piece in pieces:
+            try:
+                parsed = json.loads(piece)
+            except ValueError:
+                continue
+            self._waiting.append((parsed, response))
 
     def __iter__(self) -> Iterator[Any]:
         return self
@@ -127,6 +146,15 @@ def warm_tabs(site: Site, urls: Iterable[str]) -> None:
     warm = getattr(site, "_warm_tabs", None)
     if callable(warm):
         warm(urls)
+
+
+def _matches(match: browser.Match, url: str) -> bool:
+    """Whether `url` matches a `watch_responses` filter."""
+    if isinstance(match, str):
+        return match in url
+    if isinstance(match, re.Pattern):
+        return match.search(url) is not None
+    return bool(match(url))
 
 
 def watch_responses(

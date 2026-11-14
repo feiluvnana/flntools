@@ -92,7 +92,7 @@ class RunsCase(FlndCase):
         super().setUp()
         self.runs = []
 
-        def run(engine, chosen, tallies=()):
+        def run(engine, chosen, tallies=(), browser_pool=None):
             targets = [target for target, _ in chosen]
             self.runs.append((engine, targets, replace(chosen[0][1], stop_at_saved=False)))
             written = tuple(Path(f"{name}.jpg") for name in "abc")

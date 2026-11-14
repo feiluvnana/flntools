@@ -7,6 +7,7 @@ checks `FakeSite` has exactly the 13 members of `Site`. No network, no browser.
 
 import io
 import json
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,7 +22,7 @@ from fakes import FakeSite
 from flnd import site as site_module
 from flnd.common import auth, net, paths
 from flnd.options import Options, RunShared
-from flnd.site import STATE_KEY, TargetSite, source_run
+from flnd.site import STATE_KEY, TargetSite, shared_browser, source_run
 from flnd.source import FetchError, File, Site, Target
 from flnd.sources.common.relay import meta_results
 from flnd.sources.common.watch import warm_tabs, watch_responses
@@ -384,6 +385,10 @@ class TabRaw(FakeRaw):
         self.wait_until_calls = []
         self.waits = []
         self.events = {}
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def on(self, event, listener):
         self.events.setdefault(event, []).append(listener)
@@ -485,6 +490,52 @@ class TabTest(SiteCase):
                 self.assertIs(site.page, nested)
                 self.assertEqual(len(browsers[0].opened), 2)
         self.assertIs(site.page, main)
+
+    def test_shared_browser_uses_one_window_across_sources_and_replays_warm_responses(self):
+        browsers = []
+
+        class FacebookLike(Example):
+            code = "fbk"
+
+        class InstagramLike(Example):
+            code = "ins"
+
+        def connect(**options):
+            browsers.append(MultiTabBrowser())
+            return browsers[-1]
+
+        settings = RunShared(home=self.home, history={})
+        with mock.patch("shared._browser.open", connect):
+            with shared_browser(settings):
+                def run_target(source_cls, target, warm_url):
+                    with source_run(settings, source_cls()) as run:
+                        site = TargetSite(run, target)
+                        try:
+                            warm_tabs(site, [warm_url])
+                            # Simulate a response arriving while the background tab warms.
+                            tab = next(t for t in browsers[0].opened if warm_url in t.loaded)
+                            tab.emit(f"{API}/graphql", '{"warm": 1}')
+                            with watch_responses(site, "graphql", scroll=False) as responses:
+                                self.assertTrue(site.goto(warm_url))
+                                self.assertEqual([item["warm"] for item in responses], [1])
+                        finally:
+                            site.close()
+
+                t1 = threading.Thread(
+                    target=run_target,
+                    args=(FacebookLike, Target("fbk", "user", "example_user"), f"{API}/fbk"),
+                )
+                t2 = threading.Thread(
+                    target=run_target,
+                    args=(InstagramLike, Target("ins", "user", "example_user"), f"{API}/ins"),
+                )
+                t1.start()
+                t2.start()
+                t1.join()
+                t2.join()
+                self.assertEqual(len(browsers), 1)
+                self.assertFalse(browsers[0].closed)
+            self.assertTrue(browsers[0].closed)
 
 
 class MetaResultsTest(unittest.TestCase):

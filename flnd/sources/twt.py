@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
 from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
-from flnd.sources.common.watch import caught_up, watch_responses
+from flnd.sources.common.watch import caught_up, warm_tabs, watch_responses
 from shared import fmt, http, selector
 
 if TYPE_CHECKING:
@@ -291,6 +291,9 @@ class Twitter(Source):
                     "twt: X asked for a login or locked this account; "
                     "check it in a browser or run flnd auth login twt"
                 )
+            names = list(TIMELINES)
+            later = names[names.index(timeline.category) + 1:]
+            warm_tabs(site, [profile + TIMELINES[name].tab for name in later])
             for data in responses:
                 tweets, _ = read_timeline_page(data)
                 new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen]

@@ -62,6 +62,14 @@ LAUNCH_ARGS = [
 ]
 # `navigator.webdriver` is removed rather than set to false, matching how an ordinary browser acts.
 HIDE_WEBDRIVER = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+# Background tabs inside one shared window must still look visible and focused to site scripts.
+KEEP_VISIBLE = (
+    "Object.defineProperties(Document.prototype, {"
+    "visibilityState: {get: () => 'visible', configurable: true}, "
+    "hidden: {get: () => false, configurable: true}"
+    "});"
+    "Document.prototype.hasFocus = () => true;"
+)
 PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHeight"
 # Half a screen from the end counts as the bottom, so a small scroll up doesn't reset the end rule.
 NEAR_BOTTOM = ("(() => { const page = document.scrollingElement || document.documentElement;"
@@ -1022,6 +1030,7 @@ def _launch(playwright: Playwright, profile: str | Path | None, *, copied: bool,
     )
     if stealth:
         context.add_init_script(HIDE_WEBDRIVER)
+    context.add_init_script(KEEP_VISIBLE)
     if copied:
         copy = Path(str(profile))
         # Removed after Chrome has closed, or Chrome would still be writing into it.

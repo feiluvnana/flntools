@@ -58,7 +58,7 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual((source.concurrency, source.login_methods), (3 if telegram else 8, methods))
 
     def test_listing_floors(self):
-        floors = {"ins": 1.5, "twt": 0.2, "fbk": 0.8, "tik": 1.0, "loi": 0.5, "mht": 0.5}
+        floors = {"ins": 0.2, "twt": 0.2, "fbk": 0.2, "tik": 0.2, "loi": 0.5, "mht": 0.5}
         for code, floor in floors.items():
             with self.subTest(source=code):
                 pace = SOURCES[code].pace

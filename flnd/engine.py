@@ -37,7 +37,7 @@ from flnd.job import TargetReport
 from flnd.common import auth, compress, net, paths
 from flnd.common.compress import Compressor
 from flnd.options import Options, RunShared, single_targets, unknown_categories
-from flnd.site import LoginSite, SourceRun, TargetSite, source_run
+from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.source import Range, Source, Target, TargetError
 from flnd.sources import SOURCES
 from shared import browser, kv, log, worker
@@ -261,39 +261,47 @@ class Engine:
                 i for i, (target, _) in enumerate(chosen) if not self._is_query(target)
             ]
             results: dict[int, TargetReport] = {}
-            if normal_indices:
-                normal_chosen = [chosen[i] for i in normal_indices]
-                flnd.targets.record(self.home, normal_chosen)
-                shown = [
-                    flnd.targets.announce(target, options.shrink)
-                    for target, options in normal_chosen
-                ]
-                folders = [paths.target_folder(self.home, target) for target, _ in normal_chosen]
-                with self._history() as history:
-                    index = repair.index(history, folders)
-                tallies = [repair.Tally(str(target), folder, index[folder])
-                           for (target, _), folder in zip(normal_chosen, folders)]
-                log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
-                normal_run = [
-                    (target, replace(options, stop_at_saved=True))
-                    for target, options in normal_chosen
-                ]
-                reports = self._run(normal_run, tallies=tallies)
-                _end_if_stopped()
-                with self._history() as history:
-                    for tally in tallies:
-                        repair.count(history, tally)
-                repair.summary(tallies)
-                for pos, rep, tally, text in zip(normal_indices, reports, tallies, shown):
-                    results[pos] = replace(
-                        rep, repaired=tally.repaired, missing=tally.missing, settings=text
+            pool_settings = RunShared(home=self.home, history={})
+            with shared_browser(pool_settings):
+                if normal_indices:
+                    normal_chosen = [chosen[i] for i in normal_indices]
+                    flnd.targets.record(self.home, normal_chosen)
+                    shown = [
+                        flnd.targets.announce(target, options.shrink)
+                        for target, options in normal_chosen
+                    ]
+                    folders = [
+                        paths.target_folder(self.home, target) for target, _ in normal_chosen
+                    ]
+                    with self._history() as history:
+                        index = repair.index(history, folders)
+                    tallies = [repair.Tally(str(target), folder, index[folder])
+                               for (target, _), folder in zip(normal_chosen, folders)]
+                    log.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
+                    normal_run = [
+                        (target, replace(options, stop_at_saved=True))
+                        for target, options in normal_chosen
+                    ]
+                    reports = self._run(
+                        normal_run, tallies=tallies, browser_pool=pool_settings._browser_pool,
                     )
-            if query_indices:
-                query_chosen = [chosen[i] for i in query_indices]
-                flnd.targets.record(self.home, query_chosen)
-                for pos, (target, options) in zip(query_indices, query_chosen):
-                    results[pos] = self._sync_query(target, options)
                     _end_if_stopped()
+                    with self._history() as history:
+                        for tally in tallies:
+                            repair.count(history, tally)
+                    repair.summary(tallies)
+                    for pos, rep, tally, text in zip(normal_indices, reports, tallies, shown):
+                        results[pos] = replace(
+                            rep, repaired=tally.repaired, missing=tally.missing, settings=text
+                        )
+                if query_indices:
+                    query_chosen = [chosen[i] for i in query_indices]
+                    flnd.targets.record(self.home, query_chosen)
+                    for pos, (target, options) in zip(query_indices, query_chosen):
+                        results[pos] = self._sync_query(
+                            target, options, browser_pool=pool_settings._browser_pool,
+                        )
+                        _end_if_stopped()
             report = Report(tuple(results[i] for i in range(len(chosen))))
             _log_totals(report)
             return report
@@ -482,8 +490,8 @@ class Engine:
         if any(needs_browser(self.sources[target.source]) for target in resolved):
             _offer_browser()
         reports: list[TargetReport] = []
-        with _stop_waits_on_ctrl_c():
-            settings = RunShared(home=self.home, history={}, dry=True)
+        settings = RunShared(home=self.home, history={}, dry=True)
+        with _stop_waits_on_ctrl_c(), shared_browser(settings):
             for target in resolved:
                 source = self.sources[target.source]()
                 with source_run(settings, source) as run:
@@ -523,26 +531,34 @@ class Engine:
                         shrink: bool | None, span: Range, sync: bool = False) -> list[TargetReport]:
         """Run a mix of query targets and normal targets, preserving target order."""
         reports: list[TargetReport] = []
-        for target in resolved:
-            if self._is_query(target):
-                reports.extend(
-                    self._run_query(target, options, shrink=shrink, span=span, sync=sync)
+        pool_settings = RunShared(home=self.home, history={})
+        with shared_browser(pool_settings):
+            for target in resolved:
+                if self._is_query(target):
+                    reports.extend(
+                        self._run_query(
+                            target, options, shrink=shrink, span=span, sync=sync,
+                            browser_pool=pool_settings._browser_pool,
+                        )
+                    )
+                    continue
+                rows = flnd.targets.rows(self.home)
+                saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
+                shown = flnd.targets.announce(target, saved) if shrink is None else ""
+                chosen_options = replace(options, shrink=saved if shrink is None else shrink)
+                if shrink and not saved:
+                    self._apply([target], {target: chosen_options}, sync=sync)
+                else:
+                    flnd.targets.record(self.home, [(target, chosen_options)], sync=sync)
+                [report] = self._run(
+                    [(target, chosen_options)], browser_pool=pool_settings._browser_pool,
                 )
-                continue
-            rows = flnd.targets.rows(self.home)
-            saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
-            shown = flnd.targets.announce(target, saved) if shrink is None else ""
-            chosen_options = replace(options, shrink=saved if shrink is None else shrink)
-            if shrink and not saved:
-                self._apply([target], {target: chosen_options}, sync=sync)
-            else:
-                flnd.targets.record(self.home, [(target, chosen_options)], sync=sync)
-            [report] = self._run([(target, chosen_options)])
-            reports.append(replace(report, settings=shown))
+                reports.append(replace(report, settings=shown))
         return reports
 
     def _run_query(self, target: Target, options: Options, *,
-                   shrink: bool | None, span: Range, sync: bool = False) -> list[TargetReport]:
+                   shrink: bool | None, span: Range, sync: bool = False,
+                   browser_pool: Any = None) -> list[TargetReport]:
         """Discover targets from a query route and download each one sequentially."""
         source_cls = self.sources[target.source]
         if needs_browser(source_cls):
@@ -558,10 +574,12 @@ class Engine:
             )
         with self._history() as history, self._targets() as saved_targets, \
                 _stop_waits_on_ctrl_c(), log.group() as log_rows:
-            run_settings = RunShared(home=self.home, history=history, targets=saved_targets)
+            run_settings = RunShared(
+                home=self.home, history=history, targets=saved_targets, _browser_pool=browser_pool,
+            )
             board = job.Board(log_rows, subject_width=len(str(target)),
                               label_width=self._label_width([(target, options)]))
-            with source_run(run_settings, source) as run:
+            with shared_browser(run_settings), source_run(run_settings, source) as run:
                 account = TargetSite(run, Target(source.code, ACCOUNT, ""))
                 if not source.logged_in(account) and source.requires_login:
                     log.error("{target}: not logged in; run flnd login", target=str(target))
@@ -596,7 +614,10 @@ class Engine:
                                 if child.source == target.source:
                                     report = job.download(run, child, board, child_options)
                                 else:
-                                    [report] = self._run([(child, child_options)])
+                                    [report] = self._run(
+                                        [(child, child_options)],
+                                        browser_pool=run_settings._browser_pool,
+                                    )
                                 if sync and report.error is None:
                                     flnd.targets.mark_seen(
                                         self.home, target, [flnd.targets.key(child)]
@@ -614,7 +635,8 @@ class Engine:
                     reports.append(TargetReport(target, (), 0, error=str(error)))
         return reports
 
-    def _sync_query(self, target: Target, options: Options) -> TargetReport:
+    def _sync_query(self, target: Target, options: Options, *,
+                    browser_pool: Any = None) -> TargetReport:
         """Run one synced query target: skip known targets and update `seen`."""
         source_cls = self.sources[target.source]
         if needs_browser(source_cls):
@@ -629,10 +651,12 @@ class Engine:
         new_count = 0
         with self._history() as history, self._targets() as saved_targets, \
                 _stop_waits_on_ctrl_c(), log.group() as log_rows:
-            run_settings = RunShared(home=self.home, history=history, targets=saved_targets)
+            run_settings = RunShared(
+                home=self.home, history=history, targets=saved_targets, _browser_pool=browser_pool,
+            )
             board = job.Board(log_rows, subject_width=len(str(target)),
                               label_width=self._label_width([(target, options)]))
-            with source_run(run_settings, source) as run:
+            with shared_browser(run_settings), source_run(run_settings, source) as run:
                 account = TargetSite(run, Target(source.code, ACCOUNT, ""))
                 if not source.logged_in(account) and source.requires_login:
                     log.error("{target}: not logged in; run flnd login", target=str(target))
@@ -664,7 +688,10 @@ class Engine:
                                 if child.source == target.source:
                                     report = job.download(run, child, board, child_options)
                                 else:
-                                    [report] = self._run([(child, child_options)])
+                                    [report] = self._run(
+                                        [(child, child_options)],
+                                        browser_pool=run_settings._browser_pool,
+                                    )
                                 written.extend(report.written)
                                 skipped += report.skipped
                                 if report.error is None:
@@ -818,7 +845,8 @@ class Engine:
                 flnd.targets.record(self.home, [(target, chosen[target])], sync=sync)
 
     def _run(self, chosen: Sequence[tuple[Target, Options]], *,
-             tallies: Sequence[repair.Tally] = ()) -> list[TargetReport]:
+             tallies: Sequence[repair.Tally] = (),
+             browser_pool: Any = None) -> list[TargetReport]:
         """Download each target with its own options, and give each one's report in order.
 
             [report] = engine._run([(Target("ins", "user", "example_user"), Options())])
@@ -847,7 +875,9 @@ class Engine:
         reports: dict[int, TargetReport] = {}
         with self._history() as history, self._targets() as saved, _stop_waits_on_ctrl_c(), \
                 log.group() as rows:
-            run_settings = RunShared(home=self.home, history=history, targets=saved)
+            run_settings = RunShared(
+                home=self.home, history=history, targets=saved, _browser_pool=browser_pool,
+            )
             board = job.Board(rows, subject_width=max((len(str(target)) for target, _ in chosen),
                                                       default=0),
                               label_width=self._label_width(chosen))
@@ -855,10 +885,11 @@ class Engine:
                      [_Planned(number, *chosen[number], tallies[number] if tallies else None)
                       for number in numbers])
                     for code, numbers in groups.items()]
-            for result in worker.as_completed(partial(_run_site, run_settings, board, reports),
-                                              work, concurrency=max(len(work), 1)):
-                if not result.ok:
-                    _fail_unreached(result.item, result.error, reports, board)
+            with shared_browser(run_settings):
+                for result in worker.as_completed(partial(_run_site, run_settings, board, reports),
+                                                  work, concurrency=max(len(work), 1)):
+                    if not result.ok:
+                        _fail_unreached(result.item, result.error, reports, board)
         return [reports[number] for number in range(len(chosen))]
 
     def _label_width(self, chosen: Sequence[tuple[Target, Options]]) -> int:

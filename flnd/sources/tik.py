@@ -316,7 +316,7 @@ class TikTok(Source):
     user_agent = TIKTOK_UA
     browser = True
     # No known limit; a captcha doubles the gap.
-    pace = 1.0
+    pace = 0.2
     # What a post's files are named and keyed by, as they always were: `<date>_<id>` for a video and
     # `<date>_<id>_<n>` for the n-th photo (n from 1), the key the same without the date. `idx` is
     # empty for a video, so the `_` before it goes. A post's `part` is its folder (videos, images,
