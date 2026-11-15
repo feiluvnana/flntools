@@ -10,6 +10,7 @@ The learned speed runs from 1x to 8x: each 429 doubles it, and every 50 clean re
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from collections.abc import Mapping
@@ -49,12 +50,17 @@ class Pace:
     # A name those hosts go by together: they share one learned speed, budget windows and
     # back-off, and messages and `Client.speeds` use the name. Empty keeps each host apart.
     label: str = ""
+    _domains: tuple[str, ...] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        normalized = tuple(domain.lower().lstrip(".") for domain in self.domains)
+        object.__setattr__(self, "_domains", normalized)
 
     def paces(self, host: str) -> bool:
         """Whether the floor and budgets apply to `host`."""
-        domains = [domain.lower().lstrip(".") for domain in self.domains]
-        return not domains or any(host == domain or host.endswith("." + domain)
-                                  for domain in domains)
+        name = host.lower()
+        return not self._domains or any(name == domain or name.endswith("." + domain)
+                                        for domain in self._domains)
 
 
 class Host:
@@ -64,23 +70,26 @@ class Host:
         """Start `name`'s pace (a host's, or its hosts' label) under `pace`, or None for none."""
         self.name = name
         self.floor = pace.floor if pace is not None else 0.0
-        self.budgets = dict(pace.budgets) if pace is not None else {}
+        budgets = pace.budgets.items() if pace is not None else ()
+        self._budgets: tuple[tuple[str, int, float, deque[float]], ...] = tuple(
+            (key, requests, per, deque[float]()) for key, (requests, per) in budgets
+        )
         self.speed = min(max(speed, 1.0), SLOWEST)
         self.strikes = 0
         self._prev_strikes = 0
+        self._epoch = 0
         # Whether a thread is drawing this host's countdown, so others waiting with it draw none.
         self.showing = False
         self._last: float | None = None
         # Until when a rate header or a back-off holds every request, on the monotonic clock.
         self._blocked_until = 0.0
         self._backoff_until = 0.0
-        self._windows = {key: deque[float]() for key in self.budgets}
         self._clean = 0
         # Every thread of a run asks the same host for turns.
         self._lock = threading.Lock()
 
-    def turn(self, url: str) -> float:
-        """Reserve the next request to `url`, and return the seconds to wait before sending it."""
+    def turn(self, url: str) -> tuple[float, int]:
+        """Reserve the next request to `url`, returning `(wait_seconds, dispatch_epoch)`."""
         with self._lock:
             if self._clean > 0:
                 self._prev_strikes = 0
@@ -89,21 +98,18 @@ class Host:
             if self._last is not None and self.floor:
                 gap = self.floor * self.speed * clock.random().uniform(1, 1 + JITTER)
                 ready = max(ready, self._last + gap)
-            counted = [key for key in self.budgets if key in url]
-            for key in counted:
-                requests, per = self.budgets[key]
-                window = self._windows[key]
+            counted = [budget for budget in self._budgets if budget[0] in url]
+            for _, requests, per, window in counted:
                 if len(window) >= requests:
                     # The oldest of the last `requests` must leave the window, margin and all.
                     ready = max(ready, window[-requests] + per * (1 + MARGIN))
             start = max(now, ready)
             self._last = start
-            for key in counted:
-                window = self._windows[key]
+            for _, requests, _, window in counted:
                 window.append(start)
-                while len(window) > self.budgets[key][0]:
+                while len(window) > requests:
                     window.popleft()
-            return start - now
+            return start - now, self._epoch
 
     def held(self) -> float:
         """The seconds a rate header or a back-off still holds every request; takes no turn."""
@@ -135,21 +141,26 @@ class Host:
             if self.strikes == 0 and self._prev_strikes > 0:
                 self.strikes = self._prev_strikes
             self.strikes += 1
+            self._epoch += 1
             self.speed = min(self.speed * 2, SLOWEST)
             self._clean = 0
             self._prev_strikes = 0
             step = min(FIRST_BACKOFF * 2 ** (self.strikes - 1), MAX_BACKOFF)
-            if retry_after is None or retry_after <= 0:
+            if retry_after is not None and (not math.isfinite(retry_after) or retry_after <= 0):
+                retry_after = None
+            if retry_after is None:
                 seconds = step * clock.random().uniform(1 - BACKOFF_JITTER, 1 + BACKOFF_JITTER)
             else:
-                seconds = retry_after
+                seconds = min(retry_after, MAX_BACKOFF)
             self._backoff_until = now + seconds
             self._blocked_until = max(self._blocked_until, self._backoff_until)
             return seconds
 
-    def clean(self) -> None:
+    def clean(self, epoch: int | None = None) -> None:
         """Count a request that went through: a 429 waits 30 s again, and 50 ease the speed."""
         with self._lock:
+            if epoch is not None and epoch != self._epoch:
+                return
             self._prev_strikes = self.strikes
             self.strikes = 0
             self._clean += 1

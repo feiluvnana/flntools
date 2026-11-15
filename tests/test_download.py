@@ -16,8 +16,9 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from unittest import mock
 
 import httpx
@@ -33,9 +34,12 @@ DATA = bytes(range(256)) * 40  # 10,240 bytes, every offset distinguishable
 FIRST = f"bytes=0-{download.PIECE_MIN - 1}"
 
 
-def client(handler: Callable[[httpx.Request], httpx.Response], **options) -> httpx.Client:
-    """A client whose requests go to `handler`, never the network."""
-    return httpx.Client(transport=httpx.MockTransport(handler), **options)
+@contextmanager
+def client(handler: Callable[[httpx.Request], httpx.Response], **options) -> Iterator[httpx.Client]:
+    """A client whose requests go to `handler`, bound as `http._client()` for `http.download`."""
+    with httpx.Client(transport=httpx.MockTransport(handler), **options) as fake:
+        with mock.patch.object(http, "_client", return_value=fake):
+            yield fake
 
 
 def small(test: unittest.TestCase) -> None:
@@ -147,9 +151,9 @@ class DownloadCase(unittest.TestCase):
 
     def download(self, url: str | list[str] = "https://cdn.example/v.mp4",
                  dest: str | Path | None = None, **options) -> Path:
-        with client(self.cdn.handler) as fake:
+        with client(self.cdn.handler):
             dest = dest if dest is not None else self.tmp / "v.mp4"
-            return http.download(url, dest, transfer=http.Transfer(client=fake, **options)).path
+            return http.download(url, dest, transfer=http.Transfer(**options)).path
 
     def leftovers(self) -> list[str]:
         return sorted(path.name for path in self.tmp.iterdir() if path.name.startswith("."))
@@ -274,8 +278,8 @@ class DownloadTest(DownloadCase):
             raise httpx.ConnectError(f"refused with {request.headers['cookie']}")
 
         self.cdn.script = [refused] * 3
-        with self.assertRaises(http.Error) as raised, client(self.cdn.handler) as fake:
-            transfer = http.Transfer(client=fake, headers={"Cookie": "sid=supersecret"})
+        with self.assertRaises(http.Error) as raised, client(self.cdn.handler):
+            transfer = http.Transfer(headers={"Cookie": "sid=supersecret"})
             http.download("https://cdn.example/v.mp4?token=abcdef", self.tmp / "v.mp4",
                           transfer=transfer)
         self.assertNotIn("supersecret", str(raised.exception))
@@ -356,7 +360,8 @@ class ResumeTest(DownloadCase):
 
     def test_a_part_json_from_an_earlier_run_resumes(self):
         """A Ctrl-C, here raised from `progress`, keeps the part and its `.part.json`."""
-        with self.assertRaises(KeyboardInterrupt):
+        with (mock.patch.object(download, "PROGRESS_EVERY", 0.0),
+              self.assertRaises(KeyboardInterrupt)):
             self.download("https://cdn.example/v.mp4?sig=secret", progress=interrupt_at(4096))
         parts = self.leftovers()
         self.assertEqual(len(parts), 2)
@@ -441,7 +446,8 @@ class OverlapTest(DownloadCase):
         self.assertEqual(self.cdn.ranges_asked(), [FIRST, "bytes=2936-", None])
 
     def test_a_part_without_a_validator_resumes_in_a_later_call(self):
-        with self.assertRaises(KeyboardInterrupt):
+        with (mock.patch.object(download, "PROGRESS_EVERY", 0.0),
+              self.assertRaises(KeyboardInterrupt)):
             self.download(progress=interrupt_at(4096))
         info = json.loads(next(self.tmp.glob(".v.mp4.*.part.json")).read_text())
         self.assertEqual((info["validator"], info["ranges"]), (None, True))
@@ -502,7 +508,8 @@ class PiecesTest(DownloadCase):
         self.assertEqual(self.cdn.ranges_asked(), ["bytes=0-1023"])
 
     def test_a_split_part_json_resumes_each_piece(self):
-        with self.assertRaises(KeyboardInterrupt):
+        with (mock.patch.object(download, "PROGRESS_EVERY", 0.0),
+              self.assertRaises(KeyboardInterrupt)):
             self.download(progress=interrupt_at(6000))
         info = json.loads(next(self.tmp.glob(".v.mp4.*.part.json")).read_text())
         self.assertEqual(len(info["segments"]), 10)
@@ -588,10 +595,9 @@ class PiecesTest(DownloadCase):
 
         url = "https://limits.cdn.example/v.mp4"
         results: dict[int, bytes] = {}
-        with client(handler) as fake:
+        with client(handler):
             def work(number: int) -> None:
-                saved = http.download(url, self.tmp / f"{number}.mp4",
-                                      transfer=http.Transfer(client=fake))
+                saved = http.download(url, self.tmp / f"{number}.mp4")
                 results[number] = saved.path.read_bytes()
 
             threads = [threading.Thread(target=work, args=(number,)) for number in range(4)]
@@ -710,8 +716,8 @@ class GateTest(unittest.TestCase):
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         url = "https://busy.cdn.example/v.mp4"
-        with client(handler) as fake:
-            saved = http.download(url, tmp / "v.mp4", transfer=http.Transfer(client=fake))
+        with client(handler):
+            saved = http.download(url, tmp / "v.mp4")
         self.assertEqual(saved.path.read_bytes(), DATA)
         gate = download._gate(url)
         self.assertIsNotNone(gate.cap)
@@ -744,12 +750,12 @@ class StallTest(DownloadCase):
 
     def test_the_rules(self):
         worker = mock.Mock(first=None, sent=0.0, since=None, segment=None)
-        rules = {"ttfb": 0.1, "best": 0.0, "disk": False}
-        self.assertIsNone(download._stall(worker, 0.2, others=True, **rules))
-        self.assertEqual(download._stall(worker, 0.21, others=True, **rules), "stalled")
-        self.assertIsNone(download._stall(worker, 0.21, others=False, **rules))
-        # A 20 ms floor, when the first answer came at once.
-        self.assertEqual(download._stall(worker, 0.03, others=True,
+        rules = {"ttfb": 0.3, "best": 0.0, "disk": False}
+        self.assertIsNone(download._stall(worker, 0.6, others=True, **rules))
+        self.assertEqual(download._stall(worker, 0.61, others=True, **rules), "stalled")
+        self.assertIsNone(download._stall(worker, 0.61, others=False, **rules))
+        # A 0.5 s floor, when the first answer came at once.
+        self.assertEqual(download._stall(worker, 0.51, others=True,
                                          **{**rules, "ttfb": 0.0}), "stalled")
 
         segment = download._Segment(0, 10_000_000, done=100_000)
@@ -869,17 +875,16 @@ class TransportTest(unittest.TestCase):
             setattr(self.transport, attribute, httpx.MockTransport(handler))
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with httpx.Client(transport=self.transport) as raw:
-            saved = http.download("https://cdn.example/v.mp4", tmp,
-                                  transfer=http.Transfer(client=raw))
+            saved = http.Client(raw).download("https://cdn.example/v.mp4", tmp)
         self.assertEqual(saved.path.read_bytes(), DATA)
         self.assertEqual(versions, ["2"] + ["1.1"] * 9)
 
 
 class DownloadRecordTest(DownloadCase):
     def test_a_download_gives_its_path_url_and_headers(self):
-        with client(self.cdn.handler) as fake:
+        with client(self.cdn.handler):
             saved = http.download("https://cdn.example/v.mp4?sig=x", self.tmp,
-                                  transfer=http.Transfer(client=fake, parts=1))
+                                  transfer=http.Transfer(parts=1))
         self.assertEqual(saved.path, self.tmp / "v.mp4")
         self.assertEqual(saved.url, "https://cdn.example/v.mp4?sig=x")
         self.assertEqual(saved.headers["ETag"], '"v1"')
@@ -887,9 +892,8 @@ class DownloadRecordTest(DownloadCase):
 
     def test_a_resumed_download_gives_the_resuming_responses_headers(self):
         self.cdn.script = [self.cdn.cut_at(3000)]
-        with client(self.cdn.handler) as fake:
-            saved = http.download("https://cdn.example/v.mp4", self.tmp / "v.mp4",
-                                  transfer=http.Transfer(client=fake))
+        with client(self.cdn.handler):
+            saved = http.download("https://cdn.example/v.mp4", self.tmp / "v.mp4")
         self.assertEqual(saved.headers["content-range"], f"bytes 3000-{len(DATA) - 1}/{len(DATA)}")
 
 
@@ -901,7 +905,8 @@ class StopTest(DownloadCase):
             if done >= 4096:
                 stop.set()
 
-        with self.assertRaises(http.StoppedError):
+        with (mock.patch.object(download, "PROGRESS_EVERY", 0.0),
+              self.assertRaises(http.StoppedError)):
             self.download(progress=progress, stop=stop)
         self.assertEqual(len(self.leftovers()), 2)
         self.cdn.requests.clear()
@@ -943,6 +948,121 @@ class StopTest(DownloadCase):
         with self.assertRaises(http.StoppedError):
             self.download(stop=stop)
         self.assertEqual(len(self.cdn.requests), 1)
+
+
+class Phase8DownloadTest(DownloadCase):
+    def test_download_skips_an_invalid_mirror(self):
+        saved = self.download(["https://cdn.example/bad\n", "https://cdn.example/v.mp4"])
+        self.assertEqual(saved.read_bytes(), DATA)
+
+    def test_resume_with_more_parts_fetches_each_byte_once(self):
+        small(self)
+        self.cdn.script = [self.cdn.cut_at(2048)]
+        with self.assertRaises(http.Error):
+            self.download(parts=1, attempts=1)
+        self.cdn.requests.clear()
+        saved = self.download(parts="auto")
+        self.assertEqual(saved.read_bytes(), DATA)
+        # Missing bytes = 10240 - 2048 = 8192 across 8 pieces of 1024 bytes.
+        self.assertEqual(len(self.cdn.requests), 8)
+
+    def test_download_from_a_server_capping_ranges_completes(self):
+        small(self)
+
+        def capped(request: httpx.Request) -> httpx.Response:
+            range_hdr = request.headers.get("range", "")
+            start_s, _, end_s = range_hdr.removeprefix("bytes=").partition("-")
+            start = int(start_s) if start_s else 0
+            req_end = int(end_s) if end_s else len(DATA) - 1
+            # Cap every 206 response to at most 512 bytes.
+            end = min(req_end, start + 511, len(DATA) - 1)
+            headers = {
+                "ETag": '"v1"',
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes {start}-{end}/{len(DATA)}",
+                "Content-Length": str(end - start + 1),
+            }
+            return httpx.Response(206, headers=headers, stream=Body(DATA[start:end + 1]))
+
+        self.cdn.script = [capped] * 30
+        self.assertEqual(self.download().read_bytes(), DATA)
+
+    def test_drop_before_first_byte_raises_error_not_changed(self):
+        self.cdn.script = [self.cdn.cut_at(0)] * 3
+        with self.assertRaises(http.Error) as raised:
+            self.download(parts=1, attempts=3)
+        self.assertNotIsInstance(raised.exception, http.ChangedError)
+
+    def test_final_rename_retries_permission_error(self):
+        real_replace = os.replace
+        calls = 0
+
+        def flaky_replace(src, dst):
+            nonlocal calls
+            if Path(dst) == self.tmp / "v.mp4":
+                calls += 1
+                if calls < 3:
+                    raise PermissionError("locked by scanner")
+            return real_replace(src, dst)
+
+        with (mock.patch("shared._fs.WINDOWS", True),
+              mock.patch("shared._fs.os.replace", side_effect=flaky_replace)):
+            self.assertEqual(self.download(parts=1).read_bytes(), DATA)
+        self.assertEqual(calls, 3)
+
+    def test_piece_stall_uses_piece_median_ttfb(self):
+        small(self)
+        self.enterContext(clock.use(clock.Clock()))
+        first = True
+
+        def slow_pieces(request: httpx.Request) -> httpx.Response | None:
+            nonlocal first
+            if first:
+                first = False
+                time.sleep(0.005)
+                return None
+            # 60 ms piece TTFB (> 2x the 5 ms first TTFB, but < 0.5 s floor).
+            time.sleep(0.06)
+            return None
+
+        self.cdn.script = [slow_pieces] * 20
+        self.assertEqual(self.download().read_bytes(), DATA)
+        self.assertEqual(len(self.cdn.requests), 10)
+
+    def test_progress_throttled_at_10hz_outside_pieces_lock(self):
+        calls: list[int] = []
+        self.cdn.chunk = 512
+
+        def on_chunk() -> None:
+            self.clock.advance(0.02)
+
+        def answer_with_tick(request: httpx.Request) -> httpx.Response:
+            resp = self.cdn.answer(request)
+            assert isinstance(resp.stream, Body)
+            resp.stream.on_chunk = on_chunk
+            return resp
+
+        self.cdn.script = [answer_with_tick]
+        self.download(parts=1, progress=lambda done, total: calls.append(done))
+        # 20 chunks * 0.02 s = 0.4 s -> ~4 intermediate calls + initial + final (< 10 total).
+        self.assertLess(len(calls), 10)
+        self.assertEqual(calls[-1], len(DATA))
+
+    def test_shared_stop_watcher_uses_one_thread(self):
+        stop = threading.Event()
+        with download._Streams(stop), download._Streams(stop):
+            watcher = download._watcher(stop)
+            self.assertEqual(watcher.refs, 2)
+            self.assertIsNotNone(watcher.thread)
+        self.assertEqual(watcher.refs, 0)
+
+    def test_single_connection_stream_hashes_without_second_read(self):
+        sha = base64.b64encode(hashlib.sha256(DATA).digest()).decode()
+        headers = {"Repr-Digest": f"sha-256=:{sha}:"}
+        self.cdn.script = [lambda r: self.cdn.answer(r, headers=headers)]
+        with mock.patch.object(download, "_hash_check",
+                               side_effect=AssertionError("should not re-read")):
+            self.assertEqual(self.download(parts=1).read_bytes(), DATA)
 
 
 if __name__ == "__main__":

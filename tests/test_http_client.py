@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 
+from shared import _cookies as cookies
 from shared import clock, http, theme
 from shared._theme import Screen
 
@@ -223,11 +224,11 @@ class DownloadTest(ClientCase):
         self.assertEqual((saved.path, saved.path.read_bytes()), (Path(folder) / "v.mp4", b"ok"))
         self.assertAlmostEqual(self.gaps()[0], 3.0)
 
-    def test_a_cdns_retry_after_is_waited_out_up_to_five_minutes(self):
+    def test_a_cdns_retry_after_is_waited_out_up_to_fifteen_minutes(self):
         folder = self.enterContext(tempfile.TemporaryDirectory())
         self.answers = [httpx.Response(429, headers={"Retry-After": "3600"})]
         self.client().download(f"{CDN}/v.mp4", folder + "/")
-        self.assertAlmostEqual(self.gaps()[0], http.MAX_RETRY_AFTER)
+        self.assertAlmostEqual(self.gaps()[0], 900.0)
 
     def test_a_download_stops_on_its_own_stop_not_only_the_clients(self):
         folder = self.enterContext(tempfile.TemporaryDirectory())
@@ -236,6 +237,72 @@ class DownloadTest(ClientCase):
         with self.assertRaises(http.StoppedError):
             self.client(stop=threading.Event()).download(f"{CDN}/v.mp4", folder + "/",
                                                          transfer=http.Transfer(stop=stop))
+
+
+class ClientBehaviorTest(ClientCase):
+    def test_client_fetch_stop_ends_5xx_retries(self):
+        stop = threading.Event()
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            stop.set()
+            return httpx.Response(503)
+
+        raw = httpx.Client(transport=httpx.MockTransport(handler))
+        self.addCleanup(raw.close)
+        with self.assertRaises(http.StoppedError):
+            http.Client(raw, stop=stop).fetch(f"{SITE}/items", attempts=4)
+        self.assertEqual(calls, 1)
+
+    def test_backoff_doubles_despite_in_flight_successes(self):
+        in_flight = threading.Event()
+        release_200 = threading.Event()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/slow":
+                in_flight.set()
+                release_200.wait(2)
+                return httpx.Response(200, content=b"ok")
+            if request.url.path == "/429":
+                return httpx.Response(429)
+            return httpx.Response(200, content=b"ok")
+
+        raw = httpx.Client(transport=httpx.MockTransport(handler))
+        self.addCleanup(raw.close)
+        client = http.Client(raw)
+        t = threading.Thread(target=lambda: client.fetch(f"{SITE}/slow"))
+        t.start()
+        in_flight.wait(2)
+        host = client._host(SITE)
+        # First 429 happens while /slow is in flight (epoch 0 -> 1).
+        client._throttled(host, None)
+        self.assertEqual(host.strikes, 1)
+        # Stale 200 finishes now; strikes must NOT reset.
+        release_200.set()
+        t.join(2)
+        self.assertEqual(host.strikes, 1)
+        # Advance past first backoff and hit a second 429: strikes must double to 2.
+        self.fake.advance(host.held() + 1.0)
+        client._throttled(host, None)
+        self.assertEqual(host.strikes, 2)
+
+    def test_cookies_shared_live_with_jar(self):
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers.get("cookie", ""))
+            return httpx.Response(200, headers={"Set-Cookie": "b=2; Domain=example.com; Path=/"})
+
+        raw = httpx.Client(transport=httpx.MockTransport(handler))
+        self.addCleanup(raw.close)
+        client = http.Client(raw)
+        client.cookies = cookies.Jar([{"name": "a", "value": "1", "domain": "example.com"}])
+        client.fetch(f"{SITE}/one")
+        self.assertIn("a=1", seen[0])
+        self.assertEqual(client.cookies["a"], "1")
+        self.assertEqual(client.cookies["b"], "2")
 
 
 if __name__ == "__main__":

@@ -23,28 +23,30 @@ import os
 import re
 import secrets
 import shutil
+import statistics
 import sys
 import threading
+import weakref
 from collections import deque
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal, Mapping, Sequence, Union
+from typing import Any, Callable, Iterator, Mapping, Sequence, Union
 from urllib.parse import unquote, urlsplit
 
 import httpx
 
 import shared
-from shared import _atomic as atomic
 from shared import _clock as clock
 from shared import _fmt as fmt
+from shared import _fs as fs
 from shared._http import (CONNECTION_ERRORS, DOWNLOAD_EXTENSION, PIECE_EXTENSION, ChangedError,
                           CorruptError, Download, Error, IncompleteError, RateLimitedError,
-                          RefusedError, ServerError, SpaceError, StoppedError, _retry_after,
-                          _scrub, _where)
+                          RefusedError, ServerError, SpaceError, StoppedError, Transfer,
+                          _retry_after, _scrub, _where)
 from shared._log import log
 
-__all__ = ["Options", "run"]
+__all__ = ["run"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -66,9 +68,11 @@ GROW_WINDOW, GROW_GAIN = 1.0, 1.1
 # Refusals while other connections receive before a host is capped, and how long a cap holds,
 # so a long `sync` probes again (MDM's rules).
 REFUSALS, FORGET = 2, 600.0
-# A connection with no first byte after twice the file's first time-to-first-byte, at least
-# 20 ms, gives its piece away (MDM).
-STALL_FACTOR, STALL_FLOOR = 2.0, 0.02
+# A connection with no first byte after twice the piece connections' median TTFB, at least
+# 0.5 s, gives its piece away.
+STALL_FACTOR, STALL_FLOOR = 2.0, 0.5
+# How often, in seconds, progress callbacks are invoked (10 Hz).
+PROGRESS_EVERY = 0.1
 # After 2 s of receiving, a connection slower than a quarter of the best speed any connection
 # of the file sustained reconnects, when it has over 2 s of work left at its own pace (MDM).
 SLOW_AFTER, SLOW_SHARE, SLOW_LEFT = 2.0, 0.25, 2.0
@@ -99,44 +103,30 @@ FALLBACK_NAME = "download"
 STOP_POLL = 0.25
 
 
-@dataclass(frozen=True)
-class Options:
-    """What `http.download` was asked for beyond its URL and `dest`; its docstring says each."""
-
-    client: httpx.Client
-    headers: Mapping[str, str] = field(default_factory=dict)
-    size: int | None = None
-    parts: Literal["auto"] | int = "auto"
-    resume: bool = True
-    attempts: int = 3
-    timeout: float = 30.0
-    check: Callable[[Path], Any] | None = None
-    progress: Callable[[int, int | None], Any] | None = None
-    label: str | None = None
-    stop: threading.Event | None = None
-
-
-def run(mirrors: Sequence[str], dest: PathLike, options: Options) -> Download:
+def run(mirrors: Sequence[str], dest: PathLike, client: httpx.Client,
+        transfer: Transfer) -> Download:
     """Save one file from the first of `mirrors` that works, as `http.download` documents.
 
     Args:
         mirrors: the file's URLs, tried in order; at least one.
         dest: the file, or a folder to name it in from the first URL.
-        options: the rest of `http.download`'s arguments.
+        client: the `httpx.Client` used for requests.
+        transfer: the rest of `http.download`'s arguments.
     """
     path = _destination(dest, mirrors[0])
     path.parent.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
-        bar = (stack.enter_context(log.progress(options.label, total=options.size, show=fmt.size))
-               if options.label is not None else None)
+        bar = (stack.enter_context(log.progress(transfer.label, total=transfer.size, show=fmt.size))
+               if transfer.label is not None else None)
         taken = stack.enter_context(_claimed(path))
-        streams = stack.enter_context(_Streams(options.stop))
-        report = _Report(bar, options.progress)
+        streams = stack.enter_context(_Streams(transfer.stop))
+        report = _Report(bar, transfer.progress)
         for number, mirror in enumerate(mirrors, start=1):
-            transfer = _Transfer(mirror, path, options, resume=options.resume and not taken,
-                                 report=report, streams=streams)
             try:
-                return transfer.run()
+                job = _Transfer(mirror, path, client, transfer,
+                                resume=transfer.resume and not taken,
+                                report=report, streams=streams)
+                return job.run()
             # A 429: the caller's back-off decides, and another mirror is likely the same site.
             # A stop, or a full disk: no mirror would do better.
             except (RateLimitedError, StoppedError, SpaceError):
@@ -253,7 +243,10 @@ _claims_lock = threading.Lock()
 
 def _gate(url: str) -> _Gate:
     """The download gate of `url`'s host, made on first use."""
-    parsed = httpx.URL(url)
+    try:
+        parsed = httpx.URL(url)
+    except httpx.InvalidURL as error:
+        raise Error(f"GET {_where(url)}: InvalidURL: {error}") from error
     key = (parsed.scheme, parsed.host, parsed.port)
     with _gates_lock:
         if key not in _gates:
@@ -316,7 +309,7 @@ class _State:
         data = {"url": _where(self.url), "validator": self.validator, "size": self.size,
                 "ranges": self.ranges,
                 "segments": [[part.start, part.end, part.done] for part in self.segments]}
-        atomic.write(self.info, jsonlib.dumps(data).encode("utf-8"))
+        fs.write(self.info, jsonlib.dumps(data).encode("utf-8"))
 
     def drop(self) -> None:
         """Delete the part and its sidecar."""
@@ -332,23 +325,80 @@ class _Dropped(Exception):
     """A connection whose piece the stall rules gave to another; not a failure."""
 
 
+class _StopWatcher:
+    """One shared watcher thread per `stop` event across concurrent downloads."""
+
+    def __init__(self, stop: threading.Event):
+        self.stop = stop
+        self.responses: set[httpx.Response] = set()
+        self.lock = threading.Lock()
+        self.refs = 0
+        self.thread: threading.Thread | None = None
+
+    def acquire(self) -> None:
+        with self.lock:
+            self.refs += 1
+            if self.thread is None and not self.stop.is_set():
+                self.thread = threading.Thread(target=self._watch, name="shared-http-stop",
+                                               daemon=True)
+                self.thread.start()
+
+    def release(self) -> None:
+        with self.lock:
+            self.refs -= 1
+
+    def opened(self, response: httpx.Response) -> None:
+        with self.lock:
+            self.responses.add(response)
+
+    def closed(self, response: httpx.Response) -> None:
+        with self.lock:
+            self.responses.discard(response)
+
+    def _watch(self) -> None:
+        """Close every open response once `stop` is set; exit when no download is active."""
+        while not self.stop.wait(STOP_POLL):
+            with self.lock:
+                if self.refs <= 0:
+                    self.thread = None
+                    return
+        with self.lock:
+            responses = list(self.responses)
+            self.thread = None
+        for response in responses:
+            with suppress(Exception):
+                response.close()
+
+
+_watchers: weakref.WeakKeyDictionary[threading.Event, _StopWatcher] = weakref.WeakKeyDictionary()
+_watchers_lock = threading.Lock()
+
+
+def _watcher(stop: threading.Event) -> _StopWatcher:
+    """Return the shared `_StopWatcher` for `stop`, creating it on first use."""
+    with _watchers_lock:
+        watcher = _watchers.get(stop)
+        if watcher is None:
+            watcher = _StopWatcher(stop)
+            _watchers[stop] = watcher
+        return watcher
+
+
 class _Streams:
     """A download's stop: its open responses, closed once `stop` is set, so a stalled read ends."""
 
     def __init__(self, stop: threading.Event | None):
         self.stop = stop
-        self.responses: set[httpx.Response] = set()
-        # Streams open and close on the connections' threads while the watcher reads the set.
-        self.lock = threading.Lock()
-        self.done = threading.Event()
+        self.watcher = _watcher(stop) if stop is not None else None
 
     def __enter__(self) -> _Streams:
-        if self.stop is not None:
-            threading.Thread(target=self._watch, name="shared-http-stop", daemon=True).start()
+        if self.watcher is not None:
+            self.watcher.acquire()
         return self
 
     def __exit__(self, *exc: Any) -> None:
-        self.done.set()
+        if self.watcher is not None:
+            self.watcher.release()
 
     def check(self, url: str) -> None:
         """Raise `StoppedError` once `stop` is set."""
@@ -361,26 +411,12 @@ class _Streams:
             self.check(url)
 
     def opened(self, response: httpx.Response) -> None:
-        with self.lock:
-            self.responses.add(response)
+        if self.watcher is not None:
+            self.watcher.opened(response)
 
     def closed(self, response: httpx.Response) -> None:
-        with self.lock:
-            self.responses.discard(response)
-
-    def _watch(self) -> None:
-        """Close every open response once `stop` is set; the download's threads then see why."""
-        assert self.stop is not None
-        # Real waits, not `clock`: the stop and the reads it ends are real.
-        while not self.done.is_set():
-            if self.stop.wait(STOP_POLL):
-                with self.lock:
-                    responses = list(self.responses)
-                for response in responses:
-                    # Closing from another thread may race the reader's own close.
-                    with suppress(Exception):
-                        response.close()
-                return
+        if self.watcher is not None:
+            self.watcher.closed(response)
 
 
 @dataclass(eq=False)
@@ -392,6 +428,8 @@ class _Stream:
     segment: _Segment | None = None
     # Bytes the body starts with that are on disk already: checked, not written again.
     overlap: bytes = b""
+    # Exclusive end of a 206 Content-Range, when the server sent one.
+    range_end: int | None = None
 
     def close(self) -> None:
         """Close the response; safe to call twice and from another thread."""
@@ -416,13 +454,22 @@ class _Report:
 
     def __init__(self, bar: Any, progress: Callable[[int, int | None], Any] | None):
         self.bar, self.progress = bar, progress
-        # Connections report from their own threads; one at a time keeps the callback from
-        # running twice at once and `done` from going back.
         self.lock = threading.Lock()
+        self.last_done = 0
+        self.last_total: int | None = None
+        self.last_time: float | None = None
 
-    def __call__(self, done: int, total: int | None) -> None:
-        """Report `done` of `total` bytes to the row and the callback, one caller at a time."""
+    def __call__(self, done: int, total: int | None, *, force: bool = False) -> None:
+        """Report `done` of `total` bytes to the row and the callback, throttled at 10 Hz."""
         with self.lock:
+            if done < self.last_done and total == self.last_total:
+                return
+            now = clock.now()
+            if not force and self.last_time is not None and now - self.last_time < PROGRESS_EVERY:
+                return
+            self.last_done = done
+            self.last_total = total
+            self.last_time = now
             if self.bar is not None:
                 self.bar.total = total
                 self.bar.count = done
@@ -433,13 +480,13 @@ class _Report:
 class _Transfer:
     """One mirror of one download: its attempts, its part, and its pieces."""
 
-    def __init__(self, url: str, dest: Path, options: Options, *, resume: bool, report: _Report,
-                 streams: _Streams):
+    def __init__(self, url: str, dest: Path, client: httpx.Client, options: Transfer, *,
+                 resume: bool, report: _Report, streams: _Streams):
         """One mirror's transfer; nothing is requested until `run`."""
-        self.url, self.dest, self.options = url, dest, options
+        self.url, self.dest, self.client, self.options = url, dest, client, options
         self.resume, self.report, self.streams = resume, report, streams
         # `identity`: a compressed body's bytes and ranges aren't the file's, so it couldn't resume.
-        self.headers = {"Accept-Encoding": "identity", **options.headers}
+        self.headers = {"Accept-Encoding": "identity", **(options.headers or {})}
         self.gate = _gate(url)
         self.state: _State | None = None
         # The answer the transfer started from: its URL and headers for the `Download`, and its
@@ -453,6 +500,9 @@ class _Transfer:
         self.restarted = False
         # Set after a restart: later attempts fetch the file in one plain request.
         self.single = False
+        # Streamed hash for a single-connection, non-resumed download.
+        self.hasher: Any = None
+        self.expected_digest: tuple[str, bytes] | None = None
 
     def run(self) -> Download:
         """Every attempt until the file is whole and checked, then its rename."""
@@ -474,10 +524,7 @@ class _Transfer:
             attempt += 1
         state = self.state
         assert state is not None
-        # Through `atomic`, whose part moves onto the file's name in one step: a reader sees the
-        # old file or the whole new one. The resumable part moves into it first, one rename too.
-        with atomic.writing(self.named, replace=True) as final:
-            os.replace(state.part, final)
+        fs._replace(state.part, self.named)
         state.info.unlink(missing_ok=True)
         return Download(self.named, self.final_url, self.response_headers)
 
@@ -503,7 +550,7 @@ class _Transfer:
         except shared.BrokenError as error:
             # `check` or the server's hash found the file damaged; `_verify` deleted it.
             return error
-        except httpx.HTTPError as error:  # an invalid URL, too many redirects: it would repeat
+        except (httpx.HTTPError, httpx.InvalidURL) as error:  # invalid URL, too many redirects
             self._keep()
             raise Error(self._scrub(f"GET {_where(self.url)}: {type(error).__name__}: "
                                     f"{error}")) from error
@@ -527,7 +574,7 @@ class _Transfer:
         state = self.state
         assert state is not None
         try:
-            self.report(state.done, self.total())
+            self.report(state.done, self.total(), force=True)
         except BaseException:
             # The caller's progress raised (a Ctrl-C, say) before a connection owns the stream.
             stream.close()
@@ -552,6 +599,9 @@ class _Transfer:
         """Open the first unfinished segment of a kept part; a whole-file answer restarts on it."""
         state = self.state
         assert state is not None
+        self.hasher, self.expected_digest = None, None
+        if self.width() > 1 and state.size is not None:
+            _recut(state)
         first = next((segment for segment in state.segments if not segment.finished), None)
         if first is None:
             return None
@@ -560,11 +610,13 @@ class _Transfer:
         self.ttfb = clock.now() - start
         self._started(stream)
         if stream.response.status_code == 200:
-            # A 200 to a range: the file changed (`If-Range` didn't match) or the server ignores
-            # ranges. Either way the body is the whole file, so the part restarts on it.
-            log.debug("{name}: not the file the part holds; starting again", name=self.dest.name)
+            # A 200 to a range means the file changed or ranges are ignored; without Range it is
+            # just a fresh start after a pre-first-byte drop.
+            if "Range" in stream.response.request.headers:
+                log.debug("{name}: not the file the part holds; starting again",
+                          name=self.dest.name)
+                self.restarted = True
             self._drop()
-            self.restarted = True
             self._start(stream)
         return stream
 
@@ -602,11 +654,22 @@ class _Transfer:
                 raise
             self.state = _State(part, self.url, validator, total, segments, ranges)
             stream.segment = segments[0]
+            self._init_hasher()
             if self._resumable():
                 self.state.save()
         except BaseException:
             stream.close()
             raise
+
+    def _init_hasher(self) -> None:
+        """Start an inline hasher when writing sequentially on a single fresh connection."""
+        self.hasher, self.expected_digest = None, None
+        if self.width() != 1:
+            return
+        target = _digest_target(self.response_headers, whole=self.status == 200)
+        if target is not None:
+            self.expected_digest = target
+            self.hasher = hashlib.new(target[0])
 
     def _rest(self, end: int | None, total: int | None, validator: str | None) -> list[_Segment]:
         """The segments after a first piece that ended at `end`: pieces, one segment, or none."""
@@ -664,12 +727,14 @@ class _Transfer:
         extensions: dict[str, Any] = {DOWNLOAD_EXTENSION: True}
         if piece:
             extensions[PIECE_EXTENSION] = True
-        client = self.options.client
+        client = self.client
         request = client.build_request("GET", self.url, headers=headers,
                                        timeout=self.options.timeout, extensions=extensions)
         response = client.send(request, stream=True)
         self.streams.opened(response)
-        stream = _Stream(response, self.streams)
+        range_end = (_range(response.headers.get("content-range", ""))[1]
+                     if response.status_code == 206 else None)
+        stream = _Stream(response, self.streams, range_end=range_end)
         try:
             self.streams.check(self.url)
             _checked(response, request, first, ranged="Range" in headers)
@@ -702,7 +767,12 @@ class _Transfer:
                 # Every segment is written, so these bytes are all the body had: only a fresh
                 # download can mend it.
                 raise IncompleteError(f"GET {_where(self.url)}: got {got} of {expected} bytes")
-            _hash_check(state.part, self.response_headers, whole=self.status == 200)
+            if self.hasher is not None and self.expected_digest is not None:
+                name, expected_bytes = self.expected_digest
+                if self.hasher.digest() != expected_bytes:
+                    raise CorruptError(f"{state.part.name}: its {name} differs from the server's")
+            else:
+                _hash_check(state.part, self.response_headers, whole=self.status == 200)
             self.named = self.dest
             if self.options.check is not None:
                 named = self.options.check(state.part)
@@ -751,7 +821,10 @@ class _Transfer:
 
     def _scrub(self, text: str) -> str:
         """`text` with the caller's secret header values replaced by `***`."""
-        request = self.options.client.build_request("GET", self.url, headers=self.headers)
+        try:
+            request = self.client.build_request("GET", self.url, headers=self.headers)
+        except httpx.InvalidURL:
+            return text
         return _scrub(text, request)
 
 
@@ -764,6 +837,8 @@ class _Pieces:
         assert state is not None and stream.segment is not None
         self.transfer, self.state, self.gate = transfer, state, transfer.gate
         self.width = transfer.width()
+        for segment in state.segments:
+            segment.failures = 0
         if self.width > 1:
             _recut(state)
         first = _Worker(self, stream)
@@ -781,6 +856,8 @@ class _Pieces:
         self.done = state.done
         # The best speed any connection of the file sustained, in bytes per second.
         self.best = 0.0
+        # First-byte times observed on piece connections, for the stall median.
+        self.ttfbs: list[float] = []
 
     def run(self) -> None:
         """Fetch every unfinished segment, then raise the first failure that stopped it."""
@@ -790,6 +867,7 @@ class _Pieces:
             self._watch_all()
         if self.failures:
             raise self.failures[0]
+        self.transfer.report(self.done, self.transfer.total(), force=True)
 
     def _watch_all(self) -> None:
         """Run the connections on threads, adding them while pieces wait, until all are done."""
@@ -852,8 +930,9 @@ class _Pieces:
                     self.best = max(self.best, worker.speed(now))
             disk = _disk_bound(busy, now)
             others = len(busy) > 1 or self.gate.allowed() > self.gate.active
+            ttfb = statistics.median(self.ttfbs) if self.ttfbs else self.transfer.ttfb
             for worker in busy:
-                reason = _stall(worker, now, ttfb=self.transfer.ttfb, best=self.best, disk=disk,
+                reason = _stall(worker, now, ttfb=ttfb, best=self.best, disk=disk,
                                 others=others)
                 if reason is not None:
                     closing += self._take_back(worker, reason)
@@ -882,6 +961,20 @@ class _Pieces:
             segment.owner = worker
             return segment
 
+    def record_ttfb(self, ttfb: float) -> None:
+        """Record a piece connection's time to first byte for the stall median."""
+        with self.lock:
+            self.ttfbs.append(ttfb)
+
+    def requeue_rest(self, segment: _Segment) -> None:
+        """Split a capped 206 segment at `segment.at` and requeue the remaining tail."""
+        with self.lock:
+            rest = _Segment(segment.at, segment.end)
+            segment.end = segment.at
+            index = self.state.segments.index(segment)
+            self.state.segments.insert(index + 1, rest)
+            self.queue.appendleft(rest)
+
     def wrote(self, worker: _Worker, segment: _Segment, count: int) -> bool:
         """Count `count` bytes `worker` wrote at `segment`'s end; False when it isn't its piece."""
         with self.lock:
@@ -889,8 +982,8 @@ class _Pieces:
                 return False
             segment.done += count
             self.done += count
-            # Under the lock, so two connections' reports never make `done` go back.
-            self.transfer.report(self.done, self.transfer.total())
+            done = self.done
+        self.transfer.report(done, self.transfer.total())
         self.gate.received(count)
         return True
 
@@ -984,6 +1077,7 @@ class _Worker:
                 stream.close()
                 raise _Changed("a range came back as the whole file")
             self.first = clock.now()
+            self.pieces.record_ttfb(self.first - self.sent)
             if segment.owner is not self:
                 # The stall rules gave the piece away while this answer was on its way.
                 stream.close()
@@ -1013,8 +1107,12 @@ class _Worker:
             # No length from the server: the body ending is the file ending.
             segment.end = segment.at
         elif not segment.finished:
-            raise IncompleteError(f"GET {_where(self.transfer.url)}: got {segment.at} of "
-                                  f"{segment.end} bytes")
+            if (stream.range_end is not None and segment.at == stream.range_end
+                    and stream.range_end < segment.end):
+                self.pieces.requeue_rest(segment)
+            else:
+                raise IncompleteError(f"GET {_where(self.transfer.url)}: got {segment.at} of "
+                                      f"{segment.end} bytes")
         self.pieces.finished(self, segment)
 
     def _fill(self, file: io.FileIO, stream: _Stream, segment: _Segment) -> None:
@@ -1036,6 +1134,8 @@ class _Worker:
         file.seek(at)
         _write_all(file, chunk)
         self.writing += clock.now() - start
+        if self.transfer.hasher is not None:
+            self.transfer.hasher.update(chunk)
         self.received += len(chunk)
         # Counted only now: the part's handle has no buffer, so these bytes are the system's
         # already, and a sidecar saved from here on never claims a byte a crash could lose.
@@ -1139,19 +1239,26 @@ def _disk_bound(workers: list[_Worker], now: float) -> bool:
     return elapsed > 0 and sum(worker.writing for worker in workers) / elapsed >= DISK_BOUND
 
 
-def _hash_check(part: Path, headers: httpx.Headers, *, whole: bool) -> None:
-    """Compare the finished file with the strongest digest the server sent, if it sent one."""
+def _digest_target(headers: httpx.Headers, *, whole: bool) -> tuple[str, bytes] | None:
+    """The strongest `(hashlib_name, expected_bytes)` the response headers name, or None."""
     if headers.get("content-encoding", "identity").lower() != "identity":
-        return
+        return None
     digests = _digests(headers, whole=whole)
     name = next((HASHES[key] for key in HASHES if HASHES[key] in digests), None)
-    if name is None:
+    return (name, digests[name]) if name is not None else None
+
+
+def _hash_check(part: Path, headers: httpx.Headers, *, whole: bool) -> None:
+    """Compare the finished file with the strongest digest the server sent, if it sent one."""
+    target = _digest_target(headers, whole=whole)
+    if target is None:
         return
+    name, expected = target
     digest = hashlib.new(name)
     with open(part, "rb") as file:
         while block := file.read(MB):
             digest.update(block)
-    if digest.digest() != digests[name]:
+    if digest.digest() != expected:
         raise CorruptError(f"{part.name}: its {name} differs from the server's")
 
 
