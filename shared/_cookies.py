@@ -236,6 +236,7 @@ def _identity(cookie: Cookie) -> tuple[str, str, str]:
 
 
 def _load_firefox(profile: str | None) -> list[Cookie]:
+    """Read cookies from a Firefox `cookies.sqlite` database."""
     with _open_copy(_firefox_profile(profile) / "cookies.sqlite") as connection:
         try:
             rows = connection.execute(

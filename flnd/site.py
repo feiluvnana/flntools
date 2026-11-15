@@ -503,7 +503,7 @@ class TargetSite:
         try:
             for tab in held:
                 self._stop_warm_watch(tab)
-            pool = self._run.settings._browser_pool
+            pool = self._run.settings.browser_pool
             if self._browser is not None:
                 self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
                 if pool is None:
@@ -543,7 +543,7 @@ class TargetSite:
 
     def _connect(self) -> Any:
         """The target's browser, with the source's settings and the login's cookies."""
-        if (pool := self._run.settings._browser_pool) is not None:
+        if (pool := self._run.settings.browser_pool) is not None:
             return pool.browser_for(self._run.jar)
         source = self._source
         # Visible (open's default), so a person can solve a captcha in it.
@@ -620,15 +620,15 @@ class _PacedPage(browser.Page):
 @contextmanager
 def shared_browser(settings: RunShared) -> Iterator[None]:
     """Share one browser window across every source and target running under `settings`."""
-    if settings._browser_pool is not None:
+    if settings.browser_pool is not None:
         yield
         return
     pool = _BrowserPool()
-    settings._browser_pool = pool
+    settings.browser_pool = pool
     try:
         yield
     finally:
-        settings._browser_pool = None
+        settings.browser_pool = None
         pool.close()
 
 

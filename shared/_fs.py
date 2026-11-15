@@ -38,28 +38,29 @@ class ExistsError(Error, FileExistsError):
 
 @overload
 def write(
-    dest: PathLike, data: bytes, *, replace: bool = True, sync: bool = False
+    dest: PathLike, *, data: bytes | str, replace: bool = True, sync: bool = False
 ) -> Path: ...
 
 
 @overload
 def write(
-    dest: PathLike, data: None = None, *, replace: bool = True, sync: bool = False
+    dest: PathLike, *, data: None = None, replace: bool = True, sync: bool = False
 ) -> AbstractContextManager[Path]: ...
 
 
 def write(
     dest: PathLike,
-    data: bytes | None = None,
     *,
+    data: bytes | str | None = None,
     replace: bool = True,
     sync: bool = False,
 ) -> Path | AbstractContextManager[Path]:
     """Atomically write `data` to `dest`, or yield a temp `Path` to write and rename on exit."""
     if data is None:
         return _write_context(dest, replace=replace, sync=sync)
+    raw = data.encode("utf-8") if isinstance(data, str) else data
     with _write_context(dest, replace=replace, sync=sync) as part:
-        _write_bytes(part, data)
+        _write_bytes(part, raw)
     return Path(dest)
 
 

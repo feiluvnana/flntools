@@ -1,9 +1,15 @@
 flnd: module
+flnd.AuthInfo(code: str, name: str, state: str, origin: str, expiring: list[tuple[str, float]])
+flnd.AuthInfo.code: field -> str
+flnd.AuthInfo.expiring: field -> list[tuple[str, float]]
+flnd.AuthInfo.name: field -> str
+flnd.AuthInfo.origin: field -> str
+flnd.AuthInfo.state: field -> str
 flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
-flnd.Engine.auth_ls() -> list[dict[str, Any]]
+flnd.Engine.auth_ls() -> list[AuthInfo]
 flnd.Engine.browsers: property -> dict[str, str]
 flnd.Engine.cookie_logins: property -> tuple[str, ...]
-flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, folders: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None, limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False) -> Report
+flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None, limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False) -> Report
 flnd.Engine.home: attribute
 flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
 flnd.Engine.logins: property -> dict[str, str]
@@ -12,8 +18,9 @@ flnd.Engine.resolve(texts: Sequence[str]) -> list[Target]
 flnd.Engine.sources: attribute
 flnd.Engine.sync(targets: Sequence[Target | str] = ()) -> Report
 flnd.Engine.target_del(targets: Sequence[Target | str]) -> list[Target]
-flnd.Engine.target_ls() -> list[dict[str, Any]]
+flnd.Engine.target_ls() -> list[TargetInfo]
 flnd.Engine.target_sync(targets: Sequence[Target | str], *, enabled: bool) -> list[Target]
+flnd.Error(Exception)
 flnd.LoginError(flnd.source.Error)
 flnd.Range(since: datetime.date | None = None, until: datetime.date | None = None)
 flnd.Range.parse(text: str) -> Range
@@ -31,6 +38,16 @@ flnd.Target.source: field -> str
 flnd.Target.value: field -> str
 flnd.TargetError(flnd.source.Error, ValueError)
 flnd.TargetError.url: attribute
+flnd.TargetInfo(target: Target, sync: bool, shrink: bool, at: str, files: int, size: int, seen: int, categories: dict[str, str], query: bool)
+flnd.TargetInfo.at: field -> str
+flnd.TargetInfo.categories: field -> dict[str, str]
+flnd.TargetInfo.files: field -> int
+flnd.TargetInfo.query: field -> bool
+flnd.TargetInfo.seen: field -> int
+flnd.TargetInfo.shrink: field -> bool
+flnd.TargetInfo.size: field -> int
+flnd.TargetInfo.sync: field -> bool
+flnd.TargetInfo.target: field -> Target
 flnd.TargetReport(target: Target, written: tuple[Path, ...], skipped: int, repaired: int = 0, missing: int = 0, settings: str = '', error: str | None = None)
 flnd.TargetReport.error: field -> str | None
 flnd.TargetReport.missing: field -> int
@@ -124,11 +141,13 @@ flnd.source.Range(since: datetime.date | None = None, until: datetime.date | Non
 flnd.source.Range.parse(text: str) -> Range
 flnd.source.Range.since: field -> datetime.date | None
 flnd.source.Range.until: field -> datetime.date | None
-flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None, params: Mapping[str, Any] | None = None, discovers: bool = False)
+flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None, params: Mapping[str, Any] | None = None, discovers: bool = False, from_: Iterable[str] | None = None, folder: str | None = None)
 flnd.source.Route.categories: property -> tuple[Category, ...]
 flnd.source.Route.category(function: Callable[..., Any] | None = None, /, *, newest_first: bool = False, folder: str | None = None, key: str | None = None) -> Any
 flnd.source.Route.discovers: attribute
+flnd.source.Route.folder: attribute
 flnd.source.Route.forms(code: str) -> list[str]
+flnd.source.Route.from_: property -> frozenset[str]
 flnd.source.Route.function: attribute
 flnd.source.Route.is_query: attribute
 flnd.source.Route.kind: attribute
@@ -184,7 +203,7 @@ flnd.source.TargetError.url: attribute
 flnd.source.day(value: Any) -> datetime.date | None
 flnd.source.fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str
 flnd.source.pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None]) -> Iterator[Any]
-flnd.source.target(*patterns: str, shown: str | None = None, params: Mapping[str, Any] | None = None, discovers: bool = False) -> Callable[[Callable[..., Any]], Route]
+flnd.source.target(*patterns: str, shown: str | None = None, params: Mapping[str, Any] | None = None, discovers: bool = False, from_: Iterable[str] | None = None, folder: str | None = None) -> Callable[[Callable[..., Any]], Route]
 shared: module
 shared.BrokenError(shared.Error, ValueError)
 shared.Error(Exception)
@@ -192,9 +211,7 @@ shared.MissingError(shared.Error, RuntimeError)
 shared.RefusedError(shared.Error)
 shared.UnsafeError(shared.Error, ValueError)
 shared.archive: module
-shared.archive.BombError(shared.archive.Error, shared.UnsafeError)
 shared.archive.BrokenError(shared.archive.Error, shared.BrokenError)
-shared.archive.ConflictError(shared.archive.Error, ValueError)
 shared.archive.Entry(name: str, size: int | None, kind: Literal['file', 'dir'])
 shared.archive.Entry.kind: field -> Literal['file', 'dir']
 shared.archive.Entry.name: field -> str
@@ -207,22 +224,19 @@ shared.archive.Limits.size: field -> int
 shared.archive.MissingError(shared.archive.Error, shared.MissingError)
 shared.archive.PasswordError(shared.archive.Error, shared.RefusedError, ValueError)
 shared.archive.UnsafeError(shared.archive.Error, shared.UnsafeError)
-shared.archive.ls(path: PathLike, *, password: str | None = None, limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Entry]
-shared.archive.unzip(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, conflict: Conflict = 'error', limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Path]
-shared.archive.zip(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, split: int | None = None) -> list[Path]
-shared.atomic: module
-shared.atomic.Error(shared.Error)
-shared.atomic.write(dest: PathLike, data: bytes, *, mode: int = 438) -> None
-shared.atomic.writing(dest: PathLike, *, replace: bool = False) -> Iterator[Path]
+shared.archive.ls(parts: PathLike | Sequence[PathLike], *, password: str | None = None, limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Entry]
+shared.archive.pack(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, split: int | None = None, progress: Progress | None = None) -> list[Path]
+shared.archive.unpack(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, conflict: Conflict = 'error', limits: Limits = Limits(size=20000000000, ratio=200, files=100000), progress: Progress | None = None) -> list[Path]
 shared.browser: module
 shared.browser.Browser(context: BrowserContext, *, close_steps: list[Callable[[], Any]], headless: bool, page_viewport: tuple[int, int] | None = None)
-shared.browser.Browser.add_cookies(jar: Jar | Iterable[dict]) -> None
-shared.browser.Browser.clear_cookies() -> None
 shared.browser.Browser.close() -> None
-shared.browser.Browser.cookies: property -> Jar
+shared.browser.Browser.cookies: property -> BrowserCookies
 shared.browser.Browser.open(url: str | None = None, *, idle: bool = False, timeout: float = 30.0) -> Page
-shared.browser.Browser.pages: property -> list[Page]
-shared.browser.Browser.raw: attribute
+shared.browser.Browser.raw: property -> BrowserContext
+shared.browser.BrowserCookies(browser: Browser)
+shared.browser.BrowserCookies.add(jar: Jar | Iterable[dict[str, Any]]) -> None
+shared.browser.BrowserCookies.clear() -> None
+shared.browser.BrowserCookies.get() -> Jar
 shared.browser.Error(shared.Error)
 shared.browser.Match: Union
 shared.browser.MissingError(shared.browser.Error, shared.MissingError)
@@ -232,218 +246,115 @@ shared.browser.Page.close() -> None
 shared.browser.Page.document: property -> Selection
 shared.browser.Page.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, timeout: float = 30.0) -> http.Response | None
 shared.browser.Page.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> Visit | None
-shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, poll: float = 1.0, timeout: float | None = None) -> bool
-shared.browser.Page.on_request(match: Match, handler: Callable[[Request], Any]) -> Subscription
-shared.browser.Page.on_response(match: Match, handler: Callable[[Any, Response], Any], *, lines: bool = False) -> Subscription
+shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 shared.browser.Page.raw: attribute
-shared.browser.Page.scroll(*, within: str | Locator | None = None, until: Callable[[], bool] | None = None, count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0, pause: float = 0.05, on_step: Callable[[], Any] | None = None) -> int
-shared.browser.Page.title: property -> str
+shared.browser.Page.requests(match: Match) -> Watch
+shared.browser.Page.responses(match: Match) -> Watch
+shared.browser.Page.scroll(*, until: Callable[[], bool] | None = None, within: str | None = None, idle: float = 10.0) -> int
 shared.browser.Page.url: property -> str
 shared.browser.Page.wait(css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None, idle: bool = False, timeout: float = 30.0) -> None
-shared.browser.RawError(Exception)
-shared.browser.Subscription(stop: Callable[[], None])
-shared.browser.Subscription.stop() -> None
 shared.browser.Visit(status: int, url: str, headers: Mapping[str, str])
 shared.browser.Visit.headers: field -> Mapping[str, str]
 shared.browser.Visit.status: field -> int
 shared.browser.Visit.url: field -> str
 shared.browser.WaitError(shared.browser.Error)
-shared.browser.check() -> None
-shared.browser.open(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = False, viewport: tuple[int, int] = (1280, 900), locale: str | None = None, timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser
+shared.browser.Watch(stop: Callable[[], None], step: Callable[[], bool] | None = None)
+shared.browser.Watch.request: property -> Request | None
+shared.browser.Watch.stop() -> None
+shared.browser.attach(cdp: str) -> Browser
+shared.browser.open(*, profile: str | Path | None = None, headless: bool = False, stealth: bool = True) -> Browser
 shared.bundler: module
 shared.bundler.BuildError(shared.bundler.Error, RuntimeError)
 shared.bundler.Error(shared.Error)
-shared.bundler.MissingError(shared.bundler.Error, ImportError)
+shared.bundler.MissingError(shared.bundler.Error, shared.MissingError)
 shared.bundler.build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Iterable[PathLike] = (), dest: PathLike = 'dist') -> Path
 shared.cli: module
-shared.cli.App(name: str, *, version: str | None = None, description: str = '', epilog: str = '')
-shared.cli.App.children: attribute -> dict[str, Command | App]
-shared.cli.App.command(target: Callable | str | None = None, /) -> Any
-shared.cli.App.default: attribute -> Command | None
-shared.cli.App.description: attribute
-shared.cli.App.epilog: attribute
-shared.cli.App.group(name: str, *, description: str = '', default: Callable | None = None) -> App
-shared.cli.App.handler: attribute -> Command | None
-shared.cli.App.help(*path: str) -> str
-shared.cli.App.name: attribute
-shared.cli.App.parent: attribute -> App | None
-shared.cli.App.parse(argv: list[str]) -> inspect.BoundArguments | None
-shared.cli.App.row_text() -> str
-shared.cli.App.run(argv: list[str] | None = None) -> int
-shared.cli.App.version: attribute
+shared.cli.App(*, name: str = '', help: str = '')
+shared.cli.App.command(target: Callable[..., Any] | str | None = None, /) -> Any
+shared.cli.App.group(name: str, *, help: str = '', default: Callable[..., Any] | None = None) -> App
+shared.cli.App.raw: property -> cyclopts.App
+shared.cli.App.run(argv: Sequence[str] | None = None) -> int
 shared.cli.Error(shared.Error)
-shared.cli.UsageError(shared.cli.Error)
-shared.cli.UsageError.usage: attribute -> str
-shared.cli.arg(help: str | None = None, *, metavar: str | None = None, nargs: str | None = None, choices: Any = None, type: Callable[[str], Any] | None = None, stdin: bool = True) -> Arg
-shared.cli.opt(*flags: str, help: str | None = None, metavar: str | None = None, choices: Any = None, type: Callable[[str], Any] | None = None, stdin: bool = False, const: Any = None) -> Opt
-shared.cli.run(fn: Callable) -> typing.NoReturn
+shared.cli.Stopping(soon: threading.Event, now: threading.Event)
+shared.cli.Stopping.now: field -> threading.Event
+shared.cli.Stopping.soon: field -> threading.Event
+shared.cli.UsageError(shared.cli.Error, ValueError)
+shared.cli.stopping() -> Iterator[Stopping]
 shared.clock: module
-shared.clock.Clock()
+shared.clock.Clock(*args, **kwargs)
 shared.clock.Clock.now() -> float
-shared.clock.Clock.random: attribute -> Random
 shared.clock.Clock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
 shared.clock.Clock.wall() -> float
 shared.clock.Error(shared.Error)
-shared.clock.Fake(*, start: float = 0.0, seed: int = 0)
+shared.clock.Fake(start: float = 0.0)
 shared.clock.Fake.advance(seconds: float) -> None
 shared.clock.Fake.now() -> float
-shared.clock.Fake.random: attribute
 shared.clock.Fake.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
 shared.clock.Fake.slept: attribute -> list[float]
-shared.clock.Fake.time: attribute -> float
 shared.clock.Fake.wall() -> float
 shared.clock.now() -> float
-shared.clock.random() -> Random
 shared.clock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
 shared.clock.use(replacement: C) -> Iterator[C]
 shared.clock.wall() -> float
 shared.cookies: module
-shared.cookies.Error(shared.Error, ValueError)
+shared.cookies.Error(shared.Error)
 shared.cookies.Jar(cookies: Iterable[Cookie] = ())
-shared.cookies.Jar.filter(*, domain: str | None = None, names: Iterable[str] | None = None) -> Jar
+shared.cookies.Jar.filter(*, domains: str | Iterable[str] | None = None, names: Iterable[str] | None = None) -> Jar
 shared.cookies.Jar.header: property -> str
 shared.cookies.Jar.merge(other: Jar | Iterable[Cookie]) -> Jar
-shared.cookies.Jar.names: property -> list[str]
 shared.cookies.Jar.raw: property -> list[Cookie]
 shared.cookies.Jar.save(dest: PathLike) -> Path
 shared.cookies.MissingError(shared.cookies.Error, shared.MissingError)
 shared.cookies.UnsafeError(shared.cookies.Error, shared.UnsafeError)
-shared.cookies.from_browser(browser: str = 'chrome', *, profile: str | None = None) -> Jar
-shared.cookies.load(path: PathLike) -> Jar
-shared.cookies.profiles(browser: str = 'chrome') -> list[str]
+shared.cookies.load(source: PathLike | str, *, profile: str | None = None) -> Jar
 shared.crypto: module
 shared.crypto.Error(shared.Error, ValueError)
-shared.crypto.blake2b(data: HashInput) -> str
+shared.crypto.MissingError(shared.crypto.Error, shared.MissingError)
 shared.crypto.decrypt(blob: bytes, key: bytes, *, context: bytes = b'') -> bytes
+shared.crypto.digest(data: HashInput, *, algorithm: str = 'sha256') -> str
 shared.crypto.encrypt(data: Data, key: bytes, *, context: bytes = b'') -> bytes
-shared.crypto.md5(data: HashInput) -> str
-shared.crypto.sha1(data: HashInput) -> str
-shared.crypto.sha256(data: HashInput) -> str
-shared.crypto.sha512(data: HashInput) -> str
-shared.fmt: module
-shared.fmt.Error(shared.Error)
-shared.fmt.count(n: int, noun: str, *, plural: str | None = None) -> str
-shared.fmt.date(value: _datetime.date | float, *, pattern: str | None = None) -> str
-shared.fmt.duration(seconds: float) -> str
-shared.fmt.filename(text: str, *, fallback: str = 'untitled', max_bytes: int = 200) -> str
-shared.fmt.size(n: float) -> str
-shared.fmt.url(text: str) -> str
+shared.fs: module
+shared.fs.Error(shared.Error)
+shared.fs.ExistsError(shared.fs.Error, FileExistsError)
+shared.fs.lock(path: PathLike, *, timeout: float | None = None) -> Iterator[filelock.FileLock]
+shared.fs.sweep(folder: PathLike, *, keep: float = 604800, settle: float = 3600) -> int
+shared.fs.write(dest: PathLike, *, data: bytes | str | None = None, replace: bool = True, sync: bool = False) -> Path | AbstractContextManager[Path]
 shared.http: module
-shared.http.ChangedError(shared.http.Error, shared.BrokenError)
-shared.http.Client(raw: httpx.Client | None = None, *, pace: Pace | None = None, speeds: Mapping[str, float] | None = None, stop: threading.Event | None = None)
-shared.http.Client.back_off(url: str, *, reason: str = 'rate limited', retry_after: float | None = None) -> None
-shared.http.Client.call(url: str, send: Callable[[], A], *, attempts: int = 1) -> A
+shared.http.Client(*, cookies: cookies.Jar | None = None, headers: Mapping[str, str] | None = None, timeout: float = 30.0, rate: float | None = None)
 shared.http.Client.close() -> None
-shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, transfer: Transfer | None = None) -> Download
-shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0, redirects: bool | None = None) -> Response | None
-shared.http.Client.pace: attribute -> Pace | None
-shared.http.Client.raw: attribute -> httpx.Client
-shared.http.Client.speeds: property -> dict[str, float]
-shared.http.Client.stop: attribute -> threading.Event | None
-shared.http.CorruptError(shared.http.Error, shared.BrokenError)
-shared.http.Download(path: Path, url: str, headers: Mapping[str, str] = <factory>)
-shared.http.Download.headers: field -> Mapping[str, str]
-shared.http.Download.path: field -> Path
-shared.http.Download.url: field -> str
+shared.http.Client.cookies: property, settable -> cookies.Jar
+shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, resume: bool = True, attempts: int = 3, timeout: float = 30.0, progress: Callable[[int, int | None], Any] | None = None, stop: threading.Event | None = None) -> Path
+shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
+shared.http.Client.raw: property -> httpx.Client
 shared.http.Error(shared.Error)
 shared.http.IncompleteError(shared.http.Error, shared.BrokenError)
-shared.http.Pace(floor: float = 0.0, budgets: Mapping[str, tuple[int, float]] = <factory>, domains: tuple[str, ...] = (), label: str = '')
-shared.http.Pace.budgets: field -> Mapping[str, tuple[int, float]]
-shared.http.Pace.domains: field -> tuple[str, ...]
-shared.http.Pace.floor: field -> float
-shared.http.Pace.label: field -> str
-shared.http.Pace.paces(host: str) -> bool
 shared.http.RateLimitedError(shared.http.Error)
 shared.http.RateLimitedError.retry_after: attribute
 shared.http.RateLimitedError.status: attribute
 shared.http.RefusedError(shared.http.Error, shared.RefusedError)
 shared.http.RefusedError.response: attribute
 shared.http.RefusedError.status: attribute
-shared.http.Response(status: int, url: str, headers: Mapping[str, str], content: bytes = b'')
+shared.http.Response(status: int, url: str, headers: Mapping[str, str], content: bytes = b'', _raw: httpx.Response | None = None)
 shared.http.Response.content: field -> bytes
 shared.http.Response.headers: field -> Mapping[str, str]
 shared.http.Response.html: property -> Selection
 shared.http.Response.json: property -> Any
 shared.http.Response.ok: property -> bool
+shared.http.Response.raw: property -> httpx.Response
 shared.http.Response.status: field -> int
 shared.http.Response.text: property -> str
 shared.http.Response.url: field -> str
-shared.http.ServerError(shared.http.Error)
-shared.http.ServerError.status: attribute
-shared.http.SpaceError(shared.http.Error)
 shared.http.StoppedError(shared.http.Error)
-shared.http.Transfer(client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, size: int | None = None, parts: Literal['auto'] | int = 'auto', resume: bool = True, attempts: int = 3, timeout: float = 30.0, check: Callable[[Path], Any] | None = None, progress: Callable[[int, int | None], Any] | None = None, label: str | None = None, stop: threading.Event | None = None)
-shared.http.Transfer.attempts: field -> int
-shared.http.Transfer.check: field -> Callable[[Path], Any] | None
-shared.http.Transfer.client: field -> httpx.Client | None
-shared.http.Transfer.headers: field -> Mapping[str, str] | None
-shared.http.Transfer.label: field -> str | None
-shared.http.Transfer.parts: field -> Literal['auto'] | int
-shared.http.Transfer.progress: field -> Callable[[int, int | None], Any] | None
-shared.http.Transfer.resume: field -> bool
-shared.http.Transfer.size: field -> int | None
-shared.http.Transfer.stop: field -> threading.Event | None
-shared.http.Transfer.timeout: field -> float
-shared.http.Transport(**options: Any)
-shared.http.Transport.close() -> None
-shared.http.Transport.handle_request(request: httpx.Request) -> httpx.Response
-shared.http.download(url: str | Sequence[str], dest: PathLike, *, transfer: Transfer | None = None) -> Download
-shared.http.fetch(url: str, *, method: str = 'GET', client: httpx.Client | None = None, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0, redirects: bool | None = None) -> Response | None
-shared.kv: module
-shared.kv.ClosedError(shared.kv.Error, RuntimeError)
-shared.kv.Error(shared.Error)
-shared.kv.Store(link: _Link, table: str)
-shared.kv.Store.clear() -> None
-shared.kv.Store.close() -> None
-shared.kv.Store.get(key: str, default: Any = None) -> Any
-shared.kv.Store.items() -> ItemsView[str, Any]
-shared.kv.Store.keys(prefix: str = '') -> KeysView[str]
-shared.kv.Store.raw: property -> sqlite3.Connection
-shared.kv.Store.set(key: str, value: Any, *, ttl: float | None = None) -> None
-shared.kv.Store.table(name: str) -> Store
-shared.kv.Store.update(other: Any = (), /, **kwargs: Any) -> None
-shared.kv.Store.values() -> ValuesView[Any]
-shared.kv.UnstorableError(shared.kv.Error, TypeError)
-shared.kv.open(path: PathLike, *, table: str = 'default', timeout: float = 5.0) -> Store
-shared.log: Log
-shared.log.Error(shared.Error)
-shared.log.Group(theme: Theme, title: str, parent: Progress | StatusRow | None = None)
-shared.log.Group.add(label: str, *, total: float | None = None, show: Callable[[Any], str] = str, wait: bool = False) -> Progress
-shared.log.Group.add_status(status: Status) -> StatusRow
-shared.log.Group.parent: attribute
-shared.log.Progress(label: str, total: float | None, show: Callable[[Any], str], _group: Group, *, wait: bool = False)
-shared.log.Progress.advance(n: float = 1) -> None
-shared.log.Progress.caption: property, settable -> str
-shared.log.Progress.count: property, settable -> float
-shared.log.Progress.fail() -> None
-shared.log.Progress.finish() -> None
-shared.log.Progress.finished: property -> bool
-shared.log.Progress.label: attribute
-shared.log.Progress.outcome: property -> str | None
-shared.log.Progress.slots: attribute -> int | None
-shared.log.Progress.total: property, settable -> float | None
-shared.log.Progress.updater() -> Callable[[int, int], None]
-shared.log.Progress.wait: attribute
-shared.log.StatusRow(status: Status, _group: Group)
-shared.log.StatusRow.fail() -> None
-shared.log.StatusRow.finish() -> None
-shared.log.StatusRow.finished: property -> bool
-shared.log.StatusRow.outcome: property -> str | None
-shared.log.StatusRow.slots: attribute -> int | None
-shared.log.StatusRow.status: property, settable -> Status
-shared.log.debug(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.log.error(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.log.event(kind: str, message: str, /, *args: Any, **fields: Any) -> None
-shared.log.group(title: str = '') -> Iterator[Group]
-shared.log.info(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.log.level: property, settable -> Level
-shared.log.ok(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.log.progress(label: str, *, total: float | None = None, show: Callable[[Any], str] = str, wait: bool = False) -> Iterator[Progress]
-shared.log.record(path: Path) -> Iterator[None]
-shared.log.under(row: Progress | StatusRow | None) -> Iterator[None]
-shared.log.warn(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.http.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, resume: bool = True, attempts: int = 3, timeout: float = 30.0, progress: Callable[[int, int | None], Any] | None = None, stop: threading.Event | None = None) -> Path
+shared.http.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
 shared.media: module
 shared.media.BrokenError(shared.media.Error, shared.BrokenError)
+shared.media.Encoding(quality: int = 80, resolution: int | None = None, fps: float | None = None, audio_bitrate: int | None = None, codec: str | None = None)
+shared.media.Encoding.audio_bitrate: field -> int | None
+shared.media.Encoding.codec: field -> str | None
+shared.media.Encoding.fps: field -> float | None
+shared.media.Encoding.quality: field -> int
+shared.media.Encoding.resolution: field -> int | None
 shared.media.Error(shared.Error)
 shared.media.Info(path: Path, kind: str, animated: bool, format: str, size: int, width: int | None = None, height: int | None = None, duration: float | None = None, frames: int | None = None, fps: float | None = None, bitrate: int | None = None, video: str | None = None, audio: str | None = None, sample_rate: int | None = None, channels: int | None = None, created: datetime | None = None, location: tuple[float, float] | None = None, tags: dict[str, str] = <factory>)
 shared.media.Info.animated: field -> bool
@@ -464,60 +375,33 @@ shared.media.Info.size: field -> int
 shared.media.Info.tags: field -> dict[str, str]
 shared.media.Info.video: field -> str | None
 shared.media.Info.width: field -> int | None
-shared.media.KindError(shared.media.Error, ValueError)
+shared.media.LEVELS: dict
 shared.media.Media()
-shared.media.Media.audio(*, bitrate: int | None = None, format: str | None = None) -> Media
-shared.media.Media.check() -> Media
+shared.media.Media.audio(*, bitrate: int | None = None, format: str | None = None, progress: Progress | None = None) -> Media
 shared.media.Media.close() -> None
-shared.media.Media.codec: property -> str | None
-shared.media.Media.compress(level: str = 'mid', *, format: str | None = None, codec: str | None = None, quality: int | None = None, resolution: int | None = None, fps: float | None = None, audio_bitrate: int | None = None, strip: bool = True, progress: Progress | None = None) -> Media
-shared.media.Media.convert(format: str, *, quality: int = 90, fps: float | None = None, codec: str | None = None) -> Media
-shared.media.Media.created: property -> datetime | None
-shared.media.Media.crop(box: tuple[int, int, int, int]) -> Media
-shared.media.Media.duration: property -> float | None
-shared.media.Media.format: property -> str
-shared.media.Media.fps: property -> float | None
-shared.media.Media.frames(*, dest: PathLike, every: float | None = None, at: Sequence[float] | None = None, count: int | None = None, format: str = 'jpg', quality: int = 90, limit: int | None = 1000) -> list[Path]
-shared.media.Media.height: property -> int | None
+shared.media.Media.compress(level: str | Encoding = 'mid', *, format: str | None = None, strip: bool = True, progress: Progress | None = None) -> Media
+shared.media.Media.convert(format: str, *, encoding: Encoding = Encoding(quality=80, resolution=None, fps=None, audio_bitrate=None, codec=None), progress: Progress | None = None) -> Media
 shared.media.Media.info: property -> Info
-shared.media.Media.kind: property -> str
-shared.media.Media.location: property -> tuple[float, float] | None
-shared.media.Media.merge(*others: Media | PathLike, audio: Media | PathLike | None = None, format: str | None = None, fps: float | None = None, duration: float | None = None, progress: Progress | None = None) -> Media
-shared.media.Media.resize(*, width: int | None = None, height: int | None = None) -> Media
+shared.media.Media.merge(*others: Media | PathLike, audio: Media | PathLike | None = None, format: str | None = None, progress: Progress | None = None) -> Media
+shared.media.Media.raw: property -> Any
 shared.media.Media.save(dest: PathLike | None = None) -> Path
-shared.media.Media.size: property -> int
-shared.media.Media.tags: property -> dict[str, str]
-shared.media.Media.trim(*, start: float = 0.0, end: float | None = None, exact: bool = True) -> Media
-shared.media.Media.width: property -> int | None
 shared.media.MissingError(shared.media.Error, shared.MissingError)
-shared.media.StalledError(shared.media.Error, TimeoutError)
 shared.media.UnsafeError(shared.media.Error, shared.UnsafeError)
-shared.media.kind(name: str) -> str | None
+shared.media.info(path: PathLike) -> Info
 shared.media.open(path: PathLike) -> Media
 shared.media.sniff(path: PathLike) -> str | None
 shared.prompt: module
 shared.prompt.Error(shared.Error)
-shared.prompt.Keymap()
-shared.prompt.Keymap.ACTIONS: attribute -> tuple
-shared.prompt.Keymap.backspace: attribute
-shared.prompt.Keymap.down: attribute
-shared.prompt.Keymap.interrupt: attribute
-shared.prompt.Keymap.left: attribute
-shared.prompt.Keymap.no: attribute
-shared.prompt.Keymap.right: attribute
-shared.prompt.Keymap.submit: attribute
-shared.prompt.Keymap.toggle: attribute
-shared.prompt.Keymap.up: attribute
-shared.prompt.Keymap.yes: attribute
-shared.prompt.ask(message: str, *, secret: bool = False, default: str | None = None, placeholder: str = '', description: str = '', validate: Validate | None = None, mask: str | None = None, keys: bool | None = None) -> str
-shared.prompt.choose(message: str, options: Sequence | Mapping, *, many: bool = False, default: Any = None, filter: bool = False, min: int = 0, max: int | None = None, description: str = '', validate: Validate | None = None, keys: bool | None = None) -> Any
-shared.prompt.confirm(message: str, *, description: str = '', default: bool = False, yes: str = 'Yes', no: str = 'No', keys: bool | None = None, validate: Validate | None = None) -> bool
-shared.prompt.defaults() -> Iterator[None]
-shared.prompt.keymap: Keymap
-shared.prompt.keys_shown: bool
+shared.prompt.ask(message: str, *, secret: bool = False, default: str | None = None, validate: Validate | None = None) -> str
+shared.prompt.autofill() -> Iterator[None]
+shared.prompt.choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *, many: bool = False, default: Any = None) -> Any
+shared.prompt.confirm(message: str, *, default: bool = True) -> bool
+shared.prompt.raw: module
 shared.selector: module
 shared.selector.BrokenError(shared.selector.Error, shared.BrokenError)
 shared.selector.Error(shared.Error)
+shared.selector.MissingError(shared.selector.Error, shared.MissingError)
+shared.selector.QueryError(shared.selector.Error, ValueError)
 shared.selector.Selection(raw: Raw)
 shared.selector.Selection.all: property -> list[Any]
 shared.selector.Selection.css(query: str) -> Selection
@@ -525,128 +409,105 @@ shared.selector.Selection.first: property -> Any
 shared.selector.Selection.jmespath(query: str) -> Selection
 shared.selector.Selection.json: property -> Selection
 shared.selector.Selection.jsonpath(query: str) -> Selection
+shared.selector.Selection.match(pattern: str) -> Selection
 shared.selector.Selection.raw: property -> Raw
-shared.selector.Selection.script(id: str | None = None, *, pattern: str | None = None) -> Selection
+shared.selector.Selection.script(id: str) -> Selection
 shared.selector.Selection.text: property -> str
 shared.selector.Selection.xpath(query: str) -> Selection
-shared.selector.UnsafeError(shared.selector.Error, shared.UnsafeError)
 shared.selector.parse(source: Any) -> Selection
-shared.style: Chain
-shared.style.Error(shared.Error)
-shared.style.bg: field -> tuple | None
-shared.style.bg_ramp: field -> tuple
-shared.style.color(value: str | int, *, background: bool = False) -> Chain
-shared.style.fg: field -> tuple | None
-shared.style.fg_ramp: field -> tuple
-shared.style.gradient(*stops: str | int, background: bool = False) -> Chain
-shared.style.href: field -> str | None
-shared.style.link(url: str) -> Chain
-shared.style.modifiers: field -> frozenset
-shared.style.paint(text: str, depth: str) -> str
-shared.style.strip(text: str) -> str
-shared.theme: Theme
-shared.theme.Bar(label: str, count: float, total: float | None, caption: str, finished: bool, show: Callable[[Any], str] = str, tick: int | None = None, wait: bool = False)
-shared.theme.Bar.caption: field -> str
-shared.theme.Bar.count: field -> float
-shared.theme.Bar.finished: field -> bool
-shared.theme.Bar.label: field -> str
-shared.theme.Bar.show: field -> Callable[[Any], str]
-shared.theme.Bar.tick: field -> int | None
-shared.theme.Bar.total: field -> float | None
-shared.theme.Bar.wait: field -> bool
-shared.theme.Count(number: int, word: str, role: str, glyph: str)
-shared.theme.Count.glyph: field -> str
-shared.theme.Count.number: field -> int
-shared.theme.Count.role: field -> str
-shared.theme.Count.word: field -> str
-shared.theme.EVENTS: attribute -> tuple
-shared.theme.Error(shared.Error)
-shared.theme.HelpModel(prog: str, description: str, usage: str, arguments: tuple = (), options: tuple = (), commands: tuple = (), epilog: str = '', error: str = '')
-shared.theme.HelpModel.arguments: field -> tuple
-shared.theme.HelpModel.commands: field -> tuple
-shared.theme.HelpModel.description: field -> str
-shared.theme.HelpModel.epilog: field -> str
-shared.theme.HelpModel.error: field -> str
-shared.theme.HelpModel.options: field -> tuple
-shared.theme.HelpModel.prog: field -> str
-shared.theme.HelpModel.usage: field -> str
-shared.theme.LogRecord(level: str, message: str, bar: Bar | None = None, kind: str = '')
-shared.theme.LogRecord.bar: field -> Bar | None
-shared.theme.LogRecord.kind: field -> str
-shared.theme.LogRecord.level: field -> str
-shared.theme.LogRecord.message: field -> str
-shared.theme.Namespace(kind: str, defaults: dict, pick: Callable[[Any], Any], *, check: Callable[[Any], Any] = Namespace.<lambda>)
-shared.theme.PromptView(kind: str, message: str, description: str = '', value: str = '', placeholder: str = '', options: tuple = (), position: int = 0, checked: frozenset = frozenset(), error: str | None = None, keys: tuple = (), done: bool = False, caret: int | None = None)
-shared.theme.PromptView.caret: field -> int | None
-shared.theme.PromptView.checked: field -> frozenset
-shared.theme.PromptView.description: field -> str
-shared.theme.PromptView.done: field -> bool
-shared.theme.PromptView.error: field -> str | None
-shared.theme.PromptView.keys: field -> tuple
-shared.theme.PromptView.kind: field -> str
-shared.theme.PromptView.message: field -> str
-shared.theme.PromptView.options: field -> tuple
-shared.theme.PromptView.placeholder: field -> str
-shared.theme.PromptView.position: field -> int
-shared.theme.PromptView.value: field -> str
-shared.theme.Screen(dest=None, inp=None, *, width: int | None = None, height: int | None = None, tty: bool | None = None, interactive: bool | None = None)
-shared.theme.Screen.dest: property
-shared.theme.Screen.height: property -> int
-shared.theme.Screen.inp: property
-shared.theme.Screen.interactive: property -> bool
-shared.theme.Screen.lock: attribute
-shared.theme.Screen.reading() -> Iterator[None]
-shared.theme.Screen.readkey() -> str
-shared.theme.Screen.tty: property -> bool
-shared.theme.Screen.width: property -> int
-shared.theme.Screen.write(text: str) -> None
-shared.theme.Status(subject: str, label: str = '', counts: tuple[Count, ...] = (), running: tuple[Count, ...] = (), tail: tuple[str, ...] = (), note: str = '', subject_width: int = 0, label_width: int = 0, outcome: str | None = None, elapsed: float | None = None, tick: int | None = None, width: int = 0)
-shared.theme.Status.counts: field -> tuple[Count, ...]
-shared.theme.Status.elapsed: field -> float | None
-shared.theme.Status.label: field -> str
-shared.theme.Status.label_width: field -> int
-shared.theme.Status.note: field -> str
-shared.theme.Status.outcome: field -> str | None
-shared.theme.Status.running: field -> tuple[Count, ...]
-shared.theme.Status.subject: field -> str
-shared.theme.Status.subject_width: field -> int
-shared.theme.Status.tail: field -> tuple[str, ...]
-shared.theme.Status.tick: field -> int | None
-shared.theme.Status.width: field -> int
-shared.theme.color: property, settable -> ColorDepth
-shared.theme.draw(kind: str, value: Any) -> str
-shared.theme.draw_help(theme: Theme, model: HelpModel) -> str
-shared.theme.draw_log(theme: Theme, record: LogRecord) -> str
-shared.theme.draw_progress(theme: Theme, record: LogRecord) -> str
-shared.theme.draw_prompt(theme: Theme, view: PromptView) -> str
-shared.theme.draw_status(theme: Theme, status: Status) -> str
-shared.theme.drawers: attribute
-shared.theme.glyphs: attribute
-shared.theme.gradient(text: str, *, phase: int = 0) -> str
-shared.theme.motion: property -> bool
-shared.theme.paint(name: str, text: str, *, on: str | None = None) -> str
-shared.theme.palette: attribute
-shared.theme.scope(**changes: Any) -> Iterator[Theme]
-shared.theme.screen: attribute
-shared.theme.unicode: attribute
+shared.store: module
+shared.store.ClosedError(shared.store.Error, RuntimeError)
+shared.store.Error(shared.Error)
+shared.store.Store(link: _Link, table: str)
+shared.store.Store.clear() -> None
+shared.store.Store.close() -> None
+shared.store.Store.get(key: str, default: Any = None) -> Any
+shared.store.Store.items() -> ItemsView[str, Any]
+shared.store.Store.keys(prefix: str = '') -> KeysView[str]
+shared.store.Store.prune() -> int
+shared.store.Store.raw: property -> sqlite3.Connection
+shared.store.Store.set(key: str, value: Any, *, ttl: float | None = None) -> None
+shared.store.Store.table(name: str) -> Store
+shared.store.Store.update(other: Any = (), /, **kwargs: Any) -> None
+shared.store.Store.values() -> ValuesView[Any]
+shared.store.open(path: PathLike, *, table: str = 'kv', timeout: float = 5.0) -> Store
+shared.text: module
+shared.text.Error(shared.Error)
+shared.text.clean()
+shared.text.clean.filename(name: str, *, fallback: str = 'untitled', max_bytes: int = 255) -> str
+shared.text.clean.url(url: str) -> str
+shared.text.fmt()
+shared.text.fmt.count(n: float, unit: str, *, plural: str | None = None) -> str
+shared.text.fmt.duration(seconds: float) -> str
+shared.text.fmt.size(n: float) -> str
+shared.text.fold(text: str) -> str
+shared.ui: UI
+shared.ui.Error(shared.Error)
+shared.ui.Group(owner: UI, title: str)
+shared.ui.Group.add(label: str, *, total: float | None = None) -> Row
+shared.ui.Group.title: attribute
+shared.ui.Row(label: str, total: float | None, group: Group)
+shared.ui.Row.advance(n: float = 1) -> None
+shared.ui.Row.count: property, settable -> float
+shared.ui.Row.fail() -> None
+shared.ui.Row.finish() -> None
+shared.ui.Row.label: attribute
+shared.ui.Row.part() -> Callable[[int, int | None], None]
+shared.ui.Row.raw: property -> TaskID
+shared.ui.Row.total: property, settable -> float | None
+shared.ui.UI()
+shared.ui.UI.Error(shared.Error)
+shared.ui.UI.Group(owner: UI, title: str)
+shared.ui.UI.Group.add(label: str, *, total: float | None = None) -> Row
+shared.ui.UI.Group.title: attribute
+shared.ui.UI.Row(label: str, total: float | None, group: Group)
+shared.ui.UI.Row.advance(n: float = 1) -> None
+shared.ui.UI.Row.count: property, settable -> float
+shared.ui.UI.Row.fail() -> None
+shared.ui.UI.Row.finish() -> None
+shared.ui.UI.Row.label: attribute
+shared.ui.UI.Row.part() -> Callable[[int, int | None], None]
+shared.ui.UI.Row.raw: property -> TaskID
+shared.ui.UI.Row.total: property, settable -> float | None
+shared.ui.UI.debug(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.UI.error(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.UI.group(title: str = '') -> Iterator[Group]
+shared.ui.UI.info(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.UI.level: property, settable -> Level
+shared.ui.UI.ok(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.UI.progress(label: str, *, total: float | None = None) -> Iterator[Row]
+shared.ui.UI.raw: property -> RichConsole
+shared.ui.UI.scope(*, color: str | bool | None = None, dest: IO[str] | None = None, width: int | None = None, level: Level | None = None) -> Iterator[UI]
+shared.ui.UI.warn(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.debug(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.error(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.group(title: str = '') -> Iterator[Group]
+shared.ui.info(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.level: property, settable -> Level
+shared.ui.ok(message: str = '', /, *args: Any, **fields: Any) -> None
+shared.ui.progress(label: str, *, total: float | None = None) -> Iterator[Row]
+shared.ui.raw: property -> RichConsole
+shared.ui.scope(*, color: str | bool | None = None, dest: IO[str] | None = None, width: int | None = None, level: Level | None = None) -> Iterator[UI]
+shared.ui.warn(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.worker: module
+shared.worker.ClosedError(shared.worker.Error, RuntimeError)
 shared.worker.Error(shared.Error)
-shared.worker.Pool(run: _Run)
+shared.worker.Loop()
+shared.worker.Loop.close() -> None
+shared.worker.Loop.raw: property -> asyncio.AbstractEventLoop | None
+shared.worker.Loop.run(coro: Coroutine[Any, Any, R], *, timeout: float | None = None) -> R
+shared.worker.Pool(*, concurrency: int | None = None, retries: int = 0, timeout: float | None = None, progress: Callable[[int, int], Any] | None = None, stop: threading.Event | None = None)
+shared.worker.Pool.as_completed() -> Iterator[Result[Any]]
 shared.worker.Pool.close() -> None
 shared.worker.Pool.join(timeout: float | None = None) -> list[Result[Any]]
-shared.worker.Pool.raw: property -> Any
-shared.worker.Pool.results: property -> list[Result[Any]]
+shared.worker.Pool.raw: property -> concurrent.futures.Executor
+shared.worker.Pool.run_on_owner(fn: Callable[[], R]) -> R
+shared.worker.Pool.stop(error: BaseException | None = None) -> None
 shared.worker.Pool.submit(fn: Callable[..., Any], *args: Any) -> None
-shared.worker.Pool.submitted: property -> int
-shared.worker.Result(item: Any, value: R | None = None, error: BaseException | None = None, attempts: int = 0, _position: int = 0)
+shared.worker.Result(item: Any, value: R | None = None, error: BaseException | None = None, attempts: int = 0)
 shared.worker.Result.attempts: field -> int
 shared.worker.Result.error: field -> BaseException | None
 shared.worker.Result.item: field -> Any
 shared.worker.Result.ok: property -> bool
 shared.worker.Result.value: field -> R | None
 shared.worker.StalledError(shared.worker.Error, TimeoutError)
-shared.worker.TaskError(shared.worker.Error)
-shared.worker.TaskError.results: attribute
-shared.worker.as_completed(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> Iterator[Result[Any]]
-shared.worker.as_ordered(fn: Callable[..., Any], *iterables: Iterable[Any], **options: Any) -> list[Any]
-shared.worker.pool(**options: Unpack[_Options]) -> Pool

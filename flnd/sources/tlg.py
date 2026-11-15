@@ -305,6 +305,7 @@ class _Download:
         sidecar: Path | None = None,
         done: list[int] | None = None,
     ):
+        """Initialize a multi-part Telegram document downloader with optional resume state."""
         self.site, self.document, self.file, self.progress = site, document, file, progress
         self.size: int = document.size
         self.parts = parts(self.size)
@@ -367,7 +368,7 @@ class _Download:
             self.done[number] += len(chunk)
             if self.sidecar is not None:
                 payload = json.dumps({"size": self.size, "done": self.done}).encode("utf-8")
-                fs.write(self.sidecar, payload)
+                fs.write(self.sidecar, data=payload)
             self.progress(sum(self.done), self.size)
         if self.done[number] == before:
             raise FetchError(f"Telegram sent nothing from byte {position} of {self.size}")

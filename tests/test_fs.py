@@ -65,7 +65,7 @@ class WriteContextTest(FsCase):
 
     def test_sync_flushes_part_before_replace(self):
         with mock.patch.object(fs.os, "fsync", wraps=os.fsync) as spy:
-            out = fs.write(self.dest, b"durable", sync=True)
+            out = fs.write(self.dest, data=b"durable", sync=True)
         self.assertGreaterEqual(spy.call_count, 1)
         self.assertEqual(out, self.dest)
         self.assertEqual(self.dest.read_bytes(), b"durable")
@@ -86,7 +86,7 @@ class WindowsReplaceTest(FsCase):
     def test_windows_retries_permission_error(self):
         patch, calls = self.held(3)
         with patch, mock.patch.object(fs, "WINDOWS", True), clock.use(clock.Fake()) as fake:
-            fs.write(self.dest, b"new")
+            fs.write(self.dest, data=b"new")
         self.assertEqual(self.dest.read_bytes(), b"new")
         self.assertEqual(len(calls), 4)
         self.assertEqual(fake.slept, [0.05] * 3)
@@ -96,7 +96,7 @@ class WindowsReplaceTest(FsCase):
         patch, calls = self.held(100)
         with patch, mock.patch.object(fs, "WINDOWS", True), clock.use(clock.Fake()):
             with self.assertRaises(fs.Error) as ctx:
-                fs.write(self.dest, b"new")
+                fs.write(self.dest, data=b"new")
         self.assertIsInstance(ctx.exception.__cause__, PermissionError)
         self.assertEqual(self.dest.read_bytes(), b"old")
         self.assertEqual(len(calls), 20)
@@ -104,11 +104,11 @@ class WindowsReplaceTest(FsCase):
 
 class WriteBytesTest(FsCase):
     def test_write_bytes_and_replace_false(self):
-        out = fs.write(self.dest, b"one\ntwo\n")
+        out = fs.write(self.dest, data=b"one\ntwo\n")
         self.assertEqual(out, self.dest)
         self.assertEqual(self.dest.read_bytes(), b"one\ntwo\n")
         with self.assertRaises(fs.ExistsError):
-            fs.write(self.dest, b"two", replace=False)
+            fs.write(self.dest, data=b"two", replace=False)
         self.assertEqual(self.dest.read_bytes(), b"one\ntwo\n")
 
 

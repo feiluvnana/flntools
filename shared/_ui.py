@@ -194,6 +194,7 @@ class Row:
             return self._build_text(owner, level)
 
     def _build_text(self, owner: UI, level: str) -> Text:
+        """Render the status glyph, count, and label for this progress row."""
         role = "accent" if level == "info" else level
         glyph = owner._glyph(LOG_GLYPHS[level])
         text = Text()
@@ -348,6 +349,7 @@ class UI:
         args: tuple[Any, ...],
         fields: dict[str, Any],
     ) -> None:
+        """Format and emit a log message if `level` meets the active threshold."""
         unused = set(fields) - _field_names(message) if fields else ()
         if unused:
             raise TypeError(f"ui message {message!r} has no field {', '.join(sorted(unused))}")

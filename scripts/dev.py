@@ -240,6 +240,8 @@ def _add(name: str, value: Any, names: dict[str, ApiName], owner: Any = None) ->
         return
     if isinstance(value, types.ModuleType):
         names[name] = ApiName(name, "module", value, owner, detail=": module")
+        if value.__name__.split(".")[0] not in PROJECT_PACKAGES:
+            return
         for member in value.__all__:
             member_value = getattr(value, member)
             # A public name that is an object, not a module, stands for the private file `_<name>`

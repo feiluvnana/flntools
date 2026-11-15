@@ -287,6 +287,7 @@ class Engine:
         sync: bool,
         stop: cli.Stopping,
     ) -> Report:
+        """Download non-query targets with metadata locking and optional history sweep."""
         with fs.lock(self.home / paths.METADATA):
             rows = flnd.targets.rows(self.home)
             chosen: list[tuple[Target, Options]] = []
@@ -335,6 +336,7 @@ class Engine:
         pool_settings: RunShared,
         stop: cli.Stopping,
     ) -> None:
+        """Sync non-query targets and store their `TargetReport` entries in `results`."""
         indices = [i for i, (target, _) in enumerate(chosen) if not self._is_query(target)]
         if not indices:
             return
@@ -371,6 +373,7 @@ class Engine:
         pool_settings: RunShared,
         stop: cli.Stopping,
     ) -> None:
+        """Sync query targets and store their `TargetReport` entries in `results`."""
         indices = [i for i, (target, _) in enumerate(chosen) if self._is_query(target)]
         if not indices:
             return
@@ -384,6 +387,7 @@ class Engine:
                 raise KeyboardInterrupt
 
     def _target_info(self, target: Target, rows: Mapping[str, Any]) -> TargetInfo:
+        """Build a `TargetInfo` summary for `target` from stored rows and disk stats."""
         row = rows.get(flnd.targets.key(target), {})
         is_query = self._is_query(target)
         files, size = (0, 0) if is_query else _folder_stats(paths.target_folder(self.home, target))
@@ -440,6 +444,7 @@ class Engine:
         span: Range,
         stop: cli.Stopping,
     ) -> TargetReport:
+        """Run a dry-run plan for a single target."""
         source = self.sources[target.source]()
         with source_run(settings, source) as run:
             account = TargetSite(run, Target(source.code, ACCOUNT, ""))
@@ -468,6 +473,7 @@ class Engine:
         sync: bool,
         stop: cli.Stopping,
     ) -> list[TargetReport]:
+        """Download a mix of query and non-query targets in caller order."""
         reports: list[TargetReport] = []
         pool_settings = RunShared(home=self.home, history={}, stop=stop)
         with fs.lock(self.home / paths.METADATA), shared_browser(pool_settings):
@@ -504,6 +510,7 @@ class Engine:
         stop: cli.Stopping,
         browser_pool: Any = None,
     ) -> list[TargetReport]:
+        """Discover targets from a query and download each one."""
         source = self.sources[target.source]()
         rows = flnd.targets.rows(self.home)
         saved_shrink = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
@@ -540,6 +547,7 @@ class Engine:
         span: Range,
         stop: cli.Stopping,
     ) -> None:
+        """Discover query children, download each, and record the query's seen set."""
         seen_keys: list[str] = []
         account = TargetSite(run, Target(run.source.code, ACCOUNT, ""))
         try:
@@ -594,6 +602,7 @@ class Engine:
         stop: cli.Stopping,
         browser_pool: Any = None,
     ) -> TargetReport:
+        """Run a dry-run plan for a single target."""
         source = self.sources[target.source]()
         rows = flnd.targets.rows(self.home)
         seen_keys = set(flnd.targets.seen(rows, target))
@@ -624,6 +633,7 @@ class Engine:
         known_keys: set[str],
         stop: cli.Stopping,
     ) -> TargetReport:
+        """Run discovery and download for a synced query target."""
         written: list[Path] = []
         skipped, child_failed, seen_to_mark, failed = 0, None, [], False
         try:
@@ -658,6 +668,7 @@ class Engine:
         written: list[Path],
         seen_to_mark: list[str],
     ) -> tuple[int, str | None]:
+        """Download newly discovered query children and return `(new_count, first_error)`."""
         skipped, new_count, child_failed = 0, 0, None
         account = TargetSite(run, Target(run.source.code, ACCOUNT, ""))
         with _written_back(run), _connected(run, account):
@@ -717,6 +728,7 @@ class Engine:
         return resolved
 
     def _plan(self, targets: Sequence[Target]) -> list[tuple[Target, Options]]:
+        """Resolve which targets to sync and attach their stored options."""
         rows = flnd.targets.rows(self.home)
         if not targets:
             synced_rows = flnd.targets.synced(rows)
@@ -736,6 +748,7 @@ class Engine:
     def _unrecorded(
         self, known: Sequence[Target], rows: Mapping[str, Any] | None = None,
     ) -> Iterator[Target]:
+        """Yield targets found on disk under `media/` that are not in `known`."""
         seen = {paths.target_folder(self.home, t) for t in known if not self._is_query(t)}
         media = self.home / paths.MEDIA
         saved_rows = rows or {}
@@ -776,6 +789,7 @@ class Engine:
         tallies: Sequence[repair.Tally] = (),
         browser_pool: Any = None,
     ) -> list[TargetReport]:
+        """Group targets by site and run each site in parallel via `worker.Pool`."""
         groups: dict[str, list[int]] = {}
         for number, (target, _) in enumerate(chosen):
             groups.setdefault(target.source, []).append(number)
@@ -907,6 +921,7 @@ def resolve(
 
 
 def _split_target(cleaned: str, sources: Mapping[str, type[Source]]) -> tuple[Source, str]:
+    """Resolve `cleaned` into `(source_instance, target_text)`."""
     if _is_url(cleaned):
         return _owner_source(cleaned, sources), cleaned
     qmark, colon = cleaned.find("?"), cleaned.find(":")
@@ -965,6 +980,7 @@ def _run_site(
     reports: dict[int, TargetReport],
     work: tuple[Source, list[_Planned]],
 ) -> None:
+    """Execute all planned targets for one source site and record their reports."""
     source, group = work
     with source_run(run_settings, source) as run:
         account = TargetSite(run, Target(source.code, ACCOUNT, ""))
@@ -1006,6 +1022,7 @@ def _fail_unreached(
     reports: dict[int, TargetReport],
     board: job.Board,
 ) -> None:
+    """Execute all planned targets for one source site and record their reports."""
     source, group = work
     ui.error("{source}: {error}", source=source.code, error=error)
     for planned in group:

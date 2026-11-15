@@ -82,6 +82,7 @@ class Pool:
         progress: Callable[[int, int], Any] | None = None,
         stop: threading.Event | None = None,
     ) -> None:
+        """Initialize the pool and its underlying execution run."""
         self._run = _Run(
             concurrency=concurrency,
             retries=retries,
@@ -249,6 +250,7 @@ class _Run:
         progress: Callable[[int, int], Any] | None = None,
         stop: threading.Event | None = None,
     ) -> None:
+        """Validate pool configuration and initialize worker threads and queues."""
         if concurrency is not None and concurrency < 1:
             raise ValueError(f"concurrency must be at least 1, not {concurrency}")
         if retries < 0:
@@ -486,6 +488,7 @@ class _Run:
                 self._worker_ids.discard(ident)
 
     def _finish_job(self, job: _Job) -> None:
+        """Execute `job` and record its result or stop the pool on fatal errors."""
         result: Result[Any] | None = None
         try:
             result = self._run_task(job)
@@ -560,6 +563,7 @@ class _Run:
                 self.done_cond.notify_all()
 
     def _attempt(self, job: _Job) -> Any:
+        """Run one attempt of `job` on the thread pool or async loop."""
         future: concurrent.futures.Future[Any]
         if self.loop is not None and inspect.iscoroutinefunction(job.fn):
             future = asyncio.run_coroutine_threadsafe(job.fn(*job.args), self.loop)
@@ -579,6 +583,7 @@ class _Run:
     def _submit_timed(
         self, fn: Callable[..., Any], args: tuple[Any, ...]
     ) -> concurrent.futures.Future[Any]:
+        """Run `fn(*args)` on a daemon thread so timeouts never block pool shutdown."""
         future: concurrent.futures.Future[Any] = concurrent.futures.Future()
         future.set_running_or_notify_cancel()
         with self.lock:
@@ -595,6 +600,7 @@ class _Run:
         return future
 
     def _try_worker(self, wake: threading.Event, box: list[Any]) -> None:
+        """Track worker identity and run one owner-thread task, waking the caller."""
         ident = threading.get_ident()
         with self.lock:
             self._worker_ids.add(ident)
@@ -634,6 +640,7 @@ def _wait_future(
     deadline: float | None,
     timeout: float | None,
 ) -> None:
+    """Poll `future` until it completes or `deadline` expires."""
     while not future.done():
         left = (
             WAKE_INTERVAL

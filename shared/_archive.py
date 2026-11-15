@@ -311,6 +311,7 @@ def _collect(sources: PathLike | Sequence[PathLike]) -> list[tuple[Path, str]]:
 
 def _write_zip(path: Path, files: list[tuple[Path, str]], password: str | None,
                progress: Progress | None = None) -> None:
+    """Write `files` into a zip archive at `path`, optionally encrypted with `password`."""
     if password is None:
         packed = zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED)
     else:

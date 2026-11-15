@@ -608,6 +608,7 @@ class Page:
     def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None,
                params: Mapping[str, Any] | None, data: Any, json: Any, soft: bool,
                timeout: float) -> http.Response | None:
+        """Issue an HTTP request through the browser context's APIRequestContext."""
         from shared import _http
 
         if data is not None and json is not None:
@@ -828,6 +829,7 @@ class _Scroller:
         self.scrolls = 0
 
     def __call__(self) -> bool:
+        """Scroll once and report whether further scrolling should continue."""
         if self._until is not None and self._until():
             return False
         started = clock.now()

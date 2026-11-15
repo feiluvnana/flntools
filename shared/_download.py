@@ -330,7 +330,7 @@ class _State:
         data = {"url": _where(self.url), "validator": self.validator, "size": self.size,
                 "ranges": self.ranges,
                 "segments": [[part.start, part.end, part.done] for part in self.segments]}
-        fs.write(self.info, jsonlib.dumps(data).encode("utf-8"))
+        fs.write(self.info, data=jsonlib.dumps(data).encode("utf-8"))
 
     def drop(self) -> None:
         """Delete the part and its sidecar."""

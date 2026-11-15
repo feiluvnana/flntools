@@ -348,6 +348,7 @@ class Client:
 
     @cookies.setter
     def cookies(self, jar: cookies.Jar) -> None:
+        """Replace the client's cookies from `jar`."""
         self._raw.cookies.clear()
         for cookie in jar:
             self._raw.cookies.jar.set_cookie(_cookie_from_dict(cookie))

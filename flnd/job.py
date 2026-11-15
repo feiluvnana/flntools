@@ -35,7 +35,6 @@ from shared import fs, text, ui, worker
 
 if TYPE_CHECKING:
     from shared import cli
-    from shared._ui import Group, Row
 
 __all__ = [
     "STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",
@@ -133,7 +132,7 @@ class _Line:
     target: Target
     label: str
     counts: Counts
-    row: Row | None = None
+    row: Any = None
     listed: bool = False
     ended: bool = False
     note: str = ""
@@ -143,7 +142,7 @@ class Board:
     """Status board drawing per-target, per-category progress in a `ui.Group`."""
 
     def __init__(
-        self, rows: Group, *, subject_width: int = 0, label_width: int = 0,
+        self, rows: Any, *, subject_width: int = 0, label_width: int = 0,
         parent: Target | None = None,
     ) -> None:
         self.rows, self.widths, self.parent = rows, (subject_width, label_width), parent
@@ -196,7 +195,7 @@ class Board:
             line.ended = True
             line.row.fail() if failed else line.row.finish()
 
-    def row(self, target: Target, category: str) -> Row | None:
+    def row(self, target: Target, category: str) -> Any:
         """Return the `ui.Row` for `(target, category)`, or None before it opens."""
         owner = self.parent or target
         with self._lock:
@@ -388,6 +387,7 @@ class Ledger:
         self, run: SourceRun, site: TargetSite, target: Target, board: Board, *,
         options: Options | None = None,
     ) -> None:
+        """Initialize a target ledger with its stores, dates, and category state."""
         self.source, self.settings, self.site = run.source, run.settings, site
         self.target, self.board, self._options = target, board, options
         self.folder = paths.target_folder(self.settings.home, target)
@@ -432,7 +432,7 @@ class Ledger:
             dest = self.folder.joinpath(*placed.path.split("/"))
             if placed.file.content is not None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                fs.write(dest, placed.file.content.encode("utf-8"))
+                fs.write(dest, data=placed.file.content)
                 continue
             item_key = f"{self.source.code}:{placed.key}"
             held = self._held(dest, item_key)
