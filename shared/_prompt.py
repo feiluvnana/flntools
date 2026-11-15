@@ -1,4 +1,4 @@
-"""Terminal prompts backed by `questionary`, with `ContextVar`-isolated defaults.
+"""Terminal prompts backed by `questionary`, with `ContextVar`-isolated autofill.
 
     name = prompt.ask("Name", default="ada")
     ok = prompt.confirm("Continue?", default=True)
@@ -10,17 +10,20 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
-from typing import Any, Callable, TypeVar, cast, overload
+from types import ModuleType
+from typing import Any, Callable, Literal, TypeVar, cast, overload
 
 import questionary
 
 import shared
 
-__all__ = ["Error", "ask", "choose", "choose_many", "confirm", "defaults"]
+__all__ = ["Error", "ask", "autofill", "choose", "confirm", "raw"]
 
 T = TypeVar("T")
-Validate = Callable[[Any], "str | bool | None"]
-_defaults_depth: ContextVar[int] = ContextVar("prompt_defaults", default=0)
+Validate = Callable[[str], bool | str]
+_autofill_depth: ContextVar[int] = ContextVar("prompt_autofill", default=0)
+
+raw: ModuleType = questionary
 
 
 class Error(shared.Error):
@@ -33,72 +36,67 @@ def ask(
     secret: bool = False,
     default: str | None = None,
     validate: Validate | None = None,
-    description: str = "",
 ) -> str:
     """Ask for a line of text, hiding characters when `secret` is true."""
-    if _use_defaults():
+    if _use_autofill():
         return _require_default(message, default)
     fn = questionary.password if secret else questionary.text
-    kwargs: dict[str, Any] = {
-        "default": default or "",
-        "validate": _validator(validate),
-    }
-    if description:
-        kwargs["instruction"] = description
-    return _run(fn(message, **kwargs))
+    return _run(fn(message, default=default or "", validate=_validator(validate)))
 
 
 def confirm(message: str, *, default: bool = True) -> bool:
     """Ask a yes-or-no question and return the boolean answer."""
-    if _use_defaults():
+    if _use_autofill():
         return default
     return bool(_run(questionary.confirm(message, default=default)))
 
 
 @overload
 def choose(
-    message: str, choices: Mapping[Any, T], *, default: T | None = None
+    message: str,
+    choices: Sequence[T] | Mapping[str, T],
+    *,
+    many: Literal[False] = False,
+    default: T | None = None,
 ) -> T: ...
 @overload
 def choose(
-    message: str, choices: Sequence[T], *, default: T | None = None
-) -> T: ...
+    message: str,
+    choices: Sequence[T] | Mapping[str, T],
+    *,
+    many: Literal[True],
+    default: Iterable[T] = (),
+) -> list[T]: ...
 def choose(
-    message: str, choices: Sequence[Any] | Mapping[Any, Any], *, default: Any = None
+    message: str,
+    choices: Sequence[Any] | Mapping[str, Any],
+    *,
+    many: bool = False,
+    default: Any = None,
 ) -> Any:
-    """Ask to pick one item from `choices`, returning its value."""
+    """Ask to pick one or more items from `choices`, returning selected value(s)."""
     pairs = _choice_pairs(message, choices)
+    if many:
+        return _choose_many(message, pairs, () if default is None else default)
     if default is not None and not any(value == default for _, value in pairs):
         raise Error(f"{default!r} is not a choice for {message!r}")
-    if _use_defaults():
+    if _use_autofill():
         return _require_default(message, default)
     items = [questionary.Choice(title=str(label), value=value) for label, value in pairs]
     initial = next((item for item in items if item.value == default), None)
     return _run(questionary.select(message, choices=items, default=initial))
 
 
-@overload
-def choose_many(
-    message: str, choices: Mapping[Any, T], *, defaults: Iterable[T] = ()
-) -> list[T]: ...
-@overload
-def choose_many(
-    message: str, choices: Sequence[T], *, defaults: Iterable[T] = ()
-) -> list[T]: ...
-def choose_many(
-    message: str,
-    choices: Sequence[Any] | Mapping[Any, Any],
-    *,
-    defaults: Iterable[Any] = (),
+def _choose_many(
+    message: str, pairs: list[tuple[Any, Any]], default: Iterable[Any]
 ) -> list[Any]:
-    """Ask to pick zero or more items from `choices`, returning selected values."""
-    pairs = _choice_pairs(message, choices)
-    selected = list(defaults)
+    """Ask to pick zero or more items from `pairs`, returning selected values."""
+    selected = list(default)
     values = [value for _, value in pairs]
     for item in selected:
         if item not in values:
             raise Error(f"{item!r} is not a choice for {message!r}")
-    if _use_defaults():
+    if _use_autofill():
         return selected
     items = [
         questionary.Choice(title=str(label), value=value, checked=value in selected)
@@ -108,18 +106,18 @@ def choose_many(
 
 
 @contextmanager
-def defaults() -> Iterator[None]:
+def autofill() -> Iterator[None]:
     """Answer every prompt inside the block with its default without reading input."""
-    token = _defaults_depth.set(_defaults_depth.get() + 1)
+    token = _autofill_depth.set(_autofill_depth.get() + 1)
     try:
         yield
     finally:
-        _defaults_depth.reset(token)
+        _autofill_depth.reset(token)
 
 
-def _use_defaults() -> bool:
+def _use_autofill() -> bool:
     """Whether prompts should return their default immediately."""
-    return _defaults_depth.get() > 0 or not _interactive()
+    return _autofill_depth.get() > 0 or not _interactive()
 
 
 def _interactive() -> bool:
@@ -136,7 +134,7 @@ def _require_default(message: str, default: T | None) -> T:
 
 
 def _choice_pairs(
-    message: str, choices: Sequence[Any] | Mapping[Any, Any]
+    message: str, choices: Sequence[Any] | Mapping[str, Any]
 ) -> list[tuple[Any, Any]]:
     """Normalize a sequence or mapping of choices into `(label, value)` pairs."""
     pairs = list(choices.items()) if isinstance(choices, Mapping) else [(c, c) for c in choices]
@@ -146,7 +144,7 @@ def _choice_pairs(
 
 
 def _validator(validate: Validate | None) -> Callable[[str], bool | str] | None:
-    """Adapt a `str | None` validator into `questionary`'s `True | False | str` contract."""
+    """Adapt a validator into `questionary`'s `True | False | str` contract."""
     if validate is None:
         return None
 
@@ -164,8 +162,31 @@ def _validator(validate: Validate | None) -> Callable[[str], bool | str] | None:
 def _live_paused() -> AbstractContextManager[Any]:
     """Pause `shared._ui`'s live display if `_ui` has already been imported."""
     ui_mod = sys.modules.get("shared._ui")
-    pause = getattr(getattr(ui_mod, "ui", None), "pause_live", None)
-    return cast(AbstractContextManager[Any], pause()) if callable(pause) else nullcontext()
+    ui_obj = getattr(ui_mod, "ui", None)
+    pause = getattr(ui_obj, "pause_live", None)
+    if callable(pause):
+        return cast(AbstractContextManager[Any], pause())
+    live = getattr(getattr(ui_obj, "raw", None), "_live", None)
+    if live is not None and getattr(live, "is_started", False):
+        return _pause_live(live)
+    return nullcontext()
+
+
+@contextmanager
+def _pause_live(live: Any) -> Iterator[None]:
+    """Temporarily stop and restart a Rich `Live` instance."""
+    try:
+        live.stop()
+    except Exception:
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            live.start()
+        except Exception:
+            pass
 
 
 def _run(question: questionary.Question) -> Any:

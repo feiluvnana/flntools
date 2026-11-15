@@ -1,4 +1,4 @@
-"""Tests for `shared.prompt`: defaults, non-TTY fallback, choices, and `ui.pause_live`."""
+"""Tests for `shared.prompt`: autofill, non-TTY fallback, choices, `raw`, and UI live pause."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import types
 import unittest
 from contextlib import contextmanager
 from unittest import mock
+
+import questionary
 
 import shared
 from shared import prompt
@@ -35,9 +37,10 @@ class _FakeQuestion:
         return self._result
 
 
-class DefaultsAndFallbackTest(unittest.TestCase):
-    def test_error_hierarchy(self) -> None:
+class AutofillAndFallbackTest(unittest.TestCase):
+    def test_error_hierarchy_and_raw(self) -> None:
         self.assertTrue(issubclass(prompt.Error, shared.Error))
+        self.assertIs(prompt.raw, questionary)
 
     def test_non_tty_returns_defaults_or_raises(self) -> None:
         with (
@@ -48,26 +51,30 @@ class DefaultsAndFallbackTest(unittest.TestCase):
             self.assertTrue(prompt.confirm("Continue?"))
             self.assertFalse(prompt.confirm("Continue?", default=False))
             self.assertEqual(prompt.choose("Color", ["red", "blue"], default="blue"), "blue")
-            self.assertEqual(prompt.choose_many("Tags", ["a", "b"], defaults=("b",)), ["b"])
+            self.assertEqual(
+                prompt.choose("Tags", ["a", "b"], many=True, default=("b",)), ["b"]
+            )
             with self.assertRaises(prompt.Error):
                 prompt.ask("Token")
             with self.assertRaises(prompt.Error):
                 prompt.choose("Color", ["red", "blue"])
 
-    def test_defaults_context_overrides_tty(self) -> None:
+    def test_autofill_context_overrides_tty(self) -> None:
         with (
             mock.patch("sys.stdin", _FakeStream(True)),
             mock.patch("sys.stdout", _FakeStream(True)),
-            prompt.defaults(),
+            prompt.autofill(),
         ):
             self.assertEqual(prompt.ask("Name", default="ada"), "ada")
             self.assertFalse(prompt.confirm("Deploy?", default=False))
             self.assertEqual(prompt.choose("Mode", {"Fast": 1, "Safe": 2}, default=2), 2)
-            self.assertEqual(prompt.choose_many("Ops", {"A": 1, "B": 2}, defaults=[1]), [1])
+            self.assertEqual(
+                prompt.choose("Ops", {"A": 1, "B": 2}, many=True, default=[1]), [1]
+            )
             with self.assertRaises(prompt.Error):
                 prompt.ask("Secret", secret=True)
 
-    def test_defaults_isolated_across_threads(self) -> None:
+    def test_autofill_isolated_across_threads(self) -> None:
         entered = threading.Event()
         release = threading.Event()
         other_result: list[str] = []
@@ -84,16 +91,16 @@ class DefaultsAndFallbackTest(unittest.TestCase):
 
         thread = threading.Thread(target=worker)
         thread.start()
-        with prompt.defaults():
+        with prompt.autofill():
             entered.set()
             release.wait()
             self.assertEqual(prompt.ask("Name", default="fallback"), "fallback")
         thread.join()
         self.assertEqual(other_result, ["typed"])
 
-    def test_defaults_isolated_in_copied_context(self) -> None:
+    def test_autofill_isolated_in_copied_context(self) -> None:
         ctx = contextvars.copy_context()
-        with prompt.defaults():
+        with prompt.autofill():
             with (
                 mock.patch("sys.stdin", _FakeStream(True)),
                 mock.patch("sys.stdout", _FakeStream(True)),
@@ -108,13 +115,13 @@ class ChoiceValidationTest(unittest.TestCase):
         with self.assertRaises(prompt.Error):
             prompt.choose("Pick", [])
         with self.assertRaises(prompt.Error):
-            prompt.choose_many("Pick", {})
+            prompt.choose("Pick", {}, many=True)
 
     def test_invalid_defaults_raise(self) -> None:
         with self.assertRaises(prompt.Error):
             prompt.choose("Pick", ["a", "b"], default="c")
         with self.assertRaises(prompt.Error):
-            prompt.choose_many("Pick", ["a", "b"], defaults=("c",))
+            prompt.choose("Pick", ["a", "b"], many=True, default=("c",))
 
 
 class InteractiveQuestionaryTest(unittest.TestCase):
@@ -136,17 +143,16 @@ class InteractiveQuestionaryTest(unittest.TestCase):
             captured["kwargs"] = kwargs
             return _FakeQuestion("sam")
 
-        def nonempty(val: str) -> str | None:
-            return None if val else "required"
+        def nonempty(val: str) -> bool | str:
+            return True if val else "required"
 
         with mock.patch("questionary.text", side_effect=fake_text):
-            ans = prompt.ask("Name", default="ada", validate=nonempty, description="Your handle")
+            ans = prompt.ask("Name", default="ada", validate=nonempty)
         self.assertEqual(ans, "sam")
         self.assertEqual(captured["message"], "Name")
         kw = captured["kwargs"]
         assert isinstance(kw, dict)
         self.assertEqual(kw["default"], "ada")
-        self.assertEqual(kw["instruction"], "Your handle")
         validator = kw["validate"]
         assert callable(validator)
         self.assertTrue(validator("ok"))
@@ -168,7 +174,10 @@ class InteractiveQuestionaryTest(unittest.TestCase):
         self.assertIs(sel.call_args.kwargs["default"], items[1])
 
         with mock.patch("questionary.checkbox", return_value=_FakeQuestion([1, 2])) as chk:
-            self.assertEqual(prompt.choose_many("Features", {"A": 1, "B": 2}, defaults=[1]), [1, 2])
+            self.assertEqual(
+                prompt.choose("Features", {"A": 1, "B": 2}, many=True, default=[1]),
+                [1, 2],
+            )
         citems = chk.call_args.kwargs["choices"]
         self.assertTrue(citems[0].checked)
         self.assertFalse(citems[1].checked)
@@ -199,6 +208,21 @@ class InteractiveQuestionaryTest(unittest.TestCase):
             with mock.patch("questionary.confirm", return_value=_FakeQuestion(True)):
                 self.assertTrue(prompt.confirm("Ok?"))
         self.assertEqual(events, ["enter", "exit"])
+
+        raw_events: list[str] = []
+        fake_live = types.SimpleNamespace(
+            is_started=True,
+            stop=lambda: raw_events.append("stop"),
+            start=lambda: raw_events.append("start"),
+        )
+        fake_raw_mod = types.ModuleType("shared._ui")
+        fake_raw_mod.ui = types.SimpleNamespace(  # type: ignore[attr-defined]
+            raw=types.SimpleNamespace(_live=fake_live)
+        )
+        with mock.patch.dict(sys.modules, {"shared._ui": fake_raw_mod}):
+            with mock.patch("questionary.confirm", return_value=_FakeQuestion(True)):
+                self.assertTrue(prompt.confirm("Ok?"))
+        self.assertEqual(raw_events, ["stop", "start"])
 
         without_ui = {k: v for k, v in sys.modules.items() if k != "shared._ui"}
         with mock.patch.dict(sys.modules, without_ui, clear=True):

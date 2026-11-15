@@ -1,47 +1,29 @@
-"""Run a function on many inputs at once: `map`, `as_completed`, `Pool` and `Loop`.
+"""Bounded thread pool with retries, timeouts, owner-thread dispatch, and asyncio `Loop`.
 
-    from shared import worker
-    sizes = worker.map(file_size, urls, concurrency=8, retries=2, label="files")
-    for result in worker.as_completed(download, urls, timeout=30):
-        print(result.item, result.value if result.ok else result.error)
     with worker.Pool(concurrency=6) as pool:
         pool.submit(download, url)
-
-Each call starts a bounded queue served by runner threads (`processes=True` uses a
-`ProcessPoolExecutor`; `async def` functions run on a background `asyncio` loop).
-`Pool.raw` is the `ProcessPoolExecutor` or event loop once started. Entry points and
-`Pool` methods are thread-safe; Ctrl-C once finishes running tasks, twice stops at once.
+        for result in pool.as_completed():
+            ...
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import inspect
 import os
-import pickle
-import signal
+import random
 import sys
 import threading
 import time
 from collections import deque
-from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import (
-    Any,
-    Callable,
-    Coroutine,
-    Generic,
-    Iterable,
-    Iterator,
-    NamedTuple,
-    TypeVar,
-    overload,
-)
+from typing import Any, Callable, Coroutine, Generic, Iterator, NamedTuple, TypeVar
 
 import shared
 from shared import _clock as clock
-from shared._log import Progress, log
+from shared._ui import ui
 
 __all__ = [
     "ClosedError",
@@ -50,9 +32,6 @@ __all__ = [
     "Pool",
     "Result",
     "StalledError",
-    "TaskError",
-    "as_completed",
-    "map",
 ]
 
 # The longest wait between two tries, which caps the exponential backoff at one minute.
@@ -61,21 +40,11 @@ MAX_RETRY_WAIT = 60.0
 WAKE_INTERVAL = 0.25
 
 R = TypeVar("R")
-A1 = TypeVar("A1")
-A2 = TypeVar("A2")
-A3 = TypeVar("A3")
 
 
 @dataclass
 class Result(Generic[R]):
-    """How one task went: its input, and what it returned or raised.
-
-        for result in worker.as_completed(download, urls):
-            print(result.item, result.value if result.ok else result.error, result.attempts)
-
-    A `Result` is made by a runner thread and never changed after it is handed out, so any
-    thread may read it.
-    """
+    """Outcome record for a single completed task."""
 
     item: Any
     value: R | None = None
@@ -85,245 +54,24 @@ class Result(Generic[R]):
 
     @property
     def ok(self) -> bool:
-        """Whether the task succeeded: `error` is None."""
+        """Whether the task succeeded without error."""
         return self.error is None
 
 
 class Error(shared.Error):
-    """The base of every error `shared.worker` raises."""
+    """Base exception for all `worker` errors."""
 
 
 class StalledError(Error, TimeoutError):
-    """One try of a task ran past the pool's `timeout`."""
+    """Raised when a task exceeds its per-attempt `timeout`."""
 
 
 class ClosedError(Error, RuntimeError):
-    """Raised when submitting to or calling the owner of a closed or stopped pool."""
-
-
-class TaskError(Error):
-    """Raised by `map` when some tasks failed, once every other task has finished."""
-
-    def __init__(self, results: list[Result[Any]]):
-        self.results = results
-        failed = [result for result in results if not result.ok]
-        first = failed[0]
-        super().__init__(
-            f"{len(failed)} of {len(results)} tasks failed; "
-            f"first: {first.item}: {_describe(first.error)}"
-        )
-
-
-@overload
-def map(
-    fn: Callable[[A1], R],
-    items: Iterable[A1],
-    /,
-    *,
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> list[R]: ...
-@overload
-def map(
-    fn: Callable[[A1, A2], R],
-    items: Iterable[A1],
-    second: Iterable[A2],
-    /,
-    *,
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> list[R]: ...
-@overload
-def map(
-    fn: Callable[[A1, A2, A3], R],
-    items: Iterable[A1],
-    second: Iterable[A2],
-    third: Iterable[A3],
-    /,
-    *,
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> list[R]: ...
-@overload
-def map(
-    fn: Callable[..., Any],
-    items: Iterable[Any],
-    second: Iterable[Any],
-    third: Iterable[Any],
-    fourth: Iterable[Any],
-    /,
-    *more: Iterable[Any],
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> list[Any]: ...
-def map(
-    fn: Callable[..., Any],
-    *iterables: Iterable[Any],
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> list[Any]:
-    """Run `fn` on every item concurrently and return the results in input order.
-
-        sizes = worker.map(file_size, urls, concurrency=8, retries=2, timeout=30)
-
-    Raises:
-        TaskError: Any task failed after its retries, once all others finish.
-        ValueError, TypeError: Invalid option or unpicklable `fn` when `processes=True`.
-    """
-    with _Run(
-        concurrency=concurrency,
-        retries=retries,
-        timeout=timeout,
-        label=label,
-        progress=progress,
-        processes=processes,
-        total=_length(iterables),
-        stop=stop,
-    ) as run:
-        for args in zip(*iterables):
-            run.submit(fn, args)
-    results = sorted(run.finished, key=lambda result: result._position)
-    if any(not result.ok for result in results):
-        raise TaskError(results)
-    return [result.value for result in results]
-
-
-@overload
-def as_completed(
-    fn: Callable[[A1], R],
-    items: Iterable[A1],
-    /,
-    *,
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> Iterator[Result[R]]: ...
-@overload
-def as_completed(
-    fn: Callable[[A1, A2], R],
-    items: Iterable[A1],
-    second: Iterable[A2],
-    /,
-    *,
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> Iterator[Result[R]]: ...
-@overload
-def as_completed(
-    fn: Callable[[A1, A2, A3], R],
-    items: Iterable[A1],
-    second: Iterable[A2],
-    third: Iterable[A3],
-    /,
-    *,
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> Iterator[Result[R]]: ...
-@overload
-def as_completed(
-    fn: Callable[..., Any],
-    items: Iterable[Any],
-    second: Iterable[Any],
-    third: Iterable[Any],
-    fourth: Iterable[Any],
-    /,
-    *more: Iterable[Any],
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> Iterator[Result[Any]]: ...
-def as_completed(
-    fn: Callable[..., Any],
-    *iterables: Iterable[Any],
-    concurrency: int | None = None,
-    retries: int = 0,
-    timeout: float | None = None,
-    label: str | None = None,
-    progress: Callable[[int, int], Any] | None = None,
-    processes: bool = False,
-    stop: threading.Event | None = None,
-) -> Iterator[Result[Any]]:
-    """Run `fn` on every item concurrently and yield each `Result` as soon as it is ready.
-
-        for result in worker.as_completed(download, urls, concurrency=8):
-            if not result.ok:
-                log.error("{url}: {error}", url=result.item, error=result.error)
-    """
-    with _Run(
-        concurrency=concurrency,
-        retries=retries,
-        timeout=timeout,
-        label=label,
-        progress=progress,
-        processes=processes,
-        total=_length(iterables),
-        stop=stop,
-    ) as run:
-        seen = 0
-        for args in zip(*iterables):
-            while not run.has_room():
-                run.wait(run.room_cond, lambda: run.has_room() or len(run.finished) > seen)
-                fresh = run.finished[seen:]
-                seen += len(fresh)
-                yield from fresh
-            run.submit(fn, args)
-        run.close()
-        while seen < run.submitted:
-            run.wait(run.done_cond, lambda: len(run.finished) > seen)
-            fresh = run.finished[seen:]
-            seen += len(fresh)
-            yield from fresh
+    """Raised when submitting to or running on a closed `Pool` or `Loop`."""
 
 
 class Pool:
-    """Tasks submitted one at a time, with bounded queuing and owner-thread marshaling.
-
-        with worker.Pool(concurrency=6, label="downloads") as pool:
-            pool.submit(download, url)
-    """
+    """Reusable bounded thread pool with retries, timeouts, owner-thread dispatch, and stop."""
 
     def __init__(
         self,
@@ -331,60 +79,64 @@ class Pool:
         concurrency: int | None = None,
         retries: int = 0,
         timeout: float | None = None,
-        label: str | None = None,
         progress: Callable[[int, int], Any] | None = None,
-        processes: bool = False,
         stop: threading.Event | None = None,
     ) -> None:
         self._run = _Run(
             concurrency=concurrency,
             retries=retries,
             timeout=timeout,
-            label=label,
             progress=progress,
-            processes=processes,
             stop=stop,
         )
 
     def submit(self, fn: Callable[..., Any], *args: Any) -> None:
-        """Queue `fn(*args)`, waiting while twice `concurrency` tasks are already queued."""
+        """Enqueue `fn(*args)` for execution in the pool."""
         self._run.submit(fn, args)
 
-    def run_on_owner(self, fn: Callable[[], R]) -> R:
-        """Run `fn()` on the pool's owner thread and return its result."""
-        return self._run.run_on_owner(fn)
-
-    def close(self) -> None:
-        """Say that no more tasks are coming; queued tasks still run."""
-        self._run.close()
-
-    def stop(self, error: BaseException | None = None) -> None:
-        """Drop queued tasks, wait for running ones, and shut the pool down."""
-        self._run.stop(error)
-        self._run.end(error)
+    def as_completed(self) -> Iterator[Result[Any]]:
+        """Yield `Result` objects as submitted tasks finish."""
+        run = self._run
+        seen = 0
+        while True:
+            run.wait(
+                run.done_cond,
+                lambda: len(run.finished) > seen or run.is_idle() or run.ended,
+            )
+            with run.lock:
+                fresh = run.finished[seen:]
+                done = run.is_idle() or run.ended
+            if fresh:
+                seen += len(fresh)
+                yield from fresh
+            elif done:
+                return
 
     def join(self, timeout: float | None = None) -> list[Result[Any]]:
-        """Wait for every task submitted so far, or `timeout` seconds, and return `results`."""
+        """Wait for all submitted tasks to finish and return their `Result` list."""
         run = self._run
         if run.wait(run.done_cond, run.is_idle, timeout) and run.closed:
             run.end(None)
-        return self.results
+        with run.lock:
+            return list(run.finished)
+
+    def run_on_owner(self, fn: Callable[[], R]) -> R:
+        """Execute `fn()` on the thread that owns the pool."""
+        return self._run.run_on_owner(fn)
+
+    def stop(self, error: BaseException | None = None) -> None:
+        """Request immediate shutdown and cancel queued tasks."""
+        self._run.stop(error)
+        self._run.end(error)
+
+    def close(self) -> None:
+        """Shut down the pool and release worker threads."""
+        self._run.close()
 
     @property
-    def results(self) -> list[Result[Any]]:
-        """The finished results, in the order they finished, as a new list."""
-        with self._run.lock:
-            return list(self._run.finished)
-
-    @property
-    def submitted(self) -> int:
-        """How many tasks were submitted, finished or not."""
-        return self._run.submitted
-
-    @property
-    def raw(self) -> Any:
-        """The `ProcessPoolExecutor` or asyncio loop once started, else None."""
-        return self._run.executor or self._run.loop
+    def raw(self) -> concurrent.futures.Executor:
+        """Underlying `concurrent.futures.Executor`."""
+        return self._run.ensure_executor()
 
     def __enter__(self) -> Pool:
         return self
@@ -395,17 +147,16 @@ class Pool:
         self._run.__exit__(error_type, error, traceback)
 
     def __del__(self) -> None:
-        if not sys.is_finalizing() and not self._run.ended:
-            unfinished = self._run.submitted - len(self._run.finished)
+        run = getattr(self, "_run", None)
+        if run is not None and not sys.is_finalizing() and not run.ended:
+            unfinished = run.submitted - len(run.finished)
             if unfinished > 0:
-                log.warn(
-                    "worker.Pool was never joined; {n} tasks may not have finished", n=unfinished
-                )
-            self._run.close()
+                ui.warn(f"worker.Pool was never joined; {unfinished} tasks may not have finished")
+            run.close()
 
 
 class Loop:
-    """A long-lived background asyncio event loop that survives task errors."""
+    """Dedicated background `asyncio` event-loop runner for sync callers."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -415,33 +166,26 @@ class Loop:
 
     @property
     def raw(self) -> asyncio.AbstractEventLoop | None:
-        """The underlying asyncio event loop once started, else None."""
+        """Underlying `asyncio.AbstractEventLoop`, or `None` before first use / after close."""
         return self._loop
 
-    def run(
-        self,
-        coro: Coroutine[Any, Any, R],
-        *,
-        stop: threading.Event | None = None,
-        timeout: float | None = None,
-    ) -> R:
-        """Run `coro` on the background loop and return its result."""
+    def run(self, coro: Coroutine[Any, Any, R], *, timeout: float | None = None) -> R:
+        """Run `coro` to completion on the background loop and return its result."""
         loop = self._ensure_loop(coro)
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         deadline = None if timeout is None else time.monotonic() + timeout
         try:
-            _wait_future(future, stop=stop, deadline=deadline, timeout=timeout)
+            _wait_future(future, deadline=deadline, timeout=timeout)
         except KeyboardInterrupt:
             future.cancel()
             raise
         try:
             return future.result()
         except (concurrent.futures.CancelledError, asyncio.CancelledError):
-            cancelled = getattr(shared, "CancelledError", Error)
-            raise cancelled("task was cancelled") from None
+            raise Error("task was cancelled") from None
 
     def close(self) -> None:
-        """Stop the background loop and join its thread."""
+        """Stop the background event loop and join its thread."""
         with self._lock:
             if self._closed:
                 return
@@ -494,7 +238,7 @@ class _OwnerCall:
 
 
 class _Run:
-    """The engine under `map`, `as_completed` and `Pool`: queue, runners, retries and stop."""
+    """Internal queue, runner threads, retries, timeouts, and stop coordination."""
 
     def __init__(
         self,
@@ -502,10 +246,7 @@ class _Run:
         concurrency: int | None = None,
         retries: int = 0,
         timeout: float | None = None,
-        label: str | None = None,
         progress: Callable[[int, int], Any] | None = None,
-        processes: bool = False,
-        total: int | None = None,
         stop: threading.Event | None = None,
     ) -> None:
         if concurrency is not None and concurrency < 1:
@@ -515,13 +256,10 @@ class _Run:
         if timeout is not None and timeout <= 0:
             raise ValueError(f"timeout must be above 0, not {timeout}")
         if progress is not None and not callable(progress):
-            raise TypeError(
-                f"progress must be a progress(done, total) callback, not {progress!r}; "
-                "a progress row's text goes in label="
-            )
+            raise TypeError(f"progress must be a progress(done, total) callback, not {progress!r}")
         cpus = os.cpu_count() or 1
-        self.concurrency = concurrency or (cpus if processes else min(32, cpus + 4))
-        self.retries, self.timeout, self.processes = retries, timeout, processes
+        self.concurrency = concurrency or min(32, cpus + 4)
+        self.retries, self.timeout = retries, timeout
         self.lock = threading.Lock()
         self.room_cond = threading.Condition(self.lock)
         self.work_cond = threading.Condition(self.lock)
@@ -538,16 +276,10 @@ class _Run:
         self._worker_ids: set[int] = set()
         self._runner_threads: list[threading.Thread] = []
         self._idle_workers: deque[tuple[threading.Event, list[Any]]] = deque()
-        self.executor: concurrent.futures.ProcessPoolExecutor | None = None
+        self.executor: concurrent.futures.ThreadPoolExecutor | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
-        self.exits = ExitStack()
-        self.bar: Progress | None = (
-            self.exits.enter_context(log.progress(label, total=total))
-            if label is not None
-            else None
-        )
-        self.total, self.progress = total, progress
+        self.progress = progress
         self.reporting = threading.Lock()
         self.reported = 0
 
@@ -569,6 +301,15 @@ class _Run:
                 raise
         self.end(None if isinstance(error, GeneratorExit) else error)
 
+    def ensure_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the underlying `ThreadPoolExecutor`, creating it on first use."""
+        with self.lock:
+            if self.executor is None:
+                self.executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.concurrency, thread_name_prefix="shared-worker"
+                )
+            return self.executor
+
     def has_room(self) -> bool:
         """Whether another task may be queued: fewer than twice `concurrency` are waiting."""
         return len(self.queued) < 2 * self.concurrency
@@ -579,8 +320,6 @@ class _Run:
 
     def submit(self, fn: Callable[..., Any], args: tuple[Any, ...]) -> None:
         """Queue one task, waiting while the queue is full unless called from a worker."""
-        if self.processes:
-            _check_picklable(fn)
         with self.lock:
             if self.closed:
                 raise ClosedError("this pool was closed: no more tasks can be submitted")
@@ -593,11 +332,12 @@ class _Run:
             self._start_backend(fn)
             self.queued.append(_Job(fn, args, args[0] if len(args) == 1 else args, self.submitted))
             self.submitted += 1
-            if self.bar is not None and self.total is None:
-                self.bar.total = self.submitted
             if self.runners < self.concurrency:
                 self.runners += 1
-                thread = threading.Thread(target=self._serve, name="shared-worker", daemon=True)
+                ctx = contextvars.copy_context()
+                thread = threading.Thread(
+                    target=ctx.run, args=(self._serve,), name="shared-worker", daemon=True
+                )
                 self._runner_threads.append(thread)
                 thread.start()
             self.work_cond.notify()
@@ -672,35 +412,29 @@ class _Run:
             raise
 
     def end(self, error: BaseException | None, *, force: bool = False) -> None:
-        """Shut down processes, event loop, worker threads and progress bar. Idempotent."""
+        """Shut down executor, event loop, and worker threads. Idempotent."""
         with self.lock:
             if self.ended:
                 return
             self.ended = True
             self.closed = True
             self._reject_owner_calls()
-            failed = any(not result.ok for result in self.finished)
             idle = list(self._idle_workers)
             self._idle_workers.clear()
             runners = list(self._runner_threads) if not force else []
             self.work_cond.notify_all()
+            self.done_cond.notify_all()
         for wake, box in idle:
             box[0] = None
             wake.set()
         if self.executor is not None:
-            _logging_failure(_stop_processes, self.executor, force)
+            _logging_failure(self.executor.shutdown, wait=not force, cancel_futures=True)
         if self.loop is not None:
             _logging_failure(self.loop.call_soon_threadsafe, self.loop.stop)
             if self._loop_thread is not None and not force:
                 self._loop_thread.join()
         for thread in runners:
             thread.join()
-        if self.bar is not None and failed and error is None:
-            self.bar.fail()
-        if error is None:
-            self.exits.close()
-        else:
-            self.exits.__exit__(type(error), error, error.__traceback__)
 
     def _drain_owner_calls(self) -> None:
         if threading.get_ident() != self._owner_id:
@@ -728,20 +462,14 @@ class _Run:
     def _log_stop(self, error: BaseException | None, running: int, dropped: int) -> None:
         if isinstance(error, KeyboardInterrupt):
             if running:
-                log.warn(
-                    "stopping: waiting for {n} running tasks (Ctrl-C again to force)", n=running
+                ui.warn(
+                    f"stopping: waiting for {running} running tasks (Ctrl-C again to force)"
                 )
         elif error is not None and dropped and not isinstance(error, GeneratorExit):
-            log.warn(
-                "dropped {n} queued tasks after {error}", n=dropped, error=type(error).__name__
-            )
+            ui.warn(f"dropped {dropped} queued tasks after {type(error).__name__}")
 
     def _start_backend(self, fn: Callable[..., Any]) -> None:
-        if self.processes and self.executor is None:
-            self.executor = concurrent.futures.ProcessPoolExecutor(
-                self.concurrency, initializer=_ignore_ctrl_c
-            )
-        elif not self.processes and self.loop is None and inspect.iscoroutinefunction(fn):
+        if self.loop is None and inspect.iscoroutinefunction(fn):
             self.loop, self._loop_thread = _start_loop_thread()
             if self._loop_thread.ident is not None:
                 self._worker_ids.add(self._loop_thread.ident)
@@ -766,8 +494,6 @@ class _Run:
         with self.lock:
             if result is not None and not self.ended:
                 self.finished.append(result)
-                if self.bar is not None:
-                    self.bar.advance()
             self.done_cond.notify_all()
         if result is not None and self.progress is not None:
             try:
@@ -790,7 +516,7 @@ class _Run:
         with self.reporting:
             with self.lock:
                 done = len(self.finished)
-                total = self.submitted if self.total is None else self.total
+                total = self.submitted
             if done > self.reported:
                 self.reported = done
                 progress(done, total)
@@ -835,9 +561,7 @@ class _Run:
 
     def _attempt(self, job: _Job) -> Any:
         future: concurrent.futures.Future[Any]
-        if self.executor is not None:
-            future = self.executor.submit(_call_in_child, job.fn, job.args, self.timeout)
-        elif self.loop is not None and inspect.iscoroutinefunction(job.fn):
+        if self.loop is not None and inspect.iscoroutinefunction(job.fn):
             future = asyncio.run_coroutine_threadsafe(job.fn(*job.args), self.loop)
         elif self.timeout is None:
             return job.fn(*job.args)
@@ -907,14 +631,10 @@ def _make_result(
 def _wait_future(
     future: concurrent.futures.Future[Any],
     *,
-    stop: threading.Event | None,
     deadline: float | None,
     timeout: float | None,
 ) -> None:
     while not future.done():
-        if stop is not None and stop.is_set():
-            future.cancel()
-            return
         left = (
             WAKE_INTERVAL
             if deadline is None
@@ -953,71 +673,17 @@ def _start_loop_thread() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
     return box[0], thread
 
 
-def _check_picklable(fn: Callable[..., Any]) -> None:
-    """Raise TypeError with a hint when `fn` can't be pickled before a process run starts."""
-    try:
-        pickle.dumps(fn)
-    except Exception:
-        name = getattr(fn, "__name__", repr(fn))
-        raise TypeError(
-            f"worker can't send {name} to another process: "
-            "use a function defined at the top level of a module"
-        ) from None
-
-
-def _ignore_ctrl_c() -> None:
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-
-
-def _call_in_child(fn: Callable[..., Any], args: tuple[Any, ...], timeout: float | None) -> Any:
-    """Run one try in a worker process, which stops it itself after `timeout` seconds."""
-    def call() -> Any:
-        return asyncio.run(fn(*args)) if inspect.iscoroutinefunction(fn) else fn(*args)
-    if timeout is None or sys.platform == "win32" or not hasattr(signal, "setitimer"):
-        return call()
-
-    def give_up(signal_number: int, frame: Any) -> None:
-        raise StalledError(f"took longer than {timeout}s")
-
-    signal.signal(signal.SIGALRM, give_up)
-    signal.setitimer(signal.ITIMER_REAL, timeout)
-    try:
-        return call()
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-
-
 def _retry_wait(attempt: int) -> float:
     """The seconds to wait before the next try: 1, 2, 4… with jitter, capped at MAX_RETRY_WAIT."""
-    return min(MAX_RETRY_WAIT, 2 ** (attempt - 1) * clock.random().uniform(0.75, 1.25))
+    return min(MAX_RETRY_WAIT, 2 ** (attempt - 1) * random.uniform(0.75, 1.25))
 
 
-def _stop_processes(executor: concurrent.futures.ProcessPoolExecutor, force: bool) -> None:
-    """Shut the process pool down: wait for running tasks, or with `force` terminate at once."""
-    if force:
-        for process in list((executor._processes or {}).values()):
-            process.terminate()
-    executor.shutdown(wait=not force, cancel_futures=True)
-
-
-def _logging_failure(step: Callable[..., Any], *args: Any) -> None:
-    """Call one shutdown step, and log a warning instead of raising when it fails."""
+def _logging_failure(step: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Call one shutdown step, and warn instead of raising when it fails."""
     try:
-        step(*args)
+        step(*args, **kwargs)
     except Exception as error:
-        log.warn("worker couldn't shut down cleanly: {error}", error=_describe(error))
-
-
-def _length(iterables: tuple[Iterable[Any], ...]) -> int | None:
-    """The shortest input's length (the run's total), or None when an input has no length."""
-    try:
-        return (
-            min(len(iterable) for iterable in iterables)  # pyright: ignore[reportArgumentType]
-            if iterables
-            else 0
-        )
-    except TypeError:
-        return None
+        ui.warn(f"worker couldn't shut down cleanly: {_describe(error)}")
 
 
 def _describe(error: BaseException | None) -> str:

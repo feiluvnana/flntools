@@ -1,12 +1,12 @@
 """Command-line apps backed by `cyclopts` and `rich`, plus two-stage Ctrl-C handling.
 
-    app = cli.App("notes", version="1.0")
+    app = cli.App(name="notes", help="Manage notes.")
 
     @app.command
     def add(text: str, *, count: int = 1) -> int:
         return 0
 
-    app()
+    raise SystemExit(app.run())
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, NoReturn
+from typing import Any, Callable
 
 import cyclopts
 from cyclopts.exceptions import CycloptsError
@@ -25,7 +25,7 @@ from rich.console import Console
 
 import shared
 
-__all__ = ["App", "Error", "Stopping", "UsageError", "main", "stopping"]
+__all__ = ["App", "Error", "Stopping", "UsageError", "stopping"]
 
 
 class Error(shared.Error):
@@ -45,65 +45,42 @@ class Stopping:
 
 
 class App:
-    """Command-line application wrapping `cyclopts.App` with `rich` output."""
+    """Command-line application wrapping `cyclopts.App`."""
 
-    def __init__(
-        self,
-        name: str,
-        *,
-        version: str | None = None,
-        description: str = "",
-        epilog: str = "",
-        default: Callable[..., Any] | None = None,
-    ) -> None:
-        self.name = name
-        self.raw = cyclopts.App(
-            name=name,
-            help=description or None,
-            help_epilogue=epilog or None,
-            version=version,
-            version_flags=["-V", "--version"],
-            default_command=default,
-            exit_on_error=False,
-            print_error=False,
-            result_action="return_value",
-            suppress_keyboard_interrupt=False,
-        )
+    def __init__(self, *, name: str = "", help: str = "") -> None:
+        self._raw = _cyclopts_app(name, help)
+
+    @property
+    def raw(self) -> cyclopts.App:
+        """Underlying `cyclopts.App` for advanced configuration."""
+        return self._raw
 
     def command(self, target: Callable[..., Any] | str | None = None, /) -> Any:
         """Register a command handler as `@app.command` or `@app.command('name')`."""
         if callable(target):
-            return self.raw.command(target)
-        return self.raw.command(name=target)
+            return self._raw.command(target)
+        return self._raw.command(name=target)
 
     def group(
-        self, name: str, *, description: str = "", default: Callable[..., Any] | None = None
+        self, name: str, *, help: str = "", default: Callable[..., Any] | None = None
     ) -> App:
-        """Add and return a subcommand group under `name`."""
-        child = App(name, description=description, default=default)
-        self.raw.command(child.raw)
+        """Create and attach a nested subcommand group `App`."""
+        child = App(name=name, help=help)
+        if default is not None:
+            child._raw = _cyclopts_app(name, help, default=default)
+        self._raw.command(child._raw)
         return child
 
     def run(self, argv: Sequence[str] | None = None) -> int:
         """Parse `argv`, run the matched command, and return its exit code."""
         tokens = sys.argv[1:] if argv is None else list(argv)
         try:
-            return _exit_code(self.raw(tokens))
+            return _exit_code(self._raw(tokens))
         except (UsageError, CycloptsError) as error:
             Console(stderr=True).print(f"[red]✗[/red] {error}")
             return 2
         except KeyboardInterrupt:
             return 130
-
-    def __call__(self) -> NoReturn:
-        """Run with `sys.argv` and exit with the resulting status code."""
-        sys.exit(self.run())
-
-
-def main(fn: Callable[..., Any]) -> NoReturn:
-    """Run a single function `fn` as a standalone CLI program and exit."""
-    app = App(fn.__name__.replace("_", "-"), default=fn)
-    app()
 
 
 @contextmanager
@@ -126,6 +103,22 @@ def stopping() -> Iterator[Stopping]:
         yield state
     finally:
         signal.signal(signal.SIGINT, previous)
+
+
+def _cyclopts_app(
+    name: str, help: str, *, default: Callable[..., Any] | None = None
+) -> cyclopts.App:
+    """Build a configured `cyclopts.App` instance."""
+    return cyclopts.App(
+        name=name or None,
+        help=help or None,
+        version_flags=["-V", "--version"],
+        default_command=default,
+        exit_on_error=False,
+        print_error=False,
+        result_action="return_value",
+        suppress_keyboard_interrupt=False,
+    )
 
 
 def _exit_code(result: Any) -> int:

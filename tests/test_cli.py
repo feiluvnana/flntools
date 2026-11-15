@@ -1,4 +1,4 @@
-"""Tests for `shared.cli`: commands, groups, exit codes, help, and `stopping()`."""
+"""Tests for `shared.cli`: commands, groups, `.raw`, exit codes, help, and `stopping()`."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import signal
 import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from unittest import mock
+
+import cyclopts
 
 import shared
 from shared import cli
@@ -25,9 +26,10 @@ class ErrorAndExitCodeTest(unittest.TestCase):
         self.assertTrue(issubclass(cli.Error, shared.Error))
         self.assertTrue(issubclass(cli.UsageError, cli.Error))
         self.assertTrue(issubclass(cli.UsageError, ValueError))
+        self.assertFalse(hasattr(cli, "main"))
 
     def test_bool_int_and_none_exit_codes(self) -> None:
-        app = cli.App("tool")
+        app = cli.App(name="tool")
 
         @app.command
         def ok_true() -> bool:
@@ -51,7 +53,7 @@ class ErrorAndExitCodeTest(unittest.TestCase):
         self.assertEqual(app.run(["ret-none"]), 0)
 
     def test_usage_error_and_keyboard_interrupt(self) -> None:
-        app = cli.App("tool")
+        app = cli.App(name="tool")
 
         @app.command
         def check(value: str) -> int:
@@ -73,8 +75,9 @@ class ErrorAndExitCodeTest(unittest.TestCase):
 
 
 class CommandsGroupsAndHelpTest(unittest.TestCase):
-    def test_commands_groups_and_native_args_help(self) -> None:
-        app = cli.App("notes", version="2.0", description="Manage notes.", epilog="See docs.")
+    def test_commands_groups_raw_and_help(self) -> None:
+        app = cli.App(name="notes", help="Manage notes.")
+        self.assertIsInstance(app.raw, cyclopts.App)
         seen: list[object] = []
 
         @app.command
@@ -88,7 +91,7 @@ class CommandsGroupsAndHelpTest(unittest.TestCase):
             seen.append((text, count))
             return 0
 
-        auth = app.group("auth", description="Auth commands.")
+        auth = app.group("auth", help="Auth commands.")
 
         @auth.command("set-token")
         def set_token(token: str) -> int:
@@ -104,32 +107,12 @@ class CommandsGroupsAndHelpTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Note body.", out)
         self.assertIn("Number of copies.", out)
+        self.assertIn("Manage notes.", _run_captured(app, "--help")[1])
 
-        code, out, _ = _run_captured(app, "--version")
-        self.assertEqual(code, 0)
-        self.assertIn("2.0", out)
-
-        code, out, _ = _run_captured(app, "-V")
-        self.assertEqual(code, 0)
-        self.assertIn("2.0", out)
-
-    def test_group_default_and_main(self) -> None:
-        app = cli.App("tool")
+    def test_group_default(self) -> None:
+        app = cli.App(name="tool")
         app.group("sync", default=lambda: 5)
         self.assertEqual(app.run(["sync"]), 5)
-
-        def run_tool(name: str) -> int:
-            return len(name)
-
-        with mock.patch("sys.argv", ["run-tool", "ada"]):
-            with self.assertRaises(SystemExit) as ctx:
-                cli.main(run_tool)
-        self.assertEqual(ctx.exception.code, 3)
-
-        with mock.patch("sys.argv", ["tool", "sync"]):
-            with self.assertRaises(SystemExit) as ctx:
-                app()
-        self.assertEqual(ctx.exception.code, 5)
 
 
 class StoppingTest(unittest.TestCase):
