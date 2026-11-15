@@ -151,7 +151,7 @@ class Engine:
             ui.info("nothing to sync")
             return Report(())
         _validate_targets(self.sources, None, [t for t, _ in chosen])
-        with cli.stopping() as stop, fs.lock(self.home / paths.METADATA):
+        with cli.stopping() as stop, fs.lock(self.home / paths.METADATA / ".lock"):
             results: dict[int, TargetReport] = {}
             pool_settings = RunShared(home=self.home, history={}, stop=stop)
             with shared_browser(pool_settings):
@@ -288,7 +288,7 @@ class Engine:
         stop: cli.Stopping,
     ) -> Report:
         """Download non-query targets with metadata locking and optional history sweep."""
-        with fs.lock(self.home / paths.METADATA):
+        with fs.lock(self.home / paths.METADATA / ".lock"):
             rows = flnd.targets.rows(self.home)
             chosen: list[tuple[Target, Options]] = []
             shown: list[str] = []
@@ -476,7 +476,7 @@ class Engine:
         """Download a mix of query and non-query targets in caller order."""
         reports: list[TargetReport] = []
         pool_settings = RunShared(home=self.home, history={}, stop=stop)
-        with fs.lock(self.home / paths.METADATA), shared_browser(pool_settings):
+        with fs.lock(self.home / paths.METADATA / ".lock"), shared_browser(pool_settings):
             for target in resolved:
                 options = by_source[target.source]
                 if self._is_query(target):

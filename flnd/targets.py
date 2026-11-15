@@ -287,7 +287,7 @@ def _validate_from(
         return
     routes = _target_routes(by_code, targets)
     for target, route in routes:
-        if not _route_from(route):
+        if not _route_from(route) and not route.discovers:
             raise cli.UsageError(
                 f"--from applies to profiles and chats; {target} is one post, downloaded whole"
             )
