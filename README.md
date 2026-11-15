@@ -2,7 +2,7 @@
 
 Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, **Twitter/X**, **LOIBUS**, and **Telegram**. The command is `flnd`.
 
-The plan for the shared helpers flnd is built on is in [plan/README.md](plan/README.md).
+Built on `shared/` — a lean 16-namespace utility toolkit (`ui`, `prompt`, `cli`, `text`, `clock`, `fs`, `store`, `worker`, `http`, `cookies`, `browser`, `selector`, `crypto`, `archive`, `media`, `bundler`).
 
 ---
 
@@ -49,10 +49,10 @@ in the folder you run it from.
 
 ```bash
 flnd download <targets...> [--from CATEGORIES] [--time SINCE,UNTIL]
-              [--shrink [off]] [-v]
-flnd sync [targets...] [-v]
-flnd login
-flnd logout <sources...> | all
+              [--shrink [off]] [--sync] [--again] [--limit N] [--dry] [-v]
+flnd sync [targets...] [--time SINCE,UNTIL] [--shrink [off]] [-v]
+flnd target ls | rm <targets...>
+flnd auth login | logout <sources...> | ls
 ```
 
 Or via python module:
@@ -83,6 +83,7 @@ Sources:
 - `ins`: Instagram
 - `twt`: Twitter/X
 - `loi`: LOIBUS (loix.cc), one post by its id or URL
+- `mht`: Mimihentai, mangas, authors, genres, and searches
 - `tlg`: Telegram, a chat, group or channel the account can see
 
 Facebook and Instagram serve their best videos as separate video and sound streams (DASH);
@@ -223,7 +224,7 @@ schtasks /create /tn "flnd sync" /sc daily /st 03:15 /tr "cmd /c cd /d C:\path\t
 
 ## Logging in
 
-Most sources work better logged in. `flnd login` reads your login cookies from your browser, or from a cookie file you exported.
+Most sources work better logged in. `flnd auth login` reads your login cookies from your browser, or from a cookie file you exported.
 It takes no arguments and asks everything, in a terminal: the source (those already logged in say so),
 then from your browser or a cookie file, then which browser (Chrome, Firefox, Edge, Brave or Chromium)
 and profile, the default one preselected, or the file's path (Netscape cookies.txt or JSON).
@@ -231,9 +232,10 @@ For Telegram the methods are its own: your browser's Telegram Web login, a QR co
 number and the code Telegram sends.
 
 ```bash
-flnd login                  # asks the source, the method, then the browser or the file
-flnd logout ins tik         # removes those logins
-flnd logout all             # removes every login
+flnd auth login             # asks the source, the method, then the browser or the file
+flnd auth ls                # lists saved logins and their state
+flnd auth logout ins tik    # removes those logins
+flnd auth logout all        # removes every login
 ```
 
 A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/metadata/secrets.db`

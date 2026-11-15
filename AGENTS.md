@@ -38,24 +38,24 @@ All commits must strictly follow this message format:
 - Live checks against real sites are done by hand on the authorized test accounts, never in unit tests. Unit tests fake the network (`httpx.MockTransport`), the browser and the clock.
 
 ## Layout
-- `shared/` is the toolkit. Every file starts with `_`, and `shared/__init__.py` is the only public surface.
-- `flnd/` keeps its entry points and engine modules at the top level: `cli`, `engine`, `source` (what sources import), `site`, `job`, `post`, `targets`, `repair` and `options`.
+- `shared/` is the toolkit. Every implementation file starts with `_`, and `shared/__init__.py` is the only public surface exposing 16 namespaces: `ui`, `prompt`, `cli`, `text`, `clock`, `fs`, `store`, `worker`, `http`, `cookies`, `browser`, `selector`, `crypto`, `archive`, `media`, and `bundler`.
+- `flnd/` keeps its entry points and engine modules at the top level: `cli`, `dry`, `engine`, `job`, `options`, `query`, `repair`, `site`, `source` (what sources import), and `targets`.
 - `flnd/common/` holds the engine side's helpers (`auth`, `compress`, `paths`, `net`).
-- `flnd/sources/` holds one module per site. `flnd/sources/common/` holds what sources share (`dash`, `relay`, …).
-- A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib (plan/phase-6/redesign.md, B4).
+- `flnd/sources/` holds one module per site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`), each declaring `@target` routes with per-target `from_` categories and `folder` templates validated up-front. `flnd/sources/common/` holds what sources share (`dash`, `feed`, `relay`).
+- A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib.
 
 ## API and naming
-- Follow plan/phase-6/redesign.md §2:
+- Follow these naming rules:
   - a verb for an action, a noun for a read;
   - a property for a read with no arguments;
   - no `get_`, `to_`, `load_from_` style prefixes;
   - options after the first parameter are keyword-only;
   - one word means one thing: `dest`, `timeout`, `progress(done, total)`, `label`, `level`.
 - One spelling: no aliases or deprecated names. `shared` has one user, flnd, which is changed in the same commit.
-- Every module's errors share a `<module>.Error` base, under `shared.UnsafeError`, `BrokenError` or `RefusedError` where they fit.
+- Every module's errors share a `<module>.Error` base, under `shared.UnsafeError`, `BrokenError`, `RefusedError`, or `MissingError` where they fit.
 - `tests/test_names.py` enforces these rules, and the writing rules a machine can check. Its allowlist may only shrink.
 
-## Writing (plan/phase-7/readable.md, user 2026-11-13)
+## Writing
 - Code a reader can follow top to bottom; more code than prose in every file. `shared` and `flnd` both stay lean.
 - A docstring is one sentence. An example only on a public entry point. `Args:`, `Returns:`, `Raises:` only where the name and type don't say it (`flnd/cli.py` keeps `Args:`: `shared.cli` reads help from them). About 10 lines at most; a module docstring at most 15.
 - A comment says why: a site quirk, a magic value, a lock, a platform branch, a non-obvious choice. Never what the next line does; never a plan id, a `.md` file, an issue number, a phase or "as before" (history goes in the commit message, a regression guard in a test name).
@@ -64,11 +64,6 @@ All commits must strictly follow this message format:
 - No chained ternaries; no `bool | None` for three states (an `Enum`); no callback from a producer into its consumer; no writing to a frozen object. Five or more options become a record.
 - A module is named for what it holds, never renamed on import; one word, one meaning across modules. A module reads: docstring, imports, constants, main entry point, helpers in call order.
 - Plain over clever: declare what code would otherwise guess (a downloader that opens a browser says `browser = True`).
-
-## Plans
-- The plan is in `plan/`. In Phase 6, `plan/phase-6/redesign.md` wins over every other Phase 6 file, and `simplify.md` wins over the rest.
-- Build in the order given in `plan/phase-6/README.md`.
-- Ask the user before building a step whose decision is still open. Record each decision in the plan, with its date.
 
 ## Models
 - **Mechanical changes use a low-cost model** (user, 2026-11-12): Claude Haiku in Claude Code, or the low-cost tier of whichever tool is in use.
