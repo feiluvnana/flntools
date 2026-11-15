@@ -375,7 +375,9 @@ class Row:
 
     def _build_text(self, owner: UI, level: str) -> Text:
         """Assemble Rich `Text` for this progress row."""
-        role = level if level != "info" else ("wait" if self.wait else "accent")
+        role = level
+        if level == "info":
+            role = "wait" if self.wait else "accent"
         glyph = owner._glyph(LOG_GLYPHS[level])
         text = Text()
         text.append(glyph, style=role)
@@ -985,11 +987,12 @@ def _format_count(
 def _render_status(owner: UI, status: Status) -> Text:
     """Render a `Status` snapshot into Rich `Text`."""
     text = Text()
-    glyph = (
-        owner._glyph("tick") if status.outcome == "ok"
-        else owner._glyph("cross") if status.outcome == "error"
-        else owner._spinner()
-    )
+    if status.outcome == "ok":
+        glyph = owner._glyph("tick")
+    elif status.outcome == "error":
+        glyph = owner._glyph("cross")
+    else:
+        glyph = owner._spinner()
     text.append(glyph, style=status.outcome or "accent")
     text.append(" " + status.subject.ljust(status.subject_width), style="target")
     if status.label:
