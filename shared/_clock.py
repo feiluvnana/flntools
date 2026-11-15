@@ -1,12 +1,4 @@
-"""One clock for every module of `shared`: the time now, sleeps, and the random source for jitter.
-
-Every wait, timestamp and jitter in `shared` goes through `now`, `wall`, `sleep` and `random`, so
-a test swaps the whole clock once with `use` and runs minutes of back-off in no time.
-
-    with clock.use(clock.Fake()) as fake:
-        http.fetch("https://example.com/items")     # a 503's retry waits pass at once
-        fake.slept                                  # [1.0]
-"""
+"""One clock for every module of `shared`: monotonic time, wall time, sleeps, and jitter."""
 
 from __future__ import annotations
 
@@ -14,6 +6,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from random import Random
 from typing import TypeVar
 
@@ -21,7 +14,7 @@ import shared
 
 __all__ = ["Clock", "Error", "Fake", "now", "random", "sleep", "use", "wall"]
 
-# Where a `Fake` starts its wall clock: 2026-01-01 UTC, a fixed day so a test's dates repeat.
+# 2026-01-01 UTC, so a test's formatted dates are repeatable.
 FAKE_WALL = 1767225600.0
 
 C = TypeVar("C", bound="Clock")
@@ -32,24 +25,21 @@ class Error(shared.Error):
 
 
 class Clock:
-    """The real clock: monotonic seconds, the wall clock, sleeps a stop can end, and jitter."""
+    """The real clock: monotonic seconds, wall time, interruptible sleeps, and jitter."""
 
     def __init__(self) -> None:
         self.random: Random = Random()
 
     def now(self) -> float:
-        """Monotonic seconds, for gaps and deadlines."""
+        """Return monotonic seconds for measuring intervals and deadlines."""
         return time.monotonic()
 
     def wall(self) -> float:
-        """Unix seconds, for a server's dates and resets and for stored expiry times."""
+        """Return Unix seconds for wall-clock timestamps and expiry times."""
         return time.time()
 
     def sleep(self, seconds: float, *, stop: threading.Event | None = None) -> bool:
-        """Wait `seconds`, or until `stop` is set; True when `stop` ended the wait.
-
-            stopped = clock.sleep(30, stop=ctrl_c)
-        """
+        """Wait `seconds`, or until `stop` is set; return True when `stop` ended the wait."""
         if stop is None:
             time.sleep(max(0.0, seconds))
             return False
@@ -57,84 +47,70 @@ class Clock:
 
 
 class Fake(Clock):
-    """A clock whose sleeps pass at once and are kept in `slept`, with a seeded random source.
-
-        fake = clock.Fake(seed=7)
-        fake.advance(30)        # now() is 30 s later
-    """
+    """A clock whose sleeps pass at once and are recorded in `slept`, with seeded random."""
 
     def __init__(self, *, start: float = 0.0, seed: int = 0) -> None:
         super().__init__()
         self.random = Random(seed)
-        self.time: float = start
         self.slept: list[float] = []
+        self._time: float = start
         self._start = start
-        # Sleeps may come from several threads (a pool's retries); each one advances the time once.
         self._lock = threading.Lock()
 
     def now(self) -> float:
-        """The fake's seconds, moved only by `sleep` and `advance`."""
-        return self.time
+        """Return the fake's monotonic seconds, moved only by `sleep` and `advance`."""
+        with self._lock:
+            return self._time
 
     def wall(self) -> float:
-        """2026-01-01 UTC at the start, moving with `now`."""
-        return FAKE_WALL + self.time - self._start
+        """Return the fake's Unix seconds, starting at 2026-01-01 UTC and moving with `now`."""
+        with self._lock:
+            return FAKE_WALL + self._time - self._start
 
     def sleep(self, seconds: float, *, stop: threading.Event | None = None) -> bool:
-        """Record `seconds` and move the time on at once; True, without waiting, when `stop` is set.
-
-            fake.sleep(2.0); fake.slept     # [2.0]
-        """
+        """Record `seconds` and advance time at once; return True immediately if `stop` is set."""
         if stop is not None and stop.is_set():
             return True
         with self._lock:
             self.slept.append(seconds)
-            self.time += max(0.0, seconds)
+            self._time += max(0.0, seconds)
         return False
 
     def advance(self, seconds: float) -> None:
-        """Move the time on by `seconds` without recording a sleep."""
+        """Move the fake's time forward by `seconds` without recording a sleep."""
         with self._lock:
-            self.time += seconds
+            self._time += seconds
 
 
-_current = Clock()
+_DEFAULT = Clock()
+_current: ContextVar[Clock] = ContextVar("shared.clock", default=_DEFAULT)
 
 
 def now() -> float:
-    """Monotonic seconds on the clock in use."""
-    return _current.now()
+    """Return monotonic seconds on the clock in use."""
+    return _current.get().now()
 
 
 def wall() -> float:
-    """Unix seconds on the clock in use."""
-    return _current.wall()
+    """Return Unix seconds on the clock in use."""
+    return _current.get().wall()
 
 
 def sleep(seconds: float, *, stop: threading.Event | None = None) -> bool:
-    """Wait `seconds` on the clock in use, or until `stop` is set; True when `stop` ended it.
-
-        clock.sleep(1.5)
-    """
-    return _current.sleep(seconds, stop=stop)
+    """Wait `seconds` on the clock in use, or until `stop` is set."""
+    return _current.get().sleep(seconds, stop=stop)
 
 
 def random() -> Random:
-    """The random source of the clock in use, for jitter a test wants to repeat."""
-    return _current.random
+    """Return the random source of the clock in use."""
+    return _current.get().random
 
 
 @contextmanager
 def use(replacement: C) -> Iterator[C]:
-    """Make `replacement` the clock of every module until the block ends.
-
-        with clock.use(clock.Fake()) as fake:
-            ...
-    """
-    global _current
-    previous: Clock = _current
-    _current = replacement
+    """Install `replacement` as the clock in use for the current context."""
+    token = _current.set(replacement)
     try:
         yield replacement
     finally:
-        _current = previous
+        _current.reset(token)
