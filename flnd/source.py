@@ -21,7 +21,7 @@ from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, 
                     MutableMapping, Protocol, Sequence, Union, overload)
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from shared import fmt, log
+from shared import text, ui
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -267,6 +267,7 @@ class Route:
     def __init__(
         self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None,
         params: Mapping[str, Any] | None = None, discovers: bool = False,
+        from_: Iterable[str] | None = None, folder: str | None = None,
     ):
         """Compile `patterns` for `function`, raising `TypeError` for a mistake in them.
 
@@ -285,6 +286,10 @@ class Route:
         self.kind = function.__name__
         self.patterns = patterns
         self.shown = shown
+        # What `--from` may name here and the target's folder template; `targets.validate`
+        # checks both before any work. `from_` defaults to the categories.
+        self._from = None if from_ is None else frozenset(from_)
+        self.folder = folder
         self._patterns = [_Pattern(pattern) for pattern in patterns]
         self.is_query = any(pattern.is_query for pattern in self._patterns)
         self.discovers = self.is_query or discovers
@@ -318,6 +323,13 @@ class Route:
     def categories(self) -> tuple[Category, ...]:
         """The route's categories, in declaration order; empty if it yields posts itself."""
         return tuple(self._categories)
+
+    @property
+    def from_(self) -> frozenset[str]:
+        """The category names `--from` accepts for this route; empty for a single post."""
+        if self._from is not None:
+            return self._from
+        return frozenset(category.name for category in self._categories)
 
     @overload
     def category(self, function: Callable[..., Any], /) -> Callable[..., Any]: ...
@@ -364,7 +376,8 @@ class Route:
 
 def target(*patterns: str, shown: str | None = None,
            params: Mapping[str, Any] | None = None,
-           discovers: bool = False) -> Callable[[Callable[..., Any]], Route]:
+           discovers: bool = False, from_: Iterable[str] | None = None,
+           folder: str | None = None) -> Callable[[Callable[..., Any]], Route]:
     """Mark a method as a route: the targets it reads, as patterns, named by the method's kind.
 
         @target("instagram.com/p/{code:[\\w-]+}", "instagram.com/reel/{code:[\\w-]+}")
@@ -374,6 +387,7 @@ def target(*patterns: str, shown: str | None = None,
     """
     return lambda function: Route(
         function, patterns, shown=shown, params=params, discovers=discovers,
+        from_=from_, folder=folder,
     )
 
 
@@ -517,13 +531,13 @@ def fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str:
         fill("{date}_{id}{index}", {"id": "C1abc", "date": "", "index": ""})  # "C1abc"
         fill("{author}/{id} {title}", {"author": "a/b", "id": 7})            # "a_b/7"
 
-    Passes path segments through `fmt.filename` when `safe` is True.
+    Passes path segments through `text.clean.filename` when `safe` is True.
     """
     segments = []
     for segment in _split(template, "/"):
-        text = _fill_segment(segment, fields)
-        if text:
-            segments.append(fmt.filename(text) if safe else text)
+        piece = _fill_segment(segment, fields)
+        if piece:
+            segments.append(text.clean.filename(piece) if safe else piece)
     return "/".join(segments)
 
 
@@ -885,7 +899,7 @@ def _first_page(fetch: Callable[[str | None], Any], start: str | None,
         # A cursor gone stale (a 4xx) is the site's answer for good; anything else is a failure.
         if error.status is None or not 400 <= error.status < 500:
             raise
-    log.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
+    ui.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
              label=resume.label)
     resume.refused, resume.cursor = True, None
     return fetch(None)
