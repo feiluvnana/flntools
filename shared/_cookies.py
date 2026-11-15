@@ -1,8 +1,8 @@
-"""Cookie jars: read them from a file or a browser, narrow, combine, send or save them.
+"""Cookie jars: read them from a file, browser, or text, narrow, combine, send or save them.
 
 A `Jar` is an immutable collection of cookies in Playwright's dictionary shape.
-`load` reads Netscape or JSON cookie files; `Jar.save` writes Netscape files.
-`from_browser` reads installed browser cookies; `Jar.filter` narrows them by domain.
+`load` reads Netscape or JSON cookie files, installed browsers, or raw cookie text;
+`Jar.save` writes Netscape files and `Jar.filter` narrows them by domain.
 Values are never printed, logged, or included in error messages.
 """
 
@@ -25,7 +25,7 @@ import shared
 from shared import _atomic
 from shared._log import log
 
-__all__ = ["Error", "Jar", "MissingError", "UnsafeError", "from_browser", "load", "profiles"]
+__all__ = ["Error", "Jar", "MissingError", "UnsafeError", "load"]
 
 Cookie = dict[str, Any]
 PathLike = Union[str, Path]
@@ -73,8 +73,8 @@ class UnsafeError(Error, shared.UnsafeError):
 class Jar:
     """An immutable collection of cookies: filter and merge it, read it by name, send or save it.
 
-        jar = cookies.load("cookies.txt").filter(domain="example.com")
-        jar["sessionid"], "sessionid" in jar, jar.names, len(jar)
+        jar = cookies.load("cookies.txt").filter(domains="example.com")
+        jar["sessionid"], "sessionid" in jar, len(jar)
         for cookie in jar:
             print(cookie["name"], cookie["domain"])
 
@@ -128,11 +128,6 @@ class Jar:
         by_key = {_identity(cookie): cookie for cookie in newer._cookies}
         merged = [by_key.pop(_identity(cookie), cookie) for cookie in self._cookies]
         return Jar(merged + [cookie for cookie in newer._cookies if _identity(cookie) in by_key])
-
-    @property
-    def names(self) -> list[str]:
-        """Every cookie's name, once each, in the jar's order."""
-        return list(dict.fromkeys(str(cookie["name"]) for cookie in self._cookies))
 
     @property
     def header(self) -> str:
@@ -191,26 +186,23 @@ class Jar:
 
     def __repr__(self) -> str:
         # Names only: a repr ends up in tracebacks and logs, and a value is a login.
-        return f"Jar({', '.join(self.names)})"
+        names = list(dict.fromkeys(str(cookie["name"]) for cookie in self._cookies))
+        return f"Jar({', '.join(names)})"
 
 
-def load(path: PathLike) -> Jar:
-    """Read a Netscape `cookies.txt` or a JSON list of cookies, telling them apart by content.
-
-        jar = cookies.load("all.txt").filter(domain="example.com")
-
-    Args:
-        path: the file. Text starting with `[` or `{` is JSON; anything else is Netscape.
-
-    Raises:
-        UnsafeError: the file is over 16 MB.
-        Error: the file isn't UTF-8 text, or isn't a cookie file; the message names the file
-            and, for Netscape, the line.
-        OSError: the file is missing or unreadable.
-    """
-    path = Path(path)
-    # The size is checked before reading and again by reading one byte past the limit, so a
-    # file that grows in between is still refused without reading it all.
+def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
+    """Load cookies from a `cookies.txt` file, a browser name, or raw cookie text."""
+    if isinstance(source, str):
+        lower = source.lower()
+        if lower in _BROWSERS:
+            if lower == "firefox":
+                return Jar(_load_firefox(profile))
+            return Jar(_load_chromium(lower, profile or "Default"))
+        if profile is not None:
+            raise Error(f"unknown browser {source!r}: use one of {', '.join(_BROWSERS)}")
+        if "\n" in source or "\r" in source or "\t" in source or source.lstrip()[:1] in ("[", "{"):
+            return _load_text(source, "<text>")
+    path = Path(source)
     if path.stat().st_size > MAX_SIZE:
         raise UnsafeError(f"{path}: a cookie file over {MAX_SIZE // (1024 * 1024)} MB is refused")
     with open(path, "rb") as file:
@@ -222,38 +214,16 @@ def load(path: PathLike) -> Jar:
     except UnicodeDecodeError as err:
         # Not str(err): it quotes the undecodable byte, which may be part of a value.
         raise Error(f"{path}: not UTF-8 text (at byte {err.start})") from None
+    return _load_text(text, str(path))
+
+
+def _load_text(text: str, label: str) -> Jar:
+    """Parse raw Netscape or JSON cookie text into a `Jar`."""
     try:
-        cookies = _parse_json(text) if text.lstrip()[:1] in ("[", "{") else _parse_netscape(text)
+        parsed = _parse_json(text) if text.lstrip()[:1] in ("[", "{") else _parse_netscape(text)
     except ValueError as err:
-        raise Error(f"{path}: {err}") from None
-    return Jar(cookies)
-
-
-def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
-    """Read every cookie of an installed browser's profile."""
-    if browser == "firefox":
-        return Jar(_load_firefox(profile))
-    if browser not in _CHROMIUM:
-        raise Error(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
-    return Jar(_load_chromium(browser, profile or "Default"))
-
-
-def profiles(browser: str = "chrome") -> list[str]:
-    """The installed browser's profiles, default first."""
-    if browser == "firefox":
-        try:
-            return _firefox_paths(_firefox_root())
-        except FileNotFoundError:
-            return []
-    if browser not in _CHROMIUM:
-        raise Error(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
-    root = _chromium_root(browser)
-    if not root.is_dir():
-        return []
-    found = [folder.name for folder in root.iterdir()
-             if (folder / "Network" / "Cookies").is_file() or (folder / "Cookies").is_file()]
-    # The default first, as `from_browser` reads it without `profile=`.
-    return sorted(found, key=lambda name: (name != "Default", name))
+        raise Error(f"{label}: {err}") from None
+    return Jar(parsed)
 
 
 def _identity(cookie: Cookie) -> tuple[str, str, str]:

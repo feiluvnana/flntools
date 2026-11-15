@@ -1,17 +1,8 @@
 """Drive a real browser with Playwright's sync API (`browser.open()` -> `Browser`, `Page`).
 
-`open` launches Chrome or Chromium, or connects over CDP. `Browser` manages tabs and `Jar` cookies;
-`Page` handles navigation (`goto`, `wait`), network listeners (`on_response`, `on_request`), human
-scrolling (`scroll`), captcha hand-offs (`handoff`), in-page requests (`fetch`), and live DOM
-queries (`document`). Everything else is on `.raw`. Use each `Browser` on the thread that opened it.
-
-    from shared import browser
-
-    with browser.open(profile="Default") as chrome:
-        tab = chrome.open("https://example.com/", idle=True)
-        with tab.on_response("graphql", lambda data, response: found.append(data)):
-            tab.scroll(until=lambda: len(found) > 100)
-        tab.fetch("/api/items", headers={"x-csrf": token}).json
+`open` launches Chrome or Chromium, or connects over CDP (`attach`). `Browser` manages tabs and
+`cookies` (`get`, `add`, `clear`); `Page` handles navigation (`goto`, `wait`), network iterators
+(`responses`, `requests`), scrolling (`scroll`), hand-offs (`handoff`), `fetch`, and `document`.
 """
 
 from __future__ import annotations
@@ -31,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence, Union,
+    TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence, Union, overload,
 )
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -49,8 +40,8 @@ if TYPE_CHECKING:
     from playwright.sync_api import Page as RawPage
 
 __all__ = [
-    "Browser", "Error", "Launch", "Match", "MissingError", "Page", "RawError",
-    "Scroll", "Visit", "WaitError", "Watch", "attach", "check", "open",
+    "Browser", "BrowserCookies", "Error", "Match", "MissingError", "Page",
+    "Visit", "WaitError", "Watch", "attach", "open",
 ]
 
 # Switches that hide the automation Chrome would otherwise show (AutomationControlled sets
@@ -145,11 +136,12 @@ Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
 # Chrome freed a response body (Network.getResponseBody) once its page moved on, seen 2026-11-13.
 GONE = ("Execution context was destroyed", "page is navigating",
         "No resource with given identifier found")
-# Playwright's own error class, which `except browser.RawError` catches; the module's `__getattr__`
-# resolves it on first use, so importing this module never loads Playwright.
-RawError: type[Exception]
 # Seconds between two checks for a scroll's progress: short next to a page's load, cheap for DOM.
 POLL = 0.05
+DEFAULT_VIEWPORT = (1280, 900)
+SCROLL_WAIT = 3.0
+SCROLL_PAUSE = 0.3
+HANDOFF_POLL = 1.0
 # Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
 _chromium_declined = False
 # The error the Chromium download failed with, re-raised without asking for the rest of the process.
@@ -167,12 +159,6 @@ class Error(shared.Error):
 
 class _NeverRaised(Exception):
     """Stands for Playwright's error classes where Playwright isn't installed: nothing matches."""
-
-
-def __getattr__(name: str) -> Any:
-    if name == "RawError":
-        return _raw_error()
-    raise AttributeError(f"module 'shared.browser' has no attribute {name!r}")
 
 
 @functools.cache
@@ -212,33 +198,10 @@ class WaitError(Error):
     """
 
 
-@dataclass(frozen=True)
-class Launch:
-    """Options for `browser.open`: profile, window, locale, timezone, switches and stealth."""
-
-    profile: str | Path | None = None
-    headless: bool = False
-    viewport: tuple[int, int] = (1280, 900)
-    locale: str | None = None
-    timezone: str | None = None
-    args: Sequence[str] = ()
-    stealth: bool = True
-
-
-@dataclass(frozen=True)
-class Scroll:
-    """Timing and progress options for `Page.scroll`."""
-
-    idle: float = 10.0
-    wait: float = 3.0
-    pause: float = 0.3
-    count: Callable[[], int] | None = None
-    on_step: Callable[[], Any] | None = None
-
-
-def open(launch: Launch = Launch()) -> Browser:
+def open(*, profile: str | Path | None = None, headless: bool = False,
+         stealth: bool = True) -> Browser:
     """Launch Chrome or Chromium and return it as a `Browser` for a `with` block."""
-    name = _profile_name(launch.profile)
+    name = _profile_name(profile)
     # Copied before Playwright starts, so a misspelt name fails at once. From here the copy holds
     # the profile's logins, so it is deleted however open ends without a launched browser.
     copy = _copy_profile(name) if name is not None else None
@@ -246,11 +209,10 @@ def open(launch: Launch = Launch()) -> Browser:
     try:
         playwright = _start_playwright()
         try:
-            target_profile = copy if copy is not None else launch.profile
+            target_profile = copy if copy is not None else profile
             started = _launch(
-                playwright, target_profile, copied=copy is not None, headless=launch.headless,
-                viewport=launch.viewport, locale=launch.locale, timezone=launch.timezone,
-                args=launch.args, stealth=launch.stealth,
+                playwright, target_profile, copied=copy is not None, headless=headless,
+                viewport=DEFAULT_VIEWPORT, locale=None, timezone=None, args=(), stealth=stealth,
             )
             launched = True
             return started
@@ -264,37 +226,16 @@ def open(launch: Launch = Launch()) -> Browser:
             shutil.rmtree(copy, ignore_errors=True)
 
 
-def attach(cdp: str, *, viewport: tuple[int, int] | None = None) -> Browser:
+def attach(cdp: str) -> Browser:
     """Attach to a running browser over CDP; it keeps running after `close()`."""
     playwright = _start_playwright()
     try:
         remote = playwright.chromium.connect_over_cdp(cdp)
         context = remote.contexts[0] if remote.contexts else remote.new_context()
-        return Browser(
-            context, close_steps=[remote.close, playwright.stop], headless=False,
-            page_viewport=viewport,
-        )
+        return Browser(context, close_steps=[remote.close, playwright.stop], headless=False)
     except BaseException:
         playwright.stop()
         raise
-
-
-def check() -> None:
-    """Ensure a browser can be opened, offering to download Chromium now if Chrome is missing.
-
-        browser.check()          # before a long run, so its one question comes first
-
-    Raises:
-        MissingError: Chrome is missing and the Chromium download was declined or failed.
-        ImportError: Playwright isn't installed (the `browser` extra), when Chrome is missing.
-    """
-    if _chrome_installed():
-        return
-    playwright = _start_playwright()
-    try:
-        _channel(playwright)
-    finally:
-        playwright.stop()
 
 
 def _profile_name(profile: str | Path | None) -> str | None:
@@ -363,12 +304,39 @@ class Visit:
             {str(name).lower(): value for name, value in self.headers.items()}))
 
 
+class BrowserCookies:
+    """Sub-namespace for managing browser context cookies (`get`, `add`, `clear`)."""
+
+    def __init__(self, browser: Browser) -> None:
+        self._browser = browser
+
+    def get(self) -> Jar:
+        """Every cookie in the browser as a `shared.cookies.Jar` snapshot."""
+        return Jar(dict(cookie) for cookie in self._browser.raw.cookies())
+
+    def add(self, jar: Jar | Iterable[dict[str, Any]]) -> None:
+        """Add each cookie to the browser unchanged, except that `path` defaults to `/`."""
+        for cookie in jar:
+            try:
+                entry: Any = {**cookie, "path": cookie.get("path") or "/"}
+                self._browser.raw.add_cookies([entry])
+            # Playwright's Error is what a cookie it won't take (no domain, a bad expiry) raises;
+            # anything else is a real failure and goes on up.
+            except _raw_error() as error:
+                log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
+                         error=_without(_first_line(error), str(cookie.get("value", ""))))
+
+    def clear(self) -> None:
+        """Delete every cookie in the browser."""
+        self._browser.raw.clear_cookies()
+
+
 class Browser:
-    """A running browser: open tabs in it, and read or add its cookies (`raw` is `BrowserContext`).
+    """A running browser: open tabs in it, and manage its cookies (`raw` is `BrowserContext`).
 
         with browser.open() as chrome:
             tab = chrome.open("https://example.com/")
-            chrome.add_cookies(cookies.load("example_cookies.txt"))
+            chrome.cookies.add(cookies.load("example_cookies.txt"))
 
     Made by `browser.open`, not directly. Use it only on the thread that opened it.
     """
@@ -376,13 +344,24 @@ class Browser:
     def __init__(self, context: BrowserContext, *, close_steps: list[Callable[[], Any]],
                  headless: bool, page_viewport: tuple[int, int] | None = None):
         """Wrap `context`; `close_steps` run in order on `close`; `handoff` checks `headless`."""
-        self.raw = context
+        self._raw = context
         self._close_steps = close_steps
         self._headless = headless
         self._page_viewport = page_viewport
         self._wrappers: dict[RawPage, Page] = {}
         self._opened: list[Page] = []
         self._closed = False
+        self._cookies = BrowserCookies(self)
+
+    @property
+    def raw(self) -> BrowserContext:
+        """Underlying `playwright.sync_api.BrowserContext`."""
+        return self._raw
+
+    @property
+    def cookies(self) -> BrowserCookies:
+        """Sub-namespace for managing browser context cookies."""
+        return self._cookies
 
     def __enter__(self) -> Browser:
         return self
@@ -391,19 +370,7 @@ class Browser:
         self.close()
 
     def open(self, url: str | None = None, *, idle: bool = False, timeout: float = 30.0) -> Page:
-        """Open a new tab, and go to `url` when given.
-
-            tab = chrome.open("https://example.com/", idle=True)
-
-        Args:
-            url: where the tab goes, as `Page.goto`; None leaves it on `about:blank`.
-            idle: also wait until the network has been quiet for a moment, not only for `load`.
-            timeout: seconds before the navigation counts as failed.
-
-        Returns:
-            The tab, which `close()` closes; the browser's close closes it too. A navigation error
-            is logged, not raised, and leaves the tab open on `about:blank`.
-        """
+        """Open a new tab, and go to `url` when given."""
         raw = self.raw.new_page()
         if self._page_viewport is not None:
             width, height = self._page_viewport
@@ -413,42 +380,6 @@ class Browser:
         if url is not None:
             page.goto(url, idle=idle, timeout=timeout)
         return page
-
-    @property
-    def pages(self) -> list[Page]:
-        """Every open tab, including ones the site or a person opened."""
-        return [self._wrap(raw) for raw in self.raw.pages]
-
-    @property
-    def cookies(self) -> Jar:
-        """Every cookie in the browser as a `shared.cookies.Jar` snapshot."""
-        return Jar(dict(cookie) for cookie in self.raw.cookies())
-
-    def add_cookies(self, jar: Jar | Iterable[dict]) -> None:
-        """Add each cookie to the browser unchanged, except that `path` defaults to `/`.
-
-            chrome.add_cookies(cookies.load("example_cookies.txt"))
-            chrome.add_cookies([{"name": "sid", "value": "1", "domain": ".example.com"}])
-
-        Args:
-            jar: a `Jar`, or any iterable of cookie dicts in Playwright's shape.
-
-        They go in one at a time, so a rejected cookie is logged by name and the rest still go
-        in. The log line never holds the cookie's value, even when Playwright's error quotes it.
-        """
-        for cookie in jar:
-            try:
-                entry: Any = {**cookie, "path": cookie.get("path") or "/"}
-                self.raw.add_cookies([entry])
-            # Playwright's Error is what a cookie it won't take (no domain, a bad expiry) raises;
-            # anything else is a real failure and goes on up.
-            except _raw_error() as error:
-                log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
-                         error=_without(_first_line(error), str(cookie.get("value", ""))))
-
-    def clear_cookies(self) -> None:
-        """Delete every cookie in the browser."""
-        self.raw.clear_cookies()
 
     def close(self) -> None:
         """Close the tabs, context, browser and Playwright in order (same as leaving `with`).
@@ -627,17 +558,16 @@ class Page:
         except _raw_timeout():
             raise WaitError(f"waited {timeout:g} s for {what}") from None
 
-    def responses(self, match: Match, *, lines: bool = False, scroll: bool = False) -> Watch:
-        """Watch matching responses and iterate their parsed JSON bodies (scrolling if asked)."""
+    def responses(self, match: Match) -> Watch:
+        """Watch matching responses and iterate their parsed JSON bodies."""
         matches = _matcher(match)
-        step = self._scroll_stepper() if scroll else None
-        watch = Watch(lambda: self.raw.remove_listener("response", listener), step=step)
+        watch = Watch(lambda: self.raw.remove_listener("response", listener))
 
         def listener(response: Response) -> None:
             if not matches(response.url):
                 return
             self._responses_seen += 1
-            for parsed in _json_bodies(response, lines):
+            for parsed in _json_bodies(response, False):
                 watch._push(parsed, response.request)
 
         self.raw.on("response", listener)
@@ -655,21 +585,24 @@ class Page:
         self.raw.on("request", listener)
         return watch
 
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: Literal[False] = ..., timeout: float = ...) -> http.Response: ...
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: Literal[True], timeout: float = ...) -> http.Response | None: ...
+    @overload
+    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
+              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
+              soft: bool, timeout: float = ...) -> http.Response | None: ...
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
               params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
-              timeout: float = 30.0) -> http.Response:
-        """Send one request from the page via `fetch()`, raising on 4xx/5xx or network error."""
-        response = self._fetch(url, method=method, headers=headers, params=params, data=data,
-                               json=json, soft=False, timeout=timeout)
-        assert response is not None
-        return response
-
-    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-                  params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
-                  timeout: float = 30.0) -> http.Response | None:
-        """Send one request from the page via `fetch()`, returning None on 401, 403 or 404."""
+              soft: bool = False, timeout: float = 30.0) -> http.Response | None:
+        """Execute an HTTP request inside the browser context."""
         return self._fetch(url, method=method, headers=headers, params=params, data=data,
-                           json=json, soft=True, timeout=timeout)
+                           json=json, soft=soft, timeout=timeout)
 
     def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None,
                params: Mapping[str, Any] | None, data: Any, json: Any, soft: bool,
@@ -721,19 +654,14 @@ class Page:
         return _http._checked(response, method, soft=soft)
 
     def scroll(self, *, until: Callable[[], bool] | None = None,
-               within: str | Locator | None = None, timing: Scroll = Scroll()) -> int:
+               within: str | None = None, idle: float = 10.0) -> int:
         """Scroll like a person until the feed ends, and return the number of scrolls."""
-        scroller = self._scroll_stepper(until=until, within=within, timing=timing)
+        scroller = _Scroller(self, until, within, idle)
         while scroller():
             pass
         return scroller.scrolls
 
-    def _scroll_stepper(self, *, until: Callable[[], bool] | None = None,
-                        within: str | Locator | None = None,
-                        timing: Scroll = Scroll()) -> _Scroller:
-        return _Scroller(self, until, within, timing)
-
-    def handoff(self, *, until: Callable[[], bool], message: str, poll: float = 1.0,
+    def handoff(self, *, until: Callable[[], bool], message: str,
                 timeout: float | None = None) -> bool:
         """Wait for a person to complete a step (e.g. a captcha) and return whether done."""
         if until():
@@ -747,19 +675,12 @@ class Page:
                 if deadline is not None and clock.now() >= deadline:
                     bar.fail()
                     return False
-                self.raw.wait_for_timeout(poll * 1000)
+                self.raw.wait_for_timeout(HANDOFF_POLL * 1000)
         return True
 
     @property
     def document(self) -> Selection:
-        """The live page as a `selector.Selection`, read fresh each time.
-
-            tab.document.css("h1").text
-            tab.document.script(id="__NEXT_DATA__").jmespath("props").first
-
-        It is a snapshot: a later change to the page needs another read. The HTML is `.raw.get()`.
-        Needs the `selector` extra, and raises `selector.UnsafeError` when the page is over 64 MB.
-        """
+        """The live page as a `selector.Selection`, read fresh each time."""
         # Imported here, so a script that only drives the browser doesn't need parsel.
         from shared._selector import parse
 
@@ -769,11 +690,6 @@ class Page:
     def url(self) -> str:
         """The tab's current URL."""
         return self.raw.url
-
-    @property
-    def title(self) -> str:
-        """The page's `<title>`, or "" without one."""
-        return self.raw.title()
 
     def __enter__(self) -> Page:
         return self
@@ -897,18 +813,18 @@ def _start_playwright() -> Playwright:
 
 
 class _Scroller:
-    """Drives `Page.scroll` one step at a time, shared with `Page.responses(scroll=True)`."""
+    """Drives `Page.scroll` one step at a time."""
 
     def __init__(self, page: Page, until: Callable[[], bool] | None,
-                 within: str | Locator | None, timing: Scroll):
+                 within: str | Locator | None, idle: float):
         self._page = page
         self._until = until
-        self._timing = timing
+        self._idle = idle
         target = page.raw.locator(within).first if isinstance(within, str) else within
         if target is not None and not target.is_visible():
             raise Error("scroll(within=…) found no visible element to scroll")
         self._target = target
-        self._marker = page._progress_marker(target, timing.count)
+        self._marker = page._progress_marker(target, None)
         self._quiet_since: float | None = None
         self.scrolls = 0
 
@@ -922,26 +838,22 @@ class _Scroller:
         if not at_bottom:
             longest = 0.0
         elif self._quiet_since is None:
-            longest = self._timing.wait
+            longest = SCROLL_WAIT
         else:
-            longest = min(
-                self._timing.wait, self._quiet_since + self._timing.idle - clock.now()
-            )
+            longest = min(SCROLL_WAIT, self._quiet_since + self._idle - clock.now())
         previous, self._marker = self._marker, self._page._wait_for_progress(
-            self._target, self._marker, self._timing.count, longest
+            self._target, self._marker, None, longest
         )
         if at_bottom:
-            self._page._pause(self._timing.pause)
-        if self._timing.on_step is not None:
-            self._timing.on_step()
+            self._page._pause(SCROLL_PAUSE)
         if any(now > before for now, before in zip(self._marker, previous)) or not at_bottom:
             self._quiet_since = None
             return True
         if self._quiet_since is None:
             self._quiet_since = started
-        if clock.now() - self._quiet_since >= self._timing.idle:
+        if clock.now() - self._quiet_since >= self._idle:
             return False
-        self._page._jiggle(self._target, self._timing.pause)
+        self._page._jiggle(self._target, SCROLL_PAUSE)
         return True
 
 

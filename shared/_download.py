@@ -40,9 +40,8 @@ import shared
 from shared import _clock as clock
 from shared import _fmt as fmt
 from shared import _fs as fs
-from shared._http import (CONNECTION_ERRORS, DOWNLOAD_EXTENSION, PIECE_EXTENSION, ChangedError,
-                          CorruptError, Download, Error, IncompleteError, RateLimitedError,
-                          RefusedError, ServerError, SpaceError, StoppedError, Transfer,
+from shared._http import (CONNECTION_ERRORS, DOWNLOAD_EXTENSION, PIECE_EXTENSION, Error,
+                          IncompleteError, RateLimitedError, RefusedError, StoppedError,
                           _retry_after, _scrub, _where)
 from shared._log import log
 
@@ -103,16 +102,38 @@ FALLBACK_NAME = "download"
 STOP_POLL = 0.25
 
 
-def run(mirrors: Sequence[str], dest: PathLike, client: httpx.Client,
-        transfer: Transfer) -> Download:
-    """Save one file from the first of `mirrors` that works, as `http.download` documents.
+@dataclass(frozen=True)
+class _Options:
+    """Internal options for `_download.run`."""
 
-    Args:
-        mirrors: the file's URLs, tried in order; at least one.
-        dest: the file, or a folder to name it in from the first URL.
-        client: the `httpx.Client` used for requests.
-        transfer: the rest of `http.download`'s arguments.
-    """
+    headers: Mapping[str, str] | None = None
+    size: int | None = None
+    parts: str | int = "auto"
+    resume: bool = True
+    attempts: int = 3
+    timeout: float = 30.0
+    check: Callable[[Path], Any] | None = None
+    progress: Callable[[int, int | None], Any] | None = None
+    label: str | None = None
+    stop: threading.Event | None = None
+
+    def __post_init__(self) -> None:
+        if self.attempts < 1:
+            raise ValueError(f"attempts must be at least 1, not {self.attempts}")
+        valid_parts = self.parts == "auto" or (
+            isinstance(self.parts, int) and not isinstance(self.parts, bool) and self.parts >= 1
+        )
+        if not valid_parts:
+            raise ValueError(f"parts must be 'auto' or >= 1, not {self.parts!r}")
+
+
+class _SpaceError(OSError):
+    """Disk full or FAT32 limit error; never retried on another mirror."""
+
+
+def run(mirrors: Sequence[str], dest: PathLike, client: httpx.Client,
+        transfer: _Options) -> Path:
+    """Save one file from the first of `mirrors` that works, as `http.download` documents."""
     path = _destination(dest, mirrors[0])
     path.parent.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
@@ -129,7 +150,7 @@ def run(mirrors: Sequence[str], dest: PathLike, client: httpx.Client,
                 return job.run()
             # A 429: the caller's back-off decides, and another mirror is likely the same site.
             # A stop, or a full disk: no mirror would do better.
-            except (RateLimitedError, StoppedError, SpaceError):
+            except (RateLimitedError, StoppedError, _SpaceError):
                 raise
             except Exception as error:  # any other failure of a mirror but the last: try the next
                 if number == len(mirrors):
@@ -480,7 +501,7 @@ class _Report:
 class _Transfer:
     """One mirror of one download: its attempts, its part, and its pieces."""
 
-    def __init__(self, url: str, dest: Path, client: httpx.Client, options: Transfer, *,
+    def __init__(self, url: str, dest: Path, client: httpx.Client, options: _Options, *,
                  resume: bool, report: _Report, streams: _Streams):
         """One mirror's transfer; nothing is requested until `run`."""
         self.url, self.dest, self.client, self.options = url, dest, client, options
@@ -504,7 +525,7 @@ class _Transfer:
         self.hasher: Any = None
         self.expected_digest: tuple[str, bytes] | None = None
 
-    def run(self) -> Download:
+    def run(self) -> Path:
         """Every attempt until the file is whole and checked, then its rename."""
         if self.resume:
             self.state = _resumable(self.dest)
@@ -512,8 +533,10 @@ class _Transfer:
         while (failure := self._attempt()) is not None:
             if attempt >= self.options.attempts:
                 if self.restarted:
-                    raise ChangedError(f"GET {_where(self.url)}: the file changed during a resume, "
-                                       f"and its restart failed: {failure}") from failure
+                    raise IncompleteError(
+                        f"GET {_where(self.url)}: the file changed during a resume, "
+                        f"and its restart failed: {failure}"
+                    ) from failure
                 raise failure
             # At once the first time, as most drops are one-offs; then 1 s doubling to 30 s.
             seconds = 0.0 if attempt == 1 else min(FIRST_WAIT * 2 ** (attempt - 2), MAX_WAIT)
@@ -526,7 +549,7 @@ class _Transfer:
         assert state is not None
         fs._replace(state.part, self.named)
         state.info.unlink(missing_ok=True)
-        return Download(self.named, self.final_url, self.response_headers)
+        return self.named
 
     def _attempt(self) -> Exception | None:
         """One attempt: None once the file is whole and checked, the failure to retry, or raise."""
@@ -544,7 +567,7 @@ class _Transfer:
             failure = Error(self._scrub(f"GET {_where(self.url)}: {type(error).__name__}: {error}"))
             failure.__cause__ = error
             return failure
-        except (ServerError, IncompleteError) as error:
+        except IncompleteError as error:
             self._keep()
             return error
         except shared.BrokenError as error:
@@ -770,7 +793,8 @@ class _Transfer:
             if self.hasher is not None and self.expected_digest is not None:
                 name, expected_bytes = self.expected_digest
                 if self.hasher.digest() != expected_bytes:
-                    raise CorruptError(f"{state.part.name}: its {name} differs from the server's")
+                    msg = f"{state.part.name}: its {name} differs from the server's"
+                    raise IncompleteError(msg)
             else:
                 _hash_check(state.part, self.response_headers, whole=self.status == 200)
             self.named = self.dest
@@ -1018,7 +1042,7 @@ class _Pieces:
         if self.width == 1 or (segment is not None and segment.failures >= PIECE_TRIES):
             return False
         others = any(other.alive and other is not worker for other in self.workers)
-        if isinstance(error, (RateLimitedError, ServerError, httpx.ConnectError)):
+        if isinstance(error, (RateLimitedError, IncompleteError, httpx.ConnectError)):
             # A refusal while others receive is the host's connection limit: it may cap the host.
             self.gate.refused()
             return others
@@ -1156,7 +1180,7 @@ def _checked(response: httpx.Response, request: httpx.Request, first: int, *,
     if status == 416 and ranged:
         raise _Changed("the server has fewer bytes than asked for (HTTP 416)")
     if status >= 500:
-        raise ServerError(status, f"{where}: HTTP {status}")
+        raise IncompleteError(f"{where}: HTTP {status}")
     if status >= 400:
         raise RefusedError(status, f"{where}: HTTP {status}")
     if status not in (200, 206):
@@ -1259,7 +1283,7 @@ def _hash_check(part: Path, headers: httpx.Headers, *, whole: bool) -> None:
         while block := file.read(MB):
             digest.update(block)
     if digest.digest() != expected:
-        raise CorruptError(f"{part.name}: its {name} differs from the server's")
+        raise IncompleteError(f"{part.name}: its {name} differs from the server's")
 
 
 def _digests(headers: httpx.Headers, *, whole: bool) -> dict[str, bytes]:
@@ -1288,12 +1312,12 @@ def _room(folder: Path, size: int | None) -> None:
     if size is None or size < SPLIT_MIN:
         return
     if size >= FAT_LIMIT and _filesystem(folder) in FAT_NAMES:
-        raise SpaceError(f"{folder} is on FAT32, which can't hold a file of 4 GiB or more "
-                         f"({fmt.size(size)})")
+        raise _SpaceError(f"{folder} is on FAT32, which can't hold a file of 4 GiB or more "
+                          f"({fmt.size(size)})")
     free = shutil.disk_usage(folder).free
     if free < size + SPACE_MARGIN:
-        raise SpaceError(f"{folder}: {fmt.size(free)} free, and a {fmt.size(size)} file needs "
-                         f"{fmt.size(size + SPACE_MARGIN)}")
+        raise _SpaceError(f"{folder}: {fmt.size(free)} free, and a {fmt.size(size)} file needs "
+                          f"{fmt.size(size + SPACE_MARGIN)}")
 
 
 def _filesystem(folder: Path) -> str:

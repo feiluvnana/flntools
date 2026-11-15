@@ -151,9 +151,12 @@ class DownloadCase(unittest.TestCase):
 
     def download(self, url: str | list[str] = "https://cdn.example/v.mp4",
                  dest: str | Path | None = None, **options) -> Path:
-        with client(self.cdn.handler):
+        with client(self.cdn.handler) as fake:
             dest = dest if dest is not None else self.tmp / "v.mp4"
-            return http.download(url, dest, transfer=http.Transfer(**options)).path
+            if options.keys() & {"size", "parts", "check", "label"}:
+                urls = [url] if isinstance(url, str) else list(url)
+                return download.run(urls, dest, fake, download._Options(**options))
+            return http.download(url, dest, **options)
 
     def leftovers(self) -> list[str]:
         return sorted(path.name for path in self.tmp.iterdir() if path.name.startswith("."))
@@ -228,7 +231,7 @@ class DownloadTest(DownloadCase):
         self.assertEqual(self.download().read_bytes(), DATA)
         self.assertEqual(self.clock.slept, [])
         self.cdn.script = [lambda request: httpx.Response(503)] * 8
-        with self.assertRaises(http.ServerError):
+        with self.assertRaises(http.IncompleteError):
             self.download(attempts=8)
         self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0, 16.0, 30.0])
 
@@ -279,9 +282,8 @@ class DownloadTest(DownloadCase):
 
         self.cdn.script = [refused] * 3
         with self.assertRaises(http.Error) as raised, client(self.cdn.handler):
-            transfer = http.Transfer(headers={"Cookie": "sid=supersecret"})
             http.download("https://cdn.example/v.mp4?token=abcdef", self.tmp / "v.mp4",
-                          transfer=transfer)
+                          headers={"Cookie": "sid=supersecret"})
         self.assertNotIn("supersecret", str(raised.exception))
         self.assertNotIn("abcdef", str(raised.exception))
 
@@ -348,10 +350,9 @@ class ResumeTest(DownloadCase):
             return self.cdn.answer(request, data=changed, etag='"v2"', cut=10)
 
         self.cdn.script = [self.cdn.cut_at(3000), cut_new, lambda request: httpx.Response(503)]
-        with self.assertRaises(http.ChangedError) as raised:
+        with self.assertRaises(http.IncompleteError) as raised:
             self.download()
-        self.assertIsInstance(raised.exception, shared.BrokenError)
-        self.assertIsInstance(raised.exception.__cause__, http.ServerError)
+        self.assertIsInstance(raised.exception.__cause__, http.IncompleteError)
 
     def test_a_416_restarts_the_file_in_one_plain_request(self):
         self.cdn.script = [self.cdn.cut_at(3000), lambda request: httpx.Response(416)]
@@ -598,7 +599,7 @@ class PiecesTest(DownloadCase):
         with client(handler):
             def work(number: int) -> None:
                 saved = http.download(url, self.tmp / f"{number}.mp4")
-                results[number] = saved.path.read_bytes()
+                results[number] = saved.read_bytes()
 
             threads = [threading.Thread(target=work, args=(number,)) for number in range(4)]
             for thread in threads:
@@ -718,7 +719,7 @@ class GateTest(unittest.TestCase):
         url = "https://busy.cdn.example/v.mp4"
         with client(handler):
             saved = http.download(url, tmp / "v.mp4")
-        self.assertEqual(saved.path.read_bytes(), DATA)
+        self.assertEqual(saved.read_bytes(), DATA)
         gate = download._gate(url)
         self.assertIsNotNone(gate.cap)
         self.assertLess(gate.allowed(), download.START_CONNECTIONS)
@@ -790,7 +791,7 @@ class DigestTest(DownloadCase):
         self.assertEqual(self.download().read_bytes(), DATA)
         self.assertEqual(self.cdn.ranges_asked(), [FIRST, FIRST])
         self.cdn.script = [self.answer({"Repr-Digest": f"sha-256=:{wrong}:"})] * 3
-        with self.assertRaises(http.CorruptError) as raised:
+        with self.assertRaises(http.IncompleteError) as raised:
             self.download()
         self.assertIsInstance(raised.exception, shared.BrokenError)
         self.assertEqual(self.leftovers(), [])
@@ -800,7 +801,7 @@ class DigestTest(DownloadCase):
         self.cdn.script = [self.answer({"Content-MD5": piece})]
         self.assertEqual(self.download().read_bytes(), DATA)
         self.cdn.script = [self.answer({"Content-MD5": piece})]
-        with self.assertRaises(http.CorruptError):
+        with self.assertRaises(http.IncompleteError):
             self.download(parts=1, attempts=1)
 
 
@@ -809,7 +810,7 @@ class SpaceTest(DownloadCase):
         self.enterContext(mock.patch.object(download, "SPLIT_MIN", 4096))
         usage = mock.Mock(free=len(DATA) + download.SPACE_MARGIN - 1)
         with mock.patch.object(download.shutil, "disk_usage", return_value=usage), \
-                self.assertRaises(http.SpaceError):
+                self.assertRaises(OSError):
             self.download(["https://a.example/v.mp4", "https://b.example/v.mp4"])
         self.assertEqual(len(self.cdn.requests), 1)
         self.assertEqual(self.leftovers(), [])
@@ -821,7 +822,7 @@ class SpaceTest(DownloadCase):
         usage = mock.Mock(free=10 * download.FAT_LIMIT)
         with mock.patch.object(download, "_filesystem", return_value="msdos"), \
                 mock.patch.object(download.shutil, "disk_usage", return_value=usage):
-            with self.assertRaises(http.SpaceError) as raised:
+            with self.assertRaises(OSError) as raised:
                 download._room(self.tmp, download.FAT_LIMIT)
             self.assertIn("FAT32", str(raised.exception))
             download._room(self.tmp, download.FAT_LIMIT - 1)
@@ -834,7 +835,7 @@ class SpaceTest(DownloadCase):
 class TransportTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.transport = http.Transport()
+        self.transport = http._Transport()
         self.addCleanup(self.transport.close)
         self.transport._http1 = httpx.MockTransport(self.answer("1.1"))
         self.transport._http2 = httpx.MockTransport(self.answer("2"))
@@ -875,26 +876,12 @@ class TransportTest(unittest.TestCase):
             setattr(self.transport, attribute, httpx.MockTransport(handler))
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with httpx.Client(transport=self.transport) as raw:
-            saved = http.Client(raw).download("https://cdn.example/v.mp4", tmp)
-        self.assertEqual(saved.path.read_bytes(), DATA)
+            c = http.Client()
+            c._raw.close()
+            c._raw = raw
+            saved = c.download("https://cdn.example/v.mp4", tmp)
+        self.assertEqual(saved.read_bytes(), DATA)
         self.assertEqual(versions, ["2"] + ["1.1"] * 9)
-
-
-class DownloadRecordTest(DownloadCase):
-    def test_a_download_gives_its_path_url_and_headers(self):
-        with client(self.cdn.handler):
-            saved = http.download("https://cdn.example/v.mp4?sig=x", self.tmp,
-                                  transfer=http.Transfer(parts=1))
-        self.assertEqual(saved.path, self.tmp / "v.mp4")
-        self.assertEqual(saved.url, "https://cdn.example/v.mp4?sig=x")
-        self.assertEqual(saved.headers["ETag"], '"v1"')
-        self.assertEqual(saved.headers["content-length"], str(len(DATA)))
-
-    def test_a_resumed_download_gives_the_resuming_responses_headers(self):
-        self.cdn.script = [self.cdn.cut_at(3000)]
-        with client(self.cdn.handler):
-            saved = http.download("https://cdn.example/v.mp4", self.tmp / "v.mp4")
-        self.assertEqual(saved.headers["content-range"], f"bytes 3000-{len(DATA) - 1}/{len(DATA)}")
 
 
 class StopTest(DownloadCase):
@@ -991,7 +978,7 @@ class Phase8DownloadTest(DownloadCase):
         self.cdn.script = [self.cdn.cut_at(0)] * 3
         with self.assertRaises(http.Error) as raised:
             self.download(parts=1, attempts=3)
-        self.assertNotIsInstance(raised.exception, http.ChangedError)
+        self.assertNotIn("changed mid-download", str(raised.exception))
 
     def test_final_rename_retries_permission_error(self):
         real_replace = os.replace

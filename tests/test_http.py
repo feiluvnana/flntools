@@ -148,9 +148,10 @@ class RetryTest(HttpTestCase):
             return httpx.Response(502)
 
         with client(handler):
-            with self.assertRaises(http.ServerError) as raised:
+            with self.assertRaises(http.IncompleteError) as raised:
                 http.fetch("https://example.com/", attempts=4)
-        self.assertEqual((raised.exception.status, len(calls)), (502, 4))
+        self.assertIn("502", str(raised.exception))
+        self.assertEqual(len(calls), 4)
         self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0])
 
     def test_retries_connection_errors_up_to_attempts(self):
@@ -170,13 +171,13 @@ class RetryTest(HttpTestCase):
 
     def test_one_attempt_never_waits(self):
         with client(lambda request: httpx.Response(500)):
-            with self.assertRaises(http.ServerError):
+            with self.assertRaises(http.IncompleteError):
                 http.fetch("https://example.com/", attempts=1)
         self.assertEqual(self.clock.slept, [])
 
     def test_waits_stop_growing_at_the_cap(self):
         with client(lambda request: httpx.Response(500)):
-            with self.assertRaises(http.ServerError):
+            with self.assertRaises(http.IncompleteError):
                 http.fetch("https://example.com/", attempts=7)
         self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0, 8.0, 8.0])
 
@@ -277,7 +278,12 @@ class PerHostLimitTest(unittest.TestCase):
 
         # Two clients, to show the limit is the process's, not one client's.
         raws = [httpx.Client(transport=httpx.MockTransport(handler)) for _ in range(2)]
-        clients = [http.Client(raw) for raw in raws]
+        clients: list[http.Client] = []
+        for raw in raws:
+            c = http.Client()
+            c._raw.close()
+            c._raw = raw
+            clients.append(c)
         errors: list[BaseException] = []
 
         def work(index: int) -> None:
@@ -413,13 +419,15 @@ class BackOffEscalationTest(unittest.TestCase):
         with mock.patch("shared._pace.clock.now", side_effect=lambda: now[0]):
             with mock.patch.object(http.Client, "_wait",
                                    side_effect=lambda h, s: now.__setitem__(0, now[0] + s)):
-                with http.Client(raw) as c:
+                with http.Client() as c:
+                    c._raw = raw
                     c.fetch("https://example.com/a")
-                    c.back_off("https://example.com/a", reason="wall")
-                    self.assertEqual(c._hosts["example.com"].strikes, 1)
+                    host = c._host("https://example.com/a")
+                    c._throttled(host, None, reason="wall")
+                    self.assertEqual(host.strikes, 1)
                     c.fetch("https://example.com/a")
-                    c.back_off("https://example.com/a", reason="wall")
-                    self.assertEqual(c._hosts["example.com"].strikes, 2)
+                    c._throttled(host, None, reason="wall")
+                    self.assertEqual(host.strikes, 2)
 
     def test_clean_200_turn_not_followed_by_back_off_leaves_strikes_zero(self):
         now = [100.0]
@@ -430,15 +438,17 @@ class BackOffEscalationTest(unittest.TestCase):
         with mock.patch("shared._pace.clock.now", side_effect=lambda: now[0]):
             with mock.patch.object(http.Client, "_wait",
                                    side_effect=lambda h, s: now.__setitem__(0, now[0] + s)):
-                with http.Client(raw) as c:
+                with http.Client() as c:
+                    c._raw = raw
                     c.fetch("https://example.com/a")
-                    c.back_off("https://example.com/a", reason="wall")
-                    self.assertEqual(c._hosts["example.com"].strikes, 1)
+                    host = c._host("https://example.com/a")
+                    c._throttled(host, None, reason="wall")
+                    self.assertEqual(host.strikes, 1)
                     c.fetch("https://example.com/a")
-                    self.assertEqual(c._hosts["example.com"].strikes, 0)
+                    self.assertEqual(host.strikes, 0)
                     c.fetch("https://example.com/a")
-                    c.back_off("https://example.com/a", reason="wall")
-                    self.assertEqual(c._hosts["example.com"].strikes, 1)
+                    c._throttled(host, None, reason="wall")
+                    self.assertEqual(host.strikes, 1)
 
 
 class BugFixTest(HttpTestCase):
@@ -448,8 +458,15 @@ class BugFixTest(HttpTestCase):
         with http.Client() as c, self.assertRaises(http.Error):
             c.fetch("https://example.com/bad\n")
 
+    def test_response_raw_returns_httpx_response(self):
+        with client(lambda r: httpx.Response(200, content=b"hi")):
+            resp = http.fetch("https://example.com/")
+        assert resp is not None
+        self.assertIsInstance(resp.raw, httpx.Response)
+        self.assertEqual(resp.raw.status_code, 200)
+
     def test_transport_does_not_resend_post(self):
-        transport = http.Transport()
+        transport = http._Transport()
         self.addCleanup(transport.close)
         h1_calls: list[str] = []
 

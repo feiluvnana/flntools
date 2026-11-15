@@ -294,7 +294,7 @@ class SizeTest(unittest.TestCase):
                        FakePlaywrightResponse(text, "application/json")]
             for source in sources:
                 with self.subTest(type(source).__name__):
-                    for error in (selector.UnsafeError, selector.Error, shared.UnsafeError, ValueError):
+                    for error in (selector.BrokenError, selector.Error, shared.BrokenError, ValueError):
                         with self.assertRaises(error):
                             selector.parse(source)
 
@@ -302,9 +302,9 @@ class SizeTest(unittest.TestCase):
         with mock.patch.object(selector, "MAX_SIZE", 8):
             self.assertEqual(selector.parse("<p>a</p>").css("p::text").first, "a")
             self.assertEqual(selector.parse(b'"abcdef"').first, "abcdef")
-            with self.assertRaises(selector.UnsafeError):
+            with self.assertRaises(selector.BrokenError):
                 selector.parse("<p>ab</p>")
-            with self.assertRaises(selector.UnsafeError):
+            with self.assertRaises(selector.BrokenError):
                 selector.parse({"a": "[1, 2, 3]"}).jmespath("a").json
 
     def test_parsed_data_has_no_limit(self):

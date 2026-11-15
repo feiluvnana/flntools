@@ -11,7 +11,7 @@
     page.script(id="__NEXT_DATA__").jmespath("props.user").first
     selector.parse({"data": {"id": "9"}}).jmespath("data.id").first
 
-Text over 64 MB raises `UnsafeError`. Invalid JSON raises `BrokenError`.
+Text over 64 MB or invalid JSON raises `BrokenError`.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ except ImportError:
     raise ImportError("shared.selector needs parsel: pip install 'flntools[selector]'") from None
 
 __all__ = [
-    "BrokenError", "Error", "MissingError", "QueryError", "Selection", "UnsafeError", "parse",
+    "BrokenError", "Error", "MissingError", "QueryError", "Selection", "parse",
 ]
 
 WHITESPACE = re.compile(r"\s+")
@@ -42,10 +42,6 @@ Raw = Union[parsel.Selector, parsel.SelectorList[parsel.Selector]]
 
 class Error(shared.Error):
     """The base of every error `shared.selector` raises."""
-
-
-class UnsafeError(Error, shared.UnsafeError):
-    """Text over 64 MB, refused before it is parsed."""
 
 
 # A ValueError through shared.BrokenError so callers catching ValueError still handle it.
@@ -174,7 +170,7 @@ class Selection:
         The text of an HTML element is all its text nodes, joined as they are; a text or attribute
         match is its own text; a JSON string is parsed. JSON that is already parsed (a number, a
         list, an object) is kept as it is, so `script(...).json` is the same as `script(...)`.
-        It raises `BrokenError` when a text isn't JSON, and `UnsafeError` when it is over 64 MB.
+        It raises `BrokenError` when a text isn't JSON or is over 64 MB.
         """
         values = []
         for match in self._matches:
@@ -265,7 +261,7 @@ def _text_selector(text: str) -> tuple[parsel.Selector, str | None]:
 
 
 def _loads(text: str) -> Any:
-    """Parse JSON text, raising UnsafeError if too large and BrokenError if invalid."""
+    """Parse JSON text, raising `BrokenError` if too large or invalid."""
     _check_size(len(text), "characters")
     clean = text.removeprefix("\ufeff")
     try:
@@ -275,9 +271,9 @@ def _loads(text: str) -> Any:
 
 
 def _check_size(size: int, unit: str) -> None:
-    """Raise `UnsafeError` when `size` is over `MAX_SIZE`."""
+    """Raise `BrokenError` when `size` is over `MAX_SIZE`."""
     if size > MAX_SIZE:
-        raise UnsafeError(f"refusing {size:,} {unit} of text: the limit is {MAX_SIZE:,}")
+        raise BrokenError(f"refusing {size:,} {unit} of text: the limit is {MAX_SIZE:,}")
 
 
 @functools.cache
