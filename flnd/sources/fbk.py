@@ -26,8 +26,8 @@ from urllib.parse import parse_qs, urlsplit
 from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import meta_results
-from flnd.sources.common.watch import warm_tabs, watch_responses
-from shared import fmt, selector
+from flnd.sources.common.feed import warm_tabs, watch_responses
+from shared import selector
 
 SITE = "https://www.facebook.com"
 # What a single post, reel or video is refused with: only a profile is read.

@@ -22,11 +22,13 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
 
-from flnd.source import FetchError, File, LoginError, Post, Site, Source, Target, day, target
+from flnd.source import (
+    FetchError, File, LoginError, Post, Site, Source, Target, caught_up, day, target,
+)
 from flnd.sources.common import dash
+from flnd.sources.common.feed import warm_tabs, watch_responses
 from flnd.sources.common.relay import embedded_results
-from flnd.sources.common.watch import caught_up, warm_tabs, watch_responses
-from shared import fmt, http, selector
+from shared import http, selector, text
 
 if TYPE_CHECKING:
     import httpx
@@ -104,9 +106,7 @@ class Instagram(Source):
     needs = ("sessionid",)
     user_agent = CHROME
     browser = True
-    # Instaloader's measured budgets set the ceiling; the floor only spaces a burst while a window
-    # still has room.
-    pace = http.Pace(0.2, budgets={"/graphql": (275, 600), "/api/v1/": (75, 660)})
+    pace = 0.2
     # Post category or highlight title: "posts", "highlights/<title>", or "".
     folder = "{category}/{album}"
     fields = ("album",)
@@ -211,7 +211,7 @@ class Instagram(Source):
             if reels is None:
                 warm_tabs(site, [f"{SITE}/stories/highlights/{hid}/" for hid, _ in chunk])
             for highlight_id, title in chunk:
-                folder = f"highlights/{fmt.filename(title)}"
+                folder = f"highlights/{text.clean.filename(title)}"
                 if reels is None:
                     posts = story_posts(site, f"{SITE}/stories/highlights/{highlight_id}/", folder)
                 else:
@@ -731,7 +731,7 @@ def reel_posts(site: Site, stories: list[dict], folder: str) -> Iterator[Post]:
             mname = file_name(day(story.get("taken_at")), f"{story_id}_music", "m4a")
             files.append(File(music, name=mname))
         yield Post(story_id, files, date=story.get("taken_at"), headers=CDN_HEADERS)
-    cnt = fmt.count(len(stories), "story", plural="stories")
+    cnt = text.fmt.count(len(stories), "story", plural="stories")
     site.info("{folder}: {stories}", folder=folder, stories=cnt)
 
 

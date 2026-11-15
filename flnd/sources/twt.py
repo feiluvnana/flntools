@@ -15,7 +15,6 @@ Under .flnd/media/twt/<username>/:
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -23,9 +22,13 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, NamedTuple
 from urllib.parse import urlsplit
 
-from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, target
-from flnd.sources.common.watch import caught_up, warm_tabs, watch_responses
-from shared import fmt, http, selector
+import msgspec
+
+from flnd.source import (
+    FetchError, File, LoginError, Post, Site, Source, caught_up, day, target,
+)
+from flnd.sources.common.feed import warm_tabs, watch_responses
+from shared import http, selector, text
 
 if TYPE_CHECKING:
     import httpx
@@ -357,7 +360,8 @@ class Graph:
             return False
         self._table(site).update(queries)
         site.state[STATE_KEY] = dict(self._table(site))
-        site.info("refreshed {n} from x.com's script", n=fmt.count(len(queries), "query id"))
+        n = text.fmt.count(len(queries), "query id")
+        site.info("refreshed {n} from x.com's script", n=n)
         return True
 
     def _get(self, site: Site, query: str, variables: dict) -> Any:
@@ -366,7 +370,10 @@ class Graph:
         # The refreshed flags when the table has them, else the built-in ones.
         features = entry.get("features") or FEATURES
         endpoint = f"{API}{entry.get('id') or QUERIES[query]}/{query}"
-        params = {"variables": json.dumps(variables), "features": json.dumps(features)}
+        params = {
+            "variables": msgspec.json.encode(variables).decode(),
+            "features": msgspec.json.encode(features).decode(),
+        }
         return site.fetch(endpoint, follow_redirects=False, params=params).json
 
     def _table(self, site: Site) -> dict[str, dict[str, Any]]:
