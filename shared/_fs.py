@@ -1,27 +1,20 @@
-"""Atomic file writes, file locks, stale part cleanup, and single-pass directory scans.
-
-    from shared import fs
-
-    with fs.writing(Path("out/clip.mp4")) as part:
-        run_ffmpeg(output=part)
-    fs.write(Path("cookies.txt"), data, mode=0o600)
-"""
+"""Atomic file writes, file locks, and stale part cleanup."""
 
 from __future__ import annotations
 
 import os
 import secrets
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import NamedTuple, Union
+from typing import Union, overload
 
 import filelock
 
 import shared
 from shared import _clock as clock
 
-__all__ = ["Error", "ExistsError", "Scan", "lock", "scan", "sweep", "write", "writing"]
+__all__ = ["Error", "ExistsError", "lock", "sweep", "write"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -43,15 +36,35 @@ class ExistsError(Error, FileExistsError):
     """Raised when `dest` already exists and `replace` is False."""
 
 
-class Scan(NamedTuple):
-    """Files and directories collected in one `os.scandir` pass."""
+@overload
+def write(
+    dest: PathLike, data: bytes, *, replace: bool = True, sync: bool = False
+) -> Path: ...
 
-    files: list[os.DirEntry[str]]
-    dirs: list[os.DirEntry[str]]
+
+@overload
+def write(
+    dest: PathLike, data: None = None, *, replace: bool = True, sync: bool = False
+) -> AbstractContextManager[Path]: ...
+
+
+def write(
+    dest: PathLike,
+    data: bytes | None = None,
+    *,
+    replace: bool = True,
+    sync: bool = False,
+) -> Path | AbstractContextManager[Path]:
+    """Atomically write `data` to `dest`, or yield a temp `Path` to write and rename on exit."""
+    if data is None:
+        return _write_context(dest, replace=replace, sync=sync)
+    with _write_context(dest, replace=replace, sync=sync) as part:
+        _write_bytes(part, data)
+    return Path(dest)
 
 
 @contextmanager
-def writing(
+def _write_context(
     dest: PathLike, *, replace: bool = True, sync: bool = False
 ) -> Iterator[Path]:
     """Yield a hidden part path beside `dest` and atomically move it into place on exit."""
@@ -75,35 +88,27 @@ def writing(
             pass
 
 
-def write(
-    dest: PathLike,
-    data: bytes,
-    *,
-    replace: bool = True,
-    sync: bool = False,
-    mode: int = 0o666,
-) -> None:
-    """Atomically write `data` to `dest` with permission bits `mode`."""
-    with writing(dest, replace=replace, sync=sync) as part:
-        try:
-            handle = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | BINARY, mode)
-        except OSError as error:
-            raise Error(str(error)) from error
-        try:
-            file = os.fdopen(handle, "wb")
-        except BaseException:
-            os.close(handle)
-            raise
-        try:
-            with file:
-                file.write(data)
-        except OSError as error:
-            raise Error(str(error)) from error
+def _write_bytes(part: Path, data: bytes) -> None:
+    """Write `data` to `part` in binary mode."""
+    try:
+        handle = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | BINARY, 0o666)
+    except OSError as error:
+        raise Error(str(error)) from error
+    try:
+        file = os.fdopen(handle, "wb")
+    except BaseException:
+        os.close(handle)
+        raise
+    try:
+        with file:
+            file.write(data)
+    except OSError as error:
+        raise Error(str(error)) from error
 
 
 @contextmanager
-def lock(path: PathLike, *, timeout: float | None = None) -> Iterator[None]:
-    """Acquire an inter-process lock at `path` (or `<path>/.lock` when `path` is a folder)."""
+def lock(path: PathLike, *, timeout: float | None = None) -> Iterator[filelock.FileLock]:
+    """Acquire an advisory lock at `path` (or `<path>/.lock` for a folder) and yield it."""
     target = Path(path)
     try:
         if target.is_dir():
@@ -111,8 +116,9 @@ def lock(path: PathLike, *, timeout: float | None = None) -> Iterator[None]:
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
         wait = -1.0 if timeout is None else timeout
-        with filelock.FileLock(target, timeout=wait):
-            yield
+        flock = filelock.FileLock(target, timeout=wait)
+        with flock:
+            yield flock
     except (filelock.Timeout, OSError) as error:
         raise Error(str(error)) from error
 
@@ -127,7 +133,7 @@ def sweep(
             return 0
     except OSError as error:
         raise Error(str(error)) from error
-    files = scan(root).files
+    files = _scan_files(root)
     parts, sides = _classify_parts(files)
     now = clock.wall()
     removed = 0
@@ -147,10 +153,9 @@ def sweep(
     return removed
 
 
-def scan(folder: PathLike) -> Scan:
-    """Walk `folder` recursively in one `os.scandir` pass, returning `(files, dirs)`."""
+def _scan_files(folder: PathLike) -> list[os.DirEntry[str]]:
+    """Walk `folder` recursively in one `os.scandir` pass, returning file entries."""
     files: list[os.DirEntry[str]] = []
-    dirs: list[os.DirEntry[str]] = []
     stack = [os.fspath(folder)]
     while stack:
         current = stack.pop()
@@ -158,13 +163,12 @@ def scan(folder: PathLike) -> Scan:
             with os.scandir(current) as entries:
                 for entry in entries:
                     if entry.is_dir(follow_symlinks=False):
-                        dirs.append(entry)
                         stack.append(entry.path)
                     elif entry.is_file(follow_symlinks=False):
                         files.append(entry)
         except OSError as error:
             raise Error(str(error)) from error
-    return Scan(files=files, dirs=dirs)
+    return files
 
 
 def _commit(part: Path, dest: Path, *, sync: bool) -> None:

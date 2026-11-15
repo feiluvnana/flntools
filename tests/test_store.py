@@ -8,16 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import msgspec
-
 import shared
 from shared import _clock as clock
 from shared import _store as store
-
-
-class Item(msgspec.Struct):
-    name: str
-    count: int
 
 
 def at(seconds: float):
@@ -71,33 +64,26 @@ class MappingTest(StoreCase):
 
     def test_update_bad_value_rolls_back_without_writing(self):
         self.db["keep"] = 1
-        with self.assertRaises(store.UnstorableError):
+        with self.assertRaises(store.Error):
             self.db.update([("ok", 2), ("bad", object())])
         self.assertEqual(dict(self.db), {"keep": 1})
 
 
-class SchemaAndValuesTest(StoreCase):
+class ValuesTest(StoreCase):
     def test_wal_and_synchronous_normal(self):
         mode = self.db.raw.execute("PRAGMA journal_mode").fetchone()[0]
         sync = self.db.raw.execute("PRAGMA synchronous").fetchone()[0]
         self.assertEqual(mode.lower(), "wal")
         self.assertEqual(sync, 1)  # 1 == NORMAL
 
-    def test_schema_typed_round_trip(self):
-        with store.open(self.file, table="items", schema=Item) as typed:
-            typed["one"] = Item(name="alpha", count=7)
-            got = typed["one"]
-            self.assertIsInstance(got, Item)
-            self.assertEqual(got, Item(name="alpha", count=7))
-
     def test_surrogate_safe_encoding_and_bad_keys(self):
         self.db["ok"] = {"name": "bad\udc80name"}
         self.assertEqual(self.db["ok"], {"name": "bad\udc80name"})
-        with self.assertRaises(store.UnstorableError):
+        with self.assertRaises(store.Error):
             self.db["bad\udc80key"] = 1
-        with self.assertRaises(store.UnstorableError):
+        with self.assertRaises(store.Error):
             self.db[1] = "x"  # pyright: ignore[reportArgumentType]
-        with self.assertRaises(store.UnstorableError):
+        with self.assertRaises(store.Error):
             self.db["bad"] = object()
 
 

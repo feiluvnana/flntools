@@ -12,73 +12,73 @@ class ErrorTest(unittest.TestCase):
 class ScrubUrlTest(unittest.TestCase):
     def test_strips_userinfo_query_and_fragment(self):
         raw = "https://user:secret@cdn.example.com:8080/a/b.jpg?oe=1&sig=tok#top"
-        self.assertEqual(text.scrub_url(raw), "https://cdn.example.com:8080/a/b.jpg")
-        self.assertEqual(text.scrub_url("http://user@example.com/p"), "http://example.com/p")
+        self.assertEqual(text.clean.url(raw), "https://cdn.example.com:8080/a/b.jpg")
+        self.assertEqual(text.clean.url("http://user@example.com/p"), "http://example.com/p")
 
     def test_preserves_protocol_relative_urls(self):
         self.assertEqual(
-            text.scrub_url("//user:pw@cdn.example.com/a.jpg?sig=1#x"),
+            text.clean.url("//user:pw@cdn.example.com/a.jpg?sig=1#x"),
             "//cdn.example.com/a.jpg",
         )
         self.assertEqual(
-            text.scrub_url("//cdn.example.com:8443/path?x=1"),
+            text.clean.url("//cdn.example.com:8443/path?x=1"),
             "//cdn.example.com:8443/path",
         )
 
     def test_ipv6_and_relative_paths(self):
         self.assertEqual(
-            text.scrub_url("https://user:pw@[::1]:8080/p?q=1#f"),
+            text.clean.url("https://user:pw@[::1]:8080/p?q=1#f"),
             "https://[::1]:8080/p",
         )
-        self.assertEqual(text.scrub_url("/relative/path?x=1#h"), "/relative/path")
+        self.assertEqual(text.clean.url("/relative/path?x=1#h"), "/relative/path")
         self.assertEqual(
-            text.scrub_url("mailto:user@example.com?subject=hi"),
+            text.clean.url("mailto:user@example.com?subject=hi"),
             "mailto:user@example.com",
         )
 
 
 class SizeTest(unittest.TestCase):
     def test_units_and_rounding(self):
-        self.assertEqual(text.size(0), "0.0 B")
-        self.assertEqual(text.size(1023), "1023.0 B")
-        self.assertEqual(text.size(1024), "1.0 KB")
-        self.assertEqual(text.size(1536), "1.5 KB")
-        self.assertEqual(text.size(1_048_576), "1.0 MB")
-        self.assertEqual(text.size(1024**3), "1.0 GB")
-        self.assertEqual(text.size(1024**4), "1.0 TB")
-        self.assertEqual(text.size(2048 * 1024**4), "2048.0 TB")
-        self.assertEqual(text.size(1024 * 1024 - 1), "1.0 MB")
+        self.assertEqual(text.fmt.size(0), "0.0 B")
+        self.assertEqual(text.fmt.size(1023), "1023.0 B")
+        self.assertEqual(text.fmt.size(1024), "1.0 KB")
+        self.assertEqual(text.fmt.size(1536), "1.5 KB")
+        self.assertEqual(text.fmt.size(1_048_576), "1.0 MB")
+        self.assertEqual(text.fmt.size(1024**3), "1.0 GB")
+        self.assertEqual(text.fmt.size(1024**4), "1.0 TB")
+        self.assertEqual(text.fmt.size(2048 * 1024**4), "2048.0 TB")
+        self.assertEqual(text.fmt.size(1024 * 1024 - 1), "1.0 MB")
 
 
 class DurationTest(unittest.TestCase):
     def test_formats(self):
-        self.assertEqual(text.duration(0), "0ms")
-        self.assertEqual(text.duration(0.25), "250ms")
-        self.assertEqual(text.duration(0.999), "999ms")
-        self.assertEqual(text.duration(1), "1.0s")
-        self.assertEqual(text.duration(12.4), "12.4s")
-        self.assertEqual(text.duration(59.9), "59.9s")
-        self.assertEqual(text.duration(60), "1m")
-        self.assertEqual(text.duration(90), "1m 30s")
-        self.assertEqual(text.duration(3600), "1h")
-        self.assertEqual(text.duration(3661), "1h 1m")
-        self.assertEqual(text.duration(3601), "1h 1s")
+        self.assertEqual(text.fmt.duration(0), "0ms")
+        self.assertEqual(text.fmt.duration(0.25), "250ms")
+        self.assertEqual(text.fmt.duration(0.999), "999ms")
+        self.assertEqual(text.fmt.duration(1), "1.0s")
+        self.assertEqual(text.fmt.duration(12.4), "12.4s")
+        self.assertEqual(text.fmt.duration(59.9), "59.9s")
+        self.assertEqual(text.fmt.duration(60), "1m")
+        self.assertEqual(text.fmt.duration(90), "1m 30s")
+        self.assertEqual(text.fmt.duration(3600), "1h")
+        self.assertEqual(text.fmt.duration(3661), "1h 1m")
+        self.assertEqual(text.fmt.duration(3601), "1h 1s")
 
 
 class CountTest(unittest.TestCase):
     def test_singular_and_plural(self):
-        self.assertEqual(text.count(1, "file"), "1 file")
-        self.assertEqual(text.count(0, "file"), "0 files")
-        self.assertEqual(text.count(3, "file"), "3 files")
-        self.assertEqual(text.count(-1, "file"), "-1 files")
-        self.assertEqual(text.count(1.5, "second"), "1.5 seconds")
-        self.assertEqual(text.count(1200, "file"), "1,200 files")
+        self.assertEqual(text.fmt.count(1, "file"), "1 file")
+        self.assertEqual(text.fmt.count(0, "file"), "0 files")
+        self.assertEqual(text.fmt.count(3, "file"), "3 files")
+        self.assertEqual(text.fmt.count(-1, "file"), "-1 files")
+        self.assertEqual(text.fmt.count(1.5, "second"), "1.5 seconds")
+        self.assertEqual(text.fmt.count(1200, "file"), "1,200 files")
 
     def test_irregular_plural_is_keyword_only(self):
-        self.assertEqual(text.count(1, "story", plural="stories"), "1 story")
-        self.assertEqual(text.count(2, "story", plural="stories"), "2 stories")
+        self.assertEqual(text.fmt.count(1, "story", plural="stories"), "1 story")
+        self.assertEqual(text.fmt.count(2, "story", plural="stories"), "2 stories")
         with self.assertRaises(TypeError):
-            text.count(2, "story", "stories")  # pyright: ignore[reportCallIssue]
+            text.fmt.count(2, "story", "stories")  # pyright: ignore[reportCallIssue]
 
 
 class FoldTest(unittest.TestCase):
@@ -93,35 +93,37 @@ class FoldTest(unittest.TestCase):
 class FilenameTest(unittest.TestCase):
     def test_unsafe_chars_and_whitespace(self):
         for char in '\\/*?:"<>|\x00\x1f\x7f\x80\x9f':
-            self.assertEqual(text.filename(f"a{char}b"), "a_b", repr(char))
-        self.assertEqual(text.filename("Summer: 2026 / day 1?"), "Summer_2026_day_1")
-        self.assertEqual(text.filename(" ._name_. "), "name")
+            self.assertEqual(text.clean.filename(f"a{char}b"), "a_b", repr(char))
+        self.assertEqual(text.clean.filename("Summer: 2026 / day 1?"), "Summer_2026_day_1")
+        self.assertEqual(text.clean.filename(" ._name_. "), "name")
 
     def test_drops_unicode_format_controls(self):
-        self.assertEqual(text.filename("photo\u202egpj.exe"), "photogpj.exe")
-        self.assertEqual(text.filename("a\u200b\u200e\ufeffb"), "ab")
-        self.assertEqual(text.filename("C\u200bON"), "CON_")
-        self.assertEqual(text.filename("\u202e\u200b"), "untitled")
+        self.assertEqual(text.clean.filename("photo\u202egpj.exe"), "photogpj.exe")
+        self.assertEqual(text.clean.filename("a\u200b\u200e\ufeffb"), "ab")
+        self.assertEqual(text.clean.filename("C\u200bON"), "CON_")
+        self.assertEqual(text.clean.filename("\u202e\u200b"), "untitled")
 
     def test_fallback_and_max_bytes(self):
-        self.assertEqual(text.filename("..."), "untitled")
-        self.assertEqual(text.filename("", fallback="x"), "x")
-        name = text.filename("é" * 10, max_bytes=5)
+        self.assertEqual(text.clean.filename("..."), "untitled")
+        self.assertEqual(text.clean.filename("", fallback="x"), "x")
+        name = text.clean.filename("é" * 10, max_bytes=5)
         self.assertEqual(name, "éé")
         self.assertLessEqual(len(name.encode()), 5)
-        self.assertEqual(text.filename("a" * 300), "a" * 255)
+        self.assertEqual(text.clean.filename("a" * 300), "a" * 255)
 
     def test_reserved_windows_names(self):
         for reserved in ("CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "LPT9",
                          "COM\u00b9", "COM\u00b2", "COM\u00b3",
                          "LPT\u00b9", "LPT\u00b2", "LPT\u00b3"):
-            self.assertEqual(text.filename(reserved), f"{reserved}_")
-            self.assertEqual(text.filename(f"{reserved.lower()}.txt"), f"{reserved.lower()}_.txt")
-        self.assertEqual(text.filename("CONSOLE"), "CONSOLE")
+            self.assertEqual(text.clean.filename(reserved), f"{reserved}_")
+            self.assertEqual(
+                text.clean.filename(f"{reserved.lower()}.txt"), f"{reserved.lower()}_.txt"
+            )
+        self.assertEqual(text.clean.filename("CONSOLE"), "CONSOLE")
 
     def test_options_are_keyword_only(self):
         with self.assertRaises(TypeError):
-            text.filename("a", "b")  # pyright: ignore[reportCallIssue]
+            text.clean.filename("a", "b")  # pyright: ignore[reportCallIssue]
 
 
 if __name__ == "__main__":

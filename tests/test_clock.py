@@ -1,7 +1,6 @@
 import contextvars
 import threading
 import unittest
-from random import Random
 
 import shared
 from shared import _clock as clock
@@ -13,29 +12,27 @@ class ErrorTest(unittest.TestCase):
 
 
 class RealClockTest(unittest.TestCase):
-    def test_now_wall_and_random(self):
-        real = clock.Clock()
-        self.assertIsInstance(real.now(), float)
-        self.assertIsInstance(real.wall(), float)
-        self.assertIsInstance(real.random, Random)
-        self.assertFalse(real.sleep(0.0))
+    def test_now_wall_and_sleep(self):
+        self.assertIsInstance(clock.now(), float)
+        self.assertIsInstance(clock.wall(), float)
+        self.assertTrue(clock.sleep(0.0))
 
-    def test_sleep_stops_early_when_event_set(self):
+    def test_sleep_returns_false_when_stop_is_set(self):
         stop = threading.Event()
         stop.set()
-        self.assertTrue(clock.sleep(10.0, stop=stop))
+        self.assertFalse(clock.sleep(10.0, stop=stop))
         with self.assertRaises(TypeError):
             clock.sleep(0.0, stop)  # pyright: ignore[reportCallIssue]
 
 
 class FakeClockTest(unittest.TestCase):
     def test_private_time_and_advancement(self):
-        fake = clock.Fake(start=10.0, seed=7)
+        fake = clock.Fake(10.0)
         self.assertFalse(hasattr(fake, "time"))
         self.assertEqual(fake.now(), 10.0)
         self.assertEqual(fake.wall(), clock.FAKE_WALL)
 
-        self.assertFalse(fake.sleep(2.5))
+        self.assertTrue(fake.sleep(2.5))
         self.assertEqual(fake.slept, [2.5])
         self.assertEqual(fake.now(), 12.5)
         self.assertEqual(fake.wall(), clock.FAKE_WALL + 2.5)
@@ -47,23 +44,15 @@ class FakeClockTest(unittest.TestCase):
 
     def test_sleep_with_stop_and_negative_seconds(self):
         fake = clock.Fake()
-        self.assertFalse(fake.sleep(-3.0))
+        self.assertTrue(fake.sleep(-3.0))
         self.assertEqual(fake.slept, [-3.0])
         self.assertEqual(fake.now(), 0.0)
 
         stop = threading.Event()
         stop.set()
-        self.assertTrue(fake.sleep(5.0, stop=stop))
+        self.assertFalse(fake.sleep(5.0, stop=stop))
         self.assertEqual(fake.slept, [-3.0])
         self.assertEqual(fake.now(), 0.0)
-
-    def test_seeded_random_repeats(self):
-        first = clock.Fake(seed=42)
-        second = clock.Fake(seed=42)
-        self.assertEqual(
-            [first.random.random() for _ in range(5)],
-            [second.random.random() for _ in range(5)],
-        )
 
     def test_thread_safe_sleep_and_advance(self):
         fake = clock.Fake()
@@ -96,7 +85,6 @@ class UseIsolationTest(unittest.TestCase):
                     clock.sleep(3.0)
                     raise RuntimeError("boom")
             self.assertEqual(clock.now(), 1.0)
-            self.assertIs(clock.random(), outer.random)
 
     def test_concurrent_threads_and_contexts_never_collide(self):
         results: dict[int, float] = {}
