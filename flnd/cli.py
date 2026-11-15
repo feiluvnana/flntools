@@ -1,346 +1,290 @@
-"""The flnd command line: `flnd download`, `flnd sync`, and `flnd auth`.
-
-Usage:
-  flnd download ins:example_user https://x.com/example_handle --from reels --time 2026-01-01,
-  cat list.txt | flnd download
-  flnd download ins:example_user --shrink --sync
-  flnd sync
-  flnd target ls
-  flnd target sync-on ins:example_user | flnd target del ins:example_user
-  flnd auth login | flnd auth logout ins tik | flnd auth ls
-
-It parses arguments, invokes `flnd.Engine`, and formats reports and errors.
-"""
+"""The flnd command line: `flnd download`, `flnd sync`, `flnd target`, and `flnd auth`."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional, Sequence
+
+import cyclopts
+from rich.table import Table
 
 from flnd import Engine, LoginError, Range, __version__
 from flnd.sources import SOURCES
-from shared import cli, cookies, fmt, log, prompt, theme
+from shared import cli, prompt, text, ui
 
 # Data folder relative to current working directory: stores logins, history, settings.
 HOME = Path(".flnd")
 METHOD_LABELS = {
-    "browser": "From your browser", "file": "From a cookie file", "qr": "With a QR code",
+    "browser": "From your browser",
+    "file": "From a cookie file",
+    "qr": "With a QR code",
     "phone": "With your phone number and a code",
 }
 
 
 def describe() -> str:
-    """The one-line summary that opens the help, naming every source in the registry."""
+    """Return the one-line summary naming every source in the registry."""
     names = [source.name for source in SOURCES.values()]
     return f"Dead simple media downloader for {', '.join(names[:-1])}, and {names[-1]}."
 
 
 def epilog() -> str:
-    """The help footer: target forms, categories, and examples from sources."""
-    # Each form a source's routes read, placeholders in angle brackets.
+    """Return the help footer with target forms, categories, and examples."""
     forms = "\n".join(f"  {form}" for source in SOURCES.values() for form in source.forms)
     categories = "\n".join(
         f"  {code}: {', '.join(source.categories)}" for code, source in SOURCES.items()
     )
-    queries = "\n".join(
-        f"  {code}?<query>: {', '.join(route.params) if route.params else 'words'}"
-        for code, source in SOURCES.items()
-        for route in source.routes if route.is_query
+    return (
+        f"Target format:\n"
+        f"  <source>:<name, id or URL>, <source>?<query>, or a bare URL\n"
+        f"  Sources: {', '.join(SOURCES)}\n"
+        f"{forms}\n\n"
+        f"Categories (--from; required for profiles, chats, and queries):\n"
+        f"{categories}"
     )
-    query_section = f"\n\nQuery parameters (<source>?<query>):\n{queries}" if queries else ""
-    return f"""\
-Target format:
-  <source>:<name, id or URL>, <source>?<query>, or a bare URL
-  Sources: {", ".join(SOURCES)}
-{forms}
-
-Categories (--from; required for profiles, chats, and queries; not for a single post's link):
-{categories}{query_section}
-
-Examples:
-  flnd download ins:example_user
-  flnd download tik:example_creator twt:example_handle --from all
-  flnd download fbk:example.page --from profile,stories
-  flnd download https://x.com/example_handle/status/1790000000000000000
-  flnd download ins:example_user --shrink --sync
-  flnd download twt:example_handle --time 2026-01-01,2026-06-30
-  cat list.txt | flnd download
-  flnd sync
-  flnd target ls
-  flnd target sync-on ins:example_user
-  flnd target sync-off ins:example_user
-  flnd target del ins:example_user
-  flnd auth login
-  flnd auth logout all
-  flnd auth ls
-"""
 
 
-app = cli.App("flnd", version=__version__, description=describe(), epilog=epilog())
+app = cli.App(name="flnd", help=f"{describe()}\n\n{epilog()}")
+app.raw.version = __version__
 
 
 @app.command
 def download(
-    targets: Annotated[list[str], cli.arg(nargs="+")],
+    targets: Annotated[
+        list[str],
+        cyclopts.Parameter(
+            help="Targets (source:value, source?query, or URL); reads stdin if empty."
+        ),
+    ] = [],
     *,
-    categories: Annotated[Optional[list[str]], cli.opt("--from", metavar="CATEGORIES")] = None,
-    folders: Annotated[
-        Optional[list[str]], cli.opt("--folder", metavar="CATEGORY:TEMPLATE")
+    categories: Annotated[
+        Optional[list[str]],
+        cyclopts.Parameter(name="--from", help="Categories to download (e.g. posts,reels or all)."),
     ] = None,
-    time: Annotated[Optional[str], cli.opt(metavar="SINCE,UNTIL")] = None,
-    # `--shrink` alone is on; `--shrink off` turns a saved one off; not given keeps the saved one.
-    shrink: Annotated[Optional[str], cli.opt(choices=("on", "off"), const="on")] = None,
-    sync: Annotated[bool, cli.opt("--sync")] = False,
-    again: Annotated[bool, cli.opt("--again")] = False,
-    limit: Annotated[Optional[int], cli.opt("--limit", metavar="N")] = None,
-    dry: Annotated[bool, cli.opt("--dry")] = False,
-    verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
+    time: Annotated[
+        Optional[str],
+        cyclopts.Parameter(help="Date range as SINCE,UNTIL (e.g. 2026-01-01,2026-06-30)."),
+    ] = None,
+    shrink: Annotated[
+        Optional[Literal["on", "off"]],
+        cyclopts.Parameter(help="Compress saved media ('on' or 'off'); saved per target."),
+    ] = None,
+    sync: bool = False,
+    again: bool = False,
+    limit: Optional[int] = None,
+    dry: bool = False,
+    verbose: Annotated[
+        bool, cyclopts.Parameter(name=["-v", "--verbose"], negative="")
+    ] = False,
 ) -> int:
     """Download each target.
 
-    --shrink is saved for each target and used by every later download and sync of it; turning
-    it on shrinks the files already saved too, and --shrink off turns it off.
-
     Args:
-        targets: source:value pairs, source?query targets, or URLs; read one per line from stdin
-            when none are given.
-        categories: what to take from each source, such as posts,reels, or all; a comma list or
-            repeated. Required for profiles, chats, and queries; not for a single post's link.
-        folders: custom output path under media/ as <category>:<template> (repeatable; use all:
-            as fallback), using fields like {source}, {query}, {target}, {id}, {path}, {name}.
-        time: only items dated from one day to another, both included, as 2026-01-01,2026-06-30;
-            leave a side empty, or give '*' (quoted), for no limit: 2026-01-01, or ,2026-06-30.
-        shrink: compress each photo, video and audio file to a balanced quality in its own format,
-            replacing it when smaller, metadata (GPS too) stripped; off stops it.
-        sync: keep these targets up to date with `flnd sync`.
-        again: ignore the new-post-only check and saved cursors, running from start to finish.
-        limit: cap how many results a query target downloads, or how many posts a normal target
-            downloads.
-        dry: list the targets or files it would download, and download none.
-        verbose: also show every file as it runs and ends, and each skip, link and shrink,
-            under the status lines.
+        targets: Target specs or URLs; read from stdin when omitted.
+        categories: Categories to fetch from each source.
+        time: Inclusive date range SINCE,UNTIL.
+        shrink: Compress media at balanced quality ('on' or 'off').
+        sync: Mark targets to be updated by `flnd sync`.
+        again: Ignore saved cursors and run from start to finish.
+        limit: Cap discovered targets or downloaded posts.
+        dry: List targets or files without downloading.
+        verbose: Show debug logs and every file event.
     """
-    # The files' rows and the debug lines, such as each skipped file, are shown only when asked for.
-    if verbose:
-        log.level = "debug"
-    try:
-        # ValueError is a usage error: engine raises it for bad option/target with message.
+    resolved_targets = _read_targets(targets)
+    with ui.scope(level="debug" if verbose else None):
         report = Engine(home=HOME).download(
-            targets, categories=categories, folders=folders, time=Range() if time is None else time,
+            resolved_targets,
+            categories=categories,
+            time=Range() if time is None else time,
             shrink=None if shrink is None else shrink == "on",
-            limit=limit, dry=dry, sync=sync, again=again,
+            limit=limit,
+            dry=dry,
+            sync=sync,
+            again=again,
         )
-    except ValueError as error:
-        raise cli.UsageError(str(error)) from None
     if not dry:
-        log.ok("Complete. {files}", files=fmt.count(report.files, "file"))
-    # 1 when a target failed, so a script can tell. A rate-limit wait, a skipped file, or one file
-    # of a target that failed while the target went on, isn't a failed target.
+        ui.ok("Complete. {files}", files=text.fmt.count(report.files, "file"))
     return 0 if report.ok else 1
 
 
 @app.command("sync")
 def sync(
-    targets: Annotated[list[str], cli.arg(nargs="*", stdin=False)],
+    targets: list[str] = [],
     *,
-    verbose: Annotated[bool, cli.opt("-v", "--verbose")] = False,
+    verbose: Annotated[
+        bool, cyclopts.Parameter(name=["-v", "--verbose"], negative="")
+    ] = False,
 ) -> int:
-    """Bring synced targets up to date: repair broken or missing files, fetch new posts, and sum up.
-
-    Each target runs with its saved --shrink and each source's default
-    categories; sync changes no setting. To change one, run flnd download with it.
+    """Bring synced targets up to date: repair lost files, fetch new posts, and sum up.
 
     Args:
-        targets: only these targets, as in flnd download; every synced one without them.
-        verbose: also show every file as it runs and ends, and each skip, link and shrink,
-            under the status lines.
+        targets: Only these targets; every synced target when omitted.
+        verbose: Show debug logs and every file event.
     """
-    # -v is how the run is shown, not how a target is synced, so it changes no setting.
-    if verbose:
-        log.level = "debug"
-    try:
-        # Engine logs each target's line and totals; ValueError is usage error, rest propagates.
+    with ui.scope(level="debug" if verbose else None):
         report = Engine(home=HOME).sync(targets)
-    except ValueError as error:
-        raise cli.UsageError(str(error)) from None
     return 0 if report.ok else 1
 
 
-target_group = app.group("target", description="Saved targets and their sync state.")
+target_group = app.group("target", help="Saved targets and their sync state.")
 
 
 @target_group.command("ls")
 def target_ls() -> int:
-    """List every known target with sync state, settings, disk size and category status."""
+    """List every known target with sync state, settings, disk size, and category status."""
     items = Engine(home=HOME).target_ls()
     if not items:
-        log.info("no targets")
+        ui.info("no targets")
         return 0
+    table = Table(title="Targets")
+    for col in ("Target", "Sync", "Shrink", "Stats", "Last", "Categories"):
+        table.add_column(col)
     for item in items:
-        state = "sync on" if item["sync"] else "sync off"
-        shrink = ", --shrink" if item["shrink"] else ""
-        stats = (fmt.count(item["seen"], "seen") if item["query"]
-                 else f"{fmt.count(item['files'], 'file')}, {fmt.size(item['size'])}")
-        last = f", {item['at'][:10]}" if item["at"] else ""
-        cats = ", ".join(f"{cat}: {st}" for cat, st in item["categories"].items())
-        cats_part = f" ({cats})" if cats else ""
-        log.info(
-            "{target}: {state}{shrink}, {stats}{last}{cats}",
-            target=str(item["target"]), state=state, shrink=shrink, stats=stats, last=last,
-            cats=cats_part,
+        stats = (
+            text.fmt.count(item.seen, "seen")
+            if item.query
+            else f"{text.fmt.count(item.files, 'file')}, {text.fmt.size(item.size)}"
         )
+        cats = ", ".join(f"{cat}: {st}" for cat, st in item.categories.items())
+        table.add_row(
+            str(item.target),
+            "on" if item.sync else "off",
+            "on" if item.shrink else "off",
+            stats,
+            item.at[:10] if item.at else "",
+            cats,
+        )
+    ui.raw.print(table)
     return 0
 
 
 @target_group.command("sync-on")
-def target_sync_on(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
-    """Enable syncing for each known target, keeping all saved settings and history.
-
-    Args:
-        targets: the targets to enable sync for, as in flnd download.
-    """
-    try:
-        updated = Engine(home=HOME).target_sync(targets, enabled=True)
-    except ValueError as error:
-        raise cli.UsageError(str(error)) from None
-    for target in updated:
-        log.ok("{target}: sync on", target=str(target))
+def target_sync_on(targets: list[str]) -> int:
+    """Enable syncing for each known target."""
+    if not targets:
+        raise cli.UsageError("give at least one target")
+    for target in Engine(home=HOME).target_sync(targets, enabled=True):
+        ui.ok("{target}: sync on", target=str(target))
     return 0
 
 
 @target_group.command("sync-off")
-def target_sync_off(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
-    """Disable syncing for each known target, keeping all saved settings and history.
-
-    Args:
-        targets: the targets to disable sync for, as in flnd download.
-    """
-    try:
-        updated = Engine(home=HOME).target_sync(targets, enabled=False)
-    except ValueError as error:
-        raise cli.UsageError(str(error)) from None
-    for target in updated:
-        log.ok("{target}: sync off", target=str(target))
+def target_sync_off(targets: list[str]) -> int:
+    """Disable syncing for each known target."""
+    if not targets:
+        raise cli.UsageError("give at least one target")
+    for target in Engine(home=HOME).target_sync(targets, enabled=False):
+        ui.ok("{target}: sync off", target=str(target))
     return 0
 
 
 @target_group.command("del")
-def target_del(targets: Annotated[list[str], cli.arg(nargs="+", stdin=False)]) -> int:
-    """Remove saved targets from `targets.db` (downloaded files are kept).
-
-    Args:
-        targets: the targets to remove, as in flnd download.
-    """
-    try:
-        removed = Engine(home=HOME).target_del(targets)
-    except ValueError as error:
-        raise cli.UsageError(str(error)) from None
-    for target in removed:
-        log.ok("{target}: removed", target=str(target))
+def target_del(targets: list[str]) -> int:
+    """Remove saved targets from `targets.db` (downloaded files are kept)."""
+    if not targets:
+        raise cli.UsageError("give at least one target")
+    for target in Engine(home=HOME).target_del(targets):
+        ui.ok("{target}: removed", target=str(target))
     return 0
 
 
-auth_group = app.group("auth", description="Logins and saved credentials.")
+auth_group = app.group("auth", help="Logins and saved credentials.")
 
 
 @auth_group.command("login")
 def login_command() -> int:
-    """Log in to a source: from your browser, a cookie file, or Telegram's own ways.
-
-    Every answer is asked, in a terminal: the source, then the method when there are several,
-    then what the method needs.
-    """
-    # Logging in is a one-time step done by a person, so there is no flag form for scripts. With no
-    # terminal there is nobody to answer the questions, so the command refuses before asking any.
-    if not theme.screen.interactive:
+    """Log in to a source interactively."""
+    if not (sys.stdin.isatty() and ui.raw.is_terminal):
         raise cli.UsageError("flnd auth login asks its questions in a terminal")
     engine = Engine(home=HOME)
     code = _ask_source(engine)
     source = SOURCES[code]
     methods = source.login_methods
-    method = methods[0] if len(methods) == 1 else prompt.choose(
-        f"Log in to {source.name}", {METHOD_LABELS.get(name, name): name for name in methods})
+    method = (
+        methods[0]
+        if len(methods) == 1
+        else prompt.choose(
+            f"Log in to {source.name}",
+            {METHOD_LABELS.get(name, name): name for name in methods},
+        )
+    )
     answers: dict[str, Optional[str]] = {}
-    # A source with its own login (tlg) asks its own questions, through the engine.
     if code in engine.cookie_logins:
-        if method == "file":
-            answers["path"] = prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()
-        else:
-            choices = {label: name for name, label in engine.browsers.items()}
-            browser = prompt.choose("Read cookies from", choices)
-            answers.update(browser=browser, profile=_ask_profile(browser))
+        answers = _ask_cookie_login(engine, method)
     try:
         message = engine.login(code, method, **answers)
-    # A failed login is expected, logged as error; any other exception is a bug.
     except LoginError as error:
-        log.error("{error}", error=error)
+        ui.error("{error}", error=error)
         return 1
     if message:
-        log.ok(message)
+        ui.ok(message)
     return 0
 
 
 @auth_group.command("logout")
-def logout(
-    sources: Annotated[list[str], cli.arg(nargs="*", choices=(*SOURCES, "all"), stdin=False)],
-) -> int:
-    """Remove saved logins: each source's cookies and secrets, an API key included.
-
-    Args:
-        sources: the sources to log out of, such as ins tik, or all for every one.
-    """
+def logout(sources: list[str] = []) -> int:
+    """Remove saved logins for the given sources, or `all`."""
     engine = Engine(home=HOME)
     if not sources:
         logged_in = [code for code, state in engine.logins.items() if state == "logged in"]
         msg = f"logged in: {', '.join(logged_in)}" if logged_in else "no source is logged in"
         raise cli.UsageError(f"give the sources to log out of, or all; {msg}")
+    bad = [code for code in sources if code != "all" and code not in SOURCES]
+    if bad:
+        raise cli.UsageError(f"unknown source {bad[0]!r}; use all or {', '.join(SOURCES)}")
     everything = "all" in sources
     removed = engine.logout(sources)
     for code in SOURCES if everything else dict.fromkeys(sources):
         if code in removed:
-            log.ok("{code}: logged out", code=code)
-        # `all` names every source, so only the ones asked for by name say they had no login.
+            ui.ok("{code}: logged out", code=code)
         elif not everything:
-            log.info("{code}: not logged in", code=code)
+            ui.info("{code}: not logged in", code=code)
     return 0
 
 
 @auth_group.command("ls")
 def auth_ls() -> int:
-    """List each site with its login state, origin, and any expiring login cookie."""
+    """List each site with its login state, origin, and expiring cookies."""
+    table = Table(title="Auth")
+    for col in ("Code", "Site", "State", "Origin", "Expiring"):
+        table.add_column(col)
     for item in Engine(home=HOME).auth_ls():
-        origin = f" ({item['origin']})" if item["origin"] else ""
-        exp_parts = [f"{name} expired" if rem <= 0 else f"{name} expires in {fmt.duration(rem)}"
-                     for name, rem in item["expiring"]]
-        exp = f"; {', '.join(exp_parts)}" if exp_parts else ""
-        log.info(
-            "{code} ({name}): {state}{origin}{exp}",
-            code=item["code"], name=item["name"], state=item["state"], origin=origin, exp=exp,
+        exp = ", ".join(
+            f"{name} expired" if rem <= 0 else f"{name} in {text.fmt.duration(rem)}"
+            for name, rem in item.expiring
         )
+        table.add_row(item.code, item.name, item.state, item.origin, exp)
+    ui.raw.print(table)
     return 0
 
 
+def _read_targets(targets: Sequence[str]) -> list[str]:
+    if targets:
+        return list(targets)
+    if not sys.stdin.isatty():
+        lines = [line.strip() for line in sys.stdin if line.strip()]
+        if lines:
+            return lines
+    raise cli.UsageError("give at least one target, or pipe targets on stdin")
+
+
+def _ask_cookie_login(engine: Engine, method: str) -> dict[str, Optional[str]]:
+    if method == "file":
+        return {"path": prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()}
+    choices = {label: name for name, label in engine.browsers.items()}
+    return {"browser": prompt.choose("Read cookies from", choices), "profile": None}
+
+
 def _ask_source(engine: Engine) -> str:
-    """Ask which source to log in to, and return its code."""
-    # List differentiates sources logged in or holding only an API key.
     logins = engine.logins
-    options = {f"{source.name} ({code})" + (f" · {logins[code]}" if code in logins else ""): code
-               for code, source in SOURCES.items()}
+    options = {
+        f"{source.name} ({code})" + (f" · {logins[code]}" if code in logins else ""): code
+        for code, source in SOURCES.items()
+    }
     return prompt.choose("Log in to", options)
 
 
-def _ask_profile(browser: str) -> Optional[str]:
-    """Ask which of the browser's profiles to read, with the default one preselected.
-
-    Only asked when there are several. With none found, None lets the engine's login say why.
-    """
-    profiles = cookies.profiles(browser)
-    if len(profiles) <= 1:
-        return profiles[0] if profiles else None
-    return prompt.choose("Profile", profiles, default=profiles[0])
-
-
-def _readable(raw: str) -> Optional[str]:
-    """Validate cookie file path: None if exists, else error message to prompt again."""
+def _readable(raw: str) -> bool | str:
     path = Path(raw.strip()).expanduser()
-    return None if path.is_file() else f"no file at {raw.strip() or '(empty)'}"
+    return True if path.is_file() else f"no file at {raw.strip() or '(empty)'}"

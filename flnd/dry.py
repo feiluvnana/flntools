@@ -1,86 +1,52 @@
-"""A dry run of one target: list what it would save without downloading or recording.
-
-This is the developer task `scripts/dev.py try`, not a `flnd` option: the source runs
-for real (network, browser, login) with the saved login of the `.flnd` folder, and the
-post tree comes out as text. No file is written, no history row or setting is recorded,
-no cookie is written back, and URLs are printed without query parameters so tokens stay safe.
-
-    python -m flnd.dry ins:example_user --from reels --time 2026-01-01,
-    for line in tree(plan(Path(".flnd"), "ins:example_user")): print(line)
-"""
+"""Dry run of one target: list what it would save without downloading or recording."""
 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Sequence
 
+from rich.tree import Tree
+
 from flnd import job
-from flnd.engine import ACCOUNT, Engine, _connected, _offer_browser, needs_browser
-from flnd.options import Options, RunShared, single_targets, unknown_categories
+from flnd.engine import ACCOUNT, Engine, _connected
+from flnd.options import Options, RunShared, unknown
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import File, Range, Source, Target
 from flnd.sources import SOURCES
-from shared import fmt
+from shared import cli, text, ui
 
 __all__ = ["main", "plan", "tree"]
 
 
-def plan(home: Path, text: str, *, categories: str | Sequence[str] | None = None,
-         time: Range | str = Range(),
-         sources: Mapping[str, type[Source]] = SOURCES) -> Iterator[job.Placed]:
-    """Every file a download of one target would save, listed for real and not downloaded.
-
-        for placed in plan(Path(".flnd"), "ins:example_user", categories="reels"):
-            print(placed.path)
-
-    Args:
-        home: flnd's folder; its saved login is used, and nothing is written in it.
-        text: the target, as `flnd download` takes it.
-        categories: `--from`'s names, a comma list or a sequence; None for every category.
-        time: `--time`, as text or a `Range`.
-        sources: the sources to read the target against; every source flnd has by default.
-
-    Raises:
-        ValueError: the target or an option can't be read, or the source isn't logged in.
-        Whatever the source's listing raises, such as `FetchError`.
-    """
+def plan(
+    home: Path,
+    target_text: str,
+    *,
+    categories: str | Sequence[str] | None = None,
+    time: Range | str = Range(),
+    sources: Mapping[str, type[Source]] = SOURCES,
+) -> Iterator[job.Placed]:
+    """Yield every file a download of one target would save, without writing anything."""
     engine = Engine(home=home, sources=sources)
-    target = engine.resolve([text])[0]
-    items = [categories] if isinstance(categories, str) else list(categories or ())
-    names = tuple(
-        dict.fromkeys(name.strip() for item in items for name in item.split(",") if name.strip())
-    ) or None
+    target = engine.resolve([target_text])[0]
+    names = _parse_names(categories)
     source = engine.sources[target.source]
-    if names and (
-        problem := unknown_categories(names, [source]) or single_targets([target], engine.sources)
-    ):
-        raise ValueError(problem)
+    _validate_dry(names, target, source)
     span = Range.parse(time) if isinstance(time, str) else time
     options = Options(categories=names, since=span.since, until=span.until)
-    if needs_browser(source):
-        _offer_browser()
-    # Never the real history: a file already saved still shows, and nothing is recorded.
-    settings = RunShared(home=home, history={})
-    with shared_browser(settings), source_run(settings, source()) as run:
-        account = TargetSite(run, Target(source.code, ACCOUNT, ""))
-        if not run.source.logged_in(account) and run.source.requires_login:
-            raise ValueError(f"{source.code}: not logged in; run flnd auth login")
-        with _connected(run, account):
-            yield from job.plan(run, target, options)
+    with cli.stopping() as stop:
+        settings = RunShared(home=home, history={}, stop=stop, dry=True)
+        with shared_browser(settings), source_run(settings, source()) as run:
+            account = TargetSite(run, Target(source.code, ACCOUNT, ""))
+            if not run.source.logged_in(account) and run.source.requires_login:
+                raise cli.UsageError(f"{source.code}: not logged in; run flnd auth login")
+            with _connected(run, account):
+                yield from job.plan(run, target, options)
 
 
 def tree(placed: Iterable[job.Placed]) -> Iterator[str]:
-    """The files as a tree: the category, then each post, then its paths.
-
-        ins:example_user
-          reels
-            C1abc  2026-01-02
-              reels/2026-01-02_C1abc_0.jpg  https://cdn.example.com/a.jpg
-
-    URLs are formatted by `fmt.url` without query parameters.
-    """
+    """Format planned files as indented text lines grouped by category and post."""
     category = post = None
     for item in placed:
         if item.post.category != category:
@@ -94,11 +60,27 @@ def tree(placed: Iterable[job.Placed]) -> Iterator[str]:
         yield f"{indent}  {item.path}  {_where(item.file)}"
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Print the post tree of one target, and return the exit status: 0, or 1 when it fails.
+def render_tree(target_text: str, placed: Iterable[job.Placed]) -> Tree:
+    """Build a Rich `Tree` of planned files grouped by category and post."""
+    root = Tree(target_text)
+    cat_node: Tree | None = None
+    post_node: Tree | None = None
+    category = post = None
+    for item in placed:
+        if item.post.category != category:
+            category, post = item.post.category, None
+            cat_node = root.add(category) if category else root
+        if item.post is not post:
+            post = item.post
+            parent = cat_node if cat_node is not None else root
+            post_node = parent.add(f"{post.id}  {item.values['date'] or 'undated'}")
+        target_node = post_node if post_node is not None else root
+        target_node.add(f"{item.path}  [dim]{_where(item.file)}[/dim]")
+    return root
 
-        main(["ins:example_user", "--from", "reels", "--time", "2026-01-01,"])
-    """
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Print the post tree of one target and return 0, or 1 on failure."""
     parser = argparse.ArgumentParser(
         prog="dev.py try", description="List what a download would save, without downloading."
     )
@@ -106,34 +88,52 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--from", dest="categories", default=None, metavar="CATEGORIES")
     parser.add_argument("--time", default="", metavar="SINCE,UNTIL")
     args = parser.parse_args(argv)
-    print(args.target)
     try:
-        for line in tree(plan(Path(".flnd"), args.target, categories=args.categories,
-                              time=Range.parse(args.time) if args.time else Range())):
-            print(line, flush=True)
+        span = Range.parse(args.time) if args.time else Range()
+        placed = plan(Path(".flnd"), args.target, categories=args.categories, time=span)
+        ui.raw.print(render_tree(args.target, placed))
     except ValueError as error:
-        print(f"error: {error}", file=sys.stderr)
+        ui.error("{error}", error=error)
         return 1
-    except Exception as error:  # source failure (FetchError, LoginError): shown, not a traceback
-        print(f"error: {type(error).__name__}: {error}", file=sys.stderr)
+    except Exception as error:
+        ui.error("{kind}: {error}", kind=type(error).__name__, error=error)
         return 1
     return 0
 
 
+def _parse_names(categories: str | Sequence[str] | None) -> tuple[str, ...] | None:
+    items = [categories] if isinstance(categories, str) else list(categories or ())
+    names = tuple(dict.fromkeys(n.strip() for item in items for n in item.split(",") if n.strip()))
+    return names or None
+
+
+def _validate_dry(
+    names: tuple[str, ...] | None, target: Target, source: type[Source],
+) -> None:
+    if not names:
+        return
+    if target.kind in source.single_kinds:
+        raise cli.UsageError(
+            f"--from applies to profiles and chats; {target} is one post, downloaded whole"
+        )
+    if problem := unknown(names, [source]):
+        raise cli.UsageError(problem)
+
+
 def _where(file: File) -> str:
-    """Where a file comes from, for tree output: URL without query, mirror count, or source info."""
+    """Describe where a file comes from without exposing query parameters."""
     if file.content is not None:
         return f"(text, {len(file.content)} characters)"
     if isinstance(file.url, str):
-        found = fmt.url(file.url)
+        found = text.clean.url(file.url)
     elif isinstance(file.url, tuple) and len(file.url) > 0:
-        found = fmt.url(file.url[0])
+        found = text.clean.url(file.url[0])
         if len(file.url) > 1:
             found += f" (+{len(file.url) - 1} mirrors)"
     else:
         found = "(fetched by the source)"
-    return f"{found} + audio {fmt.url(file.audio)}" if file.audio else found
+    return f"{found} + audio {text.clean.url(file.audio)}" if file.audio else found
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
