@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from shared import _prompt as prompt
     from shared import _selector as selector
     from shared import _store as store
-    from shared import _ui as ui
+    from shared._ui import ui as ui
     from shared import _worker as worker
 
 LAZY_MODULES = (
@@ -87,8 +87,9 @@ def __getattr__(name: str) -> Any:
     if name not in LAZY_MODULES:
         raise AttributeError(f"module 'shared' has no attribute {name!r}")
     module = importlib.import_module(f"shared._{name}")
-    globals()[name] = module
-    return module
+    value = module.ui if name == "ui" else module
+    globals()[name] = value
+    return value
 
 
 def __dir__() -> list[str]:

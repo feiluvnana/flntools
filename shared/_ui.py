@@ -249,6 +249,8 @@ class UI:
     """Central terminal logger and progress coordinator."""
 
     Error = Error
+    Group = Group
+    Row = Row
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -537,3 +539,11 @@ def _format_count(count: float, total: float | None, level: str) -> str:
 
 
 ui = UI()
+debug = ui.debug
+info = ui.info
+ok = ui.ok
+warn = ui.warn
+error = ui.error
+progress = ui.progress
+group = ui.group
+scope = ui.scope
