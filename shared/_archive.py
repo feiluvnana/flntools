@@ -683,7 +683,8 @@ def _check(found: list[_Entry], limits: Limits, archive_size: int) -> None:
     total = sum(entry.size or 0 for entry in found)
     if total > limits.size:
         raise UnsafeError(
-            f"the archive expands to {text.fmt.size(total)}, over the {text.fmt.size(limits.size)} limit"
+            f"the archive expands to {text.fmt.size(total)}, "
+            f"over the {text.fmt.size(limits.size)} limit"
         )
     if total > limits.ratio * max(archive_size, 1):
         raise UnsafeError(f"the archive expands more than {limits.ratio:g} times")

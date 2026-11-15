@@ -1316,8 +1316,10 @@ def _room(folder: Path, size: int | None) -> None:
                           f"({text.fmt.size(size)})")
     free = shutil.disk_usage(folder).free
     if free < size + SPACE_MARGIN:
-        raise _SpaceError(f"{folder}: {text.fmt.size(free)} free, and a {text.fmt.size(size)} file needs "
-                          f"{text.fmt.size(size + SPACE_MARGIN)}")
+        raise _SpaceError(
+            f"{folder}: {text.fmt.size(free)} free, "
+            f"and a {text.fmt.size(size)} file needs {text.fmt.size(size + SPACE_MARGIN)}"
+        )
 
 
 def _filesystem(folder: Path) -> str:

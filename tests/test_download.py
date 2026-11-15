@@ -698,19 +698,27 @@ class GateTest(unittest.TestCase):
         small(self)
         self.enterContext(mock.patch.object(download, "_gates", {}))
         cdn = Cdn()
-        refusals = ["bytes=3072-4095", "bytes=4096-5119"]
+        lock = threading.Lock()
+        active = 0
 
         def handler(request: httpx.Request) -> httpx.Response:
-            if request.headers.get("range") in refusals:
-                refusals.remove(request.headers["range"])
-                # Once the others are receiving, as a host at its limit refuses.
-                time.sleep(0.03)
-                return httpx.Response(429)
+            nonlocal active
+            with lock:
+                if active >= 3:
+                    return httpx.Response(429)
+                active += 1
             response = cdn.answer(request)
             stream = response.stream
             assert isinstance(stream, Body)
             stream.chunk = 128
             stream.on_chunk = lambda: time.sleep(0.002)
+
+            def done() -> None:
+                nonlocal active
+                with lock:
+                    active -= 1
+
+            stream.closed = done
             return response
 
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
