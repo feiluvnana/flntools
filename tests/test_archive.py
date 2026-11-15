@@ -101,7 +101,7 @@ class ArchiveCase(unittest.TestCase):
         self.temp.cleanup()
 
     def assert_round_trip(self, written: list[Path], **options):
-        extracted = archive.unzip(written[0] if len(written) == 1 else written, self.out, **options)
+        extracted = archive.unpack(written[0] if len(written) == 1 else written, self.out, **options)
         self.assertEqual(tree(self.out / "album"), tree(self.album))
         self.assertTrue((self.out / "album" / "empty").is_dir())
         self.assertEqual(sorted(extracted), sorted(self.out / "album" / name for name in tree(self.album)))
@@ -109,7 +109,7 @@ class ArchiveCase(unittest.TestCase):
 
     def assert_refused(self, error: type[Exception], source: Path, **options):
         with self.assertRaises(error):
-            archive.unzip(source, self.out, **options)
+            archive.unpack(source, self.out, **options)
         self.assertFalse(self.out.exists())
 
 
@@ -117,7 +117,7 @@ class RoundTripTest(ArchiveCase):
     def test_each_format(self):
         for suffix in (".zip", ".7z", *TAR_SUFFIXES, *((".tar.zst",) if HAS_ZSTD else ())):
             with self.subTest(suffix=suffix):
-                written = archive.zip(self.album, self.root / f"bundle{suffix}")
+                written = archive.pack(self.album, self.root / f"bundle{suffix}")
                 self.assertEqual(written, [self.root / f"bundle{suffix}"])
                 self.assert_round_trip(written)
                 shutil.rmtree(self.out)
@@ -125,7 +125,7 @@ class RoundTripTest(ArchiveCase):
     def test_password(self):
         for suffix in (".zip", ".7z"):
             with self.subTest(suffix=suffix):
-                written = archive.zip(self.album, self.root / f"locked{suffix}", password="pw")
+                written = archive.pack(self.album, self.root / f"locked{suffix}", password="pw")
                 self.assert_round_trip(written, password="pw")
                 shutil.rmtree(self.out)
 
@@ -138,8 +138,8 @@ class RoundTripTest(ArchiveCase):
     def test_split_into_three_parts(self):
         for suffix in (".zip", ".7z", ".tar.gz"):
             with self.subTest(suffix=suffix):
-                size = archive.zip(self.album, self.root / f"whole{suffix}")[0].stat().st_size
-                parts = archive.zip(self.album, self.root / f"split{suffix}", split=size // 3 + 1)
+                size = archive.pack(self.album, self.root / f"whole{suffix}")[0].stat().st_size
+                parts = archive.pack(self.album, self.root / f"split{suffix}", split=size // 3 + 1)
                 self.assertEqual([part.name for part in parts], [f"split{suffix}.{n:03}" for n in (1, 2, 3)])
                 self.assert_round_trip([parts[0]])
                 shutil.rmtree(self.out)
@@ -147,28 +147,40 @@ class RoundTripTest(ArchiveCase):
                 shutil.rmtree(self.out)
 
     def test_list_of_sources_named_from_their_parents(self):
-        archive.zip([self.album / "a.txt", self.album / "photos"], self.root / "picked.zip")
-        archive.unzip(self.root / "picked.zip", self.out)
+        archive.pack([self.album / "a.txt", self.album / "photos"], self.root / "picked.zip")
+        archive.unpack(self.root / "picked.zip", self.out)
         self.assertEqual(sorted(tree(self.out)), ["a.txt", "photos/1.jpg"])
 
     def test_bad_requests(self):
-        with self.assertRaises(ValueError):
-            archive.zip(self.album, self.root / "bundle.rar")
-        with self.assertRaises(ValueError):
-            archive.zip(self.album, self.root / "bundle.tar.gz", password="pw")
-        with self.assertRaises(ValueError):
-            archive.zip(self.album, self.root / "bundle.zip", split=0)
-        with self.assertRaises(ValueError):
-            bundle = archive.zip(self.album, self.root / "b.zip")[0]
-            archive.unzip(bundle, self.out, conflict="merge")  # type: ignore[arg-type]
+        with self.assertRaises(archive.Error):
+            archive.pack(self.album, self.root / "bundle.rar")
+        with self.assertRaises(archive.Error):
+            archive.pack(self.album, self.root / "bundle.tar.gz", password="pw")
+        with self.assertRaises(archive.Error):
+            archive.pack(self.album, self.root / "bundle.zip", split=0)
+        with self.assertRaises(archive.Error):
+            bundle = archive.pack(self.album, self.root / "b.zip")[0]
+            archive.unpack(bundle, self.out, conflict="merge")  # type: ignore[arg-type]
+
+    def test_missing_extra_raises_missing_error(self):
+        real_require = archive._require
+
+        def missing(module: str):
+            if module == "pyzipper":
+                raise archive.MissingError("missing pyzipper")
+            return real_require(module)
+
+        with mock.patch.object(archive, "_require", missing):
+            with self.assertRaises(archive.MissingError):
+                archive.pack(self.album, self.root / "locked.zip", password="pw")
 
     @unittest.skipIf(HAS_ZSTD, "zstd exists on this Python")
     def test_zstd_needs_python_314(self):
-        with self.assertRaisesRegex(RuntimeError, "3.14"):
-            archive.zip(self.album, self.root / "bundle.tar.zst")
+        with self.assertRaisesRegex(archive.MissingError, "3.14"):
+            archive.pack(self.album, self.root / "bundle.tar.zst")
         (self.root / "fake.tar.zst").write_bytes(b"\x28\xb5\x2f\xfd" + bytes(20))
-        with self.assertRaisesRegex(RuntimeError, "3.14"):
-            archive.unzip(self.root / "fake.tar.zst", self.out)
+        with self.assertRaisesRegex(archive.MissingError, "3.14"):
+            archive.unpack(self.root / "fake.tar.zst", self.out)
 
 
 class SingleFileTest(ArchiveCase):
@@ -181,7 +193,7 @@ class SingleFileTest(ArchiveCase):
             with self.subTest(suffix=suffix):
                 with opener(self.root / f"notes.txt{suffix}", "wb") as out:
                     out.write(b"some notes")
-                written = archive.unzip(self.root / f"notes.txt{suffix}", self.out)
+                written = archive.unpack(self.root / f"notes.txt{suffix}", self.out)
                 self.assertEqual(written, [self.out / "notes.txt"])
                 self.assertEqual(written[0].read_bytes(), b"some notes")
                 shutil.rmtree(self.out)
@@ -192,7 +204,7 @@ class SniffTest(ArchiveCase):
         for real, disguise in ((".7z", "mirror.zip"), (".zip", "mirror.bin"), (".tar", "mirror.zip"),
                                (".tar.xz", "mirror.7z")):
             with self.subTest(real=real):
-                written = archive.zip(self.album, self.root / f"real{real}")[0]
+                written = archive.pack(self.album, self.root / f"real{real}")[0]
                 self.assert_round_trip([written.replace(self.root / disguise)])
                 shutil.rmtree(self.out)
 
@@ -203,7 +215,7 @@ class SniffTest(ArchiveCase):
     def test_damaged_index(self):
         for suffix in (".zip", ".7z", ".tar.gz"):
             with self.subTest(suffix=suffix):
-                whole = archive.zip(self.album, self.root / f"whole{suffix}")[0]
+                whole = archive.pack(self.album, self.root / f"whole{suffix}")[0]
                 cut = self.root / f"cut{suffix}"
                 cut.write_bytes(whole.read_bytes()[:-60])
                 self.assert_refused(archive.BrokenError, cut)
@@ -214,15 +226,31 @@ class SniffTest(ArchiveCase):
         self.assertGreaterEqual(len(parts), 4)
         for first in (parts[0], parts[-1]):
             with self.subTest(first=first.name):
-                archive.unzip(first, self.out)
+                archive.unpack(first, self.out)
                 self.assertEqual(tree(self.out), entries)
                 shutil.rmtree(self.out)
 
     def test_seven_zip_parts_found_from_the_first(self):
-        size = archive.zip(self.album, self.root / "whole.7z")[0].stat().st_size
-        parts = archive.zip(self.album, self.root / "photos.7z", split=size // 3 + 1, password="pw")
+        size = archive.pack(self.album, self.root / "whole.7z")[0].stat().st_size
+        parts = archive.pack(self.album, self.root / "photos.7z", split=size // 3 + 1, password="pw")
         self.assertEqual(parts[0].name, "photos.7z.001")
         self.assert_round_trip([parts[0]], password="pw")
+
+    def test_multipart_file_streams_without_temp_copy(self):
+        p1, p2, p3 = self.root / "p1", self.root / "p2", self.root / "p3"
+        p1.write_bytes(b"hello ")
+        p2.write_bytes(b"")
+        p3.write_bytes(b"world!")
+        with archive.MultiPartFile([p1, p2, p3]) as reader:
+            self.assertEqual(reader.read(), b"hello world!")
+            reader.seek(-6, io.SEEK_END)
+            self.assertEqual(reader.read(3), b"wor")
+            self.assertEqual(reader.tell(), 9)
+        size = archive.pack(self.album, self.root / "whole.zip")[0].stat().st_size
+        parts = archive.pack(self.album, self.root / "split.zip", split=size // 2 + 1)
+        with mock.patch("tempfile.TemporaryDirectory") as mktemp:
+            self.assertEqual(len(archive.entries(parts)), 5)
+            mktemp.assert_not_called()
 
 
 class ConflictTest(ArchiveCase):
@@ -234,30 +262,22 @@ class ConflictTest(ArchiveCase):
 
     def test_error_writes_nothing(self):
         with self.assertRaisesRegex(archive.ConflictError, "a.txt"):
-            archive.unzip(self.bundle, self.out)
+            archive.unpack(self.bundle, self.out)
         self.assertEqual(tree(self.out), {"a.txt": b"old"})
 
     def test_skip(self):
-        self.assertEqual(archive.unzip(self.bundle, self.out, conflict="skip"), [self.out / "b.txt"])
+        self.assertEqual(archive.unpack(self.bundle, self.out, conflict="skip"), [self.out / "b.txt"])
         self.assertEqual(tree(self.out), {"a.txt": b"old", "b.txt": b"bee"})
 
     def test_overwrite(self):
-        archive.unzip(self.bundle, self.out, conflict="overwrite")
+        archive.unpack(self.bundle, self.out, conflict="overwrite")
         self.assertEqual(tree(self.out), {"a.txt": b"new", "b.txt": b"bee"})
 
     def test_rename(self):
-        archive.unzip(self.bundle, self.out, conflict="rename")
-        archive.unzip(self.bundle, self.out, conflict="rename")
+        archive.unpack(self.bundle, self.out, conflict="rename")
+        archive.unpack(self.bundle, self.out, conflict="rename")
         self.assertEqual(tree(self.out), {"a.txt": b"old", "a (1).txt": b"new", "a (2).txt": b"new",
                                           "b.txt": b"bee", "b (1).txt": b"bee"})
-
-    def test_case_only_clash(self):
-        cased = zip_with(self.root / "cased.zip", {"Photo.JPG": b"one", "photo.jpg": b"two"})
-        with self.assertRaisesRegex(archive.ConflictError, "photo.jpg"):
-            archive.unzip(cased, self.root / "fresh")
-        self.assertFalse((self.root / "fresh").exists())
-        archive.unzip(cased, self.root / "fresh", conflict="rename")
-        self.assertEqual(tree(self.root / "fresh"), {"Photo.JPG": b"one", "photo (1).jpg": b"two"})
 
 
 class SafetyTest(ArchiveCase):
@@ -270,6 +290,20 @@ class SafetyTest(ArchiveCase):
                 tarred = tar_with(self.root / "evil.tar", [("ok.txt", tarfile.REGTYPE, b""), (name, tarfile.REGTYPE, b"")])
                 self.assert_refused(archive.UnsafeError, tarred)
                 self.assertFalse((self.root / "evil.txt").exists())
+
+    def test_unpack_refuses_a_file_that_is_also_a_folder(self):
+        colliding = zip_with(self.root / "collide.zip", {"a": b"file", "a/c.txt": b"nested"})
+        self.assert_refused(archive.UnsafeError, colliding)
+        with self.assertRaises(archive.UnsafeError):
+            archive.entries(colliding)
+
+    def test_case_twins_in_one_archive_say_so(self):
+        cased = zip_with(self.root / "cased.zip", {"Photo.JPG": b"one", "photo.jpg": b"two"})
+        with self.assertRaisesRegex(archive.UnsafeError, "Photo.JPG"):
+            archive.unpack(cased, self.out)
+        self.assertFalse(self.out.exists())
+        with self.assertRaisesRegex(archive.UnsafeError, "Photo.JPG"):
+            archive.entries(cased)
 
     def test_ntfs_streams_and_reserved_names_are_refused(self):
         """Fix #3: `a:b` writes NTFS stream `b` of file `a`, and Windows' device names can't be files."""
@@ -285,7 +319,7 @@ class SafetyTest(ArchiveCase):
             with self.subTest(name=name):
                 shutil.rmtree(self.out, ignore_errors=True)
                 zipped = zip_with(self.root / "fine.zip", {name: b"x"})
-                self.assertEqual(archive.unzip(zipped, self.out), [self.out / name])
+                self.assertEqual(archive.unpack(zipped, self.out), [self.out / name])
 
     def test_links_are_always_refused(self):
         linked = zip_with(self.root / "link.zip", {"ok.txt": b"ok", "inside": b"ok.txt"}, mode=stat.S_IFLNK | 0o777)
@@ -311,14 +345,14 @@ class SafetyTest(ArchiveCase):
                 self.assert_refused(archive.UnsafeError, device)
 
     def test_bombs(self):
-        bundle = archive.zip(self.album, self.root / "bundle.zip")[0]
+        bundle = archive.pack(self.album, self.root / "bundle.zip")[0]
         self.assert_refused(archive.BombError, bundle, limits=archive.Limits(size=1000))
         self.assert_refused(archive.BombError, bundle, limits=archive.Limits(files=3))
         self.assert_refused(archive.BombError, zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)}))
-        tar = archive.zip(self.album, self.root / "bundle.tar.gz")[0]
+        tar = archive.pack(self.album, self.root / "bundle.tar.gz")[0]
         self.assert_refused(archive.BombError, tar, limits=archive.Limits(size=1000))
-        archive.unzip(zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)}), self.out,
-                      limits=archive.Limits(ratio=10_000))
+        archive.unpack(zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)}), self.out,
+                       limits=archive.Limits(ratio=10_000))
         self.assertEqual((self.out / "zeros").stat().st_size, 1_000_000)
 
     def test_size_that_lies_is_stopped_midway(self):
@@ -338,13 +372,13 @@ class SafetyTest(ArchiveCase):
         self.assertLess(sum(writes), 5_000_000)
 
     def test_nested_archive_is_not_unpacked(self):
-        inner = archive.zip(self.album, self.root / "inner.zip")[0]
-        outer = archive.zip(inner, self.root / "outer.tar")[0]
-        self.assertEqual(archive.unzip(outer, self.out), [self.out / "inner.zip"])
+        inner = archive.pack(self.album, self.root / "inner.zip")[0]
+        outer = archive.pack(inner, self.root / "outer.tar")[0]
+        self.assertEqual(archive.unpack(outer, self.out), [self.out / "inner.zip"])
 
 
-class LsTest(ArchiveCase):
-    """`ls` lists what `unzip` would write, refuses what it would refuse, and writes nothing."""
+class EntriesTest(ArchiveCase):
+    """`entries` lists what `unpack` would write, refuses what it would refuse, and writes nothing."""
 
     def setUp(self):
         super().setUp()
@@ -352,21 +386,21 @@ class LsTest(ArchiveCase):
                       archive.Entry("album/empty", 0, "dir"), archive.Entry("album/photos", 0, "dir"),
                       archive.Entry("album/photos/1.jpg", 5000, "file")]
 
-    def assert_lists(self, path: Path, expected: list[archive.Entry], **options):
+    def assert_lists(self, path: Path | list[Path], expected: list[archive.Entry], **options):
         before = sorted(self.root.rglob("*"))
-        self.assertEqual(sorted(archive.ls(path, **options), key=lambda entry: entry.name), expected)
+        self.assertEqual(sorted(archive.entries(path, **options), key=lambda entry: entry.name), expected)
         self.assertEqual(sorted(self.root.rglob("*")), before)
 
     def test_zip(self):
-        self.assert_lists(archive.zip(self.album, self.root / "b.zip")[0], self.index)
+        self.assert_lists(archive.pack(self.album, self.root / "b.zip")[0], self.index)
 
     def test_7z(self):
-        self.assert_lists(archive.zip(self.album, self.root / "b.7z")[0], self.index)
+        self.assert_lists(archive.pack(self.album, self.root / "b.7z")[0], self.index)
 
     def test_each_tar(self):
         for suffix in (*TAR_SUFFIXES, *((".tar.zst",) if HAS_ZSTD else ())):
             with self.subTest(suffix=suffix):
-                self.assert_lists(archive.zip(self.album, self.root / f"b{suffix}")[0], self.index)
+                self.assert_lists(archive.pack(self.album, self.root / f"b{suffix}")[0], self.index)
 
     def test_compressed_file(self):
         openers = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}
@@ -377,7 +411,6 @@ class LsTest(ArchiveCase):
             with self.subTest(suffix=suffix):
                 with opener(self.root / f"notes.txt{suffix}", "wb") as out:
                     out.write(b"some notes")
-                # A compressed file doesn't declare its size, so none is listed.
                 self.assert_lists(self.root / f"notes.txt{suffix}", [archive.Entry("notes.txt", None, "file")])
 
     def test_rar(self):
@@ -392,69 +425,98 @@ class LsTest(ArchiveCase):
             linked = listing + b"\n        Name: escape\n        Type: Symbolic link\n        Size: 9\n"
             with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, linked, b"")):
                 with self.assertRaises(archive.UnsafeError):
-                    archive.ls(self.root / "a.rar")
+                    archive.entries(self.root / "a.rar")
+
+    def test_rar_password_not_on_the_command_line(self):
+        (self.root / "a.rar").write_bytes(b"Rar!\x1a\x07\x01\x00" + bytes(40))
+        listing = (b"\nArchive: a.rar\nDetails: RAR 5\n\n        Name: album/a.txt\n        Type: File\n"
+                   b"        Size: 5\n Packed size: 5\n\n        Name: album/b.txt\n        Type: File\n"
+                   b"        Size: 3\n Packed size: 3\n")
+        calls: list[tuple[list[str], bytes | None]] = []
+
+        def fake_run(cmd: list[str], *, input: bytes | None = None, **_kwargs):
+            calls.append((cmd, input))
+            if cmd[1] == "lt":
+                return subprocess.CompletedProcess(cmd, 0, stdout=listing, stderr=b"")
+            dest_dir = Path(cmd[-1])
+            (dest_dir / "album").mkdir(parents=True, exist_ok=True)
+            (dest_dir / "album" / "a.txt").write_bytes(b"alpha")
+            (dest_dir / "album" / "b.txt").write_bytes(b"bee")
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        with mock.patch("shutil.which", return_value="/usr/bin/unrar"), \
+                mock.patch("subprocess.run", side_effect=fake_run):
+            written = archive.unpack(self.root / "a.rar", self.out, password="secret")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0][1], "lt")
+        self.assertEqual(calls[1][0][1], "x")
+        for cmd, stdin_data in calls:
+            self.assertNotIn("secret", " ".join(cmd))
+            self.assertEqual(stdin_data, b"secret\n")
+        self.assertEqual(tree(self.out), {"album/a.txt": b"alpha", "album/b.txt": b"bee"})
+        self.assertEqual(len(written), 2)
 
     def test_in_the_archives_order(self):
         zipped = zip_with(self.root / "order.zip", {"b.txt": b"b", "a.txt": b"a"})
-        self.assertEqual([entry.name for entry in archive.ls(zipped)], ["b.txt", "a.txt"])
+        self.assertEqual([entry.name for entry in archive.entries(zipped)], ["b.txt", "a.txt"])
 
     def test_password(self):
         for suffix in (".zip", ".7z"):
             with self.subTest(suffix=suffix):
-                locked = archive.zip(self.album, self.root / f"locked{suffix}", password="pw")[0]
+                locked = archive.pack(self.album, self.root / f"locked{suffix}", password="pw")[0]
                 self.assert_lists(locked, self.index, password="pw")
                 with self.assertRaises(archive.PasswordError):
-                    archive.ls(locked)
-        # The 7z's names are encrypted too, so a wrong password shows at once.
+                    archive.entries(locked)
         with self.assertRaises(archive.PasswordError):
-            archive.ls(self.root / "locked.7z", password="wrong")
+            archive.entries(self.root / "locked.7z", password="wrong")
 
-    def test_parts_found_from_the_first(self):
+    def test_parts_found_from_the_first_and_as_list(self):
         for suffix in (".zip", ".7z", ".tar.gz"):
             with self.subTest(suffix=suffix):
-                size = archive.zip(self.album, self.root / f"whole{suffix}")[0].stat().st_size
-                parts = archive.zip(self.album, self.root / f"split{suffix}", split=size // 3 + 1)
+                size = archive.pack(self.album, self.root / f"whole{suffix}")[0].stat().st_size
+                parts = archive.pack(self.album, self.root / f"split{suffix}", split=size // 3 + 1)
                 self.assert_lists(parts[0], self.index)
+                self.assert_lists(parts, self.index)
         spanned = spanned_zip(self.root, {"a.txt": b"alpha", "big.bin": bytes(3000)}, part_size=1000)
-        self.assertEqual(archive.ls(spanned[0]), [archive.Entry("a.txt", 5, "file"), archive.Entry("big.bin", 3000, "file")])
+        self.assertEqual(archive.entries(spanned[0]),
+                         [archive.Entry("a.txt", 5, "file"), archive.Entry("big.bin", 3000, "file")])
 
     def test_unsafe_names_links_and_devices(self):
         for name in ("../evil.txt", "/etc/evil.txt", "C:\\evil.txt", "x/a:b", "NUL", "dir/com1.txt"):
             with self.subTest(name=name):
                 with self.assertRaises(archive.UnsafeError):
-                    archive.ls(zip_with(self.root / "evil.zip", {"ok.txt": b"ok", name: b"x"}))
+                    archive.entries(zip_with(self.root / "evil.zip", {"ok.txt": b"ok", name: b"x"}))
                 with self.assertRaises(archive.UnsafeError):
-                    archive.ls(tar_with(self.root / "evil.tar", [(name, tarfile.REGTYPE, b"")]))
+                    archive.entries(tar_with(self.root / "evil.tar", [(name, tarfile.REGTYPE, b"")]))
         for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE, tarfile.FIFOTYPE):
             with self.subTest(kind=kind):
                 with self.assertRaises(archive.UnsafeError):
-                    archive.ls(tar_with(self.root / "odd.tar", [("odd", kind, b"ok.txt")]))
+                    archive.entries(tar_with(self.root / "odd.tar", [("odd", kind, b"ok.txt")]))
 
     def test_bombs(self):
-        bundle = archive.zip(self.album, self.root / "bundle.zip")[0]
+        bundle = archive.pack(self.album, self.root / "bundle.zip")[0]
         for limits in (archive.Limits(size=1000), archive.Limits(files=3)):
             with self.subTest(limits=limits), self.assertRaises(archive.BombError):
-                archive.ls(bundle, limits=limits)
+                archive.entries(bundle, limits=limits)
         zeros = zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)})
         with self.assertRaises(archive.BombError):
-            archive.ls(zeros)
-        self.assertEqual(archive.ls(zeros, limits=archive.Limits(ratio=10_000)),
+            archive.entries(zeros)
+        self.assertEqual(archive.entries(zeros, limits=archive.Limits(ratio=10_000)),
                          [archive.Entry("zeros", 1_000_000, "file")])
 
     def test_not_an_archive(self):
         (self.root / "notes.zip").write_bytes(b"just some text, no archive here")
         with self.assertRaises(archive.BrokenError):
-            archive.ls(self.root / "notes.zip")
+            archive.entries(self.root / "notes.zip")
 
 
 class ErrorTest(ArchiveCase):
     def test_wrong_or_missing_password(self):
         for suffix in (".zip", ".7z"):
-            locked = archive.zip(self.album, self.root / f"locked{suffix}", password="pw")[0]
+            locked = archive.pack(self.album, self.root / f"locked{suffix}", password="pw")[0]
             with self.subTest(suffix=suffix):
                 self.assert_refused(archive.PasswordError, locked, password="wrong")
                 self.assert_refused(archive.PasswordError, locked)
-        # Without header encryption, a 7z lists fine and only fails once its contents are read.
         with py7zr.SevenZipFile(self.root / "contents.7z", "w", password="pw") as packed:
             packed.writeall(self.album, "album")
         self.assert_refused(archive.PasswordError, self.root / "contents.7z", password="wrong")
@@ -464,7 +526,7 @@ class ErrorTest(ArchiveCase):
         (self.root / "a.rar").write_bytes(b"Rar!\x1a\x07\x01\x00" + bytes(40))
         with mock.patch("shutil.which", return_value=None):
             with self.assertRaisesRegex(archive.MissingError, "unrar"):
-                archive.unzip(self.root / "a.rar", self.out)
+                archive.unpack(self.root / "a.rar", self.out)
         self.assertFalse(self.out.exists())
 
     def test_rar_link_refused_from_listing(self):
@@ -482,14 +544,14 @@ class ErrorTest(ArchiveCase):
         subprocess.run(["rar", "a", "-r", "-idq", "-ppw", "bundle.rar", "album"], cwd=self.root, check=True)
         self.assert_round_trip([self.root / "bundle.rar"], password="pw")
 
-    def test_failed_zip_leaves_no_file(self):
-        with self.assertRaises(FileNotFoundError):
-            archive.zip([self.album, self.root / "missing"], self.root / "out" / "bundle.zip")
+    def test_failed_pack_leaves_no_file(self):
+        with self.assertRaises(archive.Error):
+            archive.pack([self.album, self.root / "missing"], self.root / "out" / "bundle.zip")
         (self.album / "broken").symlink_to(self.root / "nowhere")
         for suffix in (".zip", ".7z", ".tar.gz"):
             with self.subTest(suffix=suffix):
                 with self.assertRaises(OSError):
-                    archive.zip(self.album, self.root / "out" / f"bundle{suffix}", split=1000)
+                    archive.pack(self.album, self.root / "out" / f"bundle{suffix}", split=1000)
                 self.assertEqual(list((self.root / "out").iterdir()), [])
 
 

@@ -74,7 +74,7 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(values(argv, "--exclude-module"), ["shared._bundler", "PyInstaller"])
 
     def test_packages_are_hidden_imports_only_when_installed(self):
-        installed = {"playwright.sync_api", "cryptography", "parsel"}
+        installed = {"playwright", "cryptography", "parsel"}
         with mock.patch.object(bundler, "_installed", lambda module: module in installed):
             hidden = values(self.argv(), "--hidden-import")
         self.assertLessEqual(installed, set(hidden))
@@ -126,8 +126,9 @@ class FakePyInstallerTest(unittest.TestCase):
 
     def test_a_failure_raises_with_pyinstallers_last_lines(self):
         self.fail = True
-        with self.assertRaises(RuntimeError) as caught:
+        with self.assertRaises(bundler.BuildError) as caught:
             bundler.build("tool.py", name="tool", dest=self.root / "dist")
+        self.assertIsInstance(caught.exception, RuntimeError)
         message = str(caught.exception)
         self.assertIn("PyInstaller could not build tool", message)
         self.assertIn("Unable to find module 'missing'", message)
@@ -135,15 +136,26 @@ class FakePyInstallerTest(unittest.TestCase):
         self.assertNotIn("step 0\n", message)
 
     def test_a_missing_data_folder_raises_before_building(self):
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaises(bundler.Error):
             bundler.build("tool.py", name="tool", data=(self.root / "nothing",), dest=self.root / "dist")
+        self.assertEqual(self.calls, [])
+
+    def test_build_refuses_single_str_for_hidden_or_data(self):
+        with self.assertRaises(bundler.Error):
+            bundler.build("tool.py", name="tool", hidden="mypkg")
+        with self.assertRaises(bundler.Error):
+            bundler.build("tool.py", name="tool", data=self.root)  # pyright: ignore[reportArgumentType]
+        with self.assertRaises(bundler.Error):
+            bundler.build("tool.py", name="tool", data="assets")
         self.assertEqual(self.calls, [])
 
 
 class MissingExtraTest(unittest.TestCase):
     def test_without_pyinstaller(self):
+        self.assertTrue(issubclass(bundler.MissingError, bundler.Error))
+        self.assertTrue(issubclass(bundler.MissingError, shared.MissingError))
         with mock.patch.dict(sys.modules, {"PyInstaller": None, "PyInstaller.__main__": None}):
-            with self.assertRaises(ImportError) as caught:
+            with self.assertRaises(bundler.MissingError) as caught:
                 bundler.build("tool.py", name="tool")
         self.assertEqual(str(caught.exception), "shared.bundler needs pyinstaller: uv sync --group dist")
 
@@ -190,10 +202,10 @@ class RealBuildTest(unittest.TestCase):
                 "with kv.open('state.db') as store:\n"
                 "    store['n'] = 2\n"
                 "    factor = store['n']\n"
-                "print(worker.as_ordered(lambda n: n * factor, [1, 2, 3]))\n"
+                "print(worker.map(lambda n: n * factor, [1, 2, 3]))\n"
                 "Path('note.txt').write_text('hello')\n"
-                "archive.zip('note.txt', 'note.7z', password='pw')\n"
-                "print(Path(archive.unzip('note.7z', 'out', password='pw')[0]).read_text())\n")
+                "archive.pack('note.txt', 'note.7z', password='pw')\n"
+                "print(Path(archive.unpack('note.7z', 'out', password='pw')[0]).read_text())\n")
             built = bundler.build(script, name="tiny", dest=Path(folder) / "dist")
             program = built / ("tiny.exe" if sys.platform == "win32" else "tiny")
             result = subprocess.run([str(program)], capture_output=True, text=True, timeout=120, cwd=folder)

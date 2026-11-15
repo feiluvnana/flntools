@@ -1,9 +1,8 @@
 """Build a script into a folder that runs on a machine without Python, through PyInstaller.
 
 `build` runs PyInstaller in this process with a generated command line (no .spec file to keep), in
-a temporary work folder, adds `shared`'s lazily loaded modules as hidden imports, then copies the
-data folders beside the program. It wraps PyInstaller's `run` and exposes no `.raw`: a script that
-needs more than these options calls PyInstaller itself.
+a temporary work folder, adds `shared`'s lazily loaded modules and installed extras as hidden
+imports, then copies the data folders beside the program.
 
     from shared import bundler
     bundler.build("flnd/__main__.py", name="flnd")    # dist/flnd/flnd, or flnd.exe on Windows
@@ -17,13 +16,15 @@ Needs PyInstaller on first use, from flntools' `dist` group (`uv sync --group di
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import tempfile
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Union
 
@@ -33,15 +34,6 @@ __all__ = ["BuildError", "Error", "MissingError", "build"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
-# The optional packages shared's modules import inside functions or by name, each added whenever it
-# is installed, so a bundle never misses one an extra provides. compression.zstd is the stdlib's on
-# Python 3.14 and later, and imageio-ffmpeg's hook collects the ffmpeg binary. shared's own private
-# modules need no entry: each lazy module is a hidden import below, and PyInstaller follows the
-# plain imports inside its functions (`media`'s `from shared import _media_video`) to the rest.
-PACKAGES = (
-    "playwright.sync_api", "cryptography", "pyzipper", "py7zr", "parsel", "jmespath", "jsonpath",
-    "telethon", "compression.zstd", "PIL", "pi_heif", "imageio_ffmpeg",
-)
 LAST_LINES = 15
 
 
@@ -49,7 +41,7 @@ class Error(shared.Error):
     """The base of every error `shared.bundler` raises."""
 
 
-class MissingError(Error, ImportError):
+class MissingError(Error, shared.MissingError):
     """PyInstaller isn't installed (`uv sync --group dist`)."""
 
 
@@ -57,32 +49,16 @@ class BuildError(Error, RuntimeError):
     """PyInstaller failed to build the bundle."""
 
 
-def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Iterable[PathLike] = (),
-          dest: PathLike = "dist") -> Path:
+def build(entry: PathLike, *, name: str, hidden: Sequence[str] = (),
+          data: Sequence[PathLike] = (), dest: PathLike = "dist") -> Path:
     """Build `entry` into the one-folder bundle `dest/name`, and return that folder.
 
-        # dist/tool/
         bundler.build("tool.py", name="tool", hidden=("mypkg.plugins",), data=("assets",))
-
-    PyInstaller can't see lazy imports, so every module `shared` loads lazily, and the packages
-    those modules use, are added as hidden imports; `hidden=` adds the script's own. A one-folder
-    bundle starts at once, where a one-file one unpacks itself on every run.
-
-    Args:
-        entry: the script to build, such as "flnd/__main__.py".
-        name: program name: bundle folder and executable (`name.exe` on Windows).
-        hidden: modules the script imports in a way PyInstaller can't see, such as by name.
-        data: folders copied beside the program, found at `Path(sys.executable).parent / name`.
-        dest: the folder the bundle is built in, relative to the working directory; an earlier
-            bundle of the same name in it is replaced.
-
-    Raises:
-        ImportError: PyInstaller isn't installed (`uv sync --group dist`).
-        FileNotFoundError: a `data` folder doesn't exist; checked before anything is built.
-        RuntimeError: PyInstaller failed; the message ends with its last log lines.
-
-    Slow: a build takes from half a minute to a few minutes, and needs no network.
     """
+    if isinstance(hidden, (str, bytes)):
+        raise Error("hidden must be a sequence of module names, not a single str")
+    if isinstance(data, (str, bytes, os.PathLike)):
+        raise Error("data must be a sequence of paths, not a single path")
     try:
         import PyInstaller.__main__ as pyinstaller
     except ImportError:
@@ -90,7 +66,7 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Itera
     folders = [Path(folder) for folder in data]
     for folder in folders:
         if not folder.is_dir():
-            raise FileNotFoundError(f"no data folder at {folder}")
+            raise Error(f"no data folder at {folder}")
     dest = Path(dest).resolve()
     with tempfile.TemporaryDirectory() as work:
         args = _arguments(entry, name=name, hidden=hidden, dest=dest, work=Path(work))
@@ -102,12 +78,12 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (), data: Itera
 
 
 def _arguments(
-    entry: PathLike, *, name: str, hidden: Iterable[str], dest: Path, work: Path
+    entry: PathLike, *, name: str, hidden: Sequence[str], dest: Path, work: Path
 ) -> list[str]:
     """PyInstaller command line for `build`, with lazy `shared` modules as hidden imports."""
     # .spec file and build cache go to a temp folder, so there is nothing to clean up.
     lazy = [f"shared._{module}" for module in shared.LAZY_MODULES if module != "bundler"]
-    imports = [*lazy, *(package for package in PACKAGES if _installed(package)), *hidden]
+    imports = [*lazy, *(pkg for pkg in _extra_packages() if _installed(pkg)), *hidden]
     argv = [
         str(Path(entry).resolve()), "--onedir", "--noconfirm", "--log-level", "WARN",
         "--name", name, "--distpath", str(dest), "--workpath", str(work / "build"),
@@ -117,6 +93,36 @@ def _arguments(
         argv += ["--hidden-import", module]
     # Bundler is reachable from shared's TYPE_CHECKING imports and would bring PyInstaller along.
     return [*argv, "--exclude-module", "shared._bundler", "--exclude-module", "PyInstaller"]
+
+
+def _extra_packages() -> list[str]:
+    """Top-level import names for optional dependencies declared in flntools' extras."""
+    try:
+        reqs = importlib.metadata.requires("flntools") or ()
+    except importlib.metadata.PackageNotFoundError:
+        reqs = ()
+    extra_dists = {
+        _norm_dist(req.split(";", 1)[0])
+        for req in reqs
+        if ";" in req and "extra ==" in req.split(";", 1)[1]
+    }
+    by_dist: dict[str, list[str]] = {}
+    for pkg, dists in importlib.metadata.packages_distributions().items():
+        for dist in dists:
+            by_dist.setdefault(_norm_dist(dist), []).append(pkg)
+    found: list[str] = []
+    for dist in sorted(extra_dists):
+        for pkg in sorted(by_dist.get(dist, ())):
+            if not pkg.startswith("_") and pkg not in found:
+                found.append(pkg)
+    if _installed("compression.zstd"):
+        found.append("compression.zstd")
+    return found
+
+
+def _norm_dist(spec: str) -> str:
+    name = re.split(r"[<>=!~;\[\s]", spec, maxsplit=1)[0]
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _installed(module: str) -> bool:

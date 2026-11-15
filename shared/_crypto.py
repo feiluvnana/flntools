@@ -1,12 +1,10 @@
 """Hashes, and AES-256-GCM to seal your own data.
 
-The five hashes are hashlib's (blake2b, md5, sha1, sha256, sha512) and accept
-text, bytes, a file Path, or a binary file. `encrypt` and `decrypt` wrap
-cryptography's AESGCM cipher with authenticated encryption; cryptography is loaded
+`digest` hashes text, bytes-like objects, a `Path`, or a binary file with any `hashlib` algorithm.
+`encrypt` and `decrypt` wrap cryptography's AESGCM cipher with authenticated encryption, loaded
 on first use.
 
     import secrets
-    from pathlib import Path
     from shared import crypto
 
     key = secrets.token_bytes(32)
@@ -17,22 +15,21 @@ on first use.
 from __future__ import annotations
 
 import hashlib
+import io
 import secrets
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Union
+from typing import TYPE_CHECKING, Any, BinaryIO, Union, cast
 
 import shared
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-__all__ = ["Error", "blake2b", "decrypt", "encrypt", "md5", "sha1", "sha256", "sha512"]
+__all__ = ["Error", "MissingError", "decrypt", "digest", "encrypt"]
 
-Data = Union[str, bytes]
-HashInput = Union[str, bytes, Path, BinaryIO]
+Data = Union[str, bytes, bytearray, memoryview]
+HashInput = Union[str, bytes, bytearray, memoryview, Path, BinaryIO]
 
-# How much of a file a hash reads at a time: big enough to be fast, small enough for any file.
-CHUNK_SIZE = 1024 * 1024
 # The blob is one version byte, a 12-byte random nonce (GCM's standard size), then the
 # ciphertext with its 16-byte tag. The format is fixed: vaults hold blobs of version 1.
 GCM_VERSION = 1
@@ -47,95 +44,44 @@ MISSING_CRYPTOGRAPHY = "shared.crypto needs cryptography: pip install 'flntools[
 
 # Subclasses ValueError so callers expecting bad input exceptions catch it.
 class Error(shared.Error, ValueError):
-    """Data could not be decrypted: wrong key, changed bytes, or invalid format."""
+    """Data could not be decrypted, key length is wrong, or the hash algorithm is unknown."""
 
 
-def md5(data: HashInput) -> str:
-    """The MD5 of text, bytes, a file at a `Path`, or a binary file object, as hex.
+class MissingError(Error, shared.MissingError):
+    """`cryptography` isn't installed (`pip install 'flntools[browser]'`)."""
 
-        crypto.md5(Path("photo.jpg"))
 
-    Args:
-        data: text, bytes, a `Path` read in chunks, or an open binary file.
+def digest(data: HashInput, *, algorithm: str = "sha256") -> str:
+    """The hex digest of text, bytes-like data, a `Path`, or a binary stream.
 
-    Returns:
-        The digest as lowercase hex.
+        crypto.digest(Path("photo.jpg"))
+        crypto.digest(b"bytes", algorithm="blake2b")
     """
-    return _hash("md5", data)
-
-
-def sha1(data: HashInput) -> str:
-    """The SHA-1 of `data` as hex, read the same way as `md5`.
-
-        crypto.sha1(b"bytes")
-
-    Args:
-        data: text, bytes, a `Path` or a binary file object, as `md5` reads them.
-
-    Raises:
-        TypeError: `data` is none of these.
-        OSError: the file at the `Path` can't be read.
-    """
-    return _hash("sha1", data)
-
-
-def sha256(data: HashInput) -> str:
-    """The SHA-256 of `data` as hex, read the same way as `md5`.
-
-        crypto.sha256("text")
-
-    Args:
-        data: text, bytes, a `Path` or a binary file object, as `md5` reads them.
-
-    Raises:
-        TypeError: `data` is none of these.
-        OSError: the file at the `Path` can't be read.
-    """
-    return _hash("sha256", data)
-
-
-def sha512(data: HashInput) -> str:
-    """The SHA-512 of `data` as hex, read the same way as `md5`.
-
-        crypto.sha512(Path("f.bin"))
-
-    Args:
-        data: text, bytes, a `Path` or a binary file object, as `md5` reads them.
-
-    Raises:
-        TypeError: `data` is none of these.
-        OSError: the file at the `Path` can't be read.
-    """
-    return _hash("sha512", data)
-
-
-def blake2b(data: HashInput) -> str:
-    """The BLAKE2b (64-byte digest) of `data` as hex, read the same way as `md5`.
-
-        crypto.blake2b(open("f.bin", "rb"))
-
-    Args:
-        data: text, bytes, a `Path` or a binary file object, as `md5` reads them.
-
-    Raises:
-        TypeError: `data` is none of these.
-        OSError: the file at the `Path` can't be read.
-    """
-    return _hash("blake2b", data)
+    if isinstance(data, Path):
+        with data.open("rb") as handle:
+            return digest(handle, algorithm=algorithm)
+    try:
+        if isinstance(data, str):
+            return hashlib.new(algorithm, data.encode("utf-8")).hexdigest()
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            return hashlib.new(algorithm, data).hexdigest()
+        if isinstance(data, io.BytesIO):
+            view = data.getbuffer()[data.tell():]
+            data.seek(0, io.SEEK_END)
+            return hashlib.new(algorithm, view).hexdigest()
+        if hasattr(data, "read"):
+            return hashlib.file_digest(cast(Any, data), algorithm).hexdigest()
+    except ValueError as error:
+        raise Error(str(error)) from None
+    raise TypeError(
+        f"cannot hash {type(data).__name__}: pass str, bytes, a Path, or a binary file"
+    )
 
 
 def encrypt(data: Data, key: bytes, *, context: bytes = b"") -> bytes:
     """Encrypt and authenticate `data` with AES-256-GCM into a blob only `decrypt` opens.
 
         blob = crypto.encrypt("sessionid=abc", key, context=b"cookies")
-
-    Args:
-        data: text (sealed as UTF-8) or bytes.
-        key: 32 bytes, kept secret.
-        context: authenticated additional data that `decrypt` must match.
-
-    Returns:
-        The encrypted blob (version, nonce, ciphertext, and authentication tag).
     """
     cipher = _aes_gcm(key)
     nonce = secrets.token_bytes(GCM_NONCE_SIZE)
@@ -146,20 +92,6 @@ def decrypt(blob: bytes, key: bytes, *, context: bytes = b"") -> bytes:
     """Decrypt a blob from `encrypt`, with the same key and context, and check nobody changed it.
 
         data = crypto.decrypt(blob, key, context=b"cookies")
-
-    Args:
-        blob: what `encrypt` returned.
-        key: the 32-byte key it was sealed with.
-        context: the context it was sealed with.
-
-    Returns:
-        The data, as bytes; `.decode()` it if it was text.
-
-    Raises:
-        Error: a wrong key, a wrong context, a changed or cut blob, or one that isn't from
-            `encrypt`. The message is the same for each, and never holds the key or the data.
-        ValueError: `key` isn't 32 bytes.
-        ImportError: `cryptography` isn't installed; the message names the extra.
     """
     cipher = _aes_gcm(key)
     from cryptography.exceptions import InvalidTag
@@ -174,24 +106,6 @@ def decrypt(blob: bytes, key: bytes, *, context: bytes = b"") -> bytes:
         raise Error(DECRYPT_FAILED) from None
 
 
-def _hash(algorithm: str, data: HashInput) -> str:
-    """The hex digest of `data` under hashlib's `algorithm`, reading a `Path` or file in chunks."""
-    if isinstance(data, Path):
-        with data.open("rb") as handle:
-            return _hash(algorithm, handle)
-    hasher = hashlib.new(algorithm)
-    if isinstance(data, (str, bytes)):
-        hasher.update(_as_bytes(data))
-    elif hasattr(data, "read"):
-        while chunk := data.read(CHUNK_SIZE):
-            hasher.update(chunk)
-    else:
-        raise TypeError(
-            f"cannot hash {type(data).__name__}: pass str, bytes, a Path, or a binary file"
-        )
-    return hasher.hexdigest()
-
-
 def _as_bytes(data: Data) -> bytes:
     if isinstance(data, str):
         return data.encode("utf-8")
@@ -201,14 +115,14 @@ def _as_bytes(data: Data) -> bytes:
 
 
 def _aes_gcm(key: bytes) -> AESGCM:
-    """`cryptography`'s AESGCM for a 32-byte key, imported here so the hashes never need it."""
+    """`cryptography`'s AESGCM for a 32-byte key, imported here so `digest` never needs it."""
     # The message gives the key's length only, never its bytes.
     if len(key) != KEY_SIZE:
-        raise ValueError(
+        raise Error(
             f"an AES-256 key must be {KEY_SIZE} bytes, not {len(key)}: use secrets.token_bytes(32)"
         )
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError:
-        raise ImportError(MISSING_CRYPTOGRAPHY) from None
+        raise MissingError(MISSING_CRYPTOGRAPHY) from None
     return AESGCM(key)

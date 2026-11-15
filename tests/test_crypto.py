@@ -1,7 +1,7 @@
-"""shared.crypto: the five hashes against hashlib, and AES-256-GCM's `encrypt` and `decrypt`.
+"""shared.crypto: `digest` against hashlib, and AES-256-GCM's `encrypt` and `decrypt`.
 
 Nothing is faked but a missing `cryptography`, by patching `__import__`. The ciphers' tests skip
-without `cryptography`; the hashes need only the stdlib.
+without `cryptography`; `digest` needs only the stdlib.
 """
 
 import builtins
@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import shared
 from shared import crypto
 
 try:
@@ -22,13 +23,7 @@ try:
 except ImportError:
     HAS_CRYPTOGRAPHY = False
 
-HASHES = {
-    "md5": crypto.md5,
-    "sha1": crypto.sha1,
-    "sha256": crypto.sha256,
-    "sha512": crypto.sha512,
-    "blake2b": crypto.blake2b,
-}
+ALGORITHMS = ("md5", "sha1", "sha256", "sha512", "blake2b")
 
 # A blob made by `encrypt_aes_gcm` at 62fb584, before step 4 renamed it, with this key and the
 # context flnd's vault gives tlg's "session" slot. `decrypt` must open it: `metadata/secrets.db` vaults
@@ -41,32 +36,49 @@ OLD_EMPTY_BLOB = bytes.fromhex("0168fb78f7564d2a0a984708e0e27bc396591855308acb6b
 
 class HashTest(unittest.TestCase):
     def test_every_input_agrees_with_hashlib(self):
-        # Over two chunks and a bit, so the chunked read of a Path or a file is what is tested.
-        content = b"x" * (crypto.CHUNK_SIZE * 2 + 17)
+        content = b"x" * (2 * 1024 * 1024 + 17)
         with tempfile.TemporaryDirectory() as folder:
             file = Path(folder) / "big.bin"
             file.write_bytes(content)
-            for algorithm, hash_function in HASHES.items():
+            for algorithm in ALGORITHMS:
                 with self.subTest(algorithm):
-                    self.assertEqual(hash_function.__name__, algorithm)
-                    self.assertEqual(hash_function("héllo"), hashlib.new(algorithm, "héllo".encode()).hexdigest())
-                    self.assertEqual(hash_function(b"\x00\xff"), hashlib.new(algorithm, b"\x00\xff").hexdigest())
+                    self.assertEqual(
+                        crypto.digest("héllo", algorithm=algorithm),
+                        hashlib.new(algorithm, "héllo".encode()).hexdigest(),
+                    )
+                    self.assertEqual(
+                        crypto.digest(b"\x00\xff", algorithm=algorithm),
+                        hashlib.new(algorithm, b"\x00\xff").hexdigest(),
+                    )
                     expected = hashlib.new(algorithm, content).hexdigest()
-                    self.assertEqual(hash_function(file), expected)
+                    self.assertEqual(crypto.digest(file, algorithm=algorithm), expected)
                     with file.open("rb") as handle:
-                        self.assertEqual(hash_function(handle), expected)
+                        self.assertEqual(crypto.digest(handle, algorithm=algorithm), expected)
+
+    def test_default_algorithm_is_sha256(self):
+        self.assertEqual(crypto.digest(b"hello"), hashlib.sha256(b"hello").hexdigest())
+
+    def test_digest_accepts_bytearray(self):
+        raw = b"hello world"
+        expected = hashlib.sha256(raw).hexdigest()
+        self.assertEqual(crypto.digest(bytearray(raw)), expected)
+        self.assertEqual(crypto.digest(memoryview(raw)), expected)
 
     def test_file_object_is_read_from_its_position(self):
         handle = io.BytesIO(b"skipped|hashed")
         handle.seek(8)
-        self.assertEqual(crypto.sha256(handle), hashlib.sha256(b"hashed").hexdigest())
+        self.assertEqual(crypto.digest(handle), hashlib.sha256(b"hashed").hexdigest())
 
     def test_str_is_text_not_a_file_name(self):
-        self.assertEqual(crypto.sha256("photo.jpg"), hashlib.sha256(b"photo.jpg").hexdigest())
+        self.assertEqual(crypto.digest("photo.jpg"), hashlib.sha256(b"photo.jpg").hexdigest())
+
+    def test_unknown_algorithm_raises_crypto_error(self):
+        with self.assertRaises(crypto.Error):
+            crypto.digest(b"abc", algorithm="no-such-hash")
 
     def test_other_types_refused(self):
         with self.assertRaises(TypeError):
-            crypto.sha256(123)  # pyright: ignore[reportArgumentType]
+            crypto.digest(123)  # pyright: ignore[reportArgumentType]
 
 
 @unittest.skipUnless(HAS_CRYPTOGRAPHY, "cryptography is not installed")
@@ -106,13 +118,10 @@ class CipherTest(unittest.TestCase):
         self.assertTrue(issubclass(crypto.Error, ValueError))
 
     def test_only_a_32_byte_key(self):
-        # AES-256 only: a 16- or 24-byte key is a mistake, refused as a ValueError, not a crypto.Error,
-        # since it is the caller's bug rather than bad data.
         for size in (16, 20, 24, 33):
             for call in (lambda: crypto.encrypt("x", b"k" * size), lambda: crypto.decrypt(b"x" * 40, b"k" * size)):
-                with self.subTest(size=size), self.assertRaises(ValueError) as caught:
+                with self.subTest(size=size), self.assertRaises(crypto.Error):
                     call()
-                self.assertNotIsInstance(caught.exception, crypto.Error)
 
     def test_no_secret_reaches_a_message(self):
         # C6: an exception's text may be logged or shown; it must never hold a cookie value, key or password.
@@ -145,7 +154,7 @@ class CipherTest(unittest.TestCase):
 
 
 class MissingExtraTest(unittest.TestCase):
-    def test_ciphers_name_the_extra_and_hashes_still_work(self):
+    def test_ciphers_name_the_extra_and_digest_still_works(self):
         real_import = builtins.__import__
 
         def import_without_cryptography(name, *args, **kwargs):
@@ -153,12 +162,14 @@ class MissingExtraTest(unittest.TestCase):
                 raise ImportError("No module named 'cryptography'")
             return real_import(name, *args, **kwargs)
 
+        self.assertTrue(issubclass(crypto.MissingError, crypto.Error))
+        self.assertTrue(issubclass(crypto.MissingError, shared.MissingError))
         with mock.patch("builtins.__import__", import_without_cryptography):
             for cipher_call in (lambda: crypto.decrypt(b"x" * 40, secrets.token_bytes(32)),
                                 lambda: crypto.encrypt("x", secrets.token_bytes(32))):
-                with self.assertRaisesRegex(ImportError, re.escape("pip install 'flntools[browser]'")):
+                with self.assertRaisesRegex(crypto.MissingError, re.escape("pip install 'flntools[browser]'")):
                     cipher_call()
-            self.assertEqual(crypto.sha256("a"), hashlib.sha256(b"a").hexdigest())
+            self.assertEqual(crypto.digest("a"), hashlib.sha256(b"a").hexdigest())
 
 
 if __name__ == "__main__":
