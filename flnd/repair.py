@@ -66,7 +66,7 @@ def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
         for result in results:
             if result.error is not None:
                 raise result.error
-            _apply_check(history, tally, result.item[0], bool(result.value), today)
+            _apply_check(history, tally, result.item, bool(result.value), today)
 
 
 def _partition_rows(

@@ -9,7 +9,7 @@ from typing import Annotated, Literal, Optional, Sequence
 import cyclopts
 from rich.table import Table
 
-from flnd import Engine, LoginError, Range, __version__
+from flnd import Engine, LoginError, Range, TargetError, __version__
 from flnd.sources import SOURCES
 from shared import cli, prompt, text, ui
 
@@ -93,16 +93,19 @@ def download(
     """
     resolved_targets = _read_targets(targets)
     with ui.scope(level="debug" if verbose else None):
-        report = Engine(home=HOME).download(
-            resolved_targets,
-            categories=categories,
-            time=Range() if time is None else time,
-            shrink=None if shrink is None else shrink == "on",
-            limit=limit,
-            dry=dry,
-            sync=sync,
-            again=again,
-        )
+        try:
+            report = Engine(home=HOME).download(
+                resolved_targets,
+                categories=categories,
+                time=Range() if time is None else time,
+                shrink=None if shrink is None else shrink == "on",
+                limit=limit,
+                dry=dry,
+                sync=sync,
+                again=again,
+            )
+        except (TargetError, ValueError) as error:
+            raise cli.UsageError(str(error)) from error
     if not dry:
         ui.ok("Complete. {files}", files=text.fmt.count(report.files, "file"))
     return 0 if report.ok else 1
@@ -263,7 +266,11 @@ def _read_targets(targets: Sequence[str]) -> list[str]:
     if targets:
         return list(targets)
     if not sys.stdin.isatty():
-        lines = [line.strip() for line in sys.stdin if line.strip()]
+        lines = [
+            line.strip()
+            for line in sys.stdin
+            if line.strip() and not line.strip().startswith("#")
+        ]
         if lines:
             return lines
     raise cli.UsageError("give at least one target, or pipe targets on stdin")
