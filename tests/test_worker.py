@@ -164,10 +164,10 @@ class PoolTest(WorkerCase):
         pool = worker.Pool(concurrency=2)
         pool.submit(square, 1)
         pool.submit(square, 2)
-        self.assertEqual(sorted(result.value for result in pool.join()), [1, 4])
+        self.assertEqual(sorted(result.value for result in pool.join() if result.value is not None), [1, 4])
         pool.submit(square, 3)
         pool.close()
-        self.assertEqual(sorted(result.value for result in pool.join()), [1, 4, 9])
+        self.assertEqual(sorted(result.value for result in pool.join() if result.value is not None), [1, 4, 9])
 
     def test_join_timeout_returns_what_finished(self) -> None:
         release = threading.Event()
@@ -263,7 +263,7 @@ class PoolTest(WorkerCase):
                 pool.submit(task, n)
             results = pool.join()
         self.assertEqual(seen_threads, [owner_id] * 4)
-        self.assertEqual(sorted(r.value for r in results), [0, 2, 4, 6])
+        self.assertEqual(sorted(r.value for r in results if r.value is not None), [0, 2, 4, 6])
 
     def test_run_on_owner_stops_cleanly_on_pool_stop(self) -> None:
         started = threading.Event()
@@ -298,7 +298,7 @@ class AsyncAndTimeoutTest(WorkerCase):
             for n in range(10):
                 pool.submit(fetch, n)
             results = pool.join()
-        self.assertEqual(sorted(r.value for r in results), [n * 2 for n in range(10)])
+        self.assertEqual(sorted(r.value for r in results if r.value is not None), [n * 2 for n in range(10)])
         self.assertLessEqual(most[0], 3)
 
         cancelled = threading.Event()
@@ -421,7 +421,7 @@ class CtrlCTest(WorkerCase):
         running, retrying, release = threading.Event(), threading.Event(), threading.Event()
         ran = []
 
-        class WaitToRetry(clock.Clock):
+        class WaitToRetry(clock.Fake):
             def sleep(self, seconds: float, *, stop: threading.Event | None = None) -> bool:
                 retrying.set()
                 return not (stop is not None and stop.wait(LONG))

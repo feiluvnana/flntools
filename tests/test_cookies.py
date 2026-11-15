@@ -26,6 +26,7 @@ try:
     from cryptography.hazmat.primitives.padding import PKCS7
     HAS_CRYPTOGRAPHY = True
 except ImportError:
+    Cipher = algorithms = modes = AESGCM = PKCS7 = None
     HAS_CRYPTOGRAPHY = False
 
 REPO = Path(__file__).resolve().parent.parent
@@ -38,6 +39,7 @@ MATCHING = {"instagram.com", ".instagram.com", "www.instagram.com", "WWW.Instagr
 
 
 def encrypt_chromium(plain, password, iterations, host=None, prefix=b"v10"):
+    assert PKCS7 is not None and Cipher is not None and algorithms is not None and modes is not None
     key = hashlib.pbkdf2_hmac("sha1", password.encode(), b"saltysalt", iterations, 16)
     message = (hashlib.sha256(host.encode()).digest() if host else b"") + plain.encode()
     padder = PKCS7(128).padder()
@@ -92,11 +94,10 @@ class BrowserTestCase(unittest.TestCase):
             mock.patch("pathlib.Path.home", return_value=self.home),
             mock.patch.object(cookies, "_PLATFORM", self.platform),
             mock.patch.object(cookies.subprocess, "run", side_effect=refuse_programs),
-            mock.patch.object(cookies, "_read_keychain_password", return_value="mac-secret"),
-            mock.patch.object(cookies, "_read_keyring_password", return_value="linux-secret"),
         ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+            self.enterContext(patcher)
+        self.keychain = self.enterContext(mock.patch.object(cookies, "_read_keychain_password", return_value="mac-secret"))
+        self.keyring = self.enterContext(mock.patch.object(cookies, "_read_keyring_password", return_value="linux-secret"))
 
 
 @unittest.skipUnless(HAS_CRYPTOGRAPHY, "needs cryptography")
@@ -119,7 +120,7 @@ class ChromiumMacTest(BrowserTestCase):
         first = jar.raw[0]
         self.assertEqual(first, {"name": "c0", "value": "value0", "domain": "instagram.com", "path": "/",
                                  "expires": EXPIRES, "secure": True, "httpOnly": True, "sameSite": "Strict"})
-        cookies._read_keychain_password.assert_called_once_with("Chrome Safe Storage")
+        self.keychain.assert_called_once_with("Chrome Safe Storage")
 
     def test_decrypts_without_host_hash(self):
         self.chrome_db(23)
@@ -155,7 +156,7 @@ class ChromiumMacTest(BrowserTestCase):
         database = self.home / "Library/Application Support/Google/Chrome/Default/Network/Cookies"
         make_chromium_db(database, 24, [("example.com", "plain", "visible", b"", "/", 0, 0, 0, 1)])
         self.assertEqual(cookies.load("chrome")["plain"], "visible")
-        cookies._read_keychain_password.assert_not_called()
+        self.keychain.assert_not_called()
 
     def test_old_cookies_location_and_other_profile(self):
         database = self.home / "Library/Application Support/BraveSoftware/Brave-Browser/Profile 1/Cookies"
@@ -164,7 +165,7 @@ class ChromiumMacTest(BrowserTestCase):
         ])
         jar = cookies.load("brave", profile="Profile 1").raw
         self.assertEqual((jar[0]["value"], jar[0]["sameSite"]), ("token", "Lax"))
-        cookies._read_keychain_password.assert_called_once_with("Brave Safe Storage")
+        self.keychain.assert_called_once_with("Brave Safe Storage")
 
     def test_missing_database(self):
         with self.assertRaises(FileNotFoundError):
@@ -183,10 +184,10 @@ class ChromiumLinuxTest(BrowserTestCase):
         ])
         jar = cookies.load("chromium")
         self.assertEqual([(cookie["value"], cookie["sameSite"]) for cookie in jar], [("one", "None"), ("two", "None")])
-        cookies._read_keyring_password.assert_called_once_with("chromium")
+        self.keyring.assert_called_once_with("chromium")
 
     def test_v11_falls_back_to_peanuts_without_keyring(self):
-        cookies._read_keyring_password.return_value = None
+        self.keyring.return_value = None
         make_chromium_db(self.home / ".config/google-chrome/Default/Cookies", 23, [
             ("a.example", "new", "", encrypt_chromium("two", "peanuts", 1, prefix=b"v11"), "/", 0, 0, 0, 0),
         ])
@@ -247,6 +248,7 @@ class BrowserChoiceTest(BrowserTestCase):
         )
         nonce = os.urandom(12)
         payload = hashlib.sha256(b"example.com").digest() + b"win-secret"
+        assert AESGCM is not None
         encrypted_val = b"v10" + nonce + AESGCM(master_key).encrypt(nonce, payload, None)
         make_chromium_db(user_data / "Default/Network/Cookies", 24, [
             ("example.com", "sid", "", encrypted_val, "/", EXPIRES_UTC, 1, 1, 1),

@@ -272,7 +272,7 @@ class DownloadTest(DownloadCase):
     def test_options_are_checked(self):
         for options in ({"attempts": 0}, {"parts": 0}, {"parts": "two"}, {"parts": True}):
             with self.subTest(options=options), self.assertRaises(ValueError):
-                self.download(**options)
+                self.download(**options)  # type: ignore[arg-type]
         with self.assertRaises(ValueError):
             self.download([])
 
@@ -472,7 +472,7 @@ class PiecesTest(DownloadCase):
         asked = self.cdn.ranges_asked()
         pieces = [f"bytes={at}-{at + 1023}" for at in range(1024, 9216, 1024)] + ["bytes=9216-"]
         self.assertEqual(asked[0], "bytes=0-1023")
-        self.assertEqual(sorted(asked[1:]), sorted(pieces))
+        self.assertEqual(sorted(r for r in asked[1:] if r is not None), sorted(pieces))
         self.assertTrue(all(request.headers["if-range"] == '"v1"'
                             for request in self.cdn.requests[1:]))
         # The first request may be a photo's whole file; only the split file's pieces are pieces.
@@ -635,7 +635,7 @@ class ThresholdTest(DownloadCase):
 
     def test_pieces_are_a_32nd_of_the_file_within_2_to_4_mb(self):
         mb = 1024 * 1024
-        sizes = {total: {segment.end - segment.start for segment in download._plan(0, total)}
+        sizes = {total: {segment.end - segment.start for segment in download._plan(0, total) if segment.end is not None}
                  for total in (8 * mb, 96 * mb, 1024 * mb)}
         self.assertEqual(sizes[8 * mb], {2 * mb})
         self.assertEqual(sizes[96 * mb], {3 * mb})
@@ -774,6 +774,7 @@ class StallTest(DownloadCase):
         self.assertEqual(download._stall(slow, 2.0, **rules), "slow")    # 50 KB/s < 250 KB/s
         self.assertIsNone(download._stall(slow, 2.0, **{**rules, "disk": True}))
         self.assertIsNone(download._stall(slow, 2.0, **{**rules, "best": 150_000.0}))
+        assert segment.end is not None
         segment.done = segment.end - 50_000                              # 1 s left at its pace
         self.assertIsNone(download._stall(slow, 2.0, **rules))
 
@@ -904,7 +905,9 @@ class StopTest(DownloadCase):
         self.assertEqual(len(self.leftovers()), 2)
         self.cdn.requests.clear()
         self.assertEqual(self.download().read_bytes(), DATA)
-        self.assertTrue(self.cdn.ranges_asked()[0].startswith("bytes=4096"))
+        first_range = self.cdn.ranges_asked()[0]
+        assert first_range is not None
+        self.assertTrue(first_range.startswith("bytes=4096"))
 
     def test_a_stalled_read_is_stopped_within_a_second(self):
         stop = threading.Event()

@@ -90,6 +90,7 @@ class FetchTest(HttpTestCase):
                 http.fetch("https://example.com/gone", soft=True)
         self.assertEqual(raised.exception.status, 410)
         # The refusing response stays on the error, so a caller can read the site's reason.
+        assert raised.exception.response is not None
         self.assertEqual(raised.exception.response.json, {"reason": "gone"})
         self.assertIsInstance(raised.exception, shared.RefusedError)
         self.assertIsInstance(raised.exception, http.Error)
@@ -122,7 +123,7 @@ class FetchTest(HttpTestCase):
                 if low is None:
                     self.assertIsNone(retry_after)
                 else:
-                    assert retry_after is not None
+                    assert retry_after is not None and high is not None
                     self.assertTrue(low <= retry_after <= high, retry_after)
 
     def test_3xx_from_a_client_that_does_not_follow_is_returned(self):

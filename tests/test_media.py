@@ -320,7 +320,9 @@ class ConvertPhotoTest(unittest.TestCase):
         out = converted(sample("rgba.png"), self.folder / "x.jpg")
         with Image.open(out) as image:
             self.assertEqual(image.mode, "RGB")
-            self.assertGreater(min(image.getpixel((5, 5))), 240)
+            pixel = image.getpixel((5, 5))
+            assert isinstance(pixel, tuple)
+            self.assertGreater(min(pixel), 240)
 
     def test_quality_changes_size(self):
         low = converted(sample("big.jpg"), self.folder / "low.webp", quality=30)

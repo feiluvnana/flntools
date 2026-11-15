@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 from shared import clock, cookies, http
@@ -141,7 +142,7 @@ class BrowserCase(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def tearDown(self):
-        ui.level = self.previous_level
+        ui.level = cast(Any, self.previous_level)
         self.scope.__exit__(None, None, None)
 
     def lines(self) -> list[str]:
@@ -528,11 +529,14 @@ class OpenTest(BrowserCase):
             self.assertEqual(response.status, 200)
 
     def test_closed_after_an_exception(self):
+        chromium = None
+        page = None
         with self.assertRaises(ValueError):
             with browser.open(headless=True) as b:
                 chromium = b.raw.browser
                 page = b.open()
                 raise ValueError("boom")
+        assert page is not None and chromium is not None
         self.assertTrue(page.raw.is_closed())
         self.assertFalse(chromium.is_connected())
 
@@ -689,7 +693,7 @@ class PageTest(PageCase):
             with self.subTest(what=what):
                 started = time.monotonic()
                 with self.assertRaises(browser.WaitError) as caught:
-                    self.page.wait(**options, timeout=0.2)
+                    self.page.wait(**cast(dict[str, Any], options), timeout=0.2)
                 self.assertEqual(str(caught.exception), f"waited 0.2 s for {what}")
                 self.assertIsInstance(caught.exception, browser.Error)
                 self.assertNotIsInstance(caught.exception, browser._raw_error())
@@ -703,7 +707,7 @@ class PageTest(PageCase):
         self.assertLess(time.monotonic() - started, 2)
 
     def test_content_url_close(self):
-        self.assertIn("home", self.page.document.raw.get())
+        self.assertIn("home", self.page.document.raw.get() or "")
         self.page.raw.evaluate("document.body.innerHTML = '<p>changed</p>'")
         self.assertIn("changed", self.page.document.css("body").text)
         self.assertEqual(self.page.url, "https://site.test/")
@@ -880,13 +884,13 @@ class GoneBodyTest(BrowserCase):
         ui.level = "debug"
         error = browser._raw_error()("Response.text: Protocol error (Network.getResponseBody): "
                                      "No resource with given identifier found")
-        self.assertEqual(browser._json_bodies(self.response(error), False), [])
+        self.assertEqual(browser._json_bodies(cast(Any, self.response(error)), False), [])
         self.assertEqual(self.lines(), [])
 
     def test_another_unreadable_body_is_a_debug_line(self):
         ui.level = "debug"
         closed = self.response(browser._raw_error()("Target closed"))
-        self.assertEqual(browser._json_bodies(closed, False), [])
+        self.assertEqual(browser._json_bodies(cast(Any, closed), False), [])
         self.assertIn(self.lines(), ([". responses: no body for https://site.test/api/graphql: Target closed"],
                                      ["· responses: no body for https://site.test/api/graphql: Target closed"]))
 
@@ -1109,7 +1113,7 @@ class LocalHandler(BaseHTTPRequestHandler):
             return self.send(status, "text/plain", b"no", {"Retry-After": "7"} if status == 429 else {})
         if path == "/slow":
             # Held until the test ends (or 10 s), so the page's abort is what ends the request.
-            self.server.release.wait(10)
+            cast(_LocalHTTPServer, self.server).release.wait(10)
             return self.send(200, "text/plain", b"late")
         self.send(404, "text/plain", b"not here")
 
@@ -1130,11 +1134,15 @@ class LocalHandler(BaseHTTPRequestHandler):
         """Quiet: the default writes every request to stderr."""
 
 
+class _LocalHTTPServer(ThreadingHTTPServer):
+    release: threading.Event
+
+
 class LocalServer:
     """An HTTP server on 127.0.0.1 and a free port, serving `LocalHandler` from a thread until `close`."""
 
     def __init__(self):
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), LocalHandler)
+        self.server = _LocalHTTPServer(("127.0.0.1", 0), LocalHandler)
         self.server.daemon_threads = True
         self.server.release = threading.Event()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"

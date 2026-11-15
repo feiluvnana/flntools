@@ -4,13 +4,13 @@
 """
 
 from pathlib import Path
-from typing import ClassVar, Iterator, Optional
+from typing import Any, ClassVar, Iterator, Optional
 
 from typing_extensions import assert_type
 
 from flnd.site import LoginSite, TargetSite
 from flnd.source import File, Login, Post, Site, Source
-from shared import cookies, http, log, media, prompt, theme, worker
+from shared import cookies, fs, http, media, prompt, ui, worker
 from tests.fakes import FakeSite
 
 
@@ -22,61 +22,64 @@ def label(name: str, count: int) -> str:
     return f"{name}: {count}"
 
 
-assert_type(worker.as_ordered(double, [1, 2]), list[int])
-assert_type(worker.as_ordered(label, ["a", "b"], [1, 2]), list[str])
-assert_type(worker.as_ordered(len, ["ab"]), list[int])
-assert_type(worker.as_completed(double, [1, 2]), Iterator[worker.Result[int]])
-worker.as_ordered(double, [1], label="numbers", progress=lambda done, total: None)
+with worker.Pool(concurrency=2, progress=lambda done, total: None) as pool:
+    pool.submit(double, 1)
+    pool.submit(label, "a", 2)
+    assert_type(pool.as_completed(), Iterator[worker.Result[Any]])
+    assert_type(pool.join(), list[worker.Result[Any]])
 
 assert_type(prompt.choose("Source", {"Instagram": "ins", "TikTok": "tik"}), str)
 assert_type(prompt.choose("Count", [1, 2, 3]), int)
 assert_type(prompt.choose("Tabs", ["posts", "reels"], many=False), str)
 assert_type(prompt.choose("Tabs", ["posts", "reels"], many=True), list[str])
-assert_type(prompt.choose("Source", {"Instagram": "ins"}, many=True, min=1, max=1), list[str])
+assert_type(prompt.choose("Source", {"Instagram": "ins"}, many=True, default=["ins"]), list[str])
 assert_type(prompt.ask("Token", secret=True), str)
 prompt.choose("Tabs", ["posts"], min=1)  # pyright: ignore[reportCallIssue]
 prompt.input("Name")  # pyright: ignore[reportAttributeAccessIssue]
 
-theme.color = "256"
-theme.color = "265"  # pyright: ignore[reportAttributeAccessIssue]
+ui.level = "debug"
+ui.level = "loud"  # pyright: ignore[reportAttributeAccessIssue]
 
-worker.as_ordered(len, [1, 2])  # pyright: ignore[reportArgumentType]
-worker.as_ordered(double, [1], progress="numbers")  # pyright: ignore[reportArgumentType]
+worker.Pool(concurrency="2")  # pyright: ignore[reportArgumentType]
+worker.Pool(progress="numbers")  # pyright: ignore[reportArgumentType]
 
-with log.progress("photos", total=2) as bar:
+with ui.progress("photos", total=2) as bar:
     assert_type(bar.count, float)
     bar.total = 3
     bar.count = 1
-    bar.caption = "part 2"
     bar.advance()
-    assert_type(bar.finished, bool)
+    bar.finish()
     bar.update(1, 2)  # pyright: ignore[reportAttributeAccessIssue]
-with log.group("download") as rows:
+with ui.group("download") as rows:
     assert_type(rows.add("ins:example", total=12).total, Optional[float])
-log.multi("download")  # pyright: ignore[reportAttributeAccessIssue]
+ui.multi("download")  # pyright: ignore[reportAttributeAccessIssue]
 
 clip = media.open("a.mp4")
 assert_type(clip, media.Media)
 assert_type(clip.info, media.Info)
-assert_type(clip.duration, Optional[float])
-assert_type(clip.trim(end=10).compress("low", format="mp4"), media.Media)
+assert_type(clip.info.duration, Optional[float])
+assert_type(clip.compress("low", format="mp4"), media.Media)
+assert_type(clip.convert("mp4"), media.Media)
+assert_type(clip.audio(format="mp3"), media.Media)
+assert_type(clip.merge("b.mp4", audio="a.m4a"), media.Media)
 assert_type(clip.compress("low").save(), Path)
-assert_type(clip.frames(dest="frames"), list[Path])
-assert_type(media.open("a.jpg").resize(width=100).crop((0, 0, 50, 50)), media.Media)
-assert_type(media.kind("a.jpg"), Optional[str])
+assert_type(media.sniff("a.jpg"), Optional[str])
 with media.open("a.mov") as opened:
     assert_type(opened, media.Media)
-clip.trim(0, 10)  # pyright: ignore[reportCallIssue]
-clip.frames(dest_dir="frames")  # pyright: ignore[reportCallIssue]
+clip.compress("low", "mp4")  # pyright: ignore[reportCallIssue]
 media.probe("a.jpg")  # pyright: ignore[reportAttributeAccessIssue]
 
-jar = cookies.load("cookies.txt").filter(domain="example.com")
+jar = cookies.load("cookies.txt").filter(domains="example.com")
 assert_type(jar, cookies.Jar)
-assert_type(jar.merge(cookies.from_browser("firefox")), cookies.Jar)
+assert_type(jar.merge(cookies.load("firefox")), cookies.Jar)
 assert_type(jar.header, str)
 assert_type(jar["sessionid"], str)
 assert_type(jar.save("out.txt"), Path)
 cookies.load("cookies.txt", domain="example.com")  # pyright: ignore[reportCallIssue]
+
+assert_type(fs.write("out.txt", data="hi"), Path)
+with fs.write("out.txt") as temp:
+    assert_type(temp, Path)
 
 
 class StringDomains(Source):

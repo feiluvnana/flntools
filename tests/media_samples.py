@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 FOLDER = Path(tempfile.mkdtemp(prefix="flntools-media-"))
 atexit.register(shutil.rmtree, FOLDER, True)
@@ -36,9 +37,10 @@ def ffmpeg() -> str | None:
 
 @functools.cache
 def encoders() -> frozenset[str]:
-    if not ffmpeg():
+    exe = ffmpeg()
+    if not exe:
         return frozenset()
-    text = subprocess.run([ffmpeg(), "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+    text = subprocess.run([exe, "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
     return frozenset(line.split()[1] for line in text.splitlines() if line.startswith(" ") and len(line.split()) > 1)
 
 
@@ -58,8 +60,9 @@ def fresh(name: str) -> Path:
 
 
 def run(*args: str) -> None:
-    assert ffmpeg(), "ffmpeg is needed for this sample"
-    subprocess.run([ffmpeg(), "-hide_banner", "-v", "error", "-y", *args], check=True, capture_output=True)
+    exe = ffmpeg()
+    assert exe, "ffmpeg is needed for this sample"
+    subprocess.run([exe, "-hide_banner", "-v", "error", "-y", *args], check=True, capture_output=True)
 
 
 TONE = ("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=1")
@@ -77,6 +80,7 @@ def sample(name: str) -> Path:
 
 @functools.cache
 def srgb_profile() -> bytes:
+    assert ImageCms is not None
     return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
 
 
@@ -87,6 +91,7 @@ def wide_profile() -> bytes:
 
 
 def _exif_jpeg(path: Path) -> None:
+    assert Image is not None
     image = Image.new("RGB", (80, 40), "red")
     image.paste((0, 0, 255), (0, 0, 40, 40))
     exif = Image.Exif()
@@ -104,6 +109,7 @@ def _exif_jpeg(path: Path) -> None:
 
 
 def _zero_jpeg(path: Path) -> None:
+    assert Image is not None
     exif = Image.Exif()
     exif.get_ifd(0x8769)[0x9003] = "0000:00:00 00:00:00"
     exif.get_ifd(0x8825).update({1: "N", 2: (0.0, 0.0, 0.0), 3: "E", 4: (0.0, 0.0, 0.0)})
@@ -111,16 +117,19 @@ def _zero_jpeg(path: Path) -> None:
 
 
 def _big_jpeg(path: Path) -> None:
+    assert Image is not None
     noise = Image.effect_noise((4000, 3000), 40).convert("RGB")
     noise.save(path, "JPEG", quality=95)
 
 
 def _animation(path: Path) -> None:
+    assert Image is not None
     frames = [Image.new("RGBA", (40, 30), color) for color in ("red", "green", "blue", "white")]
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=[100, 200, 100, 100], loop=0)
 
 
 def _noise_animation(path: Path) -> None:
+    assert Image is not None
     frames = [Image.effect_noise((200, 150), 60).convert("RGB") for _ in range(4)]
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=100, loop=0)
 
@@ -157,12 +166,17 @@ def _html(path: Path) -> None:
     path.write_bytes(b"\xef\xbb\xbf  <!doctype html><title>not found</title>")
 
 
+def _image(size: tuple[int, int], color: Any, *, mode: str = "RGB") -> Any:
+    assert Image is not None
+    return Image.new(mode, size, color)
+
+
 MAKERS = {
     "exif.jpg": _exif_jpeg,
     "zero.jpg": _zero_jpeg,
-    "srgb.jpg": lambda path: Image.new("RGB", (32, 32), "green").save(path, "JPEG", icc_profile=srgb_profile()),
-    "rgba.png": lambda path: Image.new("RGBA", (32, 32), (255, 0, 0, 0)).save(path),
-    "small.png": lambda path: Image.new("RGB", (100, 50), "blue").save(path, optimize=True),
+    "srgb.jpg": lambda path: _image((32, 32), "green").save(path, "JPEG", icc_profile=srgb_profile()),
+    "rgba.png": lambda path: _image((32, 32), (255, 0, 0, 0), mode="RGBA").save(path),
+    "small.png": lambda path: _image((100, 50), "blue").save(path, optimize=True),
     "noise.gif": lambda path: _noise_animation(path),
     "big.jpg": _big_jpeg,
     "anim.webp": _animation, "anim.gif": _animation, "anim.png": _animation,

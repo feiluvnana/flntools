@@ -7,13 +7,20 @@ import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-try:
+import shared
+
+if TYPE_CHECKING:
     import parsel
-    import shared
     from shared import selector
-except ImportError:  # the selector extra is missing
-    selector = None
+else:
+    try:
+        import parsel
+        from shared import selector
+    except ImportError:  # the selector extra is missing
+        parsel = None
+        selector = None
 
 HTML = """<html><head><title>t</title>
 <script id="__NEXT_DATA__" type="application/json">{"props": {"user": "someone"}}</script>

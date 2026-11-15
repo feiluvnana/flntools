@@ -93,11 +93,11 @@ class FakePyInstallerTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
         self.calls = []
-        self.fail = False
+        self.should_fail = False
         main = types.ModuleType("PyInstaller.__main__")
-        main.run = self.run_pyinstaller
+        setattr(main, "run", self.run_pyinstaller)
         package = types.ModuleType("PyInstaller")
-        package.__main__ = main
+        setattr(package, "__main__", main)
         patcher = mock.patch.dict(sys.modules, {"PyInstaller": package, "PyInstaller.__main__": main})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -107,7 +107,7 @@ class FakePyInstallerTest(unittest.TestCase):
         logger = logging.getLogger("PyInstaller")
         for number in range(30):
             logger.warning("step %d", number)
-        if self.fail:
+        if self.should_fail:
             logger.error("Unable to find module 'missing'")
             raise SystemExit(1)
         out, name = Path(values(argv, "--distpath")[0]), values(argv, "--name")[0]
@@ -125,7 +125,7 @@ class FakePyInstallerTest(unittest.TestCase):
         self.assertFalse((Path.cwd() / "tool.spec").exists())
 
     def test_a_failure_raises_with_pyinstallers_last_lines(self):
-        self.fail = True
+        self.should_fail = True
         with self.assertRaises(bundler.BuildError) as caught:
             bundler.build("tool.py", name="tool", dest=self.root / "dist")
         self.assertIsInstance(caught.exception, RuntimeError)
@@ -173,7 +173,7 @@ class RealBuildTest(unittest.TestCase):
             video.write_bytes(sample("v.mp4").read_bytes())
             script = Path(folder) / "probe.py"
             script.write_text("import sys\nfrom shared import media\n"
-                              "print(media.open(sys.argv[1]).kind, media.open(sys.argv[2]).codec)\n")
+                              "print(media.open(sys.argv[1]).info.kind, media.open(sys.argv[2]).info.video)\n")
             built = bundler.build(script, name="probe", dest=Path(folder) / "dist")
             program = built / ("probe.exe" if sys.platform == "win32" else "probe")
             result = subprocess.run([str(program), str(photo), str(video)], capture_output=True, text=True,
@@ -198,11 +198,14 @@ class RealBuildTest(unittest.TestCase):
             script = Path(folder) / "tiny.py"
             script.write_text(
                 "from pathlib import Path\n"
-                "from shared import archive, kv, worker\n"
-                "with kv.open('state.db') as store:\n"
-                "    store['n'] = 2\n"
-                "    factor = store['n']\n"
-                "print(worker.map(lambda n: n * factor, [1, 2, 3]))\n"
+                "from shared import archive, store, worker\n"
+                "with store.open('state.db') as db:\n"
+                "    db.set('n', 2)\n"
+                "    factor = db.get('n')\n"
+                "with worker.Pool() as pool:\n"
+                "    for n in (1, 2, 3):\n"
+                "        pool.submit(lambda x: x * factor, n)\n"
+                "    print([r.value for r in pool.join()])\n"
                 "Path('note.txt').write_text('hello')\n"
                 "archive.pack('note.txt', 'note.7z', password='pw')\n"
                 "print(Path(archive.unpack('note.7z', 'out', password='pw')[0]).read_text())\n")
