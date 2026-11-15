@@ -181,6 +181,7 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
                 "-y", "-i", str(streams[0]), "-i", str(streams[1]),
                 "-c", "copy", *flags, "-f", fmt, str(part),
             )
+        row.caption("merged")
         return dest
     finally:
         for stream in streams:
@@ -287,7 +288,9 @@ class _Row:
     def start(self, total: float | None) -> None:
         with self._lock:
             if self.bar is None:
-                self.bar = self.stack.enter_context(ui.progress(self.label, total=total))
+                self.bar = self.stack.enter_context(
+                    ui.progress(self.label, total=total, unit="bytes"),
+                )
                 return
             self.base = self.bar.count
             self.bar.total = (

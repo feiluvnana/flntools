@@ -173,8 +173,8 @@ def fetch(url: str, *, method: str = "GET", headers: Mapping[str, str] | None = 
             if attempt >= attempts:
                 raise
             seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
-            ui.debug("retry {n} of {url} in {seconds:g} s: {reason}",
-                     n=attempt, url=_where(url), seconds=seconds, reason=error)
+            ui.debug("retry {n}/{total} in {seconds:g}s: {reason}",
+                     n=attempt, total=attempts, seconds=seconds, reason=error)
             clock.sleep(seconds)
             attempt += 1
 
@@ -311,8 +311,8 @@ class Client:
                 if attempt >= attempts:
                     raise
                 seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
-                ui.debug("retry {n} of {url} in {seconds:g} s: {error}", n=attempt,
-                         url=_where(url), seconds=seconds, error=error)
+                ui.debug("retry {n}/{total} in {seconds:g}s: {reason}", n=attempt,
+                         total=attempts, seconds=seconds, reason=error)
                 if not clock.sleep(seconds, stop=self._stop):
                     raise StoppedError(f"{host}: stopped") from None
                 attempt += 1
@@ -404,8 +404,8 @@ def _download_mirror(
             if attempt >= attempts:
                 raise
             seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
-            ui.debug("retry {n} of {url} in {seconds:g} s: {reason}",
-                     n=attempt, url=_where(url), seconds=seconds, reason=error)
+            ui.debug("retry {n}/{total} in {seconds:g}s: {reason}",
+                     n=attempt, total=attempts, seconds=seconds, reason=error)
             if not clock.sleep(seconds, stop=stop):
                 raise StoppedError(f"{_where(url)}: stopped") from None
             attempt += 1

@@ -24,7 +24,7 @@ import msgspec
 
 from flnd import targets
 from flnd.common import net, paths
-from flnd.options import Options
+from flnd.options import Options, selected
 from flnd.site import SourceRun, TargetSite
 from flnd.source import (
     Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site, Source, Target,
@@ -234,7 +234,10 @@ class Board:
             line.row.label = label
             line.row.count = completed
             if done:
-                line.row.finish()
+                if line.counts.failed:
+                    line.row.fail()
+                else:
+                    line.row.finish()
 
     def _label(self, line: _Line) -> str:
         """Format one status line's compact summary label."""
@@ -728,6 +731,8 @@ class Downloads:
         self.source, self.settings = run.source, run.settings
         self._pool: worker.Pool | None = None
         self._written: dict[str, Path] = {}
+        self._failed: dict[str, dict[str, Any]] = {}
+        self._succeeded: set[str] = set()
         self._writing = threading.Lock()
         self._changed = threading.Condition()
         self._pending = 0
@@ -741,6 +746,18 @@ class Downloads:
         """Return each file written so far by its history key."""
         with self._writing:
             return dict(self._written)
+
+    @property
+    def failed(self) -> dict[str, dict[str, Any]]:
+        """Return each failed serializable download request by its history key."""
+        with self._writing:
+            return dict(self._failed)
+
+    @property
+    def succeeded(self) -> set[str]:
+        """Return history keys of files downloaded in this run."""
+        with self._writing:
+            return set(self._succeeded)
 
     def submit(self, queued: _Queued) -> bool:
         """Submit one file for download once pool capacity allows; False on stop."""
@@ -867,6 +884,7 @@ class Downloads:
                 refreshed = self._expired(queued)
                 saved = self._fetch(queued, refreshed, received) if refreshed is not None else None
         except FetchError as error:
+            self._record_failed(queued)
             self._count(queued, downloading=-1, failed=1)
             ui.error("{name}: {error}", name=placed.path, error=error)
             ui.debug("{name}: {chain}", name=placed.path, chain=causes(error))
@@ -877,6 +895,7 @@ class Downloads:
                 return False
             raise
         except BaseException:
+            self._record_failed(queued)
             self._count(queued, downloading=-1, failed=1)
             raise
         if saved is None:
@@ -983,13 +1002,21 @@ class Downloads:
             finished.row.update(paths.stamp(path))
             with self._writing:
                 self._written[queued.key] = path
+                self._succeeded.add(queued.key)
+                self._failed.pop(queued.key, None)
             self.settings.history[queued.key] = finished.row
         except BaseException:
             with self._writing:
                 self._written.pop(queued.key, None)
+                self._succeeded.discard(queued.key)
             self._count(queued, downloading=-1, failed=1)
             raise
         self._count(queued, downloading=-1, saved=1, bytes=finished.row.get("size", 0))
+
+    def _record_failed(self, queued: _Queued) -> None:
+        if (entry := _serialize_failed(queued)) is not None:
+            with self._writing:
+                self._failed[queued.key] = entry
 
     def _sync_fetch(self, fetch: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a `Fetch` callable so coroutines run on the source's event loop."""
@@ -1014,6 +1041,7 @@ def _run_download(
     run: SourceRun, target: Target, board: Board, options: Options
 ) -> TargetReport:
     """Execute the locked download lifecycle for `target`."""
+    started = time.monotonic()
     site = TargetSite(run, target, time=Range(options.since, options.until))
     ledger = Ledger(run, site, target, board, options=options)
     downloads = Downloads(run, target, board)
@@ -1022,6 +1050,7 @@ def _run_download(
     saved = run.settings.targets
     listed = {} if options.again else targets.listed(saved, target)
     resumes: dict[str, Resume] = {}
+    _retry_failed(work, run, target, options)
     error = _execute_listing(work, run, site, target, options, listed, resumes, complete)
     written = downloads.finish(error)
     ledger.link_queued(downloads.written)
@@ -1032,8 +1061,77 @@ def _run_download(
     if not options.query:
         targets.keep_cursors(saved, target, cursors)
         targets.complete(saved, target, complete)
+        targets.keep_failed(
+            saved, target, failed=downloads.failed, succeeded=downloads.succeeded,
+        )
     report = TargetReport(target, written, board.totals(target).skipped)
-    return _ended(run, board, report, error, complete=", ".join(complete) or "none")
+    return _ended(
+        run, board, report, error, complete=", ".join(complete) or "none", started=started,
+    )
+
+
+def _serialize_failed(queued: _Queued) -> dict[str, Any] | None:
+    """Serialize a failed `_Queued` download with a string URL for direct retry."""
+    placed = queued.placed
+    if not isinstance(placed.file.url, str):
+        return None
+    posted = day(placed.post.date)
+    return {
+        "url": placed.file.url,
+        "audio": placed.file.audio,
+        "name": placed.file.name,
+        "size": placed.file.size,
+        "dest": str(queued.dest),
+        "path": placed.path,
+        "kind": placed.kind,
+        "id": placed.post.id,
+        "category": placed.post.category,
+        "date": posted.isoformat() if posted is not None else None,
+        "headers": dict(placed.post.headers) if placed.post.headers else None,
+        "estimated": queued.estimated,
+        "num": placed.num,
+        "count": placed.values.get("count", 1),
+    }
+
+
+def _retry_failed(work: _Work, run: SourceRun, target: Target, options: Options) -> None:
+    """Enqueue previously failed downloads for `target` before listing."""
+    if run.settings.dry or options.again:
+        return
+    pending = targets.failed(run.settings.targets, target)
+    if not pending:
+        return
+    allowed = set(selected(options, type(run.source))) if options.categories else None
+    for item_key, entry in pending.items():
+        category = str(entry.get("category") or "")
+        if allowed is not None and category and category not in allowed:
+            continue
+        url = entry.get("url")
+        dest_raw = entry.get("dest")
+        if not isinstance(url, str) or not isinstance(dest_raw, str):
+            continue
+        dest = Path(dest_raw)
+        if work.ledger._held(dest, item_key) is not None:
+            work.downloads._succeeded.add(item_key)
+            continue
+        post = Post(
+            str(entry.get("id") or ""), (),
+            date=entry.get("date"), headers=entry.get("headers") or {},
+        ).filed(category)
+        file = File(
+            url, audio=entry.get("audio"), name=entry.get("name"), size=entry.get("size"),
+        )
+        path = str(entry.get("path") or dest.name)
+        placed = Placed(
+            post=post, file=file, num=int(entry.get("num") or 0),
+            path=path, key=item_key, kind=entry.get("kind"),
+            values={"count": entry.get("count", 1)},
+        )
+        work.ledger._queued[dest] = path
+        work.ledger._queued[item_key] = path
+        work.downloads.submit(
+            _Queued(placed, dest, key=item_key, estimated=bool(entry.get("estimated"))),
+        )
 
 
 def _execute_listing(
@@ -1062,7 +1160,7 @@ def _execute_listing(
 
 def _ended(
     run: SourceRun, board: Board, report: TargetReport, error: BaseException | None, *,
-    complete: str,
+    complete: str, started: float,
 ) -> TargetReport:
     """Finalize `board` lines and return `TargetReport` with any error."""
     target = report.target
@@ -1078,12 +1176,29 @@ def _ended(
         board.end(target, failed=True)
         return replace(report, error=STOPPED)
     board.end(target, failed=False)
+    _summary(board.totals(target), target, time.monotonic() - started)
     ui.debug(
         "{target}: {written} written, {skipped} skipped; complete: {complete}",
         target=str(report.target), written=len(report.written),
         skipped=report.skipped, complete=complete,
     )
     return report
+
+
+def _summary(totals: Counts, target: Target, seconds: float) -> None:
+    """Log one line for a finished target: files saved, size, skips, failures and time."""
+    parts = [text.fmt.count(totals.saved, "file") + " saved"] if totals.saved else []
+    if totals.bytes:
+        parts.append(text.fmt.size(totals.bytes))
+    if totals.linked:
+        parts.append(f"{totals.linked} linked")
+    if totals.skipped:
+        parts.append(f"{totals.skipped} skipped")
+    if totals.failed:
+        parts.append(f"{totals.failed} failed (retried next run)")
+    body = ", ".join(parts) or "nothing new"
+    line = f"{body} in {text.fmt.duration(seconds)}"
+    (ui.warn if totals.failed else ui.ok)("{target}: {line}", target=str(target), line=line)
 
 
 def causes(error: BaseException) -> str:

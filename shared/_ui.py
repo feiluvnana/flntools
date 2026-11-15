@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import IO, Any, Literal
+from urllib.parse import urlsplit
 
 from rich.console import Console as RichConsole
 from rich.control import strip_control_codes
@@ -24,6 +25,7 @@ from rich.text import Text
 
 import shared
 from shared import _clock as clock
+from shared._text import fmt
 
 __all__ = ["Error", "Group", "Row", "UI", "ui"]
 
@@ -63,6 +65,7 @@ BAR_CELLS = 20
 _ESCAPE = re.compile(
     r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]"
 )
+_URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
 
 
 class Error(shared.Error):
@@ -134,11 +137,15 @@ def _detect_unicode(stream: Any) -> bool:
 class Row:
     """A single progress row inside a `Group` or `ui.progress`."""
 
-    def __init__(self, label: str, total: float | None, group: Group) -> None:
+    def __init__(
+        self, label: str, total: float | None, group: Group, unit: str | None = None,
+    ) -> None:
         self.label = label
         self._total = total
         self._count = 0.0
         self._group = group
+        self._unit = unit
+        self._reason: str | None = None
         self._outcome: Level | None = None
         self._task: TaskID = group._add_task(label, total)
 
@@ -180,9 +187,10 @@ class Row:
             self._group._update(self._task, completed=self._total)
         self._group._stop_task(self._task)
 
-    def fail(self) -> None:
-        """Mark this row failed."""
+    def fail(self, reason: str | None = None) -> None:
+        """Mark this row failed, showing `reason` after it."""
         self._outcome = "error"
+        self._reason = reason
         self._group._stop_task(self._task)
 
     def part(self) -> Callable[[int, int | None], None]:
@@ -201,14 +209,18 @@ class Row:
         if self._total is None:
             mark = owner._spinner() if self._outcome is None else owner._glyph(LOG_GLYPHS[level])
             text.append(mark, style=role)
-            text.append(" " + self.label, style="text")
-            return text
-        text.append(owner._glyph(LOG_GLYPHS[level]), style=role)
-        text.append(" ")
-        text.append_text(_render_bar(owner, self._count, self._total, role))
-        text.append(" " + self.label, style="text")
-        if count_str := _format_count(self._count, self._total, level):
-            text.append(" " + count_str, style="size")
+            text.append(" ")
+            text.append_text(_label_text(self.label))
+        else:
+            text.append(owner._glyph(LOG_GLYPHS[level]), style=role)
+            text.append(" ")
+            text.append_text(_render_bar(owner, self._count, self._total, role))
+            text.append(" ")
+            text.append_text(_label_text(self.label))
+            if count_str := _format_count(self._count, self._total, level, self._unit):
+                text.append(" " + count_str, style="size")
+        if self._reason:
+            text.append(" — " + self._reason, style="dim error")
         return text
 
 
@@ -235,16 +247,35 @@ def _render_bar(owner: UI, count: float, total: float, role: str) -> Text:
     return Text.assemble((full, role), (empty, "faint"))
 
 
-def _format_count(count: float, total: float | None, level: str) -> str:
+def _label_text(label: str) -> Text:
+    """A path label with its folders dim and its file name in the normal color."""
+    folder, slash, name = label.rpartition("/")
+    if not slash or " | " in label:
+        return Text(label, style="text")
+    return Text.assemble((folder + slash, "info"), (name, "text"))
+
+
+def _format_count(
+    count: float, total: float | None, level: str, unit: str | None = None,
+) -> str:
+    def one(value: float) -> str:
+        if unit == "bytes":
+            return fmt.size(value)
+        return str(int(value) if float(value).is_integer() else value)
+
     if level == "ok" and total is not None:
-        return str(int(total) if float(total).is_integer() else total)
+        return one(total)
     if total is not None:
-        c = int(count) if float(count).is_integer() else count
-        t = int(total) if float(total).is_integer() else total
-        return f"{c}/{t}"
-    if count > 0:
-        return str(int(count) if float(count).is_integer() else count)
-    return ""
+        return f"{one(count)}/{one(total)}"
+    return one(count) if count > 0 else ""
+
+
+def _brief(error: BaseException, *, limit: int = 100) -> str:
+    """One line naming `error`, with each URL cut to its host."""
+    first = (str(error).strip().splitlines() or [""])[0]
+    first = _URL.sub(lambda match: urlsplit(match.group()).netloc or match.group(), first)
+    message = f"{type(error).__name__}: {first}" if first else type(error).__name__
+    return message if len(message) <= limit else message[: limit - 1] + "…"
 
 
 class Group:
@@ -302,9 +333,11 @@ class Group:
         with self._lock:
             self._progress.stop_task(task_id)
 
-    def add(self, label: str, *, total: float | None = None) -> Row:
-        """Add a new `Row` to this group."""
-        row = Row(label, total, self)
+    def add(
+        self, label: str, *, total: float | None = None, unit: str | None = None,
+    ) -> Row:
+        """Add a new `Row` to this group; `unit="bytes"` shows its counts as sizes."""
+        row = Row(label, total, self, unit)
         with self._lock:
             self._rows.append(row)
             self._tasks[row._task] = row
@@ -461,16 +494,21 @@ class UI:
         grp._stop("ok")
 
     @contextmanager
-    def progress(self, label: str, *, total: float | None = None) -> Iterator[Row]:
-        """Context manager yielding a single `Row` progress bar."""
+    def progress(
+        self, label: str, *, total: float | None = None, unit: str | None = None,
+    ) -> Iterator[Row]:
+        """Context manager yielding a single `Row` progress bar; `unit="bytes"` shows sizes."""
         with self.group() as grp:
-            row = grp.add(label, total=total)
+            row = grp.add(label, total=total, unit=unit)
             try:
                 yield row
                 if row._outcome is None:
                     row.finish()
-            except BaseException:
-                row.fail()
+            except BaseException as error:
+                if isinstance(error, KeyboardInterrupt):
+                    row.fail("stopped")
+                else:
+                    row.fail(_brief(error))
                 raise
 
 

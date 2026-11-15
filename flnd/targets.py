@@ -19,6 +19,7 @@ SEEN = "seen"
 QUERY = "query"
 COMPLETE = "complete"
 CURSORS = "cursors"
+FAILED = "failed"
 ALL = "all"
 
 COMMON_FIELDS = frozenset({
@@ -83,7 +84,7 @@ def _kept_fields(old: Any, options: Options) -> dict[str, Any]:
     """Extract preserved `complete`, `cursors`, `seen`, and `query` fields for `record`."""
     kept: dict[str, Any] = {}
     if isinstance(old, dict):
-        for name in (COMPLETE, CURSORS):
+        for name in (COMPLETE, CURSORS, FAILED):
             if isinstance(old.get(name), dict) and old[name]:
                 kept[name] = old[name]
         if isinstance(old.get(SEEN), list) and old[SEEN]:
@@ -199,6 +200,43 @@ def keep_cursors(
         row[CURSORS] = kept
     else:
         row.pop(CURSORS, None)
+    saved[key(target)] = row
+
+
+def failed(saved: Mapping[str, Any], target: Target) -> dict[str, dict[str, Any]]:
+    """Return saved failed download requests for `target`, keyed by history key."""
+    found = _row(saved, target).get(FAILED)
+    if not isinstance(found, dict):
+        return {}
+    return {str(k): dict(v) for k, v in found.items() if isinstance(v, dict)}
+
+
+def keep_failed(
+    saved: MutableMapping[str, Any],
+    target: Target,
+    *,
+    failed: Mapping[str, Mapping[str, Any]],
+    succeeded: Iterable[str],
+) -> None:
+    """Update `target`'s pending failed requests in `targets.db`."""
+    done = set(succeeded)
+    if not failed and not done:
+        return
+    row = _row(saved, target)
+    found = row.get(FAILED)
+    current = (
+        {str(k): dict(v) for k, v in found.items() if isinstance(v, dict)}
+        if isinstance(found, dict)
+        else {}
+    )
+    for item_key in done:
+        current.pop(item_key, None)
+    for item_key, entry in failed.items():
+        current[item_key] = dict(entry)
+    if current:
+        row[FAILED] = current
+    else:
+        row.pop(FAILED, None)
     saved[key(target)] = row
 
 

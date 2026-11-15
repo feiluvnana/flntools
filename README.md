@@ -214,7 +214,7 @@ flnd auth logout ins tik    # removes those logins
 flnd auth logout all        # removes every login
 ```
 
-A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/metadata/secrets.json`
+A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/metadata/secrets.db`
 with every other login; the file you give is read once and never copied. A login saved by an earlier
 version as `.flnd/cookies/<source>.txt` moves into it on the next run, so there's no need to log in again.
 The key is `.flnd/metadata/secret.key`, so keep `.flnd/` as private as the logins in it.
@@ -246,7 +246,7 @@ with flnd.open("ins") as site:
 ```
 .flnd/
 ├── media/       # every downloaded file, laid out as below
-├── metadata/    # history.json, targets.json, sources.json, secrets.json and secret.key
+├── metadata/    # history.db, targets.db, sources.db, secrets.db (JSON files) and secret.key
 └── log/         # one log per download or sync, kept 30 days
 ```
 

@@ -193,11 +193,35 @@ class SavedTest(JobCase):
         before = len(listed)
         self.requests.clear()
         self.run_engine(Carousel, targets=["crs:example_user"])
-        self.assertEqual(len(listed), before + 1)
+        self.assertEqual(len(listed), before)
         self.assertEqual([str(request.url) for request in self.requests], [f"{CDN}/c1.jpg"])
         self.requests.clear()
         self.run_engine(Carousel, targets=["crs:example_user"])
-        self.assertEqual((len(listed), self.requests), (before + 1, []))
+        self.assertEqual((len(listed), self.requests), (before, []))
+
+    def test_failed_file_is_retried_directly_under_sync(self):
+        class Feed(Source):
+            code, name, domains = "fed", "Feed", ("example.com",)
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield Post("new1", [File(f"{CDN}/new1.jpg")], date="2026-02-01")
+                yield Post("old1", [File(f"{CDN}/old1.jpg")], date="2026-01-01")
+
+        self.routes[f"{CDN}/old1.jpg"] = httpx.Response(500)
+        self.run_engine(Feed, targets=["fed:example_user"])
+        self.assertIn("fed:new1_0", self.history())
+        self.assertNotIn("fed:old1_0", self.history())
+
+        del self.routes[f"{CDN}/old1.jpg"]
+        self.requests.clear()
+        self.run_engine(Feed, targets=["fed:example_user"], options=Options(stop_at_saved=True))
+        self.assertIn("fed:old1_0", self.history())
+        self.assertEqual([str(r.url) for r in self.requests], [f"{CDN}/old1.jpg"])
 
     def test_a_file_queued_twice_is_downloaded_once(self):
         class Twice(Source):

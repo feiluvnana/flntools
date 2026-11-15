@@ -402,12 +402,12 @@ shared.text.fold(text: str) -> str
 shared.ui: UI
 shared.ui.Error(shared.Error)
 shared.ui.Group(owner: UI, title: str)
-shared.ui.Group.add(label: str, *, total: float | None = None) -> Row
+shared.ui.Group.add(label: str, *, total: float | None = None, unit: str | None = None) -> Row
 shared.ui.Group.title: attribute
-shared.ui.Row(label: str, total: float | None, group: Group)
+shared.ui.Row(label: str, total: float | None, group: Group, unit: str | None = None)
 shared.ui.Row.advance(n: float = 1) -> None
 shared.ui.Row.count: property, settable -> float
-shared.ui.Row.fail() -> None
+shared.ui.Row.fail(reason: str | None = None) -> None
 shared.ui.Row.finish() -> None
 shared.ui.Row.label: attribute
 shared.ui.Row.part() -> Callable[[int, int | None], None]
@@ -416,12 +416,12 @@ shared.ui.Row.total: property, settable -> float | None
 shared.ui.UI()
 shared.ui.UI.Error(shared.Error)
 shared.ui.UI.Group(owner: UI, title: str)
-shared.ui.UI.Group.add(label: str, *, total: float | None = None) -> Row
+shared.ui.UI.Group.add(label: str, *, total: float | None = None, unit: str | None = None) -> Row
 shared.ui.UI.Group.title: attribute
-shared.ui.UI.Row(label: str, total: float | None, group: Group)
+shared.ui.UI.Row(label: str, total: float | None, group: Group, unit: str | None = None)
 shared.ui.UI.Row.advance(n: float = 1) -> None
 shared.ui.UI.Row.count: property, settable -> float
-shared.ui.UI.Row.fail() -> None
+shared.ui.UI.Row.fail(reason: str | None = None) -> None
 shared.ui.UI.Row.finish() -> None
 shared.ui.UI.Row.label: attribute
 shared.ui.UI.Row.part() -> Callable[[int, int | None], None]
@@ -433,7 +433,7 @@ shared.ui.UI.group(title: str = '') -> Iterator[Group]
 shared.ui.UI.info(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.ui.UI.level: property, settable -> Level
 shared.ui.UI.ok(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.ui.UI.progress(label: str, *, total: float | None = None) -> Iterator[Row]
+shared.ui.UI.progress(label: str, *, total: float | None = None, unit: str | None = None) -> Iterator[Row]
 shared.ui.UI.raw: property -> RichConsole
 shared.ui.UI.scope(*, color: str | bool | None = None, dest: IO[str] | None = None, width: int | None = None, level: Level | None = None) -> Iterator[UI]
 shared.ui.UI.warn(message: str = '', /, *args: Any, **fields: Any) -> None
@@ -443,7 +443,7 @@ shared.ui.group(title: str = '') -> Iterator[Group]
 shared.ui.info(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.ui.level: property, settable -> Level
 shared.ui.ok(message: str = '', /, *args: Any, **fields: Any) -> None
-shared.ui.progress(label: str, *, total: float | None = None) -> Iterator[Row]
+shared.ui.progress(label: str, *, total: float | None = None, unit: str | None = None) -> Iterator[Row]
 shared.ui.raw: property -> RichConsole
 shared.ui.scope(*, color: str | bool | None = None, dest: IO[str] | None = None, width: int | None = None, level: Level | None = None) -> Iterator[UI]
 shared.ui.warn(message: str = '', /, *args: Any, **fields: Any) -> None
