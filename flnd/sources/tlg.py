@@ -480,7 +480,7 @@ def read_telegram_web() -> dict[str, str]:
             try:
                 return page.raw.evaluate("Object.assign({}, localStorage)")
             # What evaluate raises when the tab navigated away or closed meanwhile.
-            except browser.Error as error:
+            except (browser.Error, Exception) as error:
                 raise LoginError(err_msg.format(error=error)) from None
     except (browser.Error, OSError, RuntimeError, ValueError) as error:
         raise LoginError(err_msg.format(error=error)) from None

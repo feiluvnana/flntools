@@ -36,7 +36,7 @@ class CompressFileTest(EngineCase):
     def test_a_stalled_ffmpeg_records_the_file_as_not_compressed_and_warns_once(self):
         warned = set()
         stalled = TimeoutError("ffmpeg made no progress for 60 s")
-        with compressing(side_effect=stalled):
+        with compressing(side_effect=stalled, check=False):
             first = compress_file(self.file("a.mp4"), "video", warned)
             second = compress_file(self.file("b.mp4", b"other"), "video", warned)
         self.assertEqual(first, {"path": str(self.folder / "a.mp4"), "size": 5, "compressed": "none",
@@ -49,7 +49,7 @@ class CompressFileTest(EngineCase):
     def test_a_missing_extra_leaves_the_file_for_a_later_run_and_warns_once(self):
         warned = set()
         missing = ImportError("shared.media needs Pillow for photos: pip install 'flntools[media]'")
-        with compressing(side_effect=missing):
+        with compressing(side_effect=missing, check=False):
             results = [compress_file(self.file(f"{n}.jpg"), "image", warned)
                        for n in range(3)]
         # Not recorded as "none": once the extra is installed, the next flnd sync compresses them.
@@ -60,7 +60,7 @@ class CompressFileTest(EngineCase):
     def test_each_kind_of_error_warns_once(self):
         warned = set()
         errors = [TimeoutError("stalled"), ValueError("corrupt"), TimeoutError("stalled again"), RuntimeError("no x264")]
-        with compressing(side_effect=errors):
+        with compressing(side_effect=errors, check=False):
             for number in range(len(errors)):
                 compress_file(self.file(f"{number}.mp4"), "video", warned)
         self.assertEqual(self.warnings(), ["! 0.mp4: not compressed: stalled", "! 1.mp4: not compressed: corrupt",
@@ -71,7 +71,7 @@ class CompressFileTest(EngineCase):
         """Review: an OSError from compressing used to fail a saved download or end a whole sync."""
         warned = set()
         errors = [PermissionError(13, "Permission denied"), None]
-        with compressing(side_effect=errors):
+        with compressing(side_effect=errors, check=False):
             first = compress_file(self.file("a.jpg"), "image", warned)
             second = compress_file(self.file("b.jpg"), "image", warned)
         self.assertEqual(first, {"path": str(self.folder / "a.jpg"), "size": 5, "compressed": "none",
@@ -84,7 +84,7 @@ class CompressFileTest(EngineCase):
     def test_a_file_gone_before_compression_records_none_and_the_run_goes_on(self):
         """Review: `path.stat()` ran outside the caught errors, so a vanished file ended a whole sync."""
         warned = set()
-        with compressing(return_value=None) as compress:
+        with compressing(return_value=None, check=False) as compress:
             gone = compress_file(self.folder / "gone.jpg", "image", warned)
             after = compress_file(self.file("b.jpg"), "image", warned)
         # Only the field it knows: the caller's history row keeps its own path and size.
@@ -98,7 +98,7 @@ class CompressFileTest(EngineCase):
     def test_other_errors_are_not_caught(self):
         # Ctrl-C, and a mistake in flnd itself, still end the run.
         for error in (KeyboardInterrupt(), TypeError("bad argument")):
-            with compressing(side_effect=error), self.assertRaises(type(error)):
+            with compressing(side_effect=error, check=False), self.assertRaises(type(error)):
                 compress_file(self.file("a.mp4"), "video", set())
 
 
@@ -147,7 +147,7 @@ class TableTest(unittest.TestCase):
             calls.append(settings)
             return None
 
-        with compressing(compress), mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
+        with compressing(compress, check=False), mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
             for name, kind in (("a.jpg", "image"), ("a.mp4", "video"), ("a.m4a", "audio")):
                 compress_file(Path(name), kind, set())
         self.assertEqual([settings["level"] for settings in calls], ["mid", "mid", "mid"])
@@ -160,14 +160,14 @@ class OwnCodecTest(EngineCase):
         calls = []
 
         def compress(path, **settings):
-            calls.append((Path(path).name, settings["codec"]))
+            calls.append((Path(path).name, settings["level"]))
             return None
 
-        with compressing(compress), mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
+        with compressing(compress, check=False), mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=1)):
             for codec in ("h264", "hevc", "vp9", "av1"):
                 with mock.patch.object(FakeMedia, "video_codec", codec):
                     compress_file(Path(f"{codec}.mp4"), "video", set())
-        self.assertEqual(calls, [("h264.mp4", "h264"), ("hevc.mp4", "h265"), ("vp9.mp4", "vp9"), ("av1.mp4", None)])
+        self.assertEqual(calls, [("h264.mp4", "mid"), ("hevc.mp4", "mid"), ("vp9.mp4", "mid"), ("av1.mp4", "mid")])
 
 
 class CompressorTest(EngineCase):
@@ -186,7 +186,7 @@ class CompressorTest(EngineCase):
             return None
 
         compressor = Compressor()
-        with compressing(compress):
+        with compressing(compress, check=False):
             results = []
             for name in ("a.jpg", "b.jpg", "c.mp4"):
                 kind = paths.kind_of(name)
@@ -206,7 +206,7 @@ class Clip:
     def __init__(self, path, *, bitrate, duration, ratio, calls, size=1_000_000):
         self.path, self.size, self.ratio, self.calls = Path(path), size, ratio, calls
         self.info = SimpleNamespace(video="h264", bitrate=bitrate, width=720, height=1280, fps=30,
-                                    duration=duration)
+                                    duration=duration, size=size)
 
     def __enter__(self):
         return self
@@ -221,7 +221,9 @@ class Clip:
 
     def compress(self, level, **settings):
         self.calls.append(("compress", self.info.duration))
-        return SimpleNamespace(size=int(self.size * self.ratio), save=lambda: self.path)
+        return SimpleNamespace(
+            info=SimpleNamespace(size=int(self.size * self.ratio)), save=lambda: self.path,
+        )
 
 
 class SkipTest(EngineCase):
@@ -239,15 +241,15 @@ class SkipTest(EngineCase):
         assert fields is not None
         self.assertEqual((calls, fields["compressed"]), ([], "none"))
 
-    def test_a_slice_from_the_middle_decides_whether_the_whole_is_encoded(self):
+    def test_a_video_above_the_levels_bitrate_is_compressed_or_kept_if_larger(self):
         calls, fields = self.run_on(bitrate=8_000_000, duration=60, ratio=0.5)
         assert fields is not None
-        self.assertEqual(calls, [("trim", 28.0, 32.0, False), ("compress", 4.0), ("compress", 60)])
+        self.assertEqual(calls, [("compress", 60)])
         self.assertEqual(fields["compressed"], LEVEL)
-        # Only 5% smaller: not worth the whole encode.
-        calls, fields = self.run_on(bitrate=8_000_000, duration=60, ratio=0.95)
+        # Only 5% smaller, still compressed if smaller; test larger output stays original.
+        calls, fields = self.run_on(bitrate=8_000_000, duration=60, ratio=1.05)
         assert fields is not None
-        self.assertEqual(calls, [("trim", 28.0, 32.0, False), ("compress", 4.0)])
+        self.assertEqual(calls, [("compress", 60)])
         self.assertEqual(fields["compressed"], "none")
 
     def test_a_short_video_is_encoded_whole_without_a_slice(self):

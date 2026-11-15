@@ -291,9 +291,14 @@ def _validate_from(
             raise cli.UsageError(
                 f"--from applies to profiles and chats; {target} is one post, downloaded whole"
             )
-    known = ({cat for _, route in routes for cat in _route_from(route)} if routes
-             else {cat for src in by_code.values() for route in src.routes
-                   for cat in _route_from(route)})
+    if routes:
+        known = {cat for target, route in routes for cat in (
+            {c for r in by_code[target.source].routes for c in _route_from(r)}
+            if route.discovers else _route_from(route)
+        )}
+    else:
+        known = {cat for src in by_code.values() for route in src.routes
+                 for cat in _route_from(route)}
     for entry in raw:
         _check_from_entry(entry, by_code, known)
 

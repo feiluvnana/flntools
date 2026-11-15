@@ -372,7 +372,7 @@ def _resolve_name(
         return formatted + extension
     if file.content is None and PurePosixPath(file.name).stem in _stems(filename, values):
         return formatted + PurePosixPath(file.name).suffix
-    return text.clean.filename(file.name)
+    return text.clean.filename(file.name, max_bytes=200)
 
 
 def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:

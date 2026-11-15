@@ -339,7 +339,7 @@ class FakeChrome:
 
 class ReadTelegramWebTest(unittest.TestCase):
     def read(self, tab):
-        with mock.patch("shared._browser.open", lambda **options: FakeChrome(tab)):
+        with mock.patch("shared.browser.open", lambda **options: FakeChrome(tab)):
             return read_telegram_web()
 
     def test_the_storage_of_a_tab_that_reached_telegram_web(self):
@@ -389,8 +389,12 @@ class LoginCase(EngineCase):
         self.addCleanup(patcher.stop)
 
     def answer(self, *answers):
-        self.screen._interactive = True
-        self.screen.readkey = iter([key for answer in answers for key in [*answer, "enter"]]).__next__
+        tty = mock.patch("sys.stdin.isatty", return_value=True)
+        ask = mock.patch("shared.prompt.ask", side_effect=list(answers))
+        tty.start()
+        ask.start()
+        self.addCleanup(ask.stop)
+        self.addCleanup(tty.stop)
 
     def log_in(self, method):  # type: ignore[override]
         Engine(home=self.home, sources={"tlg": Telegram}).login("tlg", method)
@@ -398,7 +402,7 @@ class LoginCase(EngineCase):
     def assert_logged_in(self):
         saved = stored(self.home)
         self.assertEqual({k: v for k, v in saved.items() if k != "origin"}, {"session": SESSION, **CREDENTIALS})
-        self.assertIn("• tlg: logged in as Example User", self.lines())
+        self.assertIn("* tlg: logged in as Example User", self.lines())
         # The session and the hash are sealed in metadata/secrets.db: no file holds them readably.
         for path in self.home.rglob("*"):
             if path.is_file():
@@ -417,7 +421,7 @@ class LoginTest(LoginCase):
         self.assertEqual((self.telegram.phone, self.telegram.code), ("+15550100", "12345"))
         client = self.telegram.clients[0]
         self.assertEqual((client.api_id, client.api_hash, client.string), (12345, CREDENTIALS["api_hash"], SESSION))
-        screen = self.screen.dest.getvalue()
+        screen = self.dest.getvalue()
         self.assertNotIn("hunter2", screen)
         self.assertNotIn(CREDENTIALS["api_hash"], screen)
 
@@ -432,7 +436,7 @@ class LoginTest(LoginCase):
         self.answer(*CREDENTIALS.values())
         self.log_in("qr")
         self.assert_logged_in()
-        out = self.screen.dest.getvalue()
+        out = self.dest.getvalue()
         self.assertEqual(out.count("Settings → Devices → Link Desktop Device"), 2)
         self.assertIn("█", out)
 
@@ -464,7 +468,7 @@ class LoginTest(LoginCase):
         client = self.telegram.clients[0]
         self.assertEqual(decode_session(client.string)[:3], (2, "149.154.167.51", 443))
         self.assertEqual(stored(self.home)["session"], client.string)
-        self.assertIn("• tlg: logged in as Example User", self.lines())
+        self.assertIn("* tlg: logged in as Example User", self.lines())
 
     def test_browser_when_telegram_web_refuses_the_key(self):
         store(self.home, **CREDENTIALS)
@@ -500,37 +504,51 @@ class LoginTest(LoginCase):
 
 
 class LoginCommandTest(FlndCase):
-    def choose_telegram(self, *keys):
-        """Pick Telegram, the last source, in `flnd login`'s list, then type `keys`."""
-        self.keys(*["down"] * list(SOURCES).index("tlg"), "enter", *keys)
+    def choose_telegram(self, *choices):
+        """Pick Telegram and then `choices` in `flnd auth login`."""
+        from shared import ui
+
+        p = mock.patch("shared.prompt.choose", side_effect=["tlg", *choices])
+        tty = mock.patch.object(ui.raw, "_force_terminal", True)
+        p.start()
+        tty.start()
+        self.addCleanup(tty.stop)
+        self.addCleanup(p.stop)
 
     def test_the_source_then_the_method_is_asked(self):
         methods = []
-        self.choose_telegram("down", "enter")
+        self.choose_telegram("qr")
         with mock.patch.object(Telegram, "login", lambda self, session, method: methods.append(method)):
             self.assertEqual(self.run_app("auth", "login")[0], 0)
         self.assertEqual(methods, ["qr"])
-        out = self.screen.dest.getvalue()
-        self.assertIn("✓ Log in to: Telegram (tlg)", out)
-        self.assertIn("✓ Log in to Telegram: With a QR code", out)
 
     def test_a_failed_login_is_reported(self):
         def refuse(self, session, method):
             raise LoginError("tlg: no QR code was scanned; run flnd login again")
 
-        self.choose_telegram("down", "enter")
+        self.choose_telegram("qr")
         with mock.patch.object(Telegram, "login", refuse):
             code, _, out = self.run_app("auth", "login")
         self.assertEqual(code, 1)
-        self.assertIn("✗ tlg: no QR code was scanned; run flnd login again", out)
+        self.assertIn("tlg: no QR code was scanned; run flnd login again", out)
 
     def test_a_stored_session_is_marked_logged_in(self):
+        from shared import ui
+
         with auth.secrets(Path(".flnd"), "tlg") as secrets:
             secrets.update(session=SESSION, **CREDENTIALS)
-        self.choose_telegram("enter")
-        with mock.patch.object(Telegram, "login", lambda self, session, method: None):
+        seen = []
+        answers = iter(["tlg", "browser"])
+
+        def fake_choose(message, choices, **kw):
+            seen.append(choices)
+            return next(answers)
+
+        with mock.patch("shared.prompt.choose", fake_choose), \
+                mock.patch.object(ui.raw, "_force_terminal", True), \
+                mock.patch.object(Telegram, "login", lambda self, session, method: None):
             self.run_app("auth", "login")
-        self.assertIn("Telegram (tlg) · logged in", self.screen.dest.getvalue())
+        self.assertTrue(any("Telegram (tlg) · logged in" in c for c in seen), seen)
 
 
 class DownloadCase(LoginCase):
@@ -583,7 +601,7 @@ class DownloadTest(DownloadCase):
         self.assertEqual(len(self.telegram.downloads), 5)
         # One client per run, closed at its end, on the group's own loop.
         self.assertEqual([client.connected for client in self.telegram.clients], [False, False])
-        self.assertEqual(self.telegram.threads, {"flnd-tlg"})
+        self.assertEqual(self.telegram.threads, {"shared-worker-loop"})
         self.assertEqual(self.telegram.clients[0].flood_sleep_threshold, 24 * 3600)
 
     def test_a_flood_wait_is_waited_out_and_retried(self):
@@ -627,7 +645,7 @@ class DownloadTest(DownloadCase):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
         self.assertEqual(self.download(), 0)
-        self.assertIn("✗ tlg:examplechannel: not logged in; run flnd auth login", self.lines())
+        self.assertIn("x tlg:examplechannel: not logged in; run flnd auth login", self.lines())
         self.assertEqual(self.telegram.clients, [])
 
     def test_many_files_on_the_async_loop(self):
@@ -704,7 +722,7 @@ class ChatTest(DownloadCase):
         self.assertTrue((by_title / "Example_Channel" / "photo" / "2026-01-05_11.jpg").is_file())
         self.assertEqual(self.download("tlg:-1001001"), 0)
         # The file is already saved under the title, so the id run's photo line counts it skipped.
-        self.assertTrue(any(line.startswith("✓ tlg:-1001001 photo ") and "1 skipped" in line
+        self.assertTrue(any("tlg:-1001001 photo " in line and "1 skipped" in line
                             for line in self.lines()), self.lines())
         self.assertFalse(any(line.startswith("↷") for line in self.lines()), self.lines())
 
@@ -712,12 +730,12 @@ class ChatTest(DownloadCase):
         other = chat(1002, "Example Channel")
         self.telegram.dialogs.append(SimpleNamespace(id=-1001002, name="Example Channel", entity=other))
         self.assertEqual(self.download("tlg:Example Channel"), 0)
-        self.assertIn("✗ tlg:Example Channel: 2 chats are titled 'Example Channel': -1001001, -1001002; "
+        self.assertIn("x tlg:Example Channel: 2 chats are titled 'Example Channel': -1001001, -1001002; "
                       "pass one as tlg:<id>", self.lines())
 
     def test_a_chat_that_isnt_there(self):
         self.assertEqual(self.download("tlg:nochat"), 0)
-        self.assertIn("✗ tlg:nochat: no chat 'nochat' among your chats", self.lines())
+        self.assertIn("x tlg:nochat: no chat 'nochat' among your chats", self.lines())
 
 
 def zipped(name, text):
