@@ -41,6 +41,7 @@ class CompressFileTest(EngineCase):
             second = compress_file(self.file("b.mp4", b"other"), "video", warned)
         self.assertEqual(first, {"path": str(self.folder / "a.mp4"), "size": 5, "compressed": "none",
                                  "original_size": 5})
+        assert second is not None
         self.assertEqual(second["compressed"], "none")
         self.assertEqual(self.warnings(), ["! a.mp4: not compressed: ffmpeg made no progress for 60 s"])
         self.assertEqual((self.folder / "a.mp4").read_bytes(), b"video")
@@ -75,6 +76,7 @@ class CompressFileTest(EngineCase):
             second = compress_file(self.file("b.jpg"), "image", warned)
         self.assertEqual(first, {"path": str(self.folder / "a.jpg"), "size": 5, "compressed": "none",
                                  "original_size": 5})
+        assert second is not None
         self.assertEqual(second["compressed"], "none")
         self.assertEqual(self.warnings(), ["! a.jpg: not compressed: [Errno 13] Permission denied"])
         self.assertEqual((self.folder / "a.jpg").read_bytes(), b"video")
@@ -87,6 +89,7 @@ class CompressFileTest(EngineCase):
             after = compress_file(self.file("b.jpg"), "image", warned)
         # Only the field it knows: the caller's history row keeps its own path and size.
         self.assertEqual(gone, {"compressed": "none"})
+        assert after is not None
         self.assertEqual(after["compressed"], "none")
         compress.assert_called_once()
         self.assertEqual(len(self.warnings()), 1)
@@ -131,11 +134,11 @@ class TableTest(unittest.TestCase):
         self.assertEqual(ONE_AT_A_TIME, frozenset({paths.VIDEO}))
 
     def test_the_level_is_a_media_level(self):
-        from shared import _media
+        from shared import media
 
         # cli.md's table: mid is Phase 5's balanced, the level `--shrink` uses.
         self.assertEqual(LEVEL, "mid")
-        self.assertEqual(_media.PRESETS["mid"][:3], (80, 1080, 2304))
+        self.assertEqual((media.LEVELS["mid"].quality, media.LEVELS["mid"].resolution), (80, 1080))
 
     def test_media_gets_the_level_and_no_format(self):
         calls = []
@@ -184,8 +187,13 @@ class CompressorTest(EngineCase):
 
         compressor = Compressor()
         with compressing(compress):
-            results = [compressor.compress(folder / name, paths.kind_of(name)) for name in ("a.jpg", "b.jpg", "c.mp4")]
+            results = []
+            for name in ("a.jpg", "b.jpg", "c.mp4"):
+                kind = paths.kind_of(name)
+                assert kind is not None
+                results.append(compressor.compress(folder / name, kind))
         self.assertEqual(calls, ["a.jpg", "c.mp4"])
+        assert results[2] is not None
         self.assertEqual((results[0], results[1], results[2]["compressed"]), (None, None, "none"))
         self.assertEqual(compressor.off, {"image"})
         self.assertIn("! image compression stops for this run", self.lines())
@@ -228,14 +236,17 @@ class SkipTest(EngineCase):
 
     def test_a_video_at_or_below_the_levels_bitrate_is_left_alone(self):
         calls, fields = self.run_on(bitrate=2_000_000, duration=60, ratio=0.5)
+        assert fields is not None
         self.assertEqual((calls, fields["compressed"]), ([], "none"))
 
     def test_a_slice_from_the_middle_decides_whether_the_whole_is_encoded(self):
         calls, fields = self.run_on(bitrate=8_000_000, duration=60, ratio=0.5)
+        assert fields is not None
         self.assertEqual(calls, [("trim", 28.0, 32.0, False), ("compress", 4.0), ("compress", 60)])
         self.assertEqual(fields["compressed"], LEVEL)
         # Only 5% smaller: not worth the whole encode.
         calls, fields = self.run_on(bitrate=8_000_000, duration=60, ratio=0.95)
+        assert fields is not None
         self.assertEqual(calls, [("trim", 28.0, 32.0, False), ("compress", 4.0)])
         self.assertEqual(fields["compressed"], "none")
 

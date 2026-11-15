@@ -192,20 +192,46 @@ TAB_URLS = {"photos": f"{SITE}/example.page/photos_by", "reels": f"{SITE}/exampl
 PROFILE_SCROLLS_BY_URL = {TAB_URLS[tab]: batches for tab, batches in PROFILE_SCROLLS.items()}
 
 
+class FeedRaw:
+    """Fake Playwright tab event emitter for `feed.Responses`."""
+
+    def __init__(self):
+        self.listeners = []
+
+    def on(self, event, listener):
+        if event == "response":
+            self.listeners.append(listener)
+
+    def remove_listener(self, event, listener):
+        if event == "response" and listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def emit(self, data):
+        response = SimpleNamespace(
+            url="https://www.facebook.com/api/graphql/",
+            text=lambda: json.dumps(data),
+            request=None,
+        )
+        for listener in list(self.listeners):
+            listener(response)
+
+
 class FeedPage:
     """A tab for `watch_responses`: it delivers `early` when the network is awaited and one batch of `scrolls` per scroll."""
 
     def __init__(self, site, scrolls, early, redirects):
         self.site = site
+        self.raw = FeedRaw()
         self.scrolls = {url: list(batches) for url, batches in scrolls.items()}
         self.early = {url: list(batch) for url, batch in early.items()}
         self.redirects = redirects
-        self.handlers = []
         self.scrolled = 0
 
     @property
     def _page(self):
-        return FakeSite.page.fget(self.site)
+        fget = FakeSite.page.fget
+        assert fget is not None
+        return fget(self.site)
 
     @property
     def document(self):
@@ -215,14 +241,9 @@ class FeedPage:
     def url(self):
         return self.redirects.get(self._page.url, self._page.url)
 
-    def on_response(self, match, handler, *, lines=False):
-        self.handlers.append(handler)
-        return browser.Subscription(lambda: self.handlers.remove(handler) if handler in self.handlers else None)
-
     def deliver(self, batch):
         for data in batch:
-            for handler in list(self.handlers):
-                handler(data, None)
+            self.raw.emit(data)
 
     def scroll(self, *, until=None, **options):
         self.scrolled += 1
@@ -248,7 +269,7 @@ class FeedSite(FakeSite):
         self.lifted = lifted
 
     @property
-    def page(self):
+    def page(self) -> Any:
         return self.feed
 
     def back_off(self, reason, *, retry_after=None):

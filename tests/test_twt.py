@@ -272,9 +272,12 @@ class QuotedAndCardTest(unittest.TestCase):
              "value": {"image_value": {"url": "https://pbs.example/card_img/full?format=jpg&name=orig"}}}]}}
         posts = list(tweet_posts(quoting, "posts", USER_ID))
         self.assertEqual([(post.id, post.fields["n"]) for post in posts], [("1", 0), ("1", "q0"), ("1", "q1"), ("1", "card")])
-        self.assertEqual(posts[1].files[0].url, sizes("https://pbs.example/media/quoted.jpg"))
-        self.assertEqual(posts[2].files[0].url, "https://video.example/clip.mp4")
-        card = posts[3].files[0]
+        f1 = list(posts[1].files() if callable(posts[1].files) else posts[1].files)
+        f2 = list(posts[2].files() if callable(posts[2].files) else posts[2].files)
+        f3 = list(posts[3].files() if callable(posts[3].files) else posts[3].files)
+        self.assertEqual(f1[0].url, sizes("https://pbs.example/media/quoted.jpg"))
+        self.assertEqual(f2[0].url, "https://video.example/clip.mp4")
+        card = f3[0]
         self.assertEqual((card.url, card.name), ("https://pbs.example/card_img/full?format=jpg&name=orig",
                                                  "2026-11-09_1_card.jpg"))
 

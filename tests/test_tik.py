@@ -10,6 +10,8 @@ import os
 import time
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 from fakes import FakeSite, Seen, collect
@@ -18,7 +20,6 @@ from flnd.options import Options
 from flnd.source import FetchError, Target, TargetError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
 from shared import selector
-from shared._browser import Subscription
 
 DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")
 PROFILE = "https://www.tiktok.com/@someone"
@@ -117,6 +118,25 @@ def profile_page(*tabs, video_count=2, sec_uid=None):
             f"{json.dumps(data)}</script></body></html>")
 
 
+class FakeRaw:
+    """Fake Playwright tab event emitter for `feed.Responses`."""
+
+    def __init__(self):
+        self.listeners = []
+        self._fallback = mock.MagicMock()
+
+    def on(self, event, listener):
+        if event == "response":
+            self.listeners.append(listener)
+
+    def remove_listener(self, event, listener):
+        if event == "response" and listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def __getattr__(self, name):
+        return getattr(self._fallback, name)
+
+
 class FakeTab:
     """The browser's tab as `watch_responses` and the source use it: responses are delivered when the page scrolls.
 
@@ -128,31 +148,31 @@ class FakeTab:
         html: the page's HTML, or a function of the tab giving it.
     """
 
-    def __init__(self, seen, feeds=(), html=""):
+    def __init__(self, seen, feeds=(), html: Any = ""):
         self.seen = seen
         self.pending = list(feeds)
         self.html = html
-        self.handlers = []
         self.scrolls = 0
-        self.raw = mock.MagicMock()
+        self.raw = FakeRaw()
 
     @property
     def document(self):
         return selector.parse(self.html(self) if callable(self.html) else self.html)
 
-    def on_response(self, match, handler, *, lines=False):
-        matches = (lambda url: match in url) if isinstance(match, str) else match
-        entry = (matches, handler)
-        self.handlers.append(entry)
-        return Subscription(lambda: self.handlers.remove(entry) if entry in self.handlers else None)
-
     def deliver(self):
         for url, data in list(self.pending):
-            handlers = [handler for matches, handler in self.handlers if matches(url)]
-            if handlers:
+            consumed = False
+
+            def text(d=data):
+                nonlocal consumed
+                consumed = True
+                return json.dumps(d)
+
+            response = SimpleNamespace(url=url, text=text, request=None)
+            for listener in list(self.raw.listeners):
+                listener(response)
+            if consumed:
                 self.pending.remove((url, data))
-                for handler in handlers:
-                    handler(data, None)
 
     def scroll(self, *, until=None, **options):
         self.scrolls += 1
@@ -163,7 +183,7 @@ class FakeTab:
         self.deliver()
 
 
-def run(text, *, feeds=(), html="", pages=None, json=None, options=Options(), cookies=None):
+def run(text, *, feeds=(), html: Any = "", pages=None, json=None, options=Options(), cookies=None):
     """What the job would download for `text`, with `FakeTab` as the browser: (saved files, seen, tab)."""
     seen = Seen()
     tab = FakeTab(seen, feeds, html)
@@ -419,14 +439,14 @@ class far_off_timezone:
             raise unittest.SkipTest("no time.tzset on this platform")
         self.previous = os.environ.get("TZ")
         os.environ["TZ"] = self.name
-        time.tzset()
+        getattr(time, "tzset")()
 
     def __exit__(self, *exc_info):
         if self.previous is None:
             os.environ.pop("TZ", None)
         else:
             os.environ["TZ"] = self.previous
-        time.tzset()
+        getattr(time, "tzset")()
 
 class ScrollTest(unittest.TestCase):
     def test_multi_page_scroll_collects_all_pages_before_yielding_videos_and_playlists(self):

@@ -401,8 +401,9 @@ class PostTest(unittest.TestCase):
 
     def test_an_engine_field_is_a_type_error(self):
         for name in ("category", "num", "count", "index", "extension", "path"):
+            kwargs: dict[str, object] = {name: "x"}
             with self.subTest(field=name), self.assertRaisesRegex(TypeError, f"{name} is a field the engine sets"):
-                Post("7", **{name: "x"})
+                Post("7", **kwargs)  # type: ignore[arg-type]
         with self.assertRaisesRegex(TypeError, "the engine sets"):
             Post("7").replace(category="posts")
 

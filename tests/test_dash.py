@@ -41,15 +41,21 @@ class BestTest(unittest.TestCase):
         text = manifest(representation("1v", "video/mp4", "https://cdn.example/low.mp4", height=1280, bandwidth=688558),
                         representation("2v", "video/mp4", "https://cdn.example/high.mp4", height=1280, bandwidth=2633777),
                         audios=[representation("a", "audio/mp4", "https://cdn.example/a.mp4", codecs="mp4a.40.5")])
-        self.assertEqual(dash.best(text).video, "https://cdn.example/high.mp4")
+        best = dash.best(text)
+        assert best is not None
+        self.assertEqual(best.video, "https://cdn.example/high.mp4")
 
     def test_webm_only_when_both_are_webm(self):
         webm = manifest(representation("v", "video/webm", "https://cdn.example/v.webm", height=720, codecs="vp9"),
                         audios=[representation("a", "audio/webm", "https://cdn.example/a.webm", codecs="opus")])
-        self.assertEqual(dash.best(webm).extension, ".webm")
+        best = dash.best(webm)
+        assert best is not None
+        self.assertEqual(best.extension, ".webm")
         mixed = manifest(representation("v", "video/webm", "https://cdn.example/v.webm", height=720, codecs="vp9"),
                          audios=[representation("a", "audio/mp4", "https://cdn.example/a.mp4", codecs="mp4a.40.2")])
-        self.assertEqual(dash.best(mixed).extension, ".mp4")
+        best_mixed = dash.best(mixed)
+        assert best_mixed is not None
+        self.assertEqual(best_mixed.extension, ".mp4")
 
     def test_the_mime_type_may_be_on_the_adaptation_set(self):
         text = (HEAD + '<AdaptationSet mimeType="video/mp4"><Representation id="v" height="720" bandwidth="1">'
@@ -73,7 +79,9 @@ class BestTest(unittest.TestCase):
 
     def test_relative_base_urls_are_not_used(self):
         text = INSTAGRAM.replace("https://cdn.example/1080.mp4", "1080.mp4")
-        self.assertEqual(dash.best(text).video, "https://cdn.example/720.mp4")
+        best = dash.best(text)
+        assert best is not None
+        self.assertEqual(best.video, "https://cdn.example/720.mp4")
 
     def test_an_entity_bomb_is_refused(self):
         bomb = ('<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">'

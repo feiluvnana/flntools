@@ -19,6 +19,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 from fakes import FakeSite, collect
@@ -34,7 +35,7 @@ from flnd.source import LoginError, Target, TargetError
 from flnd.sources import SOURCES
 from flnd.sources import tlg
 from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
-from shared import fmt
+from shared import text
 
 DAY = datetime.date(2026, 1, 5)
 SESSION = "1FAKE-SESSION-aGVsbG8"
@@ -101,7 +102,9 @@ class FakeTelegram:
 
     def __init__(self):
         self.authorized = False
-        self.password = None
+        self.password: str | None = None
+        self.phone: str | None = None
+        self.code: str | None = None
         self.qr_outcomes = []
         self.wrong_code = False
         self.me = SimpleNamespace(id=1, first_name="Example", last_name="User", username="example_user")
@@ -205,7 +208,9 @@ class FakeClient:
         if self.telegram.download_errors:
             raise self.telegram.download_errors.pop(0)
         self.telegram.downloads.append(item.id)
-        progress_callback(len(item.content) // 2, len(item.content))
+        if progress_callback is not None:
+            progress_callback(len(item.content) // 2, len(item.content))
+        assert file is not None
         file.write(item.content)
         return file
 
@@ -279,6 +284,7 @@ class FloodWaitTest(unittest.TestCase):
         async def download_media(message, file=None, progress_callback=None):
             if errors:
                 raise errors.pop(0)
+            assert file is not None
             file.write(b"media")
 
         client = SimpleNamespace(download_media=download_media)
@@ -286,7 +292,7 @@ class FloodWaitTest(unittest.TestCase):
             (reason, retry_after)))
         with tempfile.TemporaryDirectory() as folder:
             dest = Path(folder) / "file"
-            asyncio.run(fetcher(site, item)(dest, lambda done, total: None))
+            asyncio.run(fetcher(cast(Any, site), item)(dest, lambda done, total: None))
             return waits, dest.read_bytes()
 
     def test_a_flood_wait_is_backed_off_for_the_seconds_it_names_and_the_download_tried_again(self):
@@ -386,7 +392,7 @@ class LoginCase(EngineCase):
         self.screen._interactive = True
         self.screen.readkey = iter([key for answer in answers for key in [*answer, "enter"]]).__next__
 
-    def log_in(self, method):
+    def log_in(self, method):  # type: ignore[override]
         Engine(home=self.home, sources={"tlg": Telegram}).login("tlg", method)
 
     def assert_logged_in(self):
@@ -694,7 +700,7 @@ class ChatTest(DownloadCase):
     def test_by_title_and_by_id(self):
         self.telegram.messages[1001] = [message(11, "photo")]
         self.assertEqual(self.download("tlg:example channel"), 1)
-        by_title = self.target_dir("tlg", fmt.filename("example channel"))
+        by_title = self.target_dir("tlg", text.clean.filename("example channel"))
         self.assertTrue((by_title / "Example_Channel" / "photo" / "2026-01-05_11.jpg").is_file())
         self.assertEqual(self.download("tlg:-1001001"), 0)
         # The file is already saved under the title, so the id run's photo line counts it skipped.

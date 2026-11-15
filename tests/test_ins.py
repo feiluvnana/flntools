@@ -13,7 +13,7 @@ import time
 import unittest
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import httpx
@@ -21,6 +21,7 @@ from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
 from flnd import targets as db_targets
+from flnd.common import net
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import FetchError, LoginError, Target, TargetError, day
@@ -374,12 +375,14 @@ class StoryMusicTest(unittest.TestCase):
             "progressive_download_url": "https://cdn.example/m2"}}}}
         for extra, url in ((sticker, "https://cdn.example/m1"), (metadata, "https://cdn.example/m2")):
             [post] = reel_posts(FakeSite(Target("ins", "user", "someone")), [self.story(**extra)], "stories")
-            self.assertEqual([(file.url, file.name) for file in post.files],
+            files = list(post.files() if callable(post.files) else post.files)
+            self.assertEqual([(file.url, file.name) for file in files],
                              [("https://cdn.example/s.jpg", "2026-01-02_31.jpg"), (url, "2026-01-02_31_music.m4a")])
 
     def test_a_story_without_music_has_one_file(self):
         [post] = reel_posts(FakeSite(Target("ins", "user", "someone")), [self.story()], "stories")
-        self.assertEqual(len(post.files), 1)
+        files = list(post.files() if callable(post.files) else post.files)
+        self.assertEqual(len(files), 1)
 
 
 class NamesAndKeysTest(unittest.TestCase):
@@ -417,9 +420,9 @@ class NamesAndKeysTest(unittest.TestCase):
         pages = {f"{SITE}/p/LATE/": shortcode_page({"code": "LATE", "taken_at": late,
                                                     **image("https://cdn.example/l.jpg")})}
         with mock.patch.dict(os.environ, {"TZ": "Pacific/Auckland"}):
-            time.tzset()
+            getattr(time, "tzset")()
             saved = read("https://www.instagram.com/p/LATE/", pages=pages)
-        time.tzset()
+        getattr(time, "tzset")()
         self.assertEqual([(item.path, item.key) for item in saved], [("2023-11-14_LATE.jpg", "LATE_0")])
 
 
@@ -643,7 +646,7 @@ class Landing(FakeSite):
         url = self._seen.visited[-1] if self._seen.visited else "about:blank"
         visits = self._seen.visited.count(url)
         landings = self.lands.get(url, [])
-        page.raw.url = landings[visits - 1] if 1 <= visits <= len(landings) else url
+        cast(Any, page.raw).url = landings[visits - 1] if 1 <= visits <= len(landings) else url
         return page
 
 
@@ -855,8 +858,9 @@ class MeTest(unittest.TestCase):
                 {"name": "sessionid", "value": "99:abc:1", "domain": ".instagram.com", "path": "/"},
             ]))
             engine = Engine(home=home, sources={"ins": Instagram})
-            with mock.patch("flnd.common.net._base_transport", return_value=transport), \
-                    mock.patch("flnd.engine.needs_browser", return_value=False), \
+            real_client = httpx.Client
+            with mock.patch.object(net.httpx, "Client",
+                                   lambda *a, **kw: real_client(*a, **{**kw, "transport": transport})), \
                     mock.patch("flnd.sources.ins.Profile.read_tab", fake_read_tab):
                 dry = engine.download(["ins:me"], categories="posts", dry=True)
                 self.assertTrue(dry.ok)
@@ -869,9 +873,9 @@ class MeTest(unittest.TestCase):
                 self.assertEqual(db_targets.seen(rows, Target("ins", "me", "me")), ("ins:example_user",))
                 ls = engine.target_ls()
                 self.assertEqual(len(ls), 1)
-                self.assertEqual(str(ls[0]["target"]), "ins:me")
-                self.assertTrue(ls[0]["query"])
-                self.assertEqual(ls[0]["seen"], 1)
+                self.assertEqual(str(ls[0].target), "ins:me")
+                self.assertTrue(ls[0].query)
+                self.assertEqual(ls[0].seen, 1)
                 self.assertTrue((home / "media" / "ins" / "example_user" / "posts" / f"{DAY}_A1.jpg").exists())
 
                 step["i"] = 1

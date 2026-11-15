@@ -34,7 +34,7 @@ class SignTest(unittest.TestCase):
                          "0e7c819a540aaa6c47043c50ae7c278378a26790ec8e09edf05f799fa06c6556")
         self.assertEqual(signed.headers["x-security-challenge"], "turnstile-v1")
         self.assertEqual(signed.headers["x-request-signature"],
-                         crypto.sha256("get|lois/5930||1700000000000|loibus-sec-decoy-salt-v1"))
+                         crypto.digest("get|lois/5930||1700000000000|loibus-sec-decoy-salt-v1"))
 
     def test_every_signature_is_new(self):
         first = sign_request(httpx.Request("GET", "https://api.moegoat.com/api/user/info"), now_ms=1)
@@ -271,7 +271,7 @@ class RunTest(unittest.TestCase):
         files = saved(("all",))
         for item in files:
             if item.file.content is None:
-                self.assertEqual(dict(item.post.headers), {"referer": "https://loix.cc/", "origin": "https://loix.cc"})
+                self.assertEqual(dict(item.post.headers or {}), {"referer": "https://loix.cc/", "origin": "https://loix.cc"})
 
     def test_a_used_up_quota_skips_the_archives(self):
         site, seen = archive_site()
@@ -391,7 +391,7 @@ class LoginTest(unittest.TestCase):
 
     def test_the_browser(self):
         store = {"loix.cc": [{"name": "access-token", "value": "v", "domain": ".loix.cc", "path": "/"}]}
-        with mock.patch("shared._cookies.from_browser",
+        with mock.patch("shared.cookies.load",
                         lambda browser="chrome", *, profile=None: cookies.Jar(c for jar in store.values() for c in jar)):
             jar = auth.from_browser(Loibus(), browser="chrome")
             self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="Chrome"),

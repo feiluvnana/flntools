@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import httpx
@@ -24,11 +25,10 @@ from flnd.common import auth, net, paths
 from flnd.options import Options, RunShared
 from flnd.site import STATE_KEY, TargetSite, shared_browser, source_run
 from flnd.source import FetchError, File, Site, Target
+from flnd.sources.common.feed import warm_tabs, watch_responses
 from flnd.sources.common.relay import meta_results
-from flnd.sources.common.watch import warm_tabs, watch_responses
-from shared import clock, cookies, http, kv, theme
-from shared._browser import Page, Subscription
-from shared._theme import Screen
+from shared import cli, clock, cookies, http, store, ui
+from shared._browser import Page
 
 PAGE = "https://www.example.com/example_user/"
 
@@ -59,10 +59,9 @@ class FakeRaw:
 
 class FakeBrowser:
     def __init__(self, raw):
-        self.raw, self.cookies, self.closed = raw, [], False
-
-    def add_cookies(self, jar):
-        pass
+        self._jar = []
+        self.raw, self.closed = raw, False
+        self.cookies = SimpleNamespace(get=lambda: self._jar, add=self._jar.extend)
 
     def open(self):
         return SimpleNamespace(raw=self.raw, browser=self)
@@ -73,16 +72,19 @@ class FakeBrowser:
 
 class SiteCase(unittest.TestCase):
     def setUp(self):
-        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
-        scope = theme.scope(screen=self.screen, color="none", unicode=True)
+        self.dest = io.StringIO()
+        scope = ui.scope(dest=self.dest, color=False, width=400)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
         folder = TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.home = Path(folder.name) / ".flnd"
+        self.stop = cli.Stopping(soon=threading.Event(), now=threading.Event())
         self.requests = []
         self.raw = FakeRaw([200])
-        for patcher in (mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve)),
+        real_client = httpx.Client
+        for patcher in (mock.patch.object(net.httpx, "Client",
+                                          lambda *a, **kw: real_client(*a, **{**kw, "transport": httpx.MockTransport(self.serve)})),
                         mock.patch("shared._browser.open", lambda **options: FakeBrowser(self.raw))):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -103,15 +105,15 @@ class SiteCase(unittest.TestCase):
     def open(self, source=Example, *, state=None):
         """A `TargetSite` for `exm:example_user` on a run closed at the end of the test."""
         if state:
-            with kv.open(self.home / paths.SOURCE_STATE, table=source.code) as store:
-                store.update(state)
-        opened = source_run(RunShared(home=self.home, history={}), source())
+            with store.open(self.home / paths.SOURCE_STATE, table=source.code) as db:
+                db.update(state)
+        opened = source_run(RunShared(home=self.home, history={}, stop=self.stop), source())
         run = opened.__enter__()
         self.addCleanup(opened.__exit__, None, None, None)
         return run, TargetSite(run, Target(source.code, "user", "example_user"))
 
     def lines(self):
-        return self.screen.dest.getvalue().splitlines()
+        return self.dest.getvalue().splitlines()
 
 
 class ExpiringLoginTest(SiteCase):
@@ -175,8 +177,7 @@ class GotoTest(SiteCase):
     def test_ctrl_c_ends_a_wait(self):
         self.raw = FakeRaw([429], headers={429: {"retry-after": "30"}})
         _, site = self.open()
-        net.stopping.set()
-        self.addCleanup(net.stopping.clear)
+        self.stop.soon.set()
         with self.assertRaises(KeyboardInterrupt):
             site.goto(PAGE)
 
@@ -200,17 +201,17 @@ class PaceTest(SiteCase):
         before = self.now
         site.fetch(f"{API}/b")
         self.assertGreaterEqual(self.now - before, 1.0)
-        with mock.patch.object(Page, "scroll", return_value=3) as scroll:
-            self.assertEqual(site.page.scroll(count=lambda: 0), 3)
-            self.assertAlmostEqual(scroll.call_args.kwargs["pause"], 0.1)
+        with mock.patch.object(Page, "_pause") as pause:
+            cast(Any, site.page)._pause(0.05)
+            self.assertAlmostEqual(pause.call_args.args[0], 0.1)
 
     def test_the_speed_is_loaded_from_state_and_saved_back(self):
         run, site = self.open(state={STATE_KEY: 4.0})
         self.assertEqual(run.speed, 4.0)
         site.back_off("throttled")
         run.close()
-        with kv.open(self.home / paths.SOURCE_STATE, table="exm") as store:
-            self.assertEqual(store[STATE_KEY], 8.0)
+        with store.open(self.home / paths.SOURCE_STATE, table="exm") as db:
+            self.assertEqual(db[STATE_KEY], 8.0)
 
     def test_a_long_wait_is_a_countdown_row_naming_the_source(self):
         headers = {"x-rate-limit-remaining": "0", "x-rate-limit-reset": "30"}
@@ -219,7 +220,7 @@ class PaceTest(SiteCase):
         site.fetch(f"{API}/a")
         site.fetch(f"{API}/b")
         self.assertGreaterEqual(self.now, 31.0)
-        rows = [line for line in self.lines() if line.endswith("exm: waiting 31.0s")]
+        rows = [line for line in self.lines() if line.endswith("exm: waiting 31.0")]
         self.assertEqual(len(rows), 1, self.lines())
 
 
@@ -254,8 +255,10 @@ class FetchTest(SiteCase):
             site.fetch(f"{API}/private")
         self.assertEqual(caught.exception.status, 403)
         # The refusal keeps its response, so a source can read the site's reason from its body.
-        self.assertEqual(caught.exception.response.status, 403)
-        self.assertEqual(caught.exception.response.url, f"{API}/private")
+        response = caught.exception.response
+        assert response is not None
+        self.assertEqual(response.status, 403)
+        self.assertEqual(response.url, f"{API}/private")
 
     def test_prepare_runs_for_the_sources_own_domains_only(self):
         jar = [{"name": "token", "value": "t0k", "domain": ".example.com", "path": "/"}]
@@ -268,7 +271,7 @@ class FetchTest(SiteCase):
     def test_in_page_waits_out_a_429_and_tries_a_5xx_again(self):
         run, site = self.open()
         answer = http.Response(200, f"{API}/feed", {"content-type": "application/json"}, b'{"items": []}')
-        errors = [http.RateLimitedError(5.0), http.ServerError(503)]
+        errors = [http.RateLimitedError(5.0), http.Error("HTTP 503")]
         with mock.patch.object(Page, "fetch", side_effect=[*errors, answer]) as fetch:
             self.assertEqual(site.fetch(f"{API}/feed", in_page=True, params={"a": 1}).json, {"items": []})
         self.assertEqual(fetch.call_args.args[0], f"{API}/feed?a=1")
@@ -281,7 +284,9 @@ class FetchTest(SiteCase):
                 self.assertRaises(FetchError) as caught:
             site.fetch(f"{API}/feed", in_page=True)
         self.assertEqual(caught.exception.status, 400)
-        self.assertEqual(caught.exception.response.json, {"status": "fail"})
+        response = caught.exception.response
+        assert response is not None
+        self.assertEqual(response.json, {"status": "fail"})
         with self.assertRaisesRegex(TypeError, "takes params, data, json and timeout"):
             site.fetch(f"{API}/feed", in_page=True, follow_redirects=False)
 
@@ -292,10 +297,11 @@ class FetchTest(SiteCase):
         opened = []
 
         def connect(**options):
-            opened.append(FakeBrowser(self.raw))
-            opened[-1].options, opened[-1].added = options, []
-            opened[-1].add_cookies = opened[-1].added.extend
-            return opened[-1]
+            browser: Any = FakeBrowser(self.raw)
+            browser.options, browser.added = options, []
+            browser.cookies = SimpleNamespace(get=lambda: browser.added, add=browser.added.extend)
+            opened.append(browser)
+            return browser
 
         with mock.patch("shared._browser.open", connect):
             auth.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
@@ -322,32 +328,42 @@ class FetchTest(SiteCase):
     def test_close_closes_the_browser(self):
         _, site = self.open()
         opened = site.page
-        browser = opened.browser
+        browser = cast(FakeBrowser, opened.browser)
         site.close()
         self.assertTrue(browser.closed)
+
+
+class StubRaw:
+    def __init__(self):
+        self.listeners = []
+        self.stopped = False
+
+    def on(self, event, listener):
+        self.listeners.append(listener)
+
+    def remove_listener(self, event, listener):
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+        self.stopped = True
+
+    def emit(self, data):
+        response = SimpleNamespace(url="https://example.com/graphql", text=lambda: json.dumps(data), request=None)
+        for listener in list(self.listeners):
+            listener(response)
 
 
 class StubPage:
     """A tab for `watch_responses`: `scroll` delivers the next batch of responses, then the feed ends."""
 
     def __init__(self, batches):
+        self.raw = StubRaw()
         self.batches = list(batches)
-        self.handler = None
-        self.stopped = False
         self.scrolls = 0
         self.waits = 0
 
-    def on_response(self, match, handler, *, lines=False):
-        self.handler = handler
-
-        def stop():
-            self.stopped = True
-
-        return Subscription(stop)
-
     def deliver(self):
         for data in self.batches.pop(0) if self.batches else []:
-            self.handler(data, None)
+            self.raw.emit(data)
 
     def scroll(self, *, until=None, **options):
         self.scrolls += 1
@@ -362,19 +378,19 @@ class StubPage:
 class WatchTest(unittest.TestCase):
     def test_scrolling_yields_each_response_until_the_feed_ends(self):
         page = StubPage([[{"n": 2}], [{"n": 3}, {"n": 4}]])
-        site = SimpleNamespace(page=page)
+        site: Any = SimpleNamespace(page=page)
         responses = watch_responses(site, "graphql", scroll=True)
-        page.handler({"n": 1}, None)     # the first load, which came before any scroll
+        page.raw.emit({"n": 1})     # the first load, which came before any scroll
         self.assertEqual([data["n"] for data in responses], [1, 2, 3, 4])
         # The last scroll found nothing new: the feed ended, and watching stopped.
-        self.assertEqual((page.scrolls, page.stopped), (3, True))
+        self.assertEqual((page.scrolls, page.raw.stopped), (3, True))
 
     def test_without_scrolling_it_waits_for_a_quiet_network_once(self):
         page = StubPage([[{"n": 2}]])
-        with watch_responses(SimpleNamespace(page=page), "graphql") as responses:
-            page.handler({"n": 1}, None)
+        with watch_responses(cast(Any, SimpleNamespace(page=page)), "graphql") as responses:
+            page.raw.emit({"n": 1})
             self.assertEqual([data["n"] for data in responses], [1, 2])
-        self.assertEqual((page.scrolls, page.waits, page.stopped), (0, 1, True))
+        self.assertEqual((page.scrolls, page.waits, page.raw.stopped), (0, 1, True))
 
 
 class TabRaw(FakeRaw):
@@ -419,11 +435,9 @@ class MultiTabBrowser:
 
     def __init__(self):
         self.opened = []
-        self.cookies = []
+        self._jar = []
+        self.cookies = SimpleNamespace(get=lambda: self._jar, add=self._jar.extend)
         self.closed = False
-
-    def add_cookies(self, jar):
-        pass
 
     def open(self):
         raw = TabRaw()
@@ -462,7 +476,7 @@ class TabTest(SiteCase):
 
         with watch_responses(site, "graphql", scroll=False) as responses:
             self.assertTrue(site.goto(urls[0]))
-            adopted = site.page.raw
+            adopted = cast(TabRaw, site.page.raw)
             self.assertIn((urls[0], "commit"), adopted.wait_until_calls)
             self.assertEqual(adopted.waits, ["load"])
             adopted.emit(f"{API}/graphql", '{"n": 42}')
@@ -504,7 +518,7 @@ class TabTest(SiteCase):
             browsers.append(MultiTabBrowser())
             return browsers[-1]
 
-        settings = RunShared(home=self.home, history={})
+        settings = RunShared(home=self.home, history={}, stop=self.stop)
         with mock.patch("shared._browser.open", connect):
             with shared_browser(settings):
                 def run_target(source_cls, target, warm_url):
