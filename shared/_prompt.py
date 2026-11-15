@@ -1,88 +1,30 @@
-"""Ask a person a question in the terminal: `ask`, `confirm` and `choose`.
+"""Terminal prompts backed by `questionary`, with `ContextVar`-isolated defaults.
 
-Each function builds one question and returns its answer.
-In a terminal, questions are drawn by `shared.theme` and redrawn on each keypress.
-Without a terminal or in `prompt.defaults()`, questions answer their default immediately.
-Prompt functions synchronize terminal access across threads.
+    name = prompt.ask("Name", default="ada")
+    ok = prompt.confirm("Continue?", default=True)
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Literal, Sequence, TypeVar, overload
+import sys
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar
+from typing import Any, Callable, TypeVar, cast, overload
+
+import questionary
 
 import shared
-from shared import _theme
-from shared._log import live_area
-from shared._screen import Paste, hide_cursor, show_cursor
-from shared._style import strip
-from shared._theme import PromptView, Theme, fit
 
-__all__ = ["Error", "Keymap", "ask", "choose", "confirm", "defaults", "keymap", "keys_shown"]
+__all__ = ["Error", "ask", "choose", "choose_many", "confirm", "defaults"]
 
-# A validator takes the answer and returns the message to show, or None to accept it.
-Validate = Callable[[Any], "str | None"]
-
-# The actions a question lists in its help line, in the order they are listed. The keys are the
-# question kinds `shared.theme`'s prompt drawer knows: a typed text, a hidden one, yes or no, one
-# option, several options.
-GUIDE_ACTIONS = {
-    "input": ("submit",),
-    "secret": ("submit",),
-    "confirm": ("left", "right", "yes", "no", "submit"),
-    "choice": ("up", "down", "submit"),
-    "choices": ("up", "down", "toggle", "submit"),
-}
-# Old action names, kept so that a rename raises a message that names the new one.
-RENAMED = {"accept": "submit"}
-
-# Whether questions show the help line of keys; `keys=` overrides it for one question.
-keys_shown = True
+T = TypeVar("T")
+Validate = Callable[[Any], "str | bool | None"]
+_defaults_depth: ContextVar[int] = ContextVar("prompt_defaults", default=0)
 
 
 class Error(shared.Error):
-    """A question that cannot be asked: no default to fall back on, or bad options."""
-
-
-class Keymap:
-    """The keys for each action. Assigning a tuple replaces that action's keys.
-
-        prompt.keymap.submit = ("enter", "tab")
-        prompt.keymap.no = ()          # n no longer answers no
-
-    An unknown action, read or assigned, raises `AttributeError`.
-    """
-
-    ACTIONS = (
-        "up", "down", "left", "right", "submit", "toggle", "backspace", "yes", "no", "interrupt"
-    )
-
-    def __init__(self) -> None:
-        """Set default keys: arrows, vim letters, enter to submit, space to toggle."""
-        # The vim letters move cursor too, so a typed question treats them as text.
-        self.up = ("up", "k")
-        self.down = ("down", "j")
-        self.left = ("left", "h")
-        self.right = ("right", "l")
-        self.submit = ("enter",)
-        self.toggle = ("space",)
-        self.backspace = ("backspace",)
-        self.yes = ("y",)
-        self.no = ("n",)
-        self.interrupt = ("ctrl+c",)
-
-    def __getattr__(self, name: str) -> tuple:
-        raise _unknown_action(name)
-
-    def __setattr__(self, name: str, keys: tuple) -> None:
-        # Only the known actions can be assigned, so a typo in a key action fails at once.
-        if name not in self.ACTIONS:
-            raise _unknown_action(name)
-        object.__setattr__(self, name, tuple(keys))
-
-
-keymap = Keymap()
+    """A prompt that cannot be asked, such as missing choices or no default off-TTY."""
 
 
 def ask(
@@ -90,379 +32,146 @@ def ask(
     *,
     secret: bool = False,
     default: str | None = None,
-    placeholder: str = "",
-    description: str = "",
     validate: Validate | None = None,
-    mask: str | None = None,
-    keys: bool | None = None,
+    description: str = "",
 ) -> str:
-    """Ask for a line of text, and return what was typed."""
-    question = _Question("secret" if secret else "input", message, description, default=default,
-                         validate=validate, keys=keys)
-    question.buffer = default or ""
-    question.caret = len(question.buffer)
-    question.placeholder = placeholder
-    if secret:
-        question.mask = mask
-    return _ask(question)
+    """Ask for a line of text, hiding characters when `secret` is true."""
+    if _use_defaults():
+        return _require_default(message, default)
+    fn = questionary.password if secret else questionary.text
+    kwargs: dict[str, Any] = {
+        "default": default or "",
+        "validate": _validator(validate),
+    }
+    if description:
+        kwargs["instruction"] = description
+    return _run(fn(message, **kwargs))
 
 
-def confirm(
-    message: str,
-    *,
-    description: str = "",
-    default: bool = False,
-    yes: str = "Yes",
-    no: str = "No",
-    keys: bool | None = None,
-    validate: Validate | None = None,
-) -> bool:
-    """Ask a yes-or-no question, and return True for yes."""
-    question = _Question(
-        "confirm", message, description, default=default, validate=validate, keys=keys
-    )
-    question.labels, question.values = [yes, no], [True, False]
-    question.index = 0 if default else 1
-    return _ask(question)
-
-
-Value = TypeVar("Value")
+def confirm(message: str, *, default: bool = True) -> bool:
+    """Ask a yes-or-no question and return the boolean answer."""
+    if _use_defaults():
+        return default
+    return bool(_run(questionary.confirm(message, default=default)))
 
 
 @overload
 def choose(
-    message: str, options: Mapping[Any, Value], *, many: Literal[False] = False,
-    default: Value | None = None, filter: bool = False, description: str = "",
-    validate: Validate | None = None, keys: bool | None = None,
-) -> Value: ...
+    message: str, choices: Mapping[Any, T], *, default: T | None = None
+) -> T: ...
 @overload
 def choose(
-    message: str, options: Sequence[Value], *, many: Literal[False] = False,
-    default: Value | None = None, filter: bool = False, description: str = "",
-    validate: Validate | None = None, keys: bool | None = None,
-) -> Value: ...
-@overload
+    message: str, choices: Sequence[T], *, default: T | None = None
+) -> T: ...
 def choose(
-    message: str, options: Mapping[Any, Value], *, many: Literal[True],
-    default: Sequence[Value] | None = None, filter: bool = False, min: int = 0,
-    max: int | None = None, description: str = "", validate: Validate | None = None,
-    keys: bool | None = None,
-) -> list[Value]: ...
-@overload
-def choose(
-    message: str, options: Sequence[Value], *, many: Literal[True],
-    default: Sequence[Value] | None = None, filter: bool = False, min: int = 0,
-    max: int | None = None, description: str = "", validate: Validate | None = None,
-    keys: bool | None = None,
-) -> list[Value]: ...
-def choose(
-    message: str, options: Sequence | Mapping, *, many: bool = False, default: Any = None,
-    filter: bool = False, min: int = 0, max: int | None = None, description: str = "",
-    validate: Validate | None = None, keys: bool | None = None,
+    message: str, choices: Sequence[Any] | Mapping[Any, Any], *, default: Any = None
 ) -> Any:
-    """Ask to pick one of the options, or several with `many=True`."""
-    if not many:
-        if min != 0 or max is not None:
-            raise TypeError("choose takes min and max only with many=True")
-        question = _Question(
-            "choice", message, description, default=default, validate=validate, keys=keys
-        )
-        question.set_options(options, filter)
-        if default is not None:
-            question.index = question.position_of(default)
-        return _ask(question)
-    if min < 0 or (max is not None and max < min):
-        raise ValueError(f"choose needs 0 <= min <= max, got min={min} max={max}")
-    def_list = None if default is None else list(default)
-    question = _Question(
-        "choices", message, description, default=def_list, validate=validate, keys=keys
-    )
-    question.set_options(options, filter)
-    question.checked = {question.position_of(value) for value in default or ()}
-    question.least, question.most = min, max
-    return _ask(question)
+    """Ask to pick one item from `choices`, returning its value."""
+    pairs = _choice_pairs(message, choices)
+    if default is not None and not any(value == default for _, value in pairs):
+        raise Error(f"{default!r} is not a choice for {message!r}")
+    if _use_defaults():
+        return _require_default(message, default)
+    items = [questionary.Choice(title=str(label), value=value) for label, value in pairs]
+    initial = next((item for item in items if item.value == default), None)
+    return _run(questionary.select(message, choices=items, default=initial))
 
 
-# Process-wide on purpose: worker threads started inside the block also get defaults.
-_answering_with_defaults = 0
+@overload
+def choose_many(
+    message: str, choices: Mapping[Any, T], *, defaults: Iterable[T] = ()
+) -> list[T]: ...
+@overload
+def choose_many(
+    message: str, choices: Sequence[T], *, defaults: Iterable[T] = ()
+) -> list[T]: ...
+def choose_many(
+    message: str,
+    choices: Sequence[Any] | Mapping[Any, Any],
+    *,
+    defaults: Iterable[Any] = (),
+) -> list[Any]:
+    """Ask to pick zero or more items from `choices`, returning selected values."""
+    pairs = _choice_pairs(message, choices)
+    selected = list(defaults)
+    values = [value for _, value in pairs]
+    for item in selected:
+        if item not in values:
+            raise Error(f"{item!r} is not a choice for {message!r}")
+    if _use_defaults():
+        return selected
+    items = [
+        questionary.Choice(title=str(label), value=value, checked=value in selected)
+        for label, value in pairs
+    ]
+    return list(_run(questionary.checkbox(message, choices=items)))
 
 
 @contextmanager
 def defaults() -> Iterator[None]:
-    """Answer each question with its default, reading no keys, inside the block.
-
-        with prompt.defaults():
-            prompt.confirm("Deploy?", default=True)    # True, at once
-
-    It is process-wide: questions asked from other threads inside the block answer their default
-    too. A question with no default raises `Error`.
-    """
-    global _answering_with_defaults
-    _answering_with_defaults += 1
+    """Answer every prompt inside the block with its default without reading input."""
+    token = _defaults_depth.set(_defaults_depth.get() + 1)
     try:
         yield
     finally:
-        _answering_with_defaults -= 1
+        _defaults_depth.reset(token)
 
 
-class _Question:
-    """The state of one open question, changed one key at a time."""
+def _use_defaults() -> bool:
+    """Whether prompts should return their default immediately."""
+    return _defaults_depth.get() > 0 or not _interactive()
 
-    def __init__(
-        self, kind: str, message: str, description: str, *, default: Any,
-        validate: Validate | None, keys: bool | None,
-    ):
-        """Start a question of the given kind with its text, default, and validator."""
-        self.kind, self.message, self.description, self.default = (
-            kind, message, description, default
-        )
-        self.validate, self.show_keys = validate, keys
-        self.buffer = ""
-        self.caret = 0  # where typed characters go in `buffer`, for input and secret
-        self.placeholder = ""
-        self.mask: str | None = None
-        self.labels: list[str] = []
-        self.values: list = []
-        self.index = 0
-        self.checked: set[int] = set()
-        self.filter = False
-        self.least = 0
-        self.most: int | None = None
-        self.error: str | None = None
 
-    @property
-    def typing(self) -> bool:
-        """Whether letters are typed as text, so they can't be keys."""
-        return self.kind in ("input", "secret") or self.filter
+def _interactive() -> bool:
+    """Whether standard input and output are both attached to a terminal."""
+    stdin, stdout = sys.stdin, sys.stdout
+    return bool(stdin and stdin.isatty() and stdout and stdout.isatty())
 
-    def set_options(self, options: Sequence | Mapping, filter: bool) -> None:
-        """Set options from a sequence or mapping of label to value, and whether they filter."""
-        # A mapping shows keys as labels and returns values; a sequence does both with the item.
-        if isinstance(options, Mapping):
-            self.labels, self.values = [str(label) for label in options], list(options.values())
-        else:
-            self.labels, self.values = [str(option) for option in options], list(options)
-        if not self.values:
-            raise Error(f"{self.message!r} has no options")
-        self.filter = filter
 
-    def position_of(self, value: Any) -> int:
-        """The index of value among the options, for a default or a checked value."""
-        if value not in self.values:
-            raise Error(f"{value!r} is not an option of {self.message!r}")
-        return self.values.index(value)
+def _require_default(message: str, default: T | None) -> T:
+    """Return `default` or raise `Error` when a non-interactive prompt has none."""
+    if default is None:
+        raise Error(f"{message!r} has no default and cannot be asked here")
+    return default
 
-    def visible(self) -> list[int]:
-        """Positions of the options the filter leaves."""
-        typed = self.buffer.casefold() if self.filter else ""
-        return [
-            pos for pos, label in enumerate(self.labels) if label.casefold().startswith(typed)
-        ]
 
-    def press(self, key: str) -> bool:
-        """Apply one key. Returns True when the key asks to submit."""
-        self.error = None
-        # Step 1: a paste arrives as one value, not as keys, so it is inserted whole.
-        if isinstance(key, Paste):
-            self._paste(key)
-            return False
-        # Submit ends the question; validation happens in the caller.
-        if key in keymap.submit:
+def _choice_pairs(
+    message: str, choices: Sequence[Any] | Mapping[Any, Any]
+) -> list[tuple[Any, Any]]:
+    """Normalize a sequence or mapping of choices into `(label, value)` pairs."""
+    pairs = list(choices.items()) if isinstance(choices, Mapping) else [(c, c) for c in choices]
+    if not pairs:
+        raise Error(f"{message!r} has no choices")
+    return pairs
+
+
+def _validator(validate: Validate | None) -> Callable[[str], bool | str] | None:
+    """Adapt a `str | None` validator into `questionary`'s `True | False | str` contract."""
+    if validate is None:
+        return None
+
+    def check(text: str) -> bool | str:
+        verdict = validate(text)
+        if verdict is None or verdict is True:
             return True
-        editing = self.kind in ("input", "secret")
-        # Backspace removes one char before the caret in input, or the last in filter.
-        if self.typing and key in keymap.backspace:
-            if editing:
-                self.buffer = self.buffer[:max(self.caret - 1, 0)] + self.buffer[self.caret:]
-                self.caret = max(self.caret - 1, 0)
-            else:
-                self.buffer = self.buffer[:-1]
-            self.index = 0
+        if verdict is False:
             return False
-        # In a typed question every printable key is text, so "k" types k rather than moving.
-        # Space arrives as the key name "space", so it is turned back into one here.
-        text = " " if key == "space" else key if len(key) == 1 and key.isprintable() else None
-        # A checklist toggle is not typed text, so it toggles even while filtering.
-        toggles = self.kind == "choices" and key in keymap.toggle
-        if self.typing and text is not None and not toggles:
-            if editing:
-                self.buffer = self.buffer[:self.caret] + text + self.buffer[self.caret:]
-                self.caret += 1
-            else:
-                self.buffer += text
-            self.index = 0
-            return False
-        # Step 5: the arrow keys, not h and l (those are text above), move the typed text's cursor.
-        if editing and key in keymap.left + keymap.right:
-            step = -1 if key in keymap.left else 1
-            self.caret = min(max(self.caret + step, 0), len(self.buffer))
-            return False
-        # Step 6: movement and choice keys act on the options the filter leaves visible.
-        visible = self.visible()
-        if key in keymap.up:
-            self.index = self.index - 1 if self.index > 0 else 0
-        elif key in keymap.down:
-            self.index = self.index + 1 if self.index < len(visible) - 1 else self.index
-        elif self.kind == "confirm" and key in keymap.left + keymap.right:
-            self.index = 0 if key in keymap.left else 1
-        elif self.kind == "confirm" and key in keymap.yes + keymap.no:
-            self.index = 0 if key in keymap.yes else 1
-            return True
-        elif toggles and visible:
-            self.checked ^= {visible[self.index]}
-        return False
+        return str(verdict)
 
-    def _paste(self, text: str) -> None:
-        """Insert a pasted text whole: at the cursor in an input, at the end in a filter."""
-        if self.kind in ("input", "secret"):
-            self.buffer = self.buffer[:self.caret] + text + self.buffer[self.caret:]
-            self.caret += len(text)
-        elif self.filter:
-            self.buffer += text
-        self.index = 0
-
-    def problem(self) -> str | None:
-        """Why the current answer cannot be submitted, or None."""
-        if self.kind == "choice" and not self.visible():
-            return "no match"
-        if self.kind == "choices" and len(self.checked) < self.least:
-            return f"choose at least {self.least}"
-        if self.kind == "choices" and self.most is not None and len(self.checked) > self.most:
-            return f"choose at most {self.most}"
-        return self.validate(self.answer()) if self.validate else None
-
-    def answer(self) -> Any:
-        """The value returned: text, checked values in order, or selected option."""
-        if self.kind in ("input", "secret"):
-            return self.buffer
-        if self.kind == "choices":
-            return [self.values[position] for position in sorted(self.checked)]
-        return self.values[self.visible()[self.index]]
-
-    def view(self, done: bool = False) -> PromptView:
-        """The state drawn: the live question, or with `done`, the one line kept after."""
-        if done:
-            return PromptView(self.kind, self.message, value=self._answer_text(), done=True)
-        visible = self.visible() if self.labels else []
-        no_match = "no match" if self.filter and not visible else None
-        # A secret shows mask chars, keeping length visible but hiding text.
-        shown_value = (
-            self.buffer if self.kind != "secret" else (self.mask or "•") * len(self.buffer)
-        )
-        return PromptView(
-            self.kind, self.message, self.description, shown_value, self.placeholder,
-            options=tuple(self.labels[position] for position in visible),
-            position=self.index,
-            checked=frozenset(
-                row for row, pos in enumerate(visible) if pos in self.checked
-            ),
-            error=self.error or no_match, keys=self._help_keys(),
-            caret=self.caret if self.kind in ("input", "secret") else None,
-        )
-
-    def _help_keys(self) -> tuple:
-        """The (action, keys) pairs the help line lists, or () when keys are hidden."""
-        # `keys=` on one question beats keys_shown; None means follow the module setting.
-        if not (keys_shown if self.show_keys is None else self.show_keys):
-            return ()
-        listed = []
-        for action in GUIDE_ACTIONS[self.kind]:
-            # A single character is text in a typed question, so it is not listed as a key to press.
-            bound = tuple(
-                key for key in getattr(keymap, action) if not (self.typing and len(key) == 1)
-            )
-            if bound:
-                listed.append((action, bound))
-        return tuple(listed)
-
-    def _answer_text(self) -> str:
-        """The one line kept after submit: the typed text, the checked labels, or the chosen label.
-
-        A secret keeps nothing, so its done line shows only the question.
-        """
-        if self.kind == "input":
-            return self.buffer
-        if self.kind == "secret":
-            return ""
-        if self.kind == "choices":
-            return ", ".join(self.labels[position] for position in sorted(self.checked))
-        return self.labels[self.visible()[self.index]]
+    return check
 
 
-def _ask(question: _Question) -> Any:
-    """Run one question to its answer: read keys and redraw until it submits."""
-    theme = _theme.theme
-    screen = theme.screen
-    # Without a terminal, or inside defaults(), nothing is read; answer default.
-    if _answering_with_defaults or not screen.interactive:
-        if question.default is None:
-            raise Error(f"{question.message!r} has no default and cannot be asked here")
-        return question.default
-    # A hidden answer is drawn with a bullet in Unicode, else with an asterisk.
-    if question.kind == "secret" and question.mask is None:
-        question.mask = "•" if theme.unicode else "*"
-    frame = _Frame(theme)
-    # The question holds screen live area and key reading; other threads wait.
-    with live_area(screen).question(), screen.reading():
+def _live_paused() -> AbstractContextManager[Any]:
+    """Pause `shared._ui`'s live display if `_ui` has already been imported."""
+    ui_mod = sys.modules.get("shared._ui")
+    pause = getattr(getattr(ui_mod, "ui", None), "pause_live", None)
+    return cast(AbstractContextManager[Any], pause()) if callable(pause) else nullcontext()
+
+
+def _run(question: questionary.Question) -> Any:
+    """Run a `questionary` prompt while any active live UI is paused."""
+    with _live_paused():
         try:
-            # Step 4: draw, read one key, and apply it, until a submit passes validation.
-            while True:
-                frame.draw(theme.draw("prompt", question.view()))
-                key = screen.readkey()
-                # Interrupt key is checked before question sees the key.
-                if key in keymap.interrupt:
-                    raise KeyboardInterrupt
-                if question.press(key):
-                    question.error = question.problem()
-                    if question.error is None:
-                        break
-            # Step 5: the answered question is replaced by its one done line.
-            frame.draw(theme.draw("prompt", question.view(done=True)))
-        finally:
-            # Ctrl-C and any error end the frame too, so the cursor is never left hidden.
-            frame.end()
-    return question.answer()
-
-
-class _Frame:
-    """Draws a question's frame, replacing the previous one in place on a TTY."""
-
-    def __init__(self, theme: Theme):
-        """Start with no lines drawn, so the first draw erases nothing."""
-        self.theme = theme
-        self.drawn_lines = 0
-
-    def draw(self, frame: str) -> None:
-        """Draw the frame, erasing previous frame on a terminal, or writing plain lines."""
-        screen = self.theme.screen
-        if self.theme.color == "none":
-            frame = strip(frame)
-        lines = [fit(line, screen.width) for line in frame.split("\n")]
-        # Without a terminal there is no cursor to move back, so each frame is written as new lines.
-        if not screen.tty:
-            screen.write("\n".join(lines) + "\n")
-            return
-        hide_cursor(screen)  # input line draws cursor; terminal's would sit at keys line
-        # \r returns to col 0; ESC[nA moves up; ESC[J erases to end of screen.
-        erase = ""
-        if self.drawn_lines:
-            up = f"\x1b[{self.drawn_lines - 1}A" if self.drawn_lines > 1 else ""
-            erase = "\r" + up + "\x1b[J"
-        screen.write(erase + "\n".join(lines))
-        self.drawn_lines = len(lines)
-
-    def end(self) -> None:
-        """Leave the frame on screen, move past it, and show the cursor again."""
-        screen = self.theme.screen
-        # The last frame stays on screen, so the next output starts on a new line after it.
-        if screen.tty and self.drawn_lines:
-            screen.write("\n")
-            self.drawn_lines = 0
-        show_cursor(screen)
-
-
-def _unknown_action(name: str) -> AttributeError:
-    """The AttributeError for an unknown action name, suggesting renamed action."""
-    if name in RENAMED:
-        return AttributeError(f"prompt.keymap.{name} was renamed to {RENAMED[name]}")
-    return AttributeError(f"unknown key action {name!r}")
+            return question.unsafe_ask()
+        except EOFError as error:
+            raise Error("unexpected end of input") from error
