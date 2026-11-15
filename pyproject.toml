@@ -17,28 +17,20 @@ dependencies = [
     "telethon>=1.36",
     "cryptg>=0.5",
     "qrcode>=7.4",
-    "pillow>=11.3",
-    "pi-heif>=1.0",
-    "imageio-ffmpeg>=0.6",
-    "luqum==1.0.0",
     "rich",
     "questionary",
     "cyclopts",
     "filelock",
     "msgspec",
-    "av",
 ]
 
-# For shared alone, without flnd. flnd's dependencies already hold what these add, except
-# `archive`'s: flnd saves archives as sent and never opens one.
+# For shared alone, without flnd. flnd's dependencies already hold what these add.
 [project.optional-dependencies]
-archive = ["pyzipper", "py7zr"]
 selector = ["parsel>=1.9.0", "python-jsonpath"]
 # httpx for `fetch`, and `selector`'s packages for `Response.html`.
 http = ["httpx[http2]>=0.27.0", "parsel>=1.9.0", "python-jsonpath"]
 # Pinned to a minor version: every Playwright release downloads a new browser build.
 browser = ["playwright==1.65.*", "cryptography>=42"]
-media = ["pillow>=11.3", "pi-heif>=1.0", "imageio-ffmpeg>=0.6"]
 # Telethon finds cryptg by itself and decrypts with it, many times faster than in Python.
 telegram = ["telethon>=1.36", "cryptg>=0.5"]
 

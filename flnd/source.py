@@ -34,10 +34,6 @@ __all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Logi
            "Post", "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill",
            "pages", "target"]
 
-# Registered by `flnd.query` on import so `Source.resolve` validates queries without a circular
-# import.
-_query_check: Callable[[str, Mapping[str, Any]], Any] | None = None
-
 # Hosts that are the same site as their bare domain: desktop, mobile and web variants.
 SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 # What `{name}` matches without a regex: a user name, as the sites spell them, with one leading `@`
@@ -266,22 +262,10 @@ class Route:
 
     def __init__(
         self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None,
-        params: Mapping[str, Any] | None = None, discovers: bool = False,
+        discovers: bool = False,
         from_: Iterable[str] | None = None, folder: str | None = None,
     ):
-        """Compile `patterns` for `function`, raising `TypeError` for a mistake in them.
-
-        Args:
-            function: the decorated method, `(self, site, value)`.
-            patterns: the forms it reads, as `target` takes them.
-            shown: form help shows for first pattern, or route's only form when it has none.
-            params: query parameters for a `?{query}` route, keyed by parameter name.
-            discovers: whether this route yields targets rather than posts.
-
-        Raises:
-            TypeError: a pattern doesn't compile, has no placeholder or two, or its placeholder
-                isn't the method's value parameter.
-        """
+        """Compile `patterns` for `function`, raising `TypeError` for a mistake in them."""
         self.function = function
         self.kind = function.__name__
         self.patterns = patterns
@@ -293,11 +277,6 @@ class Route:
         self._patterns = [_Pattern(pattern) for pattern in patterns]
         self.is_query = any(pattern.is_query for pattern in self._patterns)
         self.discovers = self.is_query or discovers
-        if params is not None and not self.is_query:
-            raise TypeError(f"route {self.kind}: params= requires a '?{{query}}' pattern")
-        self.params: Mapping[str, Any] = (
-            MappingProxyType(dict(params)) if params is not None else MappingProxyType({})
-        )
         self._categories: list[Category] = []
         parameters = [
             parameter.name for parameter in inspect.signature(function).parameters.values()
@@ -375,18 +354,11 @@ class Route:
 
 
 def target(*patterns: str, shown: str | None = None,
-           params: Mapping[str, Any] | None = None,
            discovers: bool = False, from_: Iterable[str] | None = None,
            folder: str | None = None) -> Callable[[Callable[..., Any]], Route]:
-    """Mark a method as a route: the targets it reads, as patterns, named by the method's kind.
-
-        @target("instagram.com/p/{code:[\\w-]+}", "instagram.com/reel/{code:[\\w-]+}")
-        def post(self, site, code): ...
-
-    Each pattern has exactly one placeholder matching the method's value parameter.
-    """
+    """Mark a method as a route: the targets it reads, as patterns, named by the method's kind."""
     return lambda function: Route(
-        function, patterns, shown=shown, params=params, discovers=discovers,
+        function, patterns, shown=shown, discovers=discovers,
         from_=from_, folder=folder,
     )
 
@@ -957,9 +929,8 @@ class Source:
     needs: ClassVar[tuple[str, ...]] = ()
     requires_login: ClassVar[bool] = False
     login_methods: ClassVar[tuple[str, ...]] = ("browser", "file")
-    # How fast its own domains may be asked: `http.Pace(floor, budgets)`, or a number for the floor
-    # in seconds; its `domains` and `label` are the source's own.
-    pace: ClassVar[http.Pace | float] = 0.5
+    # Minimum seconds between requests to this source's own domains.
+    pace: ClassVar[float] = 0.5
     # Where a post's files go under the target's folder, what each is named (the content adds the
     # extension) and what its history row is keyed by: formats over a post's fields and the
     # engine's (see `fill` and `ENGINE_FIELDS`). A category may give its own.
@@ -1069,12 +1040,10 @@ class Source:
                     continue
                 if refused is None or pattern.literals > refused[0].literals:
                     if route.is_query:
-                        if _query_check is not None:
-                            try:
-                                _query_check(value, route.params)
-                            except ValueError as error:
-                                raise TargetError(f"{self.code}: {error}") from None
-                        return Target(self.code, route.kind, value.strip(), query=True)
+                        stripped = value.strip()
+                        if not stripped:
+                            raise TargetError(f"{self.code}: the query is empty")
+                        return Target(self.code, route.kind, stripped, query=True)
                     return Target(self.code, route.kind, value)
         if refused is not None:
             raise TargetError(f"{self.code}: {refused[1]}")

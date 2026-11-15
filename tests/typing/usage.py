@@ -10,7 +10,7 @@ from typing_extensions import assert_type
 
 from flnd.site import LoginSite, TargetSite
 from flnd.source import File, Login, Post, Site, Source
-from shared import cookies, fs, http, media, prompt, ui, worker
+from shared import cookies, fs, http, prompt, sh, ui, worker
 from tests.fakes import FakeSite
 
 
@@ -54,20 +54,12 @@ with ui.group("download") as rows:
     assert_type(rows.add("ins:example", total=12).total, Optional[float])
 ui.multi("download")  # pyright: ignore[reportAttributeAccessIssue]
 
-clip = media.open("a.mp4")
-assert_type(clip, media.Media)
-assert_type(clip.info, media.Info)
-assert_type(clip.info.duration, Optional[float])
-assert_type(clip.compress("low", format="mp4"), media.Media)
-assert_type(clip.convert("mp4"), media.Media)
-assert_type(clip.audio(format="mp3"), media.Media)
-assert_type(clip.merge("b.mp4", audio="a.m4a"), media.Media)
-assert_type(clip.compress("low").save(), Path)
-assert_type(media.sniff("a.jpg"), Optional[str])
-with media.open("a.mov") as opened:
-    assert_type(opened, media.Media)
-clip.compress("low", "mp4")  # pyright: ignore[reportCallIssue]
-media.probe("a.jpg")  # pyright: ignore[reportAttributeAccessIssue]
+tool = sh.tool("7zz", platforms={("linux", "amd64"): sh.Spec("https://example.com/7zz", "0" * 64)})
+assert_type(tool, sh.Tool)
+assert_type(tool.path, Path)
+assert_type(tool.run("--help"), sh.Result)
+assert_type(sh.run(["echo", "hi"]), sh.Result)
+sh.tool("7zz", checksum="0" * 64)  # pyright: ignore[reportCallIssue]
 
 jar = cookies.load("cookies.txt").filter(domains="example.com")
 assert_type(jar, cookies.Jar)

@@ -53,7 +53,7 @@ def module_name(path: Path) -> str:
 
 def source_allowed(name: str) -> bool:
     """Rule 1: what a source may import from flnd."""
-    return name in ("flnd", "flnd.source", "flnd.query") or name == "flnd.sources.common" or name.startswith("flnd.sources.common.")
+    return name in ("flnd", "flnd.source") or name == "flnd.sources.common" or name.startswith("flnd.sources.common.")
 
 
 class LayersTest(unittest.TestCase):

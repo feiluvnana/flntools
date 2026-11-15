@@ -7,18 +7,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from media_samples import needs_pillow
-
 from flnd.common import paths
-from shared import fs, media, ui
+from shared import fs, ui
 
 
 def jpeg(size=(64, 48)):
-    from PIL import Image
-
-    out = io.BytesIO()
-    Image.effect_noise(size, 40).convert("RGB").save(out, "JPEG")
-    return out.getvalue()
+    return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 
 
 class FilesCase(unittest.TestCase):
@@ -41,7 +35,6 @@ class PartNameTest(FilesCase):
             self.assertNotEqual(part, other)
 
 
-@needs_pillow
 class CheckedTest(FilesCase):
     def test_checked_returns_the_extension_the_content_calls_for(self):
         path = self.tmp / "a.webp"
@@ -54,30 +47,6 @@ class CheckedTest(FilesCase):
         with self.assertRaises(paths.NotMediaError) as caught:
             paths.checked(path, "image")
         self.assertEqual(str(caught.exception), "got a web page instead of a photo")
-
-    def test_a_broken_file_raises_broken_and_an_unsafe_one_unsafe(self):
-        whole = jpeg((400, 300))
-        path = self.tmp / "a.jpg"
-        path.write_bytes(whole[:300])
-        with self.assertRaises(media.BrokenError):
-            paths.checked(path, "image")
-        with mock.patch("shared.media.open", side_effect=media.UnsafeError("too many pixels")), \
-                self.assertRaises(media.UnsafeError):
-            paths.checked(path, "image")
-
-    def test_a_file_that_cant_be_checked_here_is_kept(self):
-        """Without ffmpeg, without an extra, or on a stalled ffmpeg, the file isn't known to be broken."""
-        path = self.tmp / "v.mp4"
-        path.write_bytes(b"\0\0\0\x18ftypisom" + bytes(100))
-        for error in (RuntimeError("shared.media needs ffmpeg"), ImportError("no Pillow"), TimeoutError("stalled")):
-            with mock.patch("shared.media.open", side_effect=error):
-                self.assertEqual(paths.checked(path, "video"), ".mp4")
-
-    def test_without_decode_the_file_is_only_sniffed(self):
-        path = self.tmp / "a.jpg"
-        path.write_bytes(jpeg())
-        with mock.patch("shared.media.open", side_effect=AssertionError("decoded")):
-            self.assertEqual(paths.checked(path, "image", decode=False), ".jpg")
 
 
 if __name__ == "__main__":

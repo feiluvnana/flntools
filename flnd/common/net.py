@@ -16,7 +16,7 @@ import httpx
 from flnd.common import paths
 from flnd.common.paths import NotMediaError
 from flnd.source import Fetch, FetchError, File
-from shared import clock, fs, http, text, ui
+from shared import clock, fs, http, sh, text, ui
 
 # Tries for one `fetch` function of a file, or one DASH merge, before its error is raised.
 ATTEMPTS = 3
@@ -87,11 +87,9 @@ def _try_mirror(
     received: MutableMapping[str, str] | None, stop: threading.Event | None,
 ) -> Path:
     """Download one mirror (fetch callback, DASH pair, or URL) into `dest`."""
-    from shared import media
-
     if callable(mirror):
         save = partial(_save_fetch, mirror, dest, label, file.size, kind, stop)
-        return _again(save, retryable=(Exception,), final=(NotMediaError, media.UnsafeError))
+        return _again(save, retryable=(Exception,), final=(NotMediaError,))
     if file.audio is not None:
         return _save_dash(client, mirror, file.audio, dest, label, headers, stop)
     return _save_url(client, mirror, dest, label, headers, file.size, kind, received, stop)
@@ -147,12 +145,10 @@ def _save_url(client: http.Client, url: str, dest: Path, label: str,
 def _save_dash(client: http.Client, video: str, audio: str, dest: Path, label: str,
                headers: Mapping[str, str] | None, stop: threading.Event | None) -> Path:
     """Download a DASH video and its audio stream, saving merged as `dest`."""
-    from shared import media
-
     with _Row(label) as row:
         return _again(
             partial(_dash_merge, client, video, audio, dest, headers, stop, row),
-            retryable=(media.BrokenError,),
+            retryable=(http.IncompleteError, sh.RunError),
         )
 
 
@@ -160,8 +156,6 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
                 headers: Mapping[str, str] | None, stop: threading.Event | None,
                 row: _Row) -> Path:
     """Fetch DASH video and audio streams in parallel and merge them into `dest`."""
-    from shared import media
-
     streams = [dest.with_name(f".{dest.name}.{name}.part") for name in ("video", "audio")]
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -179,8 +173,12 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
         row.caption("merging")
         if dest.is_file() and dest.stat().st_size == 0:
             dest.unlink()
-        with media.open(streams[0]) as clip:
-            clip.merge(audio=streams[1], format=dest.suffix).save(dest)
+        ffmpeg = sh.tool("ffmpeg")
+        with fs.write(dest, replace=True) as part:
+            ffmpeg.run(
+                "-y", "-i", str(streams[0]), "-i", str(streams[1]),
+                "-c", "copy", "-movflags", "+faststart", str(part),
+            )
         return dest
     finally:
         for stream in streams:
@@ -250,15 +248,13 @@ def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
 
 def _sniffed(part: Path, dest: Path, known: bool) -> Path:
     """Where a file whose content decides its kind goes: media by content, else as `dest`."""
-    from shared import media
-
-    extension = media.sniff(part)
+    extension = paths.sniff(part)
     if extension in paths.PAGES:
         raise NotMediaError("got a web page instead of a file")
     # `kind_of` reads a name's extension, and ".mp4" alone is a name without one.
     kind = paths.kind_of(f"file{extension}") if extension else None
     if extension is None or kind is None:
-        # An archive, a document, or nothing `media` knows: kept as it came.
+        # An archive, a document, or nothing `sniff` knows: kept as it came.
         return dest
     paths.checked(part, kind, decode=not known)
     return dest.with_name(dest.name + extension)

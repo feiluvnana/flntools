@@ -17,7 +17,7 @@ import questionary
 
 import shared
 
-__all__ = ["Error", "ask", "autofill", "choose", "confirm", "raw"]
+__all__ = ["Error", "ask", "autofill", "choose", "confirm", "interactive", "raw"]
 
 T = TypeVar("T")
 Validate = Callable[[str], bool | str]
@@ -117,13 +117,13 @@ def autofill() -> Iterator[None]:
 
 def _use_autofill() -> bool:
     """Whether prompts should return their default immediately."""
-    return _autofill_depth.get() > 0 or not _interactive()
+    return _autofill_depth.get() > 0 or not interactive()
 
 
-def _interactive() -> bool:
-    """Whether standard input and output are both attached to a terminal."""
-    stdin, stdout = sys.stdin, sys.stdout
-    return bool(stdin and stdin.isatty() and stdout and stdout.isatty())
+def interactive() -> bool:
+    """Whether standard input is a terminal, so a person can answer a prompt."""
+    stdin = sys.stdin
+    return bool(stdin and stdin.isatty())
 
 
 def _require_default(message: str, default: T | None) -> T:

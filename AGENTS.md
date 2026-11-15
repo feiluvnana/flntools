@@ -38,9 +38,9 @@ All commits must strictly follow this message format:
 - Live checks against real sites are done by hand on the authorized test accounts, never in unit tests. Unit tests fake the network (`httpx.MockTransport`), the browser and the clock.
 
 ## Layout
-- `shared/` is the toolkit. Every implementation file starts with `_`, and `shared/__init__.py` is the only public surface exposing 16 namespaces: `ui`, `prompt`, `cli`, `text`, `clock`, `fs`, `store`, `worker`, `http`, `cookies`, `browser`, `selector`, `crypto`, `archive`, `media`, and `bundler`.
-- `flnd/` keeps its entry points and engine modules at the top level: `cli`, `dry`, `engine`, `job`, `options`, `query`, `repair`, `site`, `source` (what sources import), and `targets`.
-- `flnd/common/` holds the engine side's helpers (`auth`, `compress`, `paths`, `net`).
+- `shared/` is the toolkit. Every implementation file starts with `_`, and `shared/__init__.py` is the only public surface exposing 16 namespaces: `ui`, `prompt`, `cli`, `text`, `clock`, `fs`, `store`, `worker`, `http`, `cookies`, `browser`, `selector`, `crypto`, `archive`, `sh`, and `bundler`.
+- `flnd/` keeps its entry points and engine modules at the top level: `cli`, `dry`, `engine`, `job`, `options`, `site`, `source` (what sources import), and `targets`.
+- `flnd/common/` holds the engine side's helpers (`auth`, `paths`, `net`).
 - `flnd/sources/` holds one module per site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`), each declaring `@target` routes with per-target `from_` categories and `folder` templates validated up-front. `flnd/sources/common/` holds what sources share (`dash`, `feed`, `relay`).
 - A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib.
 

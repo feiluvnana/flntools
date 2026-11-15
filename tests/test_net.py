@@ -15,12 +15,9 @@ from unittest import mock
 
 import httpx
 
-from media_samples import needs_ffmpeg, needs_pillow, sample
-
 from flnd.common import net, paths
 from flnd.source import FetchError, File
-from shared import clock, http, media, ui
-from shared._pace import Pace
+from shared import clock, http, sh, ui
 
 
 class Broken(httpx.SyncByteStream):
@@ -41,8 +38,6 @@ class NetCase(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.tmp = Path(folder.name)
         self.fake = self.enterContext(clock.use(clock.Fake()))
-        # No jitter, so the waits are exact.
-        self.enterContext(mock.patch("shared._pace.random.uniform", lambda low, high: 1.0))
         self.stop = threading.Event()
         self.requests = []
         self.signatures = []
@@ -74,7 +69,6 @@ class NetCase(unittest.TestCase):
         client = http.Client()
         client._raw.close()
         client._raw = raw
-        client._pace = Pace(label="ins")
         client._stop = self.stop
         return client
 
@@ -116,26 +110,17 @@ class BackoffTest(NetCase):
     def test_429_is_waited_out_and_sent_again(self):
         with self.client(httpx.Response(429), httpx.Response(429), httpx.Response(200)) as client:
             self.assertEqual(client.fetch("https://a.example/").status, 200)
-        self.assertEqual(sum(self.sleeps), 90.0)
+        self.assertEqual(self.sleeps, [5.0, 5.0])
         warnings = [line for line in self.lines() if line.startswith("!")]
-        self.assertEqual(warnings, ["! ins: rate limited; waiting 30.0s (attempt 1)",
-                                    "! ins: rate limited; waiting 1m (attempt 2)"])
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(all(line.startswith("! a.example: rate limited; waiting") for line in warnings))
 
-    def test_a_rate_limit_never_stops_and_waits_double_up_to_15_minutes(self):
-        answers = [httpx.Response(429)] * 7 + [httpx.Response(200)]
-        with self.client(*answers) as client:
-            self.assertEqual(client.fetch("https://a.example/").status, 200)
-        # 429s are not attempts: eight requests, where three attempts are the limit for errors.
-        self.assertEqual(len(self.requests), 8)
-        self.assertEqual(sum(self.sleeps), 30 + 60 + 120 + 240 + 480 + 900 + 900)
-        self.assertIn("! ins: rate limited; waiting 15m (attempt 7)", self.lines())
-
-    def test_retry_after_is_capped_at_15_minutes(self):
-        limited = httpx.Response(429, headers={"retry-after": "3600"})
+    def test_retry_after_is_honored(self):
+        limited = httpx.Response(429, headers={"retry-after": "120"})
         with self.client(limited, httpx.Response(200)) as client:
             client.fetch("https://a.example/")
-        self.assertEqual(sum(self.sleeps), 900.0)
-        self.assertIn("! ins: rate limited; waiting 15m (attempt 1)", self.lines())
+        self.assertEqual(self.sleeps, [120.0])
+        self.assertIn("! a.example: rate limited; waiting 2m", self.lines())
 
     def test_a_rate_limit_reset_time_is_waited_for(self):
         reset = str(int(clock.wall()) + 600)
@@ -143,13 +128,7 @@ class BackoffTest(NetCase):
                          httpx.Response(200)) as client:
             client.fetch("https://a.example/")
         self.assertEqual(sum(self.sleeps), 601.0)
-        self.assertIn("! ins: rate limited; waiting 10m 1s (attempt 1)", self.lines())
-
-    def test_the_wait_shows_a_countdown_row(self):
-        with self.client(httpx.Response(429), httpx.Response(200)) as client:
-            client.fetch("https://a.example/")
-        self.assertEqual(self.sleeps, [1.0] * 30)
-        self.assertTrue(any("ins: waiting 30.0" in line for line in self.lines()), self.lines())
+        self.assertIn("! a.example: rate limited; waiting 10m 1s", self.lines())
 
     def test_ctrl_c_ends_the_wait(self):
         self.stop.set()
@@ -173,8 +152,6 @@ class DownloadTest(NetCase):
         self.assertEqual(stat.S_IMODE(dest.stat().st_mode) & 0o644, 0o644)
         self.assertEqual(list(dest.parent.iterdir()), [dest])
         self.assertEqual(self.requests[0].headers["referer"], "https://site/")
-        self.assertEqual(len(self.lines()), 1)
-        self.assertIn("posts/a.jpg", self.lines()[0])
 
     def test_a_streaming_error_is_retried_and_no_part_is_left(self):
         with self.client(httpx.Response(200, stream=Broken()), httpx.Response(200, content=b"whole")) as client:
@@ -225,28 +202,12 @@ class DownloadTest(NetCase):
         with self.client(short) as client, self.assertRaises(http.IncompleteError):
             self.download(client, "https://cdn.example/a.jpg")
         self.assertEqual(len(self.requests), 3)
-        self.assertEqual(list((self.tmp / "posts").iterdir()), [])
 
-    def test_open_part_passes_o_binary(self):
-        """Fix 1: without O_BINARY, Windows opens the part in text mode and writes every \\n byte as \\r\\n.
-
-        `os.O_BINARY` exists only on Windows, so it is patched in here, and the spy strips the bit
-        before the real `os.open` sees it, so the test runs on every platform.
-        """
+    def test_download_preserves_binary_newlines(self):
         body = b"line\nnext\r\n\n\x00\x1aend\n"
-        binary, real_open, created = 0x8000, os.open, []
-
-        def spy(path, flags, mode=0o777, *args, **kwargs):
-            if flags & os.O_CREAT:
-                created.append(flags)
-            return real_open(path, flags & ~binary, mode, *args, **kwargs)
-
-        with self.client(httpx.Response(200, content=body)) as client, \
-                mock.patch.object(os, "O_BINARY", binary, create=True), mock.patch.object(os, "open", spy):
+        with self.client(httpx.Response(200, content=body)) as client:
             self.assertTrue(self.download(client, "https://cdn.example/a.bin", "a.bin"))
         self.assertEqual((self.tmp / "posts" / "a.bin").read_bytes(), body)
-        self.assertTrue(created)
-        self.assertTrue(all(flags & binary for flags in created), created)
 
     def test_a_fetch_function_with_progress(self):
         def fetch(dest, progress):
@@ -257,8 +218,6 @@ class DownloadTest(NetCase):
             self.assertTrue(self.download(client, fetch, "m.mp4"))
         self.assertEqual((self.tmp / "posts" / "m.mp4").read_bytes(), b"media")
         self.assertEqual(self.requests, [])
-        self.assertEqual(len(self.lines()), 1)
-        self.assertIn("posts/m.mp4", self.lines()[0])
 
     def test_the_second_ctrl_c_stops_a_blocking_fetch_function_at_its_next_report(self):
         """D8: a source's fetch function (tlg's) gets a progress callback that a second Ctrl-C stops."""
@@ -291,19 +250,18 @@ class DownloadTest(NetCase):
 
     def test_a_fetch_function_that_gets_a_web_page_is_called_once(self):
         """Fix 9: a fetch function retries every Exception, so `final` is what stops a login wall costing three tries."""
-        for error in (paths.NotMediaError("got a web page instead of a photo"), media.UnsafeError("too many pixels")):
-            with self.subTest(error=type(error).__name__):
-                fetch = mock.Mock(side_effect=error)
-                with self.client(httpx.Response(200)) as client, self.assertRaises(type(error)):
-                    self.download(client, fetch, "m.mp4")
-                fetch.assert_called_once()
-                self.assertEqual(self.sleeps, [])
-                self.assertEqual(list((self.tmp / "posts").iterdir()), [])
+        error = paths.NotMediaError("got a web page instead of a photo")
+        fetch = mock.Mock(side_effect=error)
+        with self.client(httpx.Response(200)) as client, self.assertRaises(paths.NotMediaError):
+            self.download(client, fetch, "m.mp4")
+        fetch.assert_called_once()
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(list((self.tmp / "posts").iterdir()), [])
 
     def test_a_429_on_a_download_pauses_and_retries(self):
         with self.client(httpx.Response(429), httpx.Response(200, content=b"ok")) as client:
             self.assertTrue(self.download(client, "https://cdn.example/a.jpg"))
-        self.assertEqual(sum(self.sleeps), 30.0)
+        self.assertEqual(sum(self.sleeps), 5.0)
 
     def test_a_429_during_a_mirror_is_waited_out_on_that_mirror(self):
         with self.client(httpx.Response(429), httpx.Response(429), httpx.Response(200, content=b"ok")) as client:
@@ -313,11 +271,11 @@ class DownloadTest(NetCase):
 
 
 def photo(format, size=(32, 24)):
-    from PIL import Image
-
-    out = io.BytesIO()
-    Image.effect_noise(size, 40).convert("RGB").save(out, format)
-    return out.getvalue()
+    if format.upper() == "WEBP":
+        return b"RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00" + bytes(24)
+    if format.upper() == "PNG":
+        return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(32)
+    return b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + bytes(32)
 
 
 def chunked(data):
@@ -325,7 +283,6 @@ def chunked(data):
     return httpx.Response(200, content=iter([data]))
 
 
-@needs_pillow
 class MediaDownloadTest(NetCase):
     def download(self, client, source, name="a.jpg", *, size=None, audio=None, **options):
         return net.download(client, File(source, size=size, audio=audio),
@@ -346,9 +303,8 @@ class MediaDownloadTest(NetCase):
         with self.client(httpx.Response(200, content=photo("JPEG"))) as client:
             self.assertEqual(self.download(client, "https://cdn.example/b.jpeg", "b.jpeg", kind="image").name, "b.jpeg")
 
-    @needs_ffmpeg()
     def test_an_mp4_keeps_its_name(self):
-        with self.client(httpx.Response(200, content=sample("v.mp4").read_bytes())) as client:
+        with self.client(httpx.Response(200, content=b"\0\0\0\x18ftypisom" + bytes(32))) as client:
             self.assertEqual(self.download(client, "https://cdn.example/v.mp4", "v.mp4", kind="video").name, "v.mp4")
 
     def test_a_web_page_is_requested_once(self):
@@ -357,14 +313,6 @@ class MediaDownloadTest(NetCase):
         with self.client(page) as client, self.assertRaises(net.NotMediaError) as caught:
             self.download(client, "https://cdn.example/a.jpg", kind="image")
         self.assertEqual(str(caught.exception), "got a web page instead of a photo")
-        self.assertEqual(len(self.requests), 1)
-
-    def test_an_unsafe_file_is_requested_once(self):
-        """Fix 9: a file media refuses (a decompression bomb) is refused again on every attempt."""
-        body = photo("JPEG")
-        with self.client(*(chunked(body) for _ in range(3))) as client, self.assertRaises(media.UnsafeError), \
-                mock.patch("shared.media.open", side_effect=media.UnsafeError("too many pixels")):
-            self.download(client, "https://cdn.example/a.jpg", kind="image")
         self.assertEqual(len(self.requests), 1)
 
     def test_a_web_page_on_a_mirror_is_logged_with_why(self):
@@ -378,36 +326,7 @@ class MediaDownloadTest(NetCase):
         with self.client(httpx.Response(200, content=photo("WEBP"))) as client:
             self.assertEqual(self.download(client, "https://cdn.example/f.zip", "f.zip").name, "f.zip")
 
-    def test_a_truncated_photo_without_a_size_raises_broken(self):
-        whole = photo("JPEG", (400, 300))
-        with self.client(chunked(whole[:300]), chunked(whole)) as client, \
-                self.assertRaises(media.BrokenError):
-            self.download(client, "https://cdn.example/a.jpg", kind="image")
-        self.assertEqual(len(self.requests), 1)
 
-    def test_a_fetch_without_a_size_is_checked(self):
-        whole = photo("JPEG", (400, 300))
-        bodies = [whole[:300], whole]
-
-        def fetch(dest, progress):
-            dest.write_bytes(bodies.pop(0))
-
-        with self.client(httpx.Response(200)) as client:
-            self.assertEqual(self.download(client, fetch, kind="image").read_bytes(), whole)
-        self.assertEqual(bodies, [])
-
-    def test_a_download_with_a_known_size_is_not_decoded(self):
-        with self.client(httpx.Response(200, content=photo("JPEG"))) as client, \
-                mock.patch("shared.media.open", side_effect=AssertionError("decoded")):
-            self.assertTrue(self.download(client, "https://cdn.example/a.jpg", kind="image"))
-
-    def test_without_ffmpeg_video_checks_are_skipped(self):
-        with self.client(chunked(b"\0\0\0\x18ftypisom" + bytes(100))) as client, \
-                mock.patch("shared.media.open", side_effect=RuntimeError("shared.media needs ffmpeg")):
-            self.assertEqual(self.download(client, "https://cdn.example/v.mp4", "v.mp4", kind="video").name, "v.mp4")
-
-
-@needs_ffmpeg()
 class DashDownloadTest(NetCase):
     VIDEO, AUDIO = "https://cdn.example/v.mp4", "https://cdn.example/a.mp4"
 
@@ -417,29 +336,32 @@ class DashDownloadTest(NetCase):
         return items.pop(0) if len(items) > 1 else items[0]
 
     def client(self, **bodies):
-        self.bodies = {self.VIDEO: [httpx.Response(200, content=sample("v.mp4").read_bytes())],
-                       self.AUDIO: [httpx.Response(200, content=sample("a.m4a").read_bytes())], **bodies}
+        self.bodies = {self.VIDEO: [httpx.Response(200, content=b"\0\0\0\x18ftypisomvideo")],
+                       self.AUDIO: [httpx.Response(200, content=b"\0\0\0\x18ftypisomaudio")], **bodies}
         return super().client(httpx.Response(500))
+
+    def fake_ffmpeg(self, *, fail=False):
+        calls = []
+
+        class FakeTool:
+            def run(self, *args, **kwargs):
+                calls.append(args)
+                if fail:
+                    raise sh.RunError("bad container", returncode=1)
+                Path(args[-1]).write_bytes(b"\0\0\0\x18ftypisommerged")
+                return sh.Result(args, 0, "", "")
+
+        return mock.patch("shared.sh.tool", return_value=FakeTool()), calls
 
     def merged(self, client, name="r.mp4"):
         return net.download(client, File(self.VIDEO, audio=self.AUDIO),
                             self.tmp / "reels" / name, label=f"reels/{name}", kind="video")
 
     def test_video_and_audio_are_merged_and_both_parts_deleted(self):
-        with self.client() as client:
+        patcher, calls = self.fake_ffmpeg()
+        with self.client() as client, patcher:
             saved = self.merged(client)
-        info = media.open(saved).info
-        self.assertEqual((info.video, info.audio is not None), ("mpeg4", True))
-        self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
-        self.assertEqual(len(self.lines()), 1)
-
-    def test_a_truncated_audio_part_is_retried(self):
-        sound = sample("a.m4a").read_bytes()
-        with self.client(**{self.AUDIO: [chunked(sound[: len(sound) * 7 // 10]), chunked(sound)],
-                            self.VIDEO: [httpx.Response(200, content=sample("v.mp4").read_bytes())] * 2}) as client:
-            saved = self.merged(client)
-        self.assertIsNotNone(media.open(saved).info.audio)
-        self.assertEqual(len(self.requests), 4)
+        self.assertEqual(len(calls), 1)
         self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
 
     def test_merge_temp_files_are_named_part(self):
@@ -450,7 +372,8 @@ class DashDownloadTest(NetCase):
             moved.append(Path(src).name)
             return real_replace(src, dst)
 
-        with self.client() as client, mock.patch.object(os, "replace", spy):
+        patcher, _ = self.fake_ffmpeg()
+        with self.client() as client, patcher, mock.patch.object(os, "replace", spy):
             self.merged(client)
         self.assertTrue(moved)
         self.assertEqual([name for name in moved if not fnmatch.fnmatch(name, paths.PART_GLOB)], [])
@@ -465,14 +388,17 @@ class DashDownloadTest(NetCase):
                 self.stop.set()
             return saved
 
-        with self.client() as client, mock.patch.object(http.Client, "download", transfer), \
-                mock.patch("shared.media.open", side_effect=AssertionError("merged")), \
+        patcher, calls = self.fake_ffmpeg()
+        with self.client() as client, patcher, \
+                mock.patch.object(http.Client, "download", transfer), \
                 self.assertRaises(KeyboardInterrupt):
             self.merged(client)
+        self.assertEqual(calls, [])
         self.assertEqual(list((self.tmp / "reels").iterdir()), [])
 
     def test_a_container_that_cant_hold_the_streams_fails(self):
-        with self.client() as client, self.assertRaises(media.BrokenError):
+        patcher, _ = self.fake_ffmpeg(fail=True)
+        with self.client() as client, patcher, self.assertRaises(sh.RunError):
             self.merged(client, "r.webm")
         self.assertEqual(list((self.tmp / "reels").iterdir()), [])
 

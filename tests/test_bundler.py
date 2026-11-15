@@ -53,21 +53,6 @@ class CommandTest(unittest.TestCase):
         self.assertIn("mypkg.plugins", hidden)
         self.assertIn("mypkg.more", hidden)
 
-    def test_media_engines_are_hidden_imports(self):
-        # media imports Pillow, pi-heif and imageio-ffmpeg inside functions, and only when installed.
-        with mock.patch.object(bundler, "_installed", lambda module: True):
-            hidden = values(self.argv(), "--hidden-import")
-        for module in ("PIL", "pi_heif", "imageio_ffmpeg"):
-            self.assertIn(module, hidden)
-
-    def test_media_private_modules_are_plain_imports_pyinstaller_follows(self):
-        """`_media_video` and `_media_audio` aren't hidden imports, so `media` must name them in
-        `import` statements, which PyInstaller's import scan sees, rather than load them by a computed name."""
-        source = (Path(shared.__file__).parent / "_media.py").read_text(encoding="utf-8")
-        for module in ("_media_video", "_media_audio"):
-            self.assertIn(f"from shared import {module}\n", source)
-            self.assertNotIn(f"shared.{module}", values(self.argv(), "--hidden-import"))
-
     def test_the_bundler_and_pyinstaller_stay_out_of_the_bundle(self):
         argv = self.argv()
         self.assertNotIn("shared._bundler", values(argv, "--hidden-import"))
@@ -163,26 +148,7 @@ class MissingExtraTest(unittest.TestCase):
 @unittest.skipUnless(HAS_PYINSTALLER and os.environ.get("FLNTOOLS_BUILD_TESTS") == "1",
                      "set FLNTOOLS_BUILD_TESTS=1 with PyInstaller installed to run a real build")
 class RealBuildTest(unittest.TestCase):
-    def test_a_built_program_probes_a_photo_and_a_video(self):
-        # The ffmpeg binary is data to PyInstaller, so a lost executable bit would only show here.
-        with tempfile.TemporaryDirectory() as folder:
-            photo, video = Path(folder) / "a.png", Path(folder) / "v.mp4"
-            from media_samples import sample
-
-            photo.write_bytes(sample("small.png").read_bytes())
-            video.write_bytes(sample("v.mp4").read_bytes())
-            script = Path(folder) / "probe.py"
-            script.write_text("import sys\nfrom shared import media\n"
-                              "print(media.open(sys.argv[1]).info.kind, media.open(sys.argv[2]).info.video)\n")
-            built = bundler.build(script, name="probe", dest=Path(folder) / "dist")
-            program = built / ("probe.exe" if sys.platform == "win32" else "probe")
-            result = subprocess.run([str(program), str(photo), str(video)], capture_output=True, text=True,
-                                    timeout=120, cwd=folder)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.split(), ["image", "mpeg4"])
-
-    def test_a_built_flnd_ships_ffmpeg(self):
-        # What `make dist` builds: flnd, whose bundled ffmpeg runs from inside it.
+    def test_a_built_flnd_runs_sync(self):
         with tempfile.TemporaryDirectory() as folder:
             built = bundler.build(ROOT / "flnd" / "__main__.py", name="flnd", dest=Path(folder) / "dist")
             program = built / ("flnd.exe" if sys.platform == "win32" else "flnd")

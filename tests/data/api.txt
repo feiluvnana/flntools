@@ -9,7 +9,7 @@ flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] =
 flnd.Engine.auth_ls() -> list[AuthInfo]
 flnd.Engine.browsers: property -> dict[str, str]
 flnd.Engine.cookie_logins: property -> tuple[str, ...]
-flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), shrink: bool | None = None, limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False) -> Report
+flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False) -> Report
 flnd.Engine.home: attribute
 flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
 flnd.Engine.logins: property -> dict[str, str]
@@ -31,6 +31,31 @@ flnd.Report.failed: property -> tuple[Target, ...]
 flnd.Report.files: property -> int
 flnd.Report.ok: property -> bool
 flnd.Report.targets: field -> tuple[TargetReport, ...]
+flnd.SOURCES: dict
+flnd.Source()
+flnd.Source.browser: attribute -> ClassVar[bool]
+flnd.Source.categories: attribute -> ClassVar[tuple[str, ...]]
+flnd.Source.concurrency: attribute -> ClassVar[int]
+flnd.Source.connect(site: Site, /) -> Any
+flnd.Source.date(site: Site, post: Post, /) -> DateLike
+flnd.Source.fields: attribute -> ClassVar[tuple[str, ...]]
+flnd.Source.filename: attribute -> ClassVar[str]
+flnd.Source.folder: attribute -> ClassVar[str]
+flnd.Source.forms: attribute -> ClassVar[tuple[str, ...]]
+flnd.Source.key: attribute -> ClassVar[str]
+flnd.Source.logged_in(site: Site, /) -> bool
+flnd.Source.login(login: Login, method: str, /) -> None
+flnd.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
+flnd.Source.needs: attribute -> ClassVar[tuple[str, ...]]
+flnd.Source.pace: attribute -> ClassVar[float]
+flnd.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
+flnd.Source.requires_login: attribute -> ClassVar[bool]
+flnd.Source.resolve(text: str) -> Target
+flnd.Source.routes: attribute -> ClassVar[tuple[Route, ...]]
+flnd.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
+flnd.Source.stealth: attribute -> ClassVar[bool]
+flnd.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
+flnd.Source.user_agent: attribute -> ClassVar[str | None]
 flnd.Target(source: str, kind: str, value: str, query: bool = False)
 flnd.Target.kind: field -> str
 flnd.Target.query: field -> bool
@@ -38,13 +63,12 @@ flnd.Target.source: field -> str
 flnd.Target.value: field -> str
 flnd.TargetError(flnd.source.Error, ValueError)
 flnd.TargetError.url: attribute
-flnd.TargetInfo(target: Target, sync: bool, shrink: bool, at: str, files: int, size: int, seen: int, categories: dict[str, str], query: bool)
+flnd.TargetInfo(target: Target, sync: bool, at: str, files: int, size: int, seen: int, categories: dict[str, str], query: bool)
 flnd.TargetInfo.at: field -> str
 flnd.TargetInfo.categories: field -> dict[str, str]
 flnd.TargetInfo.files: field -> int
 flnd.TargetInfo.query: field -> bool
 flnd.TargetInfo.seen: field -> int
-flnd.TargetInfo.shrink: field -> bool
 flnd.TargetInfo.size: field -> int
 flnd.TargetInfo.sync: field -> bool
 flnd.TargetInfo.target: field -> Target
@@ -56,51 +80,10 @@ flnd.TargetReport.settings: field -> str
 flnd.TargetReport.skipped: field -> int
 flnd.TargetReport.target: field -> Target
 flnd.TargetReport.written: field -> tuple[Path, ...]
-flnd.query: module
-flnd.query.Choice(*choices: str)
-flnd.query.Choice.choices: attribute
-flnd.query.Choice.noun: attribute
-flnd.query.Choice.parse(text: str) -> Value
-flnd.query.Date()
-flnd.query.Date.noun: attribute -> str
-flnd.query.Date.parse(text: str) -> Value
-flnd.query.Error(Exception)
-flnd.query.Kind()
-flnd.query.Kind.noun: attribute -> str
-flnd.query.Kind.parse(text: str) -> Value
-flnd.query.Lookup: _CallableGenericAlias
-flnd.query.MAX_SEARCHES: int
-flnd.query.Name()
-flnd.query.Name.noun: attribute -> str
-flnd.query.Name.parse(text: str) -> Value
-flnd.query.Number()
-flnd.query.Number.noun: attribute -> str
-flnd.query.Number.parse(text: str) -> Value
-flnd.query.Param(kind: Kind | type[Kind], help: str, any_of: bool = False, negate: bool = False, compare: bool = True, lookup: Lookup | None = None)
-flnd.query.Param.any_of: field -> bool
-flnd.query.Param.compare: field -> bool
-flnd.query.Param.help: field -> str
-flnd.query.Param.kind: field -> Kind | type[Kind]
-flnd.query.Param.lookup: field -> Lookup | None
-flnd.query.Param.negate: field -> bool
-flnd.query.Param.reader: property -> Kind
-flnd.query.Query(text: str = '', terms: tuple[Term, ...] = (), time: Range | None = None)
-flnd.query.Query.terms: field -> tuple[Term, ...]
-flnd.query.Query.text: field -> str
-flnd.query.Query.time: field -> Range | None
-flnd.query.QueryError(flnd.query.Error, ValueError)
-flnd.query.Term(param: str, values: tuple[Value, ...] = (), negated: bool = False, low: int | datetime.date | None = None, high: int | datetime.date | None = None)
-flnd.query.Term.high: field -> int | datetime.date | None
-flnd.query.Term.low: field -> int | datetime.date | None
-flnd.query.Term.negated: field -> bool
-flnd.query.Term.param: field -> str
-flnd.query.Term.values: field -> tuple[Value, ...]
-flnd.query.Text()
-flnd.query.Text.noun: attribute -> str
-flnd.query.Text.parse(text: str) -> Value
-flnd.query.Value: Union
-flnd.query.check(text: str, params: Mapping[str, Param]) -> Any
-flnd.query.plan(text: str, params: Mapping[str, Param], *, site: Any = None, cache: MutableMapping[str, str] | None = None, time: Range | None = None) -> list[Query]
+flnd.__version__: str
+flnd.download(targets: Target | str | Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False, home: Path = Path('.flnd')) -> Report
+flnd.open(code: str, *, home: Path = Path('.flnd'), time: Range | str = Range(since=None, until=None)) -> Iterator[TargetSite]
+flnd.resolve(text: str) -> Target
 flnd.source: module
 flnd.source.Category(function: Callable[..., Any], *, newest_first: bool = False, folder: str | None = None, key: str | None = None)
 flnd.source.Category.folder: attribute
@@ -141,7 +124,7 @@ flnd.source.Range(since: datetime.date | None = None, until: datetime.date | Non
 flnd.source.Range.parse(text: str) -> Range
 flnd.source.Range.since: field -> datetime.date | None
 flnd.source.Range.until: field -> datetime.date | None
-flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None, params: Mapping[str, Any] | None = None, discovers: bool = False, from_: Iterable[str] | None = None, folder: str | None = None)
+flnd.source.Route(function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None, discovers: bool = False, from_: Iterable[str] | None = None, folder: str | None = None)
 flnd.source.Route.categories: property -> tuple[Category, ...]
 flnd.source.Route.category(function: Callable[..., Any] | None = None, /, *, newest_first: bool = False, folder: str | None = None, key: str | None = None) -> Any
 flnd.source.Route.discovers: attribute
@@ -151,7 +134,6 @@ flnd.source.Route.from_: property -> frozenset[str]
 flnd.source.Route.function: attribute
 flnd.source.Route.is_query: attribute
 flnd.source.Route.kind: attribute
-flnd.source.Route.params: attribute -> Mapping[str, Any]
 flnd.source.Route.patterns: attribute
 flnd.source.Route.shown: attribute
 flnd.source.Site(*args, **kwargs)
@@ -184,7 +166,7 @@ flnd.source.Source.logged_in(site: Site, /) -> bool
 flnd.source.Source.login(login: Login, method: str, /) -> None
 flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.needs: attribute -> ClassVar[tuple[str, ...]]
-flnd.source.Source.pace: attribute -> ClassVar[http.Pace | float]
+flnd.source.Source.pace: attribute -> ClassVar[float]
 flnd.source.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
 flnd.source.Source.requires_login: attribute -> ClassVar[bool]
 flnd.source.Source.resolve(text: str) -> Target
@@ -203,7 +185,7 @@ flnd.source.TargetError.url: attribute
 flnd.source.day(value: Any) -> datetime.date | None
 flnd.source.fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str
 flnd.source.pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None]) -> Iterator[Any]
-flnd.source.target(*patterns: str, shown: str | None = None, params: Mapping[str, Any] | None = None, discovers: bool = False, from_: Iterable[str] | None = None, folder: str | None = None) -> Callable[[Callable[..., Any]], Route]
+flnd.source.target(*patterns: str, shown: str | None = None, discovers: bool = False, from_: Iterable[str] | None = None, folder: str | None = None) -> Callable[[Callable[..., Any]], Route]
 shared: module
 shared.BrokenError(shared.Error, ValueError)
 shared.Error(Exception)
@@ -212,8 +194,8 @@ shared.RefusedError(shared.Error)
 shared.UnsafeError(shared.Error, ValueError)
 shared.archive: module
 shared.archive.BrokenError(shared.archive.Error, shared.BrokenError)
-shared.archive.Entry(name: str, size: int | None, kind: Literal['file', 'dir'])
-shared.archive.Entry.kind: field -> Literal['file', 'dir']
+shared.archive.Entry(name: str, size: int | None, kind: Kind)
+shared.archive.Entry.kind: field -> Kind
 shared.archive.Entry.name: field -> str
 shared.archive.Entry.size: field -> int | None
 shared.archive.Error(shared.Error)
@@ -224,9 +206,9 @@ shared.archive.Limits.size: field -> int
 shared.archive.MissingError(shared.archive.Error, shared.MissingError)
 shared.archive.PasswordError(shared.archive.Error, shared.RefusedError, ValueError)
 shared.archive.UnsafeError(shared.archive.Error, shared.UnsafeError)
-shared.archive.ls(parts: PathLike | Sequence[PathLike], *, password: str | None = None, limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Entry]
-shared.archive.pack(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, split: int | None = None, progress: Progress | None = None) -> list[Path]
-shared.archive.unpack(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, conflict: Conflict = 'error', limits: Limits = Limits(size=20000000000, ratio=200, files=100000), progress: Progress | None = None) -> list[Path]
+shared.archive.ls(path: PathLike, *, password: str | None = None, limits: Limits = Limits(size=20000000000, ratio=200, files=100000)) -> list[Entry]
+shared.archive.pack(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None, progress: Progress | None = None) -> Path
+shared.archive.unpack(path: PathLike, dest: PathLike, *, password: str | None = None, conflict: Conflict = 'error', limits: Limits = Limits(size=20000000000, ratio=200, files=100000), progress: Progress | None = None) -> list[Path]
 shared.browser: module
 shared.browser.Browser(context: BrowserContext, *, close_steps: list[Callable[[], Any]], headless: bool, page_viewport: tuple[int, int] | None = None)
 shared.browser.Browser.close() -> None
@@ -347,55 +329,13 @@ shared.http.Response.url: field -> str
 shared.http.StoppedError(shared.http.Error)
 shared.http.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, resume: bool = True, attempts: int = 3, timeout: float = 30.0, progress: Callable[[int, int | None], Any] | None = None, stop: threading.Event | None = None) -> Path
 shared.http.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
-shared.media: module
-shared.media.BrokenError(shared.media.Error, shared.BrokenError)
-shared.media.Encoding(quality: int = 80, resolution: int | None = None, fps: float | None = None, audio_bitrate: int | None = None, codec: str | None = None)
-shared.media.Encoding.audio_bitrate: field -> int | None
-shared.media.Encoding.codec: field -> str | None
-shared.media.Encoding.fps: field -> float | None
-shared.media.Encoding.quality: field -> int
-shared.media.Encoding.resolution: field -> int | None
-shared.media.Error(shared.Error)
-shared.media.Info(path: Path, kind: str, animated: bool, format: str, size: int, width: int | None = None, height: int | None = None, duration: float | None = None, frames: int | None = None, fps: float | None = None, bitrate: int | None = None, video: str | None = None, audio: str | None = None, sample_rate: int | None = None, channels: int | None = None, created: datetime | None = None, location: tuple[float, float] | None = None, tags: dict[str, str] = <factory>)
-shared.media.Info.animated: field -> bool
-shared.media.Info.audio: field -> str | None
-shared.media.Info.bitrate: field -> int | None
-shared.media.Info.channels: field -> int | None
-shared.media.Info.created: field -> datetime | None
-shared.media.Info.duration: field -> float | None
-shared.media.Info.format: field -> str
-shared.media.Info.fps: field -> float | None
-shared.media.Info.frames: field -> int | None
-shared.media.Info.height: field -> int | None
-shared.media.Info.kind: field -> str
-shared.media.Info.location: field -> tuple[float, float] | None
-shared.media.Info.path: field -> Path
-shared.media.Info.sample_rate: field -> int | None
-shared.media.Info.size: field -> int
-shared.media.Info.tags: field -> dict[str, str]
-shared.media.Info.video: field -> str | None
-shared.media.Info.width: field -> int | None
-shared.media.LEVELS: dict
-shared.media.Media()
-shared.media.Media.audio(*, bitrate: int | None = None, format: str | None = None, progress: Progress | None = None) -> Media
-shared.media.Media.close() -> None
-shared.media.Media.compress(level: str | Encoding = 'mid', *, format: str | None = None, strip: bool = True, progress: Progress | None = None) -> Media
-shared.media.Media.convert(format: str, *, encoding: Encoding = Encoding(quality=80, resolution=None, fps=None, audio_bitrate=None, codec=None), progress: Progress | None = None) -> Media
-shared.media.Media.info: property -> Info
-shared.media.Media.merge(*others: Media | PathLike, audio: Media | PathLike | None = None, format: str | None = None, progress: Progress | None = None) -> Media
-shared.media.Media.raw: property -> Any
-shared.media.Media.save(dest: PathLike | None = None) -> Path
-shared.media.MissingError(shared.media.Error, shared.MissingError)
-shared.media.UnsafeError(shared.media.Error, shared.UnsafeError)
-shared.media.info(path: PathLike) -> Info
-shared.media.open(path: PathLike) -> Media
-shared.media.sniff(path: PathLike) -> str | None
 shared.prompt: module
 shared.prompt.Error(shared.Error)
 shared.prompt.ask(message: str, *, secret: bool = False, default: str | None = None, validate: Validate | None = None) -> str
 shared.prompt.autofill() -> Iterator[None]
 shared.prompt.choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *, many: bool = False, default: Any = None) -> Any
 shared.prompt.confirm(message: str, *, default: bool = True) -> bool
+shared.prompt.interactive() -> bool
 shared.prompt.raw: module
 shared.selector: module
 shared.selector.BrokenError(shared.selector.Error, shared.BrokenError)
@@ -415,22 +355,43 @@ shared.selector.Selection.script(id: str) -> Selection
 shared.selector.Selection.text: property -> str
 shared.selector.Selection.xpath(query: str) -> Selection
 shared.selector.parse(source: Any) -> Selection
+shared.sh: module
+shared.sh.Error(shared.Error)
+shared.sh.MissingError(shared.sh.Error, shared.MissingError)
+shared.sh.Result(returncode: int, stdout: str, stderr: str, args: tuple[str, ...])
+shared.sh.Result.args: field -> tuple[str, ...]
+shared.sh.Result.returncode: field -> int
+shared.sh.Result.stderr: field -> str
+shared.sh.Result.stdout: field -> str
+shared.sh.RunError(shared.sh.Error)
+shared.sh.RunError.returncode: attribute
+shared.sh.RunError.stderr: attribute
+shared.sh.RunError.stdout: attribute
+shared.sh.Spec(url: str, sha256: str, bin: str = '')
+shared.sh.Spec.bin: field -> str
+shared.sh.Spec.sha256: field -> str
+shared.sh.Spec.url: field -> str
+shared.sh.Tool(path: Path, name: str)
+shared.sh.Tool.name: field -> str
+shared.sh.Tool.path: field -> Path
+shared.sh.Tool.run(*args: str | os.PathLike[str], cwd: PathLike | None = None, env: Mapping[str, str] | None = None, check: bool = True, timeout: float | None = None, capture: bool = True) -> Result
+shared.sh.UnsafeError(shared.sh.Error, shared.UnsafeError)
+shared.sh.run(cmd: Sequence[str | os.PathLike[str]], *, cwd: PathLike | None = None, env: Mapping[str, str] | None = None, check: bool = True, timeout: float | None = None, capture: bool = True) -> Result
+shared.sh.tool(name: str, *, platforms: Mapping[tuple[str, str], Spec] | None = None, dest: PathLike | None = None) -> Tool
 shared.store: module
 shared.store.ClosedError(shared.store.Error, RuntimeError)
 shared.store.Error(shared.Error)
-shared.store.Store(link: _Link, table: str)
+shared.store.Store(backend: _Backend, table: str)
 shared.store.Store.clear() -> None
 shared.store.Store.close() -> None
 shared.store.Store.get(key: str, default: Any = None) -> Any
 shared.store.Store.items() -> ItemsView[str, Any]
 shared.store.Store.keys(prefix: str = '') -> KeysView[str]
-shared.store.Store.prune() -> int
-shared.store.Store.raw: property -> sqlite3.Connection
-shared.store.Store.set(key: str, value: Any, *, ttl: float | None = None) -> None
+shared.store.Store.set(key: str, value: Any) -> None
 shared.store.Store.table(name: str) -> Store
 shared.store.Store.update(other: Any = (), /, **kwargs: Any) -> None
 shared.store.Store.values() -> ValuesView[Any]
-shared.store.open(path: PathLike, *, table: str = 'kv', timeout: float = 5.0) -> Store
+shared.store.open(path: PathLike, *, table: str = 'kv') -> Store
 shared.text: module
 shared.text.Error(shared.Error)
 shared.text.clean()
@@ -511,3 +472,4 @@ shared.worker.Result.item: field -> Any
 shared.worker.Result.ok: property -> bool
 shared.worker.Result.value: field -> R | None
 shared.worker.StalledError(shared.worker.Error, TimeoutError)
+shared.worker.map(fn: Callable[..., R], items: Any, *, concurrency: int | None = None, retries: int = 0, timeout: float | None = None, progress: Callable[[int, int], Any] | None = None, stop: threading.Event | None = None) -> list[Result[R]]

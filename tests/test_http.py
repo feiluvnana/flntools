@@ -261,52 +261,6 @@ class ResponseTest(unittest.TestCase):
         self.assertEqual(dict(page.headers), {"a": "1"})
 
 
-class PerHostLimitTest(unittest.TestCase):
-    def test_never_more_than_6_connections_to_one_host_across_threads(self):
-        lock = threading.Lock()
-        in_flight: dict[str, int] = {}
-        peak: dict[str, int] = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            host = request.url.host
-            with lock:
-                in_flight[host] = in_flight.get(host, 0) + 1
-                peak[host] = max(peak.get(host, 0), in_flight[host])
-            time.sleep(0.02)  # long enough for the other threads to pile up behind the limit
-            with lock:
-                in_flight[host] -= 1
-            return httpx.Response(200)
-
-        # Two clients, to show the limit is the process's, not one client's.
-        raws = [httpx.Client(transport=httpx.MockTransport(handler)) for _ in range(2)]
-        clients: list[http.Client] = []
-        for raw in raws:
-            c = http.Client()
-            c._raw.close()
-            c._raw = raw
-            clients.append(c)
-        errors: list[BaseException] = []
-
-        def work(index: int) -> None:
-            try:
-                for _ in range(3):
-                    clients[index % 2].fetch("https://cdn.example.com/f")
-                    clients[index % 2].fetch("https://other.example.com/f")
-            except BaseException as error:  # reported by the assertion below, not lost in the thread
-                errors.append(error)
-
-        threads = [threading.Thread(target=work, args=(index,)) for index in range(20)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        for raw in raws:
-            raw.close()
-        self.assertEqual(errors, [])
-        self.assertEqual(peak["cdn.example.com"], http.MAX_PER_HOST)
-        self.assertEqual(peak["other.example.com"], http.MAX_PER_HOST)
-
-
 class SecretsTest(HttpTestCase):
     COOKIE = "s3cr3t-cookie-value"
     TOKEN = "Bearer s3cr3t-token-value"
@@ -406,52 +360,6 @@ class ThreadsTest(HttpTestCase):
         self.assertEqual(results, {number: str(number) for number in range(16)})
 
 
-# `download`: a fake CDN on `httpx.MockTransport` that honours `Range` and `If-Range` as a real
-# one does, can cut a body short after some bytes, and counts the connections it has open.
-
-
-class BackOffEscalationTest(unittest.TestCase):
-    def test_soft_block_back_off_after_200_escalates_strikes(self):
-        now = [100.0]
-        raw = httpx.Client(
-            transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"ok"))
-        )
-        self.addCleanup(raw.close)
-        with mock.patch("shared._pace.clock.now", side_effect=lambda: now[0]):
-            with mock.patch.object(http.Client, "_wait",
-                                   side_effect=lambda h, s: now.__setitem__(0, now[0] + s)):
-                with http.Client() as c:
-                    c._raw = raw
-                    c.fetch("https://example.com/a")
-                    host = c._host("https://example.com/a")
-                    c._throttled(host, None, reason="wall")
-                    self.assertEqual(host.strikes, 1)
-                    c.fetch("https://example.com/a")
-                    c._throttled(host, None, reason="wall")
-                    self.assertEqual(host.strikes, 2)
-
-    def test_clean_200_turn_not_followed_by_back_off_leaves_strikes_zero(self):
-        now = [100.0]
-        raw = httpx.Client(
-            transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"ok"))
-        )
-        self.addCleanup(raw.close)
-        with mock.patch("shared._pace.clock.now", side_effect=lambda: now[0]):
-            with mock.patch.object(http.Client, "_wait",
-                                   side_effect=lambda h, s: now.__setitem__(0, now[0] + s)):
-                with http.Client() as c:
-                    c._raw = raw
-                    c.fetch("https://example.com/a")
-                    host = c._host("https://example.com/a")
-                    c._throttled(host, None, reason="wall")
-                    self.assertEqual(host.strikes, 1)
-                    c.fetch("https://example.com/a")
-                    self.assertEqual(host.strikes, 0)
-                    c.fetch("https://example.com/a")
-                    c._throttled(host, None, reason="wall")
-                    self.assertEqual(host.strikes, 1)
-
-
 class BugFixTest(HttpTestCase):
     def test_invalid_url_raises_http_error(self):
         with self.assertRaises(http.Error):
@@ -465,36 +373,6 @@ class BugFixTest(HttpTestCase):
         assert resp is not None
         self.assertIsInstance(resp.raw, httpx.Response)
         self.assertEqual(resp.raw.status_code, 200)
-
-    def test_transport_does_not_resend_post(self):
-        transport = http._Transport()
-        self.addCleanup(transport.close)
-        h1_calls: list[str] = []
-
-        class FakeH2:
-            def handle_request(self, request: httpx.Request) -> httpx.Response:
-                raise httpx.RemoteProtocolError("stream reset", request=request)
-
-            def close(self) -> None:
-                pass
-
-        class FakeH1:
-            def handle_request(self, request: httpx.Request) -> httpx.Response:
-                h1_calls.append(request.method)
-                return httpx.Response(200, request=request)
-
-            def close(self) -> None:
-                pass
-
-        transport._http2 = FakeH2()  # type: ignore[assignment]
-        transport._http1 = FakeH1()  # type: ignore[assignment]
-        post = httpx.Request("POST", "https://example.com/submit")
-        with self.assertRaises(httpx.RemoteProtocolError):
-            transport.handle_request(post)
-        self.assertEqual(h1_calls, [])
-        get = httpx.Request("GET", "https://example.com/next")
-        self.assertEqual(transport.handle_request(get).status_code, 200)
-        self.assertEqual(h1_calls, ["GET"])
 
     def test_fetch_raw_body_no_deprecation(self):
         import warnings

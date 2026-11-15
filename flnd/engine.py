@@ -4,24 +4,21 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from urllib.parse import urlsplit
 
 import httpx
 
-import flnd.query  # noqa: F401
 import flnd.targets
-from flnd import job, repair
-from flnd.common import auth, compress, net, paths
-from flnd.common.compress import Compressor
+from flnd import job
+from flnd.common import auth, net, paths
 from flnd.job import TargetReport
 from flnd.options import Options, RunShared, categories_by_source
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.source import Range, Source, Target, TargetError
 from flnd.sources import SOURCES
-from shared import cli, fs, store, text, ui, worker
+from shared import cli, fs, store, text, ui
 
 __all__ = ["AuthInfo", "Engine", "Error", "Report", "TargetInfo", "TargetReport"]
 
@@ -41,7 +38,6 @@ class TargetInfo:
 
     target: Target
     sync: bool
-    shrink: bool
     at: str
     files: int
     size: int
@@ -90,7 +86,6 @@ class _Planned:
     number: int
     target: Target
     options: Options
-    tally: repair.Tally | None
 
 
 class Engine:
@@ -114,7 +109,6 @@ class Engine:
         *,
         categories: str | Sequence[str] | None = None,
         time: Range | str = Range(),
-        shrink: bool | None = None,
         limit: int | None = None,
         dry: bool = False,
         sync: bool = False,
@@ -138,10 +132,10 @@ class Engine:
             ui.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
             if any(self._is_query(t) for t in resolved):
                 reports = self._download_mixed(
-                    resolved, by_source, shrink=shrink, span=span, sync=sync, stop=stop
+                    resolved, by_source, span=span, sync=sync, stop=stop
                 )
                 return self._complete_download(resolved, reports, sync=sync, stop=stop)
-            return self._download_normal(resolved, by_source, shrink=shrink, sync=sync, stop=stop)
+            return self._download_normal(resolved, by_source, sync=sync, stop=stop)
 
     def sync(self, targets: Sequence[Target | str] = ()) -> Report:
         """Bring synced targets up to date: repair lost files and fetch new posts."""
@@ -283,31 +277,16 @@ class Engine:
         resolved: Sequence[Target],
         by_source: Mapping[str, Options],
         *,
-        shrink: bool | None,
         sync: bool,
         stop: cli.Stopping,
     ) -> Report:
-        """Download non-query targets with metadata locking and optional history sweep."""
+        """Download non-query targets sequentially with metadata locking."""
         with fs.lock(self.home / paths.METADATA / ".lock"):
             rows = flnd.targets.rows(self.home)
-            chosen: list[tuple[Target, Options]] = []
-            shown: list[str] = []
-            turned_on: list[Target] = []
-            for target in resolved:
-                saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
-                shown.append(flnd.targets.announce(target, saved) if shrink is None else "")
-                given = saved if shrink is None else shrink
-                chosen.append((target, replace(by_source[target.source], shrink=given)))
-                if shrink and not saved:
-                    turned_on.append(target)
-            flnd.targets.record(
-                self.home, [pair for pair in chosen if pair[0] not in turned_on], sync=sync
-            )
-            if turned_on:
-                self._apply(turned_on, dict(chosen), sync=sync)
+            chosen = [(target, by_source[target.source]) for target in resolved]
+            flnd.targets.record(self.home, chosen, sync=sync)
             reports = self._run(chosen, stop=stop)
-            final = [replace(rep, settings=txt) for rep, txt in zip(reports, shown)]
-            return self._complete_download(resolved, final, sync=sync, stop=stop, rows=rows)
+            return self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)
 
     def _complete_download(
         self,
@@ -342,29 +321,15 @@ class Engine:
             return
         normal = [chosen[i] for i in indices]
         flnd.targets.record(self.home, normal)
-        shown = [flnd.targets.announce(target, opts.shrink) for target, opts in normal]
-        folders = [paths.target_folder(self.home, target) for target, _ in normal]
-        with self._history() as history:
-            index = repair.index(history, folders)
-        tallies = [
-            repair.Tally(str(target), folder, index[folder])
-            for (target, _), folder in zip(normal, folders)
-        ]
         ui.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
         run_items = [(t, replace(opts, stop_at_saved=True)) for t, opts in normal]
         reports = self._run(
-            run_items, stop=stop, tallies=tallies, browser_pool=pool_settings.browser_pool
+            run_items, stop=stop, browser_pool=pool_settings.browser_pool
         )
         if stop.soon.is_set():
             raise KeyboardInterrupt
-        with self._history() as history:
-            for tally in tallies:
-                repair.count(history, tally)
-        repair.summary(tallies)
-        for pos, rep, tally, text in zip(indices, reports, tallies, shown):
-            results[pos] = replace(
-                rep, repaired=tally.repaired, missing=tally.missing, settings=text
-            )
+        for pos, rep in zip(indices, reports):
+            results[pos] = rep
 
     def _sync_queries(
         self,
@@ -407,7 +372,6 @@ class Engine:
         return TargetInfo(
             target=target,
             sync=flnd.targets.sync_enabled(row),
-            shrink=flnd.targets.shrink(row),
             at=str(row.get("at", "")),
             files=files,
             size=size,
@@ -468,12 +432,11 @@ class Engine:
         resolved: Sequence[Target],
         by_source: Mapping[str, Options],
         *,
-        shrink: bool | None,
         span: Range,
         sync: bool,
         stop: cli.Stopping,
     ) -> list[TargetReport]:
-        """Download a mix of query and non-query targets in caller order."""
+        """Download a mix of discovering and normal targets in caller order."""
         reports: list[TargetReport] = []
         pool_settings = RunShared(home=self.home, history={}, stop=stop)
         with fs.lock(self.home / paths.METADATA / ".lock"), shared_browser(pool_settings):
@@ -481,22 +444,15 @@ class Engine:
                 options = by_source[target.source]
                 if self._is_query(target):
                     reports.extend(self._run_query(
-                        target, options, shrink=shrink, span=span, sync=sync, stop=stop,
+                        target, options, span=span, sync=sync, stop=stop,
                         browser_pool=pool_settings.browser_pool,
                     ))
                     continue
-                rows = flnd.targets.rows(self.home)
-                saved = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
-                shown = flnd.targets.announce(target, saved) if shrink is None else ""
-                chosen_opts = replace(options, shrink=saved if shrink is None else shrink)
-                if shrink and not saved:
-                    self._apply([target], {target: chosen_opts}, sync=sync)
-                else:
-                    flnd.targets.record(self.home, [(target, chosen_opts)], sync=sync)
+                flnd.targets.record(self.home, [(target, options)], sync=sync)
                 [rep] = self._run(
-                    [(target, chosen_opts)], stop=stop, browser_pool=pool_settings.browser_pool
+                    [(target, options)], stop=stop, browser_pool=pool_settings.browser_pool
                 )
-                reports.append(replace(rep, settings=shown))
+                reports.append(rep)
         return reports
 
     def _run_query(
@@ -504,18 +460,14 @@ class Engine:
         target: Target,
         options: Options,
         *,
-        shrink: bool | None,
         span: Range,
         sync: bool,
         stop: cli.Stopping,
         browser_pool: Any = None,
     ) -> list[TargetReport]:
-        """Discover targets from a query and download each one."""
+        """Discover targets from a discovering route and download each one."""
         source = self.sources[target.source]()
-        rows = flnd.targets.rows(self.home)
-        saved_shrink = flnd.targets.shrink(rows.get(flnd.targets.key(target), {}))
-        query_shrink = saved_shrink if shrink is None else shrink
-        flnd.targets.record(self.home, [(target, replace(options, shrink=query_shrink))], sync=sync)
+        flnd.targets.record(self.home, [(target, options)], sync=sync)
         reports: list[TargetReport] = []
         with self._history() as history, self._targets() as saved_targets, ui.group() as group:
             settings = RunShared(
@@ -530,8 +482,7 @@ class Engine:
                 if err := _require_auth(source, run, target):
                     return [err]
                 self._discover_and_run(
-                    run, target, options, board, reports,
-                    query_shrink=query_shrink, span=span, stop=stop,
+                    run, target, options, board, reports, span=span, stop=stop,
                 )
         return reports
 
@@ -543,7 +494,6 @@ class Engine:
         board: job.Board,
         reports: list[TargetReport],
         *,
-        query_shrink: bool,
         span: Range,
         stop: cli.Stopping,
     ) -> None:
@@ -558,9 +508,7 @@ class Engine:
                     for child in found:
                         if stop.soon.is_set():
                             break
-                        child_opts = replace(
-                            options, shrink=query_shrink, limit=None, query=target.value
-                        )
+                        child_opts = replace(options, limit=None, query=target.value)
                         rep = self._run_child(run, target, child, board, child_opts, stop)
                         if rep.error is None:
                             seen_keys.append(flnd.targets.key(child))
@@ -738,8 +686,7 @@ class Engine:
             (
                 target,
                 Options(
-                    shrink=flnd.targets.shrink(row := rows.get(flnd.targets.key(target), {})),
-                    query=flnd.targets.query_name(row),
+                    query=flnd.targets.query_name(rows.get(flnd.targets.key(target), {})),
                 ),
             )
             for target in targets
@@ -770,26 +717,14 @@ class Engine:
                             error=error,
                         )
 
-    def _apply(
-        self, targets: Sequence[Target], chosen: Mapping[Target, Options], *, sync: bool = False,
-    ) -> None:
-        folders = {target: paths.target_folder(self.home, target) for target in targets}
-        compressor = Compressor()
-        with self._history() as history:
-            index = repair.index(history, list(folders.values()))
-            for target, folder in folders.items():
-                compress.apply(history, index[folder], compressor, label=str(target))
-                flnd.targets.record(self.home, [(target, chosen[target])], sync=sync)
-
     def _run(
         self,
         chosen: Sequence[tuple[Target, Options]],
         *,
         stop: cli.Stopping,
-        tallies: Sequence[repair.Tally] = (),
         browser_pool: Any = None,
     ) -> list[TargetReport]:
-        """Group targets by site and run each site in parallel via `worker.Pool`."""
+        """Run each target sequentially 1 by 1, grouped by site session."""
         groups: dict[str, list[int]] = {}
         for number, (target, _) in enumerate(chosen):
             groups.setdefault(target.source, []).append(number)
@@ -807,23 +742,20 @@ class Engine:
             work = [
                 (
                     self.sources[code](),
-                    [
-                        _Planned(number, *chosen[number], tallies[number] if tallies else None)
-                        for number in numbers
-                    ],
+                    [_Planned(number, *chosen[number]) for number in numbers],
                 )
                 for code, numbers in groups.items()
             ]
             with shared_browser(run_settings):
-                overall = rows.add("Targets", total=len(work))
-                with worker.Pool(
-                    concurrency=max(len(work), 1), progress=overall.part(), stop=stop.soon
-                ) as pool:
-                    for item in work:
-                        pool.submit(partial(_run_site, run_settings, board, reports), item)
-                    for result in pool.as_completed():
-                        if not result.ok:
-                            _fail_unreached(result.item, result.error, reports, board)
+                overall = rows.add("Targets", total=len(chosen))
+                for item in work:
+                    try:
+                        _run_site(run_settings, board, reports, item)
+                    except KeyboardInterrupt:
+                        raise
+                    except BaseException as error:
+                        _fail_unreached(item, error, reports, board)
+                    overall.advance(len(item[1]))
         return [reports[number] for number in range(len(chosen))]
 
     def _label_width(self, chosen: Sequence[tuple[Target, Options]]) -> int:
@@ -999,21 +931,7 @@ def _run_site(
             )
         with _written_back(run), _connected(run, account):
             for planned in group:
-                options = _repaired(run_settings, planned)
-                reports[planned.number] = job.download(run, planned.target, board, options)
-
-
-def _repaired(run_settings: RunShared, planned: _Planned) -> Options:
-    tally = planned.tally
-    if tally is None or run_settings.stop.soon.is_set():
-        return planned.options
-    ui.debug("{target}: repair", target=tally.target)
-    repair.repair(run_settings.history, tally)
-    return replace(
-        planned.options,
-        stop_at_saved=planned.options.stop_at_saved and not tally.lost,
-        again=planned.options.again or bool(tally.lost),
-    )
+                reports[planned.number] = job.download(run, planned.target, board, planned.options)
 
 
 def _fail_unreached(

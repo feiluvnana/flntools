@@ -7,11 +7,11 @@ ValueError, so every `except` written before still catches what it caught. Nothi
 import unittest
 
 import shared
-from shared import archive, browser, bundler, cli, clock, cookies, crypto, fs, http, media, prompt, selector, store, text, ui, worker
+from shared import archive, browser, bundler, cli, clock, cookies, crypto, fs, http, prompt, selector, sh, store, text, ui, worker
 
 MODULES = {"archive": archive, "browser": browser, "bundler": bundler, "cli": cli, "clock": clock,
-           "cookies": cookies, "crypto": crypto, "fs": fs, "http": http, "media": media,
-           "prompt": prompt, "selector": selector, "store": store, "text": text, "ui": ui,
+           "cookies": cookies, "crypto": crypto, "fs": fs, "http": http,
+           "prompt": prompt, "selector": selector, "sh": sh, "store": store, "text": text, "ui": ui,
            "worker": worker}
 
 # Each error that existed before the tree: its module, the builtin base it had then, which it keeps,
@@ -20,8 +20,7 @@ ERRORS = [
     (archive.UnsafeError, "archive", ValueError, shared.UnsafeError),
     (archive.BrokenError, "archive", ValueError, shared.BrokenError),
     (archive.PasswordError, "archive", ValueError, shared.RefusedError),
-    (media.BrokenError, "media", ValueError, shared.BrokenError),
-    (media.UnsafeError, "media", ValueError, shared.UnsafeError),
+    (sh.UnsafeError, "sh", ValueError, shared.UnsafeError),
     (cookies.Error, "cookies", Exception, None),
     (cookies.UnsafeError, "cookies", ValueError, shared.UnsafeError),
     (crypto.Error, "crypto", ValueError, None),
@@ -67,7 +66,7 @@ class TreeTest(unittest.TestCase):
                     self.assertEqual(issubclass(error, builtin), old_base is builtin, builtin.__name__)
 
     def test_a_missing_tool_or_a_stall_is_caught_by_name_and_by_its_old_builtin(self):
-        for error, module in ((media.MissingError, media), (archive.MissingError, archive),
+        for error, module in ((sh.MissingError, sh), (archive.MissingError, archive),
                               (browser.MissingError, browser), (cookies.MissingError, cookies)):
             with self.subTest(error.__qualname__):
                 self.assertTrue(issubclass(error, shared.MissingError))
@@ -82,8 +81,8 @@ class TreeTest(unittest.TestCase):
     def test_siblings_stay_apart(self):
         # The tree adds bases, never links two module errors: a broken archive isn't an archive.UnsafeError.
         self.assertFalse(issubclass(archive.BrokenError, archive.UnsafeError))
-        self.assertFalse(issubclass(media.UnsafeError, archive.UnsafeError))
-        self.assertFalse(issubclass(media.BrokenError, media.UnsafeError))
+        self.assertFalse(issubclass(sh.UnsafeError, archive.UnsafeError))
+        self.assertFalse(issubclass(sh.RunError, sh.UnsafeError))
 
     def test_a_module_error_is_caught_at_every_level(self):
         for level in (archive.UnsafeError, archive.Error, shared.UnsafeError, shared.Error, ValueError):

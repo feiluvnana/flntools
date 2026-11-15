@@ -18,7 +18,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import sqlite3
 import time
 # Only `token_bytes`: `secrets` is this module's own function, the vault's entry point.
 from secrets import token_bytes
@@ -312,7 +311,7 @@ def _move(home: Path, code: str) -> None:
         # damaged key (ValueError), or a vault that can't be opened or written (OSError, kv.Error,
         # sqlite3.Error): the plain file is the only copy of the login, so it stays. Each of these
         # names the file or the key, never a cookie's value.
-        except (OSError, ValueError, cookies.Error, shared.store.Error, sqlite3.Error) as error:
+        except (OSError, ValueError, cookies.Error, shared.store.Error) as error:
             ui.warn(
                 "{code}: can't move {name} into the vault: {error}; kept it",
                 code=code, name=path.name, error=error,

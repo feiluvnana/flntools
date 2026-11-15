@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Literal, Optional, Sequence
+from typing import Annotated, Optional, Sequence
 
 import cyclopts
 from rich.table import Table
@@ -66,10 +66,6 @@ def download(
         Optional[str],
         cyclopts.Parameter(help="Date range as SINCE,UNTIL (e.g. 2026-01-01,2026-06-30)."),
     ] = None,
-    shrink: Annotated[
-        Optional[Literal["on", "off"]],
-        cyclopts.Parameter(help="Compress saved media ('on' or 'off'); saved per target."),
-    ] = None,
     sync: bool = False,
     again: bool = False,
     limit: Optional[int] = None,
@@ -84,7 +80,6 @@ def download(
         targets: Target specs or URLs; read from stdin when omitted.
         categories: Categories to fetch from each source.
         time: Inclusive date range SINCE,UNTIL.
-        shrink: Compress media at balanced quality ('on' or 'off').
         sync: Mark targets to be updated by `flnd sync`.
         again: Ignore saved cursors and run from start to finish.
         limit: Cap discovered targets or downloaded posts.
@@ -98,7 +93,6 @@ def download(
                 resolved_targets,
                 categories=categories,
                 time=Range() if time is None else time,
-                shrink=None if shrink is None else shrink == "on",
                 limit=limit,
                 dry=dry,
                 sync=sync,
@@ -141,7 +135,7 @@ def target_ls() -> int:
         ui.info("no targets")
         return 0
     table = Table(title="Targets")
-    for col in ("Target", "Sync", "Shrink", "Stats", "Last", "Categories"):
+    for col in ("Target", "Sync", "Stats", "Last", "Categories"):
         table.add_column(col)
     for item in items:
         stats = (
@@ -153,7 +147,6 @@ def target_ls() -> int:
         table.add_row(
             str(item.target),
             "on" if item.sync else "off",
-            "on" if item.shrink else "off",
             stats,
             item.at[:10] if item.at else "",
             cats,

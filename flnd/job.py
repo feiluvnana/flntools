@@ -24,7 +24,6 @@ import msgspec
 
 from flnd import targets
 from flnd.common import net, paths
-from flnd.common.compress import KINDS, ONE_AT_A_TIME
 from flnd.options import Options
 from flnd.site import SourceRun, TargetSite
 from flnd.source import (
@@ -54,8 +53,6 @@ EXPIRED = frozenset({403, 410})
 STOPPED = "stopped by Ctrl-C"
 FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
 WAKE = 0.1
-LOOKUP_TTL = 24 * 3600
-LOOKUP_KEY = "query.lookups"
 ASKED_TTL = 30 * 24 * 3600
 ASKED_KEY = "redate.asked"
 ALL = "all"
@@ -111,7 +108,6 @@ class Counts:
     found: int = 0
     queued: int = 0
     downloading: int = 0
-    shrinking: int = 0
     saved: int = 0
     linked: int = 0
     later: int = 0
@@ -122,7 +118,7 @@ class Counts:
     @property
     def pending(self) -> int:
         """Return files and links not yet finished."""
-        return self.queued + self.downloading + self.shrinking + self.later
+        return self.queued + self.downloading + self.later
 
 
 @dataclass
@@ -535,13 +531,6 @@ class Ledger:
         """Return undated or estimated history rows belonging to this target's folder."""
         history = self.settings.history
         prefix = f"{self.target.source}:"
-        folder_str = str(self.folder)
-        raw = getattr(history, "raw", None)
-        if raw is not None:
-            sql = "SELECT key, value FROM kv WHERE key LIKE ? AND value LIKE ?"
-            cursor = raw.execute(sql, (f"{prefix}%", f"%{folder_str}%"))
-            rows = [(k, msgspec.json.decode(v)) for k, v in cursor.fetchall()]
-            return [(k, r) for k, r in rows if self._undated(r)]
         return [(k, r) for k, r in list(history.items())
                 if k.startswith(prefix) and self._undated(r)]
 
@@ -550,7 +539,7 @@ class Ledger:
         if not isinstance(row, dict) or not isinstance(row.get(ID), str):
             return False
         in_folder = Path(row.get("path", "")).is_relative_to(self.folder)
-        return in_folder and (DATE not in row or bool(row.get(ESTIMATED)))
+        return in_folder and (row.get(DATE) is None or bool(row.get(ESTIMATED)))
 
     def _load_asked(self) -> dict[str, float]:
         """Load non-expired 30-day `asked` cache entries from `site.state`."""
@@ -735,13 +724,12 @@ def _try_link(dest: Path, holder: Path) -> bool:
 
 
 class Downloads:
-    """Concurrent download and video-encode runner for one target."""
+    """Concurrent download runner for one target."""
 
-    def __init__(self, run: SourceRun, target: Target, board: Board, *, shrink: bool) -> None:
-        self.run, self.target, self.board, self.shrink = run, target, board, shrink
+    def __init__(self, run: SourceRun, target: Target, board: Board) -> None:
+        self.run, self.target, self.board = run, target, board
         self.source, self.settings = run.source, run.settings
         self._pool: worker.Pool | None = None
-        self._encodes: worker.Pool | None = None
         self._written: dict[str, Path] = {}
         self._writing = threading.Lock()
         self._changed = threading.Condition()
@@ -776,10 +764,10 @@ class Downloads:
         while True:
             self._answer()
             with self._changed:
-                if not self._pending:
-                    return
                 if self.settings.stop.now.is_set():
                     raise KeyboardInterrupt
+                if not self._pending:
+                    return
                 note_text = (
                     FINISHING.format(files=text.fmt.count(self._running, "file"))
                     if self.settings.stop.soon.is_set()
@@ -798,10 +786,8 @@ class Downloads:
             self.wait()
         else:
             self._cancel_refreshes()
-        for name in ("_pool", "_encodes"):
-            pool: worker.Pool | None = getattr(self, name)
-            if pool is not None:
-                self._drain_pool(pool, error)
+        if self._pool is not None:
+            self._drain_pool(self._pool, error)
         with self._writing:
             return tuple(self._written.values())
 
@@ -832,12 +818,6 @@ class Downloads:
         if self._pool is None:
             self._pool = worker.Pool(concurrency=self.source.concurrency)
         return self._pool
-
-    def _encoder(self) -> worker.Pool:
-        """Lazily create the single-thread video encode `worker.Pool`."""
-        if self._encodes is None:
-            self._encodes = worker.Pool(concurrency=1)
-        return self._encodes
 
     def _room(self) -> bool:
         """Wait for pool capacity while answering refreshes; False on stop."""
@@ -909,23 +889,11 @@ class Downloads:
         return True
 
     def _downloaded(self, queued: _Queued, saved: Path, received: Mapping[str, str]) -> None:
-        """Record a downloaded file's history row and shrink it when requested."""
+        """Record a downloaded file's history row."""
         placed = queued.placed
-        kind = paths.kind_of(saved.name)
         row = self._build_row(queued, saved)
-        shrink = bool(self.shrink and kind in KINDS)
         dated = day(placed.post.date) or _served_day(received.get("last-modified"))
-        finished = _Finished(row, kind if shrink else None, dated)
-        if not shrink:
-            self._finish(queued, saved, finished)
-            return
-        self._count(queued, downloading=-1, shrinking=1)
-        if kind not in ONE_AT_A_TIME:
-            self._finish(queued, saved, finished)
-            return
-        with self._writing:
-            self._written[queued.key] = saved
-        self._encoder().submit(self._finish, queued, saved, finished)
+        self._finish(queued, saved, _Finished(row, dated))
 
     def _build_row(self, queued: _Queued, saved: Path) -> dict[str, Any]:
         """Build the initial history dict for one downloaded file via `msgspec.Struct`."""
@@ -1011,11 +979,8 @@ class Downloads:
             refresh.run()
 
     def _finish(self, queued: _Queued, path: Path, finished: _Finished) -> None:
-        """Shrink if needed, set modified time, stamp, and write history row."""
-        state = "downloading" if finished.shrink is None else "shrinking"
+        """Set modified time, stamp, and write history row."""
         try:
-            if finished.shrink is not None:
-                path = self._shrunk(queued, path, finished)
             if finished.day is not None:
                 _set_mtime(path, finished.day)
             finished.row.update(paths.stamp(path))
@@ -1025,26 +990,9 @@ class Downloads:
         except BaseException:
             with self._writing:
                 self._written.pop(queued.key, None)
-            self._count(queued, **{state: -1}, failed=1)
+            self._count(queued, downloading=-1, failed=1)
             raise
-        self._count(queued, **{state: -1}, saved=1, bytes=finished.row.get("size", 0))
-
-    def _shrunk(self, queued: _Queued, path: Path, finished: _Finished) -> Path:
-        """Compress `path` and update `finished.row` when smaller."""
-        assert finished.shrink is not None
-        found = self.settings.compressor.compress(path, finished.shrink)
-        if found is None:
-            return path
-        before = finished.row.get("size", 0)
-        finished.row.update(found)
-        if found.get("compressed") not in (None, "none"):
-            ui.debug(
-                "shrink {name} {before} -> {after}",
-                name=queued.placed.path,
-                before=text.fmt.size(found.get("original_size", before)),
-                after=text.fmt.size(found.get("size", before)),
-            )
-        return Path(found.get("path", path))
+        self._count(queued, downloading=-1, saved=1, bytes=finished.row.get("size", 0))
 
     def _sync_fetch(self, fetch: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap a `Fetch` callable so coroutines run on the source's event loop."""
@@ -1071,7 +1019,7 @@ def _run_download(
     """Execute the locked download lifecycle for `target`."""
     site = TargetSite(run, target, time=Range(options.since, options.until))
     ledger = Ledger(run, site, target, board, options=options)
-    downloads = Downloads(run, target, board, shrink=options.shrink)
+    downloads = Downloads(run, target, board)
     work = _Work(ledger, downloads)
     complete: list[str] = []
     saved = run.settings.targets
@@ -1160,7 +1108,6 @@ class _Finished:
     """Metadata needed to finalize one downloaded file."""
 
     row: dict[str, Any]
-    shrink: str | None
     day: datetime.date | None
 
 
@@ -1342,11 +1289,9 @@ def discover(
     yielded: set[Target] = set()
     method = getattr(run.source, route.kind)
     try:
-        args = _plan_queries(route, site, target) if route.is_query else [target.value]
-        for arg in args:
-            if _at_limit(run, yielded, limit):
-                return
-            yield from _yield_arg_targets(run, method, site, arg, seen_keys, yielded, limit)
+        if _at_limit(run, yielded, limit):
+            return
+        yield from _yield_arg_targets(run, method, site, target.value, seen_keys, yielded, limit)
     finally:
         site.close()
 
@@ -1377,30 +1322,6 @@ def _yield_arg_targets(
 def _at_limit(run: SourceRun, yielded: set[Target], limit: int | None) -> bool:
     """Return whether discovery should stop due to Ctrl-C or `limit`."""
     return run.settings.stop.soon.is_set() or (limit is not None and len(yielded) >= limit)
-
-
-def _plan_queries(route: Route, site: Site, target: Target) -> list[Any]:
-    """Plan `target` into `Query` searches, caching lookup ids for 24 hours."""
-    from flnd import query
-
-    now = time.time()
-    raw = site.state.get(LOOKUP_KEY)
-    raw_dict = raw if isinstance(raw, dict) else {}
-    entries = {
-        k: v for k, v in raw_dict.items()
-        if isinstance(v, dict) and isinstance(v.get("id"), str)
-        and isinstance(v.get("at"), (int, float)) and now - v["at"] < LOOKUP_TTL
-    }
-    cache = {k: v["id"] for k, v in entries.items()}
-    before = dict(cache)
-    try:
-        return query.plan(target.value, route.params, site=site, cache=cache, time=site.time)
-    finally:
-        if cache != before or len(entries) != len(raw_dict):
-            for k, v in cache.items():
-                if before.get(k) != v:
-                    entries[k] = {"id": v, "at": now}
-            site.state[LOOKUP_KEY] = entries
 
 
 def _queue_all(

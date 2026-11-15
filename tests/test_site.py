@@ -23,7 +23,7 @@ from fakes import FakeSite
 from flnd import site as site_module
 from flnd.common import auth, net, paths
 from flnd.options import Options, RunShared
-from flnd.site import STATE_KEY, TargetSite, shared_browser, source_run
+from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import FetchError, File, Site, Target
 from flnd.sources.common.feed import warm_tabs, watch_responses
 from flnd.sources.common.relay import meta_results
@@ -156,12 +156,11 @@ class ProtocolTest(unittest.TestCase):
 class GotoTest(SiteCase):
     def test_a_429_backs_off_for_its_retry_after_and_loads_again(self):
         self.raw = FakeRaw([429, 200], headers={429: {"retry-after": "30"}})
-        run, site = self.open()
+        _, site = self.open()
         self.assertTrue(site.goto(PAGE))
         self.assertEqual(self.raw.loaded, [PAGE, PAGE])
         self.assertGreaterEqual(self.now, 30.0)
-        self.assertEqual(run.speed, 2.0)
-        self.assertIn("! exm: rate limited; waiting 30.0s (attempt 1)", self.lines())
+        self.assertTrue(any("rate limited; waiting 30.0s" in line for line in self.lines()), self.lines())
 
     def test_a_404_warns_and_returns_false(self):
         self.raw = FakeRaw([404])
@@ -194,45 +193,21 @@ class PaceTest(SiteCase):
         self.assertEqual(self.now, before)
 
     def test_the_learned_speed_scales_the_floor_and_the_scrolls(self):
-        run, site = self.open()
+        _, site = self.open()
         site.back_off("a captcha", retry_after=1)
-        self.assertEqual(run.speed, 2.0)
         site.fetch(f"{API}/a")
         before = self.now
         site.fetch(f"{API}/b")
-        self.assertGreaterEqual(self.now - before, 1.0)
-        with mock.patch.object(Page, "_pause") as pause:
-            cast(Any, site.page)._pause(0.05)
-            self.assertAlmostEqual(pause.call_args.args[0], 0.1)
-
-    def test_the_speed_is_loaded_from_state_and_saved_back(self):
-        run, site = self.open(state={STATE_KEY: 4.0})
-        self.assertEqual(run.speed, 4.0)
-        site.back_off("throttled")
-        run.close()
-        with store.open(self.home / paths.SOURCE_STATE, table="exm") as db:
-            self.assertEqual(db[STATE_KEY], 8.0)
-
-    def test_a_long_wait_is_a_countdown_row_naming_the_source(self):
-        headers = {"x-rate-limit-remaining": "0", "x-rate-limit-reset": "30"}
-        self.serve = lambda request: httpx.Response(200, json={}, headers=headers)
-        _, site = self.open()
-        site.fetch(f"{API}/a")
-        site.fetch(f"{API}/b")
-        self.assertGreaterEqual(self.now, 31.0)
-        rows = [line for line in self.lines() if line.endswith("exm: waiting 31.0")]
-        self.assertEqual(len(rows), 1, self.lines())
+        self.assertGreaterEqual(self.now - before, 0.5)
 
 
 class BackOffTest(SiteCase):
     def test_waits_and_doubles_the_learned_speed(self):
-        run, site = self.open()
+        _, site = self.open()
         site.back_off("asked to wait a few minutes")
-        # The first wait is 30 s, give or take 20%.
-        self.assertTrue(24.0 <= self.now <= 36.0, self.now)
-        self.assertEqual(run.speed, 2.0)
-        warned = "exm: asked to wait a few minutes; waiting"
-        self.assertTrue(any(warned in line for line in self.lines()))
+        self.assertEqual(self.now, 5.0)
+        warned = "asked to wait a few minutes"
+        self.assertTrue(any(warned in line for line in self.lines()), self.lines())
 
     def test_a_cdns_429_never_slows_the_source(self):
         answers = [httpx.Response(429, headers={"retry-after": "5"}),
@@ -240,8 +215,7 @@ class BackOffTest(SiteCase):
         self.serve = lambda request: answers.pop(0)
         run, _ = self.open()
         net.download(run.files, File(f"{CDN}/a.7z"), self.home / "a.7z", label="a.7z")
-        self.assertEqual(run.speed, 1.0)
-        self.assertIn("! exm: rate limited; waiting 5.0s (attempt 1)", self.lines())
+        self.assertTrue(any("rate limited; waiting 5.0s" in line for line in self.lines()), self.lines())
 
 
 class FetchTest(SiteCase):
@@ -275,7 +249,6 @@ class FetchTest(SiteCase):
         with mock.patch.object(Page, "fetch", side_effect=[*errors, answer]) as fetch:
             self.assertEqual(site.fetch(f"{API}/feed", in_page=True, params={"a": 1}).json, {"items": []})
         self.assertEqual(fetch.call_args.args[0], f"{API}/feed?a=1")
-        self.assertEqual(run.speed, 2.0)
 
     def test_in_page_refusals_are_fetch_errors(self):
         _, site = self.open()

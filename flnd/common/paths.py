@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from shared import text, ui
+from shared import text
 
 if TYPE_CHECKING:
     from flnd.source import Target
@@ -117,18 +117,56 @@ def target_folder(home: Path, target: Target) -> Path:
     return home / MEDIA / target.source / text.clean.filename(target.value)
 
 
-def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
-    """The extension a media file calls for, once validated not a web page or corrupt."""
-    from shared import media
+def sniff(path: Path) -> str | None:
+    """Sniff a common media, archive, or web-page extension from `path`'s leading bytes."""
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return None
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    if head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"avif", b"avis"):
+            return ".avif"
+        if brand in (b"heic", b"heix", b"hevc", b"mif1"):
+            return ".heic"
+        if brand == b"M4A ":
+            return ".m4a"
+        return ".mp4"
+    if head.startswith(b"\x1aE\xdf\xa3"):
+        return ".webm"
+    if head.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+        return ".mp3"
+    if head.startswith(b"OggS"):
+        return ".ogg"
+    if head.startswith(b"fLaC"):
+        return ".flac"
+    if head.startswith((b"PK\x03\x04", b"PK\x05\x06")):
+        return ".zip"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return ".7z"
+    if head.startswith(b"Rar!\x1a\x07"):
+        return ".rar"
+    stripped = head.lstrip()
+    if stripped.startswith((b"<", b"<!DOCTYPE", b"<!doctype")):
+        return ".html"
+    if stripped.startswith((b"{", b"[")):
+        return ".json"
+    return None
 
-    extension = media.sniff(path)
+
+def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
+    """The extension a media file calls for, once validated not a web page."""
+    del decode
+    extension = sniff(path)
     if extension in PAGES:
         raise NotMediaError(f"got a web page instead of {NOUNS.get(kind, kind)}")
-    if decode:
-        try:
-            with media.open(path):
-                pass
-        except (media.MissingError, RuntimeError, ImportError, TimeoutError) as error:
-            # Missing backend or timeout cannot check here; BrokenError/UnsafeError reach caller.
-            ui.debug("{name}: not checked: {error}", name=path.name, error=error)
     return extension

@@ -75,8 +75,8 @@ class LazyImportTest(unittest.TestCase):
         code = "import sys, shared\nprint('httpx' in sys.modules, shared.http is sys.modules['shared._http'])"
         self.assertEqual(run_python(code).stdout.strip(), "False True")
 
-    def test_media_loads_on_first_use(self):
-        code = "import sys, shared\nprint('shared._media' in sys.modules, shared.media is sys.modules['shared._media'])"
+    def test_sh_loads_on_first_use(self):
+        code = "import sys, shared\nprint('shared._sh' in sys.modules, shared.sh is sys.modules['shared._sh'])"
         self.assertEqual(run_python(code).stdout.strip(), "False True")
 
 

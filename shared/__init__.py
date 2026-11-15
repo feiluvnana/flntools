@@ -61,25 +61,25 @@ if TYPE_CHECKING:
     from shared import _crypto as crypto
     from shared import _fs as fs
     from shared import _http as http
-    from shared import _media as media
     from shared import _prompt as prompt
     from shared import _selector as selector
+    from shared import _sh as sh
     from shared import _store as store
     from shared._ui import ui as ui
     from shared import _worker as worker
 
 LAZY_MODULES = (
-    "ui", "prompt", "cli", "fs", "store", "worker",
+    "ui", "prompt", "cli", "fs", "sh", "store", "worker",
     "http", "cookies", "browser", "selector",
-    "crypto", "archive", "media", "bundler",
+    "crypto", "archive", "bundler",
 )
 
 __all__ = [
     "Error", "UnsafeError", "BrokenError", "RefusedError", "MissingError",
     "clock", "text",
-    "ui", "prompt", "cli", "fs", "store", "worker",
+    "ui", "prompt", "cli", "fs", "sh", "store", "worker",
     "http", "cookies", "browser", "selector",
-    "crypto", "archive", "media", "bundler",
+    "crypto", "archive", "bundler",
 ]
 
 

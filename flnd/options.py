@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
-from flnd.common.compress import Compressor
 from flnd.source import Source, Target
 from shared import cli
 
@@ -17,17 +16,16 @@ ALL = "all"
 
 @dataclass(frozen=True)
 class Options:
-    """What one target's run downloads and how: `Options(categories=("reels",), shrink=True)`."""
+    """What one target's run downloads and how: `Options(categories=("reels",))`."""
 
     # None (a single post) or "all" means every category of each source.
     categories: tuple[str, ...] | None = None
     # `--time`'s two days, both included; None is no limit on that side.
     since: datetime.date | None = None
     until: datetime.date | None = None
-    shrink: bool = False
     # A synced target with nothing lost stops a `newest_first` listing after 5 saved posts.
     stop_at_saved: bool = False
-    # Max discovered targets on a query route, or max posts on a normal target.
+    # Max discovered targets on a discovering route, or max posts on a normal target.
     limit: int | None = None
     # Ignore the new-post-only check and saved cursors.
     again: bool = False
@@ -48,8 +46,6 @@ class RunShared:
     interactive: bool = False
     # List what would be downloaded without writing or downloading anything.
     dry: bool = False
-    # One compressor per run so videos encode one at a time and each error warns once.
-    compressor: Compressor = field(default_factory=Compressor)
     # The single-window browser pool `site.shared_browser` enters; None outside a run.
     browser_pool: Any = field(default=None, repr=False)
 

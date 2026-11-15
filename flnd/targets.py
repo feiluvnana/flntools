@@ -11,10 +11,9 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import Source, Target
-from shared import cli, store, ui
+from shared import cli, store
 
 TARGETS_TABLE = "targets"
-SHRINK = "shrink"
 SYNC = "sync"
 SEEN = "seen"
 QUERY = "query"
@@ -52,11 +51,6 @@ def query_name(row: Mapping[str, Any]) -> str | None:
     return str(found) if isinstance(found, str) and found else None
 
 
-def shrink(row: Mapping[str, Any]) -> bool:
-    """Return whether a `targets.db` row has `--shrink` enabled."""
-    return row.get(SHRINK) is True
-
-
 def synced(saved: Mapping[str, Any]) -> dict[str, Any]:
     """Return rows in `saved` whose `sync` is enabled (defaulting missing to True)."""
     return {name: row for name, row in saved.items()
@@ -81,7 +75,7 @@ def record(
             kept = _kept_fields(old, options)
             is_sync = _next_sync(old, sync)
             saved[key(target)] = {
-                "kind": target.kind, SHRINK: options.shrink, SYNC: is_sync, "at": now, **kept,
+                "kind": target.kind, SYNC: is_sync, "at": now, **kept,
             }
 
 
@@ -125,8 +119,8 @@ def _write_sync(home: Path, target: Target, *, enabled: bool | None) -> bool:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     with store.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         old = saved.get(key(target))
-        row = (dict(old) if isinstance(old, dict)
-               else {"kind": target.kind, SHRINK: False, "at": now})
+        row: dict[str, Any] = (dict(old) if isinstance(old, dict)
+               else {"kind": target.kind, "at": now})
         new_state = not (row.get(SYNC, True) is True) if enabled is None else enabled
         row[SYNC] = new_state
         saved[key(target)] = row
@@ -158,7 +152,7 @@ def mark_seen(home: Path, target: Target, keys: Iterable[str]) -> None:
     with store.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
         old = saved.get(key(target))
         row = (dict(old) if isinstance(old, dict)
-               else {"kind": target.kind, SHRINK: False, SYNC: True, "at": now})
+               else {"kind": target.kind, SYNC: True, "at": now})
         existing = row.get(SEEN)
         current = [str(x) for x in existing] if isinstance(existing, list) else []
         row[SEEN] = list(dict.fromkeys([*current, *items]))
@@ -206,14 +200,6 @@ def keep_cursors(
     else:
         row.pop(CURSORS, None)
     saved[key(target)] = row
-
-
-def announce(target: Target, shrink: bool) -> str:
-    """Log saved `--shrink` setting when active, returning the logged message."""
-    if not shrink:
-        return ""
-    ui.info("{target}: --shrink (saved)", target=str(target))
-    return "--shrink (saved)"
 
 
 def validate(

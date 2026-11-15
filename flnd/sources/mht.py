@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import shlex
+import time
 from pathlib import PurePosixPath
 from typing import Any, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
 
-from flnd.query import Name, Number, Param, Query, Text
 from flnd.source import FetchError, File, Post, Site, Source, Target, TargetError, pages, target
 from shared import text
 
 API = "https://mimihentai.moe/api/"
+# How long a resolved name keeps its id, so a repeated query skips the site's lookups.
+LOOKUP_TTL = 24 * 3600
+LOOKUP_KEY = "query.lookups"
 
 
 def lookup_genres(site: Site, name: str) -> Iterator[tuple[str, str]]:
@@ -128,25 +132,16 @@ class Mimi(Source):
 
     @target(
         "?{query}",
-        params={
-            "title": Param(Text, "words in the title (bare words mean this too)"),
-            "genre": Param(Name, "a genre", any_of=False, negate=True, lookup=lookup_genres),
-            "author": Param(Name, "an author", lookup=lookup_authors),
-            "character": Param(Name, "a character"),
-            "parody": Param(Name, "the work it parodies", lookup=lookup_parodies),
-            "chapters": Param(Number, "how many chapters", compare=False),
-        },
+        discovers=True,
         from_=(),
         folder="chapters/{order} {title}",
     )
-    def query(self, site: Site, query: Query) -> Iterator[Target]:
+    def query(self, site: Site, query: str) -> Iterator[Target]:
         """Yield `mht:<id>` manga targets matching `query`."""
-        # Bare words alone use simple search; any structured filter uses advanced search.
-        if query.text and not query.terms:
-            items = _search_pages(site, f"{API}manga/search", {"q": query.text})
-            chapter_filters: list[set[int]] = []
+        text_only, params, chapter_filters = _parse_query(site, query)
+        if text_only is not None:
+            items = _search_pages(site, f"{API}manga/search", {"q": text_only})
         else:
-            params, chapter_filters = _advanced_params(query)
             items = _search_pages(site, f"{API}manga/advanced-search", params)
         for item in items:
             if all(item.get("chapter_count") in wanted for wanted in chapter_filters):
@@ -240,41 +235,101 @@ def _resolve_id(site: Site, kind: str, raw: str, lookup: Any) -> str:
     value = unquote(raw).strip()
     if value.isdigit():
         return value
+    key = f"{kind}:{text.fold(value)}"
+    if (cached := _cached_id(site, key)) is not None:
+        return cached
     candidates = [value.replace("-", " "), value] if "-" in value else [value]
     for candidate in candidates:
         found = list(lookup(site, candidate))
         folded = text.fold(candidate)
         matches = [item_id for label, item_id in found if text.fold(label) == folded]
         if matches:
+            _cache_id(site, key, matches[0])
             return matches[0]
         if candidate != value:
             folded_raw = text.fold(value)
             matches = [item_id for label, item_id in found if text.fold(label) == folded_raw]
             if matches:
+                _cache_id(site, key, matches[0])
                 return matches[0]
     raise TargetError(f"mht: no {kind} named {value}")
 
 
-def _advanced_params(query: Query) -> tuple[dict[str, str], list[set[int]]]:
-    """Build `/api/manga/advanced-search` query parameters and client-side chapter filters."""
-    titles = [query.text] if query.text else []
+def _cached_id(site: Site, key: str) -> str | None:
+    """The id cached for `key` by a lookup less than a day old, or None."""
+    entries = site.state.get(LOOKUP_KEY)
+    entry = entries.get(key) if isinstance(entries, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    saved_at = entry.get("at")
+    if not isinstance(saved_at, (int, float)) or time.time() - saved_at >= LOOKUP_TTL:
+        return None
+    found = entry.get("id")
+    return found if isinstance(found, str) else None
+
+
+def _cache_id(site: Site, key: str, found: str) -> None:
+    """Cache `found` for `key` for a day, dropping entries that have expired."""
+    now = time.time()
+    entries = site.state.get(LOOKUP_KEY)
+    kept = {
+        name: entry
+        for name, entry in (entries.items() if isinstance(entries, dict) else ())
+        if isinstance(entry, dict)
+        and isinstance(entry.get("at"), (int, float))
+        and now - entry["at"] < LOOKUP_TTL
+    }
+    kept[key] = {"id": found, "at": now}
+    site.state[LOOKUP_KEY] = kept
+
+
+def _parse_query(
+    site: Site, raw: str,
+) -> tuple[str | None, dict[str, str], list[set[int]]]:
+    """Parse `mht` query text into `(simple_q, advanced_params, chapter_filters)`."""
+    stripped = raw.strip()
+    if not stripped:
+        raise TargetError("mht: the query is empty")
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = stripped.split()
+    titles: list[str] = []
     buckets: dict[str, list[str]] = {
         "author": [], "character": [], "parody": [], "genre": [], "exclude_genre": [],
     }
     chapter_filters: list[set[int]] = []
-    for term in query.terms:
-        if term.param == "title":
-            titles.extend(str(v) for v in term.values)
-        elif term.param == "chapters":
-            chapter_filters.append({int(v) for v in term.values if isinstance(v, int)})
-        elif term.param == "genre" and term.negated:
-            buckets["exclude_genre"].extend(str(v) for v in term.values)
-        elif term.param in buckets:
-            buckets[term.param].extend(str(v) for v in term.values)
+    has_terms = False
+    for token in tokens:
+        if ":" not in token:
+            titles.append(token)
+            continue
+        has_terms = True
+        negated = token.startswith("-")
+        key, _, val = (token[1:] if negated else token).partition(":")
+        if not val:
+            raise TargetError(f"mht: empty value for {key}")
+        if key == "title" and not negated:
+            titles.append(val)
+        elif key == "chapters" and not negated and val.isdigit():
+            chapter_filters.append({int(val)})
+        elif key == "genre":
+            target_bucket = "exclude_genre" if negated else "genre"
+            buckets[target_bucket].append(_resolve_id(site, "genre", val, lookup_genres))
+        elif key == "author" and not negated:
+            buckets["author"].append(_resolve_id(site, "author", val, lookup_authors))
+        elif key == "parody" and not negated:
+            buckets["parody"].append(_resolve_id(site, "parody", val, lookup_parodies))
+        elif key == "character" and not negated:
+            buckets["character"].append(val)
+        else:
+            raise TargetError(f"mht: unsupported query term {token!r}")
+    if not has_terms:
+        return " ".join(titles), {}, []
     params = {key: ",".join(vals) for key, vals in buckets.items() if vals}
     if title := " ".join(titles).strip():
         params["title"] = title
-    return params, chapter_filters
+    return None, params, chapter_filters
 
 
 def _search_pages(site: Site, url: str, params: Mapping[str, str]) -> Iterator[dict[str, Any]]:

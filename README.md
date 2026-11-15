@@ -2,7 +2,7 @@
 
 Dead simple media downloader for **TikTok**, **Facebook**, **Instagram**, **Twitter/X**, **LOIBUS**, and **Telegram**. The command is `flnd`.
 
-Built on `shared/` — a lean 16-namespace utility toolkit (`ui`, `prompt`, `cli`, `text`, `clock`, `fs`, `store`, `worker`, `http`, `cookies`, `browser`, `selector`, `crypto`, `archive`, `media`, `bundler`).
+Built on `shared/` — a lean 16-namespace utility toolkit (`ui`, `prompt`, `cli`, `text`, `clock`, `fs`, `store`, `worker`, `http`, `cookies`, `browser`, `selector`, `crypto`, `archive`, `sh`, `bundler`).
 
 ---
 
@@ -16,7 +16,7 @@ uv run flnd download ins:example_user
 ```
 
 Or `make setup`, then `make flnd ARGS="download ins:example_user"`. Every task (`setup`, `test`,
-`lint`, `type`, `check`, `baseline`, `api`, `flnd`, `dist`, `try`) is in `scripts/dev.py`, so on Windows, which has no make,
+`lint`, `type`, `check`, `api`, `flnd`, `dist`, `try`) is in `scripts/dev.py`, so on Windows, which has no make,
 run `uv run --no-project scripts/dev.py <task>`, or install make with `winget install ezwinports.make`.
 `uv tool install --editable .` puts `flnd` on your PATH instead.
 
@@ -24,9 +24,7 @@ run `uv run --no-project scripts/dev.py <task>`, or install make with `winget in
 the listing for real with the saved login in `.flnd`, downloads and records nothing, and prints each post
 with its planned file paths and URLs (without their signed query).
 
-ffmpeg comes with `uv sync`, as the `imageio-ffmpeg` dependency; flnd uses it to join Facebook and
-Instagram videos with their sound, and to compress videos and audio. Where that package has no wheel (musl Linux,
-32-bit ARM), install ffmpeg on your PATH instead.
+`ffmpeg` on your `PATH` (or downloaded via `shared.sh.tool`) is used to join Facebook and Instagram DASH video/audio streams.
 
 flnd needs [Google Chrome](https://www.google.com/chrome/), installed the usual way, for the sources
 that open a browser. When Chrome is missing, flnd asks once, in a terminal, whether to download Chromium
@@ -49,8 +47,8 @@ in the folder you run it from.
 
 ```bash
 flnd download <targets...> [--from CATEGORIES] [--time SINCE,UNTIL]
-              [--shrink [off]] [--sync] [--again] [--limit N] [--dry] [-v]
-flnd sync [targets...] [--time SINCE,UNTIL] [--shrink [off]] [-v]
+              [--sync] [--again] [--limit N] [--dry] [-v]
+flnd sync [targets...] [--time SINCE,UNTIL] [-v]
 flnd target ls | rm <targets...>
 flnd auth login | logout <sources...> | ls
 ```
@@ -63,10 +61,10 @@ python -m flnd download <targets...>
 
 Files go to `.flnd/media/`, and the browser window is visible while a source runs.
 A run shows one live status line per target and category: how many files were found, are
-downloading or shrinking, and were saved, linked, skipped or failed, with the bytes saved and the
+downloading, and were saved, linked, skipped or failed, with the bytes saved and the
 time taken. A category that ends leaves its line as its summary; warnings and errors print in full
-above. `-v` also shows each file as it runs and ends, and each skip (with the name that holds it),
-link and shrink. A file already saved, even under another name (a feed's dated post and a tab's
+above. `-v` also shows each file as it runs and ends, and each skip (with the name that holds it)
+and link. A file already saved, even under another name (a feed's dated post and a tab's
 undated photo of the same media), is not downloaded again.
 flnd uses the `HTTPS_PROXY` and `ALL_PROXY` environment variables (httpx reads them).
 
@@ -130,13 +128,6 @@ flnd download https://loix.cc/lois/5930
 
 # Only its info and preview images, without using the daily VIP quota
 flnd download https://loix.cc/lois/5930 --from photo
-
-# Smaller files, each in its own format; the originals are replaced, and this is saved for the
-# target, so later downloads and syncs do the same
-flnd download ins:example_user --shrink
-
-# Stop shrinking this target's new files from now on
-flnd download ins:example_user --shrink off
 ```
 
 ### Options
@@ -149,17 +140,10 @@ Every source takes the same options:
 - `--time <since>,<until>`: only items dated in that range, both days included (YYYY-MM-DD). Leave a
   side empty for no limit: `--time 2026-01-01,` or `--time ,2026-06-30`. `*` works too, quoted
   (`--time 2026-01-01,'*'`), since zsh stops at a bare `*` with "no matches found";
-- `--shrink`: compress each new photo, video and audio file after it is saved, to a balanced
-  quality (photos up to 2,304 px, videos up to 1080p, quality 80) **in its own format**: a JPEG
-  stays a JPEG, an MP4 stays an MP4 in its own codec, so every file opens where it opened before.
-  It **replaces the original** when the result is smaller, and strips its metadata (date taken,
-  camera, GPS); the post's date stays in the file name. Videos are encoded one at a time.
-
-`--shrink` is **saved for each target** in `.flnd/metadata/targets.db`, and used by every later
-`download` and `sync` of it; a run that uses it says so, as `ins:example_user: --shrink (saved)`.
-The `download` that turns it on shrinks the target's files already saved first, then the new ones.
-`--shrink off` turns it off and touches no file. `--from` and `--time` are never saved. To convert
-to another format (WebP, H.265), use any converter afterwards.
+- `--sync`: stop each category once it reaches already-saved items;
+- `--again`: re-check all items instead of stopping early;
+- `--limit N`: stop after saving `N` files;
+- `--dry`: list items and URLs without downloading.
 
 A saved photo, video or audio file gets the extension its content calls for (a WebP is saved as
 `.webp`, not `.jpg`), a web page served instead of a photo is retried rather than saved, and a
@@ -186,17 +170,9 @@ flnd sync                                             # every target downloaded 
 flnd sync ins:example_user tik:example_creator        # only these
 ```
 
-`flnd sync` takes only `-v` and changes nothing about how a target is downloaded: each target runs
-with its saved `--shrink`, and each source's default categories. To change a
-setting, run `flnd download` with it. Folders downloaded before flnd saved settings are synced
-without any. For each target:
-
-1. **repair**: a missing, empty or broken file (cut off, or a web page) is downloaded again, and
-   leftover `.part` files are removed, except an unfinished download from the last 7 days, which
-   the fetch resumes;
-2. **fetch**: new posts are downloaded, as `flnd download` would;
-3. **summary**: one line per target, `ins:example_user: 120 files, 85.2 MB; 2 repaired, 1 missing`
-   (missing: files the site no longer lists), then the totals.
+`flnd sync` takes `--time` and `-v`, and runs each target sequentially with its saved settings
+and default categories. Each target fetches new posts since the last run and prints a summary
+line (`ins:example_user: 120 files, 85.2 MB`), then the totals.
 
 `sync` never deletes a file whose post was deleted, asks no questions but that same Chromium one
 when Google Chrome is missing, and exits 1 when a target failed.
@@ -238,7 +214,7 @@ flnd auth logout ins tik    # removes those logins
 flnd auth logout all        # removes every login
 ```
 
-A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/metadata/secrets.db`
+A full browser export works: only the source's own cookies are kept, encrypted in `.flnd/metadata/secrets.json`
 with every other login; the file you give is read once and never copied. A login saved by an earlier
 version as `.flnd/cookies/<source>.txt` moves into it on the next run, so there's no need to log in again.
 The key is `.flnd/metadata/secret.key`, so keep `.flnd/` as private as the logins in it.
@@ -248,12 +224,29 @@ and count against the account's daily quota (`--from photo` leaves them out).
 
 ---
 
+## Python library
+
+`flnd` can also be imported directly from Python:
+
+```python
+import flnd
+
+report = flnd.download("ins:example_user", categories=["posts"], limit=10)
+target = flnd.resolve("https://www.instagram.com/example_user/")
+src = flnd.source("ins")
+
+with flnd.open("ins") as site:
+    resp = site.get("https://www.instagram.com/")
+```
+
+---
+
 ## The `.flnd/` folder
 
 ```
 .flnd/
 ├── media/       # every downloaded file, laid out as below
-├── metadata/    # history.db, targets.db, sources.db, secrets.db and secret.key
+├── metadata/    # history.json, targets.json, sources.json, secrets.json and secret.key
 └── log/         # one log per download or sync, kept 30 days
 ```
 

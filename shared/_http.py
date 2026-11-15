@@ -12,14 +12,14 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import (TYPE_CHECKING, Any, Callable, Iterator, Literal, Mapping, Sequence, TypeVar,
-                    Union, overload)
+from typing import (
+    TYPE_CHECKING, Any, Callable, Iterator, Literal, Mapping, Sequence, TypeVar, Union, overload,
+)
 
 import shared
 from shared import _clock as clock
 from shared import _cookies as cookies
 from shared import _text as text
-from shared._pace import EPOCH, MAX_BACKOFF, Host, Pace
 from shared._ui import ui
 
 try:
@@ -27,7 +27,7 @@ try:
 except ImportError:
     raise ImportError("shared.http needs httpx: pip install 'flntools[http]'") from None
 
-if TYPE_CHECKING:  # `selector` loads on first `html`; JSON scripts skip parsel
+if TYPE_CHECKING:
     from shared._selector import Selection
 
 __all__ = [
@@ -36,41 +36,17 @@ __all__ = [
 ]
 
 PathLike = Union[str, "os.PathLike[str]"]
-# What `Client.call`'s `send` returns.
 A = TypeVar("A")
 
-# Chrome's own limit of connections to one host, so a script fetching in parallel looks to a
-# site like one browser, not a crowd. It counts requests in flight through this module, per host
-# and port, across every thread and client in the process.
-MAX_PER_HOST = 6
-# The statuses `soft=True` turns into None: "not logged in", "not allowed" and "not there", the
-# three a script asks about a profile or a post that may be private or gone.
 SOFT_STATUSES = frozenset({401, 403, 404})
-# What httpx raises when a connection drops or times out; worth another attempt. Others, such as
-# an invalid URL or too many redirects, would fail the same way again.
 CONNECTION_ERRORS = (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError)
-# Headers whose values are secrets, kept out of every message.
 SECRET_HEADERS = ("authorization", "cookie", "proxy-authorization")
-# Waits before the 2nd, 3rd, … attempt, in seconds: 1 s, then 2 s, then 4 s, up to 8 s. Short,
-# since `fetch` retries only a dead connection or a 5xx, which a moment usually cures; a site
-# that wants a longer pause says so with a 429, and that is the caller's to wait out.
 FIRST_WAIT = 1.0
 MAX_WAIT = 8.0
+MAX_BACKOFF = 3600.0
+EPOCH = 1_000_000_000.0
+CHUNK_SIZE = 65_536
 
-# The request extension every request of `download` carries, so a caller's transport can tell a
-# download's requests from others; flnd's sends them once, since `download` retries on its own.
-DOWNLOAD_EXTENSION = "shared.http.download"
-# The request extension a split file's pieces carry, which `Transport` sends over HTTP/1.1:
-# HTTP/2 would put every piece on one TCP connection, sharing one congestion window.
-PIECE_EXTENSION = "shared.http.piece"
-# The most connections `parts` may ask for on one file.
-MAX_PARTS = 8
-# Idle connections `Transport` keeps open for reuse: 8 per host across a run's few CDNs.
-KEEP_ALIVE = 64
-# A client's wait of this many seconds or more is a countdown row: a slow run explains itself.
-SHOWN_WAIT = 15.0
-# Methods safe to resend over HTTP/1.1 after an HTTP/2 connection drops.
-IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 class Error(shared.Error):
     """The base of every error `shared.http` raises; also what a failed connection raises."""
@@ -81,15 +57,7 @@ class _RequestError(Error):
 
 
 class RefusedError(Error, shared.RefusedError):
-    """A 4xx other than 429: the site said no.
-
-    Args:
-        status: the HTTP status, such as 403.
-        message: the text shown; names the method, the URL without its query and the status.
-        response: the refusing response with its body, when there was one to keep, so a caller
-            can read why the site said no (Instagram's "please wait" comes as a 400 with a JSON
-            body); None otherwise. It is never shown in the message.
-    """
+    """A 4xx other than 429: the site said no."""
 
     def __init__(self, status: int, message: str = "", *, response: Response | None = None):
         super().__init__(message or f"HTTP {status}")
@@ -98,15 +66,7 @@ class RefusedError(Error, shared.RefusedError):
 
 
 class RateLimitedError(Error):
-    """A 429: the site asks to slow down. Raised at once, never slept on, so the caller backs off.
-
-    Not a `RefusedError`, so `except http.RefusedError` doesn't swallow a rate limit by mistake.
-
-    Args:
-        retry_after: the seconds the site's `Retry-After` header asks to wait, else until its rate
-            headers' reset (`x-rate-limit-reset`, X's), or None without either.
-        message: the text shown.
-    """
+    """A 429: the site asks to slow down."""
 
     def __init__(self, retry_after: float | None, message: str = ""):
         super().__init__(message or "HTTP 429")
@@ -115,7 +75,7 @@ class RateLimitedError(Error):
 
 
 class StoppedError(Error):
-    """A download stopped because its caller set `stop`; a resumable part is kept for later."""
+    """A download stopped because its caller set `stop`."""
 
 
 class IncompleteError(Error, shared.BrokenError):
@@ -124,37 +84,11 @@ class IncompleteError(Error, shared.BrokenError):
 
 @dataclass(frozen=True, eq=False)
 class Response:
-    """One HTTP response: status, URL, headers, and body as text, JSON or HTML.
+    """One HTTP response: status, URL, headers, and body as text, JSON or HTML."""
 
-        page = http.fetch("https://example.com/items")
-        page.ok, page.status, page.url            # True, 200, "https://example.com/items"
-        page.headers["Content-Type"]              # names are looked up in any case
-        page.json["items"], page.html.css("h1::text").first
-
-    The same type comes from `http.fetch` and `browser.Page.fetch`.
-    It never changes once made and holds no connection, so it may be kept and passed between
-    threads. `text`, `json` and `html` are worked out on first read and kept, so reading one twice
-    costs nothing and a response never fetched as HTML never loads parsel. Two threads reading the
-    same one for the first time at once may each work it out; they get equal values.
-
-    Two responses are equal only when they are the same object, and a response hashes by identity,
-    so it can be a dict key or set member. The headers are unhashable, so a field-by-field
-    hash isn't possible; compare `status`, `url` or `content` when that is what you mean.
-
-    Args:
-        status: the HTTP status, such as 200.
-        url: the final URL, after any redirects.
-        headers: the response headers; any mapping, kept as a read-only copy with lowercase names.
-        content: the body as bytes, as sent (after any `Content-Encoding` is undone).
-    """
-
-    # The HTTP status, such as 200 or 404.
     status: int
-    # The final URL, after any redirects.
     url: str
-    # The headers, read-only; names are lowercase, and looking one up ignores case.
     headers: Mapping[str, str]
-    # The body as bytes, decoded from any Content-Encoding.
     content: bytes = field(default=b"", repr=False)
     _raw: httpx.Response | None = field(default=None, repr=False)
 
@@ -172,7 +106,7 @@ class Response:
 
     @property
     def ok(self) -> bool:
-        """Whether the status is 2xx, as Playwright's and fetch()'s `ok` mean it."""
+        """Whether the status is 2xx."""
         return 200 <= self.status < 300
 
     @property
@@ -188,27 +122,21 @@ class Response:
 
     @property
     def html(self) -> Selection:
-        """The body as a `shared.selector` `Selection`, made by `selector.parse(text)`."""
+        """The body as a `shared.selector` `Selection`."""
         from shared import _selector
 
         return self._cached("html", lambda: _selector.parse(self.text))
 
     def _cached(self, name: str, compute: Callable[[], Any]) -> Any:
-        """`compute()`, computed on first read of `name` and cached in `__dict__`.
-
-        Kept there directly, past the frozen `__setattr__`, as `functools.cached_property` does;
-        a plain property instead of that one, so the API snapshot shows each read's type.
-        """
         key = f"_cached_{name}"
         if key not in self.__dict__:
             self.__dict__[key] = compute()
         return self.__dict__[key]
 
     def _json(self) -> Any:
-        """The body parsed as JSON, raising `http.Error` when it isn't."""
         try:
             return jsonlib.loads(self.text)
-        except ValueError as error:  # json's JSONDecodeError; only a body that isn't JSON raises it
+        except ValueError as error:
             msg = f"expected JSON from {_where(self.url)}, got {self.text[:80]!r}: {error}"
             raise Error(msg) from None
 
@@ -246,36 +174,9 @@ def fetch(url: str, *, method: str = "GET", headers: Mapping[str, str] | None = 
                 raise
             seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
             ui.debug("retry {n} of {url} in {seconds:g} s: {reason}",
-                      n=attempt, url=_where(url), seconds=seconds, reason=error)
+                     n=attempt, url=_where(url), seconds=seconds, reason=error)
             clock.sleep(seconds)
             attempt += 1
-
-
-def _send_once(
-    sender: httpx.Client, url: str, *, method: str = "GET",
-    headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None,
-    data: Any = None, json: Any = None, soft: bool = False, timeout: float = 30.0,
-) -> Response | None:
-    """Build and send one HTTP request, wrapping httpx errors in `http.Error`."""
-    body: dict[str, Any] = (
-        {"content": data} if isinstance(data, (bytes, bytearray, memoryview, str))
-        else {"data": data}
-    )
-    try:
-        request = sender.build_request(
-            method, url, headers=headers, params=params, json=json, timeout=timeout, **body
-        )
-    except (httpx.HTTPError, httpx.InvalidURL) as error:
-        raise _RequestError(f"{method} {_where(url)}: {type(error).__name__}: {error}") from error
-    try:
-        response = _send(sender, request)
-    except CONNECTION_ERRORS as error:
-        msg = f"{request.method} {_where(request.url)}: {type(error).__name__}: {error}"
-        raise Error(_scrub(msg, request)) from error
-    except (httpx.HTTPError, httpx.InvalidURL) as error:
-        msg = f"{request.method} {_where(request.url)}: {type(error).__name__}: {error}"
-        raise _RequestError(_scrub(msg, request)) from error
-    return _checked(response, request.method, soft=soft)
 
 
 def download(url: str | Sequence[str], dest: PathLike, *,
@@ -290,27 +191,6 @@ def download(url: str | Sequence[str], dest: PathLike, *,
     )
 
 
-def _download_with(
-    url: str | Sequence[str], dest: PathLike, *, client: httpx.Client,
-    headers: Mapping[str, str] | None = None, resume: bool = True, attempts: int = 3,
-    timeout: float = 30.0, progress: Callable[[int, int | None], Any] | None = None,
-    stop: threading.Event | None = None,
-) -> Path:
-    """Validate options and run `_download.run` using `client`."""
-    from shared import _download
-
-    mirrors = [url] if isinstance(url, str) else list(url)
-    if not mirrors:
-        raise ValueError("download needs a URL")
-    if attempts < 1:
-        raise ValueError(f"attempts must be at least 1, not {attempts}")
-    options = _download._Options(
-        headers=headers, resume=resume, attempts=attempts, timeout=timeout,
-        progress=progress, stop=stop,
-    )
-    return _download.run(mirrors, dest, client, options)
-
-
 class Client:
     """Reusable HTTP session with cookies, retries, and optional rate limiting."""
 
@@ -320,15 +200,14 @@ class Client:
         if rate is not None and rate <= 0:
             raise ValueError(f"rate must be positive, not {rate}")
         self._raw = httpx.Client(
-            follow_redirects=True, headers=headers, timeout=timeout, transport=_Transport(),
+            follow_redirects=True, headers=headers, timeout=timeout,
         )
         if cookies is not None:
             self.cookies = cookies
-        self._pace: Pace | None = Pace(floor=1.0 / rate) if rate is not None else None
+        self._interval = (1.0 / rate) if rate is not None else 0.0
+        self._last_at: dict[str, float] = {}
+        self._lock = threading.Lock()
         self._stop: threading.Event | None = None
-        self._speeds: dict[str, float] = {}
-        self._hosts: dict[str, Host] = {}
-        self._hosts_lock = threading.Lock()
 
     def __enter__(self) -> Client:
         return self
@@ -396,128 +275,207 @@ class Client:
         return self._call(first, lambda: _download_with(
             url, dest, client=self._raw, headers=headers, resume=resume, attempts=attempts,
             timeout=timeout, progress=progress, stop=halt,
-        ))
+        ), rate_attempts=attempts)
 
-    def _call(self, url: str, send: Callable[[], A], *, attempts: int = 1) -> A:
-        """Run `send` in `url`'s host pace, waiting out rate limits and retrying errors."""
-        host = self._host(url)
+    def _pace_wait(self, host: str) -> None:
+        if self._interval <= 0:
+            return
+        with self._lock:
+            now = clock.now()
+            wait = (self._last_at.get(host, 0.0) + self._interval) - now
+            self._last_at[host] = max(now, self._last_at.get(host, 0.0) + self._interval)
+        if wait > 0 and not clock.sleep(wait, stop=self._stop):
+            raise StoppedError(f"{host}: stopped")
+
+    def _call(self, url: str, send: Callable[[], A], *, attempts: int = 1,
+              rate_attempts: int | None = None) -> A:
+        host = _host_name(url)
         attempt = 1
+        max_rate = rate_attempts if rate_attempts is not None else attempts
         while True:
-            wait, epoch = host.turn(url)
-            self._wait(host, wait)
+            self._pace_wait(host)
             try:
-                answer = send()
+                return send()
             except RateLimitedError as error:
-                self._throttled(host, error.retry_after)
-                continue
-            except RefusedError as error:
-                if error.response is not None:
-                    host.record(error.response.headers)
-                raise
-            except (StoppedError, _RequestError):
+                wait = error.retry_after if error.retry_after is not None else 5.0
+                if attempt >= max_rate and error.retry_after is None:
+                    raise
+                ui.warn("{host}: rate limited; waiting {time}",
+                        host=host, time=text.fmt.duration(round(wait)))
+                if not clock.sleep(wait, stop=self._stop):
+                    raise StoppedError(f"{host}: stopped") from None
+                attempt += 1
+            except (RefusedError, StoppedError, _RequestError):
                 raise
             except Error as error:
                 if attempt >= attempts:
                     raise
                 seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
                 ui.debug("retry {n} of {url} in {seconds:g} s: {error}", n=attempt,
-                          url=_where(url), seconds=seconds, error=error)
+                         url=_where(url), seconds=seconds, error=error)
                 if not clock.sleep(seconds, stop=self._stop):
-                    raise StoppedError(f"{host.name}: stopped") from None
+                    raise StoppedError(f"{host}: stopped") from None
                 attempt += 1
-                continue
-            headers: Mapping[str, str] = getattr(answer, "headers", None) or {}
-            host.record(headers)
-            if getattr(answer, "status", None) == 429:
-                retry_after = _retry_after(headers.get("retry-after"))
-                self._throttled(host, retry_after if retry_after is not None else _reset(headers))
-                continue
-            host.clean(epoch)
-            return answer
 
-    def _host(self, url: str) -> Host:
-        """The pace of `url`'s host or label, made on first use with an earlier run's speed."""
+
+def _host_name(url: str) -> str:
+    try:
+        return (httpx.URL(url).host or "").lower()
+    except httpx.InvalidURL as error:
+        raise _RequestError(f"{_where(url)}: InvalidURL: {error}") from error
+
+
+def _send_once(
+    sender: httpx.Client, url: str, *, method: str = "GET",
+    headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None,
+    data: Any = None, json: Any = None, soft: bool = False, timeout: float = 30.0,
+) -> Response | None:
+    body: dict[str, Any] = (
+        {"content": data} if isinstance(data, (bytes, bytearray, memoryview, str))
+        else {"data": data}
+    )
+    try:
+        request = sender.build_request(
+            method, url, headers=headers, params=params, json=json, timeout=timeout, **body
+        )
+    except (httpx.HTTPError, httpx.InvalidURL) as error:
+        raise _RequestError(f"{method} {_where(url)}: {type(error).__name__}: {error}") from error
+    try:
+        response = _send(sender, request)
+    except CONNECTION_ERRORS as error:
+        msg = f"{request.method} {_where(request.url)}: {type(error).__name__}: {error}"
+        raise Error(_scrub(msg, request)) from error
+    except (httpx.HTTPError, httpx.InvalidURL) as error:
+        msg = f"{request.method} {_where(request.url)}: {type(error).__name__}: {error}"
+        raise _RequestError(_scrub(msg, request)) from error
+    return _checked(response, request.method, soft=soft)
+
+
+def _download_with(
+    url: str | Sequence[str], dest: PathLike, *, client: httpx.Client,
+    headers: Mapping[str, str] | None = None, resume: bool = True, attempts: int = 3,
+    timeout: float = 30.0, progress: Callable[[int, int | None], Any] | None = None,
+    stop: threading.Event | None = None,
+) -> Path:
+    mirrors = [url] if isinstance(url, str) else list(url)
+    if not mirrors:
+        raise ValueError("download needs a URL")
+    if attempts < 1:
+        raise ValueError(f"attempts must be at least 1, not {attempts}")
+    target = Path(dest)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(f".{target.name}.part")
+    last_error: Error | None = None
+    for mirror in mirrors:
         try:
-            name = (httpx.URL(url).host or "").lower()
-        except httpx.InvalidURL as error:
-            raise _RequestError(f"{_where(url)}: InvalidURL: {error}") from error
-        pace = self._pace if self._pace is not None and self._pace.paces(name) else None
-        key = pace.label if pace is not None and pace.label else name
-        with self._hosts_lock:
-            if key not in self._hosts:
-                self._hosts[key] = Host(key, pace, speed=self._speeds.get(key, 1.0))
-            return self._hosts[key]
+            _download_mirror(
+                mirror, part, client=client, headers=headers, resume=resume,
+                attempts=attempts, timeout=timeout, progress=progress, stop=stop,
+            )
+            os.replace(part, target)
+            return target
+        except (RefusedError, RateLimitedError, StoppedError, _RequestError):
+            raise
+        except Error as error:
+            last_error = error
+    assert last_error is not None
+    raise last_error
 
-    def _throttled(self, host: Host, retry_after: float | None,
-                   reason: str = "rate limited") -> None:
-        """Count a throttle on `host`, and say how long it holds; the next turn waits it out."""
-        seconds = host.throttled(retry_after)
-        if seconds is not None:
-            ui.warn("{host}: {reason}; waiting {time} (attempt {n})", host=host.name,
-                     reason=reason, time=text.fmt.duration(round(seconds)), n=host.strikes)
 
-    def _wait(self, host: Host, seconds: float) -> None:
-        """Wait `seconds` for `host`'s turn, as a countdown row when it is long; `stop` ends it."""
-        if seconds <= 0:
+def _download_mirror(
+    url: str, part: Path, *, client: httpx.Client,
+    headers: Mapping[str, str] | None, resume: bool, attempts: int,
+    timeout: float, progress: Callable[[int, int | None], Any] | None,
+    stop: threading.Event | None,
+) -> None:
+    attempt = 1
+    while True:
+        if stop is not None and stop.is_set():
+            raise StoppedError(f"{_where(url)}: stopped")
+        try:
+            _stream_once(
+                url, part, client=client, headers=headers, resume=resume,
+                timeout=timeout, progress=progress, stop=stop,
+            )
             return
-        with self._hosts_lock:
-            show = seconds >= SHOWN_WAIT and not host.showing
-            host.showing = host.showing or show
-        if not show:
-            if not clock.sleep(seconds, stop=self._stop):
-                raise StoppedError(f"{host.name}: stopped")
-            return
-        try:
-            with ui.progress(f"{host.name}: waiting", total=seconds) as bar:
-                end = clock.now() + seconds
-                # One-second steps, so the countdown moves.
-                while (left := end - clock.now()) > 0:
-                    bar.count = seconds - left
-                    if not clock.sleep(min(1.0, left), stop=self._stop):
-                        raise StoppedError(f"{host.name}: stopped")
-        finally:
-            with self._hosts_lock:
-                host.showing = False
-
-
-class _Transport(httpx.BaseTransport):
-    """An httpx transport that sends split pieces over HTTP/1.1 and the rest over HTTP/2."""
-
-    def __init__(self, **options: Any):
-        options.setdefault("limits", httpx.Limits(max_keepalive_connections=KEEP_ALIVE))
-        self._http1: httpx.BaseTransport = httpx.HTTPTransport(**options)
-        self._http2: httpx.BaseTransport | None = (httpx.HTTPTransport(http2=True, **options)
-                                                   if _has_h2() else None)
-        # Hosts whose HTTP/2 failed; any thread may add one.
-        self._fallen: set[str] = set()
-        self._lock = threading.Lock()
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        """Send `request` over HTTP/2 unless it is a piece or its host fell back."""
-        host = request.url.host
-        if self._http2 is None or request.extensions.get(PIECE_EXTENSION) or host in self._fallen:
-            return self._http1.handle_request(request)
-        try:
-            return self._http2.handle_request(request)
-        except (httpx.RemoteProtocolError, httpx.LocalProtocolError) as error:
-            with self._lock:
-                self._fallen.add(host)
-            ui.debug("{host}: HTTP/2 failed ({error}); HTTP/1.1 from now on", host=host,
-                      error=type(error).__name__)
-            if request.method.upper() not in IDEMPOTENT_METHODS:
+        except (RefusedError, RateLimitedError, StoppedError, _RequestError):
+            raise
+        except Error as error:
+            if attempt >= attempts:
                 raise
-            return self._http1.handle_request(request)
+            seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
+            ui.debug("retry {n} of {url} in {seconds:g} s: {reason}",
+                     n=attempt, url=_where(url), seconds=seconds, reason=error)
+            if not clock.sleep(seconds, stop=stop):
+                raise StoppedError(f"{_where(url)}: stopped") from None
+            attempt += 1
 
-    def close(self) -> None:
-        """Close both transports' connections."""
-        self._http1.close()
-        if self._http2 is not None:
-            self._http2.close()
+
+def _stream_once(
+    url: str, part: Path, *, client: httpx.Client,
+    headers: Mapping[str, str] | None, resume: bool, timeout: float,
+    progress: Callable[[int, int | None], Any] | None, stop: threading.Event | None,
+) -> None:
+    req_headers = dict(headers or {})
+    offset = part.stat().st_size if (resume and part.exists()) else 0
+    if offset > 0:
+        req_headers["Range"] = f"bytes={offset}-"
+    try:
+        request = client.build_request("GET", url, headers=req_headers, timeout=timeout)
+    except (httpx.HTTPError, httpx.InvalidURL) as error:
+        raise _RequestError(f"GET {_where(url)}: {type(error).__name__}: {error}") from error
+    try:
+        with client.stream(
+            request.method, request.url, headers=request.headers, timeout=timeout,
+        ) as resp:
+            if resp.status_code >= 400:
+                resp.read()
+                fake = Response(
+                    status=resp.status_code, url=str(resp.url),
+                    headers=resp.headers, content=resp.content, _raw=resp,
+                )
+                _checked(fake, "GET", soft=False)
+            appending = offset > 0 and resp.status_code == 206
+            done = offset if appending else 0
+            total = _total_bytes(resp.headers, done)
+            mode = "ab" if appending else "wb"
+            written = 0
+            with part.open(mode) as handle:
+                for chunk in resp.iter_bytes():
+                    if stop is not None and stop.is_set():
+                        raise StoppedError(f"{_where(url)}: stopped")
+                    handle.write(chunk)
+                    written += len(chunk)
+                    done += len(chunk)
+                    if progress is not None:
+                        progress(done, total)
+            if total is not None and done < total:
+                raise IncompleteError(f"GET {_where(url)}: truncated at {done} of {total} bytes")
+            if progress is not None and written == 0:
+                progress(done, total)
+    except (RefusedError, RateLimitedError, StoppedError, IncompleteError, _RequestError):
+        raise
+    except CONNECTION_ERRORS as error:
+        msg = f"GET {_where(request.url)}: {type(error).__name__}: {error}"
+        raise IncompleteError(_scrub(msg, request)) from error
+    except (httpx.HTTPError, httpx.InvalidURL) as error:
+        msg = f"GET {_where(request.url)}: {type(error).__name__}: {error}"
+        raise _RequestError(_scrub(msg, request)) from error
+
+
+def _total_bytes(headers: Mapping[str, str], offset: int) -> int | None:
+    content_range = headers.get("content-range")
+    if content_range and "/" in content_range:
+        tail = content_range.rsplit("/", 1)[1].strip()
+        if tail.isdigit():
+            return int(tail)
+    content_length = headers.get("content-length")
+    if content_length and content_length.isdigit():
+        return offset + int(content_length)
+    return None
 
 
 class _Headers(Mapping[str, str]):
-    """A read-only header mapping with lowercase names, looked up in any case."""
-
     def __init__(self, headers: Mapping[str, str]):
         self._items = MappingProxyType({name.lower(): value for name, value in headers.items()})
 
@@ -531,21 +489,14 @@ class _Headers(Mapping[str, str]):
         return len(self._items)
 
     def __repr__(self) -> str:
-        # Names only: a `Set-Cookie` value is a secret.
         return f"Headers({sorted(self._items)})"
 
 
-# The module's client, made on first use under `_client_lock`, since two threads may both be first.
 _default: httpx.Client | None = None
 _client_lock = threading.Lock()
-# One semaphore per (scheme, host, port); `_slots_lock` makes sure two threads asking for a new
-# host at once get the same one, not one each.
-_slots: dict[tuple[str, str, int | None], threading.BoundedSemaphore] = {}
-_slots_lock = threading.Lock()
 
 
 def _close_default() -> None:
-    """Close the module's default client at interpreter shutdown."""
     global _default
     with _client_lock:
         if _default is not None:
@@ -554,61 +505,30 @@ def _close_default() -> None:
 
 
 def _client() -> httpx.Client:
-    """Module's own client, made on first use: follows redirects and keeps no cookies."""
     global _default
     with _client_lock:
         if _default is None:
-            _default = _new_client()
+            refuse_all = http.cookiejar.DefaultCookiePolicy(allowed_domains=[])
+            _default = httpx.Client(
+                follow_redirects=True, cookies=http.cookiejar.CookieJar(refuse_all),
+            )
             atexit.register(_close_default)
         return _default
 
 
-def _new_client() -> httpx.Client:
-    """A client that follows redirects and keeps no cookies between calls."""
-    # A jar whose policy allows no domain keeps no cookie, so a cookie one caller's fetch is sent
-    # never rides along on another caller's request to the same site.
-    refuse_all = http.cookiejar.DefaultCookiePolicy(allowed_domains=[])
-    return httpx.Client(follow_redirects=True, cookies=http.cookiejar.CookieJar(refuse_all),
-                        transport=_Transport())
-
-
-def _has_h2() -> bool:
-    """Whether the `h2` package httpx needs for HTTP/2 is installed."""
-    try:
-        import h2  # noqa: F401
-    except ImportError:  # HTTP/1.1 only, which is what httpx sends without it anyway
-        return False
-    return True
-
-
-def _seconds(value: float) -> str:
-    """A countdown row's count and total, such as "1m 30s"."""
-    return text.fmt.duration(round(value))
-
-
-def _slot(url: httpx.URL) -> threading.BoundedSemaphore:
-    """The semaphore that counts requests in flight to `url`'s host, made on first use."""
-    key = (url.scheme, url.host, url.port)
-    with _slots_lock:
-        if key not in _slots:
-            _slots[key] = threading.BoundedSemaphore(MAX_PER_HOST)
-        return _slots[key]
-
-
 def _send(client: httpx.Client, request: httpx.Request) -> Response:
-    """Send one attempt holding a host slot, and read the whole body into `Response`."""
-    with _slot(request.url):
-        response = client.send(request)
-        try:
-            response.read()
-        finally:
-            response.close()
-    return Response(status=response.status_code, url=str(response.url), headers=response.headers,
-                    content=response.content, _raw=response)
+    response = client.send(request)
+    try:
+        response.read()
+    finally:
+        response.close()
+    return Response(
+        status=response.status_code, url=str(response.url),
+        headers=response.headers, content=response.content, _raw=response,
+    )
 
 
 def _checked(response: Response, method: str, *, soft: bool) -> Response | None:
-    """The response for success or redirect; None for soft 401/403/404; error otherwise."""
     status = response.status
     where = f"{method} {_where(response.url)}"
     if status < 400:
@@ -627,15 +547,14 @@ def _checked(response: Response, method: str, *, soft: bool) -> Response | None:
 
 
 def _retry_after(value: str | None) -> float | None:
-    """A `Retry-After` header in seconds: seconds, or HTTP date from now; None without one."""
     if not value:
         return None
     try:
         seconds = float(value)
-    except ValueError:  # not a number, so maybe an HTTP date
+    except ValueError:
         try:
             when = email.utils.parsedate_to_datetime(value)
-        except (TypeError, ValueError):  # neither form: treated as no header, as browsers do
+        except (TypeError, ValueError):
             return None
         seconds = when.timestamp() - clock.wall()
     if not math.isfinite(seconds):
@@ -644,23 +563,19 @@ def _retry_after(value: str | None) -> float | None:
 
 
 def _reset(headers: Mapping[str, str]) -> float | None:
-    """The seconds until a 429's rate headers reset, plus a second; None without them."""
     for prefix in ("x-rate-limit-", "x-ratelimit-"):
         try:
             reset = float(headers[prefix + "reset"])
-        except (KeyError, ValueError):  # missing or not a number: this spelling says nothing
+        except (KeyError, ValueError):
             continue
         if not math.isfinite(reset):
             continue
-        # A big number is a Unix time (X's), a small one seconds from now; the second is slack for
-        # a clock a little behind the server's.
         seconds = reset - clock.wall() if reset > EPOCH else reset
         return min(max(0.0, seconds) + 1.0, MAX_BACKOFF)
     return None
 
 
 def _where(url: httpx.URL | str) -> str:
-    """The URL without its query or fragment, which may hold a signed token, for a message."""
     try:
         parsed = httpx.URL(str(url))
     except httpx.InvalidURL:
@@ -669,7 +584,6 @@ def _where(url: httpx.URL | str) -> str:
 
 
 def _cookie_dict(cookie: http.cookiejar.Cookie) -> dict[str, Any]:
-    """Convert a stdlib `Cookie` into Playwright's dict shape for `cookies.Jar`."""
     return {
         "name": cookie.name,
         "value": cookie.value or "",
@@ -683,7 +597,6 @@ def _cookie_dict(cookie: http.cookiejar.Cookie) -> dict[str, Any]:
 
 
 def _cookie_from_dict(cookie: Mapping[str, Any]) -> http.cookiejar.Cookie:
-    """Convert a `cookies.Jar` dict into a stdlib `Cookie` for `httpx.Client`."""
     domain = str(cookie.get("domain", ""))
     path = str(cookie.get("path") or "/")
     expires = cookie.get("expires")
@@ -699,12 +612,10 @@ def _cookie_from_dict(cookie: Mapping[str, Any]) -> http.cookiejar.Cookie:
 
 
 def _scrub(text: str, request: httpx.Request) -> str:
-    """`text` with every secret header value of `request` replaced by `***`."""
     for name in SECRET_HEADERS:
         for value in request.headers.get_list(name):
             if value:
                 text = text.replace(value, "***")
-                # A cookie header's single values too, in case only one of them is quoted.
                 for part in value.split(";") if name == "cookie" else ():
                     secret = part.partition("=")[2].strip()
                     if len(secret) >= 4:
@@ -713,14 +624,13 @@ def _scrub(text: str, request: httpx.Request) -> str:
 
 
 def _charset(content_type: str) -> str:
-    """The charset a `Content-Type` names, if Python knows it; UTF-8 otherwise."""
     for parameter in content_type.split(";")[1:]:
         name, _, value = parameter.partition("=")
         if name.strip().lower() == "charset":
             charset = value.strip().strip('"')
             try:
                 "".encode(charset)
-            except LookupError:  # a charset Python doesn't know: UTF-8, as browsers mostly do
+            except LookupError:
                 return "utf-8"
             return charset
     return "utf-8"

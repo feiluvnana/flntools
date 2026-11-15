@@ -8,7 +8,6 @@ from test_engine import EngineCase
 
 from flnd import Engine
 from flnd.options import Options
-from flnd.query import plan
 from flnd.source import FetchError, Target, TargetError
 from flnd.sources.mht import API, Mimi, cover_name, format_order, page_name
 
@@ -31,9 +30,6 @@ ROUTES = [
     ('mht:?author:"example creator" chapters:1', ("query", 'author:"example creator" chapters:1')),
     ("mht:?example words", ("query", "example words")),
     ("mht:?", "the query is empty"),
-    ("mht:?unknown:x", "'unknown:x': no parameter unknown"),
-    ("mht:?-author:x", "'author:x': this site can't exclude by author"),
-    ("mht:?chapters:>5", "'chapters:>5': this site can't compare chapters"),
     ("mht:abc", "can't read"),
     ("https://mimihentai.moe/", "can't read"),
     ("https://example.com/manga/70982", "can't read"),
@@ -156,9 +152,7 @@ class AuthorGenreAndQueryTest(unittest.TestCase):
             return {"items": [{"id": 30}], "next_cursor": None, "total": 3}
 
         site, seen = self._site({f"{API}manga/search": search})
-        route = next(r for r in Mimi.routes if r.is_query)
-        [q] = plan("example words", route.params, site=site)
-        self.assertEqual(list(Mimi().query(site, q)),
+        self.assertEqual(list(Mimi().query(site, "example words")),
                          [Target("mht", "manga", "10"), Target("mht", "manga", "20"), Target("mht", "manga", "30")])
         self.assertEqual(len(seen.requests), 2)
 
@@ -181,11 +175,11 @@ class AuthorGenreAndQueryTest(unittest.TestCase):
             f"{API}parodies/search": lambda u, r: [{"id": 55, "name": "example_parody"}],
             f"{API}manga/advanced-search": adv,
         })
-        route = next(r for r in Mimi.routes if r.is_query)
-        [q] = plan('genre:(vanilla AND romance) -genre:example author:example_creator '
-                   'character:example_char parody:example_parody title:extra chapters:3',
-                   route.params, site=site)
-        found = list(Mimi().query(site, q))
+        found = list(Mimi().query(
+            site,
+            'genre:vanilla genre:romance -genre:example author:example_creator '
+            'character:example_char parody:example_parody title:extra chapters:3',
+        ))
         self.assertEqual(found, [Target("mht", "manga", "101")])
         self.assertEqual(captured, [{
             "title": "extra",
@@ -196,20 +190,6 @@ class AuthorGenreAndQueryTest(unittest.TestCase):
             "exclude_genre": "9",
             "cursor_res": "true",
         }])
-
-    def test_genre_or_splits_into_two_searches(self):
-        site, _ = self._site({
-            f"{API}genres": [{"id": 1, "name": "Vanilla"}, {"id": 2, "name": "Romance"}],
-            f"{API}manga/advanced-search": lambda u, r: {
-                "items": [{"id": 10 if r["params"]["genre"] == "1" else 20, "chapter_count": 1}],
-                "next_cursor": None,
-            },
-        })
-        route = next(r for r in Mimi.routes if r.is_query)
-        queries = plan("genre:(vanilla OR romance)", route.params, site=site)
-        self.assertEqual(len(queries), 2)
-        results = [target for q in queries for target in Mimi().query(site, q)]
-        self.assertEqual(results, [Target("mht", "manga", "10"), Target("mht", "manga", "20")])
 
     def test_author_and_genre_page_routes(self):
         site, _ = self._site({
@@ -255,11 +235,11 @@ class MimiEngineTest(EngineCase):
         self.assertTrue((folder / "chapters" / "001_First_Chapter" / "001.webp").exists())
         self.assertTrue((folder / "cover" / "cover.webp").exists())
 
-        # Second run: genre lookup is cached for 24h and saved chapter is not re-fetched.
+        # Second run: saved chapter is not re-fetched.
         del self.routes[f"{API}chapters/1001"]
         report2 = engine.download(["mht?genre:vanilla"], categories="all", limit=1)
         self.assertTrue(report2.ok)
-        self.assertEqual(genre_calls, 1)
+        self.assertEqual(genre_calls, 2)
 
     def test_cover_query_reuses_search_metadata_without_manga_api(self):
         self.routes[f"{API}genres"] = httpx.Response(200, json=[{"id": 1, "name": "Vanilla"}])

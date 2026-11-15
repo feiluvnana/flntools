@@ -486,13 +486,17 @@ class LoginTest(LoginCase):
     def test_qr_and_phone_need_a_terminal_and_browser_needs_stored_credentials(self):
         store(self.home, **CREDENTIALS)
         for method in ("qr", "phone"):
-            with self.subTest(method=method), self.assertRaisesRegex(
-                    LoginError, f"the {method} login asks questions; run flnd login in a terminal"):
+            with self.subTest(method=method), \
+                    mock.patch("sys.stdin.isatty", return_value=False), \
+                    self.assertRaisesRegex(
+                        LoginError, f"the {method} login asks questions; run flnd login in a terminal"):
                 self.log_in(method)
         self.assertEqual(self.telegram.clients, [])
         with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()
-        with self.assertRaisesRegex(LoginError, "no api_id and api_hash yet; run flnd login in a terminal"):
+        with mock.patch("sys.stdin.isatty", return_value=False), \
+                self.assertRaisesRegex(
+                    LoginError, "no api_id and api_hash yet; run flnd login in a terminal"):
             self.log_in("browser")
 
     def test_logged_in_is_a_stored_session(self):
@@ -757,21 +761,21 @@ class ArchiveTest(DownloadCase):
 
 
 class WithOtherSourcesTest(DownloadCase):
-    def test_both_groups_run_at_once_telegram_on_its_loop(self):
-        both = threading.Barrier(2, timeout=5)
+    def test_groups_run_sequentially_with_telegram_on_its_loop(self):
+        order = []
         self.telegram.messages[1001] = [message(11, "photo")]
         original = FakeClient.iter_messages
 
         def iter_messages(client, entity, **options):
             if not self.telegram.asked:
-                both.wait()
+                order.append("tlg")
             return original(client, entity, **options)
 
-        other = make_source("aaa", lambda site: both.wait())
+        other = make_source("aaa", lambda site: order.append("aaa"))
         with mock.patch.object(FakeClient, "iter_messages", iter_messages):
             total = self.run_engine(Telegram, other, targets=["tlg:@examplechannel", "aaa:a"])
         self.assertEqual(total, 1)
-        self.assertFalse(both.broken)
+        self.assertEqual(order, ["tlg", "aaa"])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
-"""Tests for `shared._store`: WAL SQLite + `msgspec.json` TTL KV store."""
+"""Tests for `shared._store`: the atomic JSON key-value store."""
 
 import collections.abc
-import sqlite3
+import json
 import tempfile
 import threading
 import unittest
@@ -9,29 +9,18 @@ from pathlib import Path
 from unittest import mock
 
 import shared
-from shared import _clock as clock
 from shared import _store as store
-
-
-def at(seconds: float):
-    fake = clock.Fake()
-    fake.advance(seconds)
-    return clock.use(fake)
 
 
 class StoreCase(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
-        self.file = Path(self.folder.name) / "nested" / "state.db"
+        self.file = Path(self.folder.name) / "nested" / "state.json"
         self.db = store.open(self.file)
 
     def tearDown(self):
         self.db.close()
         self.folder.cleanup()
-
-    def stored_keys(self) -> list[str]:
-        rows = self.db.raw.execute("SELECT key FROM kv ORDER BY key").fetchall()
-        return [key for (key,) in rows]
 
 
 class MappingTest(StoreCase):
@@ -67,47 +56,51 @@ class MappingTest(StoreCase):
         with self.assertRaises(store.Error):
             self.db.update([("ok", 2), ("bad", object())])
         self.assertEqual(dict(self.db), {"keep": 1})
+        on_disk = json.loads(self.file.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk, {"kv": {"keep": 1}})
+
+
+class PersistenceTest(StoreCase):
+    def test_file_is_readable_json_and_reloads(self):
+        self.db["a"] = {"name": "example"}
+        self.assertEqual(
+            json.loads(self.file.read_text(encoding="utf-8")),
+            {"kv": {"a": {"name": "example"}}},
+        )
+        self.db.close()
+        again = store.open(self.file)
+        self.addCleanup(again.close)
+        self.assertEqual(again["a"], {"name": "example"})
+
+    def test_tables_share_one_file(self):
+        sub = self.db.table("sub")
+        sub["x"] = 1
+        self.db["y"] = 2
+        self.assertEqual(
+            json.loads(self.file.read_text(encoding="utf-8")),
+            {"kv": {"y": 2}, "sub": {"x": 1}},
+        )
+        self.assertEqual(len(self.db), 1)
+        self.assertEqual(len(sub), 1)
+
+    def test_keys_filter_by_prefix(self):
+        self.db.update({"ab": 1, "ac": 2, "bd": 3})
+        self.assertEqual(list(self.db.keys("a")), ["ab", "ac"])
+        self.assertEqual(list(self.db.keys()), ["ab", "ac", "bd"])
 
 
 class ValuesTest(StoreCase):
-    def test_wal_and_synchronous_normal(self):
-        mode = self.db.raw.execute("PRAGMA journal_mode").fetchone()[0]
-        sync = self.db.raw.execute("PRAGMA synchronous").fetchone()[0]
-        self.assertEqual(mode.lower(), "wal")
-        self.assertEqual(sync, 1)  # 1 == NORMAL
-
-    def test_surrogate_safe_encoding_and_bad_keys(self):
-        self.db["ok"] = {"name": "bad\udc80name"}
-        self.assertEqual(self.db["ok"], {"name": "bad\udc80name"})
-        with self.assertRaises(store.Error):
-            self.db["bad\udc80key"] = 1
+    def test_keys_must_be_strings(self):
         with self.assertRaises(store.Error):
             self.db[1] = "x"  # pyright: ignore[reportArgumentType]
-        with self.assertRaises(store.Error):
+
+    def test_unserializable_value_is_a_store_error(self):
+        self.db["ok"] = 1
+        with self.assertRaises(store.Error) as ctx:
             self.db["bad"] = object()
-
-
-class ExpiryAndReadsTest(StoreCase):
-    def test_reads_never_take_write_locks_and_prune_removes_expired(self):
-        with at(0):
-            self.db.set("old", 1, ttl=1)
-            self.db.set("new", 2, ttl=100)
-        with at(5):
-            # Reads return expired as missing without deleting rows.
-            self.assertNotIn("old", self.db)
-            self.assertIsNone(self.db.get("old"))
-            self.assertEqual(list(self.db.items()), [("new", 2)])
-            self.assertEqual(list(self.db.values()), [2])
-            self.assertEqual(self.stored_keys(), ["new", "old"])
-
-            removed = self.db.prune()
-            self.assertEqual(removed, 1)
-            self.assertEqual(self.stored_keys(), ["new"])
-
-    def test_prefix_near_surrogates(self):
-        self.db["\ud7ffa"] = 1
-        self.db["\ue000a"] = 2
-        self.assertEqual(list(self.db.keys("\ud7ff")), ["\ud7ffa"])
+        self.assertIsInstance(ctx.exception, shared.Error)
+        self.assertEqual(self.db["ok"], 1)
+        self.assertNotIn("bad", self.db)
 
 
 class ErrorsAndThreadsTest(StoreCase):
@@ -125,17 +118,18 @@ class ErrorsAndThreadsTest(StoreCase):
         with self.assertRaises(store.ClosedError):
             self.db["x"] = 1
 
-    def test_sqlite_and_os_errors_wrapped_in_store_error(self):
-        err = sqlite3.OperationalError("bad")
-        with mock.patch.object(store.sqlite3, "connect", side_effect=err):
-            with self.assertRaises(store.Error) as ctx:
-                store.open(self.file)
+    def test_bad_file_is_wrapped_in_store_error(self):
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        self.file.write_text("not json", encoding="utf-8")
+        with self.assertRaises(store.Error) as ctx:
+            store.open(self.file)
         self.assertIsInstance(ctx.exception, shared.Error)
-        self.assertIsInstance(ctx.exception.__cause__, sqlite3.OperationalError)
+        self.assertIsInstance(ctx.exception.__cause__, ValueError)
 
-        with mock.patch("pathlib.Path.mkdir", side_effect=OSError("no perms")):
+    def test_os_errors_are_wrapped_in_store_error(self):
+        with mock.patch.object(Path, "mkdir", side_effect=OSError("no perms")):
             with self.assertRaises(store.Error) as ctx:
-                store.open(self.file)
+                self.db["x"] = 1
         self.assertIsInstance(ctx.exception.__cause__, OSError)
 
     def test_concurrent_threads_read_and_write(self):
@@ -157,3 +151,7 @@ class ErrorsAndThreadsTest(StoreCase):
             t.join()
         self.assertEqual(errors, [])
         self.assertEqual(len(self.db), 120)
+
+
+if __name__ == "__main__":
+    unittest.main()

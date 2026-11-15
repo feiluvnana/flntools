@@ -33,9 +33,7 @@ T = TypeVar("T")
 # Tries in all for a site request, sent by the client or by the tab: a 5xx or a request that
 # couldn't be sent may go through next time, after 1, 2 and 4 s.
 ATTEMPTS = 4
-# The key of the learned speed in a source's `state`.
-STATE_KEY = "pace.speed"
-# The least seconds between two bottom scrolls at 1x, which the learned speed scales.
+# The least seconds between two bottom scrolls at 1x.
 SCROLL_FLOOR = 0.05
 # Most open tabs kept in a single target browser window when warming or nesting watches.
 MAX_TABS = 6
@@ -88,14 +86,6 @@ class SourceRun:
             self._secrets = auth.secrets(self.settings.home, self.source.code)
         return self._secrets
 
-    @property
-    def speed(self) -> float:
-        """The source's learned speed now, from 1 (no throttle seen) to 8."""
-        host = self.web._hosts.get(self.source.code)
-        if host is not None:
-            return host.speed
-        return self.web._speeds.get(self.source.code, 1.0)
-
     def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine on this source's own event loop, started on first use."""
         if self._loop is None:
@@ -103,53 +93,41 @@ class SourceRun:
         return self._loop.run(coroutine)
 
     def close(self) -> None:
-        """Save the learned speed, then close the client, stores and event loop; once."""
+        """Close the client, stores and event loop; once."""
         if self._closed:
             return
         self._closed = True
         try:
-            self.state[STATE_KEY] = self.speed
+            self.web.raw.close()
         finally:
-            try:
-                self.web.raw.close()
-            finally:
-                for db in (self._state, self._secrets):
-                    if db is not None:
-                        db.close()
-                if self._loop is not None:
-                    self._loop.close()
+            for db in (self._state, self._secrets):
+                if db is not None:
+                    db.close()
+            if self._loop is not None:
+                self._loop.close()
 
 
 def _make_client(
     raw: httpx.Client,
     *,
-    pace: Any = None,
-    speeds: dict[str, float] | None = None,
+    interval: float = 0.0,
     stop: threading.Event | None = None,
 ) -> http.Client:
-    """Wrap `raw` in an `http.Client` with `pace`, learned `speeds`, and `stop`."""
+    """Wrap `raw` in an `http.Client` with `interval` and `stop`."""
     client = http.Client()
     client._raw.close()
     client._raw = raw
-    client._pace = pace
-    client._speeds = speeds or {}
+    client._interval = interval
     client._stop = stop
     return client
 
 
-def _source_paces(source: Source) -> tuple[Any, Any]:
-    """Return `(web_pace, file_pace)` for `source`."""
-    base = http.Client(rate=1.0)._pace
-    assert base is not None
-    raw_pace: Any = source.pace
-    declared = (
-        raw_pace if hasattr(raw_pace, "paces")
-        else dataclasses.replace(base, floor=float(raw_pace))
-    )
-    return (
-        dataclasses.replace(declared, domains=source.domains, label=source.code),
-        dataclasses.replace(base, floor=0.0, label=source.code),
-    )
+def _matches_domain(source: Source, host: str | None) -> bool:
+    """Whether `host` belongs to one of `source.domains`."""
+    if not host:
+        return False
+    low = host.lower()
+    return any(low == d or low.endswith(f".{d}") for d in source.domains)
 
 
 @contextmanager
@@ -157,23 +135,21 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     """Open one source's resources for a run, and close them however the block ends."""
     jar = auth.load(settings.home, source.code)
     _warn_expiring(source, jar)
-    pace, file_pace = _source_paces(source)
+    interval = float(source.pace)
 
     def sign(request: httpx.Request) -> None:
-        if pace.paces(request.url.host):
+        if _matches_domain(source, request.url.host):
             signed = source.prepare(request, _names(raw.cookies))
             if signed is not request:
                 request.headers.update(signed.headers)
 
     raw = net.client(user_agent=source.user_agent, jar=jar, sign=sign)
     state = store.open(settings.home / paths.SOURCE_STATE, table=source.code)
-    saved = state.get(STATE_KEY)
-    speeds = {source.code: float(saved)} if isinstance(saved, (int, float)) else {}
     stop: cli.Stopping | None = getattr(settings, "stop", None)
     run = SourceRun(
         source, settings, jar,
-        _make_client(raw, pace=pace, speeds=speeds, stop=stop.soon if stop else None),
-        _make_client(raw, pace=file_pace, stop=stop.now if stop else None),
+        _make_client(raw, interval=interval, stop=stop.soon if stop else None),
+        _make_client(raw, interval=0.0, stop=stop.now if stop else None),
         _state=state,
     )
     try:
@@ -278,6 +254,7 @@ class TargetSite:
                     url,
                     lambda: self._visit_tab(page, url=url, pre_visit=None,
                                             idle=idle, timeout=timeout),
+                    attempts=3,
                 )
         if visit is None:
             return False
@@ -316,7 +293,7 @@ class TargetSite:
         if self._browser is None:
             self._browser = self._connect()
         opened = self._browser.open()
-        return _PacedPage(opened.raw, opened.browser, speed=lambda: self._run.speed)
+        return _PacedPage(opened.raw, opened.browser, speed=lambda: 1.0)
 
     def _recycle_tab(self, tab: _PacedPage) -> None:
         """Keep `tab` in `_idle_tabs` for reuse without opening another window."""
@@ -449,7 +426,12 @@ class TargetSite:
     ) -> browser.Visit | None:
         """Finish waiting for a pre-warmed tab, or navigate `page` normally."""
         if pre_visit is None:
-            return page.goto(url, idle=idle, timeout=timeout)
+            visit = page.goto(url, idle=idle, timeout=timeout)
+            if visit is not None and visit.status == 429:
+                raw_wait = visit.headers.get("retry-after") if visit.headers else None
+                wait = float(raw_wait) if raw_wait and raw_wait.isdigit() else None
+                raise http.RateLimitedError(wait, f"GET {url}: HTTP 429")
+            return visit
         try:
             page.wait(idle=idle, timeout=timeout)
         except browser.WaitError as error:
@@ -484,12 +466,11 @@ class TargetSite:
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
         """Count one rate limit and wait it out."""
         with _stoppable():
-            host = self._run.web._host(self._home)
-            seconds = host.throttled(retry_after)
-            if seconds is not None:
-                ui.warn("{host}: {reason}; waiting {time} (attempt {n})", host=host.name,
-                        reason=reason, time=text.fmt.duration(round(seconds)), n=host.strikes)
-                self._run.web._wait(host, seconds)
+            seconds = retry_after if retry_after is not None else 5.0
+            ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
+                    reason=reason, time=text.fmt.duration(round(seconds)))
+            if seconds > 0 and not clock.sleep(seconds, stop=self._run.web._stop):
+                raise http.StoppedError(f"{self.target}: stopped")
 
     def _held_pages(self) -> list[_PacedPage]:
         pages = [*self._stack, *self._idle_tabs, *(tab for tab, _ in self._warmed.values())]
@@ -561,7 +542,7 @@ class LoginSite:
     @property
     def interactive(self) -> bool:
         """Whether `ask` can ask: `flnd login` in a terminal."""
-        return self._run.settings.interactive and sys.stdin.isatty()
+        return self._run.settings.interactive and prompt.interactive()
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
         """Ask a question with `prompt.ask`, and return what was typed."""

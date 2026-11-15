@@ -246,40 +246,6 @@ class TimeTest(RunsCase):
         self.assertFalse((Path(".flnd") / paths.TARGETS).exists())
 
 
-class ShrinkOptionTest(RunsCase):
-    def test_shrink_reaches_the_engine_and_is_saved_for_the_target(self):
-        code, _, out = self.run_app("download", "ins:example_user", "--from", "all", "--shrink", "on")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[0][2], Options(categories=("all",), shrink=True))
-        with store.open(Path(".flnd") / paths.TARGETS, table="targets") as targets:
-            row = targets.get("ins:example_user")
-        self.assertEqual((row["kind"], row["shrink"]), ("user", True))
-
-    def test_saved_shrink_is_used_again_and_off_turns_it_off(self):
-        self.run_app("download", "ins:example_user", "--from", "all", "--shrink", "on")
-        code, _, out = self.run_app("download", "ins:example_user", "--from", "all")
-        self.assertEqual(code, 0, out)
-        self.assertEqual(self.runs[1][2], Options(categories=("all",), shrink=True))
-        self.assertIn("ins:example_user: --shrink (saved)", out)
-        self.run_app("download", "ins:example_user", "--from", "all", "--shrink", "off")
-        self.assertEqual(self.runs[2][2], Options(categories=("all",), shrink=False))
-        self.run_app("download", "ins:example_user", "--from", "all")
-        self.assertEqual(self.runs[3][2], Options(categories=("all",)))
-
-    def test_from_and_time_are_not_saved(self):
-        self.run_app("download", "ins:example_user", "--from", "reels", "--time", "2026-01-01,")
-        self.run_app("download", "ins:example_user", "--from", "all")
-        self.assertEqual(self.runs[1][2], Options(categories=("all",)))
-
-    def test_the_old_media_options_are_unknown(self):
-        for args in (("--image", "webp,mid"), ("--video", "h265,low"), ("--audio", "opus")):
-            code, _, out = self.run_app("download", "ins:a", *args)
-            self.assertEqual(code, 2, args)
-            self.assertIn("Unknown option:", out)
-        self.assertEqual(self.runs, [])
-        self.assertFalse((Path(".flnd") / paths.TARGETS).exists())
-
-
 class SyncCommandTest(RunsCase):
     def setUp(self):
         super().setUp()
@@ -297,24 +263,29 @@ class SyncCommandTest(RunsCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_from_and_time_are_not_saved(self):
+        self.run_app("download", "ins:example_user", "--from", "reels", "--time", "2026-01-01,")
+        self.run_app("download", "ins:example_user", "--from", "all")
+        self.assertEqual(self.runs[1][2], Options(categories=("all",)))
+
     def test_every_recorded_target_with_its_saved_settings(self):
-        self.run_app("download", "ins:example_user", "--shrink", "on", "--from", "reels", "--sync")
+        self.run_app("download", "ins:example_user", "--from", "reels", "--sync")
         self.run_app("download", "twt:example_handle", "--from", "all", "--sync")
         code, _, out = self.run_app("sync")
         self.assertEqual(code, 0, out)
-        self.assertEqual(dict(self.synced[0]), {Target("ins", "user", "example_user"): Options(shrink=True),
+        self.assertEqual(dict(self.synced[0]), {Target("ins", "user", "example_user"): Options(),
                                                 Target("twt", "user", "example_handle"): Options()})
         self.run_app("sync", "twt:example_handle")
         self.assertEqual(self.synced[1], [(Target("twt", "user", "example_handle"), Options())])
 
     def test_sync_v_shows_every_line_and_changes_no_setting(self):
-        self.run_app("download", "ins:example_user", "--from", "all", "--shrink", "on", "--sync")
+        self.run_app("download", "ins:example_user", "--from", "all", "--sync")
         self.assertEqual(ui.level, "info")
         self.assertEqual(self.run_app("sync", "-v")[0], 0)
         self.assertEqual(self.levels[-1], "debug")
         self.assertEqual(ui.level, "info")
         self.assertEqual(dict(self.synced[0]),
-                         {Target("ins", "user", "example_user"): Options(shrink=True)})
+                         {Target("ins", "user", "example_user"): Options()})
 
     def test_sync_takes_no_options(self):
         self.run_app("download", "ins:example_user", "--from", "all", "--sync")
@@ -326,12 +297,11 @@ class SyncCommandTest(RunsCase):
         self.assertEqual(self.synced, [])
 
     def test_target_ls_sync_on_off_and_del(self):
-        self.run_app("download", "ins:example_user", "--from", "all", "--shrink", "on")
+        self.run_app("download", "ins:example_user", "--from", "all")
         code, _, out = self.run_app("target", "ls")
         self.assertEqual(code, 0)
         self.assertIn("ins:example_user", out)
         self.assertIn("off", out)
-        self.assertIn("on", out)
         self.assertEqual(self.run_app("target", "ls", "extra")[0], 2)
         code, _, out = self.run_app("target", "sync-on", "ins:example_user")
         self.assertEqual(code, 0)
