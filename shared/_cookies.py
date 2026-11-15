@@ -103,11 +103,18 @@ class Jar:
         self, *, domains: str | Iterable[str] | None = None, names: Iterable[str] | None = None
     ) -> Jar:
         """A jar of only the cookies for `domains` and subdomains, and of only those `names`."""
-        wanted_domains = (
-            None if domains is None
-            else ((domains,) if isinstance(domains, str) else tuple(domains))
-        )
-        wanted = None if names is None else ({names} if isinstance(names, str) else set(names))
+        if domains is None:
+            wanted_domains: tuple[str, ...] | None = None
+        elif isinstance(domains, str):
+            wanted_domains = (domains,)
+        else:
+            wanted_domains = tuple(domains)
+        if names is None:
+            wanted: set[str] | None = None
+        elif isinstance(names, str):
+            wanted = {names}
+        else:
+            wanted = set(names)
         return Jar(
             cookie for cookie in self._cookies
             if (wanted_domains is None
