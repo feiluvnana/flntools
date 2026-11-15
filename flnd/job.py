@@ -830,9 +830,7 @@ class Downloads:
     def _downloads(self) -> worker.Pool:
         """Lazily create the target's download `worker.Pool`."""
         if self._pool is None:
-            self._pool = worker.Pool(
-                concurrency=self.source.concurrency, stop=self.settings.stop.soon,
-            )
+            self._pool = worker.Pool(concurrency=self.source.concurrency)
         return self._pool
 
     def _encoder(self) -> worker.Pool:

@@ -270,7 +270,8 @@ class _Run:
         self.finished: list[Result[Any]] = []
         self.submitted = self.busy = self.running = self.runners = 0
         self.closed = self.ended = False
-        self.stop_requested = stop if stop is not None else threading.Event()
+        self._external_stop = stop
+        self.stop_requested = threading.Event()
         self.task_interrupt: BaseException | None = None
         self._owner_id = threading.get_ident()
         self._owner_accepting = True
@@ -524,11 +525,17 @@ class _Run:
                 self.reported = done
                 progress(done, total)
 
+    def _stopped(self) -> bool:
+        return self.stop_requested.is_set() or (
+            self._external_stop is not None and self._external_stop.is_set()
+        )
+
     def _take(self) -> _Job | None:
         with self.lock:
-            while not self.queued and not self.closed and not self.stop_requested.is_set():
-                self.work_cond.wait()
-            if self.queued and not self.stop_requested.is_set():
+            wait = 0.05 if self._external_stop is not None else None
+            while not self.queued and not self.closed and not self._stopped():
+                self.work_cond.wait(wait)
+            if self.queued and not self._stopped():
                 job = self.queued.popleft()
                 self.busy += 1
                 if self.has_room():
@@ -546,8 +553,9 @@ class _Run:
                 value = self._counted_attempt(job)
                 return _make_result(job.item, value, None, attempt, job.position)
             except Exception as error:
+                stop = self._external_stop or self.stop_requested
                 stopped = attempt <= self.retries and not clock.sleep(
-                    _retry_wait(attempt), stop=self.stop_requested
+                    _retry_wait(attempt), stop=stop
                 )
                 if attempt > self.retries or stopped:
                     return _make_result(job.item, None, error, attempt, job.position)
