@@ -9,8 +9,6 @@ from unittest import mock
 from pathlib import Path
 
 try:
-    import jmespath
-    import jsonpath
     import parsel
     import shared
     from shared import selector
@@ -93,6 +91,15 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(selector.parse(HTML).css("h1 b::text").first, "User")
         self.assertEqual(selector.parse(DATA).jmespath("data.user.id").first, "9")
 
+    def test_parse_reads_bom_json(self):
+        bom_text = '\ufeff{"a": {"b": [1, 2]}}'
+        self.assertEqual(selector.parse(bom_text).jmespath("a.b[1]").first, 2)
+        self.assertEqual(selector.parse(bom_text.encode("utf-8")).jmespath("a.b[1]").first, 2)
+
+    def test_missing_file_raises_selector_error(self):
+        with self.assertRaises(selector.Error):
+            selector.parse(Path("nonexistent_selector_file.json"))
+
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")
 class HtmlTest(unittest.TestCase):
@@ -128,8 +135,14 @@ class HtmlTest(unittest.TestCase):
         self.assertIsInstance(links.raw, parsel.SelectorList)
 
     def test_jsonpath_on_html_raises(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(selector.QueryError):
             self.page.jsonpath("$..a")
+
+    def test_invalid_css_and_xpath_raise_query_error(self):
+        with self.assertRaises(selector.QueryError):
+            self.page.css("div[")
+        with self.assertRaises(selector.QueryError):
+            self.page.xpath("//div[")
 
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")
@@ -165,7 +178,7 @@ class JmespathTest(unittest.TestCase):
         self.assertEqual(self.data.jmespath("data.other.id || data.user.id").first, "9")
 
     def test_invalid_expression_raises(self):
-        with self.assertRaises(jmespath.exceptions.ParseError):
+        with self.assertRaises(selector.QueryError):
             self.data.jmespath("data.[")
 
 
@@ -188,8 +201,13 @@ class JsonpathTest(unittest.TestCase):
         self.assertIsNone(selector.parse(DATA).jsonpath("$..absent").first)
 
     def test_invalid_expression_raises(self):
-        with self.assertRaises(jsonpath.JSONPathSyntaxError):
+        with self.assertRaises(selector.QueryError):
             selector.parse(DATA).jsonpath("$..[")
+
+    def test_list_result_is_split_into_matches(self):
+        found = selector.parse({"items": [1, 2, None, 3]}).jsonpath("$.items")
+        self.assertEqual(found.first, 1)
+        self.assertEqual(found.all, [1, 2, 3])
 
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")
@@ -203,22 +221,24 @@ class ScriptTest(unittest.TestCase):
         self.assertEqual(data.jmespath("props.user").first, "someone")
 
     def test_by_pattern(self):
-        data = self.page.script(pattern=r"window\._sharedData = (\{.*?\});")
+        data = self.page.match(r"window\._sharedData = (\{.*?\});")
         self.assertEqual(data.jmespath("config.id").first, 7)
 
     def test_not_found(self):
         self.assertFalse(self.page.script("missing"))
-        self.assertIsNone(self.page.script(pattern=r"nothing = (\{\})").first)
+        self.assertIsNone(self.page.match(r"nothing = (\{\})").first)
 
     def test_broken_json_raises(self):
         with self.assertRaises(selector.BrokenError):
             self.page.script("broken")
 
-    def test_neither_or_both_raise(self):
-        with self.assertRaises(ValueError):
-            self.page.script()
-        with self.assertRaises(ValueError):
-            self.page.script("a", pattern="b")
+    def test_script_requires_id_and_match_validates_pattern(self):
+        with self.assertRaises(TypeError):
+            self.page.script()  # type: ignore[call-arg]
+        with self.assertRaises(selector.QueryError):
+            self.page.match(r"[unclosed")
+        with self.assertRaises(selector.QueryError):
+            self.page.match(r"window\._sharedData")
 
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")

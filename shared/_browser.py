@@ -26,12 +26,12 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING, Any, Callable, Iterable, Literal, Mapping, Sequence, Union, overload,
+    TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence, Union,
 )
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -48,8 +48,10 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
-__all__ = ["Browser", "Error", "Match", "MissingError", "Page", "RawError", "Subscription", "Visit",
-           "WaitError", "check", "open"]
+__all__ = [
+    "Browser", "Error", "Launch", "Match", "MissingError", "Page", "RawError",
+    "Scroll", "Visit", "WaitError", "Watch", "attach", "check", "open",
+]
 
 # Switches that hide the automation Chrome would otherwise show (AutomationControlled sets
 # `navigator.webdriver`; infobars shows the automated-software bar) and prevent Chrome from
@@ -155,6 +157,8 @@ _chromium_failed: MissingError | None = None
 # Each source's session opens its browser on its own thread, so two can find Chromium missing at
 # once: the check, the question and the download are one step, or both would ask and both download.
 _chromium_offer = threading.Lock()
+# Cached headful user-agent string keyed by browser executable path.
+_HEADFUL_UA: dict[str, str] = {}
 
 
 class Error(shared.Error):
@@ -208,63 +212,46 @@ class WaitError(Error):
     """
 
 
-def open(*, profile: str | Path | None = None, cdp: str | None = None, headless: bool = False,
-         viewport: tuple[int, int] = (1280, 900), locale: str | None = None,
-         timezone: str | None = None, args: Sequence[str] = (), stealth: bool = True) -> Browser:
-    """Launch or attach to a browser, and return it as a `Browser` for a `with` block.
+@dataclass(frozen=True)
+class Launch:
+    """Options for `browser.open`: profile, window, locale, timezone, switches and stealth."""
 
-        with browser.open() as chrome:                       # a visible, incognito Google Chrome
-            tab = chrome.open("https://example.com/")
-        with browser.open(profile="Profile 1") as chrome: ...  # a copy of that installed profile
-        with browser.open(profile=Path(".flnd/browser")) as chrome: ...  # persistent folder
+    profile: str | Path | None = None
+    headless: bool = False
+    viewport: tuple[int, int] = (1280, 900)
+    locale: str | None = None
+    timezone: str | None = None
+    args: Sequence[str] = ()
+    stealth: bool = True
 
-    Args:
-        profile: None runs incognito. A `str` with no path separator names an installed Chrome
-            profile ("Default"), copied to a private temporary folder without caches and deleted
-            on close. A `Path` or `str` with a separator ("./profile") is a persistent profile
-            folder.
-        cdp: a running browser's DevTools endpoint (`http://127.0.0.1:9222` or `wss://`) to
-            attach to instead of launching; it keeps running after close.
-        headless: run without a window (still reporting "Chrome" instead of "HeadlessChrome").
-        viewport: the tabs' `(width, height)` in CSS pixels.
-        locale: the browser's language (e.g. "fr-FR"); None keeps the system's.
-        timezone: the browser's timezone (e.g. "Europe/Paris"); None keeps the system's.
-        args: extra command-line switches after `LAUNCH_ARGS`.
-        stealth: hide `navigator.webdriver` and the automation info bar.
 
-    Raises:
-        ValueError: `cdp=` combined with launch-only options, or an empty `profile`.
-        FileNotFoundError: no installed Chrome profile has the name `profile`.
-        ImportError: Playwright isn't installed (the `browser` extra).
-        MissingError: neither Chrome nor Chromium is available, and downloading was declined/failed.
-    """
-    launch_only = profile is not None or headless or args or not stealth or locale or timezone
-    if cdp is not None and launch_only:
-        raise ValueError("open(cdp=...) uses the running browser as it is: "
-                         "profile, headless, locale, timezone, args and stealth don't apply")
-    name = _profile_name(profile)
+@dataclass(frozen=True)
+class Scroll:
+    """Timing and progress options for `Page.scroll`."""
+
+    idle: float = 10.0
+    wait: float = 3.0
+    pause: float = 0.3
+    count: Callable[[], int] | None = None
+    on_step: Callable[[], Any] | None = None
+
+
+def open(launch: Launch = Launch()) -> Browser:
+    """Launch Chrome or Chromium and return it as a `Browser` for a `with` block."""
+    name = _profile_name(launch.profile)
     # Copied before Playwright starts, so a misspelt name fails at once. From here the copy holds
-    # the profile's logins (Telegram Web's among them), so it is deleted however open ends
-    # without a launched browser.
+    # the profile's logins, so it is deleted however open ends without a launched browser.
     copy = _copy_profile(name) if name is not None else None
     launched = False
     try:
         playwright = _start_playwright()
         try:
-            if cdp is None:
-                target_profile = copy if copy is not None else profile
-                started = _launch(
-                    playwright, target_profile, copied=copy is not None, headless=headless,
-                    viewport=viewport, locale=locale, timezone=timezone, args=args, stealth=stealth,
-                )
-            else:
-                remote = playwright.chromium.connect_over_cdp(cdp)
-                context = remote.contexts[0] if remote.contexts else remote.new_context()
-                # Closing a CDP browser only disconnects; the user's context stays open.
-                started = Browser(
-                    context, close_steps=[remote.close, playwright.stop], headless=False,
-                    page_viewport=viewport,
-                )
+            target_profile = copy if copy is not None else launch.profile
+            started = _launch(
+                playwright, target_profile, copied=copy is not None, headless=launch.headless,
+                viewport=launch.viewport, locale=launch.locale, timezone=launch.timezone,
+                args=launch.args, stealth=launch.stealth,
+            )
             launched = True
             return started
         # Any exception, Ctrl-C included, stops Playwright's driver before it goes on up.
@@ -275,6 +262,21 @@ def open(*, profile: str | Path | None = None, cdp: str | None = None, headless:
         # Once launched, Browser.close deletes the copy after Chrome stops writing into it.
         if copy is not None and not launched:
             shutil.rmtree(copy, ignore_errors=True)
+
+
+def attach(cdp: str, *, viewport: tuple[int, int] | None = None) -> Browser:
+    """Attach to a running browser over CDP; it keeps running after `close()`."""
+    playwright = _start_playwright()
+    try:
+        remote = playwright.chromium.connect_over_cdp(cdp)
+        context = remote.contexts[0] if remote.contexts else remote.new_context()
+        return Browser(
+            context, close_steps=[remote.close, playwright.stop], headless=False,
+            page_viewport=viewport,
+        )
+    except BaseException:
+        playwright.stop()
+        raise
 
 
 def check() -> None:
@@ -461,7 +463,7 @@ class Browser:
             return
         self._closed = True
         failures = []
-        for step in [page.raw.close for page in self._opened] + self._close_steps:
+        for step in [page.raw.close for page in list(self._opened)] + self._close_steps:
             try:
                 step()
             # Every step runs even when one fails, so Playwright's driver is always stopped.
@@ -473,7 +475,14 @@ class Browser:
     def _wrap(self, raw: RawPage) -> Page:
         if raw not in self._wrappers:
             self._wrappers[raw] = Page(raw, self)
+            if hasattr(raw, "on"):
+                raw.on("close", lambda *_args: self._forget(raw))
         return self._wrappers[raw]
+
+    def _forget(self, raw: RawPage) -> None:
+        page = self._wrappers.pop(raw, None)
+        if page is not None and page in self._opened:
+            self._opened.remove(page)
 
 
 def _without(text: str, secret: str) -> str:
@@ -481,31 +490,50 @@ def _without(text: str, secret: str) -> str:
     return text.replace(secret, "…") if secret else text
 
 
-class Subscription:
-    """A handler added by `Page.on_response` or `Page.on_request`, until `stop()` or leaving `with`.
+class Watch:
+    """An iterator over matching responses or requests from `Page.responses` / `Page.requests`."""
 
-        with tab.on_response("graphql", handler):
-            tab.scroll()
-        watching = tab.on_request("/api/", handler); ...; watching.stop()
-
-    Stop it on the browser's thread, as everything else here.
-    """
-
-    def __init__(self, stop: Callable[[], None]):
+    def __init__(self, stop: Callable[[], None], step: Callable[[], bool] | None = None):
         self._stop = stop
+        self._step = step
         self._stopped = False
+        self._queue: deque[tuple[Any, Request | None]] = deque()
+        self._request: Request | None = None
 
-    def __enter__(self) -> Subscription:
+    @property
+    def request(self) -> Request | None:
+        """The Playwright `Request` that produced the current item, or None."""
+        return self._request
+
+    def _push(self, item: Any, request: Request | None) -> None:
+        self._queue.append((item, request))
+
+    def __enter__(self) -> Watch:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         self.stop()
 
     def stop(self) -> None:
-        """Remove the handler, so it isn't called again; a second call does nothing."""
+        """Remove the listener and stop iterating; a second call does nothing."""
         if not self._stopped:
             self._stopped = True
             self._stop()
+
+    def __iter__(self) -> Iterator[Any]:
+        try:
+            while True:
+                while self._queue:
+                    item, self._request = self._queue.popleft()
+                    yield item
+                if self._stopped or self._step is None or not self._step():
+                    break
+            while self._queue:
+                item, self._request = self._queue.popleft()
+                yield item
+        finally:
+            if self._step is not None:
+                self.stop()
 
 
 class Page:
@@ -546,7 +574,9 @@ class Page:
             response = self.raw.goto(url, wait_until=wait_state, timeout=timeout * 1000)
         # Playwright's Error covers DNS failures, aborted requests and timeouts ("not loaded").
         except _raw_error() as error:
-            log.warn("could not open {url}: {error}", url=url, error=_first_line(error))
+            clean_url = fmt.url(url)
+            msg = _first_line(error).replace(url, clean_url)
+            log.warn("could not open {url}: {error}", url=clean_url, error=msg)
             return None
         if response is None:
             return None
@@ -575,11 +605,11 @@ class Page:
 
         The conditions are waited for in the order above. Handlers keep running during the wait.
         """
-        deadline = time.monotonic() + timeout
+        deadline = clock.now() + timeout
 
         def left() -> float:
             # Playwright reads a timeout of 0 as "no timeout", so the last moment is 1 ms, not 0.
-            return max(1.0, (deadline - time.monotonic()) * 1000)
+            return max(1.0, (deadline - clock.now()) * 1000)
 
         what = "the page to load"
         try:
@@ -597,121 +627,53 @@ class Page:
         except _raw_timeout():
             raise WaitError(f"waited {timeout:g} s for {what}") from None
 
-    def on_response(self, match: Match, handler: Callable[[Any, Response], Any], *,
-                    lines: bool = False) -> Subscription:
-        """Call `handler(data, response)` with each matching response's JSON until stopped.
-
-            with tab.on_response("graphql", lambda data, response: posts.extend(data["items"])):
-                tab.scroll()
-
-        Args:
-            match: a substring of the response's URL, a compiled regex searched in it, or a
-                predicate over it (`lambda url: url.endswith("/feed")`).
-            handler: called with the parsed body and Playwright's `Response`.
-            lines: parse the body as newline-delimited JSON, with one call per line.
-
-        Returns:
-            A `Subscription`: `stop()` it, or use it in a `with` block.
-
-        A body that isn't JSON is skipped, and an exception in `handler` is logged while later
-        responses keep arriving. Each matching response also counts as progress for `scroll`.
-        """
+    def responses(self, match: Match, *, lines: bool = False, scroll: bool = False) -> Watch:
+        """Watch matching responses and iterate their parsed JSON bodies (scrolling if asked)."""
         matches = _matcher(match)
+        step = self._scroll_stepper() if scroll else None
+        watch = Watch(lambda: self.raw.remove_listener("response", listener), step=step)
 
         def listener(response: Response) -> None:
             if not matches(response.url):
                 return
             self._responses_seen += 1
             for parsed in _json_bodies(response, lines):
-                try:
-                    handler(parsed, response)
-                # A handler is a source's code, called from inside Playwright's event loop: an
-                # exception that went on up would be lost there, and stop every later response.
-                except Exception as error:
-                    log.warn(
-                        "on_response handler failed for {url}: {error}",
-                        url=fmt.url(response.url), error=f"{type(error).__name__} {error}".strip(),
-                    )
+                watch._push(parsed, response.request)
 
         self.raw.on("response", listener)
-        return Subscription(lambda: self.raw.remove_listener("response", listener))
+        return watch
 
-    def on_request(self, match: Match, handler: Callable[[Request], Any]) -> Subscription:
-        """Call `handler(request)` for each matching request, until the subscription stops.
-
-            with tab.on_request("/api/", lambda request: urls.append(request.url)): ...
-
-        Args:
-            match: a URL substring, compiled regex, or predicate over the request's URL.
-            handler: called with Playwright's `Request`.
-
-        Returns:
-            A `Subscription`: `stop()` it, or use it in a `with` block.
-        """
+    def requests(self, match: Match) -> Watch:
+        """Watch matching requests and iterate them as Playwright `Request` objects."""
         matches = _matcher(match)
+        watch = Watch(lambda: self.raw.remove_listener("request", listener))
 
         def listener(request: Request) -> None:
             if matches(request.url):
-                handler(request)
+                watch._push(request, request)
 
         self.raw.on("request", listener)
-        return Subscription(lambda: self.raw.remove_listener("request", listener))
+        return watch
 
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
-              soft: Literal[False] = ..., timeout: float = ...) -> http.Response: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
-              soft: Literal[True], timeout: float = ...) -> http.Response | None: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
-              soft: bool, timeout: float = ...) -> http.Response | None: ...
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
               params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
-              soft: bool = False, timeout: float = 30.0) -> http.Response | None:
-        """Send one request from the page itself via its `fetch()`, returning an `http.Response`.
+              timeout: float = 30.0) -> http.Response:
+        """Send one request from the page via `fetch()`, raising on 4xx/5xx or network error."""
+        response = self._fetch(url, method=method, headers=headers, params=params, data=data,
+                               json=json, soft=False, timeout=timeout)
+        assert response is not None
+        return response
 
-            items = tab.fetch("/api/items?page=2", headers={"x-csrf": token}).json
-            tab.fetch("https://example.com/api/like", method="POST", json={"id": 1})
-            tab.fetch("/example_user/", soft=True)                  # None for 401, 403, 404
+    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
+                  params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
+                  timeout: float = 30.0) -> http.Response | None:
+        """Send one request from the page via `fetch()`, returning None on 401, 403 or 404."""
+        return self._fetch(url, method=method, headers=headers, params=params, data=data,
+                           json=json, soft=True, timeout=timeout)
 
-        Args:
-            url: the URL to request; a relative one is resolved against the page's, as the page's
-                own scripts would.
-            method: the HTTP method, such as "GET" or "POST".
-            headers: headers for this request, on top of the ones the browser adds; None adds none.
-                The browser refuses to set some itself (`Cookie`, `Host`, `User-Agent`, …).
-            params: query parameters to add to the URL.
-            data: a form body (a dict, sent URL-encoded), text, or raw bytes; None sends none.
-            json: a value to send as a JSON body, with `Content-Type: application/json` unless
-                `headers` names another; None sends none.
-            soft: True returns None for a 401, 403 or 404 instead of raising `http.RefusedError`.
-            timeout: seconds for the whole request, body included; the page aborts it then.
-
-        Returns:
-            The response of a 1xx, 2xx or 3xx with its whole body (redirects are followed), or None
-            for a 401, 403 or 404 when `soft` is True. Its `headers` are what the page's `fetch()`
-            may read: never `Set-Cookie`, and for another origin only those its CORS headers expose.
-
-        Raises:
-            http.RateLimitedError: a 429, with `Retry-After` seconds when the page may read them.
-            http.RefusedError: any other 4xx, or a 401, 403 or 404 without `soft`.
-            http.ServerError: a 5xx. There is one attempt: the caller decides whether to try again.
-            http.Error: no answer within `timeout`, or the browser refused or couldn't send the
-                request (a dead connection, an origin whose CORS headers don't allow it).
-            browser.Error: the page couldn't run it, such as when it navigated away meanwhile.
-            ValueError: both `data` and `json` were given.
-
-        Because the page sends it, the request carries everything the page's own would: its
-        cookies (for another origin too, when that origin's CORS headers allow it), its `Origin`
-        and `Referer`, and the browser's TLS fingerprint. No message names a header value, a
-        cookie or the URL's query. It needs the `http` extra for `http.Response`. Like every
-        `Page` call, use it only on the browser's thread: Playwright's sync API is single-threaded,
-        and handlers keep running while it waits.
-        """
+    def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None,
+               params: Mapping[str, Any] | None, data: Any, json: Any, soft: bool,
+               timeout: float) -> http.Response | None:
         from shared import _http
 
         if data is not None and json is not None:
@@ -758,111 +720,31 @@ class Page:
         )
         return _http._checked(response, method, soft=soft)
 
-    def scroll(self, *, within: str | Locator | None = None,
-               until: Callable[[], bool] | None = None, count: Callable[[], int] | None = None,
-               idle: float = 10.0, wait: float = 3.0, pause: float = 0.05,
-               on_step: Callable[[], Any] | None = None) -> int:
-        """Scroll like a person until the feed ends, and return the number of scrolls.
+    def scroll(self, *, until: Callable[[], bool] | None = None,
+               within: str | Locator | None = None, timing: Scroll = Scroll()) -> int:
+        """Scroll like a person until the feed ends, and return the number of scrolls."""
+        scroller = self._scroll_stepper(until=until, within=within, timing=timing)
+        while scroller():
+            pass
+        return scroller.scrolls
 
-            tab.scroll(count=lambda: len(posts), until=lambda: len(posts) >= 500)
-            tab.scroll(within="[role=dialog] .list")      # a list that scrolls inside the page
-
-        Each scroll moves the mouse and turns the wheel in fast uneven steps straight through
-        loaded content. Once at the bottom, it waits for the page's progress (checked every 50 ms:
-        the page or `within` grew, `count()` rose, or an `on_response` handler's response arrived),
-        then pauses `pause` seconds plus 0 to 40% before the next scroll.
-
-        Args:
-            within: the element that scrolls, as a CSS selector (its first match) or a Playwright
-                `Locator`: the mouse goes over it, and its own height and end are watched. None
-                scrolls the page.
-            until: called before each scroll; True stops. None goes on until the feed ends.
-            count: a number whose rise is progress, such as the items found so far, or any traffic
-                the caller watches. None leaves it out.
-            idle: seconds at the end with no progress after which the feed has ended, however
-                many scrolls that takes.
-            wait: the longest wait for progress after one scroll at the bottom, in seconds.
-            pause: the least seconds after a bottom wait before the next scroll: the floor,
-                which a caller raises when the site has asked it to slow down.
-            on_step: called after each scroll, such as a spinner's advance.
-
-        Returns:
-            The number of scrolls done.
-
-        Raises:
-            Error: `within` matches no visible element.
-
-        Waits run on Playwright's clock, so `on_*` handlers keep running during them.
-        """
-        target = self.raw.locator(within).first if isinstance(within, str) else within
-        # Checked at once: a locator's reads would otherwise wait 30 s for a missing element.
-        if target is not None and not target.is_visible():
-            raise Error("scroll(within=…) found no visible element to scroll")
-        marker = self._progress_marker(target, count)
-        quiet_since: float | None = None  # when scrolls with no progress at the end began
-        scrolls = 0
-        while until is None or not until():
-            started = clock.now()
-            self._move(target)
-            scrolls += 1
-            # Away from the end there is nothing to wait for: feeds load more only when their end
-            # comes into view. At the end, the wait never runs past the end of the quiet spell.
-            at_bottom = self._at_bottom(target)
-            if not at_bottom:
-                longest = 0.0
-            elif quiet_since is None:
-                longest = wait
-            else:
-                longest = min(wait, quiet_since + idle - clock.now())
-            previous, marker = marker, self._wait_for_progress(target, marker, count, longest)
-            if at_bottom:
-                self._pause(pause)
-            if on_step is not None:
-                on_step()
-            if any(now > before for now, before in zip(marker, previous)) or not at_bottom:
-                quiet_since = None
-                continue
-            if quiet_since is None:
-                quiet_since = started
-            if clock.now() - quiet_since >= idle:
-                break
-            self._jiggle(target, pause)
-        return scrolls
+    def _scroll_stepper(self, *, until: Callable[[], bool] | None = None,
+                        within: str | Locator | None = None,
+                        timing: Scroll = Scroll()) -> _Scroller:
+        return _Scroller(self, until, within, timing)
 
     def handoff(self, *, until: Callable[[], bool], message: str, poll: float = 1.0,
                 timeout: float | None = None) -> bool:
-        """Wait for a person to complete a step (e.g. a captcha or login) and return whether done.
-
-            tab.handoff(
-                until=lambda: not tab.raw.locator("#captcha").count(), message="Solve the captcha"
-            )
-
-        It shows `message` and a spinner, and polls `until()` every `poll` seconds. False means
-        `timeout` passed first. A headless browser raises `RuntimeError`, because nobody can see it.
-
-        Args:
-            until: a check the page's state is good; True ends the hand-off at once.
-            message: what the person is asked to do, shown in the log and on the spinner's row.
-            poll: seconds between two calls of `until`.
-            timeout: seconds to wait for the person in all; None waits as long as it takes.
-
-        Returns:
-            True when `until` came true, False when `timeout` passed first.
-
-        Raises:
-            RuntimeError: the browser is headless, so there is no window for the person to use.
-
-        Handlers from `on_response` keep running while waiting on Playwright's clock.
-        """
+        """Wait for a person to complete a step (e.g. a captcha) and return whether done."""
         if until():
             return True
         if self.browser._headless:
-            raise RuntimeError(f"cannot hand off to a person in a headless browser: {message}")
+            raise Error(f"cannot hand off to a person in a headless browser: {message}")
         log.warn(message)
-        deadline = None if timeout is None else time.monotonic() + timeout
+        deadline = None if timeout is None else clock.now() + timeout
         with log.progress(message, wait=True) as bar:
             while not until():
-                if deadline is not None and time.monotonic() >= deadline:
+                if deadline is not None and clock.now() >= deadline:
                     bar.fail()
                     return False
                 self.raw.wait_for_timeout(poll * 1000)
@@ -1014,6 +896,55 @@ def _start_playwright() -> Playwright:
     return sync_playwright().start()
 
 
+class _Scroller:
+    """Drives `Page.scroll` one step at a time, shared with `Page.responses(scroll=True)`."""
+
+    def __init__(self, page: Page, until: Callable[[], bool] | None,
+                 within: str | Locator | None, timing: Scroll):
+        self._page = page
+        self._until = until
+        self._timing = timing
+        target = page.raw.locator(within).first if isinstance(within, str) else within
+        if target is not None and not target.is_visible():
+            raise Error("scroll(within=…) found no visible element to scroll")
+        self._target = target
+        self._marker = page._progress_marker(target, timing.count)
+        self._quiet_since: float | None = None
+        self.scrolls = 0
+
+    def __call__(self) -> bool:
+        if self._until is not None and self._until():
+            return False
+        started = clock.now()
+        self._page._move(self._target)
+        self.scrolls += 1
+        at_bottom = self._page._at_bottom(self._target)
+        if not at_bottom:
+            longest = 0.0
+        elif self._quiet_since is None:
+            longest = self._timing.wait
+        else:
+            longest = min(
+                self._timing.wait, self._quiet_since + self._timing.idle - clock.now()
+            )
+        previous, self._marker = self._marker, self._page._wait_for_progress(
+            self._target, self._marker, self._timing.count, longest
+        )
+        if at_bottom:
+            self._page._pause(self._timing.pause)
+        if self._timing.on_step is not None:
+            self._timing.on_step()
+        if any(now > before for now, before in zip(self._marker, previous)) or not at_bottom:
+            self._quiet_since = None
+            return True
+        if self._quiet_since is None:
+            self._quiet_since = started
+        if clock.now() - self._quiet_since >= self._timing.idle:
+            return False
+        self._page._jiggle(self._target, self._timing.pause)
+        return True
+
+
 def _launch(playwright: Playwright, profile: str | Path | None, *, copied: bool, headless: bool,
             viewport: tuple[int, int], locale: str | None, timezone: str | None,
             args: Sequence[str], stealth: bool) -> Browser:
@@ -1081,14 +1012,23 @@ def _channel(playwright: Playwright) -> str:
     return "chromium"
 
 
+def _chrome_executable() -> Path | None:
+    """The installed Google Chrome executable path, or None if not found."""
+    platform = sys.platform if sys.platform in CHROME_PATHS else "linux"
+    if platform != "win32":
+        candidate = Path(CHROME_PATHS[platform])
+        return candidate if candidate.is_file() else None
+    roots = [os.environ[name] for name in WINDOWS_ROOTS if os.environ.get(name)]
+    for root in roots:
+        candidate = Path(root) / CHROME_PATHS["win32"]
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _chrome_installed() -> bool:
     """Whether Google Chrome is where Playwright's `chrome` channel looks for it."""
-    platform = sys.platform if sys.platform in CHROME_PATHS else "linux"
-    # macOS and Linux have one fixed path for Chrome; Windows may have it under several roots.
-    if platform != "win32":
-        return Path(CHROME_PATHS[platform]).is_file()
-    roots = [os.environ[name] for name in WINDOWS_ROOTS if os.environ.get(name)]
-    return any((Path(root) / CHROME_PATHS["win32"]).is_file() for root in roots)
+    return _chrome_executable() is not None
 
 
 def _install_chromium() -> None:
@@ -1137,7 +1077,7 @@ def _open_context(playwright: Playwright, profile: str | Path | None, channel: s
     if profile is None:
         remote = playwright.chromium.launch(channel=channel, **launch_options)
         options = (
-            {**context_options, "user_agent": _headful_user_agent(remote)}
+            {**context_options, "user_agent": _cached_headful_ua(playwright, channel, remote)}
             if headless else context_options
         )
         context = remote.new_context(**options)
@@ -1148,6 +1088,24 @@ def _open_context(playwright: Playwright, profile: str | Path | None, channel: s
     context = playwright.chromium.launch_persistent_context(
         str(profile), channel=channel, **{**launch_options, "args": args}, **context_options)
     return context, [context.close, playwright.stop]
+
+
+def _executable_key(playwright: Playwright, channel: str) -> str | None:
+    if channel == "chrome":
+        path = _chrome_executable()
+        return str(path) if path is not None else None
+    exe = playwright.chromium.executable_path
+    return exe if isinstance(exe, str) else None
+
+
+def _cached_headful_ua(playwright: Playwright, channel: str, remote: Any) -> str:
+    key = _executable_key(playwright, channel)
+    if key is not None and key in _HEADFUL_UA:
+        return _HEADFUL_UA[key]
+    agent = _headful_user_agent(remote)
+    if key is not None:
+        _HEADFUL_UA[key] = agent
+    return agent
 
 
 def _headful_user_agent(remote: Any) -> str:
@@ -1162,13 +1120,19 @@ def _headful_user_agent(remote: Any) -> str:
 
 
 def _headful_user_agent_of(playwright: Playwright, channel: str | None) -> str:
-    """The headed user agent for `channel`, read from a throwaway headless browser."""
-    # A persistent profile can't be relaunched with a new user agent, so a probe reads it first.
-    remote = playwright.chromium.launch(channel=channel or "chromium", headless=True)
+    """The headed user agent for `channel`, cached per executable path."""
+    ch = channel or "chromium"
+    key = _executable_key(playwright, ch)
+    if key is not None and key in _HEADFUL_UA:
+        return _HEADFUL_UA[key]
+    remote = playwright.chromium.launch(channel=ch, headless=True)
     try:
-        return _headful_user_agent(remote)
+        agent = _headful_user_agent(remote)
     finally:
         remote.close()
+    if key is not None:
+        _HEADFUL_UA[key] = agent
+    return agent
 
 
 def _without_values(text: str, headers: Mapping[str, str]) -> str:
@@ -1208,7 +1172,7 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
         # is skipped without a line; any other unreadable body is still worth a debug line.
         if not _gone(error):
             log.debug(
-                "on_response: no body for {url}: {error}",
+                "responses: no body for {url}: {error}",
                 url=fmt.url(response.url), error=_first_line(error),
             )
         return []
@@ -1220,7 +1184,7 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
         # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
         except ValueError:
             log.debug(
-                "on_response: skipped a body that is not JSON from {url}",
+                "responses: skipped a body that is not JSON from {url}",
                 url=fmt.url(response.url),
             )
     return parsed

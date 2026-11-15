@@ -8,15 +8,15 @@ Values are never printed, logged, or included in error messages.
 
 from __future__ import annotations
 
+import base64
 import configparser
+import ctypes
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Union
@@ -36,12 +36,14 @@ _PLATFORM = sys.platform
 # anything this size is a mistake or an attack, refused before it is parsed.
 MAX_SIZE = 16 * 1024 * 1024
 
-# Keychain name ("<name> Safe Storage"), macOS folder, Linux folder, Linux keyring application.
+# Keychain name, macOS folder, Linux folder, Linux keyring app, Windows User Data folder.
 _CHROMIUM = {
-    "chrome": ("Chrome", "Google/Chrome", "google-chrome", "chrome"),
-    "chromium": ("Chromium", "Chromium", "chromium", "chromium"),
-    "edge": ("Microsoft Edge", "Microsoft Edge", "microsoft-edge", "chromium"),
-    "brave": ("Brave", "BraveSoftware/Brave-Browser", "BraveSoftware/Brave-Browser", "brave"),
+    "chrome": ("Chrome", "Google/Chrome", "google-chrome", "chrome", "Google/Chrome/User Data"),
+    "chromium": ("Chromium", "Chromium", "chromium", "chromium", "Chromium/User Data"),
+    "edge": ("Microsoft Edge", "Microsoft Edge", "microsoft-edge", "chromium",
+             "Microsoft/Edge/User Data"),
+    "brave": ("Brave", "BraveSoftware/Brave-Browser", "BraveSoftware/Brave-Browser", "brave",
+              "BraveSoftware/Brave-Browser/User Data"),
 }
 _BROWSERS = (*_CHROMIUM, "firefox")
 # Chromium and Firefox `samesite`: 0 none, 1 lax, 2 strict; -1 (unspecified) is Lax.
@@ -56,8 +58,7 @@ _HOST_HASH_VERSION = 24
 _HOST_HASH_SIZE = 32
 
 
-# A ValueError so callers catching ValueError also catch cookie errors.
-class Error(shared.Error, ValueError):
+class Error(shared.Error):
     """A cookie file is broken, unreadable, or cannot be decrypted."""
 
 
@@ -98,22 +99,21 @@ class Jar:
             kept.append(dict(cookie))
         self._cookies: tuple[Cookie, ...] = tuple(kept)
 
-    def filter(self, *, domain: str | None = None, names: Iterable[str] | None = None) -> Jar:
-        """A jar of only the cookies for `domain` and its subdomains, and of only those `names`.
-
-            jar.filter(domain="example.com")                 # matches subdomains too
-            jar.filter(names=["sessionid", "csrftoken"])
-
-        Args:
-            domain: keep a cookie whose domain is this one or a subdomain of it, ignoring case and
-                a leading dot; None keeps every domain.
-            names: keep a cookie with one of these names; a single `str` is one name. None keeps
-                every name.
-        """
+    def filter(
+        self, *, domains: str | Iterable[str] | None = None, names: Iterable[str] | None = None
+    ) -> Jar:
+        """A jar of only the cookies for `domains` and subdomains, and of only those `names`."""
+        wanted_domains = (
+            None if domains is None
+            else ((domains,) if isinstance(domains, str) else tuple(domains))
+        )
         wanted = None if names is None else ({names} if isinstance(names, str) else set(names))
-        return Jar(cookie for cookie in self._cookies
-                   if (domain is None or _belongs(str(cookie.get("domain", "")), domain))
-                   and (wanted is None or cookie["name"] in wanted))
+        return Jar(
+            cookie for cookie in self._cookies
+            if (wanted_domains is None
+                or any(_belongs(str(cookie.get("domain", "")), dom) for dom in wanted_domains))
+            and (wanted is None or cookie["name"] in wanted)
+        )
 
     def merge(self, other: Jar | Iterable[Cookie]) -> Jar:
         """Return a new jar with `other`'s cookies added, overriding matching ones."""
@@ -211,7 +211,7 @@ def load(path: PathLike) -> Jar:
     if len(data) > MAX_SIZE:
         raise UnsafeError(f"{path}: a cookie file over {MAX_SIZE // (1024 * 1024)} MB is refused")
     try:
-        text = data.decode("utf-8")
+        text = data.decode("utf-8-sig")
     except UnicodeDecodeError as err:
         # Not str(err): it quotes the undecodable byte, which may be part of a value.
         raise Error(f"{path}: not UTF-8 text (at byte {err.start})") from None
@@ -227,12 +227,7 @@ def from_browser(browser: str = "chrome", *, profile: str | None = None) -> Jar:
     if browser == "firefox":
         return Jar(_load_firefox(profile))
     if browser not in _CHROMIUM:
-        raise ValueError(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
-    if _PLATFORM == "win32":
-        # Chrome 127 and later use app-bound encryption, which only Chrome itself can undo.
-        raise MissingError(
-            f"can't read {browser} cookies on Windows: use browser.open(cdp=…), then b.cookies"
-        )
+        raise Error(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
     return Jar(_load_chromium(browser, profile or "Default"))
 
 
@@ -244,7 +239,7 @@ def profiles(browser: str = "chrome") -> list[str]:
         except FileNotFoundError:
             return []
     if browser not in _CHROMIUM:
-        raise ValueError(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
+        raise Error(f"unknown browser {browser!r}: use one of {', '.join(_BROWSERS)}")
     root = _chromium_root(browser)
     if not root.is_dir():
         return []
@@ -262,10 +257,13 @@ def _identity(cookie: Cookie) -> tuple[str, str, str]:
 
 def _load_firefox(profile: str | None) -> list[Cookie]:
     with _open_copy(_firefox_profile(profile) / "cookies.sqlite") as connection:
-        rows = connection.execute(
-            "SELECT host, name, value, path, expiry, isSecure, isHttpOnly, sameSite "
-            "FROM moz_cookies"
-        ).fetchall()
+        try:
+            rows = connection.execute(
+                "SELECT host, name, value, path, expiry, isSecure, isHttpOnly, sameSite "
+                "FROM moz_cookies"
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise Error(f"cannot read Firefox cookies: {error}") from error
     jar = []
     for host, name, value, path, expiry, secure, http_only, same_site in rows:
         # Firefox stores expiry in ms in newer versions; seconds stay below 10**11 until 5138.
@@ -320,21 +318,25 @@ def _firefox_root() -> Path:
 
 @contextmanager
 def _open_copy(database: Path) -> Iterator[sqlite3.Connection]:
-    """A connection to a temporary copy of `database` and its WAL, deleted afterwards."""
+    """A connection to an in-memory backup of `database`, closed afterwards."""
     if not database.is_file():
         raise FileNotFoundError(f"no cookie database at {database}")
-    with tempfile.TemporaryDirectory() as folder:
-        copy = Path(folder) / database.name
-        shutil.copyfile(database, copy)
-        # Firefox keeps recent writes in the write-ahead log until it checkpoints.
-        wal = database.with_name(database.name + "-wal")
-        if wal.is_file():
-            shutil.copyfile(wal, copy.with_name(copy.name + "-wal"))
-        connection = sqlite3.connect(copy)
+    uri = f"{database.resolve().as_uri()}?mode=ro"
+    try:
+        source = sqlite3.connect(uri, uri=True)
+    except sqlite3.Error as error:
+        raise Error(f"cannot open cookie database {database}: {error}") from error
+    dest = sqlite3.connect(":memory:")
+    try:
         try:
-            yield connection
+            source.backup(dest)
+        except sqlite3.Error as error:
+            raise Error(f"cannot read cookie database {database}: {error}") from error
         finally:
-            connection.close()
+            source.close()
+        yield dest
+    finally:
+        dest.close()
 
 
 def _belongs(cookie_domain: str, domain: str) -> bool:
@@ -359,11 +361,16 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
     if not database.is_file() and (folder / "Cookies").is_file():
         database = folder / "Cookies"
     with _open_copy(database) as connection:
-        version_row = connection.execute("SELECT value FROM meta WHERE key = 'version'").fetchone()
-        rows = connection.execute(
-            "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, "
-            "is_httponly, samesite FROM cookies"
-        ).fetchall()
+        try:
+            version_row = connection.execute(
+                "SELECT value FROM meta WHERE key = 'version'"
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, "
+                "is_httponly, samesite FROM cookies"
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise Error(f"cannot read {browser} cookies: {error}") from error
     has_host_hash = int(version_row[0]) >= _HOST_HASH_VERSION if version_row else False
     # The key is read only when a value needs it, so a profile of plain values shows no prompt.
     keys = _chromium_keys(browser) if any(row[3] for row in rows) else {}
@@ -402,22 +409,66 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
 
 
 def _chromium_root(browser: str) -> Path:
-    _, mac_folder, linux_folder, _ = _CHROMIUM[browser]
+    _, mac_folder, linux_folder, _, win_folder = _CHROMIUM[browser]
     if _PLATFORM == "darwin":
         return Path.home() / "Library" / "Application Support" / mac_folder
+    if _PLATFORM == "win32":
+        local = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
+        return Path(local) / win_folder
     return Path.home() / ".config" / linux_folder
 
 
 def _chromium_keys(browser: str) -> dict[bytes, bytes]:
-    """The AES keys by the 3-byte prefix a value starts with: `v10`, and on Linux `v11`."""
-    keychain_name, _, _, application = _CHROMIUM[browser]
+    """The AES keys by the 3-byte prefix a value starts with: `v10`, and `v11`."""
+    keychain_name, _, _, application, _ = _CHROMIUM[browser]
     if _PLATFORM == "darwin":
         # macOS: PBKDF2 over the Keychain's password, 1003 rounds, as Chromium's os_crypt_mac does.
         return {b"v10": _derive_key(_read_keychain_password(f"{keychain_name} Safe Storage"), 1003)}
+    if _PLATFORM == "win32":
+        key = _read_windows_key(browser)
+        return {b"v10": key, b"v11": key}
     # Linux writes v10 with the fixed password, and v11 with the keyring's when there is one.
     keyring_password = _read_keyring_password(application)
     v11_pw = keyring_password or "peanuts"
     return {b"v10": _derive_key("peanuts", 1), b"v11": _derive_key(v11_pw, 1)}
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+def _read_windows_key(browser: str) -> bytes:
+    """Read and DPAPI-decrypt Chromium's AES-256-GCM master key from `Local State`."""
+    state_path = _chromium_root(browser) / "Local State"
+    if not state_path.is_file():
+        raise MissingError(f"no Local State file for {browser} at {state_path}")
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+        raw = base64.b64decode(state["os_crypt"]["encrypted_key"])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise Error(f"cannot read {browser} Local State key: {error}") from error
+    if not raw.startswith(b"DPAPI"):
+        raise Error(f"unexpected {browser} Local State key format")
+    return _dpapi_unprotect(raw[5:])
+
+
+def _dpapi_unprotect(data: bytes) -> bytes:
+    """Decrypt `data` using Windows DPAPI (`CryptUnprotectData`)."""
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        raise MissingError("Windows DPAPI is only available on Windows")
+    buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
+    blob_in = _DataBlob(len(data), buf)
+    blob_out = _DataBlob()
+    ok = windll.crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    )
+    if not ok:
+        raise Error("Windows DPAPI CryptUnprotectData failed")
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        windll.kernel32.LocalFree(blob_out.pbData)
 
 
 def _read_keychain_password(service: str) -> str:
@@ -463,7 +514,10 @@ def _decrypt_chromium(
         raise Error(f"can't decrypt {what}: unknown format {encrypted[:3]!r}")
     # ValueError: bad padding, bad host hash, or bad UTF-8 (wrong key or damaged value).
     try:
-        plain = _decrypt_aes_cbc(key, encrypted[3:])
+        plain = (
+            _decrypt_aes_gcm(key, encrypted[3:]) if _PLATFORM == "win32"
+            else _decrypt_aes_cbc(key, encrypted[3:])
+        )
         if has_host_hash:
             # A matching host hash also proves the key was right.
             if plain[:_HOST_HASH_SIZE] != hashlib.sha256(host.encode("utf-8")).digest():
@@ -472,6 +526,23 @@ def _decrypt_chromium(
         return plain.decode("utf-8")
     except ValueError:
         raise Error(f"can't decrypt {what}: wrong key or damaged value") from None
+
+
+def _decrypt_aes_gcm(key: bytes, ciphertext: bytes) -> bytes:
+    """AES-256-GCM with 12-byte nonce followed by ciphertext and 16-byte tag."""
+    try:
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError:
+        raise ImportError(
+            "shared.cookies needs cryptography: pip install 'flntools[browser]'"
+        ) from None
+    if len(ciphertext) < 12 + 16:
+        raise ValueError("ciphertext too short")
+    try:
+        return AESGCM(key).decrypt(ciphertext[:12], ciphertext[12:], None)
+    except InvalidTag:
+        raise ValueError("authentication tag mismatch") from None
 
 
 def _decrypt_aes_cbc(key: bytes, ciphertext: bytes) -> bytes:
@@ -505,7 +576,7 @@ def _parse_netscape(text: str) -> list[Cookie]:
             raise ValueError(f"line {number} has {len(fields)} tab-separated fields, not 7")
         domain, _, path, secure, expires, name, value = fields
         try:
-            expiry = int(expires)
+            expiry = int(expires.strip() or "0")
         except ValueError:
             raise ValueError(f"line {number}: expiry {expires!r} is not a whole number") from None
         is_sec = secure.upper() == "TRUE"

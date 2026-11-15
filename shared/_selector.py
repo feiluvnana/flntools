@@ -17,7 +17,6 @@ Text over 64 MB raises `UnsafeError`. Invalid JSON raises `BrokenError`.
 from __future__ import annotations
 
 import functools
-import json
 import re
 from pathlib import Path
 from typing import Any, Iterator, Union
@@ -29,7 +28,9 @@ try:
 except ImportError:
     raise ImportError("shared.selector needs parsel: pip install 'flntools[selector]'") from None
 
-__all__ = ["BrokenError", "Error", "Selection", "UnsafeError", "parse"]
+__all__ = [
+    "BrokenError", "Error", "MissingError", "QueryError", "Selection", "UnsafeError", "parse",
+]
 
 WHITESPACE = re.compile(r"\s+")
 # The largest text `parse` reads: 64 MiB. The biggest page flnd reads (a TikTok or Facebook page
@@ -50,6 +51,14 @@ class UnsafeError(Error, shared.UnsafeError):
 # A ValueError through shared.BrokenError so callers catching ValueError still handle it.
 class BrokenError(Error, shared.BrokenError):
     """Text that should be JSON but doesn't parse: the site changed what it sends."""
+
+
+class QueryError(Error, ValueError):
+    """A CSS, XPath, JMESPath, JSONPath or regex query is invalid or used on the wrong kind."""
+
+
+class MissingError(Error, shared.MissingError):
+    """An optional parser dependency (`jsonpath`, `jmespath`, `msgspec`) is not installed."""
 
 
 def parse(source: Any) -> Selection:
@@ -90,96 +99,70 @@ class Selection:
         self._source: str | None = None
 
     def css(self, query: str) -> Selection:
-        """The HTML matches of a CSS selector, with parsel's `::text` and `::attr(name)`.
-
-            page.css("a[href*='/video/']::attr(href)").all
-
-        Args:
-            query: the CSS selector.
-
-        Raises:
-            ValueError: the selection is JSON, not HTML (parsel's error).
-            cssselect.SelectorSyntaxError: `query` isn't valid CSS (a SyntaxError, as cssselect
-                defines it).
-        """
-        return Selection(self._matches.css(query))
+        """The HTML matches of a CSS selector, with parsel's `::text` and `::attr(name)`."""
+        try:
+            return Selection(self._matches.css(query))
+        except Exception as error:
+            raise QueryError(f"invalid CSS selector {query!r}: {error}") from None
 
     def xpath(self, query: str) -> Selection:
-        """The HTML matches of an XPath expression.
-
-            page.xpath("//meta[@property='og:image']/@content").first
-
-        Args:
-            query: the XPath expression.
-
-        Raises:
-            ValueError: selection is JSON not HTML, or invalid XPath (parsel error).
-        """
-        return Selection(self._matches.xpath(query))
+        """The HTML matches of an XPath expression."""
+        try:
+            return Selection(self._matches.xpath(query))
+        except Exception as error:
+            raise QueryError(f"invalid XPath {query!r}: {error}") from None
 
     def jmespath(self, query: str) -> Selection:
-        """The JSON result of a JMESPath expression: one match per element when it is a list.
-
-            data.jmespath("data.user.id").first or ""
-            data.jmespath("edges[].node").all
-
-        Args:
-            query: the JMESPath expression; a missing path gives an empty selection.
-
-        Raises:
-            jmespath.exceptions.ParseError: `query` isn't valid JMESPath.
-        """
-        return Selection(self._matches.jmespath(query))
-
-    def jsonpath(self, query: str) -> Selection:
-        """The JSON matches of a JSONPath expression (RFC 9535), in document order.
-
-            data.jsonpath("$..video_versions").all    # the key at any depth
-
-        Args:
-            query: the JSONPath expression, in python-jsonpath's strict RFC 9535 syntax.
-
-        Raises:
-            jsonpath.JSONPathSyntaxError: `query` isn't valid JSONPath.
-            ValueError: the selection is HTML, as `css` raises on JSON.
-        """
-        found = []
+        """The JSON result of a JMESPath expression: one match per element when it is a list."""
+        compiled = _compile_jmespath(query)
+        found: list[Any] = []
         for match in self._matches:
             if match.type not in ("json", "text"):
-                raise ValueError(f"Cannot use jsonpath on a Selector of type {match.type!r}")
-            found.extend(_jsonpath().findall(query, match.root))
+                raise QueryError(f"cannot use jmespath on {match.type!r}")
+            value = compiled.search(match.root)
+            if isinstance(value, list):
+                found.extend(item for item in value if item is not None)
+            elif value is not None:
+                found.append(value)
         selectors = (parsel.Selector(root=value, type="json") for value in found)
         return Selection(parsel.SelectorList(selectors))
 
-    def script(self, id: str | None = None, *, pattern: str | None = None) -> Selection:
-        """The JSON embedded in the page, from `<script id=...>` or the first group of `pattern`.
+    def jsonpath(self, query: str) -> Selection:
+        """The JSON matches of a JSONPath expression (RFC 9535), in document order."""
+        compiled = _compile_jsonpath(query)
+        found: list[Any] = []
+        for match in self._matches:
+            if match.type not in ("json", "text"):
+                raise QueryError(f"cannot use jsonpath on {match.type!r}")
+            for value in compiled.findall(match.root):
+                if isinstance(value, list):
+                    found.extend(item for item in value if item is not None)
+                elif value is not None:
+                    found.append(value)
+        selectors = (parsel.Selector(root=value, type="json") for value in found)
+        return Selection(parsel.SelectorList(selectors))
 
-            page.script(id="__NEXT_DATA__").jmespath("props.pageProps").first
-            page.script(pattern=r"window\\._sharedData = (\\{.*?\\});")
-
-        Args:
-            id: the `id` of the `<script>` element whose text is the JSON.
-            pattern: a regular expression searched for in the HTML (with `.` matching newlines),
-                whose first group is the JSON.
-
-        Returns:
-            A JSON `Selection` over what was found, or an empty one when nothing was.
-
-        Raises:
-            ValueError: neither or both of `id` and `pattern` were passed.
-            BrokenError: the text was found but isn't JSON, because the site changed.
-        """
-        if (id is None) == (pattern is None):
-            raise ValueError("pass exactly one of id or pattern")
-        if id is not None:
-            found = self._matches.xpath("//script[@id=$id]/text()", id=id).get()
-        else:
-            haystack = self._source if self._source is not None else "".join(self._matches.getall())
-            match = re.search(pattern or "", haystack, re.DOTALL)
-            found = match.group(1) if match else None
+    def script(self, id: str) -> Selection:
+        """The JSON embedded in `<script id=...>`, or an empty `Selection` when absent."""
+        found = self._matches.xpath("//script[@id=$id]/text()", id=id).get()
         if found is None:
             return Selection(parsel.SelectorList())
         return Selection(parsel.Selector(root=_loads(found), type="json"))
+
+    def match(self, pattern: str) -> Selection:
+        """The JSON from the first capturing group of `pattern` searched in the source text."""
+        haystack = self._source if self._source is not None else "".join(self._matches.getall())
+        try:
+            found = re.search(pattern, haystack, re.DOTALL)
+        except re.error as error:
+            raise QueryError(f"invalid regex {pattern!r}: {error}") from None
+        if found is None:
+            return Selection(parsel.SelectorList())
+        try:
+            group = found.group(1)
+        except IndexError:
+            raise QueryError(f"pattern {pattern!r} needs a capturing group for JSON") from None
+        return Selection(parsel.Selector(root=_loads(group), type="json"))
 
     @property
     def json(self) -> Selection:
@@ -244,11 +227,15 @@ def _selector(source: Any) -> tuple[parsel.Selector, str | None]:
         return parsel.Selector(root=source, type="json"), None
     if isinstance(source, Path):
         # Checked before reading, so a huge file is never loaded at all.
-        _check_size(source.stat().st_size, "bytes")
-        source = source.read_text(encoding="utf-8", errors="replace")
+        try:
+            _check_size(source.stat().st_size, "bytes")
+            raw_bytes = source.read_bytes()
+        except OSError as error:
+            raise Error(f"{source}: {error}") from error
+        source = raw_bytes.decode("utf-8-sig", "replace")
     elif isinstance(source, (bytes, bytearray)):
         _check_size(len(source), "bytes")
-        source = bytes(source).decode("utf-8", "replace")
+        source = bytes(source).decode("utf-8-sig", "replace")
     elif hasattr(source, "text") and hasattr(source, "headers"):
         return _response_selector(source)
     if isinstance(source, str):
@@ -269,9 +256,10 @@ def _response_selector(response: Any) -> tuple[parsel.Selector, str | None]:
 def _text_selector(text: str) -> tuple[parsel.Selector, str | None]:
     """A JSON selector when `text` parses as JSON, else an HTML one with its source text."""
     _check_size(len(text), "characters")
+    clean = text.removeprefix("\ufeff")
     try:
-        value = json.loads(text)
-    except ValueError:  # not JSON, so it is read as HTML, which never fails to parse
+        value = _msgspec_json().decode(clean)
+    except Exception:  # not JSON, so it is read as HTML, which never fails to parse
         return parsel.Selector(text=text, type="html"), text
     return parsel.Selector(root=value, type="json"), None
 
@@ -279,9 +267,10 @@ def _text_selector(text: str) -> tuple[parsel.Selector, str | None]:
 def _loads(text: str) -> Any:
     """Parse JSON text, raising UnsafeError if too large and BrokenError if invalid."""
     _check_size(len(text), "characters")
+    clean = text.removeprefix("\ufeff")
     try:
-        return json.loads(text)
-    except ValueError as error:
+        return _msgspec_json().decode(clean)
+    except Exception as error:
         raise BrokenError(f"expected JSON, got {text[:80]!r}: {error}") from None
 
 
@@ -291,13 +280,48 @@ def _check_size(size: int, unit: str) -> None:
         raise UnsafeError(f"refusing {size:,} {unit} of text: the limit is {MAX_SIZE:,}")
 
 
+@functools.cache
+def _msgspec_json() -> Any:
+    """`msgspec.json`, imported on first use."""
+    try:
+        import msgspec.json
+    except ImportError:
+        raise MissingError("shared.selector needs msgspec: pip install msgspec") from None
+    return msgspec.json
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_jmespath(query: str) -> Any:
+    """Compiled JMESPath expression, cached across calls."""
+    try:
+        import jmespath
+    except ImportError:
+        raise MissingError(
+            "shared.selector needs jmespath: pip install 'flntools[selector]'"
+        ) from None
+    try:
+        return jmespath.compile(query)
+    except Exception as error:
+        raise QueryError(f"invalid JMESPath {query!r}: {error}") from None
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_jsonpath(query: str) -> Any:
+    """Compiled JSONPath expression, cached across calls."""
+    env = _jsonpath()
+    try:
+        return env.compile(query)
+    except Exception as error:
+        raise QueryError(f"invalid JSONPath {query!r}: {error}") from None
+
+
 @functools.lru_cache(maxsize=None)
 def _jsonpath() -> Any:
     """python-jsonpath's strict environment, imported on first use."""
     try:
         import jsonpath
     except ImportError:
-        raise ImportError(
+        raise MissingError(
             "shared.selector needs python-jsonpath: pip install 'flntools[selector]'"
         ) from None
     # The default environment adds keywords such as `missing`, which can't be keys.
