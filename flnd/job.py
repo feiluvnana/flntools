@@ -1370,6 +1370,7 @@ class Ended(Enum):
     """How one category listing ended."""
 
     RAN_OUT = "ran out"
+    CAUGHT_UP = "caught up"
     CUT = "cut"
     STOPPED = "stopped"
 
@@ -1476,7 +1477,7 @@ def _queue_listed(
             if stop_at_saved and saved_in_a_row >= SAVED_IN_A_ROW:
                 ui.info("{category}: {count} saved posts in a row, caught up",
                         category=kept.category, count=saved_in_a_row)
-                return Ended.CUT, taken
+                return Ended.CAUGHT_UP, taken
     finally:
         kept.close()
     return (Ended.RAN_OUT if kept.ran_out else Ended.CUT), taken
@@ -1562,7 +1563,12 @@ def _read_one_category(
     """List one category from `start` cursor, catching up from newest if resumed."""
     ui.debug("{target}: list {category}", target=str(target), category=category.name)
     work.ledger.board.start(target, category.name, slots=run.source.concurrency)
-    stop_at_saved = category.newest_first and category.name in listed and not start
+    stop_at_saved = (
+        category.newest_first
+        and category.name in listed
+        and not start
+        and not options.again
+    )
     saved = (
         (lambda pid, posted=None, cat=category: work.ledger.is_saved(pid, cat, posted))
         if stop_at_saved else None
@@ -1577,7 +1583,7 @@ def _read_one_category(
                  span=span, run_async=run.run_async)
     with listing(resume):
         ended, taken = _queue_all(work, kept, stop_at_saved=stop_at_saved, limit=remaining)
-    if ended is Ended.RAN_OUT:
+    if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
         complete.append(category.name)
     if ended is Ended.RAN_OUT and start and resume.taken and not resume.refused:
         rem = None if remaining is None else remaining - taken

@@ -463,6 +463,22 @@ class SyncStopTest(JobCase):
         # It stopped early, so the record is the earlier one, still there.
         self.assertIn("posts", self.record())
 
+    def test_sync_keeps_complete_record_and_fast_completes_on_subsequent_runs(self):
+        """A caught-up sync stays complete and stops after 5 saved posts on subsequent runs."""
+        self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
+        self.assertEqual(self.record(), {"posts": datetime.date.today().isoformat()})
+        self.listed.clear()
+        report = self.engine.sync(["fed:example_user"])
+        self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
+        self.assertEqual(report.files, 0)
+        self.assertIn("posts", self.record())
+        with store.open(self.home / paths.TARGETS, table="targets") as rows:
+            self.assertNotIn("cursors", rows.get("fed:example_user", {}))
+        self.listed.clear()
+        report2 = self.engine.sync(["fed:example_user"])
+        self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
+        self.assertEqual(report2.files, 0)
+
     def test_files_queued_by_an_earlier_category_are_not_caught_up(self):
         """fixes #4: a second feed listing the first one's 6 new posts goes on past them."""
         test = self

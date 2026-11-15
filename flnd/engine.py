@@ -121,7 +121,13 @@ class Engine:
         resolved = self._resolved(targets)
         cats_map = categories_by_source(categories, resolved, self.sources)
         _validate_targets(self.sources, categories, resolved)
-        base = Options(since=span.since, until=span.until, limit=limit, again=again)
+        base = Options(
+            since=span.since,
+            until=span.until,
+            limit=limit,
+            again=again,
+            stop_at_saved=sync and not again,
+        )
         by_source = {
             code: replace(base, categories=cats_map.get(code))
             for code in {t.source for t in resolved}
@@ -283,7 +289,23 @@ class Engine:
         """Download non-query targets sequentially with metadata locking."""
         with fs.lock(self.home / paths.METADATA / ".lock"):
             rows = flnd.targets.rows(self.home)
-            chosen = [(target, by_source[target.source]) for target in resolved]
+            chosen = [
+                (
+                    target,
+                    replace(
+                        by_source[target.source],
+                        stop_at_saved=(
+                            by_source[target.source].stop_at_saved
+                            or (
+                                not by_source[target.source].again
+                                and flnd.targets.key(target) in rows
+                                and flnd.targets.sync_enabled(rows[flnd.targets.key(target)])
+                            )
+                        ),
+                    ),
+                )
+                for target in resolved
+            ]
             flnd.targets.record(self.home, chosen, sync=sync)
             reports = self._run(chosen, stop=stop)
             return self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)

@@ -184,7 +184,7 @@ class Instagram(Source):
         """The posts the profile is tagged in."""
         yield from profile.read_tab(site, self.api, "tagged")
 
-    @user.category
+    @user.category(newest_first=True)
     def reposts(self, site: Site, profile: Profile) -> Iterator[Post]:
         """The posts the profile reposted."""
         yield from profile.read_tab(site, self.api, "reposts")
@@ -507,7 +507,7 @@ class Profile:
 
     def _scroll_tab(self, site: Site, tab: str) -> Iterator[Any]:
         """Scroll one profile tab until it ends or hits `OLD_STREAK`, yielding results live."""
-        since = site.time.since if tab in ("posts", "reels") else None
+        since = site.time.since if tab in ("posts", "reels", "reposts") else None
         ended, old = False, 0
         with watch_responses(site, GRAPHQL, scroll=True) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
@@ -851,7 +851,7 @@ def page_state(result: Any, tab: str) -> tuple[bool, str | None] | None:
 
 def _hit_saved(result: Any, tab: str) -> bool:
     """Whether a `newest_first` tab result hits the 5-saved-post early-stop streak."""
-    if tab not in ("posts", "reels") or not isinstance(result, dict):
+    if tab not in ("posts", "reels", "reposts") or not isinstance(result, dict):
         return False
     for media in tab_media(result, tab):
         code = post_name(media)
