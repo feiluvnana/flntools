@@ -13,7 +13,6 @@ import functools
 import math
 import re
 import threading
-import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field, replace
 from typing import Any, NoReturn, Union
@@ -25,6 +24,7 @@ from luqum.visitor import TreeVisitor
 
 from flnd import source
 from flnd.source import Range
+from shared import text
 
 source._query_check = None  # initialized below once `check` is defined
 
@@ -498,15 +498,15 @@ class _Names:
 
     def id(self, atom: _Atom, lookup: Lookup, name: str) -> str:
         """The site's id of the thing called `name`, from the cache or else from `lookup`."""
-        key = f"{atom.param}:{_folded(name)}"
+        key = f"{atom.param}:{text.fold(name)}"
         if key not in self.cache:
             self.cache[key] = self.match(atom, list(lookup(self.site, name)), name)
         return self.cache[key]
 
     def match(self, atom: _Atom, found: list[tuple[str, str]], name: str) -> str:
         """The one id whose name is `name`, ignoring case and accents; else a QueryError."""
-        target = _folded(name)
-        exact = [(each, id_) for each, id_ in found if _folded(each) == target]
+        target = text.fold(name)
+        exact = [(each, id_) for each, id_ in found if text.fold(each) == target]
         ids = list(dict.fromkeys(id_ for _, id_ in exact))
         if len(ids) == 1:
             return ids[0]
@@ -514,13 +514,6 @@ class _Names:
             listed = ", ".join(f"{each} ({id_})" for each, id_ in exact)
             raise QueryError(f"'{atom.part}': several of {atom.param} are named {name}: {listed}")
         # A lookup may list every name the site has (all its genres), so only near ones are shown.
-        near = [each for each, _ in found if target in _folded(each)][:5]
+        near = [each for each, _ in found if target in text.fold(each)][:5]
         like = f"; like it: {', '.join(near)}" if near else ""
         raise QueryError(f"'{atom.part}': this site has no {atom.param} named {name}{like}")
-
-
-def _folded(name: str) -> str:
-    """`name` as names are compared: without case, accents or extra spaces."""
-    # Unicode gives đ no decomposition, yet Vietnamese readers type it as a plain d.
-    text = unicodedata.normalize("NFKD", name.replace("đ", "d").replace("Đ", "D"))
-    return " ".join("".join(c for c in text if not unicodedata.combining(c)).casefold().split())
