@@ -24,7 +24,7 @@ import re
 import shutil
 import tempfile
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Union
 
@@ -49,8 +49,8 @@ class BuildError(Error, RuntimeError):
     """PyInstaller failed to build the bundle."""
 
 
-def build(entry: PathLike, *, name: str, hidden: Sequence[str] = (),
-          data: Sequence[PathLike] = (), dest: PathLike = "dist") -> Path:
+def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (),
+          data: Iterable[PathLike] = (), dest: PathLike = "dist") -> Path:
     """Build `entry` into the one-folder bundle `dest/name`, and return that folder.
 
         bundler.build("tool.py", name="tool", hidden=("mypkg.plugins",), data=("assets",))
@@ -59,6 +59,7 @@ def build(entry: PathLike, *, name: str, hidden: Sequence[str] = (),
         raise Error("hidden must be a sequence of module names, not a single str")
     if isinstance(data, (str, bytes, os.PathLike)):
         raise Error("data must be a sequence of paths, not a single path")
+    hidden_items = tuple(hidden)
     try:
         import PyInstaller.__main__ as pyinstaller
     except ImportError:
@@ -69,7 +70,7 @@ def build(entry: PathLike, *, name: str, hidden: Sequence[str] = (),
             raise Error(f"no data folder at {folder}")
     dest = Path(dest).resolve()
     with tempfile.TemporaryDirectory() as work:
-        args = _arguments(entry, name=name, hidden=hidden, dest=dest, work=Path(work))
+        args = _arguments(entry, name=name, hidden=hidden_items, dest=dest, work=Path(work))
         _run(pyinstaller, args, name)
     bundle = dest / name
     for folder in folders:
@@ -78,7 +79,7 @@ def build(entry: PathLike, *, name: str, hidden: Sequence[str] = (),
 
 
 def _arguments(
-    entry: PathLike, *, name: str, hidden: Sequence[str], dest: Path, work: Path
+    entry: PathLike, *, name: str, hidden: Iterable[str], dest: Path, work: Path
 ) -> list[str]:
     """PyInstaller command line for `build`, with lazy `shared` modules as hidden imports."""
     # .spec file and build cache go to a temp folder, so there is nothing to clean up.

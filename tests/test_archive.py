@@ -249,7 +249,7 @@ class SniffTest(ArchiveCase):
         size = archive.pack(self.album, self.root / "whole.zip")[0].stat().st_size
         parts = archive.pack(self.album, self.root / "split.zip", split=size // 2 + 1)
         with mock.patch("tempfile.TemporaryDirectory") as mktemp:
-            self.assertEqual(len(archive.entries(parts)), 5)
+            self.assertEqual(len(archive.ls(parts)), 5)
             mktemp.assert_not_called()
 
 
@@ -261,7 +261,7 @@ class ConflictTest(ArchiveCase):
         (self.out / "a.txt").write_bytes(b"old")
 
     def test_error_writes_nothing(self):
-        with self.assertRaisesRegex(archive.ConflictError, "a.txt"):
+        with self.assertRaisesRegex(archive.Error, "a.txt"):
             archive.unpack(self.bundle, self.out)
         self.assertEqual(tree(self.out), {"a.txt": b"old"})
 
@@ -273,11 +273,16 @@ class ConflictTest(ArchiveCase):
         archive.unpack(self.bundle, self.out, conflict="overwrite")
         self.assertEqual(tree(self.out), {"a.txt": b"new", "b.txt": b"bee"})
 
-    def test_rename(self):
-        archive.unpack(self.bundle, self.out, conflict="rename")
-        archive.unpack(self.bundle, self.out, conflict="rename")
-        self.assertEqual(tree(self.out), {"a.txt": b"old", "a (1).txt": b"new", "a (2).txt": b"new",
-                                          "b.txt": b"bee", "b (1).txt": b"bee"})
+    def test_progress(self):
+        seen: list[tuple[int, int]] = []
+        dest = self.root / "packed.zip"
+        archive.pack(self.album, dest, progress=lambda done, total: seen.append((done, total)))
+        self.assertTrue(seen)
+        self.assertEqual(seen[-1][0], seen[-1][1])
+        unpacked: list[tuple[int, int]] = []
+        archive.unpack(dest, self.out / "prog", progress=lambda done, total: unpacked.append((done, total)))
+        self.assertTrue(unpacked)
+        self.assertEqual(unpacked[-1][0], unpacked[-1][1])
 
 
 class SafetyTest(ArchiveCase):
@@ -295,7 +300,7 @@ class SafetyTest(ArchiveCase):
         colliding = zip_with(self.root / "collide.zip", {"a": b"file", "a/c.txt": b"nested"})
         self.assert_refused(archive.UnsafeError, colliding)
         with self.assertRaises(archive.UnsafeError):
-            archive.entries(colliding)
+            archive.ls(colliding)
 
     def test_case_twins_in_one_archive_say_so(self):
         cased = zip_with(self.root / "cased.zip", {"Photo.JPG": b"one", "photo.jpg": b"two"})
@@ -303,7 +308,7 @@ class SafetyTest(ArchiveCase):
             archive.unpack(cased, self.out)
         self.assertFalse(self.out.exists())
         with self.assertRaisesRegex(archive.UnsafeError, "Photo.JPG"):
-            archive.entries(cased)
+            archive.ls(cased)
 
     def test_ntfs_streams_and_reserved_names_are_refused(self):
         """Fix #3: `a:b` writes NTFS stream `b` of file `a`, and Windows' device names can't be files."""
@@ -346,11 +351,11 @@ class SafetyTest(ArchiveCase):
 
     def test_bombs(self):
         bundle = archive.pack(self.album, self.root / "bundle.zip")[0]
-        self.assert_refused(archive.BombError, bundle, limits=archive.Limits(size=1000))
-        self.assert_refused(archive.BombError, bundle, limits=archive.Limits(files=3))
-        self.assert_refused(archive.BombError, zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)}))
+        self.assert_refused(archive.UnsafeError, bundle, limits=archive.Limits(size=1000))
+        self.assert_refused(archive.UnsafeError, bundle, limits=archive.Limits(files=3))
+        self.assert_refused(archive.UnsafeError, zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)}))
         tar = archive.pack(self.album, self.root / "bundle.tar.gz")[0]
-        self.assert_refused(archive.BombError, tar, limits=archive.Limits(size=1000))
+        self.assert_refused(archive.UnsafeError, tar, limits=archive.Limits(size=1000))
         archive.unpack(zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)}), self.out,
                        limits=archive.Limits(ratio=10_000))
         self.assertEqual((self.out / "zeros").stat().st_size, 1_000_000)
@@ -368,7 +373,7 @@ class SafetyTest(ArchiveCase):
             return real_write(output, chunk)
 
         with mock.patch.object(archive._Output, "write", counted_write):
-            self.assert_refused(archive.BombError, self.root / "zeros.gz")
+            self.assert_refused(archive.UnsafeError, self.root / "zeros.gz")
         self.assertLess(sum(writes), 5_000_000)
 
     def test_nested_archive_is_not_unpacked(self):
@@ -388,7 +393,7 @@ class EntriesTest(ArchiveCase):
 
     def assert_lists(self, path: Path | list[Path], expected: list[archive.Entry], **options):
         before = sorted(self.root.rglob("*"))
-        self.assertEqual(sorted(archive.entries(path, **options), key=lambda entry: entry.name), expected)
+        self.assertEqual(sorted(archive.ls(path, **options), key=lambda entry: entry.name), expected)
         self.assertEqual(sorted(self.root.rglob("*")), before)
 
     def test_zip(self):
@@ -425,7 +430,7 @@ class EntriesTest(ArchiveCase):
             linked = listing + b"\n        Name: escape\n        Type: Symbolic link\n        Size: 9\n"
             with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, linked, b"")):
                 with self.assertRaises(archive.UnsafeError):
-                    archive.entries(self.root / "a.rar")
+                    archive.ls(self.root / "a.rar")
 
     def test_rar_password_not_on_the_command_line(self):
         (self.root / "a.rar").write_bytes(b"Rar!\x1a\x07\x01\x00" + bytes(40))
@@ -458,7 +463,7 @@ class EntriesTest(ArchiveCase):
 
     def test_in_the_archives_order(self):
         zipped = zip_with(self.root / "order.zip", {"b.txt": b"b", "a.txt": b"a"})
-        self.assertEqual([entry.name for entry in archive.entries(zipped)], ["b.txt", "a.txt"])
+        self.assertEqual([entry.name for entry in archive.ls(zipped)], ["b.txt", "a.txt"])
 
     def test_password(self):
         for suffix in (".zip", ".7z"):
@@ -466,9 +471,9 @@ class EntriesTest(ArchiveCase):
                 locked = archive.pack(self.album, self.root / f"locked{suffix}", password="pw")[0]
                 self.assert_lists(locked, self.index, password="pw")
                 with self.assertRaises(archive.PasswordError):
-                    archive.entries(locked)
+                    archive.ls(locked)
         with self.assertRaises(archive.PasswordError):
-            archive.entries(self.root / "locked.7z", password="wrong")
+            archive.ls(self.root / "locked.7z", password="wrong")
 
     def test_parts_found_from_the_first_and_as_list(self):
         for suffix in (".zip", ".7z", ".tar.gz"):
@@ -478,36 +483,36 @@ class EntriesTest(ArchiveCase):
                 self.assert_lists(parts[0], self.index)
                 self.assert_lists(parts, self.index)
         spanned = spanned_zip(self.root, {"a.txt": b"alpha", "big.bin": bytes(3000)}, part_size=1000)
-        self.assertEqual(archive.entries(spanned[0]),
+        self.assertEqual(archive.ls(spanned[0]),
                          [archive.Entry("a.txt", 5, "file"), archive.Entry("big.bin", 3000, "file")])
 
     def test_unsafe_names_links_and_devices(self):
         for name in ("../evil.txt", "/etc/evil.txt", "C:\\evil.txt", "x/a:b", "NUL", "dir/com1.txt"):
             with self.subTest(name=name):
                 with self.assertRaises(archive.UnsafeError):
-                    archive.entries(zip_with(self.root / "evil.zip", {"ok.txt": b"ok", name: b"x"}))
+                    archive.ls(zip_with(self.root / "evil.zip", {"ok.txt": b"ok", name: b"x"}))
                 with self.assertRaises(archive.UnsafeError):
-                    archive.entries(tar_with(self.root / "evil.tar", [(name, tarfile.REGTYPE, b"")]))
+                    archive.ls(tar_with(self.root / "evil.tar", [(name, tarfile.REGTYPE, b"")]))
         for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE, tarfile.FIFOTYPE):
             with self.subTest(kind=kind):
                 with self.assertRaises(archive.UnsafeError):
-                    archive.entries(tar_with(self.root / "odd.tar", [("odd", kind, b"ok.txt")]))
+                    archive.ls(tar_with(self.root / "odd.tar", [("odd", kind, b"ok.txt")]))
 
     def test_bombs(self):
         bundle = archive.pack(self.album, self.root / "bundle.zip")[0]
         for limits in (archive.Limits(size=1000), archive.Limits(files=3)):
-            with self.subTest(limits=limits), self.assertRaises(archive.BombError):
-                archive.entries(bundle, limits=limits)
+            with self.subTest(limits=limits), self.assertRaises(archive.UnsafeError):
+                archive.ls(bundle, limits=limits)
         zeros = zip_with(self.root / "zeros.zip", {"zeros": bytes(1_000_000)})
-        with self.assertRaises(archive.BombError):
-            archive.entries(zeros)
-        self.assertEqual(archive.entries(zeros, limits=archive.Limits(ratio=10_000)),
+        with self.assertRaises(archive.UnsafeError):
+            archive.ls(zeros)
+        self.assertEqual(archive.ls(zeros, limits=archive.Limits(ratio=10_000)),
                          [archive.Entry("zeros", 1_000_000, "file")])
 
     def test_not_an_archive(self):
         (self.root / "notes.zip").write_bytes(b"just some text, no archive here")
         with self.assertRaises(archive.BrokenError):
-            archive.entries(self.root / "notes.zip")
+            archive.ls(self.root / "notes.zip")
 
 
 class ErrorTest(ArchiveCase):

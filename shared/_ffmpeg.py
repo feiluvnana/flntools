@@ -148,7 +148,7 @@ def run(args: list[str], *, name: str, timeout: float, level: str = "error") -> 
     try:
         done = subprocess.run(command, capture_output=True, timeout=timeout, env=_env())
     except subprocess.TimeoutExpired:
-        raise _media.StalledError(f"{name}: ffmpeg took longer than {timeout:.0f} s") from None
+        raise _media.BrokenError(f"{name}: ffmpeg took longer than {timeout:.0f} s") from None
     stderr = done.stderr.decode("utf-8", "replace")
     if done.returncode:
         raise failure(name, stderr)
@@ -252,7 +252,7 @@ def _started(
         if feed_error:
             raise feed_error[0]
         if stalled.is_set():
-            raise _media.StalledError(f"{name}: ffmpeg made no progress for {STALL:.0f} s")
+            raise _media.BrokenError(f"{name}: ffmpeg made no progress for {STALL:.0f} s")
         if process.returncode:
             errors.seek(0)
             raise failure(name, errors.read().decode("utf-8", "replace"))
@@ -361,8 +361,8 @@ def probe(path: Path, *, format: str | None) -> _media.Info:
                 audio=_codec_name(a) if a else None,
                 sample_rate=a.sample_rate if a and a.sample_rate else None,
                 channels=a.channels if a and a.channels else None,
-                created=_media.parse_time(created),
-                location=_media.parse_iso6709(
+                created=_media._parse_time(created),
+                location=_media._parse_iso6709(
                     tags.get("location") or tags.get("com.apple.quicktime.location.ISO6709")
                 ),
                 tags=tags,

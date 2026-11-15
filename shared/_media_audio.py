@@ -30,7 +30,7 @@ def extract(
         video=None, audio=info.audio, audio_bitrate=bitrate,
         created=info.tags.get("creation_time"),
     )
-    out, copied = _media.output(extension, encoding)
+    out, copied = _media._output(extension, encoding)
     command = ["-n", *_ffmpeg.source(info.path), *out, _ffmpeg.target(part)]
     if copied:
         _ffmpeg.run(command, name=info.path.name, timeout=_ffmpeg.COPY_TIMEOUT)

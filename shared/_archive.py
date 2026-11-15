@@ -1,11 +1,11 @@
 """Pack files into zip, 7z or tar, and list or unpack every common archive without trusting it.
 
 `pack` writes one archive, its format chosen by the destination's extension, atomically and
-optionally split into parts. `unpack` and `entries` sniff the format from the bytes, stream
+optionally split into parts. `unpack` and `ls` sniff the format from the bytes, stream
 split archives without copying them, and check every entry before anything is written.
 
     archive.pack("photos", "backup.7z", password="pw")
-    for entry in archive.entries("backup.7z", password="pw"):
+    for entry in archive.ls("backup.7z", password="pw"):
         print(entry.name, entry.size)
     archive.unpack("backup.7z", "restored/", password="pw")
 """
@@ -33,15 +33,18 @@ import zipfile
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, Literal, Sequence, Union, cast
+from typing import (
+    IO, TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, Literal, NamedTuple, Sequence, Union,
+    cast,
+)
 
 import shared
 from shared import _atomic
 from shared import _fmt as fmt
 
 __all__ = [
-    "BombError", "BrokenError", "ConflictError", "Entry", "Error", "Limits",
-    "MissingError", "PasswordError", "UnsafeError", "entries", "pack", "unpack",
+    "BrokenError", "Entry", "Error", "Limits", "MissingError", "PasswordError",
+    "UnsafeError", "ls", "pack", "unpack",
 ]
 
 if TYPE_CHECKING:
@@ -49,10 +52,11 @@ if TYPE_CHECKING:
     Opened = Iterator[tuple[list["_Entry"], Extract]]
 
 PathLike = Union[str, "os.PathLike[str]"]
-Conflict = Literal["error", "skip", "overwrite", "rename"]
+Progress = Callable[[int, int], Any]
+Conflict = Literal["error", "skip", "overwrite"]
 Kind = Literal["file", "dir", "link", "special"]
 
-CONFLICTS = ("error", "skip", "overwrite", "rename")
+CONFLICTS = ("error", "skip", "overwrite")
 WRITE_FORMATS = {
     ".zip": "zip", ".7z": "7z", ".tar": "tar", ".tar.gz": "gz", ".tgz": "gz", ".tar.bz2": "bz2",
     ".tbz2": "bz2", ".tar.xz": "xz", ".txz": "xz", ".tar.zst": "zst",
@@ -80,19 +84,11 @@ class Error(shared.Error):
 
 
 class UnsafeError(Error, shared.UnsafeError):
-    """An entry would land outside dest, collides inside the archive, or is a link/device."""
-
-
-class BombError(Error, shared.UnsafeError):
-    """An archive would expand past its `Limits`."""
+    """An entry would land outside dest, collides, exceeds limits, or is a link/device."""
 
 
 class BrokenError(Error, shared.BrokenError):
     """The file is no archive `unpack` reads, or its index is damaged, or `unrar` failed on it."""
-
-
-class ConflictError(Error, ValueError):
-    """Files from the archive already exist in dest, and `conflict="error"`."""
 
 
 class PasswordError(Error, shared.RefusedError, ValueError):
@@ -103,11 +99,10 @@ class MissingError(Error, shared.MissingError):
     """Reading or writing needs what this machine lacks: `unrar`, an extra, or .zst < 3.14."""
 
 
-@dataclass(frozen=True)
-class Entry:
-    """One file or folder an archive holds, as `entries` lists it.
+class Entry(NamedTuple):
+    """One file or folder an archive holds, as `ls` lists it.
 
-        [entry.name for entry in archive.entries("backup.zip") if entry.kind == "file"]
+        [entry.name for entry in archive.ls("backup.zip") if entry.kind == "file"]
     """
 
     name: str
@@ -196,7 +191,7 @@ class MultiPartFile(io.RawIOBase):
 
 
 def pack(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None,
-         split: int | None = None) -> list[Path]:
+         split: int | None = None, progress: Progress | None = None) -> list[Path]:
     """Pack files and folders into one archive, whose format comes from `dest`'s extension.
 
         archive.pack(["photos", "notes.txt"], "out/backup.7z", password="pw")
@@ -211,11 +206,11 @@ def pack(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: st
     try:
         with _atomic.writing(dest, replace=True) as whole:
             if kind == "zip":
-                _write_zip(whole, files, password)
+                _write_zip(whole, files, password, progress)
             elif kind == "7z":
-                _write_7z(whole, files, password)
+                _write_7z(whole, files, password, progress)
             else:
-                _write_tar(whole, files, kind)
+                _write_tar(whole, files, kind, progress)
             if split is not None:
                 pieces = _split(whole, split)
                 whole.unlink()
@@ -232,13 +227,13 @@ def pack(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: st
             leftover.unlink(missing_ok=True)
 
 
-def entries(path: PathLike | Sequence[PathLike], *, password: str | None = None,
-            limits: Limits = Limits()) -> list[Entry]:
+def ls(parts: PathLike | Sequence[PathLike], *, password: str | None = None,
+       limits: Limits = Limits()) -> list[Entry]:
     """The index of a zip, 7z, RAR or tar archive, or of a compressed file, without unpacking it.
 
-        archive.entries("in/photos.7z.001", password="pw")
+        archive.ls("in/photos.7z.001", password="pw")
     """
-    part_paths = _resolve_parts(path)
+    part_paths = _resolve_parts(parts)
     with _checked(part_paths, password, limits) as (found, _extract, _size):
         return [
             Entry(e.name, 0, "dir") if e.kind == "dir" else Entry(e.name, e.size, "file")
@@ -246,20 +241,21 @@ def entries(path: PathLike | Sequence[PathLike], *, password: str | None = None,
         ]
 
 
-def unpack(path: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None,
-           conflict: Conflict = "error", limits: Limits = Limits()) -> list[Path]:
+def unpack(parts: PathLike | Sequence[PathLike], dest: PathLike, *, password: str | None = None,
+           conflict: Conflict = "error", limits: Limits = Limits(),
+           progress: Progress | None = None) -> list[Path]:
     """Unpack a zip, 7z, RAR or tar archive, or all the parts of one, directly into `dest`.
 
-        archive.unpack("in/photos.7z.001", "out/", password="pw", conflict="rename")
+        archive.unpack("in/photos.7z.001", "out/", password="pw", conflict="skip")
     """
     if conflict not in CONFLICTS:
         raise Error(f"conflict must be one of {', '.join(CONFLICTS)}, not {conflict!r}")
     dest = Path(dest)
-    part_paths = _resolve_parts(path)
+    part_paths = _resolve_parts(parts)
     with _checked(part_paths, password, limits) as (found, extract, archive_size):
         plan = _plan(found, dest, conflict)
         undeclared_cap = min(limits.size, int(limits.ratio * max(archive_size, 1)))
-        return _extract(extract, plan, dest, undeclared_cap)
+        return _extract(extract, plan, dest, undeclared_cap, progress)
 
 
 def _resolve_parts(path: PathLike | Sequence[PathLike]) -> list[Path]:
@@ -313,7 +309,8 @@ def _collect(sources: PathLike | Sequence[PathLike]) -> list[tuple[Path, str]]:
     return found
 
 
-def _write_zip(path: Path, files: list[tuple[Path, str]], password: str | None) -> None:
+def _write_zip(path: Path, files: list[tuple[Path, str]], password: str | None,
+               progress: Progress | None = None) -> None:
     if password is None:
         packed = zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED)
     else:
@@ -322,24 +319,35 @@ def _write_zip(path: Path, files: list[tuple[Path, str]], password: str | None) 
             path, "w", compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES
         )
         packed.setpassword(password.encode())
+    total = len(files)
     with packed:
-        for file, name in files:
+        for index, (file, name) in enumerate(files, 1):
             packed.write(file, name)
+            if progress:
+                progress(index, total)
 
 
-def _write_7z(path: Path, files: list[tuple[Path, str]], password: str | None) -> None:
+def _write_7z(path: Path, files: list[tuple[Path, str]], password: str | None,
+              progress: Progress | None = None) -> None:
     py7zr = _require("py7zr")
+    total = len(files)
     with py7zr.SevenZipFile(path, "w", password=password, header_encryption=password is not None,
                             dereference=True) as packed:
-        for file, name in files:
+        for index, (file, name) in enumerate(files, 1):
             packed.write(file, name)
+            if progress:
+                progress(index, total)
 
 
-def _write_tar(path: Path, files: list[tuple[Path, str]], compression: str) -> None:
+def _write_tar(path: Path, files: list[tuple[Path, str]], compression: str,
+               progress: Progress | None = None) -> None:
     mode = "w" if compression == "tar" else f"w:{compression}"
+    total = len(files)
     with tarfile.open(path, mode, dereference=True) as packed:  # type: ignore[call-overload]
-        for file, name in files:
+        for index, (file, name) in enumerate(files, 1):
             packed.add(file, name, recursive=False)
+            if progress:
+                progress(index, total)
 
 
 def _split(whole: Path, part_size: int) -> list[Path]:
@@ -489,7 +497,7 @@ def _password_errors(name: str, *, encrypted: bool,
         yield
     except missing as error:
         raise PasswordError(f"{name} needs a password") from error
-    except (BombError, UnsafeError, OSError):
+    except (UnsafeError, OSError):
         raise
     except Exception as error:
         if not encrypted:
@@ -648,7 +656,7 @@ def _safe_name(raw: str) -> str:
 def _check(found: list[_Entry], limits: Limits, archive_size: int) -> None:
     """Refuse links, devices, internal collisions and bombs before writing."""
     if len(found) > limits.files:
-        raise BombError(f"the archive holds more than {limits.files:,} entries")
+        raise UnsafeError(f"the archive holds more than {limits.files:,} entries")
     folders = _folder_keys(found)
     seen_files: dict[str, str] = {}
     for entry in found:
@@ -671,14 +679,14 @@ def _check(found: list[_Entry], limits: Limits, archive_size: int) -> None:
             seen_files[key] = entry.name
         if entry.size and entry.packed is not None:
             if entry.size > limits.ratio * max(entry.packed, 1):
-                raise BombError(f"{entry.name!r} expands more than {limits.ratio:g} times")
+                raise UnsafeError(f"{entry.name!r} expands more than {limits.ratio:g} times")
     total = sum(entry.size or 0 for entry in found)
     if total > limits.size:
-        raise BombError(
+        raise UnsafeError(
             f"the archive expands to {fmt.size(total)}, over the {fmt.size(limits.size)} limit"
         )
     if total > limits.ratio * max(archive_size, 1):
-        raise BombError(f"the archive expands more than {limits.ratio:g} times")
+        raise UnsafeError(f"the archive expands more than {limits.ratio:g} times")
 
 
 def _folder_keys(found: list[_Entry]) -> set[str]:
@@ -706,28 +714,15 @@ def _plan(found: list[_Entry], dest: Path, conflict: str) -> list[tuple[_Entry, 
         clashes.append(entry.name)
         if conflict == "overwrite":
             planned[key] = (entry, target)
-        elif conflict == "rename":
-            renamed = _free_name(target, planned)
-            planned[str(renamed).casefold()] = (entry, renamed)
     if clashes and conflict == "error":
         extra = f" and {len(clashes) - 10} more" if len(clashes) > 10 else ""
         shown = ", ".join(clashes[:10]) + extra
-        raise ConflictError(f"already in {dest}: {shown}")
+        raise Error(f"already in {dest}: {shown}")
     return list(planned.values())
 
 
-def _free_name(target: Path, taken: dict[str, tuple[_Entry, Path]]) -> Path:
-    candidates = (
-        target.with_name(f"{target.stem} ({number}){target.suffix}")
-        for number in itertools.count(1)
-    )
-    return next(
-        path for path in candidates if str(path).casefold() not in taken and not path.exists()
-    )
-
-
 def _extract(extract: Extract, plan: list[tuple[_Entry, Path]], dest: Path,
-             undeclared_cap: int) -> list[Path]:
+             undeclared_cap: int, progress: Progress | None = None) -> list[Path]:
     """Stage the planned files in a hidden folder, move them into place, and return them."""
     created = not dest.exists()
     dest.mkdir(parents=True, exist_ok=True)
@@ -735,10 +730,18 @@ def _extract(extract: Extract, plan: list[tuple[_Entry, Path]], dest: Path,
     files = {entry: (staging / str(index), target) for index, (entry, target) in enumerate(plan)
              if entry.kind == "file"}
     outputs: list[_Output] = []
+    total = len(files)
+    done = 0
+
+    def on_done() -> None:
+        nonlocal done
+        done += 1
+        if progress:
+            progress(done, total)
 
     def open_output(entry: _Entry) -> _Output:
         cap = undeclared_cap if entry.size is None else entry.size
-        outputs.append(_Output(files[entry][0], cap, entry.name))
+        outputs.append(_Output(files[entry][0], cap, entry.name, on_done if progress else None))
         return outputs[-1]
 
     try:
@@ -766,15 +769,17 @@ def _extract(extract: Extract, plan: list[tuple[_Entry, Path]], dest: Path,
 class _Output:
     """A staged file that stops its entry writing more than it declared."""
 
-    def __init__(self, path: Path, cap: int, name: str) -> None:
+    def __init__(self, path: Path, cap: int, name: str,
+                 on_done: Callable[[], None] | None = None) -> None:
         self.file = path.open("wb")
         self.cap, self.name, self.written = cap, name, 0
+        self._on_done = on_done
 
     def write(self, chunk: bytes) -> int:
         self.written += len(chunk)
         if self.written > self.cap:
-            raise BombError(f"{self.name!r} expands past {fmt.size(self.cap)}, "
-                            "more than it declared or the limits allow")
+            raise UnsafeError(f"{self.name!r} expands past {fmt.size(self.cap)}, "
+                              "more than it declared or the limits allow")
         return self.file.write(chunk)
 
     def seekable(self) -> bool:
@@ -787,7 +792,11 @@ class _Output:
         return self.written
 
     def close(self) -> None:
-        self.file.close()
+        if not self.file.closed:
+            self.file.close()
+            if self._on_done is not None:
+                cb, self._on_done = self._on_done, None
+                cb()
 
     def __enter__(self) -> _Output:
         return self

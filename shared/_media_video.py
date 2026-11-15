@@ -1,246 +1,20 @@
-"""What `Media.trim`, `Media.frames` and `Media.merge` do: timeline operations.
+"""What `Media.merge` does: timeline operations.
 
 Private: callers use `media`.
 
-`Media` checks the kind and the arguments that need only the probe record, then calls one of these
-with the record and the chain's temporary path (`frames` gets the folder to write into instead).
-Video goes through ffmpeg, animations and photos through Pillow, both reached only through
-`_ffmpeg` and `_pillow`, so there is no `.raw`. Loaded on first use.
-
-    trim(info, part, ".mp4", start=12.5, end=30, exact=True)
-    merge([video], part, ".mp4", track, fps=None, duration=None, progress=None)      # DASH: copied
+    merge([video], part, ".mp4", track, duration=None, progress=None)      # DASH: copied
 """
 
 from __future__ import annotations
 
-import math
-import os
-import secrets
-import shutil
 import tempfile
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from shared import _ffmpeg, _media, _pillow
 from shared._media import Info, Progress
 
-__all__ = ["frames", "merge", "trim"]
-
-
-def trim(
-    info: Info, part: Path, extension: str, *, start: float, end: float | None, exact: bool,
-    progress: Progress | None = None,
-) -> None:
-    """Write the part of `info`'s file from `start` to `end` seconds to `part` as `extension`.
-
-    `exact` re-encodes the video at the "high" level's quality, so the cut is exactly at `start`;
-    otherwise streams are copied and a video starts at the keyframe before it. Metadata is kept.
-
-    Args:
-        info: the probe of the file to cut.
-        part: the temporary file to write; the caller renames it into place.
-        extension: the format to write, with its dot, of the same kind as `info`, or an animation.
-        start: seconds from the beginning, 0 or more.
-        end: seconds from the beginning, after `start`; None runs to the end.
-        exact: True to cut exactly at `start` by re-encoding; False to copy the streams.
-    """
-    # An animated photo has frames, not a timeline of streams, so Pillow cuts its frame list.
-    if info.kind == "image":
-        frames, delays = _pillow.animation(_photo(info), start=start, end=end)
-        _pillow.save_animation(frames, delays, part, _media.ANIMATIONS[extension], quality=90)
-        return
-    # `-ss` seeks to keyframe at or before `start`; a re-encode drops frames before it.
-    window = ["-ss", f"{start:g}", *(["-t", f"{end - start:g}"] if end is not None else [])]
-    encoding = _media._Output(
-        video=info.video, audio=info.audio, speed="slow",
-        codec=_default_codec(extension) if exact and info.video else None,
-        created=info.tags.get("creation_time"))
-    args, copied = _media.output(extension, encoding)
-    command = ["-n", *window, *_ffmpeg.source(info.path), *args, _ffmpeg.target(part)]
-    if copied:
-        _ffmpeg.run(command, name=info.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
-    else:
-        dur = (end or info.duration or 0) - start
-        _ffmpeg.encode(command, name=info.path.name, duration=dur, progress=progress)
-
-
-def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequence[float] | None,
-           count: int | None, format: str, quality: int, limit: int | None) -> list[Path]:
-    """Save chosen frames of video or animation into `folder`; see `Media.frames`.
-
-    Args:
-        info: the probe of the video or animation to read.
-        stem: the file name the frames are named after, without its extension.
-        folder: the folder to write into; made when missing.
-        every: seconds between frames, from the start; None when `at` or `count` chooses them.
-        at: the times to take, in seconds; None when `every` or `count` chooses them.
-        count: how many frames, spread evenly through the file; None when `every` or `at` chooses.
-        format: the photo format, such as "jpg" or "png", with or without its dot.
-        quality: 1-100, for a lossy format.
-        limit: the most frames allowed, checked before anything is written; None for no limit.
-
-    Returns:
-        The paths written, in time order.
-
-    Raises:
-        ValueError: more than one of `every`, `at` and `count`; a non-positive `every` or `count`;
-            a time outside the file; an unknown `format`; or more frames than `limit`.
-        FileExistsError: a frame's name is taken, checked before anything is written.
-    """
-    if sum(choice is not None for choice in (every, at, count)) > 1:
-        raise ValueError("give at most one of every=, at= and count=")
-    if (every is not None and every <= 0) or (count is not None and count < 1):
-        raise ValueError("every= must be above 0, and count= at least 1")
-    extension = f".{format.lower().lstrip('.')}"
-    if extension not in _media.STILLS:
-        raise ValueError(f"media can't write frames as {format!r}")
-    duration = info.duration or 0.0
-    # With `count`, each frame sits in middle of one of `count` equal slices.
-    times = sorted(set(at)) if at is not None else (
-        [(index + 0.5) * duration / count for index in range(count)] if count else None)
-    if times and (times[0] < 0 or times[-1] > duration):
-        raise ValueError(f"at= must be within 0 and {duration:.3f} s")
-    # A stream with no frame rate is counted at 30 fps, the usual default.
-    rate = info.fps or 30.0
-    # 1e-9 tolerance keeps float error in duration / every from adding extra frame.
-    expected = (
-        len(times) if times
-        else math.ceil(duration / every - 1e-9) if every
-        else round(duration * rate)
-    )
-    if limit is not None and expected > limit:
-        msg = f"{expected} frames exceeds limit={limit}; pass larger limit= or limit=None"
-        raise ValueError(msg)
-
-    def name(seconds: float) -> Path:
-        return folder / f"{stem}_{seconds:09.3f}{extension}"
-
-    predicted = [name(seconds) for seconds in times] if times else [
-        name(index * (every or 1 / rate)) for index in range(expected)]
-    if taken := [path for path in predicted if path.exists()]:
-        raise FileExistsError(f"{taken[0]} already exists")
-    pictures = _pictures(info, times, every, rate)
-    return _save_frames(pictures, folder, extension, quality, name)
-
-
-def _pictures(info: Info, times: list[float] | None, every: float | None, rate: float) -> Any:
-    """(seconds, Pillow image) pairs for the frames chosen, in time order.
-
-    Args:
-        info: the probe of the video or animation.
-        times: the times to take, in seconds, or None for a step of `every` (or every frame).
-        every: seconds between frames, or None.
-        rate: the frames per second to pick from, the source's or 30.
-
-    Yields:
-        One `(seconds, RGB image)` pair per frame chosen.
-    """
-    if info.kind == "image":
-        photo = _photo(info)
-        starts, clock = [], 0.0
-        for index, delay in _pillow.durations(photo):
-            starts.append((clock, index))
-            clock += delay / 1000
-        wanted = times if times is not None else _steps(clock, every) if every else None
-        # Each time picks the frame on screen then; with no selector, every frame at its own start.
-        picks = starts if wanted is None else [
-            (seconds, max(index for start, index in starts if start <= seconds + 1e-6))
-            for seconds in wanted
-        ]
-        for seconds, index in picks:
-            photo.seek(index)
-            yield seconds, photo.convert("RGB")
-        return
-    width, height = info.width or 0, info.height or 0
-    if times is None:
-        step = every or 1 / rate
-        graph = f"fps=1/{every:g}" if every else f"fps={rate:g}"
-        for index, picture in enumerate(_media.decoded(info, graph, width, height)):
-            yield index * step, picture
-        return
-    yield from _seek_frames(info, times)
-
-
-def _seek_frames(info: Info, times: list[float]) -> Any:
-    """Seek to each timestamp in `times` via PyAV and yield `(seconds, RGB image)`."""
-    import av
-    from av.error import FFmpegError
-    from av.stream import Disposition
-
-    Image = _pillow.load()
-    rot_map = {
-        90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180,
-        270: Image.Transpose.ROTATE_90,
-    }
-    options = {"protocol_whitelist": "file", "format_whitelist": _ffmpeg.READERS}
-    try:
-        with av.open(_ffmpeg.target(info.path), options=options) as container:
-            videos = [
-                s for s in container.streams.video
-                if not (s.disposition & Disposition.attached_pic)
-            ]
-            stream = videos[0]
-            transpose = rot_map.get(round(_ffmpeg.stream_rotation(stream)) % 360)
-            for seconds in times:
-                container.seek(int(seconds * av.time_base), any_frame=False, backward=True)
-                chosen = None
-                for frame in container.decode(stream):
-                    chosen = frame
-                    if frame.time is not None and frame.time >= seconds - 1e-4:
-                        break
-                if chosen is not None:
-                    img = chosen.to_image()
-                    if transpose is not None:
-                        img = img.transpose(transpose)
-                    if info.width and info.height and img.size != (info.width, info.height):
-                        img = img.resize((info.width, info.height), Image.Resampling.LANCZOS)
-                    yield seconds, img
-    except FFmpegError as error:
-        raise _media.BrokenError(f"{info.path.name}: {error}") from None
-
-
-def _steps(duration: float, every: float) -> list[float]:
-    """The start times of each `every`-second step through `duration`, the first at 0."""
-    return [index * every for index in range(math.ceil(duration / every - 1e-9))]
-
-
-def _save_frames(
-    pictures: Any, folder: Path, extension: str, quality: int, name: Any
-) -> list[Path]:
-    """Write pictures into `folder` under `name`, through a hidden folder for safety.
-
-    Args:
-        pictures: `(seconds, image)` pairs, in time order.
-        folder: the folder to finish in; made when missing.
-        extension: the photo extension, with its dot.
-        quality: 1-100, for a lossy format.
-        name: maps a time to the final path of its frame.
-
-    Returns:
-        The final paths, in order.
-
-    Raises:
-        FileExistsError: a final name is taken by the time the frames are moved in; the frames
-            already moved are left, the rest are removed with the hidden folder.
-    """
-    folder.mkdir(parents=True, exist_ok=True)
-    # Frames go to a hidden folder next to `dest` first, so a failure leaves no half set behind.
-    work = folder.parent / f".{folder.name}.{secrets.token_hex(4)}.part"
-    work.mkdir()
-    try:
-        saved: list[tuple[Path, Path]] = []
-        for seconds, picture in pictures:
-            final = name(seconds)
-            _pillow.save(picture, work / final.name, _media.STILLS[extension], quality=quality)
-            saved.append((work / final.name, final))
-        if taken := [final for _, final in saved if final.exists()]:
-            raise FileExistsError(f"{taken[0]} already exists")
-        for part, final in saved:
-            os.replace(part, final)
-        return [final for _, final in saved]
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+__all__ = ["merge"]
 
 
 def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *,
@@ -269,7 +43,7 @@ def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *,
         with tempfile.TemporaryDirectory(dir=part.parent) as folder:
             joined = Path(folder) / "joined.mkv"
             _join(infos, joined, ".mkv", None, progress)
-            _media.transcode(_media._probe(joined), part, extension, quality=90)
+            _media._transcode(_media._probe(joined), part, extension, quality=90)
     elif len(infos) == 1 and track is not None:
         _dash(infos[0], track, part, extension)
     else:
@@ -295,9 +69,9 @@ def _slideshow(infos: list[Info], part: Path, extension: str, rate: float, track
         return
     encoding = _media._Output(video="rawvideo", audio=track.audio if track else None,
                               codec=_default_codec(extension), maps=("0:v:0", "1:a:0"))
-    args, _ = _media.output(extension, encoding)
+    args, _ = _media._output(extension, encoding)
     track_in = _ffmpeg.source(track.path) if track else []
-    inputs = [*_media.raw_input(width, height, rate), *track_in]
+    inputs = [*_media._raw_input(width, height, rate), *track_in]
     _ffmpeg.encode(["-n", *inputs, *args, *(["-shortest"] if track else []), _ffmpeg.target(part)],
                    name=infos[0].path.name, duration=len(infos) / rate, progress=progress,
                    feed=(picture.tobytes() for picture in pictures))
@@ -309,7 +83,7 @@ def _dash(video: Info, track: Info, part: Path, extension: str) -> None:
     cmd = [
         "-n", "-xerror", *_ffmpeg.source(video.path), *_ffmpeg.source(track.path),
         "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
-        *_media.muxer(extension), _ffmpeg.target(part),
+        *_media._muxer(extension), _ffmpeg.target(part),
     ]
     _ffmpeg.run(cmd, name=video.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
 
@@ -323,8 +97,8 @@ def _join(
     # Clips can be copied only when codecs, size and rate match, so concat joins packets.
     props = {(info.video, info.width, info.height, info.fps, info.audio) for info in infos}
     alike = len(props) == 1
-    holds_v = _media.holds(box.video_holds, first.video)
-    holds_a = _media.holds(box.audio_holds, first.audio)
+    holds_v = _media._holds(box.video_holds, first.video)
+    holds_a = _media._holds(box.audio_holds, first.audio)
     if alike and holds_v and holds_a:
         _concat_copy(infos, part, extension, track)
         return
@@ -355,7 +129,7 @@ def _join(
         video="filtered", audio="filtered" if sound or track else None,
         codec=_default_codec(extension), copy=False, simple=False,
         maps=("[v]", "[a]" if sound else f"{len(infos)}:a:0"))
-    args, _ = _media.output(extension, encoding)
+    args, _ = _media._output(extension, encoding)
     all_infos = [*infos, *([track] if track else [])]
     inputs = [arg for info in all_infos for arg in _ffmpeg.source(info.path)]
     shortest = ["-shortest"] if track else []
@@ -385,7 +159,7 @@ def _concat_copy(infos: list[Info], part: Path, extension: str, track: Info | No
         shortest = ["-shortest"] if track else []
         cmd = [
             "-n", *inputs, *maps, "-c", "copy", *shortest,
-            *_media.muxer(extension), _ffmpeg.target(part),
+            *_media._muxer(extension), _ffmpeg.target(part),
         ]
         _ffmpeg.run(cmd, name=infos[0].path.name, timeout=_ffmpeg.COPY_TIMEOUT)
 

@@ -61,10 +61,10 @@ class CommandTest(unittest.TestCase):
             self.assertIn(module, hidden)
 
     def test_media_private_modules_are_plain_imports_pyinstaller_follows(self):
-        """`_media_image`, `_media_video` and `_media_audio` aren't hidden imports, so `media` must name them in
+        """`_media_video` and `_media_audio` aren't hidden imports, so `media` must name them in
         `import` statements, which PyInstaller's import scan sees, rather than load them by a computed name."""
         source = (Path(shared.__file__).parent / "_media.py").read_text(encoding="utf-8")
-        for module in ("_media_image", "_media_video", "_media_audio"):
+        for module in ("_media_video", "_media_audio"):
             self.assertIn(f"from shared import {module}\n", source)
             self.assertNotIn(f"shared.{module}", values(self.argv(), "--hidden-import"))
 
