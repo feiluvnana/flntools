@@ -22,10 +22,22 @@ from typing import Any, Callable
 import cyclopts
 from cyclopts.exceptions import CycloptsError
 from rich.console import Console
+from rich.theme import Theme
 
 import shared
 
 __all__ = ["App", "Error", "Stopping", "UsageError", "stopping"]
+
+CLI_PALETTE: dict[str, str] = {
+    "cyclopts.name": "#02BF87",
+    "cyclopts.required_marker": "#ED567A bold",
+    "cyclopts.choices": "color(243)",
+    "cyclopts.env_var": "color(243)",
+    "cyclopts.default": "color(243)",
+    "cyclopts.required": "#ED567A",
+    "cyclopts.border": "#7D84D6",
+    "cyclopts.usage": "#7D84D6 bold",
+}
 
 
 class Error(shared.Error):
@@ -82,6 +94,10 @@ class App:
         except KeyboardInterrupt:
             return 130
 
+    def __call__(self, argv: Sequence[str] | None = None) -> int:
+        """Invoke `run(argv)` so `App` works directly as a console script entry point."""
+        return self.run(argv)
+
 
 @contextmanager
 def stopping() -> Iterator[Stopping]:
@@ -109,9 +125,12 @@ def _cyclopts_app(
     name: str, help: str, *, default: Callable[..., Any] | None = None
 ) -> cyclopts.App:
     """Build a configured `cyclopts.App` instance."""
+    theme = Theme(CLI_PALETTE)
     return cyclopts.App(
         name=name or None,
         help=help or None,
+        console=Console(theme=theme),
+        error_console=Console(stderr=True, theme=theme),
         version_flags=["-V", "--version"],
         default_command=default,
         exit_on_error=False,

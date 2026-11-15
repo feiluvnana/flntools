@@ -39,7 +39,7 @@ class TasksTest(unittest.TestCase):
         with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run, \
                 mock.patch.dict(dev.os.environ, {"PYTHON": "3.12"}):
             dev.main(["setup"])
-        self.assertEqual(run.call_args.args[0], ["uv", "sync", "--python", "3.12", "--extra", "archive"])
+        self.assertEqual(run.call_args.args[0], ["uv", "sync", "--python", "3.12"])
 
     def test_check_stops_at_the_first_failure_with_its_exit_code(self):
         # lint passes, type fails with 3, so test never runs and make sees pyright's own code.

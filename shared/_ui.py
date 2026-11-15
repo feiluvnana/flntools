@@ -14,17 +14,16 @@ from typing import IO, Any, Literal
 from rich.console import Console as RichConsole
 from rich.control import strip_control_codes
 from rich.progress import (
-    BarColumn,
     Progress as RichProgress,
-    SpinnerColumn,
+    ProgressColumn,
+    Task,
     TaskID,
-    TaskProgressColumn,
-    TextColumn,
 )
 from rich.theme import Theme
 from rich.text import Text
 
 import shared
+from shared import _clock as clock
 
 __all__ = ["Error", "Group", "Row", "UI", "ui"]
 
@@ -34,11 +33,15 @@ LEVEL_RANKS: dict[str, int] = {
     "debug": 0, "info": 1, "ok": 2, "warn": 3, "error": 4, "quiet": 4,
 }
 PALETTE: dict[str, str] = {
-    "info": "dim",
-    "ok": "green",
+    "info": "color(243)",
+    "ok": "#02BF87",
     "warn": "yellow",
-    "error": "red",
-    "debug": "dim",
+    "error": "#ED567A",
+    "debug": "color(242)",
+    "text": "color(252)",
+    "faint": "color(238)",
+    "accent": "#7D84D6",
+    "size": "color(245)",
 }
 GLYPHS: dict[str, tuple[str, str]] = {
     "info": ("•", "*"),
@@ -52,6 +55,11 @@ GLYPHS: dict[str, tuple[str, str]] = {
 LOG_GLYPHS: dict[str, str] = {
     "info": "info", "ok": "ok", "warn": "warn", "error": "error", "debug": "debug",
 }
+SPIN_FRAMES: tuple[tuple[str, ...], tuple[str, ...]] = (
+    ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
+    ("|", "/", "-", "\\"),
+)
+BAR_CELLS = 20
 _ESCAPE = re.compile(
     r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]"
 )
@@ -186,6 +194,63 @@ class Row:
 
         return _callback
 
+    def _render(self, owner: UI) -> Text:
+        level = "info" if self._outcome is None else self._outcome
+        role = "accent" if level == "info" else level
+        glyph = owner._glyph(LOG_GLYPHS[level])
+        text = Text()
+        text.append(glyph, style=role)
+        text.append(" ")
+        if self._total is None and self._count <= 0:
+            text.append(self.label, style="text")
+            if self._outcome is None:
+                text.append(" " + owner._spinner(), style=role)
+            return text
+        text.append_text(_render_bar(owner, self._count, self._total, level, role))
+        text.append(" " + self.label, style="text")
+        if count_str := _format_count(self._count, self._total, level):
+            text.append(" " + count_str, style="size")
+        return text
+
+
+class _RowColumn(ProgressColumn):
+    """Single Rich progress column rendering a `Row` with the Charm Huh theme."""
+
+    def __init__(self, owner: UI, lookup: Callable[[TaskID], Row | None]) -> None:
+        super().__init__()
+        self._owner = owner
+        self._lookup = lookup
+
+    def render(self, task: Task) -> Text:
+        row = self._lookup(task.id)
+        if row is None:
+            return Text("")
+        return row._render(self._owner)
+
+
+def _render_bar(
+    owner: UI, count: float, total: float | None, level: str, role: str,
+) -> Text:
+    if total is None and level == "info":
+        return Text(owner._spinner().ljust(BAR_CELLS), style=role)
+    ratio = 1.0 if total is None or total <= 0 else min(max(count, 0.0), total) / total
+    filled = round(BAR_CELLS * ratio)
+    full = owner._glyph("bar_full") * filled
+    empty = owner._glyph("bar_empty") * (BAR_CELLS - filled)
+    return Text.assemble((full, role), (empty, "faint"))
+
+
+def _format_count(count: float, total: float | None, level: str) -> str:
+    if level == "ok" and total is not None:
+        return str(int(total) if float(total).is_integer() else total)
+    if total is not None:
+        c = int(count) if float(count).is_integer() else count
+        t = int(total) if float(total).is_integer() else total
+        return f"{c}/{t}"
+    if count > 0:
+        return str(int(count) if float(count).is_integer() else count)
+    return ""
+
 
 class Group:
     """A Rich progress group holding one or more `Row` bars."""
@@ -195,13 +260,11 @@ class Group:
         self.title = title
         self._lock = threading.Lock()
         self._rows: list[Row] = []
+        self._tasks: dict[TaskID, Row] = {}
         self._progress: RichProgress | None = None
         if owner._progress_enabled():
             self._progress = RichProgress(
-                SpinnerColumn(),
-                TextColumn("{task.description}"),
-                BarColumn(bar_width=20),
-                TaskProgressColumn(),
+                _RowColumn(owner, self._tasks.get),
                 console=owner.raw,
                 transient=True,
             )
@@ -215,6 +278,11 @@ class Group:
     def _stop(self) -> None:
         if self._progress is not None:
             self._progress.stop()
+            if self._ui._allows("ok"):
+                for row in self._rows:
+                    level = row._outcome or "ok"
+                    if self._ui._allows(level):
+                        self._ui._console.print(row._render(self._ui))
             return
         for row in self._rows:
             self._ui._log(row._outcome or "info", row.label)
@@ -242,6 +310,7 @@ class Group:
         row = Row(label, total, self)
         with self._lock:
             self._rows.append(row)
+            self._tasks[row._task] = row
         return row
 
 
@@ -266,8 +335,10 @@ class UI:
         base: RichConsole | None = None,
     ) -> RichConsole:
         color_system, no_color, force_terminal = _color_settings(color, base)
+        file = dest if dest is not None else (base.file if base is not None else None)
         return RichConsole(
-            file=dest if dest is not None else (base.file if base is not None else None),
+            file=file,
+            stderr=file is None,
             width=width if width is not None else (base.width if base is not None else None),
             color_system=color_system,
             no_color=no_color,
@@ -283,6 +354,10 @@ class UI:
     def _glyph(self, name: str) -> str:
         unicode, ascii_ = GLYPHS[name]
         return unicode if self._use_unicode() else ascii_
+
+    def _spinner(self) -> str:
+        frames = SPIN_FRAMES[0] if self._use_unicode() else SPIN_FRAMES[1]
+        return frames[int(clock.now() * 10) % len(frames)]
 
     @property
     def raw(self) -> RichConsole:
@@ -320,7 +395,19 @@ class UI:
             return
         mark = self._glyph(LOG_GLYPHS.get(_kind, "info"))
         with self._lock:
-            line = Text.assemble((mark, _kind), (" " + text, ""))
+            if not text or _kind == "debug":
+                line = Text(f"{mark} {text}" if text else mark, style=_kind)
+            elif _kind == "info":
+                head, colon, detail = text.partition(": ")
+                line = Text.assemble(
+                    (mark, "info"), " ", (head, "text"), (colon + detail, "info"),
+                )
+            else:
+                head, colon, detail = text.partition(": ")
+                line = Text.assemble(
+                    (f"{mark} {head}", _kind),
+                    (colon + detail, f"dim {_kind}") if colon else ("", ""),
+                )
             self._console.print(line)
 
     def debug(self, message: str = "", /, *args: Any, **fields: Any) -> None:

@@ -1,10 +1,8 @@
-"""`Engine.sync` and the saved target settings (flnd/targets.py, flnd/repair.py): the plan, the
-records, `Engine.download`'s use of them, repair, the fetch and the summary.
+"""`Engine.sync` and the saved target settings (flnd/targets.py): the plan, the records,
+`Engine.download`'s use of them, the fetch and the summary.
 
 Each test runs on a temporary `.flnd` with test sources on `httpx.MockTransport` (see `EngineCase`),
-and the fake screen. `shared.media.open` is replaced by `test_engine.FakeMedia` wherever a test only
-needs to know what was shrunk. `shrink=False` here is `--shrink off`, as `download` is given it on the
-command line; the default, None, keeps the saved setting.
+and the fake screen. `sync=True` marks the target for `flnd sync`; the default keeps it off.
 """
 
 import datetime
@@ -159,8 +157,8 @@ class SummaryTest(SyncCase):
         self.assertEqual(len(summary), 2, self.lines())
 
 
-class RepairListsToTheEndTest(SyncCase):
-    """fixes #1: a sync that finds a lost or broken file lists that target past the saved-run stop."""
+class SavedRunStopTest(SyncCase):
+    """A sync of a target whose files are all saved lists nothing and requests nothing."""
 
     NAMES = [f"p{number:02}.jpg" for number in range(12)]
 

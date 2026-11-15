@@ -4,10 +4,10 @@
 and secrets, and `log/` with one log per run. Every module takes its path from the table
 below, joined onto flnd's home folder, and never hardcodes paths.
 
-Every temporary file matches `PART_GLOB`, which `flnd sync`'s repair removes.
-`net` streams downloads into temporary parts; `Session.write` writes small files atomically.
+`net` streams downloads into temporary parts matching `PART_GLOB`, which `shared.fs.sweep`
+removes; `shared.fs.write` writes small files atomically.
 
-`checked` provides media validation used by `net` and `sync`.
+`checked` provides media validation used by `net` and the job.
 
     extension = paths.checked(folder / "a.jpg", "image")
     paths.target_folder(Path(".flnd"), target)
@@ -17,7 +17,6 @@ Every temporary file matches `PART_GLOB`, which `flnd sync`'s repair removes.
 from __future__ import annotations
 
 import mimetypes
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,18 +35,11 @@ SOURCE_STATE = METADATA / "sources.db"
 SECRETS = METADATA / "secrets.db"
 KEY = METADATA / "secret.key"
 
-# Temporary files match (`shared.fs`'s part names) and `flnd sync`'s repair deletes them.
+# Temporary files match (`shared.fs`'s part names) and `shared.fs.sweep` removes them.
 PART_GLOB = ".*.part"
-# What a resumable download's part has beside it (`shared.http.download`'s sidecar: its URL,
-# validator, size and ranges), named after the part; and what finds every such sidecar.
-PART_INFO_SUFFIX = ".json"
-PART_INFO_GLOB = ".*.part.json"
-# How long `flnd sync`'s repair keeps a resumable part, in days since it was last written: long
-# enough to resume after a week away, short enough that a file never asked for again goes.
-RESUMABLE_DAYS = 7
-# What `media.sniff` names a server's web page or JSON answer: a login wall or an error page.
+# What `sniff` names a server's web page or JSON answer: a login wall or an error page.
 PAGES = (".html", ".json")
-# The kinds of saved file, in `media.kind`'s words; each gets its extension from its content.
+# The kinds of saved file; each gets its extension from its content.
 IMAGE, VIDEO, AUDIO = "image", "video", "audio"
 # The kind `net.download` takes for a file whose content decides what it is: a post's file named
 # without an extension, because neither its name nor its URL said.
@@ -59,30 +51,10 @@ NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
 SIZE, MTIME = "size", "mtime"
 
 
-def part_info(part: Path) -> Path:
-    """The `.part.json` sidecar a resumable download's part has beside it, if it has one."""
-    return part.with_name(part.name + PART_INFO_SUFFIX)
-
-
-def resumable(part: Path) -> bool:
-    """Whether a leftover part is a recent download with a sidecar to resume."""
-    try:
-        age = time.time() - part.stat().st_mtime
-    except OSError:  # gone already, or unreadable: nothing to resume
-        return False
-    return part_info(part).is_file() and age < RESUMABLE_DAYS * 24 * 3600
-
-
 def stamp(path: Path) -> dict[str, int]:
     """A finished file's size and modified time (ns), as its history row keeps them."""
     found = path.stat()
     return {SIZE: found.st_size, MTIME: found.st_mtime_ns}
-
-
-def unchanged(path: Path, row: dict) -> bool:
-    """Whether a file still has the size and modified time its history row keeps."""
-    found = path.stat()
-    return row.get(SIZE) == found.st_size and row.get(MTIME) == found.st_mtime_ns
 
 
 class NotMediaError(ValueError):

@@ -165,7 +165,10 @@ class InteractiveQuestionaryTest(unittest.TestCase):
     def test_confirm_choose_and_choose_many(self) -> None:
         with mock.patch("questionary.confirm", return_value=_FakeQuestion(False)) as conf:
             self.assertFalse(prompt.confirm("Proceed?", default=False))
-        conf.assert_called_once_with("Proceed?", default=False)
+        conf.assert_called_once()
+        self.assertEqual(conf.call_args.args, ("Proceed?",))
+        self.assertFalse(conf.call_args.kwargs["default"])
+        self.assertEqual(conf.call_args.kwargs["qmark"], "•")
 
         with mock.patch("questionary.select", return_value=_FakeQuestion(2)) as sel:
             self.assertEqual(prompt.choose("Env", {"Dev": 1, "Prod": 2}, default=2), 2)

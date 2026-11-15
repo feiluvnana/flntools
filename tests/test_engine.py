@@ -2,8 +2,7 @@
 
 Its runs, groups, HTTP, clients and logins through `Engine._run` (what `download` and `sync` call
 once per run), then the API itself (redesign B1): `download`, `sync`, `login`, `logout` and
-`Report`, the options read from text, and `--from` refused for a post. The screen is a fake one,
-and `shared.media.open` a `FakeMedia` where only what was compressed matters.
+`Report`, the options read from text, and `--from` refused for a post. The screen is a fake one.
 """
 
 import asyncio
@@ -616,7 +615,7 @@ class ApiTest(EngineCase):
             self.assertTrue(engine.download(["https://www.instagram.com/p/C1abcDEFghi/"]).ok)
         self.assertEqual(runs, [Options()])
 
-    def test_sync_reports_repaired_and_missing(self):
+    def test_sync_downloads_files_deleted_by_hand(self):
         listed = {"a.jpg", "b.jpg", "c.jpg"}
 
         def files(site, context):

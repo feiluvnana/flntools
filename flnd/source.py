@@ -2,7 +2,7 @@
 
 A source is a `Source` subclass defining `code`, `domains`, and `@target` routes.
 Routes return context for `@category` methods, which yield `Post` and `File` objects.
-The engine handles pacing, authentication, rate limits, downloads, compression, and history.
+The engine handles pacing, authentication, rate limits, downloads, and history.
 
 See `tests/example_source.py` for a complete reference implementation.
 """

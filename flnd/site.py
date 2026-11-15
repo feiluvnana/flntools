@@ -55,7 +55,7 @@ class SourceRun:
 
     # The source, as one instance for the whole run.
     source: Source
-    # What the run shares across sources: flnd's folder, the history, targets.db, the compressor.
+    # What the run shares across sources: flnd's folder, the history, targets.db, the stop flag.
     settings: RunShared
     # The login's cookies.
     jar: cookies.Jar

@@ -113,7 +113,7 @@ def sync(
         bool, cyclopts.Parameter(name=["-v", "--verbose"], negative="")
     ] = False,
 ) -> int:
-    """Bring synced targets up to date: repair lost files, fetch new posts, and sum up.
+    """Bring synced targets up to date: fetch new posts and sum up.
 
     Args:
         targets: Only these targets; every synced target when omitted.

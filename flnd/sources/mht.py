@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shlex
-import time
 from pathlib import PurePosixPath
 from typing import Any, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
@@ -12,9 +11,6 @@ from flnd.source import FetchError, File, Post, Site, Source, Target, TargetErro
 from shared import text
 
 API = "https://mimihentai.moe/api/"
-# How long a resolved name keeps its id, so a repeated query skips the site's lookups.
-LOOKUP_TTL = 24 * 3600
-LOOKUP_KEY = "query.lookups"
 
 
 def lookup_genres(site: Site, name: str) -> Iterator[tuple[str, str]]:
@@ -235,52 +231,19 @@ def _resolve_id(site: Site, kind: str, raw: str, lookup: Any) -> str:
     value = unquote(raw).strip()
     if value.isdigit():
         return value
-    key = f"{kind}:{text.fold(value)}"
-    if (cached := _cached_id(site, key)) is not None:
-        return cached
     candidates = [value.replace("-", " "), value] if "-" in value else [value]
     for candidate in candidates:
         found = list(lookup(site, candidate))
         folded = text.fold(candidate)
         matches = [item_id for label, item_id in found if text.fold(label) == folded]
         if matches:
-            _cache_id(site, key, matches[0])
             return matches[0]
         if candidate != value:
             folded_raw = text.fold(value)
             matches = [item_id for label, item_id in found if text.fold(label) == folded_raw]
             if matches:
-                _cache_id(site, key, matches[0])
                 return matches[0]
     raise TargetError(f"mht: no {kind} named {value}")
-
-
-def _cached_id(site: Site, key: str) -> str | None:
-    """The id cached for `key` by a lookup less than a day old, or None."""
-    entries = site.state.get(LOOKUP_KEY)
-    entry = entries.get(key) if isinstance(entries, dict) else None
-    if not isinstance(entry, dict):
-        return None
-    saved_at = entry.get("at")
-    if not isinstance(saved_at, (int, float)) or time.time() - saved_at >= LOOKUP_TTL:
-        return None
-    found = entry.get("id")
-    return found if isinstance(found, str) else None
-
-
-def _cache_id(site: Site, key: str, found: str) -> None:
-    """Cache `found` for `key` for a day, dropping entries that have expired."""
-    now = time.time()
-    entries = site.state.get(LOOKUP_KEY)
-    kept = {
-        name: entry
-        for name, entry in (entries.items() if isinstance(entries, dict) else ())
-        if isinstance(entry, dict)
-        and isinstance(entry.get("at"), (int, float))
-        and now - entry["at"] < LOOKUP_TTL
-    }
-    kept[key] = {"id": found, "at": now}
-    site.state[LOOKUP_KEY] = kept
 
 
 def _parse_query(

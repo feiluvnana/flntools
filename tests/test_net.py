@@ -365,7 +365,7 @@ class DashDownloadTest(NetCase):
         self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
 
     def test_merge_temp_files_are_named_part(self):
-        """Fix 13: every file a DASH download writes before its rename matches what `flnd sync` repair removes."""
+        """Every file a DASH download writes before its rename matches the part names `shared.fs.sweep` removes."""
         real_replace, moved = os.replace, []
 
         def spy(src, dst):

@@ -65,7 +65,7 @@ def sync_enabled(row: Mapping[str, Any]) -> bool:
 def record(
     home: Path, chosen: Sequence[tuple[Target, Options]], *, sync: bool | None = None
 ) -> None:
-    """Save each target's `--shrink` and `--sync` in `targets.db`, keeping progress state."""
+    """Save each target's settings and `--sync` in `targets.db`, keeping progress state."""
     if not chosen:
         return
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")

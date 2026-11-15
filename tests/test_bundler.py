@@ -156,8 +156,6 @@ class RealBuildTest(unittest.TestCase):
                                     timeout=120, cwd=folder)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("total", result.stdout + result.stderr)
-            binaries = list(built.rglob("ffmpeg-*-v*"))
-            self.assertTrue(binaries and os.access(binaries[0], os.X_OK), binaries)
 
     def test_a_built_script_finds_the_lazy_imports(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -179,7 +177,7 @@ class RealBuildTest(unittest.TestCase):
             program = built / ("tiny.exe" if sys.platform == "win32" else "tiny")
             result = subprocess.run([str(program)], capture_output=True, text=True, timeout=120, cwd=folder)
         self.assertEqual(result.returncode, 0, result.stderr)
-        # py7zr is imported by name inside archive, which PyInstaller can't see.
+        # 7z is looked up on PATH, so the bundled module packs and unpacks without a Python package.
         self.assertEqual(result.stdout.split(), ["[2,", "4,", "6]", "hello"])
 
 

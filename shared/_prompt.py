@@ -24,6 +24,19 @@ Validate = Callable[[str], bool | str]
 _autofill_depth: ContextVar[int] = ContextVar("prompt_autofill", default=0)
 
 raw: ModuleType = questionary
+CHARM_STYLE = questionary.Style([
+    ("qmark", "fg:#7D84D6 bold"),
+    ("question", "fg:#D0D0D0 bold"),
+    ("answer", "fg:#02BF87 bold"),
+    ("pointer", "fg:#7D84D6 bold"),
+    ("highlighted", "fg:#7D84D6 bold"),
+    ("selected", "fg:#02BF87"),
+    ("separator", "fg:#767676"),
+    ("instruction", "fg:#767676"),
+    ("text", "fg:#D0D0D0"),
+])
+QMARK = "•"
+POINTER = "❯"
 
 
 class Error(shared.Error):
@@ -41,14 +54,19 @@ def ask(
     if _use_autofill():
         return _require_default(message, default)
     fn = questionary.password if secret else questionary.text
-    return _run(fn(message, default=default or "", validate=_validator(validate)))
+    return _run(fn(
+        message, default=default or "", validate=_validator(validate),
+        qmark=QMARK, style=CHARM_STYLE,
+    ))
 
 
 def confirm(message: str, *, default: bool = True) -> bool:
     """Ask a yes-or-no question and return the boolean answer."""
     if _use_autofill():
         return default
-    return bool(_run(questionary.confirm(message, default=default)))
+    return bool(_run(questionary.confirm(
+        message, default=default, qmark=QMARK, style=CHARM_STYLE,
+    )))
 
 
 @overload
@@ -84,7 +102,10 @@ def choose(
         return _require_default(message, default)
     items = [questionary.Choice(title=str(label), value=value) for label, value in pairs]
     initial = next((item for item in items if item.value == default), None)
-    return _run(questionary.select(message, choices=items, default=initial))
+    return _run(questionary.select(
+        message, choices=items, default=initial,
+        qmark=QMARK, pointer=POINTER, style=CHARM_STYLE,
+    ))
 
 
 def _choose_many(
@@ -102,7 +123,9 @@ def _choose_many(
         questionary.Choice(title=str(label), value=value, checked=value in selected)
         for label, value in pairs
     ]
-    return list(_run(questionary.checkbox(message, choices=items)))
+    return list(_run(questionary.checkbox(
+        message, choices=items, qmark=QMARK, pointer=POINTER, style=CHARM_STYLE,
+    )))
 
 
 @contextmanager

@@ -361,7 +361,8 @@ class ChromeOnlyTest(BrowserCase):
         self.assertEqual(self.playwright.stop.call_count, 2)
 
     def test_without_a_terminal_it_raises_naming_chrome(self):
-        with self.assertRaisesRegex(browser.MissingError, "^flnd needs Google Chrome: install it"):
+        with mock.patch.object(sys.stdin, "isatty", return_value=False), \
+                self.assertRaisesRegex(browser.MissingError, "^flnd needs Google Chrome: install it"):
             browser.open()
         self.assertEqual((self.launched, self.installs), ([], []))
         self.assertNotIn(browser.CHROMIUM_QUESTION, self.dest.getvalue())

@@ -303,9 +303,17 @@ class PrivateImportTest(unittest.TestCase):
         self.assertEqual(private_imports("from shared import browser\nimport shared\n"), [])
 
 
+def _source_files() -> list[str]:
+    return sorted(
+        path.relative_to(dev.ROOT).as_posix()
+        for pkg in dev.PROJECT_PACKAGES
+        for path in (dev.ROOT / pkg).rglob("*.py")
+    )
+
+
 class ReadableTest(unittest.TestCase):
     def test_no_plan_or_history_references_in_code(self):
-        for path in dev.source_files():
+        for path in _source_files():
             with self.subTest(path):
                 self.assertEqual(history_breaches((dev.ROOT / path).read_text(encoding="utf-8")), [])
 
@@ -316,7 +324,7 @@ class ReadableTest(unittest.TestCase):
                 self.assertEqual(flnd_import_aliases(path.read_text(encoding="utf-8")), [])
 
     def test_lines_are_at_most_100_characters(self):
-        for path in dev.source_files():
+        for path in _source_files():
             with self.subTest(path):
                 self.assertEqual(line_length_breaches((dev.ROOT / path).read_text(encoding="utf-8")), [])
 

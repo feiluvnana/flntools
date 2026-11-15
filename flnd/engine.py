@@ -138,7 +138,7 @@ class Engine:
             return self._download_normal(resolved, by_source, sync=sync, stop=stop)
 
     def sync(self, targets: Sequence[Target | str] = ()) -> Report:
-        """Bring synced targets up to date: repair lost files and fetch new posts."""
+        """Bring synced targets up to date: fetch new posts and sum up."""
         resolved = self._resolved(targets)
         chosen = self._plan(resolved)
         if not chosen:

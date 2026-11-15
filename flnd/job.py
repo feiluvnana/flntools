@@ -95,9 +95,6 @@ class TargetReport:
     target: Target
     written: tuple[Path, ...]
     skipped: int
-    repaired: int = 0
-    missing: int = 0
-    settings: str = ""
     error: str | None = None
 
 

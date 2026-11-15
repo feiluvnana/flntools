@@ -1,4 +1,4 @@
-"""flnd/common/paths.py: part names and media validation, on a temp folder; ffmpeg and Pillow are mocked where named."""
+"""flnd/common/paths.py: part names and media validation, on a temp folder."""
 
 import fnmatch
 import io
@@ -26,8 +26,8 @@ class FilesCase(unittest.TestCase):
 
 
 class PartNameTest(FilesCase):
-    def test_fs_part_names_match_what_repair_removes(self):
-        """Fix 13: every temporary file flnd writes comes from `fs.write`, so sync's repair glob must match its parts."""
+    def test_fs_part_names_match_what_sweep_removes(self):
+        """Every temporary file flnd writes comes from `fs.write`, so the sweep's part glob matches its parts."""
         with fs.write(self.tmp / "a.jpg") as part, fs.write(self.tmp / "a.jpg") as other:
             self.assertEqual(part.parent, self.tmp)
             self.assertTrue(fnmatch.fnmatch(part.name, paths.PART_GLOB), part.name)

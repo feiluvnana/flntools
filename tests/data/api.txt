@@ -72,11 +72,8 @@ flnd.TargetInfo.seen: field -> int
 flnd.TargetInfo.size: field -> int
 flnd.TargetInfo.sync: field -> bool
 flnd.TargetInfo.target: field -> Target
-flnd.TargetReport(target: Target, written: tuple[Path, ...], skipped: int, repaired: int = 0, missing: int = 0, settings: str = '', error: str | None = None)
+flnd.TargetReport(target: Target, written: tuple[Path, ...], skipped: int, error: str | None = None)
 flnd.TargetReport.error: field -> str | None
-flnd.TargetReport.missing: field -> int
-flnd.TargetReport.repaired: field -> int
-flnd.TargetReport.settings: field -> str
 flnd.TargetReport.skipped: field -> int
 flnd.TargetReport.target: field -> Target
 flnd.TargetReport.written: field -> tuple[Path, ...]

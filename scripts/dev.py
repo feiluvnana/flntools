@@ -57,10 +57,9 @@ WRITE_API = "import sys; sys.path.insert(0, 'scripts'); import dev; dev.write_ap
 def setup(python: str, args: list[str]) -> None:
     """Create or update `.venv` from `uv.lock`, with the dev group; downloads no browser.
 
-    `--extra archive` keeps pyzipper and py7zr installed for the archive tests, also once flnd's own
-    dependencies drop them. A second run checks the lock and installs nothing, well under a second.
+    A second run checks the lock and installs nothing, well under a second.
     """
-    run(["uv", "sync", "--python", python, "--extra", "archive", *args])
+    run(["uv", "sync", "--python", python, *args])
 
 
 def test(python: str, args: list[str]) -> None:
@@ -446,17 +445,6 @@ def run(command: list[str], *, capture_output: bool = False) -> subprocess.Compl
     Always a list of arguments, never a shell string, so quoting can't differ between sh and cmd.exe.
     """
     return subprocess.run(command, cwd=ROOT, check=True, capture_output=capture_output, text=True)
-
-
-# Files whose docstrings are still being brought up to plan/phase-6/comments.md's standard. A file leaves the
-# list when it meets the standard (lint fails while it stays), and none joins it; empty, lint is always strict.
-def source_files() -> list[str]:
-    """The `.py` files of `flnd/` and `shared/` as sorted relative paths."""
-    return sorted(
-        p.relative_to(ROOT).as_posix()
-        for folder in ("flnd", "shared")
-        for p in (ROOT / folder).rglob("*.py")
-    )
 
 
 TASKS: dict[str, Callable[[str, list[str]], None]] = {
