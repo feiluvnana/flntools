@@ -23,7 +23,7 @@
   "flnd/sources/common/relay.py": "593247e68ed49d7336813259ae0bd7024d41b26367e46e6f459730f3ede222a1",
   "flnd/sources/fbk.py": "a18397e3848e4a6af8764c7a582a4cb01676bcd3f17352e00d1e174fbc91dbda",
   "flnd/sources/ins.py": "c45edee5837b01f804a76b0c2f68a575dcc74eb8cc1e27520906c74811df222f",
-  "flnd/sources/loi.py": "d10cc02e297bdfea17be9b45a457fbfa6b27700b71704524769748c6e29dcfd1",
+  "flnd/sources/loi.py": "bee26aae039f5895de7359c7e948473bff005c38b4bf1a1844f1aef8ec5c2ad0",
   "flnd/sources/mht.py": "c7ef9e460492756c4471ab430a701c486b3d23f1936c9ef0f581c07fd2f4fe22",
   "flnd/sources/tik.py": "790fa3695704732a617fb14d73c740f93879a558013fd0e027e4ea4ddf74d58b",
   "flnd/sources/tlg.py": "5c0c67f9ebabcc3541340414f595894b6ac6cb787216edeef74a6b976429fea3",
