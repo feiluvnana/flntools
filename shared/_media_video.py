@@ -29,7 +29,8 @@ __all__ = ["frames", "merge", "trim"]
 
 
 def trim(
-    info: Info, part: Path, extension: str, *, start: float, end: float | None, exact: bool
+    info: Info, part: Path, extension: str, *, start: float, end: float | None, exact: bool,
+    progress: Progress | None = None,
 ) -> None:
     """Write the part of `info`'s file from `start` to `end` seconds to `part` as `extension`.
 
@@ -51,7 +52,7 @@ def trim(
         return
     # `-ss` seeks to keyframe at or before `start`; a re-encode drops frames before it.
     window = ["-ss", f"{start:g}", *(["-t", f"{end - start:g}"] if end is not None else [])]
-    encoding = _media.Encoding(
+    encoding = _media._Output(
         video=info.video, audio=info.audio, speed="slow",
         codec=_default_codec(extension) if exact and info.video else None,
         created=info.tags.get("creation_time"))
@@ -61,7 +62,7 @@ def trim(
         _ffmpeg.run(command, name=info.path.name, timeout=_ffmpeg.COPY_TIMEOUT)
     else:
         dur = (end or info.duration or 0) - start
-        _ffmpeg.encode(command, name=info.path.name, duration=dur, progress=None)
+        _ffmpeg.encode(command, name=info.path.name, duration=dur, progress=progress)
 
 
 def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequence[float] | None,
@@ -96,7 +97,7 @@ def frames(info: Info, stem: str, folder: Path, *, every: float | None, at: Sequ
         raise ValueError(f"media can't write frames as {format!r}")
     duration = info.duration or 0.0
     # With `count`, each frame sits in middle of one of `count` equal slices.
-    times = sorted(at) if at is not None else (
+    times = sorted(set(at)) if at is not None else (
         [(index + 0.5) * duration / count for index in range(count)] if count else None)
     if times and (times[0] < 0 or times[-1] > duration):
         raise ValueError(f"at= must be within 0 and {duration:.3f} s")
@@ -158,14 +159,45 @@ def _pictures(info: Info, times: list[float] | None, every: float | None, rate: 
         for index, picture in enumerate(_media.decoded(info, graph, width, height)):
             yield index * step, picture
         return
-    # Each time picks frame shown then; frames decoded once with ffmpeg's select filter.
-    # The 1e-6 nudge lands a time that float error leaves just under a frame boundary on that frame.
-    wanted = sorted({math.floor(t * rate + 1e-6) for t in times})
-    picked = dict(zip(wanted, _media.decoded(
-        info, f"fps={rate:g},select='{'+'.join(f'eq(n,{n})' for n in wanted)}'", width, height)))
-    for seconds in times:
-        if (picture := picked.get(math.floor(seconds * rate + 1e-6))) is not None:
-            yield seconds, picture
+    yield from _seek_frames(info, times)
+
+
+def _seek_frames(info: Info, times: list[float]) -> Any:
+    """Seek to each timestamp in `times` via PyAV and yield `(seconds, RGB image)`."""
+    import av
+    from av.error import FFmpegError
+    from av.stream import Disposition
+
+    Image = _pillow.load()
+    rot_map = {
+        90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180,
+        270: Image.Transpose.ROTATE_90,
+    }
+    options = {"protocol_whitelist": "file", "format_whitelist": _ffmpeg.READERS}
+    try:
+        with av.open(_ffmpeg.target(info.path), options=options) as container:
+            videos = [
+                s for s in container.streams.video
+                if not (s.disposition & Disposition.attached_pic)
+            ]
+            stream = videos[0]
+            transpose = rot_map.get(round(_ffmpeg.stream_rotation(stream)) % 360)
+            for seconds in times:
+                container.seek(int(seconds * av.time_base), any_frame=False, backward=True)
+                chosen = None
+                for frame in container.decode(stream):
+                    chosen = frame
+                    if frame.time is not None and frame.time >= seconds - 1e-4:
+                        break
+                if chosen is not None:
+                    img = chosen.to_image()
+                    if transpose is not None:
+                        img = img.transpose(transpose)
+                    if info.width and info.height and img.size != (info.width, info.height):
+                        img = img.resize((info.width, info.height), Image.Resampling.LANCZOS)
+                    yield seconds, img
+    except FFmpegError as error:
+        raise _media.BrokenError(f"{info.path.name}: {error}") from None
 
 
 def _steps(duration: float, every: float) -> list[float]:
@@ -202,22 +234,21 @@ def _save_frames(
             final = name(seconds)
             _pillow.save(picture, work / final.name, _media.STILLS[extension], quality=quality)
             saved.append((work / final.name, final))
-        # Checked just before moves: a file may have appeared while frames were decoded.
+        if taken := [final for _, final in saved if final.exists()]:
+            raise FileExistsError(f"{taken[0]} already exists")
         for part, final in saved:
-            if final.exists():
-                raise FileExistsError(f"{final} already exists")
             os.replace(part, final)
         return [final for _, final in saved]
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *, fps: float | None,
+def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *,
           duration: float | None, progress: Progress | None) -> None:
     """Combine photos or clips into moving picture at `part`, as `extension`, with sound.
 
     `Media.merge` has checked the kinds and the arguments. Photos are letterboxed to the first
-    one's size and shown `duration` seconds each (default 1.0), or played at `fps`. Clips sharing
+    one's size and shown `duration` seconds each (default 1.0). Clips sharing
     codecs, size and frame rate are copied; others are encoded to the first clip's size. One clip
     with a track is DASH: both streams copied as they are. The inputs are never changed.
 
@@ -226,20 +257,19 @@ def merge(infos: list[Info], part: Path, extension: str, track: Info | None, *, 
         part: the temporary file to write; the caller renames it into place.
         extension: the format to write: a video container, or an animated ".gif", ".webp" or ".png".
         track: the probe of a soundtrack to add, or None for no added sound.
-        fps: the rate photos play at, one per frame; None when `duration` is used instead.
-        duration: seconds each photo shows; None for 1.0 seconds, or when `fps` is used.
+        duration: seconds each photo shows; None for 1.0 seconds.
         progress: `progress(done, total)` in seconds, called while an encode runs; None for none.
     """
     animation = extension in _media.STILLS
     kinds = {info.kind for info in infos}
     if kinds == {"image"}:
-        _slideshow(infos, part, extension, fps or 1 / (duration or 1.0), track, progress)
+        _slideshow(infos, part, extension, 1 / (duration or 1.0), track, progress)
     elif animation:
         # The clips are joined into one file first, beside `part`, then turned into the animation.
         with tempfile.TemporaryDirectory(dir=part.parent) as folder:
             joined = Path(folder) / "joined.mkv"
             _join(infos, joined, ".mkv", None, progress)
-            _media.transcode(_media._probe(joined), part, extension, quality=90, fps=fps)
+            _media.transcode(_media._probe(joined), part, extension, quality=90)
     elif len(infos) == 1 and track is not None:
         _dash(infos[0], track, part, extension)
     else:
@@ -263,13 +293,13 @@ def _slideshow(infos: list[Info], part: Path, extension: str, rate: float, track
         _pillow.save_animation(list(pictures), [round(1000 / rate)] * len(infos), part,
                                _media.ANIMATIONS[extension], quality=90)
         return
-    encoding = _media.Encoding(video="rawvideo", audio=track.audio if track else None,
-                               codec=_default_codec(extension), maps=("0:v:0", "1:a:0"))
+    encoding = _media._Output(video="rawvideo", audio=track.audio if track else None,
+                              codec=_default_codec(extension), maps=("0:v:0", "1:a:0"))
     args, _ = _media.output(extension, encoding)
     track_in = _ffmpeg.source(track.path) if track else []
     inputs = [*_media.raw_input(width, height, rate), *track_in]
     _ffmpeg.encode(["-n", *inputs, *args, *(["-shortest"] if track else []), _ffmpeg.target(part)],
-                   name=part.name, duration=len(infos) / rate, progress=progress,
+                   name=infos[0].path.name, duration=len(infos) / rate, progress=progress,
                    feed=(picture.tobytes() for picture in pictures))
 
 
@@ -321,7 +351,7 @@ def _join(
                 graph.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={dur:g}[a{index}]")
     pads = "".join(f"[v{index}]" + (f"[a{index}]" if sound else "") for index in range(len(infos)))
     graph.append(f"{pads}concat=n={len(infos)}:v=1:a={int(sound)}[v]" + ("[a]" if sound else ""))
-    encoding = _media.Encoding(
+    encoding = _media._Output(
         video="filtered", audio="filtered" if sound or track else None,
         codec=_default_codec(extension), copy=False, simple=False,
         maps=("[v]", "[a]" if sound else f"{len(infos)}:a:0"))
@@ -334,7 +364,7 @@ def _join(
         *shortest, _ffmpeg.target(part),
     ]
     tot_dur = sum(info.duration or 0 for info in infos)
-    _ffmpeg.encode(cmd, name=part.name, duration=tot_dur, progress=progress)
+    _ffmpeg.encode(cmd, name=infos[0].path.name, duration=tot_dur, progress=progress)
 
 
 def _concat_copy(infos: list[Info], part: Path, extension: str, track: Info | None) -> None:
@@ -357,7 +387,7 @@ def _concat_copy(infos: list[Info], part: Path, extension: str, track: Info | No
             "-n", *inputs, *maps, "-c", "copy", *shortest,
             *_media.muxer(extension), _ffmpeg.target(part),
         ]
-        _ffmpeg.run(cmd, name=part.name, timeout=_ffmpeg.COPY_TIMEOUT)
+        _ffmpeg.run(cmd, name=infos[0].path.name, timeout=_ffmpeg.COPY_TIMEOUT)
 
 
 def _default_codec(extension: str) -> str:

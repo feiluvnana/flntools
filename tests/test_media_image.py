@@ -14,8 +14,8 @@ class ResizeTest(unittest.TestCase):
         self.folder = Path(tempfile.mkdtemp(dir=FOLDER))
 
     def size(self, path: Path) -> tuple:
-        photo = media.open(path)
-        return photo.width, photo.height
+        info = media.open(path).info
+        return info.width, info.height
 
     def test_width(self):
         out = media.open(sample("big.jpg")).resize(width=1200).save(self.folder / "a.jpg")
@@ -24,7 +24,7 @@ class ResizeTest(unittest.TestCase):
     def test_box_fits_inside(self):
         out = media.open(sample("big.jpg")).resize(width=800, height=800).convert("webp").save(self.folder / "a.webp")
         self.assertEqual(self.size(out), (800, 600))
-        self.assertEqual(media.open(out).format, "webp")
+        self.assertEqual(media.open(out).info.format, "webp")
 
     def test_scales_up(self):
         out = media.open(sample("small.png")).resize(height=200).save(self.folder / "a.png")
@@ -42,7 +42,7 @@ class ResizeTest(unittest.TestCase):
 
     def test_metadata_kept(self):
         kept = media.open(sample("exif.jpg")).resize(width=20).save(self.folder / "kept.jpg")
-        self.assertEqual(media.open(kept).tags["Model"], "Pixel 99")
+        self.assertEqual(media.open(kept).info.tags["Model"], "Pixel 99")
 
     def test_animated_is_a_kind_error(self):
         with self.assertRaisesRegex(media.KindError, "resize is for still photos; anim.webp is an animation"):
@@ -76,7 +76,7 @@ class CropTest(unittest.TestCase):
     def test_in_place(self):
         path = fresh("small.png")
         media.open(path).crop((0, 0, 10, 10)).save()
-        self.assertEqual(media.open(path).width, 10)
+        self.assertEqual(media.open(path).info.width, 10)
 
 
 if __name__ == "__main__":

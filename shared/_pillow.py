@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import io
+import re
 import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,7 +50,7 @@ def load() -> Any:
     try:
         from PIL import Image
     except ImportError:
-        raise ImportError(
+        raise _media.MissingError(
             "shared.media needs Pillow for photos: pip install 'flntools[media]'"
         ) from None
     try:
@@ -120,12 +121,16 @@ def probe(path: Path, image: Image.Image) -> _media.Info:
     # EXIF orientations 5 to 8 turn quarter turn; displayed width and height swap.
     if exif.get(ORIENTATION) in (5, 6, 7, 8):
         width, height = height, width
-    animated = bool(getattr(image, "is_animated", False))
-    frames = getattr(image, "n_frames", 1)
-    duration = sum(delay for _, delay in durations(image)) / 1000 if animated else None
     name = (image.format or "").lower()
+    is_mpo = name == "mpo"
+    animated = False if is_mpo else bool(getattr(image, "is_animated", False))
+    frames = 1 if is_mpo else getattr(image, "n_frames", 1)
+    delays = _scan_delays(path, name) if animated else None
+    if animated and delays is None:
+        delays = [delay for _, delay in durations(image)]
+    duration = sum(delays) / 1000 if delays else None
     return _media.Info(
-        path=path, kind="image", animated=animated, format="jpeg" if name == "mpo" else name,
+        path=path, kind="image", animated=animated, format="jpeg" if is_mpo else name,
         size=path.stat().st_size, width=width, height=height, duration=duration, frames=frames,
         fps=frames / duration if animated and duration else None,
         created=_created(exif), location=_location(exif),
@@ -162,11 +167,14 @@ def _created(exif: Image.Exif) -> datetime | None:
         moment = datetime.strptime(str(text).strip("\0 "), "%Y:%m:%d %H:%M:%S")
     except ValueError:
         return None
-    # The zone is "+HH:MM" or "-HH:MM"; a shorter or missing one leaves the time naive.
-    if offset and len(str(offset)) >= 6:
-        sign = -1 if str(offset)[0] == "-" else 1
-        hours, minutes = int(str(offset)[1:3]), int(str(offset)[4:6])
-        moment = moment.replace(tzinfo=timezone(sign * timedelta(hours=hours, minutes=minutes)))
+    # The zone is "+HH:MM" or "-HH:MM"; a blank or malformed one leaves the time naive.
+    if offset and (match := re.fullmatch(r"([+-])(\d{2}):(\d{2})", str(offset).strip("\0 "))):
+        sign = -1 if match[1] == "-" else 1
+        hours, minutes = int(match[2]), int(match[3])
+        if hours < 24 and minutes < 60:
+            moment = moment.replace(
+                tzinfo=timezone(sign * timedelta(hours=hours, minutes=minutes))
+            )
     return moment
 
 
@@ -258,7 +266,10 @@ def upright(image: Image.Image, *, keep: bool) -> Image.Image:
     turned.info = {key: info[key] for key in ("transparency", "background") if key in info}
     icc = info.get("icc_profile")
     if keep:
-        turned.info.update({key: info[key] for key in ("xmp", "comment") if key in info})
+        if "comment" in info:
+            turned.info["comment"] = info["comment"]
+        if "xmp" in info:
+            turned.info["xmp"] = _strip_xmp_orientation(info["xmp"])
         # Turned copy's EXIF is written back with orientation already applied.
         if exif := turned.getexif():
             turned.info["exif"] = exif.tobytes()
@@ -266,6 +277,69 @@ def upright(image: Image.Image, *, keep: bool) -> Image.Image:
         # A Display P3 photo looks wrong without its profile; sRGB is what a viewer assumes anyway.
         turned.info["icc_profile"] = icc
     return turned
+
+
+def _strip_xmp_orientation(xmp: bytes) -> bytes:
+    """Remove tiff:Orientation from XMP bytes after pixels have been turned upright."""
+    xmp = re.sub(rb'\s*tiff:Orientation=["\']\d+["\']', b"", xmp)
+    return re.sub(rb"<tiff:Orientation>\d+</tiff:Orientation>", b"", xmp)
+
+
+def _scan_delays(path: Path, fmt: str) -> list[int] | None:
+    """Fast binary scan of GIF or WebP animation frame delays in milliseconds."""
+    if fmt not in ("gif", "webp"):
+        return None
+    data = path.read_bytes()
+    return _gif_delays(data) if fmt == "gif" else _webp_delays(data)
+
+
+def _gif_delays(data: bytes) -> list[int] | None:
+    """Frame delays in ms from GIF Graphic Control Extensions, or None if malformed."""
+    if len(data) < 13 or data[:6] not in (b"GIF87a", b"GIF89a"):
+        return None
+    pos = 13 + (3 << ((data[10] & 0x07) + 1) if data[10] & 0x80 else 0)
+    delays: list[int] = []
+    pending: int | None = None
+    while pos < len(data):
+        block = data[pos]
+        if block == 0x3B:
+            return delays or None
+        if block == 0x21 and pos + 1 < len(data):
+            if data[pos + 1] == 0xF9 and pos + 6 < len(data) and data[pos + 2] == 4:
+                pending = int.from_bytes(data[pos + 4:pos + 6], "little") * 10
+            pos = _skip_gif_subblocks(data, pos + 2 if data[pos + 1] == 0xF9 else pos + 2)
+        elif block == 0x2C and pos + 10 <= len(data):
+            delays.append(pending or 100)
+            pending = None
+            lct = 3 << ((data[pos + 9] & 0x07) + 1) if data[pos + 9] & 0x80 else 0
+            pos = _skip_gif_subblocks(data, pos + 10 + lct + 1)
+        else:
+            return None
+    return delays or None
+
+
+def _skip_gif_subblocks(data: bytes, pos: int) -> int:
+    while pos < len(data):
+        size = data[pos]
+        pos += 1 + size
+        if size == 0:
+            return pos
+    return len(data)
+
+
+def _webp_delays(data: bytes) -> list[int] | None:
+    """Frame delays in ms from WebP ANMF chunk headers, or None if malformed."""
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return None
+    pos, delays = 12, []
+    while pos + 8 <= len(data):
+        fourcc = data[pos:pos + 4]
+        size = int.from_bytes(data[pos + 4:pos + 8], "little")
+        payload = pos + 8
+        if fourcc == b"ANMF" and payload + 16 <= len(data):
+            delays.append(int.from_bytes(data[payload + 12:payload + 15], "little") or 100)
+        pos = payload + size + (size & 1)
+    return delays or None
 
 
 def _is_srgb(icc: bytes) -> bool:
@@ -361,26 +435,51 @@ def save_animation(
 def _writable(image: Image.Image, format: str) -> Image.Image:
     """`image` in a mode `format` holds: flattened onto white if no alpha, else converted."""
     Image = load()
+    if image.mode.startswith("I"):
+        scaled = image.point(lambda p: p / 256).convert("L")
+        scaled.info = dict(image.info)
+        image = scaled
     alpha = image.mode in ("RGBA", "LA", "PA") or (
         image.mode == "P" and "transparency" in image.info
     )
     if format in NO_ALPHA and alpha:
-        # Formats without transparency get it flattened onto white, as a viewer shows it.
         rgba = image.convert("RGBA")
         flat = Image.new("RGB", image.size, "white")
         flat.paste(rgba, mask=rgba.getchannel("A"))
         flat.info = image.info
         return flat
-    if format in NO_ALPHA:
-        keeps = ("RGB", "L")
-    elif format in ("PNG", "GIF"):
-        keeps = ("RGB", "RGBA", "L", "LA", "P")
-    else:
-        keeps = ("RGB", "RGBA", "L")
+    if format in ("JPEG", "TIFF") and image.mode == "CMYK":
+        return image
+    if image.mode == "CMYK":
+        return _cmyk_to_srgb(image)
+    keeps = {
+        "JPEG": ("RGB", "L"), "BMP": ("RGB", "L"), "PPM": ("RGB", "L"),
+        "PNG": ("RGB", "RGBA", "L", "LA", "P"), "GIF": ("RGB", "RGBA", "L", "LA", "P"),
+    }.get(format, ("RGB", "RGBA", "L"))
     if image.mode in keeps:
         return image
     converted = image.convert("RGBA" if alpha else "RGB")
     converted.info = image.info
+    return converted
+
+
+def _cmyk_to_srgb(image: Image.Image) -> Image.Image:
+    """Convert CMYK image to sRGB and drop its CMYK ICC profile."""
+    info = {k: v for k, v in image.info.items() if k != "icc_profile"}
+    if icc := image.info.get("icc_profile"):
+        try:
+            from PIL import ImageCms
+
+            src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+            dst = ImageCms.createProfile("sRGB")
+            converted = ImageCms.profileToProfile(image, src, dst, outputMode="RGB")
+            if converted is not None:
+                converted.info = info
+                return converted
+        except (ImportError, OSError, ValueError):
+            pass
+    converted = image.convert("RGB")
+    converted.info = info
     return converted
 
 
@@ -420,7 +519,8 @@ def check(path: Path) -> None:
     if image is None:
         raise _media.BrokenError(f"{path.name}: not a photo")
     try:
-        for index in range(getattr(image, "n_frames", 1)):
+        count = 1 if image.format == "MPO" else getattr(image, "n_frames", 1)
+        for index in range(count):
             image.seek(index)
             image.load()
     except (OSError, SyntaxError, ValueError, EOFError) as error:

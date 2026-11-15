@@ -14,14 +14,16 @@ and returns stderr, `encode` reports progress, and `frames_out` yields raw frame
 from __future__ import annotations
 
 import functools
+import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import IO, Any
 
@@ -30,7 +32,8 @@ from shared import _media
 # Private: what `media`'s files call.
 __all__ = [
     "encode", "encoders", "exe", "failure", "ffmetadata", "found", "frames_out",
-    "need", "parse_version", "passthrough", "probe", "run", "source", "summary", "target",
+    "need", "parse_version", "passthrough", "probe", "run", "source", "stream_rotation",
+    "summary", "target",
 ]
 
 # Readers that never open file or URL. hls, dash, concat, image2, *_pipe readers left out.
@@ -173,13 +176,17 @@ def encode(
     """
     # `-progress pipe:1` sends key=value lines to stdout; the output is then the last argument.
     cmd = [*args[:-1], "-progress", "pipe:1", "-nostats", args[-1]]
+    last_us = 0
     with _started(cmd, name=name, feed=feed) as (out, kick):
         for line in out:
-            kick()
-            # out_time_us is in microseconds of output written, so /1e6 gives seconds.
-            if line.startswith(b"out_time_us=") and line[12:].strip().isdigit() and progress:
-                done = int(line[12:]) / 1e6
-                progress(min(done, duration) if duration else done, duration)
+            if line.startswith(b"out_time_us=") and (raw := line[12:].strip()).isdigit():
+                us = int(raw)
+                if us > last_us:
+                    last_us = us
+                    kick()
+                if progress:
+                    done = us / 1e6
+                    progress(min(done, duration) if duration else done, duration)
 
 
 def frames_out(
@@ -225,19 +232,25 @@ def _started(
             cmd, env=_env(), stdout=subprocess.PIPE, stdin=stdin_mode, stderr=errors) as process:
         stalled = threading.Event()
         quiet = threading.Event()
+        feed_error: list[BaseException] = []
         threading.Thread(target=_watch, args=(process, quiet, stalled), daemon=True).start()
-        if feed is not None:
-            threading.Thread(target=_feed, args=(process, feed), daemon=True).start()
+        feeder = (threading.Thread(target=_feed, args=(process, feed, feed_error), daemon=True)
+                  if feed is not None else None)
+        if feeder is not None:
+            feeder.start()
         try:
             assert process.stdout is not None
             yield process.stdout, quiet.set
             process.wait()
         finally:
-            # Any exception, Ctrl-C included, kills ffmpeg before it is passed on.
             if process.poll() is None:
                 process.kill()
                 process.wait()
             quiet.set()
+            if feeder is not None:
+                feeder.join(timeout=1.0)
+        if feed_error:
+            raise feed_error[0]
         if stalled.is_set():
             raise _media.StalledError(f"{name}: ffmpeg made no progress for {STALL:.0f} s")
         if process.returncode:
@@ -258,16 +271,24 @@ def _watch(process: subprocess.Popen, quiet: threading.Event, stalled: threading
         quiet.clear()
 
 
-def _feed(process: subprocess.Popen, chunks: Iterable[bytes]) -> None:
+def _feed(
+    process: subprocess.Popen, chunks: Iterable[bytes], errors: list[BaseException]
+) -> None:
     """Write `chunks` to `process`'s stdin, then close it; runs on its own thread."""
     assert process.stdin is not None
     try:
         for chunk in chunks:
             process.stdin.write(chunk)
-        process.stdin.close()
     except (BrokenPipeError, OSError, ValueError):
         # ffmpeg stopped reading or was killed; its exit status is the error to report.
         pass
+    except BaseException as error:
+        errors.append(error)
+        if process.poll() is None:
+            process.kill()
+    finally:
+        with suppress(OSError, ValueError):
+            process.stdin.close()
 
 
 def failure(name: str, stderr: str) -> Exception:
@@ -290,7 +311,7 @@ def failure(name: str, stderr: str) -> Exception:
         return _media.UnsafeError(f"{name}: refused by the input rules ({first})")
     # These messages come from the muxer, and the code shows its last line rather than the first.
     if "supported in container" in stderr or "Could not write header" in stderr:
-        return RuntimeError(f"{name}: {lines[-1]}")
+        return _media.BrokenError(f"{name}: {lines[-1]}")
     return _media.BrokenError(f"{name}: {first}")
 
 
@@ -302,47 +323,84 @@ def _env() -> dict[str, str]:
 
 
 def probe(path: Path, *, format: str | None) -> _media.Info:
-    """Info for a video or audio file from one ffmpeg run: the stream summary and ffmetadata.
+    """Info for a video or audio file via PyAV without spawning a subprocess."""
+    import av
+    from av.error import FFmpegError
+    from av.stream import Disposition
 
-    Args:
-        path: the file to read, passed to ffmpeg as a whitelisted `file:` input.
-        format: the format to report, given without its dot, such as "mp4"; None reports
-            ffmpeg's own reader name instead.
-
-    Returns:
-        The file's `Info`, with the video or audio fields that ffmpeg's summary named.
-
-    Raises:
-        StalledError: ffmpeg took longer than `PROBE_TIMEOUT` to open the file.
-        UnsafeError, RuntimeError, BrokenError: ffmpeg refused or failed to read it, or it has no
-            video or audio stream.
-    """
-    # bitexact keeps ffmpeg from adding its own `encoder` tag to the metadata it prints.
-    command = [
-        exe(), "-hide_banner", "-nostdin", "-v", "info", *source(path),
-        "-fflags", "+bitexact", "-f", "ffmetadata", "pipe:1",
-    ]
+    options = {"protocol_whitelist": "file", "format_whitelist": READERS}
     try:
-        done = subprocess.run(command, capture_output=True, timeout=PROBE_TIMEOUT, env=_env())
-    except subprocess.TimeoutExpired:
-        raise _media.StalledError(f"{path.name}: ffmpeg took longer than {PROBE_TIMEOUT:.0f} s "
-                                  "to open it") from None
-    stderr = done.stderr.decode("utf-8", "replace")
-    if done.returncode:
-        raise failure(path.name, stderr)
-    fields = summary(stderr)
-    if fields["video"] is None and fields["audio"] is None:
-        raise _media.BrokenError(f"{path.name}: no video or audio stream")
-    tags = ffmetadata(done.stdout.decode("utf-8", "replace"))
-    created = fields.pop("created")
-    if created:
-        tags["creation_time"] = created
-    return _media.Info(
-        path=path, kind="video" if fields["video"] else "audio", animated=False,
-        format=format or fields.pop("reader"), size=path.stat().st_size, frames=None,
-        created=_media.parse_time(created), location=_media.parse_iso6709(
-            tags.get("location") or tags.get("com.apple.quicktime.location.ISO6709")),
-        tags=tags, **{key: value for key, value in fields.items() if key != "reader"})
+        with av.open(target(path), options=options) as container:
+            videos = [
+                s for s in container.streams.video
+                if not (s.disposition & Disposition.attached_pic)
+            ]
+            audios = list(container.streams.audio)
+            v, a = videos[0] if videos else None, audios[0] if audios else None
+            if v is None and a is None:
+                raise _media.BrokenError(f"{path.name}: no video or audio stream")
+            tags = {str(k): str(val) for k, val in container.metadata.items()}
+            created = tags.get("creation_time")
+            duration = (
+                container.duration / av.time_base
+                if container.duration and container.duration > 0 else None
+            )
+            bitrate = (
+                container.bit_rate if container.bit_rate and container.bit_rate > 0 else None
+            )
+            width, height = _display_size(v) if v else (None, None)
+            fps = (
+                float(v.average_rate) if v and v.average_rate
+                else (float(v.guessed_rate) if v and v.guessed_rate else None)
+            )
+            return _media.Info(
+                path=path, kind="video" if v else "audio", animated=False,
+                format=format or container.format.name.split(",")[0],
+                size=path.stat().st_size, frames=None, duration=duration, bitrate=bitrate,
+                video=_codec_name(v) if v else None, width=width, height=height, fps=fps,
+                audio=_codec_name(a) if a else None,
+                sample_rate=a.sample_rate if a and a.sample_rate else None,
+                channels=a.channels if a and a.channels else None,
+                created=_media.parse_time(created),
+                location=_media.parse_iso6709(
+                    tags.get("location") or tags.get("com.apple.quicktime.location.ISO6709")
+                ),
+                tags=tags,
+            )
+    except FFmpegError as error:
+        raise _media.BrokenError(f"{path.name}: {error}") from None
+
+
+def _codec_name(stream: Any) -> str | None:
+    """Canonical codec name for a PyAV stream (e.g. 'mp3' rather than 'mp3float')."""
+    codec = stream.codec_context.codec
+    return codec.canonical_name if codec else stream.codec_context.name
+
+
+def stream_rotation(stream: Any) -> float:
+    """Rotation in degrees from a video stream's display matrix or metadata."""
+    matrix = stream.codec_context.coded_side_data.get("display_matrix")
+    if matrix is not None and len(bytes(matrix)) >= 36:
+        m = struct.unpack("9i", bytes(matrix)[:36])
+        s0 = math.hypot(m[0] / 65536, m[3] / 65536)
+        s1 = math.hypot(m[1] / 65536, m[4] / 65536)
+        if s0 > 0 and s1 > 0:
+            return -math.degrees(math.atan2((m[1] / 65536) / s1, (m[0] / 65536) / s0))
+    rotate = stream.metadata.get("rotate")
+    return float(rotate) if rotate else 0.0
+
+
+def _display_size(stream: Any) -> tuple[int | None, int | None]:
+    """Displayed (width, height) after SAR scaling and rotation."""
+    width, height = stream.width, stream.height
+    if not width or not height:
+        return None, None
+    sar = stream.sample_aspect_ratio
+    if sar and sar.numerator > 0 and sar.denominator > 0 and sar.numerator != sar.denominator:
+        width = round(width * sar.numerator / sar.denominator)
+    if round(abs(stream_rotation(stream))) % 180 == 90:
+        width, height = height, width
+    return width, height
 
 
 def summary(stderr: str) -> dict[str, Any]:

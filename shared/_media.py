@@ -38,8 +38,11 @@ if TYPE_CHECKING:
 
     from typing_extensions import Self
 
-__all__ = ["BrokenError", "Error", "Info", "KindError", "Media", "MissingError", "StalledError",
-           "UnsafeError", "kind", "open", "sniff"]
+__all__ = [
+    "BrokenError", "ClosedError", "Encoding", "Error", "Info", "KindError", "LEVELS",
+    "Media", "MissingError", "NotMediaError", "StalledError", "UnsafeError",
+    "kind", "open", "sniff", "verify",
+]
 
 PathLike = Union[str, "os.PathLike[str]"]
 Progress = Callable[..., Any]
@@ -67,6 +70,14 @@ class StalledError(Error, TimeoutError):
 
 class KindError(Error, ValueError):
     """A transform that doesn't apply to the file's kind, such as trimming a photo."""
+
+
+class ClosedError(Error, ValueError):
+    """A transform, save, or unprobed read on a closed media chain."""
+
+
+class NotMediaError(BrokenError):
+    """A web page or JSON where media was expected."""
 
 
 @dataclass(frozen=True)
@@ -108,20 +119,21 @@ class Info:
     # EXIF names for a photo; ffmpeg's metadata keys for video and audio.
     tags: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def codec(self) -> str | None:
+        """Video codec of a video or audio codec of audio ("h264", "aac"); None for a photo."""
+        return {"video": self.video, "audio": self.audio}.get(self.kind)
 
-class _Preset(NamedTuple):
-    # Encoder quality, 1-100, on the one scale every codec maps from.
-    quality: int
-    # Cap in pixels on a video's shorter side; None keeps the full size.
-    video_resolution: int | None
-    # Cap in pixels on a photo's longer side; None keeps the full size.
-    photo_resolution: int | None
-    # Frame-rate cap; None keeps the source's rate.
-    fps: float | None
-    # x264's speed preset, such as "medium" or "slow".
-    speed: str
-    # Bits per second for the audio stream.
-    audio_bitrate: int
+
+@dataclass(frozen=True)
+class Encoding:
+    """Compression settings for `Media.compress`, or a level in `LEVELS` adjusted via `replace`."""
+
+    quality: int = 80
+    resolution: int | None = None
+    fps: float | None = None
+    audio_bitrate: int | None = None
+    codec: str | None = None
 
 
 class _Container(NamedTuple):
@@ -137,13 +149,14 @@ class _Container(NamedTuple):
     audio_holds: str
 
 
-# The four levels, from no visible loss to smallest: quality, the video and photo caps on the
-# shorter or longer side (None keeps the full resolution), the fps cap, x264's speed and the audio
-# bitrate. flnd's --image, --video and --audio levels are these names. Every one strips metadata.
-PRESETS = {"best": _Preset(95, None, None, None, "slow", 192_000),
-           "high": _Preset(90, None, None, None, "slow", 160_000),
-           "mid": _Preset(80, 1080, 2304, 60, "medium", 128_000),
-           "low": _Preset(70, 720, 1536, 30, "medium", 64_000)}
+# The four levels, from no visible loss to smallest.
+LEVELS: dict[str, Encoding] = {
+    "best": Encoding(quality=95),
+    "high": Encoding(quality=90),
+    "mid": Encoding(quality=80, resolution=1080, fps=60, audio_bitrate=128_000),
+    "low": Encoding(quality=70, resolution=720, fps=30, audio_bitrate=64_000),
+}
+PHOTO_CAPS = {"mid": 2304, "low": 1536}
 STILLS = {
     ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP", ".avif": "AVIF",
     ".gif": "GIF", ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP", ".ico": "ICO",
@@ -287,63 +300,12 @@ class Media:
         return self._info
 
     @property
-    def kind(self) -> str:
-        """What the file is: "image" (a photo or an animation), "video" or "audio"."""
-        return self.info.kind
-
-    @property
-    def format(self) -> str:
-        """The content format: "jpeg", "png", "heif" for photos; "mp4", "webm", "m4a" for AV."""
-        return self.info.format
-
-    @property
     def size(self) -> int:
         """Bytes on disk; read via `stat` on unprobed transform results without running a probe."""
         if self._info is not None:
             return self._info.size
         self._usable()
         return self._path.stat().st_size
-
-    @property
-    def width(self) -> int | None:
-        """Pixels across, as displayed; None for audio."""
-        return self.info.width
-
-    @property
-    def height(self) -> int | None:
-        """Pixels down, as displayed; None for audio."""
-        return self.info.height
-
-    @property
-    def duration(self) -> float | None:
-        """Seconds; None for a still photo, and for a stream that doesn't say."""
-        return self.info.duration
-
-    @property
-    def fps(self) -> float | None:
-        """Frames per second of a video or an animation; None for a still photo and audio."""
-        return self.info.fps
-
-    @property
-    def codec(self) -> str | None:
-        """Video codec of a video or audio codec of audio ("h264", "aac"); None for a photo."""
-        info = self.info
-        return {"video": info.video, "audio": info.audio}.get(info.kind)
-
-    @property
-    def created(self) -> datetime | None:
-        """When it was taken or made, from EXIF or the container; None when the file doesn't say."""
-        return self.info.created
-
-    @property
-    def location(self) -> tuple[float, float] | None:
-        """(latitude, longitude) where it was taken; None when the file doesn't say."""
-        return self.info.location
-
-    @property
-    def tags(self) -> dict[str, str]:
-        """Metadata: EXIF names for a photo ("Model"), ffmpeg keys for video and audio ("title")."""
-        return self.info.tags
 
     # Reads and checks.
 
@@ -361,7 +323,7 @@ class Media:
         which catches what a cut-off download leaves behind, but not damage inside frames.
         """
         self._usable()
-        if self.kind == "image":
+        if self.info.kind == "image":
             _pillow.check(self._path)
         else:
             _ffmpeg.run(
@@ -373,13 +335,13 @@ class Media:
             )
         return self
 
-    def frames(self, *, dest: PathLike, every: float | None = None,
+    def frames(self, dest: PathLike, *, every: float | None = None,
                at: Sequence[float] | None = None, count: int | None = None, format: str = "jpg",
                quality: int = 90, limit: int | None = 1000) -> list[Path]:
         """Save frames of a video or animation as photos in `dest`, returning paths in time order.
 
-            media.open("clip.mp4").frames(every=1.0, dest="frames/")
-            media.open("clip.mp4").frames(count=9, dest="thumbs/")
+            media.open("clip.mp4").frames("frames/", every=1.0)
+            media.open("clip.mp4").frames("thumbs/", count=9)
 
         Args:
             dest: Output folder (created if missing); files are `<stem>_<seconds>.<ext>`.
@@ -394,20 +356,19 @@ class Media:
             KindError, ValueError, FileExistsError: Still/audio, invalid args/limit, or collision.
         """
         self._usable()
-        self._expect("frames", "videos and animations", self.kind == "video" or self.info.animated)
+        info = self.info
+        self._expect("frames", "videos and animations", info.kind == "video" or info.animated)
         from shared import _media_video
 
         return _media_video.frames(
-            self.info, Path(self._chain.origin.name).stem, Path(dest), every=every, at=at,
+            info, Path(self._chain.origin.name).stem, Path(dest), every=every, at=at,
             count=count, format=format, quality=quality, limit=limit,
         )
 
     # Transforms: each writes a temporary file and returns a new Media.
 
-    def compress(self, level: str = "mid", *, format: str | None = None, codec: str | None = None,
-                 quality: int | None = None, resolution: int | None = None,
-                 fps: float | None = None, audio_bitrate: int | None = None, strip: bool = True,
-                 progress: Progress | None = None) -> Media:
+    def compress(self, level: str | Encoding = "mid", *, format: str | None = None,
+                 strip: bool = True, progress: Progress | None = None) -> Media:
         """Encode a smaller copy in the same format (or `format`), returning a new `Media`.
 
             out = clip.compress("low")
@@ -415,13 +376,8 @@ class Media:
                 out.save()
 
         Args:
-            level: "best", "high", "mid" or "low" ("mid"/"low" also cap resolution and fps).
+            level: "best", "high", "mid", "low", or an `Encoding` record.
             format: Target format of the same kind (or "gif" for video); None keeps current.
-            codec: "h264", "h265" or "vp9" for video.
-            quality: 1-100, overriding the preset.
-            resolution: Cap in px on shorter video or longer photo side, overriding the preset.
-            fps: Frame-rate cap (1-240), overriding the preset.
-            audio_bitrate: Bits per second (32,000-320,000), overriding the preset.
             strip: Drop metadata, chapters and extra streams while keeping display orientation.
             progress: `progress(done, total)` in seconds for AV; None shows a `log.progress` row.
 
@@ -431,26 +387,31 @@ class Media:
         Raises:
             KindError, ValueError, BrokenError, MissingError, StalledError: Bad kind/arg or failure.
         """
-        settings = _settings(level, quality, resolution, fps, audio_bitrate)
+        settings = _settings(level)
         info = self.info
         extension = _compress_target(info, self._name, self._extension, format)
         if extension is None:
             log.debug("{name}: media can't shrink this format without format=", name=self._name)
             return self
-        _codec(extension, codec)
-        # Without a `progress` callback, a video/audio encode shows its own bar; photos do not.
+        _codec(extension, settings.codec)
+        codec = settings.codec or (
+            _source_codec(info.video, extension) if info.kind == "video" else None
+        )
+        resolution = (
+            PHOTO_CAPS.get(level) if isinstance(level, str) and info.kind == "image"
+            else settings.resolution
+        )
+        speed = "slow" if settings.quality >= 90 else "medium"
         shown = (log.progress(self._name, total=info.duration)
                  if progress is None and info.kind != "image" else nullcontext())
         with shown as bar:
             return self._derive(extension, lambda part: transcode(
                 info, part, extension, quality=settings.quality, codec=codec, fps=settings.fps,
-                resolution=(settings.photo_resolution if info.kind == "image"
-                            else settings.video_resolution),
-                speed=settings.speed, audio_bitrate=settings.audio_bitrate, strip=strip, copy=False,
-                progress=progress or (_reporter(bar) if bar else None)))
+                resolution=resolution, speed=speed, audio_bitrate=settings.audio_bitrate,
+                strip=strip, copy=False, progress=progress or (_reporter(bar) if bar else None)))
 
     def convert(self, format: str, *, quality: int = 90, fps: float | None = None,
-                codec: str | None = None) -> Media:
+                codec: str | None = None, progress: Progress | None = None) -> Media:
         """A copy in another format of the same kind, keeping its metadata.
 
             media.open("IMG_0042.heic").convert("png").save("IMG_0042.png")
@@ -463,10 +424,11 @@ class Media:
             fps: a cap on a moving picture's frame rate. A video written as a GIF is at most 15 fps
                 unless this says otherwise, and a GIF of a long video is huge.
             codec: "h264", "h265" or "vp9", for a video.
+            progress: `progress(done, total)` in seconds for AV; None for no callback.
 
         Raises:
             KindError: `format` is of another kind (a video to "jpg": use `frames`; a photo to
-                "mp4": use `merge`; a video to "mp3": use `audio`), or `fps` for a still photo.
+                "mp4": use `merge`; a video to "mp3": use `extract_audio`), or `fps` for a photo.
             ValueError: an unknown format or codec, or `quality` out of range.
 
         Streams are copied when the new container holds them, and encoded otherwise.
@@ -480,7 +442,9 @@ class Media:
             raise KindError(f"fps= is for moving pictures, and {self._name} is a {_noun(info)}")
         return self._derive(
             extension,
-            lambda part: transcode(info, part, extension, quality=quality, fps=fps, codec=codec),
+            lambda part: transcode(
+                info, part, extension, quality=quality, fps=fps, codec=codec, progress=progress
+            ),
         )
 
     def resize(self, *, width: int | None = None, height: int | None = None) -> Media:
@@ -520,7 +484,8 @@ class Media:
 
         return self._edit("crop", lambda photo: _media_image.cut(photo, box))
 
-    def trim(self, *, start: float = 0.0, end: float | None = None, exact: bool = True) -> Media:
+    def trim(self, *, start: float = 0.0, end: float | None = None, exact: bool = True,
+             progress: Progress | None = None) -> Media:
         """The part of a video, audio file or animation from `start` to `end` seconds.
 
             media.open("clip.mp4").trim(start=12.5, end=30).save("part.mp4")
@@ -532,6 +497,7 @@ class Media:
                 (the default). False copies the streams, as fast as a file copy, but a video then
                 starts at the keyframe at or before `start`, up to a few seconds early. Audio cuts
                 exactly either way.
+            progress: `progress(done, total)` in seconds for AV; None for no callback.
 
         Raises:
             KindError: a still photo.
@@ -555,12 +521,12 @@ class Media:
         return self._derive(
             extension,
             lambda part: _media_video.trim(
-                info, part, extension, start=start, end=end, exact=exact
+                info, part, extension, start=start, end=end, exact=exact, progress=progress
             ),
         )
 
     def merge(self, *others: Media | PathLike, audio: Media | PathLike | None = None,
-              format: str | None = None, fps: float | None = None, duration: float | None = None,
+              format: str | None = None, duration: float | None = None,
               progress: Progress | None = None) -> Media:
         """Join this file and `others` end to end into one moving picture, or add `audio` to video.
 
@@ -573,14 +539,13 @@ class Media:
             audio: a soundtrack, a file with an audio stream; it ends with the pictures.
             format: what to write: a video container ("mp4", "mkv") or an animated "gif", "webp" or
                 "png", which can't hold `audio`; None keeps this video's container, or "mp4".
-            fps: photos played at this rate, one per frame.
             duration: seconds each photo shows, 1.0 by default.
             progress: `progress(done, total)` in seconds, for an encode.
 
         Raises:
             KindError: audio files, or photos mixed with videos.
             BrokenError: `audio` has no audio stream, or a part is cut off.
-            ValueError: an audio/still `format`, `audio` with animation, or both `fps` & `duration`.
+            ValueError: an audio/still `format`, or `audio` with animation.
 
         Photos are letterboxed to the first one's size. Clips sharing codecs, size and frame rate
         are copied; others are encoded to the first clip's size.
@@ -605,21 +570,24 @@ class Media:
             )
         if animation and audio is not None:
             raise ValueError("an animated image can't hold audio=")
-        if fps is not None and duration is not None:
-            raise ValueError("give fps= or duration=, not both")
         track = (None if audio is None
                  else audio.info if isinstance(audio, Media) else _probe(Path(audio)))
         if track is not None and not track.audio:
             raise BrokenError(f"{track.path.name} has no audio stream")
+        if format is None and len(infos) == 1 and track is not None and extension in CONTAINERS:
+            box = CONTAINERS[extension]
+            if not (holds(box.video_holds, infos[0].video) and holds(box.audio_holds, track.audio)):
+                extension = ".mkv"
         from shared import _media_video
 
         return self._derive(extension, lambda part: _media_video.merge(
-            infos, part, extension, track, fps=fps, duration=duration, progress=progress))
+            infos, part, extension, track, duration=duration, progress=progress))
 
-    def audio(self, *, bitrate: int | None = None, format: str | None = None) -> Media:
+    def extract_audio(self, *, bitrate: int | None = None, format: str | None = None,
+                      progress: Progress | None = None) -> Media:
         """The first audio stream, as an audio file of its own, keeping the tags.
 
-            media.open("clip.mp4").audio().save("clip.m4a")          # AAC is copied as it is
+            media.open("clip.mp4").extract_audio().save("clip.m4a")
 
         Args:
             bitrate: bits per second, 32,000-320,000, which re-encodes the stream; None copies it
@@ -627,6 +595,7 @@ class Media:
                 MP3 192 kb/s, AAC 160, Opus 128.
             format: the audio format to write, such as "mp3" or "m4a"; None picks the one that
                 holds the stream's codec as it is (AAC in M4A, Opus in .opus).
+            progress: `progress(done, total)` in seconds for AV; None for no callback.
 
         Raises:
             KindError: a photo, or a `format` that isn't audio.
@@ -634,17 +603,19 @@ class Media:
             ValueError: `bitrate` out of range, or an unknown format.
         """
         info = self.info
-        self._expect("audio", "videos and audio", info.kind != "image")
+        self._expect("extract_audio", "videos and audio", info.kind != "image")
         _check_range("bitrate", bitrate, 32_000, 320_000)
         if not info.audio:
             raise BrokenError(f"{self._name} has no audio stream")
         extension = _writable(format) if format is not None else AUDIO_HOMES.get(info.audio, ".m4a")
         if kind(extension) != "audio":
-            raise KindError(f"audio writes audio, not {extension}")
+            raise KindError(f"extract_audio writes audio, not {extension}")
         from shared import _media_audio
 
         return self._derive(
-            extension, lambda part: _media_audio.extract(info, part, extension, bitrate=bitrate)
+            extension,
+            lambda part: _media_audio.extract(info, part, extension, bitrate=bitrate,
+                                              progress=progress),
         )
 
     # Ending a chain.
@@ -739,7 +710,7 @@ class Media:
 
     def _usable(self) -> None:
         if self._chain.closed:
-            raise ValueError(f"{self._name}: this media chain is closed")
+            raise ClosedError(f"{self._name}: this media chain is closed")
 
     def _expect(self, verb: str, applies: str, fits: bool) -> None:
         """Raise `KindError` naming what `verb` is for when the file doesn't fit."""
@@ -782,10 +753,15 @@ class Media:
 def _probe(path: Path) -> Info:
     """Read what `path` holds and its metadata without decoding frames; see `open` for errors."""
     extension = sniff(path)
-    # Refused signatures are all four bytes long, so this reads exactly the ones in REFUSED.
     with path.open("rb") as file:
-        if file.read(4) in REFUSED:
-            raise UnsafeError(f"{path.name}: PostScript, PDF and WMF files are refused")
+        head = file.read(64)
+    if (
+        head[:4] in REFUSED
+        or head.startswith(b"ffconcat")
+        or (path.suffix.lower() in (".m3u", ".m3u8") and head.lstrip().startswith(b"#EXTM3U"))
+        or b"<MPD" in head
+    ):
+        raise UnsafeError(f"{path.name}: PostScript, PDF, WMF and playlists are refused")
     if extension in (".html", ".json"):
         raise BrokenError(f"{path.name} is a web page or JSON, not media")
     if extension is None or extension in PHOTO_EXTENSIONS:
@@ -793,18 +769,10 @@ def _probe(path: Path) -> Info:
             if (photo := _pillow.open(path, memory=False)) is not None:
                 with photo:
                     return _pillow.probe(path, photo)
-        except ImportError:
+        except MissingError:
             if extension is not None:
                 raise
-    try:
-        return _ffmpeg.probe(path, format=extension[1:] if extension else None)
-    except UnsafeError:
-        # A refused reader matters for a playlist or a list, which name other files; for binary
-        # junk it only means ffmpeg guessed a format it may not use, so the file isn't media.
-        with path.open("rb") as file:
-            if file.read(64).isascii():
-                raise
-        raise BrokenError(f"{path.name}: not media") from None
+    return _ffmpeg.probe(path, format=extension[1:] if extension else None)
 
 
 def _extension_of(path: Path, info: Info) -> str:
@@ -871,11 +839,34 @@ def sniff(path: PathLike) -> str | None:
         )
     if head[:4] == b"FORM" and head[8:12] in (b"AIFF", b"AIFC"):
         return ".aiff"
-    # An MPEG audio frame starts with 11 set bits.
+    # ADTS AAC sync (0xFFF with layer == 00) before MPEG audio frame sync.
+    if len(head) > 1 and head[0] == 0xFF and (head[1] & 0xF6) == 0xF0:
+        return ".aac"
     if len(head) > 1 and head[0] == 0xFF and head[1] >= 0xE0:
         return ".mp3"
     text = head.removeprefix(b"\xef\xbb\xbf").lstrip()
     return {b"<": ".html", b"{": ".json", b"[": ".json"}.get(text[:1])
+
+
+def verify(path: PathLike, *, kind: str | None = None, decode: bool = True) -> str:
+    """Verify `path` is valid media (not a web page or corrupt) and return its content extension."""
+    target = Path(path)
+    extension = sniff(target)
+    if extension in (".html", ".json"):
+        raise NotMediaError(f"{target.name}: got a web page or JSON instead of {kind or 'media'}")
+    if decode:
+        try:
+            opened = open(target)
+            opened.check()
+            extension = extension or opened._extension
+        except (MissingError, StalledError) as error:
+            log.debug("{name}: not checked: {error}", name=target.name, error=error)
+    result = extension or ""
+    if kind is not None and result:
+        actual = globals()["kind"](result)
+        if actual is not None and actual != kind:
+            raise KindError(f"{target.name} is {actual}, expected {kind}")
+    return result
 
 
 def _brand(head: bytes) -> str:
@@ -974,7 +965,7 @@ def transcode(info: Info, part: Path, extension: str, *, quality: int, codec: st
     else:
         inputs, feed = _inputs(info)
         # An animation reaches ffmpeg as GIF or raw frames, never copied as-is into a container.
-        encoding = Encoding(
+        encoding = _Output(
             video=info.video or ("rawvideo" if info.kind == "image" else None),
             audio=info.audio, quality=quality, codec=codec, fps=fps, source_fps=info.fps,
             resolution=resolution, speed=speed, audio_bitrate=audio_bitrate, strip=strip,
@@ -990,7 +981,7 @@ def transcode(info: Info, part: Path, extension: str, *, quality: int, codec: st
 
 
 @dataclass(frozen=True)
-class Encoding:
+class _Output:
     """Stream, quality, filter and metadata options for `output`."""
 
     video: str | None
@@ -1009,7 +1000,7 @@ class Encoding:
     simple: bool = True
 
 
-def output(extension: str, encoding: Encoding) -> tuple[list[str], bool]:
+def output(extension: str, encoding: _Output) -> tuple[list[str], bool]:
     """ffmpeg's output options for `extension`, and whether every stream is copied.
 
     `encoding.simple=False` leaves out `-vf`, for video from a `-filter_complex` graph.
@@ -1049,11 +1040,12 @@ def muxer(extension: str) -> list[str]:
 
 
 def _filters(resolution: int | None, fps: float | None, source_fps: float | None) -> str:
-    """ffmpeg's `-vf` chain: scale cap, frame-rate cap when the source is faster, square pixels."""
+    """ffmpeg's `-vf` chain: SAR-corrected scale cap, frame-rate cap, square pixels."""
     # -2 keeps both sides even, which H.264 needs; the shorter side is capped, never scaled up.
     size = (
-        "scale='if(gte(iw,ih),-2,min(iw,{0}))':'if(gte(iw,ih),min(ih,{0}),-2)'".format(resolution)
-        if resolution else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        "scale='if(gte(iw*sar,ih),-2,min(iw*sar,{0}))':"
+        "'if(gte(iw*sar,ih),min(ih,{0}),-2)'".format(resolution)
+        if resolution else "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2"
     )
     rate = f",fps={fps:g}" if fps and (source_fps is None or source_fps > fps) else ""
     return f"{size}{rate},setsar=1"
@@ -1221,8 +1213,8 @@ def _same_kind(info: Info, name: str, extension: str, verb: str) -> None:
     if info.kind != target:
         instead = {("video", "image"): "use .frames() to get photos",
                    ("image", "video"): "use .merge() to make a video",
-                   ("video", "audio"): "use .audio()"}.get((info.kind, target),
-                                                           f"{verb} keeps the kind")
+                   ("video", "audio"): "use .extract_audio()"}.get((info.kind, target),
+                                                                   f"{verb} keeps the kind")
         raise KindError(f"{name} is a {_noun(info)}; {instead}")
 
 
@@ -1241,22 +1233,31 @@ def _not_photo(info: Info) -> Any:
     raise BrokenError(f"{info.path.name}: not a photo")
 
 
-def _settings(level: str, quality: int | None, resolution: int | None, fps: float | None,
-              audio_bitrate: int | None) -> _Preset:
-    """The level's settings with overrides applied, each checked against its allowed range."""
-    if level not in PRESETS:
-        raise ValueError(f"level must be one of {', '.join(PRESETS)}, not {level!r}")
-    base = PRESETS[level]
+def _settings(level: str | Encoding) -> Encoding:
+    """Validate `level` (name or `Encoding` record) and return the resolved `Encoding`."""
+    if isinstance(level, str):
+        if level not in LEVELS:
+            raise ValueError(f"level must be one of {', '.join(LEVELS)}, not {level!r}")
+        return LEVELS[level]
+    if not isinstance(level, Encoding):
+        raise ValueError(f"level must be a preset name or Encoding, not {level!r}")
     for name, value, low, high in (
-        ("quality", quality, 1, 100), ("resolution", resolution, 16, 1 << 20),
-        ("fps", fps, 1, 240), ("audio_bitrate", audio_bitrate, 32_000, 320_000),
+        ("quality", level.quality, 1, 100), ("resolution", level.resolution, 16, 1 << 20),
+        ("fps", level.fps, 1, 240), ("audio_bitrate", level.audio_bitrate, 32_000, 320_000),
     ):
         _check_range(name, value, low, high)
-    return _Preset(
-        quality or base.quality, resolution or base.video_resolution,
-        resolution or base.photo_resolution, fps or base.fps, base.speed,
-        audio_bitrate or base.audio_bitrate,
-    )
+    return level
+
+
+def _source_codec(video: str | None, extension: str) -> str | None:
+    """Keep the source video codec when `extension`'s container can write it."""
+    if not video:
+        return None
+    mapped = {"hevc": "h265"}.get(video, video)
+    if mapped not in CODECS:
+        return None
+    allowed = CODECS_IN.get(extension, ("h264", "h265")) if extension in CONTAINERS else ()
+    return mapped if mapped in allowed else None
 
 
 def _check_range(name: str, value: float | None, low: float, high: float) -> None:
