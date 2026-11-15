@@ -1,11 +1,4 @@
-"""The best video and audio files of a DASH manifest, for the sources whose sites split them.
-
-    if streams := dash.best(node.get("video_dash_manifest")):
-        session.save(streams.video, name + streams.extension, category="reels", audio=streams.audio)
-
-Only single-file representations are read, which is what Facebook and Instagram serve. The stdlib's
-ElementTree never fetches external entities, and expat 2.4.1 or later refuses entity bombs.
-"""
+"""The best video and audio streams of a single-file DASH manifest."""
 
 from __future__ import annotations
 
@@ -24,11 +17,7 @@ class Streams(NamedTuple):
 
 
 def best(manifest: Any) -> Streams | None:
-    """The highest video and audio streams, or None to fall back to progressive.
-
-    Returns None when there is no manifest, it can't be read, it uses segment templates or lists,
-    or it lacks a video or an audio stream.
-    """
+    """The highest video and audio streams, or None to fall back to progressive."""
     if not isinstance(manifest, str) or not manifest:
         return None
     try:

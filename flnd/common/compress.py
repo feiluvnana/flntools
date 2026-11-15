@@ -18,12 +18,11 @@ from __future__ import annotations
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, MutableMapping
 
 from flnd.common import paths
-from shared import log, worker
+from shared import ui, worker
 
 if TYPE_CHECKING:
     from shared import media
@@ -43,13 +42,6 @@ AT_ONCE = 8
 BITS_PER_PIXEL = 0.1
 # `LEVEL`'s caps in `shared.media`: the shorter side in pixels, and the frame rate.
 LEVEL_SHORT_SIDE, LEVEL_FPS = 1080, 60
-# Seconds of a video encoded first; the whole file is encoded only when the slice came out at
-# least `SLICE_GAIN` smaller. A video under two slices long is encoded whole at once.
-SLICE = 4.0
-SLICE_GAIN = 0.10
-# A video's codec as ffmpeg names it, by the name `media.compress` takes: passed so an MP4 keeps its
-# own codec, since without one media writes the container's default (H.264 in an MP4).
-OWN_CODECS = {"h264": "h264", "hevc": "h265", "vp9": "vp9"}
 
 # Downloads compress photos on several threads at once, so warning tracking is locked.
 _warning = threading.Lock()
@@ -71,10 +63,7 @@ class Compressor:
     turns: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def compress(self, path: Path, kind: str) -> dict[str, Any] | None:
-        """Shrink one saved file, waiting for turn when required, and return history fields.
-
-            fields = compressor.compress(Path("a.jpg"), "image")
-        """
+        """Shrink one saved file, waiting for turn when required, and return history fields."""
         with self.turns if kind in ONE_AT_A_TIME else nullcontext():
             if kind in self.off:
                 return None
@@ -82,15 +71,12 @@ class Compressor:
             if fields is None:
                 # No ffmpeg, encoder or extra: every other file of the kind would fail the same way.
                 self.off.add(kind)
-                log.warn("{kind} compression stops for this run", kind=kind)
+                ui.warn("{kind} compression stops for this run", kind=kind)
             return fields
 
 
 def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[str, Any] | None:
-    """Shrink one saved photo, video or audio file at `LEVEL` in its format, and return fields.
-
-        fields = compress_file(Path("a.jpg"), "image", warned)
-    """
+    """Shrink one saved photo, video or audio file at `LEVEL` in its format, and return fields."""
     from shared import media
 
     try:
@@ -99,26 +85,11 @@ def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[s
         _warn(warned, error, path)
         return {"compressed": "none"}
     try:
-        # Temporary file drops automatically whenever it is not saved, including on error.
-        with media.open(path) as original:
-            codec = OWN_CODECS.get(original.info.video or "") if kind == paths.VIDEO else None
-            saved: Path | None = None
-            if kind == paths.VIDEO and not _can_win(original, codec):
-                log.info("{name}: an encode wouldn't save enough; kept as it is", name=path.name)
-            else:
-                out = original.compress(LEVEL, codec=codec)
-                if out.size < original.size:
-                    saved = out.save()
-                elif out is not original:
-                    log.info("{name}: compressing saved nothing; kept the original", name=path.name)
-    except (ValueError, OSError) as error:
-        # File only: unreadable, refused, file exists, timeout, missing, permission, or disk full.
-        # Fails this file and the run proceeds; transform writes temporary file so original is safe.
+        saved = _encode(path, kind)
+    except (media.BrokenError, media.UnsafeError, ValueError, OSError) as error:
         _warn(warned, error, path)
         saved = None
-    except (RuntimeError, ImportError) as error:
-        # This machine: no ffmpeg, an ffmpeg too old or without the encoder, or no Pillow. Every
-        # other file of the kind would fail the same way, and installing it fixes them all.
+    except (media.MissingError, RuntimeError, ImportError) as error:
         _warn(warned, error, path)
         return None
     if saved is None:
@@ -128,20 +99,29 @@ def compress_file(path: Path, kind: str, warned: set[type[Exception]]) -> dict[s
     }
 
 
-def _can_win(original: media.Media, codec: str | None) -> bool:
-    """Whether a video encoded at `LEVEL` can come out much smaller, by its bitrate and a slice."""
+def _encode(path: Path, kind: str) -> Path | None:
+    """Open `path`, compress if smaller, and return the saved path or None."""
+    from shared import media
+
+    with media.open(path) as original:
+        if kind == paths.VIDEO and not _can_win(original):
+            ui.info("{name}: an encode wouldn't save enough; kept as it is", name=path.name)
+            return None
+        out = original.compress(LEVEL)
+        if out.info.size < original.info.size:
+            return out.save()
+        if out is not original:
+            ui.info("{name}: compressing saved nothing; kept the original", name=path.name)
+    return None
+
+
+def _can_win(original: media.Media) -> bool:
+    """Whether a video encoded at `LEVEL` can come out smaller by its bitrate."""
     info = original.info
     target = _target_bitrate(info)
     if info.bitrate is None or target is None:
         return True
-    if info.bitrate <= target:
-        return False
-    if info.duration is None or info.duration <= 2 * SLICE:
-        return True
-    # From the middle, past any intro; cut at keyframes, so the slice is copied, not encoded.
-    start = info.duration / 2 - SLICE / 2
-    piece = original.trim(start=start, end=start + SLICE, exact=False)
-    return piece.compress(LEVEL, codec=codec).size <= piece.size * (1 - SLICE_GAIN)
+    return info.bitrate > target
 
 
 def _target_bitrate(info: media.Info) -> float | None:
@@ -160,10 +140,7 @@ def apply(
     *,
     label: str,
 ) -> int:
-    """Shrink a target's saved photos, videos and audio when `--shrink` turns it on.
-
-        apply(history, rows, Compressor(), label="ins:example_user")
-    """
+    """Shrink a target's saved photos, videos and audio when `--shrink` turns it on."""
     todo = [(key, row) for key, row in rows if paths.kind_of(row["path"]) in KINDS
             and row.get("compressed") != LEVEL and Path(row["path"]).is_file()]
     if not todo:
@@ -171,12 +148,14 @@ def apply(
     # Videos last: they take turns on the run's lock, so a pool thread holding one only waits.
     todo.sort(key=lambda item: paths.kind_of(item[1]["path"]) in ONE_AT_A_TIME)
     lock = threading.Lock()
-    with log.progress(f"--shrink {label}", total=len(todo)) as bar:
-        for result in worker.as_completed(partial(_shrink, history, lock, compressor), todo,
-                                          concurrency=AT_ONCE):
-            bar.advance()
-            if result.error is not None:
-                raise result.error
+    with ui.progress(f"--shrink {label}", total=len(todo)) as bar:
+        with worker.Pool(concurrency=AT_ONCE) as pool:
+            for item in todo:
+                pool.submit(_shrink, history, lock, compressor, item)
+            for result in pool.as_completed():
+                bar.advance()
+                if result.error is not None:
+                    raise result.error
     return len(todo)
 
 
@@ -201,5 +180,5 @@ def _warn(warned: set[type[Exception]], error: Exception, path: Path) -> None:
     with _warning:
         first = type(error) not in warned
         warned.add(type(error))
-    log_fn = log.warn if first else log.debug
+    log_fn = ui.warn if first else ui.debug
     log_fn("{name}: not compressed: {error}", name=path.name, error=error)

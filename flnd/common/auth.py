@@ -30,7 +30,8 @@ from typing import TYPE_CHECKING
 # A source's own login (tlg) raises it too; `auth.LoginError` is the same class.
 from flnd.common import paths
 from flnd.source import LoginError
-from shared import cookies, crypto, fmt, kv, log
+import shared
+from shared import cookies, crypto, text, ui
 
 if TYPE_CHECKING:
     from flnd.source import Source
@@ -63,23 +64,11 @@ KEY_POLL = 0.01
 
 
 def from_browser(source: Source, *, browser: str, profile: str | None = None) -> cookies.Jar:
-    """The source's cookies from an installed browser, for each of its domains.
-
-        jar = auth.from_browser(Instagram(), browser="firefox")
-
-    Args:
-        source: the source whose `domains` are read.
-        browser: a key of `BROWSERS`, such as "chrome".
-        profile: the browser's profile folder, such as "Profile 1"; None reads the default one.
-
-    Raises:
-        LoginError: the browser's cookies can't be read (no such browser or profile, a locked
-            Keychain, Windows' app-bound encryption); the message suggests a cookie file.
-    """
+    """The source's cookies from an installed browser, for each of its domains."""
     try:
-        return _own(source, cookies.from_browser(browser, profile=profile))
+        return _own(source, cookies.load(browser, profile=profile))
     # Every way reading a browser fails: missing file, platform refusal, bad decrypt, or no crypto.
-    except (OSError, RuntimeError, ValueError, ImportError) as error:
+    except (OSError, RuntimeError, ValueError, ImportError, cookies.Error) as error:
         raise LoginError(
             f"{source.code}: can't read {BROWSERS.get(browser, browser)}'s cookies: {error}; "
             "try a cookie file instead"
@@ -87,17 +76,10 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
 
 
 def from_file(source: Source, path: Path) -> cookies.Jar:
-    """The source's cookies from a Netscape or JSON cookie file; a whole browser export works.
-
-        jar = auth.from_file(Twitter(), Path("~/Downloads/cookies.txt").expanduser())
-
-    Raises:
-        LoginError: the file is missing, unreadable, over 16 MB, or not a cookie file.
-    """
+    """The source's cookies from a Netscape or JSON cookie file; a whole browser export works."""
     try:
         return _own(source, cookies.load(path))
-    # cookies.Error and its UnsafeError are ValueErrors; a missing or unreadable file is an OSError.
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, cookies.Error) as error:
         raise LoginError(f"{source.code}: can't read {path}: {error}") from None
 
 
@@ -129,7 +111,7 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     for path in _cookie_files(home, source.code):
         path.unlink(missing_ok=True)
     _remove_if_empty(home / COOKIE_FOLDER)
-    return f"{source.code}: logged in from {origin} ({fmt.count(len(jar), 'cookie')})"
+    return f"{source.code}: logged in from {origin} ({text.fmt.count(len(jar), 'cookie')})"
 
 
 def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) -> None:
@@ -194,56 +176,46 @@ def expiring(home: Path, source: Source, *, within: float = 24 * 3600) -> list[t
 
 
 def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
-    """Save refreshed site cookies into the vault's jar for names already present.
-
-        auth.write_back(Path(".flnd"), "twt", run.web.raw.cookies.jar)     # ["ct0"]
-
-    Args:
-        home: flnd's folder, `.flnd`.
-        code: the source's code.
-        current: the run's client cookies, as `http.cookiejar.Cookie`s (`client.cookies.jar`).
-
-    Returns:
-        The names whose value changed and were saved: twt's `ct0`, tik's `msToken`, ins's
-        `csrftoken`. Empty, with nothing written, when none changed.
-
-    A cookie is matched by name and domain (a rotated one may come for a subdomain), and only
-    names the jar already holds are updated, so a run never adds a tracking cookie to a login.
-    A failure to save is warned of, without a value, and never fails the run.
-    """
+    """Save refreshed site cookies into the vault's jar for names already present."""
     fresh = list(current)
     if not fresh or not (home / paths.SECRETS).is_file():
         return []
     try:
         saved = load(home, code).raw
-        changed: list[str] = []
-        for cookie in saved:
-            domain, path = str(cookie.get("domain", "")).lstrip("."), cookie.get("path") or "/"
-            same = [
-                found for found in fresh if found.name == cookie["name"]
-                and (found.domain.lstrip(".") == domain
-                     or found.domain.lstrip(".").endswith("." + domain))
-            ]
-            exact = [
-                found for found in same
-                if found.domain.lstrip(".") == domain and found.path == path
-            ]
-            matched = exact or same
-            if matched and (new := matched[-1]).value not in (None, "", cookie["value"]):
-                cookie["value"] = new.value
-                if new.expires is not None and isinstance(cookie.get("expires"), (int, float)):
-                    cookie["expires"] = new.expires
-                changed.append(str(cookie["name"]))
+        changed = [
+            name for cookie in saved if (name := _refresh_cookie(cookie, fresh)) is not None
+        ]
         if changed:
             save(home, code, cookies.Jar(saved))
-            log.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
+            ui.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
         return changed
-    except (OSError, ValueError) as error:
-        log.warn(
+    except (OSError, ValueError, shared.store.Error) as error:
+        ui.warn(
             "{code}: could not save refreshed cookies ({kind})",
             code=code, kind=type(error).__name__,
         )
         return []
+
+
+def _refresh_cookie(cookie: dict, fresh: list[Cookie]) -> str | None:
+    """Update `cookie` in place from `fresh` if changed, returning its name or None."""
+    domain, path = str(cookie.get("domain", "")).lstrip("."), cookie.get("path") or "/"
+    same = [
+        found for found in fresh if found.name == cookie["name"]
+        and (found.domain.lstrip(".") == domain
+             or found.domain.lstrip(".").endswith("." + domain))
+    ]
+    exact = [
+        found for found in same
+        if found.domain.lstrip(".") == domain and found.path == path
+    ]
+    matched = exact or same
+    if not matched or (new := matched[-1]).value in (None, "", cookie["value"]):
+        return None
+    cookie["value"] = new.value
+    if new.expires is not None and isinstance(cookie.get("expires"), (int, float)):
+        cookie["expires"] = new.expires
+    return str(cookie["name"])
 
 
 def load(home: Path, code: str) -> cookies.Jar:
@@ -340,8 +312,8 @@ def _move(home: Path, code: str) -> None:
         # damaged key (ValueError), or a vault that can't be opened or written (OSError, kv.Error,
         # sqlite3.Error): the plain file is the only copy of the login, so it stays. Each of these
         # names the file or the key, never a cookie's value.
-        except (OSError, ValueError, kv.Error, sqlite3.Error) as error:
-            log.warn(
+        except (OSError, ValueError, cookies.Error, shared.store.Error, sqlite3.Error) as error:
+            ui.warn(
                 "{code}: can't move {name} into the vault: {error}; kept it",
                 code=code, name=path.name, error=error,
             )
@@ -374,7 +346,7 @@ def fix_domains(jar: cookies.Jar) -> cookies.Jar:
 
 def _own(source: Source, jar: cookies.Jar) -> cookies.Jar:
     """The cookies of `jar` for the source's domains and their subdomains, domain by domain."""
-    return cookies.Jar(cookie for domain in source.domains for cookie in jar.filter(domain=domain))
+    return jar.filter(domains=source.domains)
 
 
 def secrets(home: Path, code: str) -> Vault:
@@ -400,7 +372,7 @@ class Vault(MutableMapping[str, str]):
     def __init__(self, home: Path, code: str):
         self._home = home
         self._code = code
-        self._db = kv.open(home / paths.SECRETS, table=TABLE)
+        self._db = shared.store.open(home / paths.SECRETS, table=TABLE)
         self._key: bytes | None = None
 
     def __getitem__(self, name: str) -> str:
@@ -445,24 +417,7 @@ class Vault(MutableMapping[str, str]):
 
 
 def key(home: Path) -> bytes:
-    """The key in `home/metadata/secret.key`, created with mode 0600 when missing.
-
-        secret = auth.key(Path(".flnd"))
-
-    Args:
-        home: flnd's folder, `.flnd`; it is created when missing.
-
-    Returns:
-        The 32-byte key.
-
-    Raises:
-        ValueError: the key file holds anything but 32 bytes, or exists but can't be read (a
-            dangling symlink), and still does after `KEY_WAIT`.
-        OSError: the folder or the key file can't be created or read.
-
-    When two runs create the key at once, the first one to create the file wins and the other
-    reads its key: both end with the same one. No temporary file is written.
-    """
+    """The 32-byte key in `home/metadata/secret.key`, created with mode 0600 when missing."""
     path = home / paths.KEY
     # A short key may be another run's that is still being written, so it is read again until
     # `KEY_WAIT` has passed; only then is it damaged (a run that died while writing it).

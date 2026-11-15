@@ -1,24 +1,11 @@
-"""The engine's `Site` and `Login`: what a source's routes, categories and login act through.
-
-A run opens one `SourceRun` per source (`source_run`): login cookies, two `http.Client`s
-over one httpx client, and stores. `web` paces the source's requests; `files` downloads files.
-Each target gets a `TargetSite` over that run, and `flnd login` gets a `LoginSite`.
-
-- `TargetSite.fetch` performs paced HTTP requests, raising `FetchError` on failure.
-- `TargetSite.goto` loads a page in the browser tab within the same pace.
-- `TargetSite.page` provides the browser tab, opened on first use.
-
-    with source_run(settings, source) as run:
-        site = TargetSite(run, Target("ins", "user", "example_user"))
-        profile = site.fetch("https://example.com/api", params={"user": "example_user"}).json
-        site.close()
-"""
+"""The engine's `Site` and `Login`: what a source's routes, categories and login act through."""
 
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import dataclasses
+import random
+import sys
 import threading
 from collections import deque
 from contextlib import contextmanager
@@ -33,10 +20,10 @@ import httpx
 
 from flnd.common import auth, net, paths
 from flnd.source import FetchError, Range, Source, Target
-from shared import browser, clock, fmt, http, kv, log, prompt, theme
+from shared import browser, clock, http, prompt, store, text, ui, worker
 
 if TYPE_CHECKING:
-    from shared import cookies
+    from shared import cli, cookies
 
     from flnd.options import RunShared
 
@@ -66,14 +53,7 @@ EXPIRY_WARNING = 24 * 3600
 
 @dataclass
 class SourceRun:
-    """One source's resources for a whole run: its cookies, HTTP clients, `connect` client, stores.
-
-        with source_run(settings, source) as run:
-            run.state["seen"] = True
-
-    Made by `source_run`, which closes it. Shared by every target of the source, one after
-    another, and by their downloads, which run on other threads.
-    """
+    """One source's resources for a run: cookies, HTTP clients, `connect` client, and stores."""
 
     # The source, as one instance for the whole run.
     source: Source
@@ -87,17 +67,18 @@ class SourceRun:
     files: http.Client
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
-    _state: kv.Store | None = field(default=None, repr=False)
+    _state: store.Store | None = field(default=None, repr=False)
     _secrets: auth.Vault | None = field(default=None, repr=False)
-    _loop: asyncio.AbstractEventLoop | None = field(default=None, repr=False)
-    _loop_thread: threading.Thread | None = field(default=None, repr=False)
+    _loop: worker.Loop | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     @property
-    def state(self) -> kv.Store:
-        """The source's `kv` table in `.flnd/metadata/sources.db`, opened on first use."""
+    def state(self) -> store.Store:
+        """The source's `store` table in `.flnd/metadata/sources.db`, opened on first use."""
         if self._state is None:
-            self._state = kv.open(self.settings.home / paths.SOURCE_STATE, table=self.source.code)
+            self._state = store.open(
+                self.settings.home / paths.SOURCE_STATE, table=self.source.code
+            )
         return self._state
 
     @property
@@ -110,69 +91,91 @@ class SourceRun:
     @property
     def speed(self) -> float:
         """The source's learned speed now, from 1 (no throttle seen) to 8."""
-        return self.web.speeds.get(self.source.code, 1.0)
+        host = self.web._hosts.get(self.source.code)
+        if host is not None:
+            return host.speed
+        return self.web._speeds.get(self.source.code, 1.0)
 
     def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
-        """Run a coroutine on this source's own event loop, started on first use, and wait for it.
-
-        One loop for the whole source, so an SDK client made by an async `connect` is used on the
-        loop it belongs to: by the routes and categories (one step at a time, from the job's
-        thread) and by every `fetch` download alike.
-        """
+        """Run a coroutine on this source's own event loop, started on first use."""
         if self._loop is None:
-            self._loop = asyncio.new_event_loop()
-            self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True,
-                                                 name=f"flnd-{self.source.code}")
-            self._loop_thread.start()
-        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result()
+            self._loop = worker.Loop()
+        return self._loop.run(coroutine)
 
     def close(self) -> None:
-        """Save the learned speed, then close the client, the stores and the event loop; once."""
+        """Save the learned speed, then close the client, stores and event loop; once."""
         if self._closed:
             return
         self._closed = True
-        self.state[STATE_KEY] = self.speed
-        self.web.raw.close()
-        for store in (self._state, self._secrets):
-            if store is not None:
-                store.close()
-        if self._loop is not None and self._loop_thread is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            self._loop_thread.join()
-            self._loop.close()
+        try:
+            self.state[STATE_KEY] = self.speed
+        finally:
+            try:
+                self.web.raw.close()
+            finally:
+                for db in (self._state, self._secrets):
+                    if db is not None:
+                        db.close()
+                if self._loop is not None:
+                    self._loop.close()
+
+
+def _make_client(
+    raw: httpx.Client,
+    *,
+    pace: Any = None,
+    speeds: dict[str, float] | None = None,
+    stop: threading.Event | None = None,
+) -> http.Client:
+    """Wrap `raw` in an `http.Client` with `pace`, learned `speeds`, and `stop`."""
+    client = http.Client()
+    client._raw.close()
+    client._raw = raw
+    client._pace = pace
+    client._speeds = speeds or {}
+    client._stop = stop
+    return client
+
+
+def _source_paces(source: Source) -> tuple[Any, Any]:
+    """Return `(web_pace, file_pace)` for `source`."""
+    base = http.Client(rate=1.0)._pace
+    assert base is not None
+    raw_pace: Any = source.pace
+    declared = (
+        raw_pace if hasattr(raw_pace, "paces")
+        else dataclasses.replace(base, floor=float(raw_pace))
+    )
+    return (
+        dataclasses.replace(declared, domains=source.domains, label=source.code),
+        dataclasses.replace(base, floor=0.0, label=source.code),
+    )
 
 
 @contextmanager
 def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
-    """Open one source's resources for a run, and close them however the block ends.
-
-        with source_run(settings, Instagram()) as run: ...
-
-    Args:
-        settings: the run's shared targets.
-        source: the source, one instance for the run.
-    """
+    """Open one source's resources for a run, and close them however the block ends."""
     jar = auth.load(settings.home, source.code)
     _warn_expiring(source, jar)
-    declared = source.pace if isinstance(source.pace, http.Pace) else http.Pace(float(source.pace))
-    pace = dataclasses.replace(declared, domains=source.domains, label=source.code)
+    pace, file_pace = _source_paces(source)
 
     def sign(request: httpx.Request) -> None:
-        # A CDN never sees the source's headers or signature: its own domains only.
         if pace.paces(request.url.host):
             signed = source.prepare(request, _names(raw.cookies))
             if signed is not request:
                 request.headers.update(signed.headers)
 
     raw = net.client(user_agent=source.user_agent, jar=jar, sign=sign)
-    state = kv.open(settings.home / paths.SOURCE_STATE, table=source.code)
+    state = store.open(settings.home / paths.SOURCE_STATE, table=source.code)
     saved = state.get(STATE_KEY)
     speeds = {source.code: float(saved)} if isinstance(saved, (int, float)) else {}
-    # The files' client labels every host with the source's code, so its messages name the site.
-    run = SourceRun(source, settings, jar,
-                    http.Client(raw, pace=pace, speeds=speeds, stop=net.stopping),
-                    http.Client(raw, pace=http.Pace(label=source.code), stop=net.stopping),
-                    _state=state)
+    stop: cli.Stopping | None = getattr(settings, "stop", None)
+    run = SourceRun(
+        source, settings, jar,
+        _make_client(raw, pace=pace, speeds=speeds, stop=stop.soon if stop else None),
+        _make_client(raw, pace=file_pace, stop=stop.now if stop else None),
+        _state=state,
+    )
     try:
         yield run
     finally:
@@ -217,15 +220,14 @@ class TargetSite:
         merged = {cookie["name"]: cookie["value"] for cookie in self._run.jar}
         merged.update(_names(self._run.web.raw.cookies))
         if self._browser is not None:
-            merged.update({cookie["name"]: cookie["value"] for cookie in self._browser.cookies})
+            merged.update(
+                {cookie["name"]: cookie["value"] for cookie in self._browser.cookies.get()}
+            )
         return MappingProxyType(merged)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
               in_page: bool = False, **request: Any) -> http.Response:
-        """Make one request, paced and retried.
-
-        See `flnd.source.Site.fetch`.
-        """
+        """Make one request, paced and retried."""
         response = self._fetch(url, method=method, headers=headers, soft=False, in_page=in_page,
                                request=request)
         assert response is not None
@@ -233,10 +235,7 @@ class TargetSite:
 
     def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
                   in_page: bool = False, **request: Any) -> http.Response | None:
-        """Like `fetch`, returning None for a 401, 403 or 404.
-
-        See `flnd.source.Site.try_fetch`.
-        """
+        """Like `fetch`, returning None for a 401, 403 or 404."""
         return self._fetch(url, method=method, headers=headers, soft=True, in_page=in_page,
                            request=request)
 
@@ -247,22 +246,19 @@ class TargetSite:
             return self._fetch_in_page(url, method, headers, soft, request)
         if self._browser is not None:
             # Cookies set in the browser reach the client too, as a logged-in page would send them.
-            self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies))
+            self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
         options = dict(request)
-        redirects = options.pop("follow_redirects", None)
+        options.pop("follow_redirects", None)
         unknown = options.keys() - {"params", "data", "json", "timeout"}
         if unknown:
             raise TypeError(f"fetch takes params, data, json, timeout and follow_redirects, "
                             f"not {', '.join(sorted(unknown))}")
         with _fetch_errors():
             return self._run.web.fetch(url, method=method, headers=headers, soft=soft,
-                                       redirects=redirects, attempts=ATTEMPTS, **options)
+                                       attempts=ATTEMPTS, **options)
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
-        """Load `url` in the target's tab, paced.
-
-        See `flnd.source.Site.goto`.
-        """
+        """Load `url` in the target's tab, paced."""
         if url in self._pending_warm:
             self._pending_warm.remove(url)
         warmed = self._warmed.pop(url, None)
@@ -278,7 +274,7 @@ class TargetSite:
                     page, url=url, pre_visit=pre_visit, idle=idle, timeout=timeout,
                 )
             else:
-                visit = self._run.web.call(
+                visit = self._run.web._call(
                     url,
                     lambda: self._visit_tab(page, url=url, pre_visit=None,
                                             idle=idle, timeout=timeout),
@@ -477,27 +473,23 @@ class TargetSite:
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:
-        """Log an info line naming the target.
-
-        See `flnd.source.Site.info`.
-        """
+        """Log an info line naming the target."""
         # Target's name is put in front of the message as a field so text cannot break format.
-        log.info("{target}: " + message, target=str(self.target), **fields)
+        ui.info("{target}: " + message, target=str(self.target), **fields)
 
     def warn(self, message: str, **fields: Any) -> None:
-        """Log a warning line naming the target.
-
-        See `flnd.source.Site.warn`.
-        """
-        log.warn("{target}: " + message, target=str(self.target), **fields)
+        """Log a warning line naming the target."""
+        ui.warn("{target}: " + message, target=str(self.target), **fields)
 
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
-        """Count one rate limit and wait it out.
-
-        See `flnd.source.Site.back_off`.
-        """
+        """Count one rate limit and wait it out."""
         with _stoppable():
-            self._run.web.back_off(self._home, reason=reason, retry_after=retry_after)
+            host = self._run.web._host(self._home)
+            seconds = host.throttled(retry_after)
+            if seconds is not None:
+                ui.warn("{host}: {reason}; waiting {time} (attempt {n})", host=host.name,
+                        reason=reason, time=text.fmt.duration(round(seconds)), n=host.strikes)
+                self._run.web._wait(host, seconds)
 
     def _held_pages(self) -> list[_PacedPage]:
         pages = [*self._stack, *self._idle_tabs, *(tab for tab, _ in self._warmed.values())]
@@ -508,23 +500,25 @@ class TargetSite:
     def close(self) -> None:
         """Close or release the target's tabs, giving the client the cookies set in them."""
         held = self._held_pages()
-        for tab in held:
-            self._stop_warm_watch(tab)
-        pool = self._run.settings._browser_pool
-        if self._browser is not None:
-            self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies))
-            if pool is None:
-                self._browser.close()
-            else:
-                pool.release(tab.raw for tab in held)
-        self._browser = self._page = None
-        self._stack.clear()
-        self._idle_tabs.clear()
-        self._warmed.clear()
-        self._pending_warm.clear()
-        self._active_watches.clear()
-        with self._warm_lock:
-            self._warm_buffers.clear()
+        try:
+            for tab in held:
+                self._stop_warm_watch(tab)
+            pool = self._run.settings._browser_pool
+            if self._browser is not None:
+                self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
+                if pool is None:
+                    self._browser.close()
+                else:
+                    pool.release(tab.raw for tab in held)
+        finally:
+            self._browser = self._page = None
+            self._stack.clear()
+            self._idle_tabs.clear()
+            self._warmed.clear()
+            self._pending_warm.clear()
+            self._active_watches.clear()
+            with self._warm_lock:
+                self._warm_buffers.clear()
 
     def _fetch_in_page(self, url: str, method: str, headers: Mapping[str, str] | None, soft: bool,
                        request: dict[str, Any]) -> http.Response | None:
@@ -545,26 +539,21 @@ class TargetSite:
                               timeout=timeout)
 
         with _fetch_errors():
-            return self._run.web.call(url, send, attempts=ATTEMPTS)
+            return self._run.web._call(url, send, attempts=ATTEMPTS)
 
     def _connect(self) -> Any:
         """The target's browser, with the source's settings and the login's cookies."""
         if (pool := self._run.settings._browser_pool) is not None:
             return pool.browser_for(self._run.jar)
         source = self._source
-        # Visible (open's default), so a person can solve a captcha in it; no locale or timezone, so
-        # the browser keeps the computer's own, which match where the connection comes from. The
-        # engine asked about downloading Chromium before the run started, when Chrome was missing.
+        # Visible (open's default), so a person can solve a captcha in it.
         opened = browser.open(stealth=source.stealth)
-        opened.add_cookies(self._run.jar)
+        opened.cookies.add(self._run.jar)
         return opened
 
 
 class LoginSite:
-    """The engine's `Login` for a source's own login (tlg's), during `flnd login`.
-
-        Telegram().login(LoginSite(run), "phone")
-    """
+    """The engine's `Login` for a source's own login (tlg's), during `flnd login`."""
 
     def __init__(self, run: SourceRun):
         self._run = run
@@ -572,24 +561,15 @@ class LoginSite:
     @property
     def interactive(self) -> bool:
         """Whether `ask` can ask: `flnd login` in a terminal."""
-        return self._run.settings.interactive and theme.screen.interactive
+        return self._run.settings.interactive and sys.stdin.isatty()
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
-        """Ask a question with `prompt.ask`, and return what was typed.
-
-            code = login.ask("Code", description="Sent to your phone")
-
-        Args:
-            message: the question.
-            secret: hide what is typed, as for a password; the done line shows only the message.
-            description: more lines under the question.
-
-        Raises:
-            RuntimeError: not in a terminal, where nobody could answer.
-        """
+        """Ask a question with `prompt.ask`, and return what was typed."""
         if not self.interactive:
             raise RuntimeError(f"{self._run.source.code}: logging in needs a terminal to ask in")
-        return prompt.ask(message, secret=secret, description=description)
+        if description:
+            ui.info(description)
+        return prompt.ask(message, secret=secret)
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
@@ -597,13 +577,8 @@ class LoginSite:
         return self._run.secrets
 
     def info(self, message: str, **fields: Any) -> None:
-        """A `log.info` line naming the source, the way `TargetSite.info` names a target.
-
-        Args:
-            message: the text, with `{name}` fields filled in from `fields`.
-            **fields: the values the message's fields take.
-        """
-        log.info("{code}: " + message, code=self._run.source.code, **fields)
+        """Log an info line naming the source."""
+        ui.info("{code}: " + message, code=self._run.source.code, **fields)
 
 
 class _PacedPage(browser.Page):
@@ -615,26 +590,25 @@ class _PacedPage(browser.Page):
         self._scrolling_within = False
 
     def scroll(
-        self, *, within: Any = None, until: Callable[[], bool] | None = None,
-        count: Callable[[], int] | None = None, idle: float = 10.0, wait: float = 3.0,
-        pause: float = 0.05, on_step: Callable[[], Any] | None = None,
+        self, *, until: Callable[[], bool] | None = None,
+        within: str | None = None, idle: float = 10.0,
     ) -> int:
-        """`Page.scroll`, its `pause` raised to the source's scroll floor; see `Page.scroll`."""
+        """`Page.scroll` tracking whether scrolling within a container."""
         self._scrolling_within = within is not None
         try:
-            return super().scroll(
-                within=within, until=until, count=count, idle=idle, wait=wait,
-                pause=max(pause, SCROLL_FLOOR * self._speed()), on_step=on_step,
-            )
+            return super().scroll(until=until, within=within, idle=idle)
         finally:
             self._scrolling_within = False
+
+    def _pause(self, floor: float) -> None:
+        super()._pause(max(floor, SCROLL_FLOOR * self._speed()))
 
     def _move(self, target: Any) -> None:
         if target is not None:
             super()._move(target)
             return
         _, _, _, height = self._area(None)
-        self._wheel(height * clock.random().uniform(1.8, 2.6))
+        self._wheel(height * random.uniform(1.8, 2.6))
 
     def _wheel(self, distance: float) -> None:
         if self._scrolling_within:
@@ -695,25 +669,36 @@ class _RawProxy:
         return self._call(lambda n: self._obj.wait_for_timeout(n), min(ms, 2))
 
 
+class _SharedCookies:
+    """Cookie view over a shared `_BrowserPool` matching `browser.BrowserCookies`."""
+
+    def __init__(self, pool: _BrowserPool, jar: Any):
+        self._pool = pool
+        self._jar = jar
+
+    def get(self) -> Any:
+        """Current cookies of the shared browser."""
+        return self._pool.cookies()
+
+    def add(self, jar: Any) -> None:
+        """Merge `jar` into the shared browser context."""
+        self._pool.add_cookies(jar)
+
+    def clear(self) -> None:
+        """Clear cookies on the shared browser."""
+
+
 class _SharedBrowser:
     """Browser view over a shared `_BrowserPool` for one source's cookies."""
 
     def __init__(self, pool: _BrowserPool, jar: Any):
         self._pool = pool
         self._jar = jar
-
-    @property
-    def cookies(self) -> Any:
-        """Current cookies of the shared browser."""
-        return self._pool.cookies()
+        self.cookies = _SharedCookies(pool, jar)
 
     @property
     def _headless(self) -> bool:
         return self._pool.headless()
-
-    def add_cookies(self, jar: Any) -> None:
-        """Merge `jar` into the shared browser context."""
-        self._pool.add_cookies(jar)
 
     def open(self) -> Any:
         """Open or reuse a tab in the shared browser window."""
@@ -753,7 +738,7 @@ class _BrowserPool:
         if self._browser is None:
             self._browser = browser.open(stealth=True)
         if not any(seen is jar for seen in self._jars):
-            self._browser.add_cookies(jar)
+            self._browser.cookies.add(jar)
             self._jars.append(jar)
         return self._browser
 
@@ -792,7 +777,7 @@ class _BrowserPool:
     def cookies(self) -> Any:
         if self._browser is None:
             return []
-        return self._call(lambda: self._browser.cookies if self._browser else [])
+        return self._call(lambda: self._browser.cookies.get() if self._browser else [])
 
     def headless(self) -> bool:
         return bool(getattr(self._browser, "_headless", False))
@@ -851,14 +836,14 @@ def _warn_expiring(source: Source, jar: Any) -> None:
         ):
             continue
         if expires <= now:
-            log.warn(
+            ui.warn(
                 "{code}: the login cookie {name} has expired; run flnd login again",
                 code=source.code, name=cookie["name"],
             )
         elif expires - now <= EXPIRY_WARNING:
-            log.warn(
+            ui.warn(
                 "{code}: the login cookie {name} expires in {time}; run flnd login again soon",
-                code=source.code, name=cookie["name"], time=fmt.duration(expires - now),
+                code=source.code, name=cookie["name"], time=text.fmt.duration(expires - now),
             )
 
 

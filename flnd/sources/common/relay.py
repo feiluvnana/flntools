@@ -1,13 +1,4 @@
-"""Meta's server-rendered data: the GraphQL results Instagram and Facebook embed in their pages.
-
-A page's first load doesn't fetch its own data. The server puts the results the site's GraphQL
-would have returned into `<script type="application/json">` blocks, under `__bbox.result`, so a
-source reads them there as well as from the responses that come later. `meta_results` loads a
-page and reads them, for a ported source; `embedded_results` reads a page already loaded.
-
-    for result in meta_results(site, f"https://www.instagram.com/{user}/"):
-        on_graphql(result)
-"""
+"""Meta's server-rendered GraphQL results embedded in Instagram and Facebook pages."""
 
 from __future__ import annotations
 

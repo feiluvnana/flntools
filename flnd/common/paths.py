@@ -16,11 +16,12 @@ Every temporary file matches `PART_GLOB`, which `flnd sync`'s repair removes.
 
 from __future__ import annotations
 
+import mimetypes
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from shared import fmt, log
+from shared import text, ui
 
 if TYPE_CHECKING:
     from flnd.source import Target
@@ -35,7 +36,7 @@ SOURCE_STATE = METADATA / "sources.db"
 SECRETS = METADATA / "secrets.db"
 KEY = METADATA / "secret.key"
 
-# Temporary files match (`shared.atomic`'s part names) and `flnd sync`'s repair deletes them.
+# Temporary files match (`shared.fs`'s part names) and `flnd sync`'s repair deletes them.
 PART_GLOB = ".*.part"
 # What a resumable download's part has beside it (`shared.http.download`'s sidecar: its URL,
 # validator, size and ranges), named after the part; and what finds every such sidecar.
@@ -88,22 +89,32 @@ class NotMediaError(ValueError):
     """A web page or JSON where media was expected (e.g. login wall or error page)."""
 
 
+# Common media extensions mapped to `IMAGE`, `VIDEO`, or `AUDIO` without probing disk.
+MEDIA_EXTENSIONS = {
+    ".jpg": IMAGE, ".jpeg": IMAGE, ".png": IMAGE, ".gif": IMAGE, ".webp": IMAGE,
+    ".heic": IMAGE, ".heif": IMAGE, ".avif": IMAGE, ".bmp": IMAGE, ".tif": IMAGE, ".tiff": IMAGE,
+    ".mp4": VIDEO, ".m4v": VIDEO, ".mov": VIDEO, ".webm": VIDEO, ".mkv": VIDEO, ".avi": VIDEO,
+    ".mp3": AUDIO, ".m4a": AUDIO, ".aac": AUDIO, ".ogg": AUDIO, ".opus": AUDIO,
+    ".wav": AUDIO, ".flac": AUDIO,
+}
+
+
 def kind_of(name: str) -> str | None:
-    """What a saved file is by its name: `IMAGE`, `VIDEO` or `AUDIO`, or None.
-
-        paths.kind_of("posts/a.heic")     # "image"
-    """
-    from shared import media
-
-    return media.kind(Path(name).suffix)
+    """What a saved file is by its name: `IMAGE`, `VIDEO` or `AUDIO`, or None."""
+    suffix = Path(name).suffix.lower()
+    if suffix in MEDIA_EXTENSIONS:
+        return MEDIA_EXTENSIONS[suffix]
+    mime, _ = mimetypes.guess_type(f"x{suffix}")
+    if mime:
+        head = mime.split("/", 1)[0]
+        if head in (IMAGE, VIDEO, AUDIO):
+            return head
+    return None
 
 
 def target_folder(home: Path, target: Target) -> Path:
-    """A target's folder: `<home>/media/<code>/<value>`, with value made safe.
-
-        paths.target_folder(Path(".flnd"), Target("ins", "user", "example_user"))
-    """
-    return home / MEDIA / target.source / fmt.filename(target.value)
+    """A target's folder: `<home>/media/<code>/<value>`, with value made safe."""
+    return home / MEDIA / target.source / text.clean.filename(target.value)
 
 
 def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
@@ -115,9 +126,9 @@ def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
         raise NotMediaError(f"got a web page instead of {NOUNS.get(kind, kind)}")
     if decode:
         try:
-            media.open(path).check()
-        except (RuntimeError, ImportError, TimeoutError) as error:
-            # These say check cannot run here; BrokenError and UnsafeError reach caller to
-            # decide whether to retry or delete.
-            log.debug("{name}: not checked: {error}", name=path.name, error=error)
+            with media.open(path):
+                pass
+        except (media.MissingError, RuntimeError, ImportError, TimeoutError) as error:
+            # Missing backend or timeout cannot check here; BrokenError/UnsafeError reach caller.
+            ui.debug("{name}: not checked: {error}", name=path.name, error=error)
     return extension
