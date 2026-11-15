@@ -39,8 +39,8 @@ from typing import (
 )
 
 import shared
-from shared import _atomic
-from shared import _fmt as fmt
+from shared import _fs as fs
+from shared import _text as text
 
 __all__ = [
     "BrokenError", "Entry", "Error", "Limits", "MissingError", "PasswordError",
@@ -204,7 +204,7 @@ def pack(sources: PathLike | Sequence[PathLike], dest: PathLike, *, password: st
     dest.parent.mkdir(parents=True, exist_ok=True)
     pieces: list[Path] = []
     try:
-        with _atomic.writing(dest, replace=True) as whole:
+        with fs.write(dest, replace=True) as whole:
             if kind == "zip":
                 _write_zip(whole, files, password, progress)
             elif kind == "7z":
@@ -683,7 +683,7 @@ def _check(found: list[_Entry], limits: Limits, archive_size: int) -> None:
     total = sum(entry.size or 0 for entry in found)
     if total > limits.size:
         raise UnsafeError(
-            f"the archive expands to {fmt.size(total)}, over the {fmt.size(limits.size)} limit"
+            f"the archive expands to {text.fmt.size(total)}, over the {text.fmt.size(limits.size)} limit"
         )
     if total > limits.ratio * max(archive_size, 1):
         raise UnsafeError(f"the archive expands more than {limits.ratio:g} times")
@@ -778,7 +778,7 @@ class _Output:
     def write(self, chunk: bytes) -> int:
         self.written += len(chunk)
         if self.written > self.cap:
-            raise UnsafeError(f"{self.name!r} expands past {fmt.size(self.cap)}, "
+            raise UnsafeError(f"{self.name!r} expands past {text.fmt.size(self.cap)}, "
                               "more than it declared or the limits allow")
         return self.file.write(chunk)
 

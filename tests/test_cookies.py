@@ -200,7 +200,7 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("c.example", "damaged", "", encrypt_chromium("two", "another", 1, "c.example"), "/", 0, 0, 0, 0),
             ("d.example", "plain", "visible", b"", "/", 0, 0, 0, 0),
         ])
-        with mock.patch.object(cookies.log, "debug") as debug:
+        with mock.patch.object(cookies.ui, "debug") as debug:
             jar = cookies.load("chrome")
         self.assertEqual([c["name"] for c in jar.raw], ["good", "plain"])
         self.assertEqual((jar["good"], jar["plain"]), ("one", "visible"))
@@ -568,7 +568,7 @@ class SaveTest(FileTestCase):
     def test_no_temp_file_after_failure(self):
         path = self.folder / "ins.txt"
         with mock.patch.object(cookies.os, "replace", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
+            with self.assertRaises(shared.Error):
                 self.jar.save(path)
         self.assertEqual(list(self.folder.iterdir()), [])
 

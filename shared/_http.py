@@ -18,9 +18,9 @@ from typing import (TYPE_CHECKING, Any, Callable, Iterator, Literal, Mapping, Se
 import shared
 from shared import _clock as clock
 from shared import _cookies as cookies
-from shared import _fmt as fmt
-from shared._log import log
+from shared import _text as text
 from shared._pace import EPOCH, MAX_BACKOFF, Host, Pace
+from shared._ui import ui
 
 try:
     import httpx
@@ -245,7 +245,7 @@ def fetch(url: str, *, method: str = "GET", headers: Mapping[str, str] | None = 
             if attempt >= attempts:
                 raise
             seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
-            log.debug("retry {n} of {url} in {seconds:g} s: {reason}",
+            ui.debug("retry {n} of {url} in {seconds:g} s: {reason}",
                       n=attempt, url=_where(url), seconds=seconds, reason=error)
             clock.sleep(seconds)
             attempt += 1
@@ -419,9 +419,9 @@ class Client:
                 if attempt >= attempts:
                     raise
                 seconds = min(FIRST_WAIT * 2 ** (attempt - 1), MAX_WAIT)
-                log.debug("retry {n} of {url} in {seconds:g} s: {error}", n=attempt,
+                ui.debug("retry {n} of {url} in {seconds:g} s: {error}", n=attempt,
                           url=_where(url), seconds=seconds, error=error)
-                if clock.sleep(seconds, stop=self._stop):
+                if not clock.sleep(seconds, stop=self._stop):
                     raise StoppedError(f"{host.name}: stopped") from None
                 attempt += 1
                 continue
@@ -452,8 +452,8 @@ class Client:
         """Count a throttle on `host`, and say how long it holds; the next turn waits it out."""
         seconds = host.throttled(retry_after)
         if seconds is not None:
-            log.warn("{host}: {reason}; waiting {time} (attempt {n})", host=host.name,
-                     reason=reason, time=fmt.duration(round(seconds)), n=host.strikes)
+            ui.warn("{host}: {reason}; waiting {time} (attempt {n})", host=host.name,
+                     reason=reason, time=text.fmt.duration(round(seconds)), n=host.strikes)
 
     def _wait(self, host: Host, seconds: float) -> None:
         """Wait `seconds` for `host`'s turn, as a countdown row when it is long; `stop` ends it."""
@@ -463,17 +463,16 @@ class Client:
             show = seconds >= SHOWN_WAIT and not host.showing
             host.showing = host.showing or show
         if not show:
-            if clock.sleep(seconds, stop=self._stop):
+            if not clock.sleep(seconds, stop=self._stop):
                 raise StoppedError(f"{host.name}: stopped")
             return
         try:
-            with log.progress(f"{host.name}: waiting", total=seconds, show=_seconds,
-                              wait=True) as bar:
+            with ui.progress(f"{host.name}: waiting", total=seconds) as bar:
                 end = clock.now() + seconds
                 # One-second steps, so the countdown moves.
                 while (left := end - clock.now()) > 0:
                     bar.count = seconds - left
-                    if clock.sleep(min(1.0, left), stop=self._stop):
+                    if not clock.sleep(min(1.0, left), stop=self._stop):
                         raise StoppedError(f"{host.name}: stopped")
         finally:
             with self._hosts_lock:
@@ -502,7 +501,7 @@ class _Transport(httpx.BaseTransport):
         except (httpx.RemoteProtocolError, httpx.LocalProtocolError) as error:
             with self._lock:
                 self._fallen.add(host)
-            log.debug("{host}: HTTP/2 failed ({error}); HTTP/1.1 from now on", host=host,
+            ui.debug("{host}: HTTP/2 failed ({error}); HTTP/1.1 from now on", host=host,
                       error=type(error).__name__)
             if request.method.upper() not in IDEMPOTENT_METHODS:
                 raise
@@ -583,7 +582,7 @@ def _has_h2() -> bool:
 
 def _seconds(value: float) -> str:
     """A countdown row's count and total, such as "1m 30s"."""
-    return fmt.duration(round(value))
+    return text.fmt.duration(round(value))
 
 
 def _slot(url: httpx.URL) -> threading.BoundedSemaphore:

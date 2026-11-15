@@ -330,7 +330,7 @@ class SecretsTest(HttpTestCase):
             lambda request: httpx.Response(500),
             connection_lost,
         ]
-        with mock.patch.object(http.log, "debug") as debug:
+        with mock.patch.object(http.ui, "debug") as debug:
             for handler in handlers:
                 with self.secret_client(handler), self.assertRaises(http.Error) as raised:
                     http.fetch("https://example.com/?auth=s3cr3t-cookie-value", attempts=2)

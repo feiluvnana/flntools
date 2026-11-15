@@ -7,31 +7,29 @@ ValueError, so every `except` written before still catches what it caught. Nothi
 import unittest
 
 import shared
-from shared import archive, browser, bundler, cli, cookies, crypto, fmt, kv, log, media, prompt, selector, style, theme, worker
+from shared import archive, browser, bundler, cli, clock, cookies, crypto, fs, http, media, prompt, selector, store, text, ui, worker
 
-MODULES = {"archive": archive, "browser": browser, "bundler": bundler, "cli": cli, "cookies": cookies,
-           "crypto": crypto, "fmt": fmt, "kv": kv, "log": log, "media": media, "prompt": prompt,
-           "selector": selector, "style": style, "theme": theme, "worker": worker}
+MODULES = {"archive": archive, "browser": browser, "bundler": bundler, "cli": cli, "clock": clock,
+           "cookies": cookies, "crypto": crypto, "fs": fs, "http": http, "media": media,
+           "prompt": prompt, "selector": selector, "store": store, "text": text, "ui": ui,
+           "worker": worker}
 
 # Each error that existed before the tree: its module, the builtin base it had then, which it keeps,
 # and the kind of problem it now also is (None for none of the three).
 ERRORS = [
     (archive.UnsafeError, "archive", ValueError, shared.UnsafeError),
-    (archive.BombError, "archive", ValueError, shared.UnsafeError),
-    (archive.ConflictError, "archive", ValueError, None),
+    (archive.BrokenError, "archive", ValueError, shared.BrokenError),
     (archive.PasswordError, "archive", ValueError, shared.RefusedError),
     (media.BrokenError, "media", ValueError, shared.BrokenError),
     (media.UnsafeError, "media", ValueError, shared.UnsafeError),
-    (cookies.Error, "cookies", ValueError, None),       # CookieError, renamed to its base in step 4
-    (cookies.UnsafeError, "cookies", ValueError, shared.UnsafeError),  # new in step 4: a file over 16 MB
-    (crypto.Error, "crypto", ValueError, None),       # crypto's one error, renamed to its base in step 4
-    (kv.ClosedError, "kv", RuntimeError, None),      # kv raised these builtins until step 4
-    (kv.UnstorableError, "kv", TypeError, None),
-    (selector.BrokenError, "selector", ValueError, shared.BrokenError),  # json's ValueError until step 4
-    (selector.UnsafeError, "selector", ValueError, shared.UnsafeError),  # new in step 4; a ValueError as its kind is
-    (cli.UsageError, "cli", Exception, None),
-    (prompt.Error, "prompt", Exception, None),       # PromptError, renamed to its base in step 4
-    (worker.TaskError, "worker", Exception, None),
+    (cookies.Error, "cookies", Exception, None),
+    (cookies.UnsafeError, "cookies", ValueError, shared.UnsafeError),
+    (crypto.Error, "crypto", ValueError, None),
+    (store.ClosedError, "store", RuntimeError, None),
+    (selector.BrokenError, "selector", ValueError, shared.BrokenError),
+    (cli.UsageError, "cli", ValueError, None),
+    (prompt.Error, "prompt", Exception, None),
+    (worker.ClosedError, "worker", RuntimeError, None),
 ]
 KINDS = (shared.UnsafeError, shared.BrokenError, shared.RefusedError)
 
@@ -75,22 +73,22 @@ class TreeTest(unittest.TestCase):
                 self.assertTrue(issubclass(error, shared.MissingError))
                 self.assertTrue(issubclass(error, module.Error))
                 self.assertTrue(issubclass(error, RuntimeError))
-        for error, module in ((media.StalledError, media), (worker.StalledError, worker)):
+        for error, module in ((worker.StalledError, worker),):
             with self.subTest(error.__qualname__):
                 self.assertTrue(issubclass(error, module.Error))
                 self.assertTrue(issubclass(error, TimeoutError))
         self.assertTrue(issubclass(shared.MissingError, shared.Error))
 
     def test_siblings_stay_apart(self):
-        # The tree adds bases, never links two module errors: a bomb isn't an archive.UnsafeError, as before.
-        self.assertFalse(issubclass(archive.BombError, archive.UnsafeError))
+        # The tree adds bases, never links two module errors: a broken archive isn't an archive.UnsafeError.
+        self.assertFalse(issubclass(archive.BrokenError, archive.UnsafeError))
         self.assertFalse(issubclass(media.UnsafeError, archive.UnsafeError))
         self.assertFalse(issubclass(media.BrokenError, media.UnsafeError))
 
     def test_a_module_error_is_caught_at_every_level(self):
-        for level in (archive.BombError, archive.Error, shared.UnsafeError, shared.Error, ValueError):
+        for level in (archive.UnsafeError, archive.Error, shared.UnsafeError, shared.Error, ValueError):
             with self.subTest(level.__qualname__), self.assertRaises(level):
-                raise archive.BombError("too big")
+                raise archive.UnsafeError("unsafe path")
 
 
 if __name__ == "__main__":

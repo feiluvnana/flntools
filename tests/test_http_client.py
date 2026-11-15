@@ -14,9 +14,9 @@ from pathlib import Path
 import httpx
 
 from shared import _cookies as cookies
-from shared import clock, http, theme
+from shared import clock, http
 from shared._pace import Pace
-from shared._theme import Screen
+from shared._ui import ui
 
 SITE = "https://www.example.com"
 CDN = "https://cdn.example.net"
@@ -26,9 +26,8 @@ PACE = Pace(1.0, {"/graphql": (2, 10.0)}, domains=("example.com",))
 class ClientCase(unittest.TestCase):
     def setUp(self) -> None:
         self.fake = self.enterContext(clock.use(clock.Fake()))
-        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=80, tty=False,
-                             interactive=False)
-        self.enterContext(theme.scope(screen=self.screen, color="none", unicode=True))
+        self.dest = io.StringIO()
+        self.enterContext(ui.scope(dest=self.dest, color=False, width=80))
         self.answers: list[httpx.Response] = []
         self.sent: list[tuple[float, str]] = []
 
@@ -126,7 +125,7 @@ class BackOffTest(ClientCase):
         self.assertAlmostEqual(self.gaps()[0], 7.0)
         self.assertEqual(self.speeds(client), {"www.example.com": 2.0})
         self.assertIn("! www.example.com: rate limited; waiting 7.0s (attempt 1)",
-                      self.screen.dest.getvalue())
+                      self.dest.getvalue())
 
     def test_without_retry_after_the_waits_double_from_30_seconds(self):
         self.answers = [httpx.Response(429), httpx.Response(429)]

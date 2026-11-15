@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Union
 
 import shared
-from shared import _atomic
-from shared._log import log
+from shared import _fs as fs
+from shared._ui import ui
 
 __all__ = ["Error", "Jar", "MissingError", "UnsafeError", "load"]
 
@@ -160,7 +160,10 @@ class Jar:
         text = _netscape_text(self._cookies)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Mode 0600: the file is a login. The atomic write means a reader never sees half a file.
-        _atomic.write(path, text.encode("utf-8"), mode=0o600)
+        with fs.write(path, replace=True) as part:
+            part.write_bytes(text.encode("utf-8"))
+            if os.name != "nt":
+                os.chmod(part, 0o600)
         return path
 
     def __getitem__(self, name: str) -> str:
@@ -377,7 +380,7 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
         )
     if failures:
         # The count only: a cookie's name or host says which sites a person uses.
-        log.debug(
+        ui.debug(
             "skipped {count} {browser} cookies that can't be decrypted",
             count=len(failures),
             browser=browser,

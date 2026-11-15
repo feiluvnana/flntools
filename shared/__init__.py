@@ -1,7 +1,7 @@
 """Small helpers for scripts.
 
-The terminal modules are stdlib only and load at once. The others load on first use,
-so `from shared import log` never imports Playwright, httpx, parsel, cryptography, or Pillow.
+Stdlib modules (`clock`, `text`) load at once. The others load on first use,
+so `from shared import text` never imports Rich, Playwright, httpx, parsel, cryptography, or Pillow.
 A module whose extra is missing raises an ImportError that names the extra to install.
 
 Every error `shared` raises is a `shared.Error`. Each module has its own `Error` under it, with
@@ -10,7 +10,7 @@ is also a `shared.UnsafeError`, `shared.BrokenError` or `shared.RefusedError`. S
 how wide to catch:
 
     try:
-        archive.unzip("photos.zip", "photos/")
+        archive.unpack("photos.zip", "photos/")
     except shared.UnsafeError:
         ...
 """
@@ -48,38 +48,38 @@ class MissingError(Error, RuntimeError):
     """A program, an extra or a browser this machine lacks: ffmpeg, unrar, Chrome."""
 
 
-from shared import _cli as cli
 from shared import _clock as clock
-from shared import _fmt as fmt
-from shared import _prompt as prompt
-from shared._log import log
-from shared._style import style
-from shared._theme import theme
+from shared import _text as text
 
 if TYPE_CHECKING:
     # Checkers see the real modules; at runtime they still load on first use.
     from shared import _archive as archive
-    from shared import _atomic as atomic
     from shared import _browser as browser
     from shared import _bundler as bundler
+    from shared import _cli as cli
     from shared import _cookies as cookies
     from shared import _crypto as crypto
+    from shared import _fs as fs
     from shared import _http as http
-    from shared import _kv as kv
     from shared import _media as media
+    from shared import _prompt as prompt
     from shared import _selector as selector
+    from shared import _store as store
+    from shared import _ui as ui
     from shared import _worker as worker
 
 LAZY_MODULES = (
-    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http",
-    "browser", "worker", "bundler", "media",
+    "ui", "prompt", "cli", "fs", "store", "worker",
+    "http", "cookies", "browser", "selector",
+    "crypto", "archive", "media", "bundler",
 )
 
 __all__ = [
     "Error", "UnsafeError", "BrokenError", "RefusedError", "MissingError",
-    "cli", "clock", "fmt", "log", "prompt", "style", "theme",
-    "archive", "atomic", "crypto", "cookies", "kv", "selector", "http",
-    "browser", "worker", "bundler", "media",
+    "clock", "text",
+    "ui", "prompt", "cli", "fs", "store", "worker",
+    "http", "cookies", "browser", "selector",
+    "crypto", "archive", "media", "bundler",
 ]
 
 

@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Union
 
 import shared
-from shared import _atomic, _ffmpeg, _pillow
+from shared import _ffmpeg, _pillow
+from shared import _fs as fs
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -445,19 +446,19 @@ class Media:
             raise FileExistsError(f"{target} already exists")
         if self._finalizer is not None and self._finalizer.alive:
             try:
-                _atomic._replace(self._path, target)
+                fs._replace(self._path, target)
             except OSError as error:
                 if error.errno != errno.EXDEV:
                     raise
                 # Another disk: rename can't cross it, so copy through a part beside `target`.
-                with _atomic.writing(target, replace=True) as part:
+                with fs.write(target, replace=True) as part:
                     shutil.copyfile(self._path, part)
                 self._path.unlink(missing_ok=True)
             self._finalizer.detach()
             self._chain.temporaries.discard(self._path)
         else:
             # The opened file itself, or one saved before: keep it and copy to `target`.
-            with _atomic.writing(target, replace=over_origin) as part:
+            with fs.write(target, replace=over_origin) as part:
                 shutil.copyfile(self._path, part)
         if dest is None and target != origin:
             origin.unlink(missing_ok=True)

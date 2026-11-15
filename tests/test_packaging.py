@@ -51,13 +51,13 @@ def missing_extra_message(module: str, package: str) -> str:
 
 class LazyImportTest(unittest.TestCase):
     def test_phase_1_imports_no_extra(self):
-        code = ("import sys\nfrom shared import cli, fmt, log, prompt, style, theme\n"
+        code = ("import sys\nfrom shared import cli, clock, fs, prompt, store, text, ui\n"
                 "print(sorted(n for n in ('httpx', 'playwright', 'cryptography', 'parsel') if n in sys.modules))")
         self.assertEqual(run_python(code).stdout.strip(), "[]")
 
     def test_modules_load_on_first_use(self):
-        code = ("import sys, shared\nbefore = 'shared._kv' in sys.modules\n"
-                "print(before, shared.kv is sys.modules['shared._kv'], 'kv' in dir(shared))")
+        code = ("import sys, shared\nbefore = 'shared._store' in sys.modules\n"
+                "print(before, shared.store is sys.modules['shared._store'], 'store' in dir(shared))")
         self.assertEqual(run_python(code).stdout.strip(), "False True True")
 
     def test_unknown_name(self):

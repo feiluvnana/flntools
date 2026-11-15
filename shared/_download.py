@@ -38,12 +38,12 @@ import httpx
 
 import shared
 from shared import _clock as clock
-from shared import _fmt as fmt
 from shared import _fs as fs
+from shared import _text as text
 from shared._http import (CONNECTION_ERRORS, DOWNLOAD_EXTENSION, PIECE_EXTENSION, Error,
                           IncompleteError, RateLimitedError, RefusedError, StoppedError,
                           _retry_after, _scrub, _where)
-from shared._log import log
+from shared._ui import ui
 
 __all__ = ["run"]
 
@@ -137,7 +137,7 @@ def run(mirrors: Sequence[str], dest: PathLike, client: httpx.Client,
     path = _destination(dest, mirrors[0])
     path.parent.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
-        bar = (stack.enter_context(log.progress(transfer.label, total=transfer.size, show=fmt.size))
+        bar = (stack.enter_context(ui.progress(transfer.label, total=transfer.size))
                if transfer.label is not None else None)
         taken = stack.enter_context(_claimed(path))
         streams = stack.enter_context(_Streams(transfer.stop))
@@ -155,7 +155,7 @@ def run(mirrors: Sequence[str], dest: PathLike, client: httpx.Client,
             except Exception as error:  # any other failure of a mirror but the last: try the next
                 if number == len(mirrors):
                     raise
-                log.debug("mirror {n} of {name} failed: {error}; trying the next", n=number,
+                ui.debug("mirror {n} of {name} failed: {error}; trying the next", n=number,
                           name=path.name, error=error)
     raise AssertionError("unreachable: the last mirror returns or raises")
 
@@ -428,7 +428,7 @@ class _Streams:
 
     def sleep(self, seconds: float, url: str) -> None:
         """Wait between attempts on the shared clock; `stop` ends the wait with `StoppedError`."""
-        if clock.sleep(seconds, stop=self.stop):
+        if not clock.sleep(seconds, stop=self.stop):
             self.check(url)
 
     def opened(self, response: httpx.Response) -> None:
@@ -540,7 +540,7 @@ class _Transfer:
                 raise failure
             # At once the first time, as most drops are one-offs; then 1 s doubling to 30 s.
             seconds = 0.0 if attempt == 1 else min(FIRST_WAIT * 2 ** (attempt - 2), MAX_WAIT)
-            log.debug("retry {n} of {url} in {seconds:g} s: {reason}", n=attempt,
+            ui.debug("retry {n} of {url} in {seconds:g} s: {reason}", n=attempt,
                       url=_where(self.url), seconds=seconds, reason=failure)
             if seconds:
                 self.streams.sleep(seconds, self.url)
@@ -636,7 +636,7 @@ class _Transfer:
             # A 200 to a range means the file changed or ranges are ignored; without Range it is
             # just a fresh start after a pre-first-byte drop.
             if "Range" in stream.response.request.headers:
-                log.debug("{name}: not the file the part holds; starting again",
+                ui.debug("{name}: not the file the part holds; starting again",
                           name=self.dest.name)
                 self.restarted = True
             self._drop()
@@ -969,7 +969,7 @@ class _Pieces:
         """Put `worker`'s piece back at the queue's front; the stream to close, for a slow one."""
         segment = worker.segment
         assert segment is not None
-        log.debug("{name}: a connection was {reason}; its piece goes to another",
+        ui.debug("{name}: a connection was {reason}; its piece goes to another",
                   name=self.transfer.dest.name, reason=reason)
         worker.dropped = reason
         segment.owner = None
@@ -1031,7 +1031,7 @@ class _Pieces:
             if isinstance(error, _Dropped) or worker.dropped is not None:
                 return
             if self._carries_on(worker, error, segment):
-                log.debug("{name}: a connection failed, the others carry on: {error}",
+                ui.debug("{name}: a connection failed, the others carry on: {error}",
                           name=self.transfer.dest.name, error=error)
                 return
             self.failures.append(error)
@@ -1313,11 +1313,11 @@ def _room(folder: Path, size: int | None) -> None:
         return
     if size >= FAT_LIMIT and _filesystem(folder) in FAT_NAMES:
         raise _SpaceError(f"{folder} is on FAT32, which can't hold a file of 4 GiB or more "
-                          f"({fmt.size(size)})")
+                          f"({text.fmt.size(size)})")
     free = shutil.disk_usage(folder).free
     if free < size + SPACE_MARGIN:
-        raise _SpaceError(f"{folder}: {fmt.size(free)} free, and a {fmt.size(size)} file needs "
-                          f"{fmt.size(size + SPACE_MARGIN)}")
+        raise _SpaceError(f"{folder}: {text.fmt.size(free)} free, and a {text.fmt.size(size)} file needs "
+                          f"{text.fmt.size(size + SPACE_MARGIN)}")
 
 
 def _filesystem(folder: Path) -> str:
@@ -1395,7 +1395,7 @@ def _destination(dest: PathLike, url: str) -> Path:
     if not (path.is_dir() or str(dest).endswith(("/", os.sep))):
         return path
     name = unquote(urlsplit(url).path.rstrip("/").rpartition("/")[2])
-    return path / fmt.filename(name, fallback=FALLBACK_NAME)
+    return path / text.clean.filename(name, fallback=FALLBACK_NAME)
 
 
 @contextmanager

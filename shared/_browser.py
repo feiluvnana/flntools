@@ -11,6 +11,7 @@ import base64
 import functools
 import json as jsonlib  # `json` is also `Page.fetch`'s keyword, as in `http.fetch`
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -28,10 +29,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import shared
 from shared import _clock as clock
-from shared import _fmt as fmt
 from shared import _prompt as prompt
+from shared import _text as text
 from shared._cookies import Jar
-from shared._log import log
+from shared._ui import ui
 
 if TYPE_CHECKING:
     from shared import _http as http
@@ -323,7 +324,7 @@ class BrowserCookies:
             # Playwright's Error is what a cookie it won't take (no domain, a bad expiry) raises;
             # anything else is a real failure and goes on up.
             except _raw_error() as error:
-                log.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
+                ui.warn("cookie {name} was rejected: {error}", name=cookie.get("name", ""),
                          error=_without(_first_line(error), str(cookie.get("value", ""))))
 
     def clear(self) -> None:
@@ -401,7 +402,7 @@ class Browser:
             except Exception as error:
                 failures.append(error)
         if failures:
-            log.warn("closing the browser failed: {error}", error=_first_line(failures[0]))
+            ui.warn("closing the browser failed: {error}", error=_first_line(failures[0]))
 
     def _wrap(self, raw: RawPage) -> Page:
         if raw not in self._wrappers:
@@ -505,9 +506,9 @@ class Page:
             response = self.raw.goto(url, wait_until=wait_state, timeout=timeout * 1000)
         # Playwright's Error covers DNS failures, aborted requests and timeouts ("not loaded").
         except _raw_error() as error:
-            clean_url = fmt.url(url)
+            clean_url = text.clean.url(url)
             msg = _first_line(error).replace(url, clean_url)
-            log.warn("could not open {url}: {error}", url=clean_url, error=msg)
+            ui.warn("could not open {url}: {error}", url=clean_url, error=msg)
             return None
         if response is None:
             return None
@@ -668,9 +669,9 @@ class Page:
             return True
         if self.browser._headless:
             raise Error(f"cannot hand off to a person in a headless browser: {message}")
-        log.warn(message)
+        ui.warn(message)
         deadline = None if timeout is None else clock.now() + timeout
-        with log.progress(message, wait=True) as bar:
+        with ui.progress(message) as bar:
             while not until():
                 if deadline is not None and clock.now() >= deadline:
                     bar.fail()
@@ -715,7 +716,7 @@ class Page:
                 if not _gone(error):
                     raise
                 if attempt + 1 == tries:
-                    log.warn("could not {what}, the page kept navigating: {error}", what=what,
+                    ui.warn("could not {what}, the page kept navigating: {error}", what=what,
                              error=_first_line(error))
                     return fallback
                 try:
@@ -772,25 +773,23 @@ class Page:
     def _move(self, target: Locator | None) -> None:
         """One scroll: move mouse over the area and wheel down in a fast burst."""
         left, top, width, height = self._area(target)
-        jitter = clock.random()
         # The mouse lands somewhere in the middle of the area, never on one pixel each time.
-        self.raw.mouse.move(left + width * jitter.uniform(0.25, 0.75),
-                            top + height * jitter.uniform(0.3, 0.7), steps=jitter.randint(1, 3))
-        self._wheel(height * jitter.uniform(1.2, 1.8))
+        self.raw.mouse.move(left + width * random.uniform(0.25, 0.75),
+                            top + height * random.uniform(0.3, 0.7), steps=random.randint(1, 3))
+        self._wheel(height * random.uniform(1.2, 1.8))
 
     def _wheel(self, distance: float) -> None:
         """Turn the wheel by `distance` pixels in 4 to 7 uneven frame-rate steps."""
         # Uneven frame-rate steps, so the wheel glides smoothly without ticking at one fixed rate.
-        jitter = clock.random()
-        weights = [jitter.uniform(0.6, 1.4) for _ in range(jitter.randint(4, 7))]
+        weights = [random.uniform(0.6, 1.4) for _ in range(random.randint(4, 7))]
         total = sum(weights)
         for weight in weights:
             self.raw.mouse.wheel(0, distance * weight / total)
-            self.raw.wait_for_timeout(jitter.uniform(5, 15))
+            self.raw.wait_for_timeout(random.uniform(5, 15))
 
     def _pause(self, floor: float) -> None:
         # Jitter only adds: a floor is the least a site is given, so it is never cut short.
-        self.raw.wait_for_timeout(floor * clock.random().uniform(1.0, 1.4) * 1000)
+        self.raw.wait_for_timeout(floor * random.uniform(1.0, 1.4) * 1000)
 
     def _jiggle(self, target: Locator | None, floor: float) -> None:
         # Most feeds load the next page when their end comes back into view, so up a screen and down
@@ -957,7 +956,7 @@ def _install_chromium() -> None:
 
     node, cli_js = compute_driver_executable()
     lines: list[str] = []
-    with log.progress("Downloading Chromium", total=100) as bar:
+    with ui.progress("Downloading Chromium", total=100) as bar:
         # The installer's output is read here, not shown: its own bars would tear the live area.
         cmd = [node, cli_js, "install", "--no-shell", "chromium"]
         with subprocess.Popen(cmd, env=get_driver_env(), stdout=subprocess.PIPE,
@@ -1083,9 +1082,9 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
         # that: the body is gone, and it belonged to the page being left. That is expected, so it
         # is skipped without a line; any other unreadable body is still worth a debug line.
         if not _gone(error):
-            log.debug(
+            ui.debug(
                 "responses: no body for {url}: {error}",
-                url=fmt.url(response.url), error=_first_line(error),
+                url=text.clean.url(response.url), error=_first_line(error),
             )
         return []
     pieces = [line for line in body.splitlines() if line.strip()] if lines else [body]
@@ -1095,8 +1094,8 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
             parsed.append(jsonlib.loads(piece))
         # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
         except ValueError:
-            log.debug(
+            ui.debug(
                 "responses: skipped a body that is not JSON from {url}",
-                url=fmt.url(response.url),
+                url=text.clean.url(response.url),
             )
     return parsed

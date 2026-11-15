@@ -424,7 +424,7 @@ class CtrlCTest(WorkerCase):
         class WaitToRetry(clock.Clock):
             def sleep(self, seconds: float, *, stop: threading.Event | None = None) -> bool:
                 retrying.set()
-                return stop is not None and stop.wait(LONG)
+                return not (stop is not None and stop.wait(LONG))
 
         def slow() -> None:
             running.set()

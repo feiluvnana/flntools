@@ -11,6 +11,7 @@ The learned speed runs from 1x to 8x: each 429 doubles it, and every 50 clean re
 from __future__ import annotations
 
 import math
+import random
 import threading
 from collections import deque
 from collections.abc import Mapping
@@ -96,7 +97,7 @@ class Host:
             now = clock.now()
             ready = self._blocked_until
             if self._last is not None and self.floor:
-                gap = self.floor * self.speed * clock.random().uniform(1, 1 + JITTER)
+                gap = self.floor * self.speed * random.uniform(1, 1 + JITTER)
                 ready = max(ready, self._last + gap)
             counted = [budget for budget in self._budgets if budget[0] in url]
             for _, requests, per, window in counted:
@@ -149,7 +150,7 @@ class Host:
             if retry_after is not None and (not math.isfinite(retry_after) or retry_after <= 0):
                 retry_after = None
             if retry_after is None:
-                seconds = step * clock.random().uniform(1 - BACKOFF_JITTER, 1 + BACKOFF_JITTER)
+                seconds = step * random.uniform(1 - BACKOFF_JITTER, 1 + BACKOFF_JITTER)
             else:
                 seconds = min(retry_after, MAX_BACKOFF)
             self._backoff_until = now + seconds

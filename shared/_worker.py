@@ -543,7 +543,7 @@ class _Run:
                 value = self._counted_attempt(job)
                 return _make_result(job.item, value, None, attempt, job.position)
             except Exception as error:
-                stopped = attempt <= self.retries and clock.sleep(
+                stopped = attempt <= self.retries and not clock.sleep(
                     _retry_wait(attempt), stop=self.stop_requested
                 )
                 if attempt > self.retries or stopped:

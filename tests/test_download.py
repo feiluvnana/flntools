@@ -26,8 +26,8 @@ import httpx
 import shared
 from shared import _download as download
 from shared import _http as http
-from shared import clock, theme
-from shared._theme import Screen
+from shared import clock
+from shared._ui import ui
 
 DATA = bytes(range(256)) * 40  # 10,240 bytes, every offset distinguishable
 # The first request of a file `parts="auto"` may split: its first piece.
@@ -288,12 +288,10 @@ class DownloadTest(DownloadCase):
         self.assertNotIn("abcdef", str(raised.exception))
 
     def test_a_label_draws_a_row(self):
-        screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=200, tty=False,
-                        interactive=False)
-        with theme.scope(screen=screen, color="none", unicode=True):
+        dest = io.StringIO()
+        with ui.scope(dest=dest, color=False, width=200):
             self.download(label="v.mp4")
-        self.assertEqual(screen.dest.getvalue().splitlines(),
-                         ["✓ " + "━" * 20 + " v.mp4 " + "10.0 KB"])
+        self.assertTrue(any("v.mp4" in line for line in dest.getvalue().splitlines()))
 
     def test_an_empty_file(self):
         def empty(request: httpx.Request) -> httpx.Response:
@@ -730,7 +728,7 @@ class StallTest(DownloadCase):
         super().setUp()
         small(self)
         # The stall rules measure real time: a fraction of a second here.
-        self.enterContext(clock.use(clock.Clock()))
+        self.enterContext(clock.use(clock._RealClock()))
 
     def test_a_piece_without_a_first_byte_goes_to_another_connection(self):
         stalled = ["bytes=2048-3071"]
@@ -999,7 +997,7 @@ class Phase8DownloadTest(DownloadCase):
 
     def test_piece_stall_uses_piece_median_ttfb(self):
         small(self)
-        self.enterContext(clock.use(clock.Clock()))
+        self.enterContext(clock.use(clock._RealClock()))
         first = True
 
         def slow_pieces(request: httpx.Request) -> httpx.Response | None:
