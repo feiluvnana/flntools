@@ -48,7 +48,7 @@ class clean:
 
     @staticmethod
     def url(url: str) -> str:
-        """Strip userinfo, query, and fragment from a URL while preserving protocol-relative URLs."""
+        """Strip userinfo, query, and fragment from a URL."""
         parts = urlsplit(url)
         if not parts.netloc:
             return urlunsplit((parts.scheme, "", parts.path, "", ""))
