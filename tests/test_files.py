@@ -10,8 +10,7 @@ from unittest import mock
 from media_samples import needs_pillow
 
 from flnd.common import paths
-from shared import atomic, media, theme
-from shared._theme import Screen
+from shared import fs, media, ui
 
 
 def jpeg(size=(64, 48)):
@@ -24,8 +23,7 @@ def jpeg(size=(64, 48)):
 
 class FilesCase(unittest.TestCase):
     def setUp(self):
-        screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=300, tty=False, interactive=False)
-        scope = theme.scope(screen=screen, color="none", unicode=True)
+        scope = ui.scope(dest=io.StringIO(), width=300, color=False)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
         folder = tempfile.TemporaryDirectory()
@@ -34,9 +32,9 @@ class FilesCase(unittest.TestCase):
 
 
 class PartNameTest(FilesCase):
-    def test_atomic_part_names_match_what_repair_removes(self):
-        """Fix 13: every temporary file flnd writes comes from `atomic`, so sync's repair glob must match its parts."""
-        with atomic.writing(self.tmp / "a.jpg") as part, atomic.writing(self.tmp / "a.jpg") as other:
+    def test_fs_part_names_match_what_repair_removes(self):
+        """Fix 13: every temporary file flnd writes comes from `fs.write`, so sync's repair glob must match its parts."""
+        with fs.write(self.tmp / "a.jpg") as part, fs.write(self.tmp / "a.jpg") as other:
             self.assertEqual(part.parent, self.tmp)
             self.assertTrue(fnmatch.fnmatch(part.name, paths.PART_GLOB), part.name)
             self.assertTrue(part.name.startswith(".a.jpg."))

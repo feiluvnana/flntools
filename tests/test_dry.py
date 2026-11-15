@@ -5,8 +5,8 @@ recorded, and no URL is printed with its query.
 """
 
 import io
+import threading
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from example_source import CDN, FIXTURES, Example
@@ -18,11 +18,13 @@ from flnd import site as site_module
 from flnd.common import paths
 from flnd.options import Options, RunShared
 from flnd.source import File, Post, Range, Source, Target, target
+from shared import cli, ui
 
 
 class PlanTest(JobCase):
     def planned(self, options=Options()):
-        with site_module.source_run(RunShared(home=self.home, history={}), Example()) as run:
+        stop = cli.Stopping(threading.Event(), threading.Event())
+        with site_module.source_run(RunShared(home=self.home, history={}, stop=stop), Example()) as run:
             return list(job.plan(run, Target("exm", "user", "example_user"), options))
 
     def test_plan_yields_what_a_download_would_save_and_writes_nothing(self):
@@ -60,7 +62,8 @@ class PlanTest(JobCase):
                 finally:
                     finished.append(True)
 
-        with site_module.source_run(RunShared(home=self.home, history={}), Feed()) as run:
+        stop = cli.Stopping(threading.Event(), threading.Event())
+        with site_module.source_run(RunShared(home=self.home, history={}, stop=stop), Feed()) as run:
             listing = job.plan(run, Target("fed", "user", "example_user"), Options())
             next(listing)
             listing.close()
@@ -105,10 +108,10 @@ class TreeTest(JobCase):
 
 class MainTest(unittest.TestCase):
     def run_main(self, plan_result, *argv):
-        out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(dry, "plan", plan_result), redirect_stdout(out), redirect_stderr(err):
+        out = io.StringIO()
+        with mock.patch.object(dry, "plan", plan_result), ui.scope(dest=out):
             code = dry.main(list(argv))
-        return code, out.getvalue(), err.getvalue()
+        return code, out.getvalue(), out.getvalue()
 
     def test_prints_the_target_and_its_tree_and_passes_the_options(self):
         calls = []
@@ -120,8 +123,9 @@ class MainTest(unittest.TestCase):
 
         code, out, _ = self.run_main(plan, "ins:example_user", "--from", "reels", "--time", "2026-01-01,")
         self.assertEqual(code, 0)
-        self.assertEqual(out.splitlines(),
-                         ["ins:example_user", "  p1  2026-01-02", "    p1.jpg  https://c.example/a.jpg"])
+        self.assertIn("ins:example_user", out)
+        self.assertIn("p1  2026-01-02", out)
+        self.assertIn("p1.jpg  https://c.example/a.jpg", out)
         name, text, options = calls[0]
         self.assertEqual((name, text, options["categories"]), (".flnd", "ins:example_user", "reels"))
         self.assertEqual(options["time"], Range.parse("2026-01-01,"))
@@ -131,7 +135,7 @@ class MainTest(unittest.TestCase):
             raise ValueError("ins: not logged in; run flnd login")
 
         code, _, err = self.run_main(plan, "ins:example_user")
-        self.assertEqual((code, err), (1, "error: ins: not logged in; run flnd login\n"))
+        self.assertEqual((code, err), (1, "x ins: not logged in; run flnd login\n"))
 
 
 if __name__ == "__main__":

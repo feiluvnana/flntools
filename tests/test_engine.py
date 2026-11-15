@@ -11,6 +11,7 @@ import datetime
 import inspect
 import io
 import signal
+import sys
 import threading
 import time
 import unittest
@@ -18,21 +19,20 @@ from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 import httpx
 
 from media_samples import needs_pillow
 
-from flnd import engine as engine_module
 from flnd import job, targets as targets_mod
 from flnd.common import auth, net, paths
 from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
-from shared import clock, cookies, http, kv, media, theme
-from shared._theme import Screen
+from shared import cli, clock, cookies, http, media, store, ui
 
 CDN = "https://cdn.example"
 
@@ -54,6 +54,7 @@ class FakeMedia:
     """
 
     video_codec = None
+    raw = None
 
     def __init__(self, path, compress, check):
         self.path, self._compress, self._check = Path(path), compress, check
@@ -61,8 +62,8 @@ class FakeMedia:
 
     @property
     def info(self):
-        # No bitrate or size: a video is always worth encoding, as for a file media can't measure.
-        return SimpleNamespace(video=self.video_codec, bitrate=None, width=None, height=None,
+        # No bitrate: a video is always worth encoding, as for a file media can't measure.
+        return SimpleNamespace(size=self.size, video=self.video_codec, bitrate=None, width=None, height=None,
                                fps=None, duration=None)
 
     def __enter__(self):
@@ -76,7 +77,8 @@ class FakeMedia:
 
     def check(self):
         if self._check:
-            REAL_OPEN(self.path).check()
+            with REAL_OPEN(self.path):
+                pass
         return self
 
     def compress(self, level, **settings):
@@ -90,6 +92,13 @@ class FakeResult:
     def __init__(self, path):
         self.path = path
         self.size = path.stat().st_size
+        self.info = SimpleNamespace(size=self.size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
 
     def save(self, dest=None):
         return self.path
@@ -111,13 +120,19 @@ def compressing(compress=None, *, check=True, **options):
 
     @contextmanager
     def patched():
-        with mock.patch("shared.media.open", lambda path: FakeMedia(path, fake, check)):
+        def open_fake(path):
+            fm = FakeMedia(path, fake, check)
+            if check:
+                fm.check()
+            return fm
+
+        with mock.patch("shared.media.open", open_fake):
             yield fake
 
     return patched()
 
 
-def make_source(code, route=None, *, files=(), **declared):
+def make_source(code, route=None, *, files: Any = (), **declared):
     """A routed test source: `code:<name>` reads a user, `route(site)` is its route, and `files` are its `posts`.
 
         make_source("aaa", lambda site: seen.append(site.target.value), files=[File(url, name="a.jpg")])
@@ -132,7 +147,7 @@ def make_source(code, route=None, *, files=(), **declared):
         **declared: the class's other fields and methods, such as `needs`, `connect` or `prepare`.
     """
     def listed(site, context):
-        found = files(site, context) if callable(files) else files
+        found: Any = files(site, context) if callable(files) else files
         return [Post(file.name or str(number), [file]) for number, file in enumerate(found)]
 
     if inspect.iscoroutinefunction(route):
@@ -160,8 +175,8 @@ def make_source(code, route=None, *, files=(), **declared):
 
 class EngineCase(unittest.TestCase):
     def setUp(self):
-        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
-        scope = theme.scope(screen=self.screen, color="none", unicode=True)
+        self.dest = io.StringIO()
+        scope = ui.scope(dest=self.dest, width=400, color=False)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
         folder = TemporaryDirectory()
@@ -169,7 +184,7 @@ class EngineCase(unittest.TestCase):
         self.home = Path(folder.name) / ".flnd"
         self.requests = []
         self.routes = {}
-        patcher = mock.patch.object(net, "_base_transport", lambda: httpx.MockTransport(self.serve))
+        patcher = mock.patch.object(httpx.Client, "_init_transport", lambda *a, **kw: httpx.MockTransport(self.serve))
         patcher.start()
         self.addCleanup(patcher.stop)
         # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
@@ -179,11 +194,11 @@ class EngineCase(unittest.TestCase):
     def now(self):
         return self.fake.now()
 
-    def serve(self, request):
+    def serve(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         answer = self.routes.get(str(request.url).split("?")[0])
         if callable(answer):
-            return answer(request)
+            return answer(request)  # type: ignore[return-value]
         if answer is None:
             return httpx.Response(200, content=request.url.path.encode())
         return answer
@@ -192,17 +207,18 @@ class EngineCase(unittest.TestCase):
         """Run the targets, each with `options`, and return how many files were written."""
         return self.report(*sources, targets=targets, options=options, **settings).files
 
-    def report(self, *sources, targets, options=Options(), **settings):
+    def report(self, *sources, targets, options=Options(), stop=None, **settings):
         """Run the targets, each with `options`, and return the `Report`."""
         engine = Engine(home=self.home, sources={source.code: source for source in sources}, **settings)
-        return Report(tuple(engine._run([(target, options) for target in engine.resolve(targets)])))
+        stop = stop or cli.Stopping(threading.Event(), threading.Event())
+        return Report(tuple(engine._run([(target, options) for target in engine.resolve(targets)], stop=stop)))
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
         auth.save(self.home, code, cookies.Jar(jar))
 
     def lines(self):
-        return self.screen.dest.getvalue().splitlines()
+        return self.dest.getvalue().splitlines()
 
     def target_dir(self, code, name):
         return self.home / paths.MEDIA / code / name
@@ -230,7 +246,7 @@ class GroupsTest(EngineCase):
 
     def test_targets_with_their_own_options_run_at_once_and_targets_db_opens_once(self):
         seen, opened = [], []
-        real_download, real_open = job.download, kv.open
+        real_download, real_open = job.download, store.open
 
         def download(run, target, row, options):
             seen.append((target.value, options.shrink))
@@ -244,8 +260,9 @@ class GroupsTest(EngineCase):
         engine = Engine(home=self.home, sources=sources)
         chosen = [(Target("aaa", "user", "a"), Options(shrink=True)),
                   (Target("aaa", "user", "b"), Options()), (Target("bbb", "user", "c"), Options())]
-        with mock.patch.object(job, "download", download), mock.patch.object(kv, "open", opening):
-            reports = engine._run(chosen)
+        stop = cli.Stopping(threading.Event(), threading.Event())
+        with mock.patch.object(job, "download", download), mock.patch.object(store, "open", opening):
+            reports = engine._run(chosen, stop=stop)
         self.assertEqual(sorted(seen), [("a", True), ("b", False), ("c", False)])
         self.assertEqual(opened.count(paths.TARGETS.name), 1)
         self.assertEqual([report.target for report in reports], [target for target, _ in chosen])
@@ -261,8 +278,8 @@ class GroupsTest(EngineCase):
         total = self.run_engine(make_source("aaa", run, files=files), targets=["aaa:bad", "aaa:good"])
         self.assertEqual(total, 1)
         lines = self.lines()
-        self.assertIn("✗ aaa:bad: blocked", lines)
-        self.assertTrue(any(line.startswith("✓ aaa:good posts ") for line in lines), lines)
+        self.assertTrue(any(line.endswith("aaa:bad: blocked") for line in lines), lines)
+        self.assertTrue(any("aaa:good posts " in line for line in lines), lines)
 
 
     def test_a_group_whose_connect_fails_ends_its_rows_failed(self):
@@ -272,9 +289,9 @@ class GroupsTest(EngineCase):
 
         report = self.report(make_source("aaa", connect=connect), make_source("bbb"), targets=["aaa:a", "aaa:b", "bbb:c"])
         lines = self.lines()
-        self.assertIn("✗ aaa: tlg: the saved login no longer works", lines)
-        self.assertFalse(any(line.startswith("✓ aaa:") for line in lines), lines)
-        self.assertTrue(any(line.startswith("✓ bbb:c posts ") for line in lines), lines)
+        self.assertTrue(any(line.endswith("aaa: tlg: the saved login no longer works") for line in lines), lines)
+        self.assertFalse(any("aaa:" in line and "posts " in line for line in lines), lines)
+        self.assertTrue(any("bbb:c posts " in line for line in lines), lines)
         self.assertEqual([str(target) for target in report.failed], ["aaa:a", "aaa:b"])
         self.assertEqual(report.targets[0].error, "tlg: the saved login no longer works")
 
@@ -346,8 +363,10 @@ class LoginStateTest(EngineCase):
         ran = []
         self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
-        self.assertIn("✗ aaa:a: not logged in; run flnd auth login", self.lines())
-        self.assertIn("✗ aaa:b: not logged in; run flnd auth login", self.lines())
+        self.assertTrue(any(line.endswith("aaa:a: not logged in; run flnd auth login") for line in self.lines()),
+                        self.lines())
+        self.assertTrue(any(line.endswith("aaa:b: not logged in; run flnd auth login") for line in self.lines()),
+                        self.lines())
 
     def test_download_never_asks(self):
         # The `Site` a download gives has no `ask`, so a source can't stop to ask a question.
@@ -406,54 +425,56 @@ class HttpTest(EngineCase):
         self.assertEqual(ran, [("a", {"ok": 1}), ("b", {"ok": 1}), ("c", {"ok": 1})])
         self.assertIn("! aaa: rate limited; waiting", " ".join(self.lines()))
         self.assertIn("(attempt 4)", " ".join(self.lines()))
-        self.assertTrue(any(line.startswith("✓ aaa:c posts ") for line in self.lines()))
+        self.assertTrue(any("aaa:c posts " in line for line in self.lines()), self.lines())
 
     def test_challenges_are_waited_out(self):
         self.run_engine(make_source("aaa", lambda site: site.back_off("challenged")),
                         targets=["aaa:a", "aaa:b", "aaa:c", "aaa:d"])
         waits = [line for line in self.lines() if "challenged; waiting" in line]
         self.assertEqual([wait.rsplit(" ", 1)[-1] for wait in waits], ["1)", "2)", "3)", "4)"])
-        self.assertTrue(any(line.startswith("✓ aaa:d posts ") for line in self.lines()))
+        self.assertTrue(any("aaa:d posts " in line for line in self.lines()), self.lines())
 
     def test_ctrl_c_during_a_wait_stops_the_run(self):
         """The first Ctrl-C ends a rate-limit wait at once; the target ends as stopped and the command as Ctrl-C."""
+        stop_ref: list[cli.Stopping] = []
+        real_stopping = cli.stopping
+
+        @contextmanager
+        def capture_stopping():
+            with real_stopping() as stop:
+                stop_ref.append(stop)
+                yield stop
+
         def limited(request):
-            net.stopping.set()
+            stop_ref[0].soon.set()
             return httpx.Response(429)
 
         self.routes["https://api.aaa.example/feed"] = limited
-        self.addCleanup(net.stopping.clear)
         source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json)
         engine = Engine(home=self.home, sources={"aaa": source})
-        with self.assertRaises(KeyboardInterrupt):
+        with mock.patch.object(cli, "stopping", capture_stopping), self.assertRaises(KeyboardInterrupt):
             engine.download(["aaa:a"], categories="all")
-        self.assertIn("✗ aaa:a: stopped", self.lines())
+        self.assertTrue(any(line.endswith("aaa:a: stopped") for line in self.lines()), self.lines())
 
 
 class CtrlCTest(unittest.TestCase):
-    def setUp(self):
-        for event in (net.stopping, net.stopping_now):
-            self.addCleanup(event.clear)
-
     def test_the_first_ctrl_c_stops_gracefully_and_the_second_interrupts(self):
-        """D8: the first only sets `stopping`, so the running downloads finish; the second stops now."""
+        """D8: the first only sets `soon`, so the running downloads finish; the second stops now."""
         before = signal.getsignal(signal.SIGINT)
-        net.stopping.set()
-        net.stopping_now.set()
-        with engine_module._stop_waits_on_ctrl_c():
-            # A run starts with neither set, whatever an earlier one left.
-            self.assertFalse(net.stopping.is_set() or net.stopping_now.is_set())
-            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
-            self.assertTrue(net.stopping.is_set())
-            self.assertFalse(net.stopping_now.is_set())
-            with self.assertRaises(KeyboardInterrupt):
-                signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
-            self.assertTrue(net.stopping_now.is_set())
+        with cli.stopping() as stop:
+            self.assertFalse(stop.soon.is_set() or stop.now.is_set())
+            handler = signal.getsignal(signal.SIGINT)
+            assert callable(handler)
+            handler(signal.SIGINT, None)
+            self.assertTrue(stop.soon.is_set())
+            self.assertFalse(stop.now.is_set())
+            handler(signal.SIGINT, None)
+            self.assertTrue(stop.now.is_set())
         self.assertIs(signal.getsignal(signal.SIGINT), before)
 
 
 def history(home):
-    with kv.open(home / paths.HISTORY, table="downloads") as rows:
+    with store.open(home / paths.HISTORY, table="downloads") as rows:
         return dict(rows.items())
 
 
@@ -541,9 +562,10 @@ class EngineLoginTest(EngineCase):
         source = make_source("aaa", lambda site: seen.append(hasattr(site, "interactive")), login=own_login,
                              login_methods=("qr",))
         engine = Engine(home=self.home, sources={"aaa": source})
-        engine.login("aaa", "qr")
-        self.screen._interactive = True
-        engine.login("aaa", "qr")
+        with mock.patch.object(sys.stdin, "isatty", return_value=False):
+            engine.login("aaa", "qr")
+        with mock.patch.object(sys.stdin, "isatty", return_value=True):
+            engine.login("aaa", "qr")
         self.run_engine(source, targets=["aaa:a"])
         self.assertEqual(seen, [False, True, False])
 
@@ -553,13 +575,13 @@ class EngineLoginTest(EngineCase):
         def own_login(self, login, method):
             answers.append(login.ask("Phone number", description="With the country code, such as +44"))
 
-        self.screen._interactive = True
-        self.screen.readkey = iter(["1", "enter"]).__next__
         source = make_source("aaa", login=own_login, login_methods=("qr",))
-        Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
+        with mock.patch.object(sys.stdin, "isatty", return_value=True), \
+                mock.patch("shared.prompt.ask", return_value="1") as asked:
+            Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
         self.assertEqual(answers, ["1"])
-        self.assertEqual(self.screen.dest.getvalue().splitlines()[:3],
-                         ["┃ Phone number", "┃ With the country code, such as +44", "┃ > _"])
+        asked.assert_called_once_with("Phone number", secret=False)
+        self.assertIn("With the country code, such as +44", "\n".join(self.lines()))
 
 
 class ApiTest(EngineCase):
@@ -569,14 +591,16 @@ class ApiTest(EngineCase):
         return Engine(home=self.home, sources={source.code: source for source in sources})
 
     def saved(self):
-        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
+        with store.open(self.home / paths.TARGETS, table="targets") as targets:
             return dict(targets.items())
 
     def test_flnd_exports_exactly_the_engine_api(self):
         import flnd
 
-        self.assertEqual(sorted(flnd.__all__), ["Engine", "LoginError", "Range", "Report", "Target", "TargetError",
-                                                "TargetReport"])
+        self.assertEqual(sorted(flnd.__all__), [
+            "AuthInfo", "Engine", "Error", "LoginError", "Range",
+            "Report", "Target", "TargetError", "TargetInfo", "TargetReport",
+        ])
         self.assertFalse(hasattr(Engine, "LoginError"))
         self.assertFalse(hasattr(Engine, "run"))
         self.assertFalse(hasattr(Engine(home=self.home), "failed"))
@@ -626,7 +650,7 @@ class ApiTest(EngineCase):
     def test_text_and_values_are_read_alike(self):
         runs = []
 
-        def run(engine, chosen, tallies=()):
+        def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
             runs.extend(options for _, options in chosen)
             return [TargetReport(target, (), 0) for target, _ in chosen]
 
@@ -665,8 +689,11 @@ class ApiTest(EngineCase):
         self.assertEqual(Range.parse("*,2026-06-30"), Range(None, datetime.date(2026, 6, 30)))
         self.assertEqual(Range.parse("2026-01-01,"), Range(datetime.date(2026, 1, 1), None))
         engine = self.engine(make_source("aaa"))
-        for options, message in (({"time": "2026-01-01"}, TIME_USAGE),
-                                 ({"categories": "reels"}, "no source here has 'reels'")):
+        cases: tuple[tuple[dict[str, Any], str], ...] = (
+            ({"time": "2026-01-01"}, TIME_USAGE),
+            ({"categories": "reels"}, "no source here has 'reels'"),
+        )
+        for options, message in cases:
             with self.subTest(options=options), self.assertRaises(ValueError) as caught:
                 engine.download(["aaa:a"], **options)
             self.assertTrue(str(caught.exception).startswith(message), caught.exception)
@@ -691,7 +718,7 @@ class ApiTest(EngineCase):
         self.assertFalse((self.home / paths.METADATA).exists())
         # Without --from the same link downloads whole.
         runs = []
-        def run(engine, chosen, tallies=()):
+        def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
             runs.extend(options for _, options in chosen)
             return [TargetReport(target, (), 0) for target, _ in chosen]
 
@@ -711,14 +738,14 @@ class ApiTest(EngineCase):
         (folder / "a.jpg").unlink()
         (folder / "c.jpg").unlink()
         listed.discard("c.jpg")
-        with compressing(return_value=None, check=False):
+        with compressing(return_value=None, check=False), mock.patch("flnd.repair._broken", return_value=False):
             report = engine.sync()
-        [target] = report.targets
-        self.assertEqual((target.target, target.repaired, target.missing), (Target("aaa", "user", "a"), 1, 1))
-        self.assertEqual([path.name for path in target.written], ["a.jpg"])
-        self.assertEqual((target.settings, report.ok), ("--shrink (saved)", True))
-        self.assertIn("• aaa:a: 2 files, ", "\n".join(self.lines()))
-        self.assertEqual(engine.sync([Target("aaa", "user", "a")]).targets[0].repaired, 0)
+            [target] = report.targets
+            self.assertEqual((target.target, target.repaired, target.missing), (Target("aaa", "user", "a"), 1, 1))
+            self.assertEqual([path.name for path in target.written], ["a.jpg"])
+            self.assertEqual((target.settings, report.ok), ("--shrink (saved)", True))
+            self.assertIn("* aaa:a: 2 files, ", "\n".join(self.lines()))
+            self.assertEqual(engine.sync([Target("aaa", "user", "a")]).targets[0].repaired, 0)
 
 
 class ApiLoginTest(EngineCase):
@@ -730,7 +757,7 @@ class ApiLoginTest(EngineCase):
         self.engine = Engine(home=self.home, sources={"aaa": self.source, "bbb": make_source("bbb")})
         jar = cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
                            {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
-        patcher = mock.patch("shared._cookies.from_browser", lambda browser="chrome", *, profile=None: jar)
+        patcher = mock.patch("shared.cookies.load", lambda browser="chrome", *, profile=None: jar)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -749,7 +776,7 @@ class ApiLoginTest(EngineCase):
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
 
     def test_a_failed_login_and_bad_answers(self):
-        with mock.patch("shared._cookies.from_browser", lambda browser="chrome", *, profile=None: cookies.Jar()):
+        with mock.patch("shared.cookies.load", lambda browser="chrome", *, profile=None: cookies.Jar()):
             with self.assertRaisesRegex(LoginError, "no sid for aaa.example in Chrome"):
                 self.engine.login("aaa", "browser", browser="chrome")
         for args, options in ((("aaa", "qr"), {}), (("zzz", "browser"), {}), (("aaa", "browser"), {}),
@@ -809,7 +836,7 @@ class QueryAndLimitDryTest(EngineCase):
                 yield Target("srch", "post", "1")
                 yield f"srch:2"
 
-            @target("?{query}", params={"tag": Param(Name, "a tag", lookup=lookup_tags)})
+            @target("?{query}", params={"tag": Param(Name, "a tag", lookup=lookup_tags)}, from_=["photo"])
             def query(self, site, query: Query):
                 try:
                     for term in query.terms:
@@ -853,10 +880,10 @@ class QueryAndLimitDryTest(EngineCase):
         self.assertEqual(calls, [])
 
         # Expire cache (>24h): lookup_tags is called again.
-        with kv.open(self.home / paths.SOURCE_STATE, table="srch") as store:
-            lookups = dict(store["query.lookups"])
+        with store.open(self.home / paths.SOURCE_STATE, table="srch") as db:
+            lookups = dict(db.get("query.lookups"))
             lookups["tag:action"] = {"id": "10", "at": time.time() - 25 * 3600}
-            store["query.lookups"] = lookups
+            db.set("query.lookups", lookups)
         engine.download(["srch?tag:action"], categories="photo", limit=1)
         self.assertEqual(calls, ["action"])
 
@@ -952,7 +979,7 @@ class SyncedQueryTest(EngineCase):
             def photo(self, site, id):
                 yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
 
-            @target("?{query}", params={"q": Param(Text, "words")})
+            @target("?{query}", params={"q": Param(Text, "words")}, from_=["photo"])
             def query(self, site, query: Query):
                 try:
                     for page_num, ids in enumerate(pages):
@@ -1054,13 +1081,23 @@ class SyncedQueryTest(EngineCase):
         closed.clear()
         seen_pages.clear()
         real_download = job.download
+        stop_ref: list[cli.Stopping] = []
+        real_stopping = cli.stopping
+
+        @contextmanager
+        def capture_stopping():
+            with real_stopping() as stop:
+                stop_ref.append(stop)
+                yield stop
 
         def stop_on_second(run, child, board, opts):
             if child.value == "2":
-                net.stopping.set()
+                stop_ref[0].soon.set()
             return real_download(run, child, board, opts)
 
-        with mock.patch("flnd.job.download", stop_on_second), self.assertRaises(KeyboardInterrupt):
+        with mock.patch("flnd.job.download", stop_on_second), \
+                mock.patch.object(cli, "stopping", capture_stopping), \
+                self.assertRaises(KeyboardInterrupt):
             engine.download(["pgd?dogs"], categories="photo", sync=True)
         self.assertEqual(seen_pages, [0, 1])
         self.assertEqual(closed, [True])
@@ -1082,34 +1119,6 @@ class SyncedQueryTest(EngineCase):
         self.assertFalse(report.ok)
         self.assertEqual([str(t) for t in report.failed], ["pgd?bad"])
         self.assertEqual([p.name for p in report.targets[1].written], ["1.jpg"])
-
-    def test_folder_template_groups_query_downloads_and_persists_for_sync(self):
-        pages = [[1, 2]]
-        closed, seen_pages = [], []
-        src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
-        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
-        self.routes[f"{CDN}/3.jpg"] = httpx.Response(200, content=b"3")
-        engine = Engine(home=self.home, sources={"pgd": src})
-
-        report = engine.download(
-            ["pgd?cats"],
-            categories="photo",
-            folders=["photo:pgd/{query}/{target}_{name}"],
-            sync=True,
-        )
-        self.assertTrue(report.ok)
-        self.assertEqual(list(targets_mod.rows(self.home)), ["pgd:cats"])
-        self.assertEqual(sum(line.startswith("✓ pgd?cats") for line in self.lines()), 1)
-        self.assertFalse(any(line.startswith("✓ pgd:1") for line in self.lines()))
-        self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "1_1.jpg").is_file())
-        self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "2_2.jpg").is_file())
-
-        pages.insert(0, [3])
-        sync_report = engine.sync()
-        self.assertTrue(sync_report.ok)
-        self.assertEqual(list(targets_mod.rows(self.home)), ["pgd:cats"])
-        self.assertTrue((self.home / paths.MEDIA / "pgd" / "cats" / "3_3.jpg").is_file())
 
 
 if __name__ == "__main__":

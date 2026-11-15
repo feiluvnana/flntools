@@ -19,8 +19,7 @@ import httpx
 
 from flnd.common import auth, paths
 from flnd.sources.ins import Instagram
-from shared import cookies, crypto, kv, theme
-from shared._theme import Screen
+from shared import cookies, crypto, store, ui
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".instagram.com\tTRUE\t/\tTRUE\t1825861327\tsessionid\tins-session\n")
@@ -70,14 +69,14 @@ class VaultedCookiesTest(AuthCase):
 
     def setUp(self):
         super().setUp()
-        # A fake screen, so a move that fails warns where the test can read it.
-        self.screen = Screen(dest=io.StringIO(), inp=io.StringIO(""), width=400, tty=False, interactive=False)
-        scope = theme.scope(screen=self.screen, color="none", unicode=True)
+        # A fake stream, so a move that fails warns where the test can read it.
+        self.dest = io.StringIO()
+        scope = ui.scope(dest=self.dest, width=400, color=False)
         scope.__enter__()
         self.addCleanup(scope.__exit__, None, None, None)
 
     def warnings(self):
-        return [line for line in self.screen.dest.getvalue().splitlines() if line.startswith("! ")]
+        return [line for line in self.dest.getvalue().splitlines() if line.startswith("! ")]
 
     def write(self, name, text=NETSCAPE):
         path = self.home / "cookies" / name
@@ -96,9 +95,9 @@ class VaultedCookiesTest(AuthCase):
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
         self.assertEqual([(cookie["name"], cookie["domain"]) for cookie in auth.load(self.home, "ins")],
                          [("sessionid", ".instagram.com")])
-        with kv.open(self.home / paths.SECRETS, table="secrets") as db:
+        with store.open(self.home / paths.SECRETS, table="secrets") as db:
             self.assertEqual(list(db.keys(prefix="ins:")), ["ins:cookies", "ins:origin"])
-            self.assertNotIn(b"ins-session", base64.b64decode(db["ins:cookies"]))
+            self.assertNotIn(b"ins-session", base64.b64decode(db.get("ins:cookies")))
         self.assertEqual(auth.origin(self.home, "ins"), "cookies.txt")
 
     def test_a_plain_cookie_file_moves_into_the_vault_on_the_first_run(self):
@@ -163,8 +162,8 @@ class VaultedCookiesTest(AuthCase):
 
     def test_a_jar_copied_into_another_sources_slot_doesnt_decrypt(self):
         auth.save(self.home, "ins", cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
-        with kv.open(self.home / paths.SECRETS, table="secrets") as db:
-            db["twt:cookies"] = db["ins:cookies"]
+        with store.open(self.home / paths.SECRETS, table="secrets") as db:
+            db.set("twt:cookies", db.get("ins:cookies"))
         with self.assertRaises(crypto.Error):
             auth.load(self.home, "twt")
 
@@ -226,9 +225,9 @@ class WriteBackTest(AuthCase):
 
     def test_a_new_tracking_cookie_is_never_added(self):
         self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="old-ct0", _ga="track", guest_id="g")), [])
-        self.assertEqual(auth.load(self.home, "twt").names, ["ct0", "auth_token"])
+        self.assertEqual([c["name"] for c in auth.load(self.home, "twt").raw], ["ct0", "auth_token"])
         self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="new-ct0", _ga="track")), ["ct0"])
-        self.assertEqual(auth.load(self.home, "twt").names, ["ct0", "auth_token"])
+        self.assertEqual([c["name"] for c in auth.load(self.home, "twt").raw], ["ct0", "auth_token"])
 
     def test_nothing_is_written_when_nothing_changed_or_there_is_no_login(self):
         with mock.patch.object(auth, "save") as save:
@@ -242,7 +241,7 @@ class WriteBackTest(AuthCase):
         self.assertFalse((self.home / "never").exists())
 
     def test_no_cookie_value_reaches_a_log_line(self):
-        with mock.patch.object(auth, "log") as log:
+        with mock.patch.object(auth, "ui") as log:
             auth.write_back(self.home, "twt", self.current(ct0="new-ct0"))
             with mock.patch.object(auth, "save", side_effect=OSError("disk full: new-ct0")):
                 self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="newer-ct0")), [])
@@ -253,7 +252,7 @@ class WriteBackTest(AuthCase):
         log.warn.assert_called_once()
 
     def test_a_vault_that_cannot_be_written_warns_and_does_not_fail(self):
-        with mock.patch.object(auth, "save", side_effect=OSError("read-only")), mock.patch.object(auth, "log") as log:
+        with mock.patch.object(auth, "save", side_effect=OSError("read-only")), mock.patch.object(auth, "ui") as log:
             self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="new-ct0")), [])
         log.warn.assert_called_once()
         self.assertEqual(auth.load(self.home, "twt")["ct0"], "old-ct0")
@@ -266,8 +265,8 @@ class VaultTest(AuthCase):
             secrets["api_hash"] = "abc"
         with auth.secrets(self.home, "tlg") as secrets:
             self.assertEqual(dict(secrets), {"session": "1BVts-secret", "api_hash": "abc"})
-        with kv.open(self.home / paths.SECRETS, table="secrets") as db:
-            stored = db["tlg:session"]
+        with store.open(self.home / paths.SECRETS, table="secrets") as db:
+            stored = db.get("tlg:session")
         self.assertNotIn(b"1BVts", base64.b64decode(stored))
 
     def test_sources_are_separate(self):
@@ -282,9 +281,9 @@ class VaultTest(AuthCase):
     def test_a_value_moved_to_another_slot_fails(self):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets["session"] = "s"
-        with kv.open(self.home / paths.SECRETS, table="secrets") as db:
-            db["loi:session"] = db["tlg:session"]
-            db["tlg:other"] = db["tlg:session"]
+        with store.open(self.home / paths.SECRETS, table="secrets") as db:
+            db.set("loi:session", db.get("tlg:session"))
+            db.set("tlg:other", db.get("tlg:session"))
         for code, name in (("loi", "session"), ("tlg", "other")):
             with auth.secrets(self.home, code) as secrets, self.assertRaises(crypto.Error):
                 secrets[name]

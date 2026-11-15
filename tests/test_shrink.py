@@ -18,7 +18,7 @@ from test_engine import CDN, EngineCase, make_source
 from flnd import Engine
 from flnd.common import compress, paths
 from flnd.source import File
-from shared import kv, media
+from shared import media, store
 
 
 class Shrinking:
@@ -30,7 +30,10 @@ class Shrinking:
 
     @contextmanager
     def patched(self):
-        with mock.patch("shared.media.open", self.open):
+        def fake_info(path):
+            return SimpleNamespace(size=Path(path).stat().st_size, video=self.codec)
+
+        with mock.patch("shared.media.open", self.open), mock.patch("shared.media.info", fake_info):
             yield self
 
     def open(self, path):
@@ -39,7 +42,8 @@ class Shrinking:
 
         class Opened:
             size = path.stat().st_size
-            info = SimpleNamespace(video=shrinking.codec)
+            info = SimpleNamespace(size=size, video=shrinking.codec)
+            raw = None
 
             def __enter__(self):
                 return self
@@ -53,10 +57,21 @@ class Shrinking:
             def compress(self, level, **settings):
                 shrinking.calls.append((path.name, level, settings))
                 out = path.with_name(f".{path.name}.small")
-                out.write_bytes(b"s" * max(int(self.size * shrinking.ratio), 1))
+                n = max(int(self.size * shrinking.ratio), 1)
+                data = path.read_bytes()[:n]
+                if len(data) < n:
+                    data = data + b"s" * (n - len(data))
+                out.write_bytes(data)
 
                 class Result:
                     size = out.stat().st_size
+                    info = SimpleNamespace(size=size, video=shrinking.codec)
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *exc):
+                        return None
 
                     def save(self, dest=None):
                         out.replace(path)
@@ -83,11 +98,11 @@ class ShrinkCase(EngineCase):
         return Engine(home=self.home, sources={"aaa": self.source})
 
     def row(self):
-        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
+        with store.open(self.home / paths.TARGETS, table="targets") as targets:
             return targets["aaa:example_user"]
 
     def history(self):
-        with kv.open(self.home / paths.HISTORY, table="downloads") as rows:
+        with store.open(self.home / paths.HISTORY, table="downloads") as rows:
             return {key: row for key, row in rows.items()}
 
 
@@ -97,7 +112,7 @@ class EngineShrinkTest(ShrinkCase):
         self.assertIs(self.row()["shrink"], False)
         with Shrinking().patched() as fake:
             report = self.engine().download(["aaa:example_user"], categories="all", shrink=True)
-        self.assertEqual(fake.calls, [("a.jpg", "mid", {"codec": None})])
+        self.assertEqual(fake.calls, [("a.jpg", "mid", {})])
         self.assertIs(self.row()["shrink"], True)
         self.assertEqual(self.history()["aaa:a.jpg"]["compressed"], "mid")
         self.assertEqual(report.targets[0].settings, "")
@@ -109,7 +124,7 @@ class EngineShrinkTest(ShrinkCase):
         with Shrinking().patched() as fake:
             report = self.engine().download(["aaa:example_user"], categories="all")
         self.assertEqual(report.targets[0].settings, "--shrink (saved)")
-        self.assertIn("• aaa:example_user: --shrink (saved)", self.lines())
+        self.assertIn("* aaa:example_user: --shrink (saved)", self.lines())
         self.assertEqual([name for name, _, _ in fake.calls], ["b.jpg"])
 
     def test_shrink_off_saves_off_and_touches_no_file(self):
@@ -153,6 +168,7 @@ class RealMediaTest(unittest.TestCase):
     def test_a_jpeg_stays_a_jpeg(self):
         path = fresh("big.jpg")
         fields = compress.compress_file(path, paths.IMAGE, set())
+        assert fields is not None
         self.assertEqual(Path(fields["path"]), path)
         self.assertEqual(media.sniff(path), ".jpg")
 
@@ -160,6 +176,7 @@ class RealMediaTest(unittest.TestCase):
     def test_an_mp4_stays_an_mp4(self):
         path = fresh("big.mp4")
         fields = compress.compress_file(path, paths.VIDEO, set())
+        assert fields is not None
         self.assertEqual(Path(fields["path"]).suffix, ".mp4")
         self.assertEqual(media.open(Path(fields["path"])).info.video, "h264")
 
@@ -169,9 +186,9 @@ class RealMediaTest(unittest.TestCase):
         run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=2", "-c:v", "libx265", "-crf", "5",
             "-tag:v", "hvc1", str(path))
         fields = compress.compress_file(path, paths.VIDEO, set())
+        assert fields is not None
         self.assertEqual(Path(fields["path"]).suffix, ".mp4")
         self.assertEqual(media.open(Path(fields["path"])).info.video, "hevc")
-
 
     @needs_ffmpeg("libx264")
     def test_a_long_video_is_encoded_after_its_slice_and_a_lean_one_is_left(self):
@@ -179,12 +196,15 @@ class RealMediaTest(unittest.TestCase):
         run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=10", "-c:v", "mpeg4",
             "-q:v", "2", str(heavy))
         fields = compress.compress_file(heavy, paths.VIDEO, set())
+        assert fields is not None
         self.assertEqual(fields["compressed"], compress.LEVEL)
         lean = fresh("big.mp4").with_name("lean.mp4")
         run("-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30:duration=10", "-c:v", "libx264",
             "-crf", "45", str(lean))
         before = lean.read_bytes()
-        self.assertEqual(compress.compress_file(lean, paths.VIDEO, set())["compressed"], "none")
+        lean_fields = compress.compress_file(lean, paths.VIDEO, set())
+        assert lean_fields is not None
+        self.assertEqual(lean_fields["compressed"], "none")
         self.assertEqual(lean.read_bytes(), before)
 
 

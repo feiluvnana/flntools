@@ -8,6 +8,8 @@ command line; the default, None, keeps the saved setting.
 """
 
 import datetime
+import os
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -21,7 +23,7 @@ from flnd import Engine, Range, TargetReport
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import File, Post, Source, Target, target
-from shared import kv
+from shared import clock, store
 
 class Site:
     """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""
@@ -39,7 +41,7 @@ class Site:
 
 def recorded(record):
     """An `Engine._run` that only calls `record(chosen)`, and reports each target done, empty."""
-    def run(engine, chosen, tallies=(), browser_pool=None):
+    def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
         record(chosen)
         return [TargetReport(target, (), 0) for target, _ in chosen]
 
@@ -73,7 +75,7 @@ class SyncCase(EngineCase):
         return self.engine()._plan(list(targets))
 
     def saved(self):
-        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
+        with store.open(self.home / paths.TARGETS, table="targets") as targets:
             return dict(targets.items())
 
     def folder(self):
@@ -104,10 +106,10 @@ class SettingsTest(SyncCase):
     def test_a_run_says_which_saved_settings_it_uses(self):
         self.download(shrink=True)
         self.download()
-        self.assertIn("• aaa:a: --shrink (saved)", self.lines())
+        self.assertIn("* aaa:a: --shrink (saved)", self.lines())
         self.download(shrink=False)
-        self.screen.dest.truncate(0)
-        self.screen.dest.seek(0)
+        self.dest.truncate(0)
+        self.dest.seek(0)
         self.download()
         self.assertFalse(any("(saved)" in line for line in self.lines()))
 
@@ -177,7 +179,7 @@ class DownloadAppliesTest(SyncCase):
 
     def test_a_file_already_compressed_with_the_new_setting_is_left(self):
         self.download()
-        with kv.open(self.home / paths.HISTORY, table="downloads") as rows:
+        with store.open(self.home / paths.HISTORY, table="downloads") as rows:
             rows["aaa:a.jpg"] = {**rows["aaa:a.jpg"], "compressed": "mid"}
             # Another level is compressed again.
             rows["aaa:b.jpg"] = {**rows["aaa:b.jpg"], "compressed": "low"}
@@ -248,7 +250,10 @@ class RepairTest(SyncCase):
         (folder / "a.jpg").write_bytes(b"")
         (folder / "b.jpg").write_bytes(whole[:300])
         (folder / "c.jpg").unlink()
-        (folder / ".c.jpg.1234abcd.part").write_bytes(b"left over")
+        part = folder / ".c.jpg.1234abcd.part"
+        part.write_bytes(b"left over")
+        old = clock.wall() - 7200
+        os.utime(part, (old, old))
         self.site.files["b.jpg"] = whole
         self.site.serve()
         [line] = self.sync()
@@ -321,8 +326,11 @@ class RepairTest(SyncCase):
                                                   ".c.jpg.33333333.part", ".d.jpg.44444444.part.json")}
         for path in made.values():
             path.write_bytes(b"x")
-        old = time.time() - (paths.RESUMABLE_DAYS + 1) * 24 * 3600
+        old = clock.wall() - (paths.RESUMABLE_DAYS + 1) * 24 * 3600
         os.utime(made[".b.jpg.22222222.part"], (old, old))
+        orphan = clock.wall() - 7200
+        os.utime(made[".c.jpg.33333333.part"], (orphan, orphan))
+        os.utime(made[".d.jpg.44444444.part.json"], (orphan, orphan))
         repair.repair({}, repair.Tally("aaa:example_user", folder))
         self.assertEqual(sorted(path.name for path in folder.iterdir()),
                          [".a.jpg.11111111.part", ".a.jpg.11111111.part.json"])
@@ -381,7 +389,11 @@ class RepairTest(SyncCase):
         with mock.patch.object(os, "replace", killed_after):
             self.download(source=make_source("aaa", files=files))
         # The download's resumable part moves into `atomic`'s part, which moves onto a.jpg: two renames.
-        self.assertEqual(sorted(path.name.split(".")[1] for path in left), ["a", "a", "info"])
+        self.assertEqual(sorted(path.name.split(".")[1] for path in left), ["a", "info"])
+        old = clock.wall() - 7200
+        for path in left:
+            if path.exists():
+                os.utime(path, (old, old))
         self.sync(source=make_source("aaa", files=files))
         self.assertEqual([path for path in left if path.exists()], [])
         self.assertEqual(self.names(), ["a.jpg", "info.md"])
@@ -407,7 +419,7 @@ class FetchTest(SyncCase):
             return None
 
         self.download()
-        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
+        with store.open(self.home / paths.TARGETS, table="targets") as targets:
             targets["aaa:a"] = {**targets["aaa:a"], "shrink": True}
         self.site.files["d.jpg"] = noise("JPEG")
         self.site.serve()
@@ -428,22 +440,22 @@ class HistoryTest(SyncCase):
     def test_the_history_is_read_once_per_run(self):
         """Fix 12: repair, compress and the tally each scanned the whole history, per target."""
         self.download(texts=("aaa:a", "aaa:b", "aaa:c"))
-        real_iter, real_items, scans = kv.Store.__iter__, kv.Store._items, []
+        real_iter, real_items, scans = store.Store.__iter__, store.Store.items, []
 
-        def counted_iter(store):
-            scans.append(store)
-            return real_iter(store)
+        def counted_iter(s):
+            scans.append(s)
+            return real_iter(s)
 
-        def counted_items(store):
-            scans.append(store)
-            return real_items(store)
+        def counted_items(s):
+            scans.append(s)
+            return real_items(s)
 
         with (
-            mock.patch.object(kv.Store, "__iter__", counted_iter),
-            mock.patch.object(kv.Store, "_items", counted_items),
+            mock.patch.object(store.Store, "__iter__", counted_iter),
+            mock.patch.object(store.Store, "items", counted_items),
         ):
             lines = self.sync()
-        history_scans = [store for store in scans if store._table == "downloads"]
+        history_scans = [s for s in scans if s._table == "downloads"]
         self.assertEqual(len(lines), 3)
         self.assertEqual(len(history_scans), 1)
 
@@ -458,10 +470,10 @@ class SummaryTest(SyncCase):
         lines = self.sync(source=gone.source())
         self.assertEqual([(str(line.target), line.repaired, line.missing) for line in lines],
                          [("aaa:a", 0, 1), ("aaa:b", 0, 0)])
-        summary = [line for line in self.lines() if line.startswith("• aaa:a: 2 files") or line.startswith("• total")]
+        summary = [line for line in self.lines() if line.startswith("* aaa:a: 2 files") or line.startswith("* total")]
         self.assertEqual(len(summary), 2, self.lines())
         self.assertIn("; 0 repaired, 1 missing", summary[0])
-        self.assertTrue(summary[1].startswith("• total: 2 targets, 2 files, "), summary[1])
+        self.assertTrue(summary[1].startswith("* total: 2 targets, 2 files, "), summary[1])
         self.assertTrue(summary[1].endswith("; 0 repaired, 1 missing"), summary[1])
 
 
@@ -517,9 +529,9 @@ class SyncOptInTest(SyncCase):
         self.assertIs(self.saved()["aaa:a"]["sync"], False)
         self.assertEqual(self.plan(), [])
         self.assertEqual(self.sync(), [])
-        self.assertIn("• nothing to sync", self.lines())
+        self.assertIn("* nothing to sync", self.lines())
         # A legacy row without a `sync` key counts as synced.
-        with kv.open(self.home / paths.TARGETS, table="targets") as targets:
+        with store.open(self.home / paths.TARGETS, table="targets") as targets:
             row = dict(targets["aaa:a"])
             del row["sync"]
             targets["aaa:a"] = row
@@ -536,9 +548,9 @@ class SyncOptInTest(SyncCase):
         self.assertIs(self.saved()["aaa:a"]["sync"], True)
         items = self.engine().target_ls()
         self.assertEqual(len(items), 1)
-        self.assertTrue(items[0]["sync"])
-        self.assertTrue(items[0]["shrink"])
-        self.assertEqual(items[0]["files"], 3)
+        self.assertTrue(items[0].sync)
+        self.assertTrue(items[0].shrink)
+        self.assertEqual(items[0].files, 3)
         self.assertEqual(
             self.engine().target_sync(["aaa:a"], enabled=False), [Target("aaa", "user", "a")]
         )
