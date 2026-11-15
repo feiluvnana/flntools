@@ -128,7 +128,8 @@ class LockTest(FsCase):
     def test_lock_timeout_raises_fs_error(self):
         lock_file = self.folder / "a.lock"
         with fs.lock(lock_file):
-            with mock.patch("filelock.FileLock.acquire", side_effect=fs.filelock.Timeout(str(lock_file))):
+            timeout_err = fs.filelock.Timeout(str(lock_file))
+            with mock.patch("filelock.FileLock.acquire", side_effect=timeout_err):
                 with self.assertRaises(fs.Error):
                     with fs.lock(lock_file, timeout=0.01):
                         pass

@@ -140,7 +140,8 @@ class ErrorsAndThreadsTest(StoreCase):
             self.db["x"] = 1
 
     def test_sqlite_and_os_errors_wrapped_in_store_error(self):
-        with mock.patch.object(store.sqlite3, "connect", side_effect=sqlite3.OperationalError("bad")):
+        err = sqlite3.OperationalError("bad")
+        with mock.patch.object(store.sqlite3, "connect", side_effect=err):
             with self.assertRaises(store.Error) as ctx:
                 store.open(self.file)
         self.assertIsInstance(ctx.exception, shared.Error)
