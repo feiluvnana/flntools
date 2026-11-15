@@ -53,7 +53,7 @@ def index(
 def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
     """Remove leftover parts and forget missing or broken files for re-download."""
     _remove_leftovers(tally.folder)
-    changed, trusted = _partition_rows(tally)
+    changed, trusted = _partition_rows(history, tally)
     # Checked longest ago first; a row never checked has no day, and sorts first.
     trusted.sort(key=lambda item: str(item[1].get(CHECKED, "")))
     due = changed + trusted[:math.ceil(len(trusted) / ROLLING)]
@@ -70,6 +70,7 @@ def repair(history: MutableMapping[str, Any], tally: Tally) -> None:
 
 
 def _partition_rows(
+    history: MutableMapping[str, Any],
     tally: Tally,
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, dict[str, Any]]]]:
     """Split target rows into changed/untrusted and unchanged/trusted, noting missing files."""
@@ -80,9 +81,11 @@ def _partition_rows(
         try:
             is_unchanged = path.is_file() and paths.unchanged(path, row)
         except FileNotFoundError:
+            del history[key]
             tally.lost[key] = path.name
             continue
         if not path.is_file():
+            del history[key]
             tally.lost[key] = path.name
         else:
             (trusted if is_unchanged else changed).append((key, row))
