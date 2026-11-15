@@ -1,17 +1,4 @@
-"""Telegram: every photo, video or file in a chat, group or channel the account can see.
-
-Telethon connects via user MTProto. The session is stored encrypted, never in a `.session` file.
-`connect` opens a single client on the source's event loop. `photo`, `video`, and `file`
-categories use Telegram's server-side filters over `client.iter_messages` (newest first).
-Flood waits are handled via `site.back_off`.
-
-Example:
-    flnd download tlg:@examplechannel --from photo,video --time 2026-01-01..
-    flnd download "tlg:Lens Club"
-
-Folder layout under `.flnd/media/tlg/<target>/<chat title>/`:
-  photo/ video/ file/   <date>_<message id>[_<original name>]
-"""
+"""Telegram: every photo, video or file in a chat, group or channel the account can see."""
 
 from __future__ import annotations
 
@@ -20,6 +7,7 @@ import datetime
 import json
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, AsyncIterator, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -28,6 +16,7 @@ from flnd.source import (
     Fetch, FetchError, File, Login, LoginError, Post, Site, Source, Target, TargetError,
     target,
 )
+from shared import browser, fs
 
 TELEGRAM_WEB = "https://web.telegram.org/"
 # Telegram's production data centers, as every client ships them.
@@ -79,7 +68,11 @@ class Telegram(Source):
 
     # `resolve` reads target text: no pattern can match a chat title or `t.me/c/<n>` link;
     # the route has no pattern of its own, only the form help shows.
-    @target(shown="tlg:<@username, chat title or id>")
+    @target(
+        shown="tlg:<@username, chat title or id>",
+        from_=("photo", "video", "file"),
+        folder="{chat}/{category}",
+    )
     async def chat(self, site: Site, chat: str) -> Any:
         """A chat by username, invite link, id or title."""
         return await find_chat(site.client, chat)
@@ -107,28 +100,9 @@ class Telegram(Source):
         scheme = text.lower().startswith(("http://", "https://"))
         url = urlsplit(text if scheme else f"https://{text}") if "/" in text or scheme else None
         host = (url.hostname or "").lower() if url is not None else ""
-        is_tlg_domain = any(
-            host == domain or host.endswith("." + domain) for domain in self.domains
-        )
-        if url is not None and is_tlg_domain:
-            # Desktop, mobile and old mobile sites are t.me's; telegram.org names no chat.
-            for prefix in ("www.", "m.", "mobile.", "web."):
-                host = host.removeprefix(prefix)
-            # The `s` segment is web preview marker; only t.me has chat links.
-            parts = (
-                [part for part in url.path.split("/") if part and part != "s"]
-                if host == "t.me" else []
-            )
-            # A `t.me/c/<n>` link names a channel by a number written with a `-100` prefix.
-            if parts[:1] == ["c"] and len(parts) > 1 and parts[1].isdigit():
-                value = f"-100{parts[1]}"
-            # The old `joinchat/<hash>` invite link, read as the `+<hash>` form.
-            elif parts[:1] == ["joinchat"] and len(parts) > 1:
-                value = f"+{parts[1]}"
-            elif parts and (parts[0].startswith("+") or USERNAME.fullmatch(parts[0])):
-                value = parts[0]
-            else:
-                value = None
+        is_tlg = any(host == domain or host.endswith("." + domain) for domain in self.domains)
+        if url is not None and is_tlg:
+            value = _url_value(url, host)
         elif text.startswith("@"):
             value = text[1:] if USERNAME.fullmatch(text[1:]) else None
         else:
@@ -171,6 +145,21 @@ class Telegram(Source):
         # Disconnected even when the run stops early, so no connection outlives the source.
         finally:
             await client.disconnect()
+
+
+def _url_value(url: Any, host: str) -> str | None:
+    """Extract the chat identifier from a Telegram URL, or None when invalid."""
+    for prefix in ("www.", "m.", "mobile.", "web."):
+        host = host.removeprefix(prefix)
+    # The `s` segment is web preview marker; only t.me has chat links.
+    parts = [part for part in url.path.split("/") if part and part != "s"] if host == "t.me" else []
+    if parts[:1] == ["c"] and len(parts) > 1 and parts[1].isdigit():
+        return f"-100{parts[1]}"
+    if parts[:1] == ["joinchat"] and len(parts) > 1:
+        return f"+{parts[1]}"
+    if parts and (parts[0].startswith("+") or USERNAME.fullmatch(parts[0])):
+        return parts[0]
+    return None
 
 
 async def messages(site: Site, chat: Any, kind: str) -> AsyncIterator[Post]:
@@ -261,8 +250,14 @@ def fetcher(site: Site, message: Any) -> Fetch:
 
     async def fetch(dest: Any, progress: Any) -> None:
         if message.document is not None:
-            with open(dest, "wb") as file:
-                await _Download(site, message.document, file, progress).run()
+            dest_path = Path(dest)
+            sidecar = Path(f"{dest_path}.part.json")
+            done = _load_offsets(dest_path, sidecar, message.document.size)
+            mode = "r+b" if done is not None else "wb"
+            with open(dest_path, mode) as file:
+                await _Download(
+                    site, message.document, file, progress, sidecar=sidecar, done=done,
+                ).run()
             return
         while True:
             try:
@@ -278,18 +273,49 @@ def fetcher(site: Site, message: Any) -> Fetch:
     return fetch
 
 
+def _load_offsets(dest: Path, sidecar: Path, size: int) -> list[int] | None:
+    """Load valid resumed part offsets from `sidecar` when `dest` already exists."""
+    if not dest.is_file() or not sidecar.is_file():
+        return None
+    try:
+        state = json.loads(sidecar.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    part_list = parts(size)
+    done = state.get("done") if isinstance(state, dict) else None
+    if state.get("size") != size or not isinstance(done, list) or len(done) != len(part_list):
+        return None
+    if not all(
+        isinstance(n, int) and 0 <= n <= end - start for n, (start, end) in zip(done, part_list)
+    ):
+        return None
+    return list(done)
+
+
 class _Download:
     """One document's bytes into an open file, in parts at once, each going on where it stopped."""
 
-    def __init__(self, site: Site, document: Any, file: Any, progress: Any):
+    def __init__(
+        self,
+        site: Site,
+        document: Any,
+        file: Any,
+        progress: Any,
+        *,
+        sidecar: Path | None = None,
+        done: list[int] | None = None,
+    ):
         self.site, self.document, self.file, self.progress = site, document, file, progress
         self.size: int = document.size
         self.parts = parts(self.size)
+        self.sidecar = sidecar
         # The bytes each part has written so far; one loop runs every part, so no lock.
-        self.done = [0] * len(self.parts)
+        self.done = list(done) if done is not None else [0] * len(self.parts)
 
     async def run(self) -> None:
         """Fetch every part at once; one failing stops the others."""
+        if sum(self.done) > 0:
+            self.progress(sum(self.done), self.size)
         tasks = [asyncio.ensure_future(self._part(number)) for number in range(len(self.parts))]
         try:
             await asyncio.gather(*tasks)
@@ -298,6 +324,8 @@ class _Download:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+        if self.sidecar is not None:
+            self.sidecar.unlink(missing_ok=True)
 
     async def _part(self, number: int) -> None:
         """Fetch one part, waiting out flood waits and going on after up to `RESUMES` drops."""
@@ -337,6 +365,9 @@ class _Download:
             self.file.write(chunk)
             position += len(chunk)
             self.done[number] += len(chunk)
+            if self.sidecar is not None:
+                payload = json.dumps({"size": self.size, "done": self.done}).encode("utf-8")
+                fs.write(self.sidecar, payload)
             self.progress(sum(self.done), self.size)
         if self.done[number] == before:
             raise FetchError(f"Telegram sent nothing from byte {position} of {self.size}")
@@ -434,8 +465,6 @@ def read_telegram_web() -> dict[str, str]:
     """Telegram Web's local storage from Chrome's default profile."""
     from urllib.parse import urlparse
 
-    from shared import browser
-
     err_msg = "tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead"
     try:
         # Headless: the read happens without a window, so nothing is shown to the user.
@@ -450,9 +479,9 @@ def read_telegram_web() -> dict[str, str]:
             try:
                 return page.raw.evaluate("Object.assign({}, localStorage)")
             # What evaluate raises when the tab navigated away or closed meanwhile.
-            except browser.RawError as error:
+            except browser.Error as error:
                 raise LoginError(err_msg.format(error=error)) from None
-    except (OSError, RuntimeError, ValueError) as error:
+    except (browser.Error, OSError, RuntimeError, ValueError) as error:
         raise LoginError(err_msg.format(error=error)) from None
 
 

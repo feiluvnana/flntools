@@ -1,18 +1,4 @@
-"""LOIBUS (loix.cc): one post's info, preview images and, for VIP accounts, archives.
-
-The `post` route reads the post JSON. `photo` yields info.md and preview images.
-`archive` decrypts download links, consumes daily VIP quota, and yields archives:
-
-    flnd download loi:5930 --from archive
-
-API requests carry signed timestamps and Bearer tokens for api.moegoat.com. Download
-links use AES-128-CBC encryption. Archives are saved under their URL filenames.
-
-Folder layout under `.flnd/media/loi/<id>/<author>/<id> <title>/`:
-  info.md         post fields, download links, unzip password
-  images/         preview images (01.jpg, 02.jpg, …)
-  loi-<hash>.7z   archives (--from archive)
-"""
+"""LOIBUS (loix.cc): one post's info, preview images and, for VIP accounts, archives."""
 
 from __future__ import annotations
 
@@ -26,7 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from flnd.query import Choice, Name, Param, Query
 from flnd.source import FetchError, File, Post, Site, Source, Target, TargetError, day, target
-from shared import crypto
+from shared import clock, crypto
 
 if TYPE_CHECKING:
     import httpx
@@ -144,7 +130,13 @@ class Loibus(Source):
     # Every key is the file's path, as the history has always had it, so this never changes.
     key = ""
 
-    @target(r"{id:\d+}", r"loix.cc/lois/{id:\d+}", r"moegoat.com/lois/{id:\d+}")
+    @target(
+        r"{id:\d+}",
+        r"loix.cc/lois/{id:\d+}",
+        r"moegoat.com/lois/{id:\d+}",
+        from_=("photo", "archive"),
+        folder="{author}/{id} {title}/{part}",
+    )
     def post(self, site: Site, id: str) -> dict[str, Any]:
         """One post by id, or a post URL on either site."""
         body = site.fetch(f"{API}lois/{id}").json
@@ -191,11 +183,16 @@ class Loibus(Source):
             **fields_of(post),
         )
 
-    @target("?{query}", params={
-        "tag": Param(Name, "a tag", lookup=lookup_tags),
-        "author": Param(Name, "an author", lookup=lookup_authors),
-        "sort": Param(Choice("date", "views", "likes", "bookmarks", "comments"), "sort order"),
-    })
+    @target(
+        "?{query}",
+        params={
+            "tag": Param(Name, "a tag", lookup=lookup_tags),
+            "author": Param(Name, "an author", lookup=lookup_authors),
+            "sort": Param(Choice("date", "views", "likes", "bookmarks", "comments"), "sort order"),
+        },
+        from_=(),
+        folder="{author}/{id} {title}/{part}",
+    )
     def query(self, site: Site, query: Query) -> Iterator[Target]:
         """Yield `loi:<id>` post targets matching `query`."""
         authors = [str(v) for term in query.terms if term.param == "author" for v in term.values]
@@ -251,10 +248,13 @@ class Loibus(Source):
                 used=used, limit=limit,
             )
             return None
-        body = _json(site, f"{API}user/loi/download_v6/{post['id']}")
+        body = _fetch_links(site, post["id"])
         data = body.get("data") if isinstance(body, dict) else None
-        # The site sends no links to an account that can't take the post; the warning names needed.
         if not isinstance(data, dict) or not data.get("sv_list"):
+            if isinstance(body, dict) and _quota_kind(body) == "daily":
+                _mark_exhausted(site)
+                site.warn("the daily VIP quota is used up; archives skipped")
+                return None
             needed = f"VIP{post['vip_requirement']}" if post.get("vip_requirement") else "a login"
             site.warn(
                 "the site gives no download links for this post ({needed} needed)", needed=needed,
@@ -301,9 +301,46 @@ def _json(site: Site, url: str) -> Any:
     return None if response is None else response.json
 
 
+def _fetch_links(site: Site, post_id: int) -> Any:
+    """Fetch download links once, backing off and retrying once on a rate-limit JSON response."""
+    url = f"{API}user/loi/download_v6/{post_id}"
+    body = _json(site, url)
+    if isinstance(body, dict) and _quota_kind(body) == "rate":
+        site.back_off("LOIBUS rate limit")
+        body = _json(site, url)
+    return body
+
+
+def _quota_kind(body: Mapping[str, Any]) -> str | None:
+    """Classify a failed JSON response as `'rate'`, `'daily'`, or None."""
+    data = body.get("data")
+    if isinstance(data, dict) and data.get("sv_list"):
+        return None
+    status = str(body.get("status") or "").casefold()
+    code = body.get("code")
+    msg = str(body.get("message") or body.get("msg") or "").casefold()
+    if code == 429 or any(word in msg for word in ("rate", "too many", "频繁", "稍后")):
+        return "rate"
+    if status in ("error", "fail") or code in (403, 429):
+        if any(word in msg for word in ("quota", "limit", "exceeded", "次数", "上限")):
+            return "daily"
+    return None
+
+
+def _mark_exhausted(site: Site) -> None:
+    """Record today's quota as exhausted in `site.state` so later posts skip link fetches."""
+    today = datetime.date.today().isoformat()
+    site.state["quota"] = {"day": today, "posts": today_posts(site), "exhausted": True}
+
+
 def quota(site: Site, post_id: int) -> tuple[int, int]:
     """Archives taken today and daily VIP limit, 0 when unknown."""
+    record = site.state.get("quota") or {}
+    today = datetime.date.today().isoformat()
     taken = today_posts(site)
+    if record.get("day") == today and record.get("exhausted"):
+        limit = max(len(taken), 1)
+        return limit, limit
     user = _json(site, f"{API}user/info")
     data = user.get("data") if isinstance(user, dict) else None
     # A post already counted today costs nothing more, so its limit is not checked again.
@@ -331,8 +368,8 @@ def today_posts(site: Site) -> list[int]:
     return list(record.get("posts", [])) if record.get("day") == today else []
 
 
-def info_md(post: dict, links: dict | None) -> str:
-    """The post as Markdown: fields, unzip password, description, links, and preview images."""
+def _info_rows(post: dict[str, Any]) -> list[tuple[str, str]]:
+    """Build the Markdown table rows for a post's metadata."""
     author = post.get("category") or {}
     author_name = markdown(author.get("name", ""))
     author_id = author.get("id", "")
@@ -344,7 +381,6 @@ def info_md(post: dict, links: dict | None) -> str:
         f"likes {post.get('like_count', 0)} · views {post.get('viewer_count', 0)} · "
         f"downloads {post.get('download_count', 0)}"
     )
-    # The fields as a two-column table: each row is (name, value), already escaped for Markdown.
     rows = [
         ("ID", f"`{post['id']}`"),
         ("Author", author_link),
@@ -354,31 +390,38 @@ def info_md(post: dict, links: dict | None) -> str:
         ("VIP Requirement", vip_req),
         ("Media Count", media_cnt),
         ("Stats", stats),
-        *([("Unzip Password", f"`{markdown(post['open_key'])}`")] if post.get("open_key") else []),
-        *([("Tags", tags)] if tags else []),
     ]
-    # Title, table, then each optional section in turn; omitted when absent.
-    lines = [f"# {markdown(post['loi_title'])}", "", "| Property | Value |", "| --- | --- |",
-             *(f"| {name} | {value} |" for name, value in rows)]
-    # The description is quoted line by line, so a blank line stays inside the quote.
+    if post.get("open_key"):
+        rows.append(("Unzip Password", f"`{markdown(post['open_key'])}`"))
+    if tags:
+        rows.append(("Tags", tags))
+    return rows
+
+
+def info_md(post: dict[str, Any], links: dict[str, Any] | None) -> str:
+    """The post as Markdown: fields, unzip password, description, links, and preview images."""
+    rows = _info_rows(post)
+    lines = [
+        f"# {markdown(post['loi_title'])}", "", "| Property | Value |", "| --- | --- |",
+        *(f"| {name} | {value} |" for name, value in rows),
+    ]
     if post.get("loi_description"):
-        lines += ["", "## Description", "",
-                  *(f"> {line}" if line else ">" for line in post["loi_description"].splitlines())]
-    if links:
-        server_lines = [
-            f"- **Server [{markdown(name)}]**: [Download]({url})"
-            for name, url in links["servers"]
+        lines += [
+            "", "## Description", "",
+            *(f"> {line}" if line else ">" for line in post["loi_description"].splitlines()),
         ]
-        lines += ["", "## Download Sources", "", *server_lines]
-        # The Baidu link has its own password, shown beside it when present.
+    if links:
+        lines += [
+            "", "## Download Sources", "",
+            *(f"- **Server [{markdown(n)}]**: [Download]({u})" for n, u in links["servers"]),
+        ]
         if links["pan"]:
             key = f" (Password: `{markdown(links['pan_key'])}`)" if links["pan_key"] else ""
             lines.append(f"- **Baidu**: [Link]({links['pan']}){key}")
     if post.get("images"):
         lines += [
             "", "## Preview Images", "",
-            *(f"{number}. ![Preview {number}]({url})"
-              for number, url in enumerate(post["images"], start=1)),
+            *(f"{i}. ![Preview {i}]({url})" for i, url in enumerate(post["images"], start=1)),
         ]
     return "\n".join(lines) + "\n"
 
@@ -404,7 +447,7 @@ def sign_request(
         "x-security-challenge": "turnstile-v1",
         "x-request-id": request_id(method, where, now_ms=now_ms, pick=pick, noise=noise),
         "x-signature-timestamp": at,
-        "x-request-signature": crypto.sha256(f"{method}|{where}||{at}|{SALT}"),
+        "x-request-signature": crypto.digest(f"{method}|{where}||{at}|{SALT}"),
     })
     return request
 
@@ -421,7 +464,8 @@ def request_id(
     # The slot is the time in five-minute units (one prefix per slot); random hex fills the rest.
     seed = format(now_ms // 300_000, "x").zfill(8)[-8:] + noise(9)[:17]
     # The digest covers the prefix, the request, and the digest of an empty `{}` body.
-    digest = crypto.sha256(f"{REQUEST_ID_PREFIX}|{seed}|{method}|{where}|{crypto.sha256('{}')}")[:5]
+    empty = crypto.digest("{}")
+    digest = crypto.digest(f"{REQUEST_ID_PREFIX}|{seed}|{method}|{where}|{empty}")[:5]
     seeds, digests, characters = iter(seed), iter(digest), []
     for position in range(32):
         # Position 12 is the UUID's version nibble, which is always 4.
@@ -467,4 +511,4 @@ def decode_token(raw: str) -> str:
 
 
 def _clock_ms() -> int:
-    return int(datetime.datetime.now(datetime.timezone.utc).timestamp() * 1000)
+    return int(clock.wall() * 1000)
