@@ -197,16 +197,15 @@ class Row:
     def _render(self, owner: UI) -> Text:
         level = "info" if self._outcome is None else self._outcome
         role = "accent" if level == "info" else level
-        glyph = owner._glyph(LOG_GLYPHS[level])
         text = Text()
-        text.append(glyph, style=role)
-        text.append(" ")
-        if self._total is None and self._count <= 0:
-            text.append(self.label, style="text")
-            if self._outcome is None:
-                text.append(" " + owner._spinner(), style=role)
+        if self._total is None:
+            mark = owner._spinner() if self._outcome is None else owner._glyph(LOG_GLYPHS[level])
+            text.append(mark, style=role)
+            text.append(" " + self.label, style="text")
             return text
-        text.append_text(_render_bar(owner, self._count, self._total, level, role))
+        text.append(owner._glyph(LOG_GLYPHS[level]), style=role)
+        text.append(" ")
+        text.append_text(_render_bar(owner, self._count, self._total, role))
         text.append(" " + self.label, style="text")
         if count_str := _format_count(self._count, self._total, level):
             text.append(" " + count_str, style="size")
@@ -228,12 +227,8 @@ class _RowColumn(ProgressColumn):
         return row._render(self._owner)
 
 
-def _render_bar(
-    owner: UI, count: float, total: float | None, level: str, role: str,
-) -> Text:
-    if total is None and level == "info":
-        return Text(owner._spinner().ljust(BAR_CELLS), style=role)
-    ratio = 1.0 if total is None or total <= 0 else min(max(count, 0.0), total) / total
+def _render_bar(owner: UI, count: float, total: float, role: str) -> Text:
+    ratio = 1.0 if total <= 0 else min(max(count, 0.0), total) / total
     filled = round(BAR_CELLS * ratio)
     full = owner._glyph("bar_full") * filled
     empty = owner._glyph("bar_empty") * (BAR_CELLS - filled)
@@ -275,17 +270,19 @@ class Group:
         if self._progress is not None:
             self._progress.start()
 
-    def _stop(self) -> None:
+    def _stop(self, outcome: Level = "ok") -> None:
+        for row in self._rows:
+            if row._outcome is None:
+                row._outcome = outcome
         if self._progress is not None:
             self._progress.stop()
             if self._ui._allows("ok"):
                 for row in self._rows:
-                    level = row._outcome or "ok"
-                    if self._ui._allows(level):
+                    if row._outcome is not None and self._ui._allows(row._outcome):
                         self._ui._console.print(row._render(self._ui))
             return
         for row in self._rows:
-            self._ui._log(row._outcome or "info", row.label)
+            self._ui._log(row._outcome or outcome, row.label)
 
     def _add_task(self, label: str, total: float | None) -> TaskID:
         if self._progress is None:
@@ -458,8 +455,10 @@ class UI:
         grp._start()
         try:
             yield grp
-        finally:
-            grp._stop()
+        except BaseException:
+            grp._stop("error")
+            raise
+        grp._stop("ok")
 
     @contextmanager
     def progress(self, label: str, *, total: float | None = None) -> Iterator[Row]:
