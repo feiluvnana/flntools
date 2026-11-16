@@ -252,7 +252,7 @@ class Board:
         if c.failed:
             parts.append(f"{c.failed} failed")
         if c.bytes:
-            parts.append(text.fmt.size(c.bytes))
+            parts.append(text.size(c.bytes))
         if line.note:
             parts.append(line.note)
         return " | ".join(parts)
@@ -363,12 +363,12 @@ def _resolve_name(
     post: Post, file: File, filename: str, values: Mapping[str, Any], extension: str
 ) -> str:
     """Compute a safe filename for one file of `post`."""
-    formatted = fill(filename, values) or text.clean.filename(post.id)
+    formatted = fill(filename, values) or text.filename(post.id)
     if file.name is None:
         return formatted + extension
     if file.content is None and PurePosixPath(file.name).stem in _stems(filename, values):
         return formatted + PurePosixPath(file.name).suffix
-    return text.clean.filename(file.name, max_bytes=200)
+    return text.filename(file.name, max_bytes=200)
 
 
 def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
@@ -524,7 +524,7 @@ class Ledger:
             dated += 1
         self._save_asked()
         if dated:
-            self.site.info("{files} dated", files=text.fmt.count(dated, "saved file"))
+            self.site.info("{files} dated", files=text.count(dated, "saved file"))
         return dated
 
     def _target_undated_rows(self) -> list[tuple[str, dict[str, Any]]]:
@@ -783,7 +783,7 @@ class Downloads:
                 if not self._pending:
                     return
                 note_text = (
-                    FINISHING.format(files=text.fmt.count(self._running, "file"))
+                    FINISHING.format(files=text.count(self._running, "file"))
                     if self.settings.stop.soon.is_set()
                     else None
                 )
@@ -1189,9 +1189,9 @@ def _ended(
 
 def _summary(totals: Counts, target: Target, seconds: float) -> None:
     """Log one line for a finished target: files saved, size, skips, failures and time."""
-    parts = [text.fmt.count(totals.saved, "file") + " saved"] if totals.saved else []
+    parts = [text.count(totals.saved, "file") + " saved"] if totals.saved else []
     if totals.bytes:
-        parts.append(text.fmt.size(totals.bytes))
+        parts.append(text.size(totals.bytes))
     if totals.linked:
         parts.append(f"{totals.linked} linked")
     if totals.skipped:
@@ -1199,7 +1199,7 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
     if totals.failed:
         parts.append(f"{totals.failed} failed (retried next run)")
     body = ", ".join(parts) or "nothing new"
-    line = f"{body} in {text.fmt.duration(seconds)}"
+    line = f"{body} in {text.duration(seconds)}"
     (ui.warn if totals.failed else ui.ok)("{target}: {line}", target=str(target), line=line)
 
 

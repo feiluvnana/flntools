@@ -125,14 +125,14 @@ def _where(file: File) -> str:
     if file.content is not None:
         return f"(text, {len(file.content)} characters)"
     if isinstance(file.url, str):
-        found = text.clean.url(file.url)
+        found = text.redact(file.url)
     elif isinstance(file.url, tuple) and len(file.url) > 0:
-        found = text.clean.url(file.url[0])
+        found = text.redact(file.url[0])
         if len(file.url) > 1:
             found += f" (+{len(file.url) - 1} mirrors)"
     else:
         found = "(fetched by the source)"
-    return f"{found} + audio {text.clean.url(file.audio)}" if file.audio else found
+    return f"{found} + audio {text.redact(file.audio)}" if file.audio else found
 
 
 if __name__ == "__main__":

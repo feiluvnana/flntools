@@ -466,7 +466,7 @@ class TargetSite:
         with _stoppable():
             seconds = retry_after if retry_after is not None else 5.0
             ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
-                    reason=reason, time=text.fmt.duration(round(seconds)))
+                    reason=reason, time=text.duration(round(seconds)))
             if seconds > 0 and not clock.sleep(seconds, stop=self._run.web._stop):
                 raise http.StoppedError(f"{self.target}: stopped")
 
@@ -822,7 +822,7 @@ def _warn_expiring(source: Source, jar: Any) -> None:
         elif expires - now <= EXPIRY_WARNING:
             ui.warn(
                 "{code}: the login cookie {name} expires in {time}; run flnd login again soon",
-                code=source.code, name=cookie["name"], time=text.fmt.duration(expires - now),
+                code=source.code, name=cookie["name"], time=text.duration(expires - now),
             )
 
 

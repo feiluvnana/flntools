@@ -211,7 +211,7 @@ class Instagram(Source):
             if reels is None:
                 warm_tabs(site, [f"{SITE}/stories/highlights/{hid}/" for hid, _ in chunk])
             for highlight_id, title in chunk:
-                folder = f"highlights/{text.clean.filename(title)}"
+                folder = f"highlights/{text.filename(title)}"
                 if reels is None:
                     posts = story_posts(site, f"{SITE}/stories/highlights/{highlight_id}/", folder)
                 else:
@@ -731,7 +731,7 @@ def reel_posts(site: Site, stories: list[dict], folder: str) -> Iterator[Post]:
             mname = file_name(day(story.get("taken_at")), f"{story_id}_music", "m4a")
             files.append(File(music, name=mname))
         yield Post(story_id, files, date=story.get("taken_at"), headers=CDN_HEADERS)
-    cnt = text.fmt.count(len(stories), "story", plural="stories")
+    cnt = text.count(len(stories), "story", plural="stories")
     site.info("{folder}: {stories}", folder=folder, stories=cnt)
 
 

@@ -722,7 +722,7 @@ class ChatTest(DownloadCase):
     def test_by_title_and_by_id(self):
         self.telegram.messages[1001] = [message(11, "photo")]
         self.assertEqual(self.download("tlg:example channel"), 1)
-        by_title = self.target_dir("tlg", text.clean.filename("example channel"))
+        by_title = self.target_dir("tlg", text.filename("example channel"))
         self.assertTrue((by_title / "Example_Channel" / "photo" / "2026-01-05_11.jpg").is_file())
         self.assertEqual(self.download("tlg:-1001001"), 0)
         # The file is already saved under the title, so the id run's photo line counts it skipped.

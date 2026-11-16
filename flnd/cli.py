@@ -101,7 +101,7 @@ def download(
         except (TargetError, ValueError) as error:
             raise cli.UsageError(str(error)) from error
     if not dry:
-        ui.ok("Complete. {files}", files=text.fmt.count(report.files, "file"))
+        ui.ok("Complete. {files}", files=text.count(report.files, "file"))
     return 0 if report.ok else 1
 
 
@@ -139,9 +139,9 @@ def target_ls() -> int:
         table.add_column(col)
     for item in items:
         stats = (
-            text.fmt.count(item.seen, "seen")
+            text.count(item.seen, "seen")
             if item.query
-            else f"{text.fmt.count(item.files, 'file')}, {text.fmt.size(item.size)}"
+            else f"{text.count(item.files, 'file')}, {text.size(item.size)}"
         )
         cats = ", ".join(f"{cat}: {st}" for cat, st in item.categories.items())
         table.add_row(
@@ -247,7 +247,7 @@ def auth_ls() -> int:
         table.add_column(col)
     for item in Engine(home=HOME).auth_ls():
         exp = ", ".join(
-            f"{name} expired" if rem <= 0 else f"{name} in {text.fmt.duration(rem)}"
+            f"{name} expired" if rem <= 0 else f"{name} in {text.duration(rem)}"
             for name, rem in item.expiring
         )
         table.add_row(item.code, item.name, item.state, item.origin, exp)

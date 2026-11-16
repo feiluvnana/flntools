@@ -69,7 +69,7 @@ def download(client: http.Client, file: File, dest: Path, *, label: str,
             raise KeyboardInterrupt from None
         except http.RefusedError as error:
             reason: BaseException = FetchError(
-                f"HTTP {error.status} for {text.clean.url(str(mirror))}", status=error.status
+                f"HTTP {error.status} for {text.redact(str(mirror))}", status=error.status
             )
             if number == len(mirrors):
                 raise reason from None
@@ -200,7 +200,7 @@ def _again(attempt: Callable[[], T], *, retryable: tuple[type[BaseException], ..
                 raise
             seconds = 2.0 ** (number - 1)
             ui.debug("retry {n} in {time}: {error}", n=number,
-                     time=text.fmt.duration(seconds), error=error)
+                     time=text.duration(seconds), error=error)
             clock.sleep(seconds)
             number += 1
 

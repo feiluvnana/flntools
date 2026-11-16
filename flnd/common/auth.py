@@ -110,7 +110,7 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     for path in _cookie_files(home, source.code):
         path.unlink(missing_ok=True)
     _remove_if_empty(home / COOKIE_FOLDER)
-    return f"{source.code}: logged in from {origin} ({text.fmt.count(len(jar), 'cookie')})"
+    return f"{source.code}: logged in from {origin} ({text.count(len(jar), 'cookie')})"
 
 
 def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) -> None:

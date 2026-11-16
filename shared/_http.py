@@ -301,7 +301,7 @@ class Client:
                 if attempt >= max_rate and error.retry_after is None:
                     raise
                 ui.warn("{host}: rate limited; waiting {time}",
-                        host=host, time=text.fmt.duration(round(wait)))
+                        host=host, time=text.duration(round(wait)))
                 if not clock.sleep(wait, stop=self._stop):
                     raise StoppedError(f"{host}: stopped") from None
                 attempt += 1

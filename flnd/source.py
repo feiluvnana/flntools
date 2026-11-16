@@ -503,13 +503,13 @@ def fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str:
         fill("{date}_{id}{index}", {"id": "C1abc", "date": "", "index": ""})  # "C1abc"
         fill("{author}/{id} {title}", {"author": "a/b", "id": 7})            # "a_b/7"
 
-    Passes path segments through `text.clean.filename` when `safe` is True.
+    Passes path segments through `text.filename` when `safe` is True.
     """
     segments = []
     for segment in _split(template, "/"):
         piece = _fill_segment(segment, fields)
         if piece:
-            segments.append(text.clean.filename(piece) if safe else piece)
+            segments.append(text.filename(piece) if safe else piece)
     return "/".join(segments)
 
 

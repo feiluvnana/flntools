@@ -25,7 +25,7 @@ from rich.text import Text
 
 import shared
 from shared import _clock as clock
-from shared._text import fmt
+from shared._text import size
 
 __all__ = ["Error", "Group", "Row", "UI", "ui"]
 
@@ -260,7 +260,7 @@ def _format_count(
 ) -> str:
     def one(value: float) -> str:
         if unit == "bytes":
-            return fmt.size(value)
+            return size(value)
         return str(int(value) if float(value).is_integer() else value)
 
     if level == "ok" and total is not None:

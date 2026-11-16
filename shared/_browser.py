@@ -506,7 +506,7 @@ class Page:
             response = self.raw.goto(url, wait_until=wait_state, timeout=timeout * 1000)
         # Playwright's Error covers DNS failures, aborted requests and timeouts ("not loaded").
         except _raw_error() as error:
-            clean_url = text.clean.url(url)
+            clean_url = text.redact(url)
             msg = _first_line(error).replace(url, clean_url)
             ui.warn("could not open {url}: {error}", url=clean_url, error=msg)
             return None
@@ -1086,7 +1086,7 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
         if not _gone(error):
             ui.debug(
                 "responses: no body for {url}: {error}",
-                url=text.clean.url(response.url), error=_first_line(error),
+                url=text.redact(response.url), error=_first_line(error),
             )
         return []
     pieces = [line for line in body.splitlines() if line.strip()] if lines else [body]
@@ -1098,6 +1098,6 @@ def _json_bodies(response: Response, lines: bool) -> list[Any]:
         except ValueError:
             ui.debug(
                 "responses: skipped a body that is not JSON from {url}",
-                url=text.clean.url(response.url),
+                url=text.redact(response.url),
             )
     return parsed

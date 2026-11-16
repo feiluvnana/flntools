@@ -95,7 +95,7 @@ def kind_of(name: str) -> str | None:
 
 def target_folder(home: Path, target: Target) -> Path:
     """A target's folder: `<home>/media/<code>/<value>`, with value made safe."""
-    return home / MEDIA / target.source / text.clean.filename(target.value)
+    return home / MEDIA / target.source / text.filename(target.value)
 
 
 def sniff(path: Path) -> str | None:

@@ -360,7 +360,7 @@ class Graph:
             return False
         self._table(site).update(queries)
         site.state[STATE_KEY] = dict(self._table(site))
-        n = text.fmt.count(len(queries), "query id")
+        n = text.count(len(queries), "query id")
         site.info("refreshed {n} from x.com's script", n=n)
         return True
 
