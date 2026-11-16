@@ -645,6 +645,40 @@ class DownloadTest(DownloadCase):
         self.assertEqual(sorted(self.telegram.reads), [(0, 4), (32, 4), (64, 4), (96, 4)])
         self.assertEqual(tlg.parts(10), [(0, 10)])
 
+    def test_a_damaged_offsets_file_starts_the_download_over(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "video.mp4"
+            dest.write_bytes(b"abc")
+            sidecar = Path(f"{dest}.json")
+            for damaged in ("[]", "7", '"text"', "{"):
+                with self.subTest(damaged=damaged):
+                    sidecar.write_text(damaged)
+                    self.assertIsNone(tlg._load_offsets(dest, sidecar, 16))
+
+    def test_the_offsets_file_never_counts_bytes_still_in_the_buffer(self):
+        on_disk = []
+
+        async def iter_download(document, **options):
+            yield bytes(range(8))
+            yield bytes(range(8, 16))
+
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "video.mp4"
+            dest.write_bytes(b"abc")
+            sidecar = Path(f"{dest}.json")
+            site = SimpleNamespace(client=SimpleNamespace(iter_download=iter_download))
+
+            def save(path, data, **options):
+                # What a crash right now would leave: the file on disk against the offsets saved.
+                on_disk.append((dest.stat().st_size, json.loads(data)["done"][0]))
+
+            with open(dest, "r+b") as file, mock.patch.object(tlg, "REQUEST", 8), \
+                    mock.patch.object(tlg.fs, "write", side_effect=save):
+                download = tlg._Download(site, SimpleNamespace(size=16), file, lambda *_: None,
+                                         sidecar=sidecar, done=[3])
+                asyncio.run(download.run())
+        self.assertTrue(all(size >= done for size, done in on_disk), on_disk)
+
     def test_not_logged_in_fails_the_target(self):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets.clear()

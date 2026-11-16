@@ -281,8 +281,10 @@ def _load_offsets(dest: Path, sidecar: Path, size: int) -> list[int] | None:
         state = json.loads(sidecar.read_text("utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(state, dict):
+        return None
     part_list = parts(size)
-    done = state.get("done") if isinstance(state, dict) else None
+    done = state.get("done")
     if state.get("size") != size or not isinstance(done, list) or len(done) != len(part_list):
         return None
     if not all(
@@ -367,6 +369,8 @@ class _Download:
             position += len(chunk)
             self.done[number] += len(chunk)
             if self.sidecar is not None:
+                # The offsets may only count bytes the file holds, or a resume would skip them.
+                self.file.flush()
                 payload = json.dumps({"size": self.size, "done": self.done}).encode("utf-8")
                 fs.write(self.sidecar, payload)
             self.progress(sum(self.done), self.size)
