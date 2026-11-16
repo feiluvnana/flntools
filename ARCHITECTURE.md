@@ -4,6 +4,8 @@ This is the map of flnd as it is being rebuilt: what the parts are, how a downlo
 
 [PLAN.md](PLAN.md) holds the rest: the measurements behind each choice, the dependencies, and the order of the work. Where the two differ, this file describes the design, and PLAN.md is updated to match.
 
+For how the code on this branch works today, read [docs/architecture.md](docs/architecture.md). That page stays after the rebuild; this file is deleted.
+
 ## 1. Goals
 - **Simple.** Few ideas, each with one name and one way to use it. A newcomer should be able to say what every module does after reading this page.
 - **Feature-rich.** The engine does the hard parts once: following, syncing, resuming, retrying, pacing, deduping, compressing, unpacking, progress and history. Every source gets all of it for free.

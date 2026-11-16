@@ -1,0 +1,2151 @@
+# Docstring and docs gaps that tests/test_docs.py allows today, one per line.
+# Fix a gap, then delete its line: the list may only shrink.
+docs/library.md: 2 skipped python blocks
+flnd/__init__.py:download: Args: no again
+flnd/__init__.py:download: Args: no categories
+flnd/__init__.py:download: Args: no dry
+flnd/__init__.py:download: Args: no home
+flnd/__init__.py:download: Args: no limit
+flnd/__init__.py:download: Args: no sync
+flnd/__init__.py:download: Args: no targets
+flnd/__init__.py:download: Args: no time
+flnd/__init__.py:download: no Example:
+flnd/__init__.py:download: no Returns:
+flnd/__init__.py:open: Args: no code
+flnd/__init__.py:open: Args: no home
+flnd/__init__.py:open: Args: no time
+flnd/__init__.py:open: no Example:
+flnd/__init__.py:open: no Yields:
+flnd/__init__.py:resolve: Args: no text
+flnd/__init__.py:resolve: no Example:
+flnd/__init__.py:resolve: no Returns:
+flnd/cli.py:_ask_source: no docstring
+flnd/cli.py:_read_targets: no docstring
+flnd/cli.py:auth_ls: no Returns:
+flnd/cli.py:download: no Raises:
+flnd/cli.py:download: no Returns:
+flnd/cli.py:epilog: no Returns:
+flnd/cli.py:login_command: no Raises:
+flnd/cli.py:login_command: no Returns:
+flnd/cli.py:logout: Args: no sources
+flnd/cli.py:logout: no Raises:
+flnd/cli.py:logout: no Returns:
+flnd/cli.py:sync: no Returns:
+flnd/cli.py:target_del: Args: no targets
+flnd/cli.py:target_del: no Raises:
+flnd/cli.py:target_del: no Returns:
+flnd/cli.py:target_ls: no Returns:
+flnd/cli.py:target_sync_off: Args: no targets
+flnd/cli.py:target_sync_off: no Raises:
+flnd/cli.py:target_sync_off: no Returns:
+flnd/cli.py:target_sync_on: Args: no targets
+flnd/cli.py:target_sync_on: no Raises:
+flnd/cli.py:target_sync_on: no Returns:
+flnd/common/auth.py:Vault: Args: no code
+flnd/common/auth.py:Vault: Args: no home
+flnd/common/auth.py:_create_key: Args: no path
+flnd/common/auth.py:_create_key: no Returns:
+flnd/common/auth.py:_move: Args: no code
+flnd/common/auth.py:_move: Args: no home
+flnd/common/auth.py:_refresh_cookie: Args: no cookie
+flnd/common/auth.py:_refresh_cookie: Args: no fresh
+flnd/common/auth.py:_refresh_cookie: no Returns:
+flnd/common/auth.py:_remove_if_empty: Args: no folder
+flnd/common/auth.py:expiring: Args: no home
+flnd/common/auth.py:expiring: Args: no source
+flnd/common/auth.py:expiring: Args: no within
+flnd/common/auth.py:expiring: no Returns:
+flnd/common/auth.py:fix_domains: Args: no jar
+flnd/common/auth.py:fix_domains: no Returns:
+flnd/common/auth.py:from_browser: Args: no browser
+flnd/common/auth.py:from_browser: Args: no profile
+flnd/common/auth.py:from_browser: Args: no source
+flnd/common/auth.py:from_browser: no Raises:
+flnd/common/auth.py:from_browser: no Returns:
+flnd/common/auth.py:key: Args: no home
+flnd/common/auth.py:key: no Raises:
+flnd/common/auth.py:key: no Returns:
+flnd/common/auth.py:logout: Args: no code
+flnd/common/auth.py:logout: Args: no home
+flnd/common/auth.py:logout: no Returns:
+flnd/common/auth.py:origin: no Returns:
+flnd/common/auth.py:secrets: no Returns:
+flnd/common/auth.py:store: no Returns:
+flnd/common/auth.py:write_back: Args: no code
+flnd/common/auth.py:write_back: Args: no current
+flnd/common/auth.py:write_back: Args: no home
+flnd/common/auth.py:write_back: no Returns:
+flnd/common/net.py:_Row.grow: Args: no new
+flnd/common/net.py:_Row.grow: Args: no old
+flnd/common/net.py:_Row.start: no docstring
+flnd/common/net.py:_Row.update: no docstring
+flnd/common/net.py:_Row: Args: no label
+flnd/common/net.py:_Stream: Args: no row
+flnd/common/net.py:_Stream: Args: no stop
+flnd/common/net.py:_again: Args: no attempt
+flnd/common/net.py:_again: Args: no final
+flnd/common/net.py:_again: Args: no retryable
+flnd/common/net.py:_again: no Returns:
+flnd/common/net.py:_dash_merge: Args: no audio
+flnd/common/net.py:_dash_merge: Args: no client
+flnd/common/net.py:_dash_merge: Args: no dest
+flnd/common/net.py:_dash_merge: Args: no headers
+flnd/common/net.py:_dash_merge: Args: no row
+flnd/common/net.py:_dash_merge: Args: no stop
+flnd/common/net.py:_dash_merge: Args: no video
+flnd/common/net.py:_dash_merge: no Raises:
+flnd/common/net.py:_dash_merge: no Returns:
+flnd/common/net.py:_recording: Args: no seen
+flnd/common/net.py:_recording: no Yields:
+flnd/common/net.py:_save_dash: Args: no audio
+flnd/common/net.py:_save_dash: Args: no client
+flnd/common/net.py:_save_dash: Args: no dest
+flnd/common/net.py:_save_dash: Args: no headers
+flnd/common/net.py:_save_dash: Args: no label
+flnd/common/net.py:_save_dash: Args: no stop
+flnd/common/net.py:_save_dash: Args: no video
+flnd/common/net.py:_save_dash: no Returns:
+flnd/common/net.py:_save_fetch: Args: no dest
+flnd/common/net.py:_save_fetch: Args: no fetch
+flnd/common/net.py:_save_fetch: Args: no kind
+flnd/common/net.py:_save_fetch: Args: no label
+flnd/common/net.py:_save_fetch: Args: no size
+flnd/common/net.py:_save_fetch: Args: no stop
+flnd/common/net.py:_save_fetch: no Returns:
+flnd/common/net.py:_save_url: Args: no client
+flnd/common/net.py:_save_url: Args: no dest
+flnd/common/net.py:_save_url: Args: no headers
+flnd/common/net.py:_save_url: Args: no kind
+flnd/common/net.py:_save_url: Args: no label
+flnd/common/net.py:_save_url: Args: no received
+flnd/common/net.py:_save_url: Args: no size
+flnd/common/net.py:_save_url: Args: no stop
+flnd/common/net.py:_save_url: Args: no url
+flnd/common/net.py:_save_url: no Returns:
+flnd/common/net.py:_sniffed: Args: no dest
+flnd/common/net.py:_sniffed: Args: no known
+flnd/common/net.py:_sniffed: Args: no part
+flnd/common/net.py:_sniffed: no Raises:
+flnd/common/net.py:_sniffed: no Returns:
+flnd/common/net.py:_try_mirror: Args: no client
+flnd/common/net.py:_try_mirror: Args: no dest
+flnd/common/net.py:_try_mirror: Args: no file
+flnd/common/net.py:_try_mirror: Args: no headers
+flnd/common/net.py:_try_mirror: Args: no kind
+flnd/common/net.py:_try_mirror: Args: no label
+flnd/common/net.py:_try_mirror: Args: no mirror
+flnd/common/net.py:_try_mirror: Args: no received
+flnd/common/net.py:_try_mirror: Args: no stop
+flnd/common/net.py:_try_mirror: no Returns:
+flnd/common/net.py:client: Args: no jar
+flnd/common/net.py:client: Args: no sign
+flnd/common/net.py:client: Args: no user_agent
+flnd/common/net.py:client: no Returns:
+flnd/common/net.py:cookie_jar: Args: no jar
+flnd/common/net.py:cookie_jar: no Returns:
+flnd/common/net.py:download: Args: no client
+flnd/common/net.py:download: Args: no dest
+flnd/common/net.py:download: Args: no file
+flnd/common/net.py:download: Args: no headers
+flnd/common/net.py:download: Args: no kind
+flnd/common/net.py:download: Args: no label
+flnd/common/net.py:download: Args: no received
+flnd/common/net.py:download: Args: no stop
+flnd/common/net.py:download: no Raises:
+flnd/common/net.py:download: no Returns:
+flnd/common/net.py:follow: Args: no url
+flnd/common/net.py:follow: no Returns:
+flnd/common/paths.py:checked: Args: no decode
+flnd/common/paths.py:checked: Args: no kind
+flnd/common/paths.py:checked: Args: no path
+flnd/common/paths.py:checked: no Raises:
+flnd/common/paths.py:checked: no Returns:
+flnd/common/paths.py:kind_of: Args: no name
+flnd/common/paths.py:kind_of: no Returns:
+flnd/common/paths.py:sniff: Args: no path
+flnd/common/paths.py:sniff: no Returns:
+flnd/dry.py:_validate_dry: no docstring
+flnd/dry.py:_where: Args: no file
+flnd/dry.py:_where: no Returns:
+flnd/dry.py:main: Args: no argv
+flnd/dry.py:main: no Returns:
+flnd/dry.py:plan: Args: no categories
+flnd/dry.py:plan: Args: no home
+flnd/dry.py:plan: Args: no sources
+flnd/dry.py:plan: Args: no target_text
+flnd/dry.py:plan: Args: no time
+flnd/dry.py:plan: no Raises:
+flnd/dry.py:plan: no Yields:
+flnd/dry.py:render_tree: Args: no placed
+flnd/dry.py:render_tree: Args: no target_text
+flnd/dry.py:render_tree: no Returns:
+flnd/dry.py:tree: Args: no placed
+flnd/dry.py:tree: no Yields:
+flnd/engine.py:AuthInfo: no Example:
+flnd/engine.py:Engine._discover_and_run: Args: no board
+flnd/engine.py:Engine._discover_and_run: Args: no options
+flnd/engine.py:Engine._discover_and_run: Args: no reports
+flnd/engine.py:Engine._discover_and_run: Args: no run
+flnd/engine.py:Engine._discover_and_run: Args: no span
+flnd/engine.py:Engine._discover_and_run: Args: no stop
+flnd/engine.py:Engine._discover_and_run: Args: no target
+flnd/engine.py:Engine._download_mixed: Args: no by_source
+flnd/engine.py:Engine._download_mixed: Args: no resolved
+flnd/engine.py:Engine._download_mixed: Args: no span
+flnd/engine.py:Engine._download_mixed: Args: no stop
+flnd/engine.py:Engine._download_mixed: Args: no sync
+flnd/engine.py:Engine._download_mixed: no Returns:
+flnd/engine.py:Engine._download_normal: Args: no by_source
+flnd/engine.py:Engine._download_normal: Args: no resolved
+flnd/engine.py:Engine._download_normal: Args: no stop
+flnd/engine.py:Engine._download_normal: Args: no sync
+flnd/engine.py:Engine._download_normal: no Returns:
+flnd/engine.py:Engine._dry_one: Args: no options
+flnd/engine.py:Engine._dry_one: Args: no settings
+flnd/engine.py:Engine._dry_one: Args: no span
+flnd/engine.py:Engine._dry_one: Args: no stop
+flnd/engine.py:Engine._dry_one: Args: no target
+flnd/engine.py:Engine._dry_one: no Returns:
+flnd/engine.py:Engine._dry_run: no docstring
+flnd/engine.py:Engine._interactive_login: no docstring
+flnd/engine.py:Engine._label_width: no docstring
+flnd/engine.py:Engine._plan: Args: no targets
+flnd/engine.py:Engine._plan: no Returns:
+flnd/engine.py:Engine._recorded: no docstring
+flnd/engine.py:Engine._resolved: no docstring
+flnd/engine.py:Engine._run: Args: no browser_pool
+flnd/engine.py:Engine._run: Args: no chosen
+flnd/engine.py:Engine._run: Args: no stop
+flnd/engine.py:Engine._run: no Returns:
+flnd/engine.py:Engine._run_child: no docstring
+flnd/engine.py:Engine._run_query: Args: no browser_pool
+flnd/engine.py:Engine._run_query: Args: no options
+flnd/engine.py:Engine._run_query: Args: no span
+flnd/engine.py:Engine._run_query: Args: no stop
+flnd/engine.py:Engine._run_query: Args: no sync
+flnd/engine.py:Engine._run_query: Args: no target
+flnd/engine.py:Engine._run_query: no Returns:
+flnd/engine.py:Engine._sync_normal: Args: no chosen
+flnd/engine.py:Engine._sync_normal: Args: no pool_settings
+flnd/engine.py:Engine._sync_normal: Args: no results
+flnd/engine.py:Engine._sync_normal: Args: no stop
+flnd/engine.py:Engine._sync_normal: no Raises:
+flnd/engine.py:Engine._sync_queries: Args: no chosen
+flnd/engine.py:Engine._sync_queries: Args: no pool_settings
+flnd/engine.py:Engine._sync_queries: Args: no results
+flnd/engine.py:Engine._sync_queries: Args: no stop
+flnd/engine.py:Engine._sync_queries: no Raises:
+flnd/engine.py:Engine._sync_query: Args: no browser_pool
+flnd/engine.py:Engine._sync_query: Args: no options
+flnd/engine.py:Engine._sync_query: Args: no stop
+flnd/engine.py:Engine._sync_query: Args: no target
+flnd/engine.py:Engine._sync_query: no Returns:
+flnd/engine.py:Engine._sync_query_items: Args: no board
+flnd/engine.py:Engine._sync_query_items: Args: no known_keys
+flnd/engine.py:Engine._sync_query_items: Args: no options
+flnd/engine.py:Engine._sync_query_items: Args: no run
+flnd/engine.py:Engine._sync_query_items: Args: no seen_keys
+flnd/engine.py:Engine._sync_query_items: Args: no seen_to_mark
+flnd/engine.py:Engine._sync_query_items: Args: no stop
+flnd/engine.py:Engine._sync_query_items: Args: no target
+flnd/engine.py:Engine._sync_query_items: Args: no written
+flnd/engine.py:Engine._sync_query_items: no Returns:
+flnd/engine.py:Engine._sync_query_run: Args: no board
+flnd/engine.py:Engine._sync_query_run: Args: no known_keys
+flnd/engine.py:Engine._sync_query_run: Args: no options
+flnd/engine.py:Engine._sync_query_run: Args: no run
+flnd/engine.py:Engine._sync_query_run: Args: no seen_keys
+flnd/engine.py:Engine._sync_query_run: Args: no stop
+flnd/engine.py:Engine._sync_query_run: Args: no target
+flnd/engine.py:Engine._sync_query_run: no Returns:
+flnd/engine.py:Engine._target_info: Args: no rows
+flnd/engine.py:Engine._target_info: Args: no target
+flnd/engine.py:Engine._target_info: no Returns:
+flnd/engine.py:Engine._unrecorded: Args: no known
+flnd/engine.py:Engine._unrecorded: Args: no rows
+flnd/engine.py:Engine._unrecorded: no Yields:
+flnd/engine.py:Engine._warn_unsynced: no docstring
+flnd/engine.py:Engine.auth_ls: no Example:
+flnd/engine.py:Engine.auth_ls: no Returns:
+flnd/engine.py:Engine.download: Args: no again
+flnd/engine.py:Engine.download: Args: no categories
+flnd/engine.py:Engine.download: Args: no dry
+flnd/engine.py:Engine.download: Args: no limit
+flnd/engine.py:Engine.download: Args: no sync
+flnd/engine.py:Engine.download: Args: no targets
+flnd/engine.py:Engine.download: Args: no time
+flnd/engine.py:Engine.download: no Example:
+flnd/engine.py:Engine.download: no Raises:
+flnd/engine.py:Engine.download: no Returns:
+flnd/engine.py:Engine.login: Args: no browser
+flnd/engine.py:Engine.login: Args: no code
+flnd/engine.py:Engine.login: Args: no method
+flnd/engine.py:Engine.login: Args: no path
+flnd/engine.py:Engine.login: Args: no profile
+flnd/engine.py:Engine.login: no Example:
+flnd/engine.py:Engine.login: no Raises:
+flnd/engine.py:Engine.login: no Returns:
+flnd/engine.py:Engine.logout: Args: no codes
+flnd/engine.py:Engine.logout: no Example:
+flnd/engine.py:Engine.logout: no Raises:
+flnd/engine.py:Engine.logout: no Returns:
+flnd/engine.py:Engine.resolve: Args: no texts
+flnd/engine.py:Engine.resolve: no Example:
+flnd/engine.py:Engine.resolve: no Returns:
+flnd/engine.py:Engine.sync: Args: no targets
+flnd/engine.py:Engine.sync: no Example:
+flnd/engine.py:Engine.sync: no Returns:
+flnd/engine.py:Engine.target_del: Args: no targets
+flnd/engine.py:Engine.target_del: no Example:
+flnd/engine.py:Engine.target_del: no Raises:
+flnd/engine.py:Engine.target_del: no Returns:
+flnd/engine.py:Engine.target_ls: no Example:
+flnd/engine.py:Engine.target_ls: no Returns:
+flnd/engine.py:Engine.target_sync: Args: no enabled
+flnd/engine.py:Engine.target_sync: Args: no targets
+flnd/engine.py:Engine.target_sync: no Example:
+flnd/engine.py:Engine.target_sync: no Raises:
+flnd/engine.py:Engine.target_sync: no Returns:
+flnd/engine.py:Engine: Args: no home
+flnd/engine.py:Engine: Args: no sources
+flnd/engine.py:Engine: no Example:
+flnd/engine.py:Report: no Example:
+flnd/engine.py:TargetInfo: no Example:
+flnd/engine.py:_connected: no docstring
+flnd/engine.py:_fail_unreached: Args: no board
+flnd/engine.py:_fail_unreached: Args: no error
+flnd/engine.py:_fail_unreached: Args: no reports
+flnd/engine.py:_fail_unreached: Args: no work
+flnd/engine.py:_folder_stats: no docstring
+flnd/engine.py:_log_dry: no docstring
+flnd/engine.py:_log_totals: no docstring
+flnd/engine.py:_require_auth: no docstring
+flnd/engine.py:_run_site: Args: no board
+flnd/engine.py:_run_site: Args: no reports
+flnd/engine.py:_run_site: Args: no run_settings
+flnd/engine.py:_run_site: Args: no work
+flnd/engine.py:_split_target: Args: no cleaned
+flnd/engine.py:_split_target: Args: no sources
+flnd/engine.py:_split_target: no Raises:
+flnd/engine.py:_split_target: no Returns:
+flnd/engine.py:resolve: Args: no follow
+flnd/engine.py:resolve: Args: no sources
+flnd/engine.py:resolve: Args: no target_text
+flnd/engine.py:resolve: no Raises:
+flnd/engine.py:resolve: no Returns:
+flnd/job.py:Board._label: Args: no line
+flnd/job.py:Board._label: no Returns:
+flnd/job.py:Board._show: Args: no line
+flnd/job.py:Board.count: Args: no category
+flnd/job.py:Board.count: Args: no steps
+flnd/job.py:Board.count: Args: no target
+flnd/job.py:Board.end: Args: no failed
+flnd/job.py:Board.end: Args: no target
+flnd/job.py:Board.listed: Args: no category
+flnd/job.py:Board.listed: Args: no target
+flnd/job.py:Board.start: Args: no category
+flnd/job.py:Board.start: Args: no slots
+flnd/job.py:Board.start: Args: no target
+flnd/job.py:Board.totals: Args: no target
+flnd/job.py:Board.totals: no Returns:
+flnd/job.py:Board: Args: no label_width
+flnd/job.py:Board: Args: no parent
+flnd/job.py:Board: Args: no rows
+flnd/job.py:Board: Args: no subject_width
+flnd/job.py:Downloads._build_row: Args: no queued
+flnd/job.py:Downloads._build_row: Args: no saved
+flnd/job.py:Downloads._build_row: no Returns:
+flnd/job.py:Downloads._dispatch_refresh: Args: no refresh
+flnd/job.py:Downloads._dispatch_refresh: no Raises:
+flnd/job.py:Downloads._download: Args: no queued
+flnd/job.py:Downloads._download: no Returns:
+flnd/job.py:Downloads._drain_pool: Args: no error
+flnd/job.py:Downloads._drain_pool: Args: no pool
+flnd/job.py:Downloads._expired: Args: no queued
+flnd/job.py:Downloads._expired: no Raises:
+flnd/job.py:Downloads._expired: no Returns:
+flnd/job.py:Downloads._fetch: Args: no file
+flnd/job.py:Downloads._fetch: Args: no queued
+flnd/job.py:Downloads._fetch: Args: no received
+flnd/job.py:Downloads._fetch: no Returns:
+flnd/job.py:Downloads._finish: Args: no finished
+flnd/job.py:Downloads._finish: Args: no path
+flnd/job.py:Downloads._finish: Args: no queued
+flnd/job.py:Downloads._room: no Returns:
+flnd/job.py:Downloads._sync_fetch: Args: no fetch
+flnd/job.py:Downloads._sync_fetch: no Returns:
+flnd/job.py:Downloads._task: Args: no queued
+flnd/job.py:Downloads._task: no Returns:
+flnd/job.py:Downloads.finish: Args: no error
+flnd/job.py:Downloads.finish: no Returns:
+flnd/job.py:Downloads.submit: Args: no queued
+flnd/job.py:Downloads.submit: no Returns:
+flnd/job.py:Downloads.wait: no Raises:
+flnd/job.py:Downloads: Args: no board
+flnd/job.py:Downloads: Args: no run
+flnd/job.py:Downloads: Args: no target
+flnd/job.py:Ledger._ask: Args: no post
+flnd/job.py:Ledger._ask: no Returns:
+flnd/job.py:Ledger._dated: Args: no category
+flnd/job.py:Ledger._dated: Args: no hold
+flnd/job.py:Ledger._dated: Args: no post
+flnd/job.py:Ledger._dated: no Returns:
+flnd/job.py:Ledger._first_key: Args: no category
+flnd/job.py:Ledger._first_key: Args: no post
+flnd/job.py:Ledger._first_key: no Returns:
+flnd/job.py:Ledger._held: Args: no dest
+flnd/job.py:Ledger._held: Args: no item_key
+flnd/job.py:Ledger._held: no Returns:
+flnd/job.py:Ledger._link: Args: no category
+flnd/job.py:Ledger._link: Args: no dest
+flnd/job.py:Ledger._link: Args: no holder
+flnd/job.py:Ledger._load_asked: no Returns:
+flnd/job.py:Ledger._name: Args: no path
+flnd/job.py:Ledger._name: no Returns:
+flnd/job.py:Ledger._nearest_dates: no Returns:
+flnd/job.py:Ledger._queue_post_files: Args: no category
+flnd/job.py:Ledger._queue_post_files: Args: no first
+flnd/job.py:Ledger._queue_post_files: Args: no listed
+flnd/job.py:Ledger._queue_post_files: Args: no post
+flnd/job.py:Ledger._queue_post_files: no Returns:
+flnd/job.py:Ledger._saved_first: Args: no category
+flnd/job.py:Ledger._saved_first: Args: no post
+flnd/job.py:Ledger._saved_first: no Returns:
+flnd/job.py:Ledger._skip_held: Args: no category
+flnd/job.py:Ledger._skip_held: Args: no dest
+flnd/job.py:Ledger._skip_held: Args: no held
+flnd/job.py:Ledger._skip_held: Args: no item_key
+flnd/job.py:Ledger._skip_held: Args: no name
+flnd/job.py:Ledger._target_undated_rows: no Returns:
+flnd/job.py:Ledger.is_saved: Args: no category
+flnd/job.py:Ledger.is_saved: Args: no post_id
+flnd/job.py:Ledger.is_saved: Args: no posted
+flnd/job.py:Ledger.is_saved: no Returns:
+flnd/job.py:Ledger.link_queued: Args: no written
+flnd/job.py:Ledger.redate: no Returns:
+flnd/job.py:Ledger.release: no Returns:
+flnd/job.py:Ledger.take: Args: no hold
+flnd/job.py:Ledger.take: Args: no post
+flnd/job.py:Ledger.take: no Returns:
+flnd/job.py:Ledger: Args: no board
+flnd/job.py:Ledger: Args: no options
+flnd/job.py:Ledger: Args: no run
+flnd/job.py:Ledger: Args: no site
+flnd/job.py:Ledger: Args: no target
+flnd/job.py:TargetReport: no Example:
+flnd/job.py:_Kept: Args: no category
+flnd/job.py:_Kept: Args: no newest_first
+flnd/job.py:_Kept: Args: no run_async
+flnd/job.py:_Kept: Args: no span
+flnd/job.py:_Kept: Args: no yielded
+flnd/job.py:_Work.queue: Args: no hold
+flnd/job.py:_Work.queue: Args: no post
+flnd/job.py:_Work.queue: no Returns:
+flnd/job.py:_catch_up_newest: Args: no category
+flnd/job.py:_catch_up_newest: Args: no context
+flnd/job.py:_catch_up_newest: Args: no limit
+flnd/job.py:_catch_up_newest: Args: no run
+flnd/job.py:_catch_up_newest: Args: no site
+flnd/job.py:_catch_up_newest: Args: no span
+flnd/job.py:_catch_up_newest: Args: no target
+flnd/job.py:_catch_up_newest: Args: no work
+flnd/job.py:_catch_up_newest: no Returns:
+flnd/job.py:_chained: Args: no first
+flnd/job.py:_chained: Args: no steps
+flnd/job.py:_chained: no Yields:
+flnd/job.py:_distinct_folders: Args: no dest
+flnd/job.py:_distinct_folders: Args: no holder
+flnd/job.py:_distinct_folders: Args: no root
+flnd/job.py:_distinct_folders: no Returns:
+flnd/job.py:_ended: Args: no board
+flnd/job.py:_ended: Args: no complete
+flnd/job.py:_ended: Args: no error
+flnd/job.py:_ended: Args: no report
+flnd/job.py:_ended: Args: no run
+flnd/job.py:_ended: Args: no started
+flnd/job.py:_ended: no Raises:
+flnd/job.py:_ended: no Returns:
+flnd/job.py:_execute_listing: Args: no complete
+flnd/job.py:_execute_listing: Args: no listed
+flnd/job.py:_execute_listing: Args: no options
+flnd/job.py:_execute_listing: Args: no resumes
+flnd/job.py:_execute_listing: Args: no run
+flnd/job.py:_execute_listing: Args: no site
+flnd/job.py:_execute_listing: Args: no target
+flnd/job.py:_execute_listing: Args: no work
+flnd/job.py:_execute_listing: no Returns:
+flnd/job.py:_extension: Args: no file
+flnd/job.py:_extension: no Returns:
+flnd/job.py:_file_values: Args: no count
+flnd/job.py:_file_values: Args: no extension
+flnd/job.py:_file_values: Args: no file
+flnd/job.py:_file_values: Args: no num
+flnd/job.py:_file_values: Args: no options
+flnd/job.py:_file_values: Args: no post
+flnd/job.py:_file_values: Args: no posted
+flnd/job.py:_file_values: Args: no source
+flnd/job.py:_file_values: Args: no target
+flnd/job.py:_file_values: no Returns:
+flnd/job.py:_folder_format: Args: no category
+flnd/job.py:_folder_format: Args: no route
+flnd/job.py:_folder_format: Args: no source
+flnd/job.py:_folder_format: no Returns:
+flnd/job.py:_queue_all: Args: no kept
+flnd/job.py:_queue_all: Args: no limit
+flnd/job.py:_queue_all: Args: no stop_at_saved
+flnd/job.py:_queue_all: Args: no work
+flnd/job.py:_queue_all: no Returns:
+flnd/job.py:_queue_listed: Args: no kept
+flnd/job.py:_queue_listed: Args: no limit
+flnd/job.py:_queue_listed: Args: no stop_at_saved
+flnd/job.py:_queue_listed: Args: no work
+flnd/job.py:_queue_listed: no Returns:
+flnd/job.py:_read: Args: no complete
+flnd/job.py:_read: Args: no listed
+flnd/job.py:_read: Args: no options
+flnd/job.py:_read: Args: no resumes
+flnd/job.py:_read: Args: no run
+flnd/job.py:_read: Args: no site
+flnd/job.py:_read: Args: no target
+flnd/job.py:_read: Args: no work
+flnd/job.py:_read_categories: Args: no categories
+flnd/job.py:_read_categories: Args: no complete
+flnd/job.py:_read_categories: Args: no listed
+flnd/job.py:_read_categories: Args: no options
+flnd/job.py:_read_categories: Args: no resumes
+flnd/job.py:_read_categories: Args: no route
+flnd/job.py:_read_categories: Args: no run
+flnd/job.py:_read_categories: Args: no site
+flnd/job.py:_read_categories: Args: no target
+flnd/job.py:_read_categories: Args: no work
+flnd/job.py:_read_one_category: Args: no category
+flnd/job.py:_read_one_category: Args: no complete
+flnd/job.py:_read_one_category: Args: no context
+flnd/job.py:_read_one_category: Args: no listed
+flnd/job.py:_read_one_category: Args: no options
+flnd/job.py:_read_one_category: Args: no remaining
+flnd/job.py:_read_one_category: Args: no resumes
+flnd/job.py:_read_one_category: Args: no run
+flnd/job.py:_read_one_category: Args: no site
+flnd/job.py:_read_one_category: Args: no start
+flnd/job.py:_read_one_category: Args: no target
+flnd/job.py:_read_one_category: Args: no work
+flnd/job.py:_read_one_category: no Returns:
+flnd/job.py:_read_routeless: Args: no options
+flnd/job.py:_read_routeless: Args: no route
+flnd/job.py:_read_routeless: Args: no run
+flnd/job.py:_read_routeless: Args: no site
+flnd/job.py:_read_routeless: Args: no target
+flnd/job.py:_read_routeless: Args: no work
+flnd/job.py:_redated: Args: no estimated
+flnd/job.py:_redated: Args: no filename
+flnd/job.py:_redated: Args: no found
+flnd/job.py:_redated: Args: no path
+flnd/job.py:_redated: no Returns:
+flnd/job.py:_resolve_name: Args: no extension
+flnd/job.py:_resolve_name: Args: no file
+flnd/job.py:_resolve_name: Args: no filename
+flnd/job.py:_resolve_name: Args: no post
+flnd/job.py:_resolve_name: Args: no values
+flnd/job.py:_resolve_name: no Returns:
+flnd/job.py:_retry_failed: Args: no options
+flnd/job.py:_retry_failed: Args: no run
+flnd/job.py:_retry_failed: Args: no target
+flnd/job.py:_retry_failed: Args: no work
+flnd/job.py:_row_day: Args: no row
+flnd/job.py:_row_day: no Returns:
+flnd/job.py:_run_discovered: Args: no board
+flnd/job.py:_run_discovered: Args: no items
+flnd/job.py:_run_discovered: Args: no options
+flnd/job.py:_run_discovered: Args: no run
+flnd/job.py:_run_download: Args: no board
+flnd/job.py:_run_download: Args: no options
+flnd/job.py:_run_download: Args: no run
+flnd/job.py:_run_download: Args: no target
+flnd/job.py:_run_download: no Returns:
+flnd/job.py:_serialize_failed: Args: no queued
+flnd/job.py:_serialize_failed: no Returns:
+flnd/job.py:_served_day: Args: no value
+flnd/job.py:_served_day: no Returns:
+flnd/job.py:_set_mtime: Args: no dated
+flnd/job.py:_set_mtime: Args: no path
+flnd/job.py:_steps: Args: no run_async
+flnd/job.py:_steps: Args: no yielded
+flnd/job.py:_steps: no Yields:
+flnd/job.py:_summary: Args: no seconds
+flnd/job.py:_summary: Args: no target
+flnd/job.py:_summary: Args: no totals
+flnd/job.py:_try_link: Args: no dest
+flnd/job.py:_try_link: Args: no holder
+flnd/job.py:_try_link: no Returns:
+flnd/job.py:_yield_arg_targets: Args: no arg
+flnd/job.py:_yield_arg_targets: Args: no limit
+flnd/job.py:_yield_arg_targets: Args: no method
+flnd/job.py:_yield_arg_targets: Args: no run
+flnd/job.py:_yield_arg_targets: Args: no seen_keys
+flnd/job.py:_yield_arg_targets: Args: no site
+flnd/job.py:_yield_arg_targets: Args: no yielded
+flnd/job.py:_yield_arg_targets: no Yields:
+flnd/job.py:causes: Args: no error
+flnd/job.py:causes: no Returns:
+flnd/job.py:discover: Args: no limit
+flnd/job.py:discover: Args: no run
+flnd/job.py:discover: Args: no seen
+flnd/job.py:discover: Args: no target
+flnd/job.py:discover: Args: no time_range
+flnd/job.py:discover: no Yields:
+flnd/job.py:download: Args: no board
+flnd/job.py:download: Args: no options
+flnd/job.py:download: Args: no run
+flnd/job.py:download: Args: no target
+flnd/job.py:download: no Returns:
+flnd/job.py:place: Args: no category
+flnd/job.py:place: Args: no files
+flnd/job.py:place: Args: no options
+flnd/job.py:place: Args: no post
+flnd/job.py:place: Args: no route
+flnd/job.py:place: Args: no source
+flnd/job.py:place: Args: no target
+flnd/job.py:place: no Returns:
+flnd/job.py:plan: Args: no options
+flnd/job.py:plan: Args: no row
+flnd/job.py:plan: Args: no run
+flnd/job.py:plan: Args: no target
+flnd/job.py:plan: no Yields:
+flnd/job.py:posts: Args: no options
+flnd/job.py:posts: Args: no run_async
+flnd/job.py:posts: Args: no site
+flnd/job.py:posts: Args: no source
+flnd/job.py:posts: Args: no target
+flnd/job.py:posts: no Yields:
+flnd/job.py:wanted: Args: no options
+flnd/job.py:wanted: Args: no route
+flnd/job.py:wanted: Args: no source
+flnd/job.py:wanted: no Returns:
+flnd/options.py:_names: Args: no plain
+flnd/options.py:_names: Args: no scoped
+flnd/options.py:_names: Args: no source
+flnd/options.py:_names: no Raises:
+flnd/options.py:_names: no Returns:
+flnd/options.py:_split: Args: no items
+flnd/options.py:_split: Args: no sources
+flnd/options.py:_split: Args: no used
+flnd/options.py:_split: no Raises:
+flnd/options.py:_split: no Returns:
+flnd/options.py:categories_by_source: Args: no categories
+flnd/options.py:categories_by_source: Args: no sources
+flnd/options.py:categories_by_source: Args: no targets
+flnd/options.py:categories_by_source: no Raises:
+flnd/options.py:categories_by_source: no Returns:
+flnd/options.py:unknown: Args: no names
+flnd/options.py:unknown: Args: no sources
+flnd/options.py:unknown: no Returns:
+flnd/site.py:LoginSite.ask: Args: no description
+flnd/site.py:LoginSite.ask: Args: no message
+flnd/site.py:LoginSite.ask: Args: no secret
+flnd/site.py:LoginSite.ask: no Raises:
+flnd/site.py:LoginSite.ask: no Returns:
+flnd/site.py:LoginSite: Args: no run
+flnd/site.py:TargetSite._connect: no Returns:
+flnd/site.py:TargetSite._new_tab: no Returns:
+flnd/site.py:TargetSite._pop_tab: Args: no watch
+flnd/site.py:TargetSite._push_tab: Args: no scroll
+flnd/site.py:TargetSite._push_tab: Args: no watch
+flnd/site.py:TargetSite._start_warm: Args: no tab
+flnd/site.py:TargetSite._start_warm: Args: no url
+flnd/site.py:TargetSite._start_warm: no Returns:
+flnd/site.py:TargetSite._start_warm_watch: Args: no tab
+flnd/site.py:TargetSite._stop_warm_watch: Args: no tab
+flnd/site.py:TargetSite._stop_warm_watch: no Returns:
+flnd/site.py:TargetSite._switch_tab: Args: no tab
+flnd/site.py:TargetSite._visit_tab: Args: no idle
+flnd/site.py:TargetSite._visit_tab: Args: no page
+flnd/site.py:TargetSite._visit_tab: Args: no pre_visit
+flnd/site.py:TargetSite._visit_tab: Args: no timeout
+flnd/site.py:TargetSite._visit_tab: Args: no url
+flnd/site.py:TargetSite._visit_tab: no Raises:
+flnd/site.py:TargetSite._visit_tab: no Returns:
+flnd/site.py:TargetSite.back_off: Args: no reason
+flnd/site.py:TargetSite.back_off: Args: no retry_after
+flnd/site.py:TargetSite.back_off: no Raises:
+flnd/site.py:TargetSite.fetch: Args: no check
+flnd/site.py:TargetSite.fetch: Args: no headers
+flnd/site.py:TargetSite.fetch: Args: no in_page
+flnd/site.py:TargetSite.fetch: Args: no method
+flnd/site.py:TargetSite.fetch: Args: no request
+flnd/site.py:TargetSite.fetch: Args: no url
+flnd/site.py:TargetSite.fetch: no Raises:
+flnd/site.py:TargetSite.fetch: no Returns:
+flnd/site.py:TargetSite.goto: Args: no idle
+flnd/site.py:TargetSite.goto: Args: no timeout
+flnd/site.py:TargetSite.goto: Args: no url
+flnd/site.py:TargetSite.goto: no Returns:
+flnd/site.py:_BrowserPool._call: no docstring
+flnd/site.py:_BrowserPool._ensure_browser: no docstring
+flnd/site.py:_BrowserPool.open_tab: Args: no jar
+flnd/site.py:_BrowserPool.open_tab: Args: no owner
+flnd/site.py:_BrowserPool.open_tab: no Returns:
+flnd/site.py:_BrowserPool.release: Args: no raws
+flnd/site.py:_PacedPage.scroll: Args: no idle
+flnd/site.py:_PacedPage.scroll: Args: no until
+flnd/site.py:_PacedPage.scroll: Args: no within
+flnd/site.py:_PacedPage.scroll: no Returns:
+flnd/site.py:_PacedPage: Args: no owner
+flnd/site.py:_PacedPage: Args: no raw
+flnd/site.py:_PacedPage: Args: no speed
+flnd/site.py:_RawProxy: Args: no call
+flnd/site.py:_RawProxy: Args: no obj
+flnd/site.py:_SharedBrowser: Args: no jar
+flnd/site.py:_SharedBrowser: Args: no pool
+flnd/site.py:_SharedCookies: Args: no jar
+flnd/site.py:_SharedCookies: Args: no pool
+flnd/site.py:_fetch_errors: no Raises:
+flnd/site.py:_fetch_errors: no Yields:
+flnd/site.py:_warn_expiring: Args: no jar
+flnd/site.py:_warn_expiring: Args: no source
+flnd/site.py:shared_browser: Args: no settings
+flnd/site.py:shared_browser: no Yields:
+flnd/site.py:source_run: Args: no settings
+flnd/site.py:source_run: Args: no source
+flnd/site.py:source_run: no Yields:
+flnd/source.py:Category: Args: no folder
+flnd/source.py:Category: Args: no function
+flnd/source.py:Category: Args: no key
+flnd/source.py:Category: Args: no newest_first
+flnd/source.py:Category: no Example:
+flnd/source.py:File.text: no Example:
+flnd/source.py:File.text: no Returns:
+flnd/source.py:File: no Example:
+flnd/source.py:Login.ask: no Example:
+flnd/source.py:Login.info: no Example:
+flnd/source.py:Login: no Example:
+flnd/source.py:Post.filed: Args: no category
+flnd/source.py:Post.filed: no Example:
+flnd/source.py:Post.filed: no Returns:
+flnd/source.py:Post.replace: Args: no fields
+flnd/source.py:Post.replace: no Example:
+flnd/source.py:Post.replace: no Returns:
+flnd/source.py:Post: no Example:
+flnd/source.py:Range.parse: no Example:
+flnd/source.py:Range.parse: no Returns:
+flnd/source.py:Range: no Example:
+flnd/source.py:Resume.caught_up: Args: no post_id
+flnd/source.py:Resume.caught_up: Args: no posted
+flnd/source.py:Resume.caught_up: no Returns:
+flnd/source.py:Resume: Args: no label
+flnd/source.py:Resume: Args: no saved
+flnd/source.py:Resume: Args: no start
+flnd/source.py:Route.category: Args: no folder
+flnd/source.py:Route.category: Args: no function
+flnd/source.py:Route.category: Args: no key
+flnd/source.py:Route.category: Args: no newest_first
+flnd/source.py:Route.category: no Example:
+flnd/source.py:Route.category: no Returns:
+flnd/source.py:Route.forms: Args: no code
+flnd/source.py:Route.forms: no Example:
+flnd/source.py:Route.forms: no Returns:
+flnd/source.py:Route: Args: no discovers
+flnd/source.py:Route: Args: no folder
+flnd/source.py:Route: Args: no from_
+flnd/source.py:Route: Args: no function
+flnd/source.py:Route: Args: no patterns
+flnd/source.py:Route: Args: no shown
+flnd/source.py:Route: no Example:
+flnd/source.py:Site.back_off: no Example:
+flnd/source.py:Site.fetch: Args: no check
+flnd/source.py:Site.fetch: Args: no headers
+flnd/source.py:Site.fetch: Args: no in_page
+flnd/source.py:Site.fetch: Args: no method
+flnd/source.py:Site.fetch: Args: no request
+flnd/source.py:Site.fetch: Args: no url
+flnd/source.py:Site.fetch: no Example:
+flnd/source.py:Site.goto: Args: no idle
+flnd/source.py:Site.goto: Args: no timeout
+flnd/source.py:Site.goto: Args: no url
+flnd/source.py:Site.goto: no Example:
+flnd/source.py:Site.handoff: no Example:
+flnd/source.py:Site.info: no Example:
+flnd/source.py:Site.warn: no Example:
+flnd/source.py:Site: no Example:
+flnd/source.py:Source.connect: no Example:
+flnd/source.py:Source.connect: no Returns:
+flnd/source.py:Source.date: Args: no post
+flnd/source.py:Source.date: Args: no site
+flnd/source.py:Source.date: no Example:
+flnd/source.py:Source.logged_in: no Example:
+flnd/source.py:Source.logged_in: no Returns:
+flnd/source.py:Source.login: Args: no login
+flnd/source.py:Source.login: Args: no method
+flnd/source.py:Source.login: no Example:
+flnd/source.py:Source.login: no Raises:
+flnd/source.py:Source.prepare: Args: no cookies
+flnd/source.py:Source.prepare: Args: no request
+flnd/source.py:Source.prepare: no Example:
+flnd/source.py:Source.prepare: no Returns:
+flnd/source.py:Source.resolve: no Example:
+flnd/source.py:Source: no Example:
+flnd/source.py:Target: no Example:
+flnd/source.py:_Pattern.form: Args: no code
+flnd/source.py:_Pattern.form: no Returns:
+flnd/source.py:_Pattern.match: Args: no text
+flnd/source.py:_Pattern.match: Args: no url
+flnd/source.py:_Pattern.match: no Returns:
+flnd/source.py:_Pattern: Args: no text
+flnd/source.py:_bare_host: Args: no host
+flnd/source.py:_bare_host: no Returns:
+flnd/source.py:_compile: no Returns:
+flnd/source.py:_field: Args: no fields
+flnd/source.py:_field: Args: no name
+flnd/source.py:_field: no Returns:
+flnd/source.py:_fill_segment: Args: no fields
+flnd/source.py:_fill_segment: Args: no segment
+flnd/source.py:_fill_segment: no Returns:
+flnd/source.py:_first_page: Args: no fetch
+flnd/source.py:_first_page: Args: no resume
+flnd/source.py:_first_page: Args: no start
+flnd/source.py:_first_page: no Returns:
+flnd/source.py:_parse: Args: no domains
+flnd/source.py:_parse: Args: no text
+flnd/source.py:_parse: no Returns:
+flnd/source.py:_split: Args: no once
+flnd/source.py:_split: Args: no separator
+flnd/source.py:_split: Args: no text
+flnd/source.py:_split: no Returns:
+flnd/source.py:_tokens: no Returns:
+flnd/source.py:day: no Example:
+flnd/source.py:fill: Args: no fields
+flnd/source.py:fill: Args: no safe
+flnd/source.py:fill: Args: no template
+flnd/source.py:fill: no Example:
+flnd/source.py:fill: no Returns:
+flnd/source.py:listing: Args: no resume
+flnd/source.py:listing: no Yields:
+flnd/source.py:pages: no Example:
+flnd/source.py:pages: no Yields:
+flnd/source.py:target: Args: no discovers
+flnd/source.py:target: Args: no folder
+flnd/source.py:target: Args: no from_
+flnd/source.py:target: Args: no patterns
+flnd/source.py:target: Args: no shown
+flnd/source.py:target: no Example:
+flnd/source.py:target: no Returns:
+flnd/sources/common/dash.py:best: Args: no manifest
+flnd/sources/common/dash.py:best: no Returns:
+flnd/sources/common/feed.py:Responses._adopt: Args: no page
+flnd/sources/common/feed.py:Responses._enqueue: Args: no body
+flnd/sources/common/feed.py:Responses._enqueue: Args: no response
+flnd/sources/common/feed.py:Responses._iterate: no Yields:
+flnd/sources/common/feed.py:Responses._on_response: Args: no response
+flnd/sources/common/feed.py:Responses: Args: no lines
+flnd/sources/common/feed.py:Responses: Args: no match
+flnd/sources/common/feed.py:Responses: Args: no scroll
+flnd/sources/common/feed.py:Responses: Args: no site
+flnd/sources/common/feed.py:_matches: Args: no match
+flnd/sources/common/feed.py:_matches: Args: no url
+flnd/sources/common/feed.py:_matches: no Returns:
+flnd/sources/common/relay.py:_results: no docstring
+flnd/sources/common/relay.py:embedded_results: Args: no page
+flnd/sources/common/relay.py:embedded_results: no Returns:
+flnd/sources/fbk.py:Facebook.albums: Args: no profile
+flnd/sources/fbk.py:Facebook.albums: Args: no site
+flnd/sources/fbk.py:Facebook.albums: no Yields:
+flnd/sources/fbk.py:Facebook.profile: Args: no profile
+flnd/sources/fbk.py:Facebook.profile: Args: no site
+flnd/sources/fbk.py:Facebook.profile: no Yields:
+flnd/sources/fbk.py:Facebook.stories: Args: no profile
+flnd/sources/fbk.py:Facebook.stories: Args: no site
+flnd/sources/fbk.py:Facebook.stories: no Yields:
+flnd/sources/fbk.py:Facebook.user: Args: no site
+flnd/sources/fbk.py:Facebook.user: Args: no user
+flnd/sources/fbk.py:Facebook.user: no Returns:
+flnd/sources/fbk.py:_collect_tab: Args: no path
+flnd/sources/fbk.py:_collect_tab: Args: no profile
+flnd/sources/fbk.py:_collect_tab: Args: no site
+flnd/sources/fbk.py:_collect_tab: no Raises:
+flnd/sources/fbk.py:_collect_tab: no Yields:
+flnd/sources/fbk.py:_read_album: Args: no owner
+flnd/sources/fbk.py:_read_album: Args: no site
+flnd/sources/fbk.py:_read_album: Args: no title
+flnd/sources/fbk.py:_read_album: Args: no url
+flnd/sources/fbk.py:_read_album: no Yields:
+flnd/sources/fbk.py:album_links: Args: no data
+flnd/sources/fbk.py:album_links: no Returns:
+flnd/sources/fbk.py:image_extension: Args: no url
+flnd/sources/fbk.py:image_extension: no Returns:
+flnd/sources/fbk.py:media_items: Args: no data
+flnd/sources/fbk.py:media_items: Args: no owner
+flnd/sources/fbk.py:media_items: Args: no seen
+flnd/sources/fbk.py:media_items: Args: no stamp
+flnd/sources/fbk.py:media_items: no Yields:
+flnd/sources/fbk.py:media_posts: Args: no album
+flnd/sources/fbk.py:media_posts: Args: no owner
+flnd/sources/fbk.py:media_posts: Args: no result
+flnd/sources/fbk.py:media_posts: Args: no seen
+flnd/sources/fbk.py:media_posts: Args: no tab
+flnd/sources/fbk.py:media_posts: no Yields:
+flnd/sources/fbk.py:page_info: Args: no line
+flnd/sources/fbk.py:page_info: no Returns:
+flnd/sources/fbk.py:photo_item: Args: no node
+flnd/sources/fbk.py:photo_item: Args: no stamp
+flnd/sources/fbk.py:photo_item: no Returns:
+flnd/sources/fbk.py:post_of: Args: no album
+flnd/sources/fbk.py:post_of: Args: no headers
+flnd/sources/fbk.py:post_of: Args: no item
+flnd/sources/fbk.py:post_of: Args: no part
+flnd/sources/fbk.py:post_of: no Returns:
+flnd/sources/fbk.py:read_header: Args: no result
+flnd/sources/fbk.py:read_header: no Returns:
+flnd/sources/fbk.py:read_page: Args: no site
+flnd/sources/fbk.py:read_page: Args: no url
+flnd/sources/fbk.py:read_page: no Raises:
+flnd/sources/fbk.py:read_page: no Returns:
+flnd/sources/fbk.py:read_tab: Args: no profile
+flnd/sources/fbk.py:read_tab: Args: no site
+flnd/sources/fbk.py:read_tab: Args: no tab
+flnd/sources/fbk.py:read_tab: no Yields:
+flnd/sources/fbk.py:video_item: Args: no node
+flnd/sources/fbk.py:video_item: Args: no stamp
+flnd/sources/fbk.py:video_item: no Returns:
+flnd/sources/ins.py:Api._refuse: Args: no api
+flnd/sources/ins.py:Api._refuse: Args: no site
+flnd/sources/ins.py:Api._refuse: Args: no what
+flnd/sources/ins.py:Api._refused: Args: no api
+flnd/sources/ins.py:Api._refused: Args: no site
+flnd/sources/ins.py:Api._refused: no Returns:
+flnd/sources/ins.py:Api._self_id: Args: no site
+flnd/sources/ins.py:Api._self_id: no Raises:
+flnd/sources/ins.py:Api._self_id: no Returns:
+flnd/sources/ins.py:Api._waited: Args: no refused
+flnd/sources/ins.py:Api._waited: Args: no response
+flnd/sources/ins.py:Api._waited: Args: no site
+flnd/sources/ins.py:Api._waited: Args: no walls
+flnd/sources/ins.py:Api._waited: no Raises:
+flnd/sources/ins.py:Api._waited: no Returns:
+flnd/sources/ins.py:Api.following: Args: no site
+flnd/sources/ins.py:Api.following: no Raises:
+flnd/sources/ins.py:Api.following: no Yields:
+flnd/sources/ins.py:Api.get: no Returns:
+flnd/sources/ins.py:Api.headers: Args: no cookies
+flnd/sources/ins.py:Api.headers: no Returns:
+flnd/sources/ins.py:Api.media: no Returns:
+flnd/sources/ins.py:Api.reels: Args: no reel_ids
+flnd/sources/ins.py:Api.reels: Args: no site
+flnd/sources/ins.py:Api.reels: Args: no what
+flnd/sources/ins.py:Api.reels: no Returns:
+flnd/sources/ins.py:Api.stories: Args: no site
+flnd/sources/ins.py:Api.stories: Args: no user_id
+flnd/sources/ins.py:Api.stories: no Returns:
+flnd/sources/ins.py:Instagram.highlights: Args: no profile
+flnd/sources/ins.py:Instagram.highlights: Args: no site
+flnd/sources/ins.py:Instagram.highlights: no Yields:
+flnd/sources/ins.py:Instagram.posts: no Yields:
+flnd/sources/ins.py:Instagram.stories: Args: no profile
+flnd/sources/ins.py:Instagram.stories: Args: no site
+flnd/sources/ins.py:Instagram.stories: no Yields:
+flnd/sources/ins.py:Instagram.user: no Returns:
+flnd/sources/ins.py:Profile._posts: Args: no api
+flnd/sources/ins.py:Profile._posts: Args: no deferred
+flnd/sources/ins.py:Profile._posts: Args: no result
+flnd/sources/ins.py:Profile._posts: Args: no site
+flnd/sources/ins.py:Profile._posts: Args: no tab
+flnd/sources/ins.py:Profile._posts: no Yields:
+flnd/sources/ins.py:Profile._scroll_tab: Args: no site
+flnd/sources/ins.py:Profile._scroll_tab: Args: no tab
+flnd/sources/ins.py:Profile._scroll_tab: no Raises:
+flnd/sources/ins.py:Profile._scroll_tab: no Yields:
+flnd/sources/ins.py:Profile.describe: Args: no site
+flnd/sources/ins.py:Profile.note: Args: no result
+flnd/sources/ins.py:_hit_saved: Args: no result
+flnd/sources/ins.py:_hit_saved: Args: no tab
+flnd/sources/ins.py:_hit_saved: no Returns:
+flnd/sources/ins.py:_json: Args: no response
+flnd/sources/ins.py:_json: no Returns:
+flnd/sources/ins.py:best_file: Args: no media
+flnd/sources/ins.py:best_file: no Returns:
+flnd/sources/ins.py:connection_of: no Returns:
+flnd/sources/ins.py:file_name: no Returns:
+flnd/sources/ins.py:files_of: Args: no media
+flnd/sources/ins.py:files_of: Args: no pinned
+flnd/sources/ins.py:files_of: no Returns:
+flnd/sources/ins.py:full_size: Args: no item
+flnd/sources/ins.py:full_size: no Returns:
+flnd/sources/ins.py:is_complete: Args: no media
+flnd/sources/ins.py:is_complete: no Returns:
+flnd/sources/ins.py:lazy_files: Args: no api
+flnd/sources/ins.py:lazy_files: Args: no code
+flnd/sources/ins.py:lazy_files: Args: no pk
+flnd/sources/ins.py:lazy_files: Args: no site
+flnd/sources/ins.py:lazy_files: no Returns:
+flnd/sources/ins.py:load: no Returns:
+flnd/sources/ins.py:older_streak: Args: no result
+flnd/sources/ins.py:older_streak: Args: no since
+flnd/sources/ins.py:older_streak: Args: no streak
+flnd/sources/ins.py:older_streak: Args: no tab
+flnd/sources/ins.py:older_streak: no Returns:
+flnd/sources/ins.py:page_state: no Returns:
+flnd/sources/ins.py:pk_of_code: Args: no code
+flnd/sources/ins.py:pk_of_code: no Returns:
+flnd/sources/ins.py:pk_stamp: Args: no pk
+flnd/sources/ins.py:pk_stamp: no Returns:
+flnd/sources/ins.py:post_media: Args: no code
+flnd/sources/ins.py:post_media: Args: no result
+flnd/sources/ins.py:post_media: no Returns:
+flnd/sources/ins.py:post_page: Args: no code
+flnd/sources/ins.py:post_page: Args: no site
+flnd/sources/ins.py:post_page: no Returns:
+flnd/sources/ins.py:reel_posts: Args: no folder
+flnd/sources/ins.py:reel_posts: Args: no site
+flnd/sources/ins.py:reel_posts: Args: no stories
+flnd/sources/ins.py:reel_posts: no Yields:
+flnd/sources/ins.py:story_music: no Returns:
+flnd/sources/ins.py:story_posts: Args: no folder
+flnd/sources/ins.py:story_posts: Args: no site
+flnd/sources/ins.py:story_posts: Args: no url
+flnd/sources/ins.py:story_posts: no Yields:
+flnd/sources/ins.py:tab_media: no Returns:
+flnd/sources/loi.py:Loibus._links: Args: no post
+flnd/sources/loi.py:Loibus._links: Args: no site
+flnd/sources/loi.py:Loibus._links: no Returns:
+flnd/sources/loi.py:Loibus.archive: Args: no post
+flnd/sources/loi.py:Loibus.archive: Args: no site
+flnd/sources/loi.py:Loibus.archive: no Yields:
+flnd/sources/loi.py:Loibus.photo: Args: no post
+flnd/sources/loi.py:Loibus.photo: Args: no site
+flnd/sources/loi.py:Loibus.photo: no Yields:
+flnd/sources/loi.py:Loibus.post: Args: no id
+flnd/sources/loi.py:Loibus.post: Args: no site
+flnd/sources/loi.py:Loibus.post: no Raises:
+flnd/sources/loi.py:Loibus.post: no Returns:
+flnd/sources/loi.py:Loibus.prepare: Args: no cookies
+flnd/sources/loi.py:Loibus.prepare: Args: no request
+flnd/sources/loi.py:Loibus.prepare: no Returns:
+flnd/sources/loi.py:_decrypt_aes_cbc: Args: no blob
+flnd/sources/loi.py:_decrypt_aes_cbc: no Returns:
+flnd/sources/loi.py:_fetch_links: Args: no post_id
+flnd/sources/loi.py:_fetch_links: Args: no site
+flnd/sources/loi.py:_fetch_links: no Returns:
+flnd/sources/loi.py:_info_rows: Args: no post
+flnd/sources/loi.py:_info_rows: no Returns:
+flnd/sources/loi.py:_quota_kind: Args: no body
+flnd/sources/loi.py:_quota_kind: no Returns:
+flnd/sources/loi.py:count_download: Args: no post_id
+flnd/sources/loi.py:count_download: Args: no site
+flnd/sources/loi.py:decrypt_field: Args: no text
+flnd/sources/loi.py:decrypt_field: no Raises:
+flnd/sources/loi.py:decrypt_field: no Returns:
+flnd/sources/loi.py:group_mirrors: Args: no links
+flnd/sources/loi.py:group_mirrors: no Returns:
+flnd/sources/loi.py:info_md: Args: no links
+flnd/sources/loi.py:info_md: Args: no post
+flnd/sources/loi.py:info_md: no Returns:
+flnd/sources/loi.py:quota: Args: no post_id
+flnd/sources/loi.py:quota: Args: no site
+flnd/sources/loi.py:quota: no Returns:
+flnd/sources/loi.py:request_id: Args: no method
+flnd/sources/loi.py:request_id: Args: no noise
+flnd/sources/loi.py:request_id: Args: no now_ms
+flnd/sources/loi.py:request_id: Args: no pick
+flnd/sources/loi.py:request_id: Args: no where
+flnd/sources/loi.py:request_id: no Returns:
+flnd/sources/loi.py:sign_request: Args: no noise
+flnd/sources/loi.py:sign_request: Args: no now_ms
+flnd/sources/loi.py:sign_request: Args: no pick
+flnd/sources/loi.py:sign_request: Args: no request
+flnd/sources/loi.py:sign_request: no Returns:
+flnd/sources/mht.py:Mimi._remember: Args: no item
+flnd/sources/mht.py:Mimi.chapter: Args: no id
+flnd/sources/mht.py:Mimi.chapter: Args: no site
+flnd/sources/mht.py:Mimi.chapter: no Raises:
+flnd/sources/mht.py:Mimi.chapter: no Yields:
+flnd/sources/mht.py:Mimi.chapters: Args: no manga
+flnd/sources/mht.py:Mimi.chapters: Args: no site
+flnd/sources/mht.py:Mimi.chapters: no Yields:
+flnd/sources/mht.py:Mimi.cover: Args: no manga
+flnd/sources/mht.py:Mimi.cover: Args: no site
+flnd/sources/mht.py:Mimi.cover: no Yields:
+flnd/sources/mht.py:Mimi.manga: Args: no id
+flnd/sources/mht.py:Mimi.manga: Args: no site
+flnd/sources/mht.py:Mimi.manga: no Raises:
+flnd/sources/mht.py:Mimi.manga: no Returns:
+flnd/sources/mht.py:Mimi.query: Args: no query
+flnd/sources/mht.py:Mimi.query: Args: no site
+flnd/sources/mht.py:Mimi.query: no Yields:
+flnd/sources/mht.py:_items_of: no docstring
+flnd/sources/mht.py:_manga_fields: Args: no manga
+flnd/sources/mht.py:_manga_fields: no Returns:
+flnd/sources/mht.py:_parse_query: Args: no raw
+flnd/sources/mht.py:_parse_query: Args: no site
+flnd/sources/mht.py:_parse_query: no Raises:
+flnd/sources/mht.py:_parse_query: no Returns:
+flnd/sources/mht.py:_resolve_id: Args: no kind
+flnd/sources/mht.py:_resolve_id: Args: no lookup
+flnd/sources/mht.py:_resolve_id: Args: no raw
+flnd/sources/mht.py:_resolve_id: Args: no site
+flnd/sources/mht.py:_resolve_id: no Raises:
+flnd/sources/mht.py:_resolve_id: no Returns:
+flnd/sources/mht.py:_search_pages: Args: no params
+flnd/sources/mht.py:_search_pages: Args: no site
+flnd/sources/mht.py:_search_pages: Args: no url
+flnd/sources/mht.py:_search_pages: no Yields:
+flnd/sources/mht.py:format_order: Args: no value
+flnd/sources/mht.py:format_order: no Returns:
+flnd/sources/tik.py:Profile._click_batches: Args: no category
+flnd/sources/tik.py:Profile._click_batches: Args: no css
+flnd/sources/tik.py:Profile._click_batches: no Yields:
+flnd/sources/tik.py:Profile._drain_posts: Args: no old
+flnd/sources/tik.py:Profile._drain_posts: Args: no since
+flnd/sources/tik.py:Profile._drain_posts: Args: no wanted
+flnd/sources/tik.py:Profile._drain_posts: no Yields:
+flnd/sources/tik.py:Profile._load: no Raises:
+flnd/sources/tik.py:Profile._load: no Returns:
+flnd/sources/tik.py:Profile._read_posts: Args: no wanted
+flnd/sources/tik.py:Profile._read_posts: no Yields:
+flnd/sources/tik.py:Profile._watch: Args: no posts
+flnd/sources/tik.py:Profile._watch: Args: no stories
+flnd/sources/tik.py:Profile._watch: no Returns:
+flnd/sources/tik.py:Profile.feed: Args: no wanted
+flnd/sources/tik.py:Profile.feed: no Yields:
+flnd/sources/tik.py:Profile.open: Args: no feeds
+flnd/sources/tik.py:Profile.open: no Returns:
+flnd/sources/tik.py:Profile.stories: no Yields:
+flnd/sources/tik.py:Profile.tab: Args: no category
+flnd/sources/tik.py:Profile.tab: Args: no tab
+flnd/sources/tik.py:Profile.tab: no Yields:
+flnd/sources/tik.py:Profile.wait_out_captcha: no Raises:
+flnd/sources/tik.py:TikTok.favorites: no Yields:
+flnd/sources/tik.py:TikTok.liked: no Yields:
+flnd/sources/tik.py:TikTok.playlists: no Yields:
+flnd/sources/tik.py:TikTok.profile: Args: no profile
+flnd/sources/tik.py:TikTok.profile: Args: no site
+flnd/sources/tik.py:TikTok.profile: no Yields:
+flnd/sources/tik.py:TikTok.reposts: no Yields:
+flnd/sources/tik.py:TikTok.stories: no Yields:
+flnd/sources/tik.py:TikTok.user: no Returns:
+flnd/sources/tik.py:TikTok.video: no Yields:
+flnd/sources/tik.py:TikTok.videos: Args: no profile
+flnd/sources/tik.py:TikTok.videos: Args: no site
+flnd/sources/tik.py:TikTok.videos: no Yields:
+flnd/sources/tik.py:_hit_saved: Args: no items
+flnd/sources/tik.py:_hit_saved: Args: no wanted
+flnd/sources/tik.py:_hit_saved: no Returns:
+flnd/sources/tik.py:_is_dash: Args: no entry
+flnd/sources/tik.py:_is_dash: no Returns:
+flnd/sources/tik.py:_pixels: Args: no entry
+flnd/sources/tik.py:_pixels: no Returns:
+flnd/sources/tik.py:best_video: Args: no video
+flnd/sources/tik.py:best_video: no Returns:
+flnd/sources/tik.py:cdn_headers: no Returns:
+flnd/sources/tik.py:embed_posts: no Yields:
+flnd/sources/tik.py:has_captcha: no Returns:
+flnd/sources/tik.py:is_feed_of: no Returns:
+flnd/sources/tik.py:mirrors: Args: no urls
+flnd/sources/tik.py:mirrors: no Returns:
+flnd/sources/tik.py:older_streak: Args: no items
+flnd/sources/tik.py:older_streak: Args: no since
+flnd/sources/tik.py:older_streak: Args: no streak
+flnd/sources/tik.py:older_streak: no Returns:
+flnd/sources/tik.py:post_of: Args: no category
+flnd/sources/tik.py:post_of: Args: no item
+flnd/sources/tik.py:post_of: Args: no site
+flnd/sources/tik.py:post_of: no Returns:
+flnd/sources/tik.py:stamp_of: no Returns:
+flnd/sources/tlg.py:Telegram.connect: Args: no site
+flnd/sources/tlg.py:Telegram.connect: no Raises:
+flnd/sources/tlg.py:Telegram.connect: no Yields:
+flnd/sources/tlg.py:Telegram.login: Args: no login
+flnd/sources/tlg.py:Telegram.login: Args: no method
+flnd/sources/tlg.py:Telegram.login: no Raises:
+flnd/sources/tlg.py:Telegram.resolve: Args: no text
+flnd/sources/tlg.py:Telegram.resolve: no Raises:
+flnd/sources/tlg.py:Telegram.resolve: no Returns:
+flnd/sources/tlg.py:_Download._part: Args: no number
+flnd/sources/tlg.py:_Download._read: Args: no end
+flnd/sources/tlg.py:_Download._read: Args: no number
+flnd/sources/tlg.py:_Download._read: Args: no position
+flnd/sources/tlg.py:_Download._read: no Raises:
+flnd/sources/tlg.py:_Download: Args: no document
+flnd/sources/tlg.py:_Download: Args: no done
+flnd/sources/tlg.py:_Download: Args: no file
+flnd/sources/tlg.py:_Download: Args: no progress
+flnd/sources/tlg.py:_Download: Args: no sidecar
+flnd/sources/tlg.py:_Download: Args: no site
+flnd/sources/tlg.py:_client: no docstring
+flnd/sources/tlg.py:_load_offsets: Args: no dest
+flnd/sources/tlg.py:_load_offsets: Args: no sidecar
+flnd/sources/tlg.py:_load_offsets: Args: no size
+flnd/sources/tlg.py:_load_offsets: no Returns:
+flnd/sources/tlg.py:_url_value: Args: no host
+flnd/sources/tlg.py:_url_value: Args: no url
+flnd/sources/tlg.py:_url_value: no Returns:
+flnd/sources/tlg.py:by_phone: Args: no client
+flnd/sources/tlg.py:by_phone: Args: no login
+flnd/sources/tlg.py:by_qr: Args: no client
+flnd/sources/tlg.py:by_qr: Args: no login
+flnd/sources/tlg.py:by_qr: no Raises:
+flnd/sources/tlg.py:by_qr: no Returns:
+flnd/sources/tlg.py:credentials: Args: no login
+flnd/sources/tlg.py:credentials: no Raises:
+flnd/sources/tlg.py:credentials: no Returns:
+flnd/sources/tlg.py:display_name: Args: no entity
+flnd/sources/tlg.py:display_name: no Returns:
+flnd/sources/tlg.py:draw_qr: Args: no text
+flnd/sources/tlg.py:draw_qr: no Returns:
+flnd/sources/tlg.py:fetcher: Args: no message
+flnd/sources/tlg.py:fetcher: Args: no site
+flnd/sources/tlg.py:fetcher: no Returns:
+flnd/sources/tlg.py:find_chat: Args: no client
+flnd/sources/tlg.py:find_chat: Args: no value
+flnd/sources/tlg.py:find_chat: no Raises:
+flnd/sources/tlg.py:find_chat: no Returns:
+flnd/sources/tlg.py:from_web_storage: Args: no storage
+flnd/sources/tlg.py:from_web_storage: no Raises:
+flnd/sources/tlg.py:from_web_storage: no Returns:
+flnd/sources/tlg.py:half_blocks: Args: no matrix
+flnd/sources/tlg.py:half_blocks: no Returns:
+flnd/sources/tlg.py:log_in: Args: no api_hash
+flnd/sources/tlg.py:log_in: Args: no api_id
+flnd/sources/tlg.py:log_in: Args: no login
+flnd/sources/tlg.py:log_in: Args: no method
+flnd/sources/tlg.py:log_in: Args: no start
+flnd/sources/tlg.py:log_in: no Raises:
+flnd/sources/tlg.py:log_in: no Returns:
+flnd/sources/tlg.py:messages: Args: no chat
+flnd/sources/tlg.py:messages: Args: no kind
+flnd/sources/tlg.py:messages: Args: no site
+flnd/sources/tlg.py:messages: no Yields:
+flnd/sources/tlg.py:read_telegram_web: no Raises:
+flnd/sources/tlg.py:read_telegram_web: no Returns:
+flnd/sources/twt.py:Graph._get: Args: no query
+flnd/sources/twt.py:Graph._get: Args: no site
+flnd/sources/twt.py:Graph._get: Args: no variables
+flnd/sources/twt.py:Graph._get: no Returns:
+flnd/sources/twt.py:Graph._table: Args: no site
+flnd/sources/twt.py:Graph._table: no Returns:
+flnd/sources/twt.py:Graph.get: Args: no query
+flnd/sources/twt.py:Graph.get: Args: no site
+flnd/sources/twt.py:Graph.get: Args: no variables
+flnd/sources/twt.py:Graph.get: no Returns:
+flnd/sources/twt.py:Graph.refresh: Args: no site
+flnd/sources/twt.py:Graph.refresh: no Returns:
+flnd/sources/twt.py:Twitter._scroll_timeline: Args: no profile
+flnd/sources/twt.py:Twitter._scroll_timeline: Args: no site
+flnd/sources/twt.py:Twitter._scroll_timeline: Args: no timeline
+flnd/sources/twt.py:Twitter._scroll_timeline: no Raises:
+flnd/sources/twt.py:Twitter._scroll_timeline: no Yields:
+flnd/sources/twt.py:Twitter.post: Args: no site
+flnd/sources/twt.py:Twitter.post: Args: no tweet_id
+flnd/sources/twt.py:Twitter.post: no Yields:
+flnd/sources/twt.py:Twitter.prepare: Args: no cookies
+flnd/sources/twt.py:Twitter.prepare: Args: no request
+flnd/sources/twt.py:Twitter.prepare: no Returns:
+flnd/sources/twt.py:Twitter.profile: Args: no account
+flnd/sources/twt.py:Twitter.profile: Args: no site
+flnd/sources/twt.py:Twitter.profile: no Yields:
+flnd/sources/twt.py:Twitter.read_browser: Args: no account
+flnd/sources/twt.py:Twitter.read_browser: Args: no site
+flnd/sources/twt.py:Twitter.read_browser: Args: no timeline
+flnd/sources/twt.py:Twitter.read_browser: no Yields:
+flnd/sources/twt.py:Twitter.user: Args: no site
+flnd/sources/twt.py:Twitter.user: Args: no user
+flnd/sources/twt.py:Twitter.user: no Returns:
+flnd/sources/twt.py:_hit_saved: Args: no category
+flnd/sources/twt.py:_hit_saved: Args: no tweets
+flnd/sources/twt.py:_hit_saved: no Returns:
+flnd/sources/twt.py:best_file: Args: no media
+flnd/sources/twt.py:best_file: no Returns:
+flnd/sources/twt.py:card_image: Args: no tweet
+flnd/sources/twt.py:card_image: no Returns:
+flnd/sources/twt.py:media_file: Args: no extension
+flnd/sources/twt.py:media_file: Args: no index
+flnd/sources/twt.py:media_file: Args: no posted
+flnd/sources/twt.py:media_file: Args: no tweet_id
+flnd/sources/twt.py:media_file: Args: no url
+flnd/sources/twt.py:media_file: no Returns:
+flnd/sources/twt.py:older_streak: Args: no since
+flnd/sources/twt.py:older_streak: Args: no streak
+flnd/sources/twt.py:older_streak: Args: no tweets
+flnd/sources/twt.py:older_streak: no Returns:
+flnd/sources/twt.py:parse_date: Args: no created_at
+flnd/sources/twt.py:parse_date: no Returns:
+flnd/sources/twt.py:read_timeline_page: Args: no data
+flnd/sources/twt.py:read_timeline_page: no Returns:
+flnd/sources/twt.py:timeline_entries: Args: no instructions
+flnd/sources/twt.py:timeline_entries: no Yields:
+flnd/sources/twt.py:tweet_posts: Args: no category
+flnd/sources/twt.py:tweet_posts: Args: no part
+flnd/sources/twt.py:tweet_posts: Args: no tweet
+flnd/sources/twt.py:tweet_posts: Args: no user_id
+flnd/sources/twt.py:tweet_posts: no Yields:
+flnd/targets.py:_check_from_entry: Args: no by_code
+flnd/targets.py:_check_from_entry: Args: no entry
+flnd/targets.py:_check_from_entry: Args: no known
+flnd/targets.py:_check_from_entry: no Raises:
+flnd/targets.py:_check_template: Args: no allowed
+flnd/targets.py:_check_template: Args: no source
+flnd/targets.py:_check_template: Args: no template
+flnd/targets.py:_check_template: no Raises:
+flnd/targets.py:_kept_fields: Args: no old
+flnd/targets.py:_kept_fields: Args: no options
+flnd/targets.py:_kept_fields: no Returns:
+flnd/targets.py:_next_sync: Args: no old
+flnd/targets.py:_next_sync: Args: no sync
+flnd/targets.py:_next_sync: no Returns:
+flnd/targets.py:_route_fields: Args: no route
+flnd/targets.py:_route_fields: no Returns:
+flnd/targets.py:_target_routes: Args: no by_code
+flnd/targets.py:_target_routes: Args: no targets
+flnd/targets.py:_target_routes: no Returns:
+flnd/targets.py:_validate_folders: Args: no sources
+flnd/targets.py:_validate_from: Args: no by_code
+flnd/targets.py:_validate_from: Args: no from_selection
+flnd/targets.py:_validate_from: Args: no targets
+flnd/targets.py:_validate_from: no Raises:
+flnd/targets.py:_write_sync: Args: no enabled
+flnd/targets.py:_write_sync: Args: no home
+flnd/targets.py:_write_sync: Args: no target
+flnd/targets.py:_write_sync: no Returns:
+flnd/targets.py:complete: Args: no categories
+flnd/targets.py:complete: Args: no saved
+flnd/targets.py:complete: Args: no target
+flnd/targets.py:delete: Args: no home
+flnd/targets.py:delete: Args: no target
+flnd/targets.py:delete: no Returns:
+flnd/targets.py:keep_cursors: Args: no changed
+flnd/targets.py:keep_cursors: Args: no saved
+flnd/targets.py:keep_cursors: Args: no target
+flnd/targets.py:keep_failed: Args: no failed
+flnd/targets.py:keep_failed: Args: no saved
+flnd/targets.py:keep_failed: Args: no succeeded
+flnd/targets.py:keep_failed: Args: no target
+flnd/targets.py:mark_seen: Args: no home
+flnd/targets.py:mark_seen: Args: no keys
+flnd/targets.py:mark_seen: Args: no target
+flnd/targets.py:record: Args: no chosen
+flnd/targets.py:record: Args: no home
+flnd/targets.py:record: Args: no sync
+flnd/targets.py:validate: Args: no from_selection
+flnd/targets.py:validate: Args: no sources
+flnd/targets.py:validate: Args: no targets
+shared/_archive.py:Entry: no Example:
+shared/_archive.py:Limits: no Example:
+shared/_archive.py:_7z_entry: no docstring
+shared/_archive.py:_7z_tool: no docstring
+shared/_archive.py:_check_limits: no docstring
+shared/_archive.py:_collect_files: no docstring
+shared/_archive.py:_detect: no docstring
+shared/_archive.py:_ls_7z: no docstring
+shared/_archive.py:_ls_unrar: no docstring
+shared/_archive.py:_read_entries: no docstring
+shared/_archive.py:_safe_dest: no docstring
+shared/_archive.py:_seven_zip_pack: no docstring
+shared/_archive.py:_unpack_7z: no docstring
+shared/_archive.py:_unpack_tar: no docstring
+shared/_archive.py:_unpack_unrar: no docstring
+shared/_archive.py:_unpack_zip: no docstring
+shared/_archive.py:_write_kind: no docstring
+shared/_archive.py:ls: Args: no limits
+shared/_archive.py:ls: Args: no password
+shared/_archive.py:ls: Args: no path
+shared/_archive.py:ls: no Example:
+shared/_archive.py:ls: no Returns:
+shared/_archive.py:pack: Args: no dest
+shared/_archive.py:pack: Args: no password
+shared/_archive.py:pack: Args: no progress
+shared/_archive.py:pack: Args: no sources
+shared/_archive.py:pack: no Example:
+shared/_archive.py:pack: no Raises:
+shared/_archive.py:pack: no Returns:
+shared/_archive.py:unpack: Args: no conflict
+shared/_archive.py:unpack: Args: no dest
+shared/_archive.py:unpack: Args: no limits
+shared/_archive.py:unpack: Args: no password
+shared/_archive.py:unpack: Args: no path
+shared/_archive.py:unpack: Args: no progress
+shared/_archive.py:unpack: no Example:
+shared/_archive.py:unpack: no Raises:
+shared/_archive.py:unpack: no Returns:
+shared/_browser.py:Browser.close: no Example:
+shared/_browser.py:Browser.open: Args: no idle
+shared/_browser.py:Browser.open: Args: no timeout
+shared/_browser.py:Browser.open: Args: no url
+shared/_browser.py:Browser.open: no Example:
+shared/_browser.py:Browser.open: no Returns:
+shared/_browser.py:Browser: Args: no close_steps
+shared/_browser.py:Browser: Args: no context
+shared/_browser.py:Browser: Args: no headless
+shared/_browser.py:Browser: Args: no page_viewport
+shared/_browser.py:Browser: no Example:
+shared/_browser.py:BrowserCookies.add: Args: no jar
+shared/_browser.py:BrowserCookies.add: no Example:
+shared/_browser.py:BrowserCookies.clear: no Example:
+shared/_browser.py:BrowserCookies.get: no Example:
+shared/_browser.py:BrowserCookies.get: no Returns:
+shared/_browser.py:BrowserCookies: Args: no browser
+shared/_browser.py:BrowserCookies: no Example:
+shared/_browser.py:Page._area: Args: no target
+shared/_browser.py:Page._area: no Raises:
+shared/_browser.py:Page._area: no Returns:
+shared/_browser.py:Page._fetch: Args: no request
+shared/_browser.py:Page._fetch: no Raises:
+shared/_browser.py:Page._fetch: no Returns:
+shared/_browser.py:Page._move: Args: no target
+shared/_browser.py:Page._steady: Args: no fallback
+shared/_browser.py:Page._steady: Args: no read
+shared/_browser.py:Page._steady: Args: no tries
+shared/_browser.py:Page._steady: Args: no what
+shared/_browser.py:Page._steady: no Returns:
+shared/_browser.py:Page._wait_for_progress: Args: no before
+shared/_browser.py:Page._wait_for_progress: Args: no count
+shared/_browser.py:Page._wait_for_progress: Args: no longest
+shared/_browser.py:Page._wait_for_progress: Args: no target
+shared/_browser.py:Page._wait_for_progress: no Returns:
+shared/_browser.py:Page._wheel: Args: no distance
+shared/_browser.py:Page.close: no Example:
+shared/_browser.py:Page.fetch: Args: no body
+shared/_browser.py:Page.fetch: Args: no check
+shared/_browser.py:Page.fetch: Args: no headers
+shared/_browser.py:Page.fetch: Args: no method
+shared/_browser.py:Page.fetch: Args: no url
+shared/_browser.py:Page.fetch: no Example:
+shared/_browser.py:Page.fetch: no Returns:
+shared/_browser.py:Page.goto: no Example:
+shared/_browser.py:Page.handoff: Args: no message
+shared/_browser.py:Page.handoff: Args: no timeout
+shared/_browser.py:Page.handoff: Args: no until
+shared/_browser.py:Page.handoff: no Example:
+shared/_browser.py:Page.handoff: no Raises:
+shared/_browser.py:Page.handoff: no Returns:
+shared/_browser.py:Page.requests: Args: no match
+shared/_browser.py:Page.requests: no Example:
+shared/_browser.py:Page.requests: no Returns:
+shared/_browser.py:Page.responses: Args: no match
+shared/_browser.py:Page.responses: no Example:
+shared/_browser.py:Page.responses: no Returns:
+shared/_browser.py:Page.scroll: Args: no idle
+shared/_browser.py:Page.scroll: Args: no until
+shared/_browser.py:Page.scroll: Args: no within
+shared/_browser.py:Page.scroll: no Example:
+shared/_browser.py:Page.scroll: no Returns:
+shared/_browser.py:Page.wait: no Example:
+shared/_browser.py:Page: Args: no browser
+shared/_browser.py:Page: Args: no raw
+shared/_browser.py:Page: no Example:
+shared/_browser.py:Visit: no Example:
+shared/_browser.py:Watch.stop: no Example:
+shared/_browser.py:Watch: Args: no step
+shared/_browser.py:Watch: Args: no stop
+shared/_browser.py:Watch: no Example:
+shared/_browser.py:_Scroller: Args: no idle
+shared/_browser.py:_Scroller: Args: no page
+shared/_browser.py:_Scroller: Args: no until
+shared/_browser.py:_Scroller: Args: no within
+shared/_browser.py:_cached_headful_ua: no docstring
+shared/_browser.py:_channel: Args: no playwright
+shared/_browser.py:_channel: no Raises:
+shared/_browser.py:_channel: no Returns:
+shared/_browser.py:_chrome_executable: no Returns:
+shared/_browser.py:_copy_profile: Args: no name
+shared/_browser.py:_copy_profile: no Raises:
+shared/_browser.py:_copy_profile: no Returns:
+shared/_browser.py:_headful_user_agent: Args: no remote
+shared/_browser.py:_headful_user_agent: no Returns:
+shared/_browser.py:_headful_user_agent_of: Args: no channel
+shared/_browser.py:_headful_user_agent_of: Args: no playwright
+shared/_browser.py:_headful_user_agent_of: no Returns:
+shared/_browser.py:_json_bodies: Args: no lines
+shared/_browser.py:_json_bodies: Args: no response
+shared/_browser.py:_json_bodies: no Returns:
+shared/_browser.py:_launch: Args: no args
+shared/_browser.py:_launch: Args: no copied
+shared/_browser.py:_launch: Args: no headless
+shared/_browser.py:_launch: Args: no locale
+shared/_browser.py:_launch: Args: no playwright
+shared/_browser.py:_launch: Args: no profile
+shared/_browser.py:_launch: Args: no stealth
+shared/_browser.py:_launch: Args: no timezone
+shared/_browser.py:_launch: Args: no viewport
+shared/_browser.py:_launch: no Returns:
+shared/_browser.py:_matcher: Args: no match
+shared/_browser.py:_matcher: no Raises:
+shared/_browser.py:_matcher: no Returns:
+shared/_browser.py:_open_context: Args: no channel
+shared/_browser.py:_open_context: Args: no context_options
+shared/_browser.py:_open_context: Args: no launch_options
+shared/_browser.py:_open_context: Args: no playwright
+shared/_browser.py:_open_context: Args: no profile
+shared/_browser.py:_open_context: no Returns:
+shared/_browser.py:_profile_name: Args: no profile
+shared/_browser.py:_profile_name: no Raises:
+shared/_browser.py:_profile_name: no Returns:
+shared/_browser.py:_raw_error: no Returns:
+shared/_browser.py:_raw_timeout: no Returns:
+shared/_browser.py:_start_playwright: no Raises:
+shared/_browser.py:_start_playwright: no Returns:
+shared/_browser.py:attach: Args: no cdp
+shared/_browser.py:attach: no Example:
+shared/_browser.py:attach: no Returns:
+shared/_browser.py:open: Args: no headless
+shared/_browser.py:open: Args: no profile
+shared/_browser.py:open: Args: no stealth
+shared/_browser.py:open: no Example:
+shared/_browser.py:open: no Returns:
+shared/_bundler.py:_arguments: Args: no dest
+shared/_bundler.py:_arguments: Args: no entry
+shared/_bundler.py:_arguments: Args: no hidden
+shared/_bundler.py:_arguments: Args: no name
+shared/_bundler.py:_arguments: Args: no work
+shared/_bundler.py:_arguments: no Returns:
+shared/_bundler.py:_extra_packages: no Returns:
+shared/_bundler.py:_run: no docstring
+shared/_bundler.py:build: Args: no data
+shared/_bundler.py:build: Args: no dest
+shared/_bundler.py:build: Args: no entry
+shared/_bundler.py:build: Args: no hidden
+shared/_bundler.py:build: Args: no name
+shared/_bundler.py:build: no Example:
+shared/_bundler.py:build: no Raises:
+shared/_bundler.py:build: no Returns:
+shared/_cli.py:App.command: Args: no target
+shared/_cli.py:App.command: no Example:
+shared/_cli.py:App.command: no Returns:
+shared/_cli.py:App.group: Args: no default
+shared/_cli.py:App.group: Args: no help
+shared/_cli.py:App.group: Args: no name
+shared/_cli.py:App.group: no Example:
+shared/_cli.py:App.group: no Returns:
+shared/_cli.py:App.run: Args: no argv
+shared/_cli.py:App.run: no Example:
+shared/_cli.py:App.run: no Returns:
+shared/_cli.py:App: Args: no help
+shared/_cli.py:App: Args: no name
+shared/_cli.py:App: no Example:
+shared/_cli.py:Stopping: no Example:
+shared/_cli.py:_cyclopts_app: Args: no default
+shared/_cli.py:_cyclopts_app: Args: no help
+shared/_cli.py:_cyclopts_app: Args: no name
+shared/_cli.py:_cyclopts_app: no Returns:
+shared/_cli.py:_exit_code: Args: no result
+shared/_cli.py:_exit_code: no Returns:
+shared/_cli.py:stopping: no Example:
+shared/_cli.py:stopping: no Yields:
+shared/_clock.py:Clock.sleep: Args: no seconds
+shared/_clock.py:Clock.sleep: Args: no stop
+shared/_clock.py:Clock.sleep: no Example:
+shared/_clock.py:Clock: no Example:
+shared/_clock.py:Fake.advance: Args: no seconds
+shared/_clock.py:Fake.advance: no Example:
+shared/_clock.py:Fake.sleep: Args: no seconds
+shared/_clock.py:Fake.sleep: Args: no stop
+shared/_clock.py:Fake.sleep: no Example:
+shared/_clock.py:Fake.sleep: no Returns:
+shared/_clock.py:Fake: Args: no start
+shared/_clock.py:Fake: no Example:
+shared/_clock.py:now: no Example:
+shared/_clock.py:now: no Returns:
+shared/_clock.py:sleep: Args: no seconds
+shared/_clock.py:sleep: Args: no stop
+shared/_clock.py:sleep: no Example:
+shared/_clock.py:sleep: no Returns:
+shared/_clock.py:use: Args: no replacement
+shared/_clock.py:use: no Example:
+shared/_clock.py:use: no Yields:
+shared/_clock.py:wall: no Example:
+shared/_clock.py:wall: no Returns:
+shared/_cookies.py:Jar.filter: Args: no domains
+shared/_cookies.py:Jar.filter: Args: no names
+shared/_cookies.py:Jar.filter: no Example:
+shared/_cookies.py:Jar.filter: no Returns:
+shared/_cookies.py:Jar.merge: Args: no other
+shared/_cookies.py:Jar.merge: no Example:
+shared/_cookies.py:Jar.merge: no Returns:
+shared/_cookies.py:Jar.save: no Example:
+shared/_cookies.py:Jar.save: no Returns:
+shared/_cookies.py:Jar: no Example:
+shared/_cookies.py:_DataBlob: no docstring
+shared/_cookies.py:_chromium_keys: Args: no browser
+shared/_cookies.py:_chromium_keys: no Returns:
+shared/_cookies.py:_chromium_root: no docstring
+shared/_cookies.py:_decrypt_aes_cbc: Args: no ciphertext
+shared/_cookies.py:_decrypt_aes_cbc: Args: no key
+shared/_cookies.py:_decrypt_aes_cbc: no Raises:
+shared/_cookies.py:_decrypt_aes_cbc: no Returns:
+shared/_cookies.py:_decrypt_aes_gcm: Args: no ciphertext
+shared/_cookies.py:_decrypt_aes_gcm: Args: no key
+shared/_cookies.py:_decrypt_aes_gcm: no Raises:
+shared/_cookies.py:_decrypt_aes_gcm: no Returns:
+shared/_cookies.py:_decrypt_chromium: Args: no encrypted
+shared/_cookies.py:_decrypt_chromium: Args: no has_host_hash
+shared/_cookies.py:_decrypt_chromium: Args: no host
+shared/_cookies.py:_decrypt_chromium: Args: no keys
+shared/_cookies.py:_decrypt_chromium: Args: no what
+shared/_cookies.py:_decrypt_chromium: no Raises:
+shared/_cookies.py:_decrypt_chromium: no Returns:
+shared/_cookies.py:_dpapi_unprotect: Args: no data
+shared/_cookies.py:_dpapi_unprotect: no Raises:
+shared/_cookies.py:_dpapi_unprotect: no Returns:
+shared/_cookies.py:_firefox_paths: Args: no root
+shared/_cookies.py:_firefox_paths: no Raises:
+shared/_cookies.py:_firefox_paths: no Returns:
+shared/_cookies.py:_firefox_profile: no docstring
+shared/_cookies.py:_firefox_root: no docstring
+shared/_cookies.py:_json_cookie: no docstring
+shared/_cookies.py:_load_chromium: Args: no browser
+shared/_cookies.py:_load_chromium: Args: no profile
+shared/_cookies.py:_load_chromium: no Raises:
+shared/_cookies.py:_load_chromium: no Returns:
+shared/_cookies.py:_load_firefox: Args: no profile
+shared/_cookies.py:_load_firefox: no Raises:
+shared/_cookies.py:_load_firefox: no Returns:
+shared/_cookies.py:_load_text: Args: no label
+shared/_cookies.py:_load_text: Args: no text
+shared/_cookies.py:_load_text: no Raises:
+shared/_cookies.py:_load_text: no Returns:
+shared/_cookies.py:_netscape_text: Args: no jar
+shared/_cookies.py:_netscape_text: no Raises:
+shared/_cookies.py:_netscape_text: no Returns:
+shared/_cookies.py:_open_copy: Args: no database
+shared/_cookies.py:_open_copy: no Raises:
+shared/_cookies.py:_open_copy: no Yields:
+shared/_cookies.py:_parse_netscape: Args: no text
+shared/_cookies.py:_parse_netscape: no Raises:
+shared/_cookies.py:_parse_netscape: no Returns:
+shared/_cookies.py:_read_keychain_password: no docstring
+shared/_cookies.py:_read_keyring_password: no docstring
+shared/_cookies.py:_read_windows_key: Args: no browser
+shared/_cookies.py:_read_windows_key: no Raises:
+shared/_cookies.py:_read_windows_key: no Returns:
+shared/_cookies.py:load: Args: no profile
+shared/_cookies.py:load: Args: no source
+shared/_cookies.py:load: no Example:
+shared/_cookies.py:load: no Raises:
+shared/_cookies.py:load: no Returns:
+shared/_crypto.py:_aes_gcm: Args: no key
+shared/_crypto.py:_aes_gcm: no Raises:
+shared/_crypto.py:_aes_gcm: no Returns:
+shared/_crypto.py:decrypt: Args: no blob
+shared/_crypto.py:decrypt: Args: no context
+shared/_crypto.py:decrypt: Args: no key
+shared/_crypto.py:decrypt: no Example:
+shared/_crypto.py:decrypt: no Raises:
+shared/_crypto.py:decrypt: no Returns:
+shared/_crypto.py:digest: Args: no algorithm
+shared/_crypto.py:digest: Args: no data
+shared/_crypto.py:digest: no Example:
+shared/_crypto.py:digest: no Raises:
+shared/_crypto.py:digest: no Returns:
+shared/_crypto.py:encrypt: Args: no context
+shared/_crypto.py:encrypt: Args: no data
+shared/_crypto.py:encrypt: Args: no key
+shared/_crypto.py:encrypt: no Example:
+shared/_crypto.py:encrypt: no Returns:
+shared/_fs.py:_commit: Args: no dest
+shared/_fs.py:_commit: Args: no sync
+shared/_fs.py:_commit: Args: no temp
+shared/_fs.py:_commit: no Raises:
+shared/_fs.py:_fsync_dir: Args: no folder
+shared/_fs.py:_fsync_file: Args: no path
+shared/_fs.py:_fsync_file: no Raises:
+shared/_fs.py:_link: Args: no dest
+shared/_fs.py:_link: Args: no sync
+shared/_fs.py:_link: Args: no temp
+shared/_fs.py:_link: no Raises:
+shared/_fs.py:_older_than: Args: no age
+shared/_fs.py:_older_than: Args: no entry
+shared/_fs.py:_older_than: Args: no now
+shared/_fs.py:_older_than: no Raises:
+shared/_fs.py:_older_than: no Returns:
+shared/_fs.py:_remove: Args: no others
+shared/_fs.py:_remove: Args: no path
+shared/_fs.py:_remove: no Returns:
+shared/_fs.py:_replace: Args: no dest
+shared/_fs.py:_replace: Args: no temp
+shared/_fs.py:_scan: Args: no folder
+shared/_fs.py:_scan: no Raises:
+shared/_fs.py:_scan: no Yields:
+shared/_fs.py:_stage_path: Args: no target
+shared/_fs.py:_stage_path: no Returns:
+shared/_fs.py:_unlink: Args: no path
+shared/_fs.py:_unlink: no Raises:
+shared/_fs.py:_unlink: no Returns:
+shared/_fs.py:_write_bytes: Args: no data
+shared/_fs.py:_write_bytes: Args: no temp
+shared/_fs.py:_write_bytes: no Raises:
+shared/_fs.py:lock: Args: no path
+shared/_fs.py:lock: Args: no timeout
+shared/_fs.py:lock: no Example:
+shared/_fs.py:lock: no Raises:
+shared/_fs.py:lock: no Yields:
+shared/_fs.py:stage: Args: no dest
+shared/_fs.py:stage: Args: no keep
+shared/_fs.py:stage: Args: no sync
+shared/_fs.py:stage: Args: no timeout
+shared/_fs.py:stage: no Example:
+shared/_fs.py:stage: no Yields:
+shared/_fs.py:sweep: Args: no folder
+shared/_fs.py:sweep: Args: no keep
+shared/_fs.py:sweep: Args: no settle
+shared/_fs.py:sweep: no Example:
+shared/_fs.py:sweep: no Returns:
+shared/_fs.py:touch: Args: no mtime
+shared/_fs.py:touch: Args: no path
+shared/_fs.py:touch: no Example:
+shared/_fs.py:touch: no Raises:
+shared/_fs.py:walk: Args: no folder
+shared/_fs.py:walk: Args: no suffix
+shared/_fs.py:walk: no Example:
+shared/_fs.py:walk: no Yields:
+shared/_fs.py:write: Args: no data
+shared/_fs.py:write: Args: no dest
+shared/_fs.py:write: Args: no replace
+shared/_fs.py:write: Args: no sync
+shared/_fs.py:write: no Example:
+shared/_fs.py:write: no Returns:
+shared/_http.py:Client._back_off: no docstring
+shared/_http.py:Client._call: Args: no check
+shared/_http.py:Client._call: Args: no method
+shared/_http.py:Client._call: Args: no send
+shared/_http.py:Client._call: Args: no url
+shared/_http.py:Client._call: no Returns:
+shared/_http.py:Client._file: Args: no headers
+shared/_http.py:Client._file: Args: no meter
+shared/_http.py:Client._file: Args: no part
+shared/_http.py:Client._file: Args: no resume
+shared/_http.py:Client._file: Args: no url
+shared/_http.py:Client._file: no Returns:
+shared/_http.py:Client._open: Args: no headers
+shared/_http.py:Client._open: Args: no span
+shared/_http.py:Client._open: Args: no url
+shared/_http.py:Client._open: no Raises:
+shared/_http.py:Client._open: no Yields:
+shared/_http.py:Client._request: no docstring
+shared/_http.py:Client._send: no docstring
+shared/_http.py:Client._unsatisfied: Args: no headers
+shared/_http.py:Client._unsatisfied: Args: no meter
+shared/_http.py:Client._unsatisfied: Args: no offset
+shared/_http.py:Client._unsatisfied: Args: no part
+shared/_http.py:Client._unsatisfied: Args: no total
+shared/_http.py:Client._unsatisfied: Args: no url
+shared/_http.py:Client._unsatisfied: no Raises:
+shared/_http.py:Client._write: no docstring
+shared/_http.py:Client.close: no Example:
+shared/_http.py:Client.download: Args: no dest
+shared/_http.py:Client.download: Args: no headers
+shared/_http.py:Client.download: Args: no progress
+shared/_http.py:Client.download: Args: no resume
+shared/_http.py:Client.download: Args: no url
+shared/_http.py:Client.download: no Example:
+shared/_http.py:Client.download: no Raises:
+shared/_http.py:Client.download: no Returns:
+shared/_http.py:Client.fetch: Args: no body
+shared/_http.py:Client.fetch: Args: no check
+shared/_http.py:Client.fetch: Args: no headers
+shared/_http.py:Client.fetch: Args: no method
+shared/_http.py:Client.fetch: Args: no url
+shared/_http.py:Client.fetch: no Example:
+shared/_http.py:Client.fetch: no Returns:
+shared/_http.py:Client: Args: no cookies
+shared/_http.py:Client: Args: no headers
+shared/_http.py:Client: Args: no rate
+shared/_http.py:Client: Args: no retry
+shared/_http.py:Client: Args: no stop
+shared/_http.py:Client: Args: no timeout
+shared/_http.py:Client: no Example:
+shared/_http.py:IncompleteError: Args: no message
+shared/_http.py:IncompleteError: Args: no response
+shared/_http.py:IncompleteError: Args: no status
+shared/_http.py:RateLimitedError: Args: no message
+shared/_http.py:RateLimitedError: Args: no response
+shared/_http.py:RateLimitedError: Args: no retry_after
+shared/_http.py:RefusedError: Args: no message
+shared/_http.py:RefusedError: Args: no response
+shared/_http.py:RefusedError: Args: no status
+shared/_http.py:Response: no Example:
+shared/_http.py:Retry: no Example:
+shared/_http.py:_Headers: no docstring
+shared/_http.py:_Meter.start: no docstring
+shared/_http.py:_Meter: Args: no sink
+shared/_http.py:_Pace.wait: no docstring
+shared/_http.py:_Pace: Args: no rate
+shared/_http.py:_Router: Args: no routes
+shared/_http.py:_Segments.copy: Args: no handle
+shared/_http.py:_Segments.copy: Args: no index
+shared/_http.py:_Segments.copy: Args: no response
+shared/_http.py:_Segments.copy: no Returns:
+shared/_http.py:_Segments.fetch: no docstring
+shared/_http.py:_Segments.one: no docstring
+shared/_http.py:_Segments: Args: no client
+shared/_http.py:_Segments: Args: no headers
+shared/_http.py:_Segments: Args: no meter
+shared/_http.py:_Segments: Args: no part
+shared/_http.py:_Segments: Args: no url
+shared/_http.py:_answer: no docstring
+shared/_http.py:_charset: no docstring
+shared/_http.py:_checked: no docstring
+shared/_http.py:_client: no docstring
+shared/_http.py:_cookie_dict: no docstring
+shared/_http.py:_cookie_from_dict: no docstring
+shared/_http.py:_reset: no docstring
+shared/_http.py:_retries: no docstring
+shared/_http.py:_retry_after: no docstring
+shared/_http.py:_scrub: no docstring
+shared/_http.py:_total_bytes: no docstring
+shared/_http.py:download: Args: no dest
+shared/_http.py:download: Args: no headers
+shared/_http.py:download: Args: no progress
+shared/_http.py:download: Args: no resume
+shared/_http.py:download: Args: no url
+shared/_http.py:download: no Example:
+shared/_http.py:download: no Returns:
+shared/_http.py:fake: Args: no routes
+shared/_http.py:fake: no Example:
+shared/_http.py:fake: no Yields:
+shared/_http.py:fetch: Args: no body
+shared/_http.py:fetch: Args: no check
+shared/_http.py:fetch: Args: no headers
+shared/_http.py:fetch: Args: no method
+shared/_http.py:fetch: Args: no url
+shared/_http.py:fetch: no Example:
+shared/_http.py:fetch: no Returns:
+shared/_prompt.py:_choose_many: Args: no default
+shared/_prompt.py:_choose_many: Args: no message
+shared/_prompt.py:_choose_many: Args: no pairs
+shared/_prompt.py:_choose_many: no Raises:
+shared/_prompt.py:_choose_many: no Returns:
+shared/_prompt.py:_live_paused: no Returns:
+shared/_prompt.py:_pause_live: Args: no live
+shared/_prompt.py:_pause_live: no Yields:
+shared/_prompt.py:_run: Args: no question
+shared/_prompt.py:_run: no Raises:
+shared/_prompt.py:_run: no Returns:
+shared/_prompt.py:_validator: Args: no validate
+shared/_prompt.py:_validator: no Returns:
+shared/_prompt.py:ask: Args: no default
+shared/_prompt.py:ask: Args: no message
+shared/_prompt.py:ask: Args: no secret
+shared/_prompt.py:ask: Args: no validate
+shared/_prompt.py:ask: no Example:
+shared/_prompt.py:ask: no Returns:
+shared/_prompt.py:autofill: no Example:
+shared/_prompt.py:autofill: no Yields:
+shared/_prompt.py:choose: Args: no choices
+shared/_prompt.py:choose: Args: no default
+shared/_prompt.py:choose: Args: no many
+shared/_prompt.py:choose: Args: no message
+shared/_prompt.py:choose: no Example:
+shared/_prompt.py:choose: no Raises:
+shared/_prompt.py:choose: no Returns:
+shared/_prompt.py:confirm: Args: no default
+shared/_prompt.py:confirm: Args: no message
+shared/_prompt.py:confirm: no Example:
+shared/_prompt.py:confirm: no Returns:
+shared/_prompt.py:interactive: no Example:
+shared/_prompt.py:interactive: no Returns:
+shared/_query.py:Query.filter: Args: no equal
+shared/_query.py:Query.filter: Args: no predicate
+shared/_query.py:Query.filter: no Example:
+shared/_query.py:Query.filter: no Returns:
+shared/_query.py:Query.get: no Example:
+shared/_query.py:Query.get: no Returns:
+shared/_query.py:Query.limit: Args: no n
+shared/_query.py:Query.limit: no Example:
+shared/_query.py:Query.limit: no Raises:
+shared/_query.py:Query.limit: no Returns:
+shared/_query.py:Query.sort: Args: no by
+shared/_query.py:Query.sort: Args: no desc
+shared/_query.py:Query.sort: no Example:
+shared/_query.py:Query.sort: no Returns:
+shared/_query.py:Query: Args: no plan
+shared/_query.py:Query: Args: no source
+shared/_query.py:Query: no Example:
+shared/_query.py:run: Args: no plan
+shared/_query.py:run: Args: no rows
+shared/_query.py:run: no Returns:
+shared/_selector.py:Selection.css: Args: no query
+shared/_selector.py:Selection.css: no Example:
+shared/_selector.py:Selection.css: no Raises:
+shared/_selector.py:Selection.css: no Returns:
+shared/_selector.py:Selection.get: no Example:
+shared/_selector.py:Selection.get: no Returns:
+shared/_selector.py:Selection.jmespath: Args: no query
+shared/_selector.py:Selection.jmespath: no Example:
+shared/_selector.py:Selection.jmespath: no Raises:
+shared/_selector.py:Selection.jmespath: no Returns:
+shared/_selector.py:Selection.jsonpath: Args: no query
+shared/_selector.py:Selection.jsonpath: no Example:
+shared/_selector.py:Selection.jsonpath: no Raises:
+shared/_selector.py:Selection.jsonpath: no Returns:
+shared/_selector.py:Selection.match: Args: no pattern
+shared/_selector.py:Selection.match: no Example:
+shared/_selector.py:Selection.match: no Raises:
+shared/_selector.py:Selection.match: no Returns:
+shared/_selector.py:Selection.script: Args: no id
+shared/_selector.py:Selection.script: no Example:
+shared/_selector.py:Selection.script: no Returns:
+shared/_selector.py:Selection.xpath: Args: no query
+shared/_selector.py:Selection.xpath: no Example:
+shared/_selector.py:Selection.xpath: no Raises:
+shared/_selector.py:Selection.xpath: no Returns:
+shared/_selector.py:Selection: Args: no raw
+shared/_selector.py:Selection: no Example:
+shared/_selector.py:_compile_jmespath: Args: no query
+shared/_selector.py:_compile_jmespath: no Raises:
+shared/_selector.py:_compile_jmespath: no Returns:
+shared/_selector.py:_compile_jsonpath: Args: no query
+shared/_selector.py:_compile_jsonpath: no Raises:
+shared/_selector.py:_compile_jsonpath: no Returns:
+shared/_selector.py:_jsonpath: no Raises:
+shared/_selector.py:_jsonpath: no Returns:
+shared/_selector.py:_loads: Args: no text
+shared/_selector.py:_loads: no Raises:
+shared/_selector.py:_loads: no Returns:
+shared/_selector.py:_msgspec_json: no Raises:
+shared/_selector.py:_msgspec_json: no Returns:
+shared/_selector.py:_response_selector: Args: no response
+shared/_selector.py:_response_selector: no Returns:
+shared/_selector.py:_selector: Args: no source
+shared/_selector.py:_selector: no Raises:
+shared/_selector.py:_selector: no Returns:
+shared/_selector.py:_text_selector: Args: no text
+shared/_selector.py:_text_selector: no Returns:
+shared/_selector.py:parse: no Example:
+shared/_sh.py:Result: no Example:
+shared/_sh.py:RunError: Args: no code
+shared/_sh.py:RunError: Args: no err
+shared/_sh.py:RunError: Args: no message
+shared/_sh.py:RunError: Args: no out
+shared/_sh.py:Spec: no Example:
+shared/_sh.py:Tool.run: Args: no args
+shared/_sh.py:Tool.run: Args: no check
+shared/_sh.py:Tool.run: Args: no cwd
+shared/_sh.py:Tool.run: Args: no env
+shared/_sh.py:Tool.run: Args: no timeout
+shared/_sh.py:Tool.run: no Example:
+shared/_sh.py:Tool.run: no Returns:
+shared/_sh.py:Tool.stream: Args: no args
+shared/_sh.py:Tool.stream: Args: no cwd
+shared/_sh.py:Tool.stream: Args: no env
+shared/_sh.py:Tool.stream: Args: no timeout
+shared/_sh.py:Tool.stream: no Example:
+shared/_sh.py:Tool.stream: no Yields:
+shared/_sh.py:Tool: no Example:
+shared/_sh.py:_checked: Args: no check
+shared/_sh.py:_checked: Args: no result
+shared/_sh.py:_checked: no Raises:
+shared/_sh.py:_checked: no Returns:
+shared/_sh.py:_download: Args: no name
+shared/_sh.py:_download: Args: no specs
+shared/_sh.py:_download: no Raises:
+shared/_sh.py:_download: no Returns:
+shared/_sh.py:_end: Args: no drain
+shared/_sh.py:_end: Args: no process
+shared/_sh.py:_extract_tar: no docstring
+shared/_sh.py:_extract_zip: no docstring
+shared/_sh.py:_faked: Args: no argv
+shared/_sh.py:_faked: no Raises:
+shared/_sh.py:_faked: no Returns:
+shared/_sh.py:_install_artifact: no docstring
+shared/_sh.py:_provision: no docstring
+shared/_sh.py:_read_versions: Args: no cache
+shared/_sh.py:_read_versions: no Returns:
+shared/_sh.py:_stream: Args: no argv
+shared/_sh.py:_stream: Args: no cwd
+shared/_sh.py:_stream: Args: no env
+shared/_sh.py:_stream: Args: no timeout
+shared/_sh.py:_stream: no Raises:
+shared/_sh.py:_stream: no Yields:
+shared/_sh.py:fake: Args: no handlers
+shared/_sh.py:fake: no Example:
+shared/_sh.py:fake: no Yields:
+shared/_sh.py:find: Args: no name
+shared/_sh.py:find: Args: no specs
+shared/_sh.py:find: no Example:
+shared/_sh.py:find: no Raises:
+shared/_sh.py:find: no Returns:
+shared/_sh.py:run: Args: no args
+shared/_sh.py:run: Args: no check
+shared/_sh.py:run: Args: no cwd
+shared/_sh.py:run: Args: no env
+shared/_sh.py:run: Args: no timeout
+shared/_sh.py:run: no Example:
+shared/_sh.py:run: no Raises:
+shared/_sh.py:run: no Returns:
+shared/_sink.py:Sink.advance: no docstring
+shared/_sink.py:Sink.total: no docstring
+shared/_sink.py:Sink: no Example:
+shared/_store.py:Db._run: no docstring
+shared/_store.py:Db.batch: no Example:
+shared/_store.py:Db.batch: no Yields:
+shared/_store.py:Db.close: no Example:
+shared/_store.py:Db: Args: no path
+shared/_store.py:Db: no Example:
+shared/_store.py:Row: no Example:
+shared/_store.py:Rows.filter: Args: no equal
+shared/_store.py:Rows.filter: Args: no predicate
+shared/_store.py:Rows.filter: no Example:
+shared/_store.py:Rows.filter: no Returns:
+shared/_store.py:Rows.limit: Args: no n
+shared/_store.py:Rows.limit: no Example:
+shared/_store.py:Rows.limit: no Returns:
+shared/_store.py:Rows.prefix: Args: no text
+shared/_store.py:Rows.prefix: no Example:
+shared/_store.py:Rows.prefix: no Returns:
+shared/_store.py:Rows.sort: Args: no by
+shared/_store.py:Rows.sort: Args: no desc
+shared/_store.py:Rows.sort: no Example:
+shared/_store.py:Rows.sort: no Returns:
+shared/_store.py:Rows: no Example:
+shared/_store.py:Table._select: no docstring
+shared/_store.py:Table._write: no docstring
+shared/_store.py:Table.clear: no Example:
+shared/_store.py:Table.items: no Example:
+shared/_store.py:Table.items: no Returns:
+shared/_store.py:Table.values: no Example:
+shared/_store.py:Table.values: no Returns:
+shared/_store.py:Table: Args: no db
+shared/_store.py:Table: Args: no kind
+shared/_store.py:Table: Args: no name
+shared/_store.py:Table: no Example:
+shared/_store.py:_Pushed._where: no docstring
+shared/_store.py:_Pushed.run: no docstring
+shared/_store.py:_Pushed: Args: no prefix
+shared/_store.py:_Pushed: Args: no table
+shared/_store.py:_connect: no docstring
+shared/_store.py:_convert: Args: no path
+shared/_store.py:_on_values: Args: no plan
+shared/_store.py:_on_values: no Returns:
+shared/_store.py:_rewrite: no docstring
+shared/_store.py:open: Args: no path
+shared/_store.py:open: no Example:
+shared/_store.py:open: no Returns:
+shared/_text.py:_rough_redact: Args: no url
+shared/_text.py:_rough_redact: no Returns:
+shared/_text.py:count: Args: no n
+shared/_text.py:count: Args: no plural
+shared/_text.py:count: Args: no unit
+shared/_text.py:count: no Example:
+shared/_text.py:count: no Returns:
+shared/_text.py:duration: Args: no seconds
+shared/_text.py:duration: no Example:
+shared/_text.py:duration: no Returns:
+shared/_text.py:filename: Args: no fallback
+shared/_text.py:filename: Args: no max_bytes
+shared/_text.py:filename: Args: no name
+shared/_text.py:filename: no Example:
+shared/_text.py:filename: no Returns:
+shared/_text.py:fold: Args: no text
+shared/_text.py:fold: no Example:
+shared/_text.py:fold: no Returns:
+shared/_text.py:redact: Args: no url
+shared/_text.py:redact: no Example:
+shared/_text.py:redact: no Returns:
+shared/_text.py:size: Args: no n
+shared/_text.py:size: no Example:
+shared/_text.py:size: no Returns:
+shared/_ui.py:Group._stop: no docstring
+shared/_ui.py:Group.add: Args: no label
+shared/_ui.py:Group.add: Args: no total
+shared/_ui.py:Group.add: Args: no unit
+shared/_ui.py:Group.add: no Example:
+shared/_ui.py:Group.add: no Returns:
+shared/_ui.py:Group: Args: no owner
+shared/_ui.py:Group: Args: no title
+shared/_ui.py:Group: no Example:
+shared/_ui.py:Row._render: no docstring
+shared/_ui.py:Row.advance: Args: no n
+shared/_ui.py:Row.advance: no Example:
+shared/_ui.py:Row.count: no docstring
+shared/_ui.py:Row.fail: Args: no reason
+shared/_ui.py:Row.fail: no Example:
+shared/_ui.py:Row.finish: no Example:
+shared/_ui.py:Row.part: no Example:
+shared/_ui.py:Row.part: no Returns:
+shared/_ui.py:Row.total: no docstring
+shared/_ui.py:Row: Args: no group
+shared/_ui.py:Row: Args: no label
+shared/_ui.py:Row: Args: no total
+shared/_ui.py:Row: Args: no unit
+shared/_ui.py:Row: no Example:
+shared/_ui.py:UI._log: no docstring
+shared/_ui.py:UI._make_console: no docstring
+shared/_ui.py:UI.debug: Args: no args
+shared/_ui.py:UI.debug: Args: no fields
+shared/_ui.py:UI.debug: Args: no message
+shared/_ui.py:UI.debug: no Example:
+shared/_ui.py:UI.error: Args: no args
+shared/_ui.py:UI.error: Args: no fields
+shared/_ui.py:UI.error: Args: no message
+shared/_ui.py:UI.error: no Example:
+shared/_ui.py:UI.group: Args: no title
+shared/_ui.py:UI.group: no Example:
+shared/_ui.py:UI.group: no Yields:
+shared/_ui.py:UI.info: Args: no args
+shared/_ui.py:UI.info: Args: no fields
+shared/_ui.py:UI.info: Args: no message
+shared/_ui.py:UI.info: no Example:
+shared/_ui.py:UI.level: no docstring
+shared/_ui.py:UI.ok: Args: no args
+shared/_ui.py:UI.ok: Args: no fields
+shared/_ui.py:UI.ok: Args: no message
+shared/_ui.py:UI.ok: no Example:
+shared/_ui.py:UI.progress: Args: no label
+shared/_ui.py:UI.progress: Args: no total
+shared/_ui.py:UI.progress: Args: no unit
+shared/_ui.py:UI.progress: no Example:
+shared/_ui.py:UI.progress: no Yields:
+shared/_ui.py:UI.scope: Args: no color
+shared/_ui.py:UI.scope: Args: no dest
+shared/_ui.py:UI.scope: Args: no level
+shared/_ui.py:UI.scope: Args: no width
+shared/_ui.py:UI.scope: no Example:
+shared/_ui.py:UI.scope: no Yields:
+shared/_ui.py:UI.warn: Args: no args
+shared/_ui.py:UI.warn: Args: no fields
+shared/_ui.py:UI.warn: Args: no message
+shared/_ui.py:UI.warn: no Example:
+shared/_ui.py:UI: no Example:
+shared/_ui.py:_RowColumn: Args: no lookup
+shared/_ui.py:_RowColumn: Args: no owner
+shared/_ui.py:_SafeFormatter: no docstring
+shared/_ui.py:_color_settings: Args: no base
+shared/_ui.py:_color_settings: Args: no color
+shared/_ui.py:_color_settings: no Raises:
+shared/_ui.py:_color_settings: no Returns:
+shared/_ui.py:_detect_unicode: Args: no stream
+shared/_ui.py:_detect_unicode: no Returns:
+shared/_ui.py:_field_names: Args: no message
+shared/_ui.py:_field_names: no Returns:
+shared/_ui.py:_format_count: no docstring
+shared/_worker.py:Pool._attempt: no docstring
+shared/_worker.py:Pool._await: no docstring
+shared/_worker.py:Pool._block: Args: no ready
+shared/_worker.py:Pool._close_loop: no docstring
+shared/_worker.py:Pool._event_loop: no docstring
+shared/_worker.py:Pool._next: no docstring
+shared/_worker.py:Pool._run_calls: no docstring
+shared/_worker.py:Pool.call: Args: no fn
+shared/_worker.py:Pool.call: no Example:
+shared/_worker.py:Pool.call: no Raises:
+shared/_worker.py:Pool.call: no Returns:
+shared/_worker.py:Pool.close: no Example:
+shared/_worker.py:Pool.pause: no Example:
+shared/_worker.py:Pool.resume: no Example:
+shared/_worker.py:Pool.stop: no Example:
+shared/_worker.py:Pool.submit: Args: no args
+shared/_worker.py:Pool.submit: Args: no fn
+shared/_worker.py:Pool.submit: no Example:
+shared/_worker.py:Pool.submit: no Raises:
+shared/_worker.py:Pool.wait: Args: no args
+shared/_worker.py:Pool.wait: Args: no fn
+shared/_worker.py:Pool.wait: no Example:
+shared/_worker.py:Pool.wait: no Returns:
+shared/_worker.py:Pool: Args: no jobs
+shared/_worker.py:Pool: Args: no progress
+shared/_worker.py:Pool: Args: no retries
+shared/_worker.py:Pool: Args: no stop
+shared/_worker.py:Pool: no Example:
+shared/_worker.py:Result: no Example:
+shared/_worker.py:_Call: no docstring
+shared/_worker.py:_Task: no docstring
+shared/_worker.py:_answer: no docstring
+shared/_worker.py:_cancel_pending: no docstring
+shared/_worker.py:_size: no docstring
