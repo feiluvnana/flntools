@@ -29,7 +29,7 @@ from flnd.engine import Engine, Report, TargetReport
 from flnd.errors import Error
 from flnd.options import Options
 from flnd.site import LoginSite
-from flnd.source import File, Login, Post, Range, SiteError, Source, target
+from flnd.source import File, Login, Post, SiteError, Source, target
 from flnd.source import cookies as login_cookies
 
 CDN = "https://cdn.example"
@@ -581,34 +581,11 @@ class ApiTest(EngineCase):
         self.engine(make_source("aaa")).download(["aaa:whole"], categories="all")
         self.assertIn("posts", self.saved()["aaa:whole"].complete)
 
-    def test_text_and_values_are_read_alike(self):
-        runs = []
-
-        def run(engine, chosen, *, stop=None, tallies=(), browser_pool=None):
-            runs.extend(options for _, options in chosen)
-            return [TargetReport(target, (), 0) for target, _ in chosen]
-
-        engine = self.engine(make_source("aaa"))
-        with mock.patch.object(Engine, "_run", run):
-            engine.download(["aaa:a"], categories="posts", time="2026-01-01,2026-06-30")
-            engine.download(["aaa:b"], categories=["posts"], time=Range(datetime.date(2026, 1, 1),
-                                                                        datetime.date(2026, 6, 30)))
-        self.assertEqual(runs[0], runs[1])
-        self.assertEqual(runs[0], Options(categories=("posts",), since=datetime.date(2026, 1, 1),
-                                          until=datetime.date(2026, 6, 30)))
-
     def test_bad_values_are_value_errors_before_anything_starts(self):
-        from flnd.engine import TIME_USAGE, _span
-
-        for text in ("2026-01-01", "2026-13-01,", "2026-06-30,2026-01-01", "yesterday,", "2026-01-01,2026-02-01,"):
-            with self.subTest(time=text), self.assertRaisesRegex(UsageError, "^--time takes <since>,<until>"):
-                _span(text)
-        self.assertEqual(_span("*,2026-06-30"), Range(None, datetime.date(2026, 6, 30)))
-        self.assertEqual(_span("2026-01-01,"), Range(datetime.date(2026, 1, 1), None))
         engine = self.engine(make_source("aaa"))
         cases: tuple[tuple[dict[str, Any], str], ...] = (
-            ({"time": "2026-01-01"}, TIME_USAGE),
             ({"categories": "reels"}, "no source here has 'reels'"),
+            ({"limit": 0}, "--limit must be at least 1"),
         )
         for options, message in cases:
             with self.subTest(options=options), self.assertRaises(UsageError) as caught:

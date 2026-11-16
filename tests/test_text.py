@@ -83,15 +83,6 @@ class CountTest(unittest.TestCase):
             _text.count(2, "story", "stories")  # pyright: ignore[reportCallIssue]
 
 
-class FoldTest(unittest.TestCase):
-    def test_diacritics_case_and_whitespace(self):
-        self.assertEqual(_text.fold("  Café   naïve  "), "cafe naive")
-        self.assertEqual(_text.fold("Đồng Nai - Địa chỉ"), "dong nai - dia chi")
-        self.assertEqual(_text.fold("Straße"), "strasse")
-        self.assertEqual(_text.fold("a\t\nb   c"), "a b c")
-        self.assertEqual(_text.fold("   "), "")
-
-
 class FilenameTest(unittest.TestCase):
     def test_unsafe_chars_and_whitespace(self):
         for char in '\\/*?:"<>|\x00\x1f\x7f\x80\x9f':

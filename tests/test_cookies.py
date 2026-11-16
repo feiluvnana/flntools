@@ -515,28 +515,6 @@ class JarTest(unittest.TestCase):
         self.assertIsInstance(jar.filter(names=[]), _cookies.Jar)
         self.assertEqual(len(jar.filter(names=[])), 0)
 
-    def test_merge_newer_wins_in_place(self):
-        saved = _cookies.Jar([cookie("sid", "old"), cookie("ct0", "old", expires=2_000_000_000),
-                              cookie("lang", "en")])
-        # ct0 was rotated with a shorter expiry: the argument still wins, since it is the newer jar.
-        refreshed = _cookies.Jar([cookie("ct0", "new", domain="EXAMPLE.com", expires=1_900_000_000),
-                                 cookie("guest", "g")])
-        merged = saved.merge(refreshed)
-        self.assertEqual([(c["name"], c["value"]) for c in merged],
-                         [("sid", "old"), ("ct0", "new"), ("lang", "en"), ("guest", "g")])
-        self.assertEqual(merged.list[1]["expires"], 1_900_000_000)
-        self.assertEqual(saved["ct0"], "old")
-
-    def test_merge_keeps_other_domains_and_paths_apart(self):
-        saved = _cookies.Jar([cookie("sid", "a"), cookie("sid", "b", path="/app")])
-        merged = saved.merge([cookie("sid", "c", domain="other.example"), cookie("sid", "d", path="/app")])
-        self.assertEqual([c["value"] for c in merged], ["a", "d", "c"])
-
-    def test_merge_a_missing_path_is_the_root(self):
-        merged = _cookies.Jar([{"name": "sid", "value": "a", "domain": "example.com"}]).merge(
-            [cookie("sid", "b", domain="example.com")])
-        self.assertEqual([c["value"] for c in merged], ["b"])
-
     def test_header_in_order(self):
         jar = _cookies.Jar([{"name": "b", "value": "2"}, {"name": "a", "value": "1"}])
         self.assertEqual(jar.header, "b=2; a=1")

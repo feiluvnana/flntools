@@ -1,7 +1,7 @@
 """The engine: every flnd command as a method of `Engine`, and target resolution.
 
 What it holds: `Engine`, whose methods are the commands (`download`, `sync`, `retry`,
-`target_ls`, `target_sync`, `target_del`, `auth_ls`, `login`, `logout`); `resolve` and `owner`,
+`target_ls`, `target_sync`, `auth_ls`, `login`, `logout`); `resolve` and `owner`,
 which turn a target's text into a `Target` of the right source; and the reports a command
 returns (`Report`, one `flnd.job.TargetReport` per target), with `TargetInfo` and `AuthInfo` for
 the reads behind `fl.targets()` (`flnd ls`) and `fl.logins`.
@@ -45,7 +45,6 @@ Rules a change must keep:
 
 from __future__ import annotations
 
-import datetime
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
@@ -72,11 +71,6 @@ ACCOUNT = "account"
 ALL = "all"
 # How many links deep the targets that listings yield are followed (`Engine._found`).
 FOLLOW_DEPTH = 2
-# What `download(time=...)` takes as text, and the message for text that isn't it.
-TIME_USAGE = (
-    "--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
-    "for no limit"
-)
 # Targets a search's sync downloads at most per run, among those it hadn't seen: a search that
 # suddenly finds hundreds (a popular tag) is taken a slice per sync, never all at once.
 MAX_SYNC_NEW = 25
@@ -184,12 +178,11 @@ class Engine:
         targets: Sequence[Target | str],
         *,
         categories: str | Sequence[str] | None = None,
-        time: Range | str | None = None,
+        time: Range | None = None,
         limit: int | None = None,
         dry: bool = False,
         sync: bool = False,
         again: bool = False,
-        every: bool = False,
         keep: bool = False,
         compress: bool = False,
     ) -> Report:
@@ -198,13 +191,11 @@ class Engine:
         Args:
             targets: the targets, as text or resolved.
             categories: `--only`: the categories to take; None for none named.
-            time: `--when`, as text or a `Range`; None for no limit.
+            time: `--when`, as a `Range`; None for no limit.
             limit: at most this many posts per target, or targets per search; None for all.
             dry: plan what would be saved (`Planned` events), and write nothing.
             sync: follow the targets, so `sync` takes them later.
             again: ignore saved cursors and the stop at saved posts.
-            every: whether no `categories` means every category (the library's `only=None`)
-                rather than a usage error for a profile (today's CLI).
             keep: whether to save `categories` with each target, for later syncs (`follow`).
             compress: shrink each saved photo and video once it lands, and remove an archive
                 once it is extracted (docs/media).
@@ -213,15 +204,15 @@ class Engine:
             One `TargetReport` per target, in order.
 
         Raises:
-            UsageError: a bad target, category, time or limit, before anything is fetched.
+            UsageError: a bad target, category or limit, before anything is fetched.
             DiskError: the home can't be written; the run stopped.
             KeyboardInterrupt: Ctrl-C (or the run's stop) ended it.
         """
         if limit is not None and limit < 1:
             raise UsageError("--limit must be at least 1")
-        span = _span(time) if isinstance(time, str) else (time or Range())
+        span = time or Range()
         resolved = self._resolved(targets)
-        cats_map = categories_by_source(categories, resolved, self.sources, every=every)
+        cats_map = categories_by_source(categories, resolved, self.sources)
         _validate_targets(self.sources, categories, resolved)
         base = Options(
             since=span.since,
@@ -367,32 +358,6 @@ class Engine:
                 db.follow(target, enabled)
         return resolved
 
-    def target_del(self, targets: Sequence[Target | str]) -> list[Target]:
-        """Forget each saved target, keeping its files and their rows.
-
-        The target's row goes (its follow state, cursors, heads and gaps); its files and their
-        history rows stay, so a later download of it skips what is saved. Every target is
-        checked before any row is removed.
-
-        Args:
-            targets: the targets, as text or resolved.
-
-        Returns:
-            The resolved targets, in order.
-
-        Raises:
-            UsageError: a target has no row in `flnd.db`.
-        """
-        resolved = self._resolved(targets)
-        rows = self._rows()
-        for target in resolved:
-            if _home.key(target) not in rows:
-                raise UsageError(f"{target}: not a saved target")
-        with _home.open(self.home) as db:
-            for target in resolved:
-                db.forget(target)
-        return resolved
-
     def auth_ls(self) -> list[AuthInfo]:
         """Each source's login state, where its login came from, and its cookies expiring soon.
 
@@ -503,11 +468,6 @@ class Engine:
             elif _home.api_key_saved(self.home, code):
                 found[code] = "api key saved"
         return found
-
-    @property
-    def browsers(self) -> dict[str, str]:
-        """Supported browsers mapping `browser=` key to display label."""
-        return dict(_home.BROWSERS)
 
     @property
     def cookie_logins(self) -> tuple[str, ...]:
@@ -1463,35 +1423,6 @@ def _logged_in(run: SourceRun) -> bool:
 def _required(source: Source) -> bool:
     """Whether the source lists nothing without a login."""
     return source.login is not None and source.login.required
-
-
-def _span(text: str) -> Range:
-    """Read a time range given as text, `<since>,<until>`, each side a day or `*` for no limit.
-
-    The library reads `when` itself (`flnd._library._when`) and hands a `Range`; this reads the
-    text form `download(time=...)` also takes.
-
-    Args:
-        text: the value as given, such as `2026-01-01,` or `*,2026-06-30`.
-
-    Returns:
-        The two days, either one None for no limit.
-
-    Raises:
-        UsageError: there is no comma, a side isn't a day, or since is after until.
-    """
-    since, comma, until = text.partition(",")
-    if not comma or "," in until:
-        raise UsageError(TIME_USAGE)
-    try:
-        days = [None if side.strip() in ("", "*")
-                else datetime.datetime.strptime(side.strip(), "%Y-%m-%d").date()
-                for side in (since, until)]
-    except ValueError:
-        raise UsageError(TIME_USAGE) from None
-    if days[0] and days[1] and days[0] > days[1]:
-        raise UsageError(TIME_USAGE)
-    return Range(days[0], days[1])
 
 
 def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetReport | None:

@@ -1,2 +1,0 @@
-# Docstring and docs gaps that tests/test_docs.py allows today, one per line.
-# Fix a gap, then delete its line: the list may only shrink.

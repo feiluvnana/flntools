@@ -1,10 +1,9 @@
-"""Cookie jars, a library: read cookies from a file, a browser or text, narrow, merge and save them.
+"""Cookie jars, a library: read cookies from a file, a browser or text, narrow and save them.
 
 What it offers any caller:
 - `Jar`, an immutable collection of cookies in Playwright's dictionary shape (`name`, `value`,
   `domain`, `path`, `expires`, `secure`, `httpOnly`, `sameSite`). It filters by domain and name,
-  merges with another jar, reads a value by name, builds a `Cookie:` header and saves itself as
-  a Netscape `cookies.txt`.
+  reads a value by name, builds a `Cookie:` header and saves itself as a Netscape `cookies.txt`.
 - `load`, which reads a Netscape or JSON cookie file, raw cookie text, or the cookie database of
   an installed browser (`BROWSERS`: Chrome, Chromium, Edge, Brave and Firefox), decrypting
   Chromium's encrypted values with the operating system's key store.
@@ -130,7 +129,7 @@ def _real_home() -> Path:
 
 
 class Jar:
-    """An immutable collection of cookies: filter and merge it, read it by name, send or save it.
+    """An immutable collection of cookies: filter it, read it by name, send or save it.
 
         jar = cookies.load("cookies.txt").filter(domains="example.com")
         jar["sessionid"], "sessionid" in jar, len(jar)
@@ -193,13 +192,6 @@ class Jar:
                 or any(_belongs(str(cookie.get("domain", "")), dom) for dom in wanted_domains))
             and (wanted is None or cookie["name"] in wanted)
         )
-
-    def merge(self, other: Jar | Iterable[Cookie]) -> Jar:
-        """Return a new jar with `other`'s cookies added, overriding matching ones."""
-        newer = other if isinstance(other, Jar) else Jar(other)
-        by_key = {_identity(cookie): cookie for cookie in newer._cookies}
-        merged = [by_key.pop(_identity(cookie), cookie) for cookie in self._cookies]
-        return Jar(merged + [cookie for cookie in newer._cookies if _identity(cookie) in by_key])
 
     @property
     def header(self) -> str:
@@ -339,12 +331,6 @@ def _load_text(text: str, label: str) -> Jar:
     except ValueError as err:
         raise LoginError(f"{label}: {err}") from None
     return Jar(parsed)
-
-
-def _identity(cookie: Cookie) -> tuple[str, str, str]:
-    """What makes two cookies the same one for `merge`: name, domain without case or dot, path."""
-    domain = str(cookie.get("domain", "")).lstrip(".").lower()
-    return (str(cookie["name"]), domain, str(cookie.get("path") or "/"))
 
 
 def _load_firefox(profile: str | None) -> list[Cookie]:

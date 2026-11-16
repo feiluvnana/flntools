@@ -96,10 +96,10 @@ __all__ = ["FailureRow", "FileRow", "Home", "RunRow", "TargetRow", "open", "samp
 # The home's layout
 # ---------------------------------------------------------------------------------------------
 
-# Under the home: the database, the vault and its key, the downloads, things safe to delete,
-# and each run's log.
+# Under the home: the database, the vault and its key, the downloads, and each run's log. A
+# `cache/` folder is reserved for things safe to delete; nothing writes there yet.
 DB, SECRETS, KEY = Path("flnd.db"), Path("secrets.db"), Path("secret.key")
-MEDIA, CACHE, LOGS = Path("media"), Path("cache"), Path("logs")
+MEDIA, LOGS = Path("media"), Path("logs")
 # An old home kept its stores in `metadata/`: tables of JSON values, keyed by text.
 OLD = Path("metadata")
 OLD_HISTORY, OLD_TARGETS, OLD_STATE = OLD / "history.db", OLD / "targets.db", OLD / "sources.db"
@@ -192,8 +192,6 @@ STEP_COLUMNS = frozenset({"path", "size", "mtime", "shrink", "tools", "before", 
                           "folder", "hash", "sidecar"})
 # The rows that name a file on disk: saved files and their links.
 ON_DISK = "state IN ('saved', 'link')"
-# The vault name an archive's password is kept under, before its file's key.
-PASSWORD = "password:"
 # The most files `save` writes in one statement; SQLite takes up to 32,766 values in one.
 ONE_STATEMENT = 500
 TARGET_COLUMNS = ("key", "source", "value", "kind", "follow", "options", "query", "complete",
@@ -908,11 +906,6 @@ class Home:
                                                    target.kind, last_sync=now())
             row.follow = on
             self._put(row)
-
-    def forget(self, target: Target) -> bool:
-        """Remove a target's row; its files and their rows stay. Whether there was one."""
-        with self._store.transaction() as sql:
-            return sql.execute("DELETE FROM targets WHERE key = ?", (key(target),)).rowcount > 0
 
     def seen(self, target: Target, found: Sequence[str]) -> None:
         """Add targets a search found to its row, in order, each once.

@@ -205,7 +205,7 @@ class TargetsTest(DbCase):
         with self.assertRaises(ValueError):
             db.update("aaa:1", target="aaa:other")
 
-    def test_record_follow_progress_seen_tally_and_forget(self):
+    def test_record_follow_progress_seen_and_tally(self):
         db = self.open()
         db.record([(USER, Options(categories=("posts",)))], follow=False, keep=True)
         self.assertEqual(db.target(USER).only, ("posts",))
@@ -224,8 +224,6 @@ class TargetsTest(DbCase):
         self.assertEqual((saved.follow, saved.only, saved.cursors, list(saved.complete)),
                          (True, ("posts",), {}, ["posts"]))
         self.assertEqual((saved.seen, saved.files, saved.bytes), (["aaa:a", "aaa:b", "aaa:c"], 2, 20))
-        self.assertTrue(db.forget(USER))
-        self.assertFalse(db.forget(USER))
         self.assertEqual(len(db.records()), 2)
 
     def test_a_sources_state_is_a_mapping_of_json_values(self):

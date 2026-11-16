@@ -44,7 +44,7 @@ it as working.
 
 `tests/test_docs.py` runs in `make check`. It runs every `python` block on these pages, checks
 that every link resolves, that [cli.md](cli.md) names every command and flag, and that every
-source has its page. It also checks the docstrings of the code against the rules in AGENTS.md;
-today's gaps are listed in `tests/data/docs_gaps.txt`, and that list may only shrink.
+source has its page. It also checks the docstrings of the code against the rules in AGENTS.md:
+any gap fails, with a line naming it and the rule it breaks.
 
 A change of behaviour updates its page here in the same commit.

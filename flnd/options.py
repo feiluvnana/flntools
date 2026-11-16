@@ -195,32 +195,28 @@ def categories_by_source(
     categories: str | Sequence[str] | None,
     targets: Sequence[Target],
     sources: Mapping[str, type[Source]],
-    *,
-    every: bool = False,
 ) -> dict[str, tuple[str, ...] | None]:
     """Check `--only` (plain or `<source>:<cats>`) and give each target source its categories.
+
+    Naming nothing takes every category of every target, as the library's `only=None` does.
 
     Args:
         categories: what `--only` (or the library's `only`) names; None when it names nothing.
         targets: the run's targets, resolved.
         sources: the sources by code.
-        every: whether naming nothing means every category of every target, as the library's
-            `only=None` does; False makes `--only` required for a profile, as today's CLI does.
 
     Returns:
         Each source's categories by its code; None means every category.
 
     Raises:
-        UsageError: `--only` is missing where it is required, names a category no source here
-            has, or is given for a single post.
+        UsageError: `--only` names a category no source here has, or is given for a single
+            post.
     """
     used = list(dict.fromkeys(sources[target.source] for target in targets))
     used = used or list(sources.values())
-    singles = [t for t in targets if t.kind in sources[t.source].single_kinds]
     if categories is None:
-        if not every and len(singles) < len(targets):
-            raise UsageError(f"--only is required (use all, or {_lists(used)})")
         return {source.code: None for source in used}
+    singles = [t for t in targets if t.kind in sources[t.source].single_kinds]
     if singles:
         raise UsageError(
             f"--only applies to profiles and chats; {singles[0]} is one post, downloaded whole: "

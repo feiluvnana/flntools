@@ -27,7 +27,6 @@ from test_engine import EngineCase, make_source
 import flnd
 from flnd import _files, _net, _time, _tools, job, sources
 from flnd._ui import ui
-from flnd.engine import _span
 from flnd.errors import (
     Blocked,
     Changed,
@@ -102,8 +101,8 @@ class ClassesTest(HttpCase):
     def test_usage_error(self):
         with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
             fl.download("nosuchsource:example_user")
-        with self.assertRaises(UsageError):
-            _span("yesterday")
+        with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
+            fl.download("ins:example_user", when="yesterday")
         with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
             fl.logout("nosuchsource")
 

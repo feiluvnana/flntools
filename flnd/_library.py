@@ -192,7 +192,7 @@ class Flnd:
         resolved = self._checked(targets, only)
         again = _settings(self.home) if self._again is None else self._again
         return self._run(f"download {_names(resolved)}", lambda engine: engine.download(
-            resolved, categories=only, time=span, limit=limit, dry=dry, every=True,
+            resolved, categories=only, time=span, limit=limit, dry=dry,
             compress=compress, again=again))
 
     def follow(
@@ -231,7 +231,7 @@ class Flnd:
         resolved = self._checked(targets, only)
         again = _settings(self.home) if self._again is None else self._again
         return self._run(f"follow {_names(resolved)}", lambda engine: engine.download(
-            resolved, categories=only, time=span, sync=True, every=True, keep=True,
+            resolved, categories=only, time=span, sync=True, keep=True,
             compress=compress, again=again))
 
     def sync(self, targets: str | Target | Sequence[str | Target] = (), *,
@@ -705,7 +705,7 @@ class Flnd:
         resolved = self._resolve(targets)
         if not resolved:
             raise UsageError("give at least one target")
-        categories_by_source(only, resolved, self._sources(), every=True)
+        categories_by_source(only, resolved, self._sources())
         return resolved
 
     def _run(self, name: str, command: Any) -> Run:
@@ -743,13 +743,14 @@ def _installed(cls: type[Source], plugin: Any, logins: Mapping[str, str], *,
         The row.
     """
     import flnd
+    from flnd import _plugins
 
     if plugin is not None:
         origin, where, version = plugin.origin, plugin.where, plugin.version
     else:
         where = f"{cls.__module__}:{cls.__qualname__}"
         version = flnd.__version__ if origin is None else ""
-        origin = origin or "built-in"
+        origin = origin or _plugins.BUILT_IN
     if cls.login is None:
         login = "needs no login"
     else:

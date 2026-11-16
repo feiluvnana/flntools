@@ -7,6 +7,15 @@ signature. Nothing is faked: the names come from importing `flnd`.
 Today's code breaks some conventions. Every such breach is in `ALLOWED`, by module, and nowhere else:
 a new breach fails `test_no_new_breach`, and a fixed one still listed fails `test_no_stale_allowance`,
 so the list can only shrink.
+
+`DeadNameTest` checks that flnd holds no dead code: every name defined at the top of a private
+module (`flnd/_*.py`, `engine`, `job`, `site`, `options`, `cli`, `sources/*`), and every method
+of its classes, is used somewhere in flnd/ beyond its definition, or is public (in the API
+snapshot), or is a hook Python or the framework calls (a dunder, a source's route or category).
+It reads the modules with `ast` and searches by word, so a docstring, a comment or an `__all__`
+entry isn't a use, and neither is a test: code only tests call is dead. The few names called
+from outside flnd are in `CALLED_FROM_OUTSIDE`, each with who calls it; that list may only
+shrink.
 """
 
 import ast
@@ -269,6 +278,134 @@ def from_a_library(error: type) -> bool:
     return "site-packages" in Path(file).parts
 
 
+# ---------------------------------------------------------------------------------------------
+# Dead names: code nothing in flnd calls
+# ---------------------------------------------------------------------------------------------
+
+FLND = snapshot.ROOT / "flnd"
+# The modules whose names must each be used: the private ones. `flnd`, `flnd.source`,
+# `flnd.testing` and `flnd.errors` are public, and the API snapshot covers them.
+PRIVATE = ("_*.py", "engine.py", "job.py", "site.py", "options.py", "cli.py", "sources/*.py")
+# A string constant that reads as a name or a dotted path (`"chapter"`, `"flnd.sources.twt"`)
+# counts as a use of its words: routes, categories and lazy imports name code in strings.
+NAMEISH = re.compile(r"[\w.:]+")
+WORD = re.compile(r"[A-Za-z_]\w*")
+# Names something outside flnd calls by name, each with who calls it. A name is listed here only
+# when nothing in flnd/ could use it instead. The list may only shrink: a listed name that
+# becomes used, or goes, fails `test_no_stale_allowance`.
+CALLED_FROM_OUTSIDE: dict[str, str] = {
+    "flnd/_ui.py:_RowColumn.render": "Rich calls a progress column's `render` for each task",
+    "flnd/_net.py:fake": "the HTTP library's test seam: a caller's tests answer requests in a "
+                         "block, through state the request path reads; flnd's own tests use it",
+    "flnd/_tools.py:fake": "the tools library's test seam: a caller's tests answer program runs "
+                           "in a block, through state `run` reads; flnd's own tests use it",
+}
+
+
+def registered(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether a method is a source's route or category, which the framework finds by decorator."""
+    for decorator in function.decorator_list:
+        decorator = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(decorator, ast.Name) and decorator.id == "target":
+            return True
+        if isinstance(decorator, ast.Attribute) and decorator.attr == "category":
+            return True
+    return False
+
+
+def definitions(source: str) -> list[tuple[str, str]]:
+    """The names a module defines at its top level, and its classes' methods.
+
+    Args:
+        source: the module's text.
+
+    Returns:
+        `(name, qualname)` per definition, in file order: a function, class or assigned name
+        at the top, and `Class.method` for a method. Dunders and a source's routes and
+        categories are left out, since Python and the framework call them.
+    """
+    found: list[tuple[str, str]] = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.append((node.name, node.name))
+            if isinstance(node, ast.ClassDef):
+                found += [(sub.name, f"{node.name}.{sub.name}") for sub in node.body
+                          if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+                          and not registered(sub)]
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                names = target.elts if isinstance(target, ast.Tuple) else [target]
+                found += [(name.id, name.id) for name in names if isinstance(name, ast.Name)]
+    return [(name, qual) for name, qual in found
+            if not (name.startswith("__") and name.endswith("__"))]
+
+
+def references(source: str) -> set[str]:
+    """Every name a module uses: read names, attributes, imports, keywords and name-like strings.
+
+    A definition itself isn't a use, nor is a docstring or an `__all__` entry: a name only
+    exported or only described is still dead.
+
+    Args:
+        source: the module's text.
+
+    Returns:
+        The words used.
+    """
+    tree = ast.parse(source)
+    skip: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                skip.add(id(first.value))
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                                                and target.id == "__all__"
+                                                for target in node.targets):
+            skip |= {id(sub) for sub in ast.walk(node.value)}
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if id(node) in skip:
+            continue
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Store):
+            used.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            used.add(node.attr)
+        elif isinstance(node, ast.alias):
+            used.add(node.name.rsplit(".", 1)[-1])
+        elif isinstance(node, ast.keyword) and node.arg:
+            used.add(node.arg)
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+              and NAMEISH.fullmatch(node.value)):
+            used |= set(WORD.findall(node.value))
+    return used
+
+
+def dead_names() -> set[str]:
+    """Every name of flnd's private modules that nothing in flnd/ uses and that isn't public.
+
+    The search is by word over all of flnd/, so a name is used when any module uses that word;
+    tests don't count, since code only tests call is dead. A public name (in the API snapshot)
+    is a script's to call, so it is never dead here.
+
+    Returns:
+        `<path>:<qualname>` per dead name, as `CALLED_FROM_OUTSIDE` spells it.
+    """
+    from test_docs import public_names
+
+    public = public_names()
+    used: set[str] = set()
+    for path in FLND.rglob("*.py"):
+        used |= references(path.read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for path in sorted({path for pattern in PRIVATE for path in FLND.glob(pattern)}):
+        relative = path.relative_to(snapshot.ROOT).as_posix()
+        for name, qual in definitions(path.read_text(encoding="utf-8")):
+            if name not in used and (relative, qual) not in public:
+                found.add(f"{relative}:{qual}")
+    return found
+
+
 class NamesTest(unittest.TestCase):
     def test_no_new_breach(self):
         allowed = {breach for group in ALLOWED.values() for breach in group}
@@ -285,6 +422,42 @@ class NamesTest(unittest.TestCase):
             for breach in group:
                 found = module_of(breach.split(":", 1)[0])
                 self.assertTrue(found == module or found.startswith(f"{module}."), breach)
+
+
+class DeadNameTest(unittest.TestCase):
+    """Every private name is used somewhere in flnd/, or is listed with who calls it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.dead = dead_names()
+
+    def test_no_dead_name(self):
+        new = sorted(self.dead - set(CALLED_FROM_OUTSIDE))
+        self.assertEqual(new, [], "nothing in flnd/ uses these: delete them, and the tests that "
+                         "only exercise them (AGENTS.md › Writing: plain over clever)")
+
+    def test_no_stale_allowance(self):
+        stale = sorted(set(CALLED_FROM_OUTSIDE) - self.dead)
+        self.assertEqual(stale, [], "used now, or gone: delete these from CALLED_FROM_OUTSIDE")
+
+    def test_the_search_sees_uses_and_ignores_mentions(self):
+        source = ('"""Says `told` in the docstring."""\n'
+                  '__all__ = ["exported"]\n'
+                  "def used(): ...\n"
+                  "def exported(): ...\n"
+                  "def told(): ...\n"
+                  "class Box:\n"
+                  "    def __init__(self): ...\n"
+                  "    def get(self): return used()\n"
+                  "    @target(\"x/{id}\")\n"
+                  "    def route(self): ...\n"
+                  'LAZY = "pkg.mod:Box"\n')
+        self.assertEqual(definitions(source),
+                         [("used", "used"), ("exported", "exported"), ("told", "told"),
+                          ("Box", "Box"), ("get", "Box.get"), ("LAZY", "LAZY")])
+        used = references(source)
+        self.assertTrue({"used", "Box", "target"} <= used)
+        self.assertFalse({"exported", "told", "get", "LAZY"} & used)
 
 
 class LibraryErrorTest(unittest.TestCase):

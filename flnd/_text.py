@@ -3,8 +3,8 @@
 A library module. It imports only the stdlib, holds no state, and every function is pure, so any
 program and any thread may call it. Inside flnd, the file layer names files with `filename` and
 `fill`, every log line and error message passes URLs through `redact`, a bug report's sample body
-goes through `scrub`, the progress display and the summaries use `size`, `duration` and `count`,
-and the sources match names with `fold`.
+goes through `scrub`, and the progress display and the summaries use `size`, `duration` and
+`count`.
 
 What it offers:
 - `filename(text)`: a file name every OS accepts (Windows' reserved names and characters,
@@ -14,7 +14,6 @@ What it offers:
 - `scrub(body)`: the values under secret-looking names replaced by "…", in JSON or any text;
 - `size`, `duration` and `count`: a number the way a person reads it (`1.5 KB`, `3m 5s`,
   `3 files`);
-- `fold(text)`: text for matching, without case, accents or extra spaces;
 - `fill(template, values)` and `fields(template)`: a name template such as `"{date}_{post}"`,
   filled per `/` segment, with the separators beside an empty field dropped.
 
@@ -40,7 +39,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-__all__ = ["count", "duration", "fields", "filename", "fill", "fold", "redact", "scrub", "size"]
+__all__ = ["count", "duration", "fields", "filename", "fill", "redact", "scrub", "size"]
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 # What the name of a secret looks like, for `scrub`: a token, a CSRF value, a session, a cookie,
@@ -179,13 +178,6 @@ def count(n: float, unit: str, *, plural: str | None = None) -> str:
     if n == 1:
         return f"{n:,} {unit}"
     return f"{n:,} {plural if plural is not None else unit + 's'}"
-
-
-def fold(text: str) -> str:
-    """Normalize Unicode, strip combining marks, casefold, and collapse whitespace."""
-    norm = unicodedata.normalize("NFKD", text.replace("đ", "d").replace("Đ", "D"))
-    stripped = "".join(ch for ch in norm if not unicodedata.combining(ch))
-    return " ".join(stripped.casefold().split())
 
 
 def _rough_redact(url: str) -> str:

@@ -14,15 +14,9 @@ AGENTS.md › Writing sets the rules this file checks. Each check is a test clas
 5. `SourcePageTest` checks that each built-in source has `docs/sources/<code>.md`, and that no
    page is left for a source that is gone.
 
-Today's code has many gaps, and they are listed in `tests/data/docs_gaps.txt`, one per line.
-The list may only shrink:
-- a gap that isn't listed fails `test_no_new_gap`, so new code is documented as it is written;
-- a listed gap that is fixed fails `test_no_stale_gap`, so whoever fixes it also deletes its
-  line, and the list can't grow back silently.
-
-When a move or a rename changes many paths at once, rewrite the list with
-`uv run python tests/test_docs.py --write`, and check in review that its diff only renames or
-removes lines.
+A gap fails `test_no_gap`, with one line per gap naming the module or the name and the rule it
+breaks, so new code is documented as it is written. There is no allowlist: fix the gap, or
+the docs page, in the same commit.
 
 The whole file runs in well under a second on a laptop, since it parses and never imports the
 modules it checks; only the API snapshot's names are imported, as `test_names.py` does.
@@ -38,7 +32,6 @@ import inspect
 import io
 import os
 import re
-import sys
 import tempfile
 import unittest
 from collections.abc import Iterator
@@ -55,7 +48,6 @@ from test_packaging import ROOT
 # product, so it is left out.
 PACKAGES = ("flnd",)
 DOCS = ROOT / "docs"
-GAPS_FILE = ROOT / "tests" / "data" / "docs_gaps.txt"
 # A private function this short (body lines, docstring included) needs no docstring: AGENTS.md
 # exempts "a few obvious lines".
 SHORT = 5
@@ -99,7 +91,7 @@ def public_names() -> dict[tuple[str, str], str]:
 
 
 def modules() -> list[Path]:
-    """Every module of `PACKAGES`, sorted, so the gap list keeps one order on every OS."""
+    """Every module of `PACKAGES`, sorted, so the gaps are reported in one order on every OS."""
     return sorted(path for package in PACKAGES for path in (ROOT / package).rglob("*.py"))
 
 
@@ -196,7 +188,7 @@ def function_gaps(node: ast.FunctionDef | ast.AsyncFunctionDef, method: bool,
         public: the API snapshot's kind for it; "" when it isn't public.
 
     Returns:
-        One gap per line, as `docs_gaps.txt` spells it after the name.
+        One line per gap, as the failure message spells it after the name.
     """
     doc = ast.get_docstring(node)
     lines = node.end_lineno - node.body[0].lineno + 1
@@ -246,7 +238,7 @@ def class_gaps(node: ast.ClassDef, public: str) -> list[str]:
         public: the API snapshot's kind for it; "" when it isn't public.
 
     Returns:
-        One gap per line, as `docs_gaps.txt` spells it after the name.
+        One line per gap, as the failure message spells it after the name.
     """
     doc = ast.get_docstring(node)
     if doc is None:
@@ -274,7 +266,7 @@ def overload(node: ast.AST) -> bool:
 
 
 def module_gaps(path: Path, public: dict[tuple[str, str], str]) -> list[str]:
-    """Every docstring gap of one module, one `docs_gaps.txt` line each.
+    """Every docstring gap of one module, one line each.
 
     The walk goes into classes (and their nested classes), but not into functions: a closure
     is part of the function that holds it. Dunder methods other than `__init__` are skipped,
@@ -321,46 +313,42 @@ def page_gaps() -> list[str]:
 
 
 def gaps() -> list[str]:
-    """Every gap the code and the docs have today, sorted: what `docs_gaps.txt` must list."""
+    """Every gap the code and the docs have, sorted: `test_no_gap` wants none."""
     public = public_names()
     found = [gap for path in modules() for gap in module_gaps(path, public)]
     # A property and its setter share a name, so the same gap can come twice; it is listed once.
     return sorted(set(found + page_gaps()))
 
 
-def listed() -> list[str]:
-    """The gaps `docs_gaps.txt` allows, without its comment lines and blank lines."""
-    text = GAPS_FILE.read_text(encoding="utf-8")
-    return [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
+def rule(gap: str) -> str:
+    """The rule of AGENTS.md › Writing that one gap breaks, for the failure message.
 
+    Args:
+        gap: one line of `gaps()`.
 
-def write() -> None:
-    """Rewrite `docs_gaps.txt` from the code, for a move or a rename (see the module docstring)."""
-    header = ("# Docstring and docs gaps that tests/test_docs.py allows today, one per line.\n"
-              "# Fix a gap, then delete its line: the list may only shrink.\n")
-    GAPS_FILE.write_text(header + "".join(f"{gap}\n" for gap in gaps()), encoding="utf-8")
+    Returns:
+        A short statement of the rule.
+    """
+    if gap.endswith("skipped python blocks"):
+        return "every python block in docs/ runs; drop its skip marker and make it run"
+    if gap.endswith("no module docstring"):
+        return "a module starts with a docstring"
+    if gap.endswith("no docstring"):
+        return "a class or function has a docstring (a private one of a few lines may skip it)"
+    if ": Args: no " in gap:
+        return "`Args:` names each argument"
+    if gap.endswith("no Example:"):
+        return "a public name has an `Example:` with `>>>` lines"
+    return "a docstring has `Returns:`, `Yields:` or `Raises:` when the body does that"
 
 
 class DocstringTest(unittest.TestCase):
-    """The docstring rules of AGENTS.md › Writing, against `docs_gaps.txt`."""
+    """The docstring rules of AGENTS.md › Writing: any gap fails, naming it and its rule."""
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.found = set(gaps())
-        cls.allowed = listed()
-
-    def test_no_new_gap(self) -> None:
-        new = sorted(self.found - set(self.allowed))
-        self.assertFalse(new, "document these (AGENTS.md › Writing), or fix the docs page:\n"
-                         + "\n".join(new))
-
-    def test_no_stale_gap(self) -> None:
-        stale = sorted(set(self.allowed) - self.found)
-        self.assertFalse(stale, "these are fixed; delete their lines from "
-                         "tests/data/docs_gaps.txt:\n" + "\n".join(stale))
-
-    def test_list_is_sorted_without_repeats(self) -> None:
-        self.assertEqual(self.allowed, sorted(set(self.allowed)))
+    def test_no_gap(self) -> None:
+        found = gaps()
+        self.assertFalse(found, "document these (AGENTS.md › Writing), or fix the docs page:\n"
+                         + "\n".join(f"{gap}  [rule: {rule(gap)}]" for gap in found))
 
     def test_examples_run(self) -> None:
         """Every docstring with `>>>` lines runs as a doctest, in a scratch folder."""
@@ -563,7 +551,4 @@ class SourcePageTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--write"]:
-        write()
-    else:
-        unittest.main()
+    unittest.main()
