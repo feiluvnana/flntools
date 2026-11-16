@@ -137,6 +137,41 @@ A run uses a few threads, and every rule below protects one of them:
 - **Ctrl-C** is handled by `flnd._run.stopping`: the first one sets `stop.soon` (stop listing,
   let running files finish), the second sets `stop.now` (stop at once, keep the parts).
 
+## The browser
+
+`flnd._browser` is a library of its own: it knows Playwright, tabs and scrolling, and nothing of
+sources. A source reads a site that only shows its data to a logged-in page by watching the
+page's own API calls: `site.feed(match, scroll=True, cursor=reader)` keeps the JSON of every
+response whose URL `match` takes, and scrolls the tab only when no body is waiting.
+
+**A scroll step is driven by what the page does**, never by a fixed sleep:
+
+1. **Scroll.** With `scroll = "human"` (the default), the tab glides down 1.2 to 1.8 screens in
+   three to six uneven wheel steps, and now and then (7%) first scrolls back up a little and
+   hesitates, as a person going back to look at something. With `"fast"`, it jumps to the
+   bottom in one go.
+2. **Watch.** The step watches for progress: the next matching response (the capture wakes it
+   at once) or the page growing (checked every 50 ms). At the very bottom with nothing yet, it
+   waits up to 3 s. With `human` it also pauses, counted from the scroll: a lognormal time with
+   a median of 0.4 s when new media just came, 0.25 s when not (a glance), never more than four
+   medians.
+3. **Go on, or end.** Progress, or room left to scroll, means another step. The feed ends as
+   soon as the site says so: the source's cursor reader read a page with no next one, or the
+   same cursor came back twice more (the site answering one page again). Only a feed without
+   that word ends on silence: a whole 3 s wait with nothing, then 2 s more.
+
+**At most two tabs of one login scroll at once with `human`** (`Page.gate`, one semaphore per
+login in the run's browser), since a person doesn't scroll many tabs of one account at the same
+moment. `fast` has no such limit.
+
+**Where the style comes from.** A source sets `scroll = "human"` or `"fast"` on its class;
+`TargetSite` hands it to the target's `Tabs`, which every feed and `site.scroll` of that target
+use. The config file's `[source.<code>] scroll` will override it at that same spot.
+
+A target's tab scrolls by script (`window.scrollBy` with a wheel event per step), not with real
+mouse input: the tabs of one shared window are background tabs to Chrome, which gives them no
+mouse events. An element that scrolls on its own (`scroll(within=…)`) gets real wheel events.
+
 ## Where things are kept
 
 Everything lives in the home folder, `.flnd` in the current folder:

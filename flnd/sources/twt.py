@@ -289,7 +289,7 @@ class Twitter(Source):
         since = site.time.since if timeline.category in ("posts", "media", "replies") else None
         seen: set[str] = set()
         old = 0
-        with site.feed(f"/{timeline.query}", scroll=True) as responses:
+        with site.feed(f"/{timeline.query}", scroll=True, cursor=timeline_state) as responses:
             if not site.open(profile + timeline.tab):
                 return
             path = urlsplit(site.url).path
@@ -417,6 +417,24 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
             if isinstance(tweet, dict):
                 tweets.append(tweet)
     return tweets, cursor
+
+
+def timeline_state(data: Any) -> tuple[bool, str | None] | None:
+    """Whether one timeline page has a next page, and its cursor, for `site.feed(cursor=…)`.
+
+    A body without a `Bottom` cursor (an error or throttle body) says nothing. A page with a
+    cursor but no tweets is the end: X answers the last page with its cursors alone.
+
+    Args:
+        data: a response's JSON.
+
+    Returns:
+        `(more, cursor)`, or None for a body that isn't a timeline page.
+    """
+    tweets, cursor = read_timeline_page(data)
+    if cursor is None:
+        return None
+    return bool(tweets), cursor
 
 
 def timeline_entries(instructions: list[Any]) -> Iterator[dict]:

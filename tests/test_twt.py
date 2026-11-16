@@ -218,7 +218,7 @@ class Feed:
 
 def browser(answers):
     """Patch the scroll to read `answers`, `{query: page | [pages]}`, when a timeline's tab is watched."""
-    return mock.patch.object(FakeSite, "feed", lambda site, match, scroll=False, lines=False: Feed(answers, match))
+    return mock.patch.object(FakeSite, "feed", lambda site, match, scroll=False, lines=False, cursor=None: Feed(answers, match))
 
 
 def pairs(saved):
@@ -351,7 +351,7 @@ class TimelineTest(unittest.TestCase):
                 return gen()
 
         with mock.patch.object(FakeSite, "feed",
-                        lambda site, match, scroll=False, lines=False: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)):
+                        lambda site, match, scroll=False, lines=False, cursor=None: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)):
             saved = collect(Twitter, "twt:someone",
                             options=Options(categories=("posts",), since=date(2026, 11, 8)),
                             json={url("UserByScreenName"): USER})
@@ -374,7 +374,7 @@ class TimelineTest(unittest.TestCase):
 
         with (
             mock.patch.object(FakeSite, "feed",
-                       lambda site, match, scroll=False, lines=False: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)),
+                       lambda site, match, scroll=False, lines=False, cursor=None: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)),
             mock.patch("flnd.sources.twt.caught_up", side_effect=lambda tid, **_: tid == "2"),
         ):
             saved = collect(Twitter, "twt:someone", options=Options(categories=("posts",)),

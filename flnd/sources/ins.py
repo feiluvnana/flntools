@@ -516,7 +516,12 @@ class Profile:
         """Scroll one profile tab until it ends or hits `OLD_STREAK`, yielding results live."""
         since = site.time.since if tab in ("posts", "reels", "reposts") else None
         ended, old = False, 0
-        with site.feed(GRAPHQL, scroll=True) as responses:
+
+        def cursor(result: Any) -> tuple[bool, str | None] | None:
+            # The tab's own connection says when it ends, so the scroll stops on the site's word.
+            return page_state(result, tab)
+
+        with site.feed(GRAPHQL, scroll=True, cursor=cursor) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
                 # Raised, not returned: a tab that ended here would be recorded complete.
                 raise SiteError(f"{tab}: the page didn't load")

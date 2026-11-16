@@ -96,7 +96,8 @@ response whose URL names the tab's operation:
 | `replies` | `/with_replies` | `UserRepliesTimeline` |
 
 A numeric target opens `https://x.com/i/user/<id>` instead of the handle. The scroll ends when a
-page brings no new tweet, or at an early stop. The tabs not yet read are opened in background
+page brings no new tweet, or at an early stop. A page of cursors alone, which X sends at a
+timeline's end, stops the scroll at once (`timeline_state`, the feed's cursor reader). The tabs not yet read are opened in background
 tabs meanwhile. If the API could not find the user, the timelines are still read in the
 browser.
 

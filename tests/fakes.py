@@ -114,11 +114,11 @@ class FakeSite:
     def wait(self, css: str | None = None, *, url: Any = None, idle: bool = False, timeout: float = 30.0) -> None:
         pass
 
-    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 10.0) -> int:
+    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 2.0) -> int:
         return 0
 
-    def feed(self, match: Any, *, scroll: bool = False, lines: bool = False) -> FakeFeed:
-        return FakeFeed(self, match, scroll=scroll)
+    def feed(self, match: Any, *, scroll: bool = False, lines: bool = False, cursor: Any = None) -> FakeFeed:
+        return FakeFeed(self, match, scroll=scroll, cursor=cursor)
 
     def document(self) -> Any:
         # The page of the URL last opened, even where a subclass reports a redirect as `url`.
@@ -166,13 +166,15 @@ class FakeFeed:
     """What `FakeSite.feed` returns: the `feeds` fixture's responses whose URL matches, as `Site.feed` gives them.
 
     Iterating yields what is waiting; then, with `scroll`, it asks the site to deliver once more and ends when
-    nothing new came, and without `scroll` it asks once and ends, as the engine's feed waits once for quiet.
+    nothing new came, or when `cursor` read the end as the engine's feed reads it (`flnd._browser._Cursors`),
+    and without `scroll` it asks once and ends, as the engine's feed waits once for quiet.
     """
 
-    def __init__(self, site: FakeSite, match: Any, *, scroll: bool = False):
+    def __init__(self, site: FakeSite, match: Any, *, scroll: bool = False, cursor: Any = None):
         self._site = site
         self._matches = _browser._matcher(match)
         self._scroll = scroll
+        self._cursors = _browser._Cursors(cursor)
         self._waiting: deque[Any] = deque()
         self._closed = False
         site._feeds.append(self)
@@ -182,6 +184,7 @@ class FakeFeed:
         if self._closed or not self._matches(url):
             return False
         self._waiting.append(data)
+        self._cursors.read(data)
         return True
 
     def __iter__(self) -> FakeFeed:
@@ -206,6 +209,9 @@ class FakeFeed:
             while True:
                 while self._waiting:
                     yield self._waiting.popleft()
+                # The site said there is no more: no scroll asks for it.
+                if self._scroll and self._cursors.ended:
+                    return
                 self._site._deliver(scroll=self._scroll)
                 if not self._scroll:
                     while self._waiting:

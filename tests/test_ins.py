@@ -297,7 +297,7 @@ class FakeWatch:
         self.batches = {url: list(entries) for url, entries in batches.items()}
         self.opened = 0
 
-    def __call__(self, site, match, *, scroll=False, lines=False):
+    def __call__(self, site, match, *, scroll=False, lines=False, cursor=None):
         self.opened += 1
         batches = self.batches
 

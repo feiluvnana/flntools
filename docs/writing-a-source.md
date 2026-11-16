@@ -155,9 +155,9 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 | --- | --- |
 | `site.fetch(url, params=…, method=…, headers=…, check=…)` | one request, paced and retried; `.json`, `.text`, `.html` on the answer; a refusal raises a `SiteError` with its `status` (`NotFound` for a 404 or 410, `Blocked` for a 429) unless `check=False`; no answer raises `NetworkError` |
 | `site.open(url)`, `site.url` | load a page in the target's browser tab (False when it didn't load), and where the tab is now |
-| `site.feed(match, scroll=…, lines=…)` | the JSON of the responses whose URL matches, as the page receives them; with `scroll=True` it scrolls for more until the feed ends. Open it before the page that sends them |
+| `site.feed(match, scroll=…, lines=…, cursor=…)` | the JSON of the responses whose URL matches, as the page receives them; with `scroll=True` it scrolls for more until the feed ends, which `cursor` reads from the site's own pages (below). Open it before the page that sends them |
 | `site.document()` | the tab's page now, parsed: `.css(…)`, `.xpath(…)`, `.script(…)`, `.text` |
-| `site.wait(css=…, url=…)`, `site.scroll(until=…)` | wait for an element or a URL; scroll like a person until the feed ends |
+| `site.wait(css=…, url=…)`, `site.scroll(until=…)` | wait for an element or a URL; scroll, in the source's `scroll` style, until the page stops growing |
 | `site.evaluate(js)`, `site.click(css)` | run a script in the page; click an element |
 | `site.handoff(until=…, message=…)` | ask a person to do a step in the browser window, such as a captcha |
 | `site.pause(seconds, reason)` | wait, as a page that needs time to settle does |
@@ -169,6 +169,52 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 | `site.back_off(reason, retry_after=…)` | wait out a rate limit the site reported in its own way |
 
 A source never sleeps, retries, writes files or touches the history itself.
+
+### A feed in the browser: name its responses and its cursor
+
+A site that only shows its data to a logged-in page is read from the page's own API calls. The
+source names two things, and flnd does the scrolling:
+
+- **the feed's filter**, `match`: a piece of the URL (`"/graphql"`), a regex, or a function of
+  the URL, which picks the responses that carry the listing;
+- **its cursor reader**, `cursor`: a small function given each parsed response (each line, with
+  `lines=True`) that says what the site said about the next page. It returns `(more, cursor)`
+  for one of the listing's pages, where `more` is whether there is another page and `cursor`
+  names it (None if the page doesn't), or `None` for a response that says nothing about paging,
+  such as an error body or another part of the page.
+
+```python
+def page_state(page):
+    """`(more, cursor)` from one page of example.com's listing; None for anything else."""
+    info = page.get("page_info") if isinstance(page, dict) else None
+    if not isinstance(info, dict):
+        return None
+    return bool(info.get("has_next_page")), info.get("end_cursor")
+
+
+assert page_state({"page_info": {"has_next_page": False, "end_cursor": None}}) == (False, None)
+assert page_state({"errors": ["slow down"]}) is None
+```
+
+Then, in a category:
+
+```
+with site.feed("/graphql", scroll=True, cursor=page_state) as pages:
+    if site.open(f"https://www.example.com/{user}/"):
+        for page in pages:
+            ...
+```
+
+The feed scrolls only when no response is waiting, and each scroll waits for the next response
+or for the page to grow, not for a fixed time. It ends as soon as the reader sees a page with no
+next one, or the same cursor three times; without a reader, it ends after about 5 s of silence
+at the bottom. Read only what is surely the listing's own: a "no next page" from a side feed on
+the same page would end the listing early (Facebook's `tab_cursor` is an example).
+
+**How it scrolls** is the class attribute `scroll`: `"human"` (the default) moves the wheel in
+uneven steps, pauses about 0.4 s as a reader would, and lets at most two tabs of one login
+scroll at once, so the site flags it less as a bot; `"fast"` jumps to the bottom and never
+pauses. A mistake in it fails when the class is made.
 
 ## 7. Hooks
 

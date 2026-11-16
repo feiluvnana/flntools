@@ -707,12 +707,16 @@ class Site(Protocol):
         """
         ...
 
-    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 10.0) -> int:
-        """Scroll the tab like a person until its feed ends or `until()` is True.
+    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 2.0) -> int:
+        """Scroll the tab until its feed ends or `until()` is True, in the source's `scroll` style.
+
+        Each step waits for the page to grow, not for a fixed time. A feed whose API responses
+        say when it ends is better read with `feed(match, scroll=True, cursor=…)`.
 
         Args:
             until: asked before each scroll; True stops.
-            idle: seconds without the page growing at its bottom before the feed counts as ended.
+            idle: seconds the bottom may stay quiet, after a whole wait of 3 s brought nothing,
+                before the feed counts as ended.
 
         Returns:
             How many scrolls it made.
@@ -720,21 +724,36 @@ class Site(Protocol):
         ...
 
     def feed(self, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = False,
-             lines: bool = False) -> Feed:
+             lines: bool = False,
+             cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> Feed:
         """Watch the tab for responses whose URL matches, and iterate their JSON.
 
-            with site.feed("/graphql", scroll=True) as pages:
+            def page_state(page):
+                info = page.get("page_info") if isinstance(page, dict) else None
+                return None if info is None else (info["has_next_page"], info["end_cursor"])
+
+            with site.feed("/graphql", scroll=True, cursor=page_state) as pages:
                 if site.open(f"https://www.example.com/{user}/"):
                     for page in pages:
                         ...
 
         Open it before the page that sends the responses, or the first ones are missed.
 
+        A scrolling feed scrolls a step only when no body is waiting, and each step waits for
+        the next matching response or for the page to grow, never a fixed time. It ends as soon
+        as the site says there is no more: `cursor` read a page with no next one, or the same
+        cursor came back again and again. A feed without `cursor` ends when the page's bottom
+        stays quiet for about 5 s.
+
         Args:
             match: a substring of the URL, a compiled regex searched in it, or a predicate.
             scroll: when none is waiting, scroll the tab for more, and end when the feed ends.
                 Without it, the feed waits once for the network to go quiet, and ends.
             lines: each body holds one JSON value per line (NDJSON).
+            cursor: the source's cursor reader, called with each parsed value (each line, with
+                `lines`): `(more, cursor)` for one of the feed's pages, where `more` is whether
+                the site has another page and `cursor` names it (None if the page doesn't);
+                None for a value that says nothing about paging. None reads no cursor.
 
         Returns:
             The `Feed`, to iterate and close.
@@ -1057,6 +1076,9 @@ class Source:
     user_agent: ClassVar[str | None] = None
     browser: ClassVar[bool] = False
     stealth: ClassVar[bool] = True
+    # How the browser scrolls this source's feeds: "human" (wheel steps, pauses about 0.4 s, at
+    # most two tabs at once), so the site flags it less as a bot, or "fast" (no pauses).
+    scroll: ClassVar[str] = "human"
     # Files of one target downloading at once: CDNs are built for many, and the host's own
     # connection limit in `flnd._http` still holds.
     concurrency: ClassVar[int] = 8
@@ -1068,7 +1090,8 @@ class Source:
 
         Raises:
             SourceError: a pattern outside `domains`, a pattern given twice, a placeholder in
-                `unsupported`, or categories declared as both field and methods.
+                `unsupported`, categories declared as both field and methods, or a `scroll`
+                other than "human" or "fast".
         """
         super().__init_subclass__(**kwargs)
         # A subclass keeps its base's routes; one of the same name replaces it in place.
@@ -1104,6 +1127,12 @@ class Source:
             if key in seen:
                 raise SourceError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
             seen.add(key)
+        # The styles `flnd._browser` knows (`SCROLLS`), named here so a source's import doesn't
+        # load the browser library.
+        if getattr(cls, "scroll", "human") not in ("human", "fast"):
+            raise SourceError(
+                f"{cls.__name__}.scroll must be 'human' or 'fast', not {cls.scroll!r}"
+            )
         if "categories" in vars(cls) or "single_kinds" in vars(cls):
             raise SourceError(
                 f"{cls.__name__}: its categories are its @<route>.category methods; "

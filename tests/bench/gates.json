@@ -287,7 +287,7 @@
       "baseline": null,
       "target": 3,
       "gate": "perf:drive feeds by responses and end on the site's cursor",
-      "note": "the fast scroll, which doesn't exist yet"
+      "note": "the fast scroll; it didn't exist before this gate's commit"
     },
     "browser.launch": {
       "unit": "ms",
@@ -318,11 +318,6 @@
       "unit": "ms",
       "better": "lower",
       "baseline": 0.8384
-    },
-    "browser.scroll_idle_2": {
-      "unit": "s",
-      "better": "lower",
-      "baseline": 18.9672
     },
     "browser.close": {
       "unit": "ms",

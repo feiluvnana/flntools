@@ -291,27 +291,31 @@ class TargetSite:
         tabs = self._verbs()
         tabs.run(tabs.page.wait(css, url=url, idle=idle, timeout=timeout))
 
-    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 10.0) -> int:
+    def scroll(self, *, until: Callable[[], bool] | None = None,
+               idle: float = _browser.IDLE) -> int:
         """Scroll the target's tab until its feed ends or `until()`; see `flnd.source.Site.scroll`.
+
+        It scrolls in the source's `scroll` style, as its feeds do.
 
         Args:
             until: asked here, on the listing thread, before each scroll; True stops.
-            idle: seconds without growth at the bottom before the feed counts as ended.
+            idle: seconds the bottom may stay quiet, after a whole wait for more brought nothing,
+                before the feed counts as ended.
 
         Returns:
             How many scrolls it made.
         """
         tabs = self._verbs()
-        scroller = tabs.run(tabs.page.scroller(idle=idle))
+        scroller = tabs.run(tabs.page.scroller(idle=idle, style=tabs.scroll))
         # One step per call to the loop, with `until` asked here, on the listing thread.
         while not (until is not None and until()) and tabs.run(scroller.step()):
             pass
         return scroller.scrolls
 
-    def feed(self, match: _browser.Match, *, scroll: bool = False,
-             lines: bool = False) -> _browser.Feed:
-        """See `flnd.source.Site.feed`."""
-        return _browser.Feed(self._verbs(), match, scroll=scroll, lines=lines)
+    def feed(self, match: _browser.Match, *, scroll: bool = False, lines: bool = False,
+             cursor: _browser.Reader | None = None) -> _browser.Feed:
+        """See `flnd.source.Site.feed`; it scrolls in the source's `scroll` style."""
+        return _browser.Feed(self._verbs(), match, scroll=scroll, lines=lines, cursor=cursor)
 
     def document(self) -> Selection:
         """The tab's page now, parsed; see `flnd.source.Site.document`.
@@ -370,13 +374,14 @@ class TargetSite:
 
         Returns:
             The target's `Tabs` in the run's browser, or, outside a run, in a browser of the
-            site's own, which `close` closes.
+            site's own, which `close` closes. They scroll in the source's `scroll` style.
         """
         if self._tabs is None:
             if self._shared is None:
                 self._shared = _browser.RunBrowser(self._run.loop, stealth=self._source.stealth)
                 self._own = True
-            self._tabs = _browser.Tabs(self._shared, self._run.jar)
+            # The source's own `scroll` until the config file can set one per source.
+            self._tabs = _browser.Tabs(self._shared, self._run.jar, scroll=self._source.scroll)
         return self._tabs
 
     def _browser_cookies(self) -> list[Mapping[str, Any]]:

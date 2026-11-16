@@ -75,7 +75,10 @@ it asks its GraphQL endpoint for more, answered as one JSON result per line.
    profile header from them: the profile's id, its pictures, its story buckets, and the paths of
    its tabs.
 2. **`posts`** reads that page's results first, without loading it again, then scrolls it and
-   reads every captured response whose URL contains `graphql`.
+   reads every captured response whose URL contains `graphql`. The scroll ends when the tab's
+   `page_info` says there is no next page (`tab_cursor`), but only after an earlier page said
+   there was one: on some loads the profile's Tiles feed (its intro photos) answers first with
+   "no next page", which is not the tab's end (seen 2026-11).
 3. **`photos`, `tagged`, `reels`, `videos`** each open their tab's page (the path the header
    names, such as `photos_by` or `photos`) and do the same. A tab the header does not list is
    skipped with "this profile has no such tab". The tabs not yet read are opened in background

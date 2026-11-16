@@ -1,7 +1,6 @@
 # Docstring and docs gaps that tests/test_docs.py allows today, one per line.
 # Fix a gap, then delete its line: the list may only shrink.
 docs/library.md: 1 skipped python blocks
-flnd/_browser.py:Page._move: Args: no target
 flnd/_browser.py:_channel: Args: no playwright
 flnd/_browser.py:_channel: no Raises:
 flnd/_browser.py:_channel: no Returns:

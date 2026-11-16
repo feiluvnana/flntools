@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import PurePosixPath
-from typing import Any, Iterator, NamedTuple
+from typing import Any, Callable, Iterator, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 from flnd.source import Blocked, File, LoginError, Post, Site, Source, day, target
@@ -228,7 +228,7 @@ class Facebook(Source):
             site.info("{tab}: this profile has no such tab", tab=tab.category)
             return
         listed: dict[str, str] = {}
-        with site.feed(FEED, scroll=True, lines=True) as responses:
+        with site.feed(FEED, scroll=True, lines=True, cursor=tab_cursor()) as responses:
             results = read_page(site, f"{profile.url}/{path}")
             if results is None:
                 return
@@ -325,7 +325,7 @@ def _place(url: str) -> tuple[str, str]:
 
 def _read_album(site: Site, url: str, *, title: str, owner: str | None) -> Iterator[Post]:
     """Scroll one album page and stream its media posts."""
-    with site.feed(FEED, scroll=True, lines=True) as responses:
+    with site.feed(FEED, scroll=True, lines=True, cursor=tab_cursor()) as responses:
         results = read_page(site, url)
         if results is None:
             return
@@ -350,7 +350,7 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
 def _collect_tab(site: Site, profile: Profile, path: str) -> Iterator[tuple[Any, str | None]]:
     """Scroll one tab to its end, yielding `(result, owner)` pairs live."""
     blocks = 0
-    with site.feed(FEED, scroll=True, lines=True) as responses:
+    with site.feed(FEED, scroll=True, lines=True, cursor=tab_cursor()) as responses:
         if path or profile.results is None:
             results = read_page(site, f"{profile.url}/{path}")
             if results is None:
@@ -395,6 +395,33 @@ def page_info(line: Any) -> tuple[bool, str | None] | None:
             nested += [value for value in node.values() if isinstance(value, dict)]
         level = nested
     return None
+
+
+def tab_cursor() -> Callable[[Any], tuple[bool, str | None] | None]:
+    """A cursor reader for one scrolled tab's feed (`site.feed(cursor=…)`): `page_info`, except
+    that a page with no next one ends the feed only after some page said there was one.
+
+    2026-11, live: on some loads the profile's Tiles feed (its intro photos,
+    `ProfileCometTilesFeedPaginationQuery`) answers first, with `has_next_page` false, and the
+    tab's own pages come after it. That false says nothing about the tab, so it is read as no
+    news; the tab's own last page, after its earlier pages, still ends the feed at once.
+
+    Returns:
+        A new reader, for one feed: it remembers whether a next page was seen.
+    """
+    seen_more = False
+
+    def read(line: Any) -> tuple[bool, str | None] | None:
+        nonlocal seen_more
+        state = page_info(line)
+        if state is None:
+            return None
+        if state[0]:
+            seen_more = True
+            return state
+        return state if seen_more else None
+
+    return read
 
 
 def media_posts(

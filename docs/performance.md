@@ -77,7 +77,7 @@ CPython 3.14.6. The numbers a planned change is gated on:
 | `db.commit_per_post` (per file) | 8.1 µs | ≤ 15 µs |
 | `e2e.sync_nothing_new` | 4 ms (4,000 files) | ≤ 0.3 s (100k files) |
 | `e2e.latency_500_posts` (150 ms a page, 40 ms a file) | 7.16 s | ≤ 5.5 s |
-| `browser.scroll_default` (the synthetic feed) | 26.0 s | ≤ 16 s human-like, ≤ 3 s fast |
+| `browser.scroll_default` (the synthetic feed) | 26.0 s | ≤ 16 s human-like, ≤ 3 s fast (`scroll_fast`); see "Browser feeds" |
 | `cpu.html_meta` (a 2 MiB Meta-style page) | 18.0 ms | ≤ 8 ms |
 | `media.jpegs_1000` (compressing 1,000 JPEGs) | 23.2 s (measured under load, below) | ≤ 2 min |
 | `media.sync_compress_100k` (`sync --compress` over 100k done files) | 0.44 s | ≤ 3 s |
@@ -100,6 +100,25 @@ the history row takes the file's size and time from the `fstat` before the renam
 stats the file again. A part that a failed run left costs one `stat` more, to check that no
 other run landed it meanwhile. `tests/test_fs.py` counts these calls, so a change that adds one
 fails `make check`.
+
+## Browser feeds
+
+Reading the synthetic feed of 30 batches to its end (`browser.scroll_default` and
+`browser.scroll_fast`), measured A/B on the M5 above on 2026-11-16 while other work ran: the
+median of 3 alternating runs of each.
+
+| how | seconds |
+| --- | ---: |
+| before: fixed sleeps, the end found by 10 s of silence (`idle=10`, the old default) | 25.17 |
+| before, with `idle=2` | 18.35 |
+| driven by responses, ended by the cursor, `scroll = "human"` (the default) | 14.14 |
+| the same with `scroll = "fast"` | 1.99 |
+
+Each old step cost about 0.6 s whether data came or not (a 3 s wait for growth at the bottom,
+a 0.3 s pause and a jiggle), and the end cost the whole idle window. Now a step waits only for
+the next matching response or the page growing, and the read ends on the last batch's own "no
+more". With `human`, nearly all of what is left is the pauses a person would make: 29 steps at
+a median of 0.4 s each. `fast` is the 30 answers of 50 ms each, plus the scrolling.
 
 ## Compression
 

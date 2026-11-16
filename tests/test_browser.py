@@ -13,6 +13,7 @@ import asyncio
 import importlib
 import json
 import os
+import random
 import re
 import shutil
 import stat
@@ -58,16 +59,14 @@ def chromium_installed() -> bool:
 HAS_CHROMIUM = chromium_installed()
 needs_chromium = unittest.skipUnless(HAS_CHROMIUM, "Chromium is not installed")
 
-# Items are 300px tall and come five at a time when the page is scrolled near its end. With
-# ?jiggle=1, more only come after the reader went up at least half a screen since the last load.
+# Items are 300px tall and come five at a time when the page is scrolled to its end.
 FEED_PAGE = """<!doctype html><html><body style="margin:0">
 <div id="feed"></div>
 <script>
   const params = new URLSearchParams(location.search);
-  const cap = Number(params.get("cap") || 40), jiggle = params.get("jiggle") === "1";
+  const cap = Number(params.get("cap") || 40);
   const feed = document.getElementById("feed");
   window.wheels = [];
-  let lowest = 0, wentUp = false;
   function add(n) {
     for (let i = 0; i < n && feed.children.length < cap; i++) {
       const item = document.createElement("div");
@@ -80,13 +79,8 @@ FEED_PAGE = """<!doctype html><html><body style="margin:0">
   add(5);
   addEventListener("wheel", event => wheels.push(Math.round(event.deltaY)));
   addEventListener("scroll", () => {
-    lowest = Math.max(lowest, scrollY);
-    if (scrollY < lowest - innerHeight / 2) wentUp = true;
     if (scrollY + innerHeight < document.body.scrollHeight - 10) return;
-    if (jiggle && !wentUp) return;
     add(5);
-    wentUp = false;
-    lowest = scrollY;
   });
 </script></body></html>"""
 
@@ -682,14 +676,16 @@ class PageTest(PageCase):
 
 
 class ScrollTest(PageCase):
+    """The scroller on a real page. Most use `fast`, which has no pauses; the human one makes its pauses short."""
+
     def setUp(self):
         super().setUp()
-        self.enterContext(_time.use(seeded(7)))
-        self.enterContext(mock.patch.object(_browser, "SCROLL_WAIT", 0.3))
-        self.enterContext(mock.patch.object(_browser, "SCROLL_PAUSE", 0.01))
+        # A quiet bottom ends a feed after 0.3 s plus 0.3 s here, not 3 s plus 2 s.
+        self.enterContext(mock.patch.object(_browser, "WAIT", 0.3))
+        self.page.random = random.Random(7)
 
-    def load(self, cap=40, jiggle=False):
-        run(self.page.goto(f"https://site.test/feed?cap={cap}&jiggle={int(jiggle)}"))
+    def load(self, cap=40):
+        run(self.page.goto(f"https://site.test/feed?cap={cap}"))
 
     def count(self) -> int:
         return run(self.page.evaluate("document.querySelectorAll('.item').length"))
@@ -699,30 +695,24 @@ class ScrollTest(PageCase):
 
     def test_reaches_the_end_of_the_feed(self):
         self.load(cap=20)
-        scrolls = run(self.page.scroll(idle=1.5))
+        scrolls = run(self.page.scroll(idle=0.3, style="fast"))
         self.assertEqual(self.count(), 20)
         self.assertLess(scrolls, 20)
-
-    def test_feed_that_only_loads_after_the_jiggle(self):
-        self.load(cap=20, jiggle=True)
-        run(self.page.scroll(idle=2.0))
-        self.assertEqual(self.count(), 20)
 
     def test_by_script_reaches_the_end_too(self):
         self.page.by_script = True
         self.load(cap=20)
-        run(self.page.scroll(idle=1.5))
+        run(self.page.scroll(idle=0.3, style="fast"))
         self.assertEqual(self.count(), 20)
 
     def test_until_is_asked_before_each_scroll(self):
         self.load()
-        with mock.patch.object(_browser, "SCROLL_WAIT", 0.02):
-            self.assertEqual(run(self.page.scroll(until=upto(3))), 3)
+        self.assertEqual(run(self.page.scroll(until=upto(3), style="fast")), 3)
         self.assertEqual(run(self.page.scroll(until=lambda: True)), 0)
 
     def test_within_scrolls_an_element_to_its_end(self):
         run(self.page.goto("https://site.test/box"))
-        scrolls = run(self.page.scroll(within="#box", idle=1.0))
+        scrolls = run(self.page.scroll(within="#box", idle=0.3, style="fast"))
         self.assertEqual(self.count(), 20)
         self.assertGreater(scrolls, 3)
         # The box scrolled, and the page around it didn't.
@@ -734,26 +724,19 @@ class ScrollTest(PageCase):
         with self.assertRaisesRegex(Changed, "no visible element"):
             run(self.page.scroll(within="#missing"))
 
-    def test_uses_the_wheel_in_uneven_steps(self):
+    def test_human_uses_the_wheel_in_uneven_steps(self):
         self.load()
-        with mock.patch.object(_browser, "SCROLL_WAIT", 0.02):
+        with mock.patch.object(_browser, "GLANCE", 0.01), mock.patch.object(_browser, "LOOK", 0.01):
             run(self.page.scroll(until=upto(8)))
         down = [delta for delta in self.wheels() if delta > 0]
-        self.assertGreaterEqual(len(down), 8 * 3)
+        self.assertGreaterEqual(len(down), 8 * _browser.WHEEL_STEPS[0])
         self.assertGreater(len(set(down)), 5)
-        self.assertTrue(all(delta < 900 * 0.9 for delta in down))
+        # No one wheel step scrolls much more than a screen: a glide is several of them.
+        self.assertTrue(all(delta < 900 * 1.25 for delta in down))
 
-    def test_seeded_run_is_repeatable(self):
-        runs = []
-        with mock.patch.object(_browser, "SCROLL_WAIT", 0.02):
-            for _ in range(2):
-                import random
-                random.seed(42)
-                self.load(cap=5)
-                run(self.page.scroll(until=upto(4), idle=100))
-                runs.append(self.wheels())
-        self.assertEqual(runs[0], runs[1])
-        self.assertTrue(any(delta < 0 for delta in runs[0]))
+    def test_an_unknown_style_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "human, fast, not 'slow'"):
+            run(self.page.scroll(style="slow"))
 
 
 def upto(scrolls: int):
@@ -831,26 +814,23 @@ class GoneBodyTest(BrowserCase):
                                      ["· responses: no body for https://site.test/api/graphql: Target closed"]))
 
 
-def seeded(seed):
-    """The real clock with a seeded random source, so a scroll's jitter repeats."""
-    import random
-    random.seed(seed)
-    return _time._RealClock()
-
-
 class FakeFeed:
-    """A raw page on a fake clock: each scroll makes it grow `after` seconds later, for `grows` scrolls.
+    """A raw page on a fake clock: each scroll brings the next page `after` seconds later, for `grows` scrolls.
 
-    It is always at the bottom, as a feed waiting for its next page is. Waits advance the clock.
+    `grows` says whether that page makes the page taller (a DOM feed) or only arrives as a response (`capture`,
+    which a scroller watches); `bottom` whether the tab is at the very end, as a feed waiting for its next page
+    is. Nothing here waits for real: `nap` advances the clock.
     """
 
-    def __init__(self, *, after=0.1, grows=10**9, bottom=True):
+    def __init__(self, *, after=0.1, grows=10**9, bottom=True, dom=True):
         self.clock = _time.Fake()
-        self.after, self.grows, self.bottom = after, grows, bottom
+        self.after, self.grows, self.bottom, self.dom = after, grows, bottom, dom
         self.height = 1000
         self.due = []                                    # when the next pages arrive
         self.scrolled_at = []
         self.mouse = SimpleNamespace(move=mock.AsyncMock(), wheel=mock.AsyncMock())
+        self.capture = SimpleNamespace(news=asyncio.Event())
+        self.heard = 0
 
     def scroll(self):
         self.scrolled_at.append(self.now)
@@ -858,90 +838,183 @@ class FakeFeed:
             self.grows -= 1
             self.due.append(self.now + self.after)
 
-    async def evaluate(self, expression, arg=None):
-        if expression == _browser.PAGE_HEIGHT:
-            arrived = [when for when in self.due if when <= self.now]
-            self.due = [when for when in self.due if when > self.now]
+    def arrive(self):
+        """Move the pages whose time came: into the height for a DOM feed, else into the capture's count."""
+        arrived = [when for when in self.due if when <= self.now]
+        self.due = [when for when in self.due if when > self.now]
+        if self.dom:
             self.height += 900 * len(arrived)
+        else:
+            self.heard += len(arrived)
+        self.capture.count = self.heard
+
+    async def evaluate(self, expression, arg=None):
+        self.arrive()
+        if expression == _browser.PAGE_HEIGHT:
             return self.height
-        if expression == _browser.NEAR_BOTTOM:
+        if expression == _browser.AT_BOTTOM:
             return self.bottom
         if expression == _browser.VIEWPORT:
             return [800, 900]
+        if expression == _browser.SCROLL_BY:
+            return None
         raise AssertionError(f"unexpected script {expression!r}")
+
+    async def nap(self, seconds, news=None):
+        self.clock.advance(seconds)
+        self.arrive()
 
     @property
     def now(self):
         return self.clock.now
 
-    async def wait_for_timeout(self, ms):
-        self.clock.advance(ms / 1000)
-
 
 class ScrollTimingTest(BrowserCase):
-    """Page.scroll's waits on a fake page and clock, so the timing rules are exact and take no time."""
+    """The scroller's waits on a fake page and clock, so the timing rules are exact, repeat, and take no time."""
 
-    def feed(self, **options):
-        feed = FakeFeed(**options)
+    def feed(self, *, style="fast", watch=False, **options):
+        """A fake feed, and a scroller over it whose every scroll is one instant `FakeFeed.scroll`."""
+        feed = FakeFeed(dom=not watch, **options)
+        feed.arrive()
         self.enterContext(_time.use(feed.clock))
         page = _browser.Page(cast(Any, feed), cast(Any, None))
+        page.random = random.Random(7)
+        self.enterContext(mock.patch.object(page, "_nap", feed.nap))
+        scroller = run(page.scroller(style=style, watch=cast(Any, feed.capture) if watch else None))
 
-        async def move(target):
-            # The fake page's scroll stands in for the mouse and the wheel, which would advance the clock.
+        async def move():
             feed.scroll()
 
-        self.enterContext(mock.patch.object(page, "_move", move))
-        return feed, page
+        self.enterContext(mock.patch.object(scroller, "_move", move))
+        return feed, scroller
+
+    def scroll(self, scroller, until=None):
+        async def steps():
+            while not (until is not None and until()) and await scroller.step():
+                pass
+
+        run(steps())
 
     def gaps(self, feed):
         return [later - earlier for earlier, later in zip(feed.scrolled_at, feed.scrolled_at[1:])]
 
-    def test_a_page_that_grows_quickly_is_scrolled_again_after_the_floor_not_the_wait(self):
-        feed, page = self.feed(after=0.1, grows=20)
-        with mock.patch.object(_browser, "SCROLL_WAIT", 3.0), mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
-            run(page.scroll(until=upto(20)))
-        # 0.1 s for the page, then the 0.05 s floor plus at most 40%, give or take one 50 ms check.
-        gaps = self.gaps(feed)
-        self.assertGreaterEqual(min(gaps), 0.1 + 0.05)
-        self.assertLessEqual(max(gaps), 0.1 + 0.05 + 0.05 * 1.4 + 1e-9)
+    def test_fast_scrolls_again_as_soon_as_the_page_grows(self):
+        feed, scroller = self.feed(after=0.1, grows=20)
+        self.scroll(scroller, upto(20))
+        # 0.1 s for the page, give or take one check of its height.
+        self.assertTrue(all(0.1 - 1e-9 <= gap <= 0.1 + _browser.POLL + 1e-9 for gap in self.gaps(feed)), self.gaps(feed))
+
+    def test_a_matching_response_is_progress_before_the_page_grows(self):
+        feed, scroller = self.feed(after=0.1, grows=20, watch=True)
+        self.scroll(scroller, upto(20))
+        self.assertTrue(all(0.1 - 1e-9 <= gap <= 0.1 + _browser.POLL + 1e-9 for gap in self.gaps(feed)), self.gaps(feed))
+        self.assertEqual(feed.height, 1000)
 
     def test_a_slow_page_is_waited_for(self):
-        feed, page = self.feed(after=2.0, grows=5)
-        with mock.patch.object(_browser, "SCROLL_WAIT", 3.0), mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
-            run(page.scroll(until=upto(5)))
-        self.assertTrue(all(2.0 + 0.05 <= gap < 3.0 for gap in self.gaps(feed)))
+        feed, scroller = self.feed(after=2.0, grows=5)
+        self.scroll(scroller, upto(5))
+        self.assertTrue(all(2.0 - 1e-9 <= gap < 2.0 + 2 * _browser.POLL for gap in self.gaps(feed)), self.gaps(feed))
         self.assertEqual(feed.height, 1000 + 900 * 5)
 
-    def test_a_page_that_stops_growing_ends_after_10_s_whatever_the_wait(self):
-        for wait in (0.05, 0.5, 3.0):
-            with self.subTest(wait=wait):
-                feed, page = self.feed(after=0.1, grows=5)
-                with mock.patch.object(_browser, "SCROLL_WAIT", wait), \
-                        mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
-                    run(page.scroll())
-                # The quiet spell starts with the sixth scroll, the first that brought nothing.
-                quiet = feed.scrolled_at[5]
-                self.assertGreaterEqual(feed.now - quiet, 10.0)
-                self.assertLess(feed.now - quiet, 11.5)
+    def test_a_quiet_bottom_ends_after_the_wait_and_the_idle_window(self):
+        for style in ("fast", "human"):
+            with self.subTest(style=style):
+                feed, scroller = self.feed(after=0.1, grows=5, style=style)
+                self.scroll(scroller)
+                # The quiet starts with the sixth scroll, the first that brought nothing: a whole wait of 3 s,
+                # then 2 s more, give or take a human pause.
+                quiet = feed.now - feed.scrolled_at[5]
+                self.assertGreaterEqual(quiet, _browser.WAIT + _browser.IDLE)
+                self.assertLess(quiet, _browser.WAIT + _browser.IDLE + 1.5)
 
     def test_300_growing_scrolls_are_not_cut_off(self):
-        feed, page = self.feed(after=0.1, grows=300)
-        with mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
-            scrolls = run(page.scroll())
-        self.assertGreater(scrolls, 300)
+        feed, scroller = self.feed(after=0.1, grows=300)
+        self.scroll(scroller)
+        self.assertGreater(scroller.scrolls, 300)
         self.assertEqual(feed.height, 1000 + 900 * 300)
 
     def test_away_from_the_bottom_there_is_nothing_to_wait_for(self):
-        feed, page = self.feed(grows=0, bottom=False)
-        with mock.patch.object(_browser, "SCROLL_WAIT", 3.0):
-            self.assertEqual(run(page.scroll(until=upto(10))), 10)
+        feed, scroller = self.feed(grows=0, bottom=False)
+        self.scroll(scroller, upto(10))
+        self.assertEqual(scroller.scrolls, 10)
         self.assertTrue(all(gap == 0.0 for gap in self.gaps(feed)))
 
-    def test_the_floor_is_the_pause(self):
-        feed, page = self.feed(after=0.0, grows=10)
-        with mock.patch.object(_browser, "SCROLL_PAUSE", 2.4):
-            run(page.scroll(until=upto(10)))
-        self.assertTrue(all(2.4 <= gap <= 2.4 * 1.4 + 1e-9 for gap in self.gaps(feed)))
+    def test_a_human_pause_is_a_look_after_new_media_and_a_glance_otherwise(self):
+        looks, scroller = self.feed(after=0.05, grows=200, style="human")
+        self.scroll(scroller, upto(200))
+        glances, scroller = self.feed(grows=0, bottom=False, style="human")
+        self.scroll(scroller, upto(200))
+        for feed, median in ((looks, _browser.LOOK), (glances, _browser.GLANCE)):
+            gaps = sorted(self.gaps(feed))
+            # Lognormal around its median: the middle gap is near it, and some are well off it either way.
+            self.assertAlmostEqual(gaps[len(gaps) // 2], median, delta=median * 0.15)
+            self.assertLess(gaps[0], median * 0.7)
+            self.assertGreater(gaps[-1], median * 1.4)
+            self.assertLessEqual(gaps[-1], median * _browser.LONGEST + 1e-9)
+
+    def test_seeded_run_is_repeatable(self):
+        """Two runs from one seed scroll the same wheel steps, back-ups included, however busy the machine is."""
+        def wheels():
+            feed = FakeFeed(grows=0, bottom=False)
+            self.enterContext(_time.use(feed.clock))
+            page = _browser.Page(cast(Any, feed), cast(Any, None))
+            page.random = random.Random(42)
+            self.enterContext(mock.patch.object(page, "_nap", feed.nap))
+            run(page.scroll(until=upto(60)))
+            return [call.args for call in feed.mouse.wheel.call_args_list]
+
+        first, second = wheels(), wheels()
+        self.assertEqual(first, second)
+        self.assertGreater(len(first), 60 * 2)
+        self.assertTrue(any(delta < 0 for _, delta in first))
+
+    def test_at_most_two_tabs_of_one_login_scroll_at_once_with_human(self):
+        inside, most = 0, 0
+
+        async def step(self):
+            nonlocal inside, most
+            inside += 1
+            most = max(most, inside)
+            await asyncio.sleep(0.01)
+            inside -= 1
+            return True
+
+        async def four(style):
+            gate = asyncio.Semaphore(_browser.HUMAN_TABS)
+            scrollers = []
+            for _ in range(4):
+                page = _browser.Page(cast(Any, SimpleNamespace()), cast(Any, None))
+                page.gate = gate
+                scrollers.append(_browser._Scroller(page, None, idle=2.0, style=style, watch=None, height=0))
+            await asyncio.gather(*(scroller.step() for scroller in scrollers))
+
+        with mock.patch.object(_browser._Scroller, "_step", step):
+            for style, allowed in (("human", 2), ("fast", 4)):
+                most = 0
+                run(four(style))
+                self.assertEqual(most, allowed)
+
+
+class GateTest(BrowserCase):
+    """`RunBrowser.tab` gives the tabs of one login one gate, whoever held a tab before."""
+
+    def test_one_gate_per_login(self):
+        class Fake:
+            async def tab(self, *, by_script=False):
+                return _browser.Page(cast(Any, SimpleNamespace()), cast(Any, self), by_script=by_script)
+
+            async def add_cookies(self, jar):
+                pass
+
+        shared = _browser.RunBrowser(LOOP)
+        shared._browser = cast(Any, Fake())
+        one, other = _cookies.Jar([]), _cookies.Jar([])
+        first, second, third = (run(shared.tab(jar)) for jar in (one, one, other))
+        self.assertIs(first.gate, second.gate)
+        self.assertIsNot(first.gate, third.gate)
+        run(shared.release([third]))
+        self.assertIs(run(shared.tab(one)), third)
+        self.assertIs(third.gate, first.gate)
 
 
 class NavigationRaceTest(BrowserCase):

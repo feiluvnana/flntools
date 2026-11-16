@@ -80,7 +80,8 @@ The source mixes three ways of reading:
    first when a page loads.
 2. **Captured responses.** While a profile tab scrolls, flnd keeps the JSON of every response
    whose URL contains `graphql`, and reads the posts from them. It scrolls until the tab's
-   `page_info` says there is no next page.
+   `page_info` says there is no next page (`page_state`, the feed's cursor reader), which stops
+   the scroll at once, with no wait for silence.
 3. **The REST API** at `https://www.instagram.com/api/v1/`, the one the web client uses:
    - `media/<pk>/info/` for one post (`pk` is the post's numeric id, decoded from its code);
    - `feed/user/<id>/story/` for a user's active stories;

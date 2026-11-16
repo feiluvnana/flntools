@@ -172,7 +172,7 @@ class Profile:
         """Open profile on first call, or reload with watchers if `feeds` is needed later."""
         if self._loaded is None:
             if feeds:
-                self._posts = self.site.feed(is_feed_of("videos"), scroll=True)
+                self._posts = self.site.feed(is_feed_of("videos"), scroll=True, cursor=page_state)
                 self._stories = self.site.feed(is_feed_of("stories"))
             self._loaded = self._load()
             return self._loaded
@@ -234,7 +234,7 @@ class Profile:
 
     def _click_batches(self, category: str, css: str) -> Iterator[Any]:
         """Click a profile tab and yield its responses live while scrolling to the end."""
-        with self.site.feed(is_feed_of(category), scroll=True) as responses:
+        with self.site.feed(is_feed_of(category), scroll=True, cursor=page_state) as responses:
             try:
                 self.site.click(css, timeout=CLICK_TIMEOUT)
             # Nothing to click in time, or the tab closed: that tab is skipped.
@@ -250,7 +250,7 @@ class Profile:
     def _watch(self, *, posts: bool = False, stories: bool = False) -> bool:
         """Start feed watchers and load the profile page."""
         if posts:
-            self._posts = self.site.feed(is_feed_of("videos"), scroll=True)
+            self._posts = self.site.feed(is_feed_of("videos"), scroll=True, cursor=page_state)
         if stories:
             self._stories = self.site.feed(is_feed_of("stories"))
         self._loaded = self._load()
@@ -280,7 +280,7 @@ class Profile:
                 ended, old = yield from self._drain_posts(wanted, since, old)
                 if ended or self.found["videos"] or not has_captcha(self.site):
                     break
-                self._posts = self.site.feed(is_feed_of("videos"), scroll=True)
+                self._posts = self.site.feed(is_feed_of("videos"), scroll=True, cursor=page_state)
                 self.wait_out_captcha()
         finally:
             self._end()
@@ -500,6 +500,24 @@ def cdn_headers(cookies: Mapping[str, str]) -> Dict[str, str]:
     # CDN cookie carries tt_chain_token when session has one; sessionid always sent.
     cookie_header = f"tt_chain_token={token}; sessionid={sess}" if token else f"sessionid={sess}"
     return {"Referer": "https://www.tiktok.com/", "User-Agent": TIKTOK_UA, "Cookie": cookie_header}
+
+
+def page_state(data: Any) -> tuple[bool, str | None] | None:
+    """Whether one item-list response has a next page, and its cursor, for `site.feed(cursor=…)`.
+
+    Every list API (`FEEDS`) answers `{"itemList": [...], "hasMore": …, "cursor": "…"}`; a body
+    without `hasMore` (an error, a captcha's) says nothing.
+
+    Args:
+        data: a response's JSON.
+
+    Returns:
+        `(more, cursor)`, or None for a body that isn't a list's page.
+    """
+    if not isinstance(data, dict) or "hasMore" not in data:
+        return None
+    cursor = data.get("cursor")
+    return bool(data.get("hasMore")), str(cursor) if cursor not in (None, "") else None
 
 
 def items_of(data: Any) -> List[Dict[str, Any]]:

@@ -77,7 +77,8 @@ scrolling the page to its end. Each category listens for its own API paths:
 2. It reads the profile's own data (its picture and its video count) from the
    `__UNIVERSAL_DATA_FOR_REHYDRATION__` script in the page.
 3. `videos` and `playlists` share one scroll of the post list. Each item goes to `playlists` if
-   it has a playlist name, else to `videos`.
+   it has a playlist name, else to `videos`. The scroll ends when a list response says
+   `hasMore: false` (`page_state`, the feed's cursor reader).
 4. `stories` arrive with the page load, without scrolling; flnd waits up to 10 seconds for the
    network to go quiet.
 5. `reposts`, `liked` and `favorites` each click their tab (`data-e2e="repost-tab"`,

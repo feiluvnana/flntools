@@ -2,13 +2,17 @@
 
 The feed is a local page served by `server.py`. Each time the reader nears the bottom it
 fetches the next batch of 10 items from `/slow/items<n>.json`, which the server answers after
-50 ms; after 30 batches the feed says there is no more. So the data itself takes about 1.5 s to
-arrive, and the rest of a scroll's time is the scroller's own waiting.
+50 ms; each batch names the next one's cursor, and the 30th says there is no more. So the data
+itself takes about 1.5 s to arrive, and the rest of a scroll's time is the scroller's own.
 
 What it times: launching the browser, opening a tab, one `evaluate` round trip, reading the
-page as HTML and parsing it, an in-page `fetch` against flnd's HTTP client, scrolling to the end
-with today's default (`idle=10`, how long the scroller waits for silence before deciding the feed
-ended) and with `idle=2`, and closing.
+page as HTML and parsing it, an in-page `fetch` against flnd's HTTP client, reading the whole
+feed as a source does, and closing.
+
+The feed is read the way `site.feed(match, scroll=True, cursor=…)` reads one: a `Feed` over a
+target's `Tabs` in a `RunBrowser`, with the cursor reader below, once with `scroll = "human"`
+(the default, `scroll_default`) and once with `"fast"` (`scroll_fast`). A whole read ends on
+the 30th batch's word, with no idle wait.
 
 The browser runs on a loop thread of its own (`flnd._loop.Loop`), and every step is handed to it
 from this thread with `Loop.run`, as a source's listing thread does through `Site`'s verbs, so
@@ -25,7 +29,7 @@ import time
 from pathlib import Path
 
 import kit
-from flnd import _browser, _html, _http
+from flnd import _browser, _cookies, _html, _http
 from flnd._loop import Loop
 
 BATCHES = 30
@@ -55,13 +59,26 @@ def timed(work):
     return result, time.perf_counter() - start
 
 
+def cursor(batch):
+    """The feed's cursor reader: whether there is another batch, and its cursor."""
+    return batch["more"], batch.get("next")
+
+
+def read_feed(tabs: _browser.Tabs, url: str) -> int:
+    """Read the whole feed at `url` as a source does, and return how many batches came."""
+    with _browser.Feed(tabs, "/slow/items", scroll=True, cursor=cursor) as batches:
+        tabs.run(tabs.page.goto(url))
+        return sum(1 for _ in batches)
+
+
 def main() -> None:
     """Serve the feed, drive it in headless Chromium, and emit the report."""
     report = kit.Report("browser")
     with tempfile.TemporaryDirectory(prefix="flnd-bench-") as scratch, Loop() as loop:
         folder = Path(scratch)
         for n in range(BATCHES):
-            batch = {"items": [f"item {n}-{k}" for k in range(10)], "more": n < BATCHES - 1}
+            batch = {"items": [f"item {n}-{k}" for k in range(10)], "more": n < BATCHES - 1,
+                     "next": f"c{n + 1}" if n < BATCHES - 1 else None}
             (folder / f"items{n}.json").write_text(json.dumps(batch))
         (folder / "feed.html").write_text(FEED)
         with kit.serve(folder) as base:
@@ -90,20 +107,31 @@ def main() -> None:
             report.add("page_fetch", took / 50 * 1e3, "ms")
             _, took = timed(lambda: [_http.fetch(f"{base}/items1.json") for _ in range(50)])
             report.add("http_fetch", took / 50 * 1e3, "ms")
-            # `idle` left out is today's default of 10 s.
-            for name, tab, options in (("scroll_default", page, {}),
-                                       ("scroll_idle_2", loop.run(tab_at(f"{base}/feed.html")),
-                                        {"idle": 2})):
-                start = time.perf_counter()
-                loop.run(tab.scroll(**options))
-                took = time.perf_counter() - start
-                # A scroll that stopped early would look fast; only a whole feed counts.
-                rows = loop.run(tab.evaluate("list.children.length"))
-                if rows != BATCHES * 10:
-                    raise SystemExit(f"browser: {name} stopped at {rows} of {BATCHES * 10} rows")
-                report.add(name, took, "s")
             _, took = timed(lambda: loop.run(chrome.close()))
             report.add("close", took * 1e3, "ms")
+
+            # A target's tabs in a run's browser, as a source's feed gets them.
+            shared = _browser.RunBrowser(loop, headless=True)
+            try:
+                for name, style in (("scroll_default", _browser.HUMAN),
+                                    ("scroll_fast", _browser.FAST)):
+                    tabs = _browser.Tabs(shared, _cookies.Jar([]), scroll=style)
+                    try:
+                        # The tab is opened (and the browser launched) before the clock starts.
+                        _ = tabs.page
+                        start = time.perf_counter()
+                        batches = read_feed(tabs, f"{base}/feed.html")
+                        took = time.perf_counter() - start
+                        # A read that stopped early would look fast; only a whole feed counts.
+                        rows = tabs.run(tabs.page.evaluate("list.children.length"))
+                    finally:
+                        tabs.close()
+                    if (batches, rows) != (BATCHES, BATCHES * 10):
+                        raise SystemExit(f"browser: {name} stopped at {batches} batches, "
+                                         f"{rows} of {BATCHES * 10} rows")
+                    report.add(name, took, "s")
+            finally:
+                shared.close()
     report.emit()
 
 

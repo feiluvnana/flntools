@@ -329,7 +329,7 @@ class FetchTest(SiteCase):
         self.assertTrue(site.open(PAGE))
         [browser] = self.browsers
         # Visible (launch's default, so no headless=).
-        self.assertEqual(browser.options, {"stealth": False})
+        self.assertEqual(browser.options, {"stealth": False, "headless": False})
         self.assertEqual([cookie["name"] for cookie in browser.added], ["token"])
         self.assertEqual(site.url, PAGE)
         self.assertFalse(browser.closed)
@@ -339,7 +339,7 @@ class FetchTest(SiteCase):
     def test_the_default_browser_is_stealthy(self):
         _, site = self.open()
         site.open(PAGE)
-        self.assertEqual([browser.options for browser in self.browsers], [{"stealth": True}])
+        self.assertEqual([browser.options for browser in self.browsers], [{"stealth": True, "headless": False}])
 
     def test_before_a_page_the_tab_is_blank_and_no_browser_starts(self):
         _, site = self.open()
@@ -384,10 +384,14 @@ class FeedRaw(FakeRaw):
 
 
 class StubScroller:
-    """`Page.scroller` for a `FeedRaw`: a step delivers the next batch, and the feed ends with none left."""
+    """`Page.scroller` for a `FeedRaw`: a step delivers the next batch, and the feed ends with none left.
 
-    def __init__(self, raw):
+    It keeps the options it was made with in `raw.scroller_options`.
+    """
+
+    def __init__(self, raw, options):
         self.raw, self.scrolls = raw, 0
+        raw.scroller_options = options
 
     async def step(self):
         self.raw.scrolls += 1
@@ -401,7 +405,7 @@ class FeedTest(SiteCase):
         super().setUp()
 
         async def scroller(page, **options):
-            return StubScroller(page.raw)
+            return StubScroller(page.raw, options)
 
         patcher = mock.patch.object(Page, "scroller", scroller)
         patcher.start()
@@ -416,6 +420,41 @@ class FeedTest(SiteCase):
         self.assertEqual([data["n"] for data in responses], [1, 2, 3, 4])
         # The last scroll found nothing new: the feed ended, and watching stopped.
         self.assertEqual((self.raw.scrolls, self.raw.listening), (3, False))
+
+    def test_the_site_saying_no_more_ends_the_feed_without_another_scroll(self):
+        # The second page says it is the last; the batch after it is never scrolled for.
+        self.raw = FeedRaw([[{"n": 2, "next": None}], [{"n": 3, "next": "c3"}]])
+        run, site = self.open()
+
+        def cursor(page):
+            return bool(page["next"]), page["next"]
+
+        responses = site.feed("graphql", scroll=True, cursor=cursor)
+        run.loop.run(self.raw.emit("https://example.com/graphql", '{"n": 1, "next": "c1"}'))
+        self.assertEqual([data["n"] for data in responses], [1, 2])
+        self.assertEqual((self.raw.scrolls, self.raw.listening), (1, False))
+        self.assertTrue(responses.ended)
+
+    def test_a_cursor_that_keeps_coming_back_ends_the_feed(self):
+        # Once again is allowed (a page may send one request twice); a third time is the end.
+        self.raw = FeedRaw([[{"n": 2}], [{"n": 3}], [{"n": 4}], [{"n": 5}]])
+        _, site = self.open()
+        responses = site.feed("graphql", scroll=True, cursor=lambda page: (True, "same"))
+        self.assertEqual([data["n"] for data in responses], [2, 3, 4])
+        self.assertEqual(self.raw.scrolls, 3)
+
+    def test_the_feed_scrolls_in_the_sources_style_and_watches_its_capture(self):
+        class Quick(Example):
+            scroll = "fast"
+
+        for source, style in ((Example, "human"), (Quick, "fast")):
+            with self.subTest(style=style):
+                self.raw = FeedRaw([[{"n": 1}]])
+                _, site = self.open(source)
+                self.assertEqual([data["n"] for data in site.feed("graphql", scroll=True)], [1])
+                options = self.raw.scroller_options
+                self.assertEqual(options["style"], style)
+                self.assertIsInstance(options["watch"], _browser.Capture)
 
     def test_without_scrolling_it_waits_for_a_quiet_network_once(self):
         self.raw = FeedRaw([[{"n": 2}]])

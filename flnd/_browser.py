@@ -17,16 +17,28 @@ What it offers, from the bottom up:
   tabs for nested scrolling feeds, and up to `MAX_TABS` tabs pre-loading the pages it will open
   next ("warm" tabs). Its methods are plain functions, called from the user's own thread.
 - `Feed` iterates the JSON of the matching responses a user's tab receives, in order, scrolling
-  the tab for more when asked.
+  the tab for more when asked, and ending when the site's own cursor says there is no more.
 - `local_storage` reads a page's local storage in a copy of a Chrome profile, on a loop of its own.
 
-The main flow of a scrolled feed (`Feed(tabs, match, scroll=True)`):
-1. the feed starts a `Capture` on the user's tab (one call to the loop);
-2. the user loads a page; the page's own API calls arrive as responses, and the capture reads
-   each matching body on the loop, keeping their order;
+The main flow of a scrolled feed (`Feed(tabs, match, scroll=True, cursor=read)`):
+1. the feed starts a `Capture` on the user's tab (one call to the loop), which keeps the bodies
+   of the responses `match` takes: the feed's own API calls;
+2. the user loads a page; its API calls arrive as responses, and the capture reads each matching
+   body on the loop, keeping their order;
 3. iterating the feed parses the bodies that arrived, on the user's thread, and yields them;
+   `read` (the caller's cursor reader) says of each whether the site has another page;
 4. when none is waiting, it scrolls one step at a time (one call to the loop each) until one is,
-   or the scroller says the feed ended.
+   the cursor said there is no more, or the scroller says the feed went quiet.
+
+How a scroll step goes (`_Scroller`):
+1. it scrolls: `fast` jumps to the bottom; `human` glides down 1.2 to 1.8 screens in uneven
+   wheel steps, now and then after a small scroll back up;
+2. it watches for progress, a new matching response or the page growing, and at the very bottom
+   waits up to `WAIT` for it. `human` also pauses, as a reader looks at what came;
+3. progress, or room left to scroll, means go on; a bottom that stays quiet for `IDLE` more
+   seconds after a whole `WAIT` is the end of a feed whose site gave no cursor.
+
+There are no fixed sleeps: a step costs what the site takes to answer, plus the human pause.
 
 Rules a change must keep:
 - Playwright objects are used only on the loop's thread. Everything another thread holds (a
@@ -34,6 +46,8 @@ Rules a change must keep:
 - `RunBrowser.run` must not be called on the loop itself: it would wait for itself; code on the
   loop awaits instead.
 - Responses are kept in the order they arrived, even though their bodies are read at once.
+- With `human`, at most `HUMAN_TABS` tabs of one login scroll at once (`Page.gate`), whatever
+  holds them, since a person doesn't scroll many tabs of one account at the same moment.
 """
 
 from __future__ import annotations
@@ -42,6 +56,7 @@ import asyncio
 import base64
 import functools
 import json
+import math
 import os
 import random
 import re
@@ -50,7 +65,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -70,8 +85,8 @@ if TYPE_CHECKING:
     from playwright.async_api import Page as RawPage
 
 __all__ = [
-    "Browser", "Capture", "Feed", "Match", "Page", "RunBrowser", "Tabs", "Visit", "WaitError",
-    "launch", "local_storage",
+    "FAST", "HUMAN", "Browser", "Capture", "Feed", "Match", "Page", "Reader", "RunBrowser", "Tabs",
+    "Visit", "WaitError", "launch", "local_storage",
 ]
 
 # ---------------------------------------------------------------------------------------------
@@ -100,13 +115,13 @@ KEEP_VISIBLE = (
 )
 DEFAULT_VIEWPORT = (1280, 900)
 PAGE_HEIGHT = "(document.scrollingElement || document.documentElement).scrollHeight"
-# Half a screen from the end counts as the bottom, so a small scroll up doesn't reset the end rule.
-NEAR_BOTTOM = ("(() => { const page = document.scrollingElement || document.documentElement;"
-               " return page.scrollTop + innerHeight * 1.5 >= page.scrollHeight; })()")
+# Within a few pixels of the end counts as the bottom: a scroll position may be fractional.
+AT_BOTTOM = ("(() => { const page = document.scrollingElement || document.documentElement;"
+             " return page.scrollTop + innerHeight >= page.scrollHeight - 8; })()")
 # The same two reads for `scroll(within=…)`, on the element that scrolls instead of the page.
 ELEMENT_HEIGHT = "element => element.scrollHeight"
-ELEMENT_NEAR_BOTTOM = (
-    "element => element.scrollTop + element.clientHeight * 1.5 >= element.scrollHeight"
+ELEMENT_AT_BOTTOM = (
+    "element => element.scrollTop + element.clientHeight >= element.scrollHeight - 8"
 )
 VIEWPORT = "[innerWidth, innerHeight]"
 # A target's tab scrolls by script: a background tab gets no mouse events, so a wheel would stall
@@ -148,11 +163,45 @@ FETCH_TIMEOUT = 30.0
 # Chrome freed a response body (Network.getResponseBody) once its page moved on, seen 2026-11-13.
 GONE = ("Execution context was destroyed", "page is navigating",
         "No resource with given identifier found")
-# Seconds between two checks for a scroll's progress: short next to a page's load, cheap for DOM.
+# Seconds between two checks of a page's height while a scroll step watches for progress; a
+# matching response wakes the step at once instead.
 POLL = 0.05
-# The longest a scroll at the bottom waits for the page to grow, and the pause after it.
-SCROLL_WAIT = 3.0
-SCROLL_PAUSE = 0.3
+
+# -- scrolling: the two styles, and the numbers a step goes by --------------------------------
+# `human` (the default) scrolls as a person does, so the site flags it less as a bot (the user
+# asked for this on 2026-11-11); `fast` jumps to the bottom and never pauses.
+HUMAN = "human"
+FAST = "fast"
+SCROLLS = (HUMAN, FAST)
+# The longest a step at the very bottom waits for a matching response or for the page to grow.
+WAIT = 3.0
+# After a step's whole `WAIT` brought nothing, the seconds the bottom may stay quiet before the
+# feed counts as ended. Only a feed whose site gives no cursor ever ends this way.
+IDLE = 2.0
+# A human pause is lognormal: most are near the median, a few are much longer, never negative.
+# Its median is `LOOK` when the step brought new media (a reader looks at it), `GLANCE` when not.
+LOOK = 0.4
+GLANCE = 0.25
+# The lognormal's sigma: a pause is within about 0.7x and 1.4x its median two times in three.
+SPREAD = 0.35
+# No pause is longer than this many medians, so one unlucky draw can't stall a feed.
+LONGEST = 4.0
+# How a human step glides: one screen times a factor in this range, in this many wheel steps,
+# each `GLIDE` seconds apart (about 60 frames a second, unevenly). More than one screen, so a
+# feed that loads its next page near its end gets there in one step.
+SCREENS = (1.2, 1.8)
+WHEEL_STEPS = (3, 6)
+GLIDE = (0.008, 0.016)
+# The chance a human step first scrolls back up a little (part of a screen), as a reader goes
+# back to look at something, and the hesitation's median before going on down.
+BACK_UP = 0.07
+BACK_UP_SCREENS = (0.2, 0.5)
+HESITATE = 0.15
+# At most this many tabs of one login scroll at once with `human`.
+HUMAN_TABS = 2
+# The times one cursor may come back before a feed counts as stuck at its end. Once is allowed:
+# a page may send one request twice, and both answers name the same next page.
+REPEATS = 1
 # Seconds between two checks that a person finished a handoff (a captcha).
 HANDOFF_POLL = 1.0
 # Most tabs one target holds at once: its own, nested feeds' and the warm ones.
@@ -193,6 +242,10 @@ INSTALL_PERCENT = re.compile(r"(\d+)% of")
 SKIP_IN_PROFILE = shutil.ignore_patterns("Cache", "Code Cache", "GPUCache", "Service Worker")
 # What a feed takes as its match: a substring of the URL, a regex searched in it, or a predicate.
 Match = Union[str, "re.Pattern[str]", Callable[[str], bool]]
+# What a feed takes as its cursor reader: given one parsed body, `(more, cursor)` when the body is
+# one of the feed's pages (whether the site has another, and the next page's cursor if it names
+# one), or None when the body says nothing about paging.
+Reader = Callable[[Any], "tuple[bool, str | None] | None"]
 
 # Set when the Chromium download was declined (or couldn't be asked), so it isn't asked again.
 _chromium_declined = False
@@ -648,12 +701,18 @@ class Page:
         browser: the browser it belongs to.
         by_script: scroll the page by script instead of the mouse wheel (see `SCROLL_BY`); an
             element (`scroll(within=…)`) is always scrolled with the wheel.
+
+    Two attributes shape its scrolling: `random`, the source of every scroll's jitter (a test
+    seeds its own), and `gate`, the semaphore its login's tabs share so that at most
+    `HUMAN_TABS` of them scroll at once with `human` (None: no limit). `RunBrowser.tab` sets it.
     """
 
     def __init__(self, raw: RawPage, browser: Browser, *, by_script: bool = False):
         self.raw = raw
         self.browser = browser
         self.by_script = by_script
+        self.random = random.Random()
+        self.gate: asyncio.Semaphore | None = None
 
     @property
     def url(self) -> str:
@@ -843,42 +902,56 @@ class Page:
         return _http._checked(response, method) if check else response
 
     async def scroll(self, *, until: Callable[[], bool] | None = None,
-                     within: str | None = None, idle: float = 10.0) -> int:
-        """Scroll like a person until the feed ends or `until()`, and return the number of scrolls.
+                     within: str | None = None, idle: float = IDLE, style: str = HUMAN) -> int:
+        """Scroll until the feed ends or `until()`, and return the number of scrolls.
+
+        Here a step's progress is the page growing; `Feed` scrolls with its capture watched
+        (`scroller(watch=…)`), so a matching response counts too.
 
         Args:
             until: asked before each scroll, on the loop; True stops. It must not block.
             within: a CSS selector of an element that scrolls on its own; None scrolls the page.
-            idle: seconds without growth at the bottom before the feed counts as ended.
+            idle: seconds the bottom may stay quiet, after a whole `WAIT` brought nothing, before
+                the feed counts as ended.
+            style: `HUMAN` or `FAST` (see `_Scroller`).
 
         Returns:
             How many scrolls it made.
 
         Raises:
             Changed: `within` matches no visible element.
+            ValueError: `style` is neither.
         """
-        scroller = await self.scroller(within=within, idle=idle)
+        scroller = await self.scroller(within=within, idle=idle, style=style)
         while not (until is not None and until()) and await scroller.step():
             pass
         return scroller.scrolls
 
-    async def scroller(self, *, within: str | None = None, idle: float = 10.0) -> _Scroller:
+    async def scroller(self, *, within: str | None = None, idle: float = IDLE,
+                       style: str = HUMAN, watch: Capture | None = None) -> _Scroller:
         """A scroller for this tab, which `_Scroller.step` moves one scroll at a time.
 
         Args:
             within: as `scroll`'s.
             idle: as `scroll`'s.
+            style: as `scroll`'s.
+            watch: a capture on this tab whose new bodies count as progress; None watches only
+                the page's height.
 
         Returns:
             The scroller, with the page's height measured.
 
         Raises:
             Changed: `within` matches no visible element.
+            ValueError: `style` is neither `HUMAN` nor `FAST`.
         """
+        if style not in SCROLLS:
+            raise ValueError(f"scroll must be one of {', '.join(SCROLLS)}, not {style!r}")
         target = self.raw.locator(within).first if within is not None else None
         if target is not None and not await target.is_visible():
             raise Changed("scroll(within=…) found no visible element to scroll")
-        return _Scroller(self, target, idle, await self._height(target))
+        return _Scroller(self, target, idle=idle, style=style, watch=watch,
+                         height=await self._height(target))
 
     async def close(self) -> None:
         """Close the tab."""
@@ -918,7 +991,7 @@ class Page:
                     pass
         return fallback
 
-    # -- scrolling: the steps `_Scroller` takes -------------------------------------------------
+    # -- scrolling: what `_Scroller` asks of the tab -------------------------------------------
 
     async def _height(self, target: Locator | None) -> int:
         """The scrolled height of the page, or of `target`: its rise is progress."""
@@ -927,27 +1000,10 @@ class Page:
             else target.evaluate(ELEMENT_HEIGHT), 0, "measure the page")
 
     async def _at_bottom(self, target: Locator | None) -> bool:
-        return await self._steady(lambda: self.raw.evaluate(NEAR_BOTTOM) if target is None
-                                  else target.evaluate(ELEMENT_NEAR_BOTTOM),
+        """Whether the page, or `target`, is scrolled to its very end."""
+        return await self._steady(lambda: self.raw.evaluate(AT_BOTTOM) if target is None
+                                  else target.evaluate(ELEMENT_AT_BOTTOM),
                                   False, "measure the page")
-
-    async def _wait_for_growth(self, target: Locator | None, before: int, longest: float) -> int:
-        """Check every `POLL` s until the height passes `before` or `longest` s pass.
-
-        Args:
-            target: the element that scrolls, or None for the page.
-            before: the height to pass.
-            longest: the most seconds to wait; 0 or less measures once.
-
-        Returns:
-            The height last measured.
-        """
-        deadline = _time.now() + longest
-        while True:
-            height = await self._height(target)
-            if height > before or _time.now() >= deadline:
-                return height
-            await self.raw.wait_for_timeout(POLL * 1000)
 
     async def _area(self, target: Locator | None) -> tuple[float, float, float, float]:
         """The visible part of what scrolls, as (x, y, width, height) in the viewport's pixels.
@@ -981,101 +1037,195 @@ class Page:
             raise Changed("scroll(within=…) found its element outside the viewport")
         return left, top, right - left, bottom - top
 
-    async def _move(self, target: Locator | None) -> None:
-        """One scroll: by script two screens or so, or the mouse over the area and a wheel burst."""
-        left, top, width, height = await self._area(target)
-        if target is None and self.by_script:
-            await self._wheel(height * random.uniform(1.8, 2.6), target)
-            return
-        # The mouse lands somewhere in the middle of the area, never on one pixel each time.
-        await self.raw.mouse.move(left + width * random.uniform(0.25, 0.75),
-                                  top + height * random.uniform(0.3, 0.7),
-                                  steps=random.randint(1, 3))
-        await self._wheel(height * random.uniform(1.2, 1.8), target)
+    async def _roll(self, distance: float, target: Locator | None,
+                    area: tuple[float, float, float, float], *, steps: int) -> None:
+        """Scroll by `distance` pixels in `steps` uneven wheel steps, about `GLIDE` apart.
 
-    async def _wheel(self, distance: float, target: Locator | None) -> None:
-        """Scroll by `distance` pixels: by script, or the wheel in 4 to 7 uneven steps.
+        The page of a target's tab (`by_script`) scrolls by script, each step with its wheel
+        event (see `SCROLL_BY`); anything else gets the mouse over `area`, somewhere near its
+        middle, and real wheel events (`page.mouse.wheel`).
 
         Args:
             distance: pixels down; negative goes up.
             target: the element that scrolls, or None for the page.
+            area: the visible part of what scrolls, as `_area` gives it.
+            steps: wheel steps; 1 scrolls at once, with no wait.
         """
-        if target is None and self.by_script:
-            await self._steady(lambda: self.raw.evaluate(SCROLL_BY, distance), None,
-                               "scroll the page")
-            return
-        # Uneven frame-rate steps, so the wheel glides smoothly without ticking at one fixed rate.
-        weights = [random.uniform(0.6, 1.4) for _ in range(random.randint(4, 7))]
+        weights = [self.random.uniform(0.6, 1.4) for _ in range(steps)]
         total = sum(weights)
+        by_script = target is None and self.by_script
+        if not by_script:
+            left, top, width, height = area
+            # The mouse lands somewhere in the middle of the area, never on one pixel each time.
+            await self.raw.mouse.move(left + width * self.random.uniform(0.25, 0.75),
+                                      top + height * self.random.uniform(0.3, 0.7),
+                                      steps=self.random.randint(1, 3))
         for weight in weights:
-            await self.raw.mouse.wheel(0, distance * weight / total)
-            await self.raw.wait_for_timeout(random.uniform(5, 15))
+            part = distance * weight / total
+            if by_script:
+                await self._steady(lambda part=part: self.raw.evaluate(SCROLL_BY, part), None,
+                                   "scroll the page")
+            else:
+                await self.raw.mouse.wheel(0, part)
+            if steps > 1:
+                await self._nap(self.random.uniform(*GLIDE))
 
-    async def _pause(self, floor: float) -> None:
-        # Jitter only adds: a floor is the least a site is given, so it is never cut short.
-        await self.raw.wait_for_timeout(floor * random.uniform(1.0, 1.4) * 1000)
+    async def _nap(self, seconds: float, news: asyncio.Event | None = None) -> None:
+        """Wait `seconds`, or less when `news` is set meanwhile.
 
-    async def _jiggle(self, target: Locator | None, floor: float) -> None:
-        # Most feeds load the next page when their end comes back into view, so up a screen and
-        # down wakes them. The mouse is still over the area from the scroll before.
-        height = (await self._area(target))[3]
-        await self._wheel(-height, target)
-        await self._pause(floor)
-        await self._wheel(height, target)
+        Every wait of a scroll goes through here, so a test can make them take no time.
+
+        Args:
+            seconds: the longest to wait.
+            news: an event that ends the wait early when set; None waits the whole time.
+        """
+        if news is None:
+            await asyncio.sleep(seconds)
+            return
+        try:
+            await asyncio.wait_for(news.wait(), seconds)
+        except TimeoutError:
+            pass
 
 
 class _Scroller:
-    """Scrolls a tab one step at a time, and says when its feed ended.
+    """Scrolls a tab one step at a time, driven by what the page does, and says when it ended.
 
     Args:
         page: the tab.
         target: the element that scrolls, or None for the page.
-        idle: seconds without growth at the bottom before the feed counts as ended.
+        idle: seconds the bottom may stay quiet, after a whole `WAIT` brought nothing, before the
+            feed counts as ended.
+        style: `HUMAN` or `FAST`.
+        watch: a capture whose new bodies count as progress, or None.
         height: the height measured before the first step.
 
-    A step scrolls once. Away from the bottom that is all. At the bottom it waits up to
-    `SCROLL_WAIT` for the page to grow, then pauses `SCROLL_PAUSE`; when nothing grew it goes up a
-    screen and down again (a "jiggle"), and once `idle` seconds pass without growth the feed ended.
+    A step (`step`):
+    1. with `HUMAN`, waits for its turn: at most `HUMAN_TABS` tabs of one login scroll at once;
+    2. scrolls. `FAST` jumps past the bottom in one go. `HUMAN` glides down `SCREENS` screens in
+       `WHEEL_STEPS` uneven wheel steps, and now and then (`BACK_UP`) first goes up a little and
+       hesitates, as a reader going back to something does;
+    3. watches for progress: a body the capture read, or the page growing. With `HUMAN` it
+       pauses meanwhile, a lognormal time counted from the scroll: `GLANCE` at the median, or
+       `LOOK` once new media came. At the very bottom with nothing yet, it waits up to `WAIT`;
+    4. progress, or room left to scroll, means go on. A bottom where nothing came in a whole
+       `WAIT` starts the idle window: once the bottom stays quiet `idle` seconds more, the feed
+       has ended. A feed whose site says when it ends (`Feed`'s cursor) never gets that far.
     """
 
-    def __init__(self, page: Page, target: Locator | None, idle: float, height: int):
+    def __init__(self, page: Page, target: Locator | None, *, idle: float, style: str,
+                 watch: Capture | None, height: int):
         self._page = page
         self._target = target
         self._idle = idle
+        self._style = style
+        self._watch = watch
         self._height = height
         self._quiet_since: float | None = None
         self.scrolls = 0
 
     async def step(self) -> bool:
-        """Scroll once, and wait as the rules in the class's docstring say.
+        """Scroll once and watch, as the class's docstring says.
 
         Returns:
             False when the feed ended, so there is nothing more to scroll for; True otherwise.
         """
-        page, target = self._page, self._target
-        started = _time.now()
-        await page._move(target)
+        gate = self._page.gate
+        if self._style == HUMAN and gate is not None:
+            async with gate:
+                return await self._step()
+        return await self._step()
+
+    async def _step(self) -> bool:
+        """`step`'s work, once it is this tab's turn: scroll, watch, and say whether to go on.
+
+        Returns:
+            As `step`'s.
+        """
+        page, target, human = self._page, self._target, self._style == HUMAN
+        heard = self._watch.count if self._watch is not None else 0
+        before = self._height
+        # 2. Scroll.
+        await self._move()
         self.scrolls += 1
-        at_bottom = await page._at_bottom(target)
-        if not at_bottom:
-            longest = 0.0
-        elif self._quiet_since is None:
-            longest = SCROLL_WAIT
-        else:
-            longest = min(SCROLL_WAIT, self._quiet_since + self._idle - _time.now())
-        previous, self._height = self._height, await page._wait_for_growth(
-            target, self._height, longest)
+        moved = _time.now()
+        # 3. Watch, pausing meanwhile. One draw sets both pauses, so a step takes as many numbers
+        # from the random source whatever the page does, and a seeded run repeats.
+        scale = min(math.exp(page.random.gauss(0.0, SPREAD)), LONGEST) if human else 0.0
+        glance, look = GLANCE * scale, LOOK * scale
+        progressed = await self._progress(heard, before, moved + glance)
+        at_bottom = False
+        if not progressed:
+            at_bottom = await page._at_bottom(target)
         if at_bottom:
-            await page._pause(SCROLL_PAUSE)
-        if self._height > previous or not at_bottom:
+            deadline = moved + WAIT
+            if self._quiet_since is not None:
+                deadline = min(deadline, self._quiet_since + self._idle)
+            progressed = await self._progress(heard, before, deadline)
+        if human:
+            left = moved + (look if progressed else glance) - _time.now()
+            if left > 0:
+                await page._nap(left)
+        # 4. Go on, or count the quiet.
+        if progressed or not at_bottom:
             self._quiet_since = None
             return True
         if self._quiet_since is None:
-            self._quiet_since = started
-        if _time.now() - self._quiet_since >= self._idle:
-            return False
-        await page._jiggle(target, SCROLL_PAUSE)
-        return True
+            self._quiet_since = _time.now()
+            return True
+        # The same sum as the deadline above, so a wait that reached it is always the end.
+        return _time.now() < self._quiet_since + self._idle
+
+    async def _move(self) -> None:
+        """Scroll once, as the style says: a jump to the bottom, or a human glide."""
+        page, target = self._page, self._target
+        area = await page._area(target)
+        if self._style == FAST:
+            # Past the end: the browser stops at the bottom, wherever that is now.
+            await page._roll(self._height + area[3], target, area, steps=1)
+            return
+        rng = page.random
+        distance = area[3] * rng.uniform(*SCREENS)
+        if rng.random() < BACK_UP:
+            up = area[3] * rng.uniform(*BACK_UP_SCREENS)
+            await page._roll(-up, target, area, steps=rng.randint(*WHEEL_STEPS))
+            await page._nap(_lognormal(rng, HESITATE))
+            distance += up
+        await page._roll(distance, target, area, steps=rng.randint(*WHEEL_STEPS))
+
+    async def _progress(self, heard: int, before: int, deadline: float) -> bool:
+        """Watch for progress until `deadline`, a time on `flnd._time`'s clock.
+
+        Args:
+            heard: the capture's `count` before the scroll; a count past it is progress.
+            before: the height before the scroll; a height past it is progress.
+            deadline: when to give up.
+
+        Returns:
+            Whether progress came. The height last measured is kept for the next step.
+        """
+        page, watch = self._page, self._watch
+        news = watch.news if watch is not None else None
+        while True:
+            # Cleared before the count is read: a body read after that sets it again, so the nap
+            # below ends at once instead of missing it.
+            if news is not None:
+                news.clear()
+            if watch is not None and watch.count > heard:
+                return True
+            height = await page._height(self._target)
+            self._height = max(self._height, height)
+            if height > before:
+                return True
+            left = deadline - _time.now()
+            if left <= 0:
+                return False
+            await page._nap(min(POLL, left), news)
+
+
+def _lognormal(rng: random.Random, median: float) -> float:
+    """A lognormal pause around `median` seconds, `SPREAD` wide, at most `LONGEST` medians."""
+    return median * min(math.exp(rng.gauss(0.0, SPREAD)), LONGEST)
 
 
 class Capture:
@@ -1092,7 +1242,8 @@ class Capture:
     reads finish. A body Chrome already freed (its page moved on) is skipped.
 
     `items` is a deque: the loop appends and a listing thread pops, which a deque allows without a
-    lock. Everything else runs on the loop.
+    lock. Everything else runs on the loop. `count` and `news` are what a scroll step watches:
+    how many responses have had their turn so far, and an event set each time more have.
 
     Args:
         page: the tab it listens on.
@@ -1109,8 +1260,15 @@ class Capture:
         self._ready: dict[int, tuple[str, str] | None] = {}
         self._reads: set[asyncio.Task[None]] = set()
         self._stopped = False
+        # Set on the loop each time responses have their turn; a scroll step clears it and waits.
+        self.news = asyncio.Event()
         # One bound method, kept, so `remove_listener` gets the very object `on` was given.
         self.listener = self._heard
+
+    @property
+    def count(self) -> int:
+        """How many accepted responses have had their turn, an unreadable body included."""
+        return self._flushed
 
     def _heard(self, response: Response) -> None:
         """Playwright's call for each response the tab gets: number it and start reading it.
@@ -1149,6 +1307,7 @@ class Capture:
                 self._flushed += 1
                 if done is not None:
                     self.items.append(done)
+                self.news.set()
 
     async def settle(self) -> None:
         """Wait for the bodies still being read, so `items` holds every response heard so far."""
@@ -1185,20 +1344,26 @@ class RunBrowser:
     time it asks. (In flnd there is one per run, and its users are the targets.) Its coroutines
     run on the loop; `run` hands one to the loop from another thread.
 
+    The tabs of one login (one `jar`) share one `Page.gate`, so at most `HUMAN_TABS` of them
+    scroll at once with `human`, however many users hold them.
+
     Args:
         loop: the loop the browser lives on.
         stealth: hide `navigator.webdriver` (see `launch`).
+        headless: hide the window. A visible one (the default) lets a person solve a captcha.
     """
 
-    def __init__(self, loop: Loop, *, stealth: bool = True):
+    def __init__(self, loop: Loop, *, stealth: bool = True, headless: bool = False):
         self.loop = loop
         self._stealth = stealth
+        self._headless = headless
         self._browser: Browser | None = None
         # Made on the loop, the first time a tab is asked for: a lock belongs to its loop.
         self._launching: asyncio.Lock | None = None
         # One tab a finished target left, for the next target to reuse, so the window stays open.
         self._idle: list[Page] = []
-        self._jars: list[Any] = []
+        # Each login seen so far, by identity, with the gate its tabs share.
+        self._jars: list[tuple[Any, asyncio.Semaphore]] = []
 
     @property
     def headless(self) -> bool:
@@ -1232,20 +1397,22 @@ class RunBrowser:
             jar: the source's login cookies, added to the browser the first time they come.
 
         Returns:
-            The tab, which scrolls by script.
+            The tab, which scrolls by script, with the gate of `jar`'s tabs.
         """
         if self._launching is None:
             self._launching = asyncio.Lock()
         async with self._launching:
             if self._browser is None:
-                # Visible, so a person can solve a captcha in it.
-                self._browser = await launch(stealth=self._stealth)
-            if not any(seen is jar for seen in self._jars):
+                self._browser = await launch(stealth=self._stealth, headless=self._headless)
+            gate = next((gate for seen, gate in self._jars if seen is jar), None)
+            if gate is None:
                 await self._browser.add_cookies(jar)
-                self._jars.append(jar)
-        if self._idle:
-            return self._idle.pop()
-        return await self._browser.tab(by_script=True)
+                gate = asyncio.Semaphore(HUMAN_TABS)
+                self._jars.append((jar, gate))
+        page = self._idle.pop() if self._idle else await self._browser.tab(by_script=True)
+        # A tab another login left behind takes this login's gate.
+        page.gate = gate
+        return page
 
     async def release(self, pages: Iterable[Page]) -> None:
         """Take back a finished target's tabs: keep one open for the next target, close the rest.
@@ -1285,7 +1452,7 @@ class RunBrowser:
 class Tabs:
     """One user's tabs in a shared browser (in flnd, a target's), used from that user's thread.
 
-        tabs = Tabs(shared, jar)
+        tabs = Tabs(shared, jar, scroll="human")
         visit = tabs.run(tabs.page.goto(url))
         tabs.warm([next_url])          # starts loading it in another tab
         tabs.take_warm(next_url)       # makes that tab the target's own
@@ -1302,11 +1469,18 @@ class Tabs:
     Args:
         shared: the run's browser.
         jar: the source's login cookies.
+        scroll: how its feeds scroll: `HUMAN` (the default) or `FAST` (see `_Scroller`).
+
+    Raises:
+        ValueError: `scroll` is neither.
     """
 
-    def __init__(self, shared: RunBrowser, jar: Any):
+    def __init__(self, shared: RunBrowser, jar: Any, *, scroll: str = HUMAN):
+        if scroll not in SCROLLS:
+            raise ValueError(f"scroll must be one of {', '.join(SCROLLS)}, not {scroll!r}")
         self._shared = shared
         self._jar = jar
+        self.scroll = scroll
         self._page: Page | None = None
         self._stack: list[Page] = []
         self._idle: deque[Page] = deque()
@@ -1549,34 +1723,45 @@ def _not_an_asset(response: Response) -> bool:
 class Feed:
     """The JSON of the matching responses a target's tab receives; what `site.feed` returns.
 
-        with site.feed("/graphql", scroll=True) as pages:
+        with site.feed("/graphql", scroll=True, cursor=page_state) as pages:
             site.open(url)
             for page in pages: ...
 
     Iterating yields each body that arrived, oldest first. Then, with `scroll`, it scrolls the tab
-    one step at a time until another arrives, and ends when the scroller says the feed ended with
-    nothing new. Without `scroll`, it waits once for the network to go quiet (up to `QUIET`),
-    yields what came, and ends. Leaving `with`, or the end of the iteration, closes it.
+    one step at a time until another arrives (`_Scroller`, in the tabs' `scroll` style), and ends
+    when the feed ended:
+    - the site said so: `cursor` read a page with no next one, or the same cursor came back more
+      than `REPEATS` times (the site is answering the same page again);
+    - or, for a feed without a cursor reader, or whose site never said, the bottom stayed quiet
+      (`WAIT`, then `IDLE`).
+    Without `scroll`, it waits once for the network to go quiet (up to `QUIET`), yields what
+    came, and ends. Leaving `with`, or the end of the iteration, closes it.
 
-    Made on the listing thread, used there only.
+    Made on the listing thread, used there only; the cursor reader runs there too.
 
     Args:
         tabs: the target's tabs.
         match: which responses: a substring of the URL, a regex searched in it, or a predicate.
         scroll: scroll for more when none is waiting.
         lines: a body holds one JSON value per line (NDJSON), not one in all.
+        cursor: reads each parsed value (each line, with `lines`), as `Reader` says; None never
+            ends the feed on the site's word.
     """
 
-    def __init__(self, tabs: Tabs, match: Match, *, scroll: bool = False, lines: bool = False):
+    def __init__(self, tabs: Tabs, match: Match, *, scroll: bool = False, lines: bool = False,
+                 cursor: Reader | None = None):
         self._tabs = tabs
         self._matches = _matcher(match)
         self._scroll = scroll
         self._lines = lines
+        self._cursors = _Cursors(cursor)
         self._closed = False
         self._waiting: deque[Any] = deque()
         tabs.push(self, scroll=scroll)
         self._page = tabs.page
         self._capture: Capture = tabs.run(self._page.capture(self._accepts))
+        # Made at the first scroll, and again after `adopt` moves the feed to another tab.
+        self._scroller: _Scroller | None = None
         self._items = self._iterate()
 
     def _accepts(self, response: Response) -> bool:
@@ -1593,6 +1778,11 @@ class Feed:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+    @property
+    def ended(self) -> bool:
+        """Whether the site said the feed has no more pages (see the class's docstring)."""
+        return self._cursors.ended
 
     def close(self) -> None:
         """Stop listening and give back a tab it pushed; a second call does nothing."""
@@ -1620,6 +1810,7 @@ class Feed:
             if self._matches(url):
                 self._parse(url, body)
         self._capture = self._tabs.run(page.capture(self._accepts))
+        self._scroller = None
 
     def _iterate(self) -> Iterator[Any]:
         """The bodies, scrolling or waiting once for more as the class's docstring says.
@@ -1647,15 +1838,19 @@ class Feed:
         """Scroll step by step, one call to the loop each, until a body is waiting.
 
         Returns:
-            True when one is; False when the feed ended without one.
+            True when one is; False when the feed ended, the bodies still being read included.
         """
-        scroller = None
         while not self._fill():
-            if scroller is None:
-                scroller = self._tabs.run(self._page.scroller())
-            if not self._tabs.run(scroller.step()):
-                self._tabs.run(self._capture.settle())
-                return self._fill()
+            if not self._cursors.ended:
+                if self._scroller is None:
+                    self._scroller = self._tabs.run(self._page.scroller(
+                        style=self._tabs.scroll, watch=self._capture))
+                if self._tabs.run(self._scroller.step()):
+                    continue
+            # The end: the site said so, or the page went quiet. A body still being read is
+            # waited for, since it may be the last page.
+            self._tabs.run(self._capture.settle())
+            return self._fill()
         return True
 
     def _arrived(self) -> Iterator[Any]:
@@ -1671,7 +1866,7 @@ class Feed:
         return bool(self._waiting)
 
     def _parse(self, url: str, body: str) -> None:
-        """Parse `body`, or each line of it with `lines`, into `_waiting`.
+        """Parse `body`, or each line of it with `lines`, into `_waiting`, reading its cursor.
 
         Args:
             url: where it came from, named in the debug line for a piece that isn't JSON.
@@ -1680,11 +1875,54 @@ class Feed:
         pieces = [line for line in body.splitlines() if line.strip()] if self._lines else [body]
         for piece in pieces:
             try:
-                self._waiting.append(json.loads(piece))
+                value = json.loads(piece)
             # A piece that isn't JSON (an HTML error page, say) is skipped; the others still count.
             except ValueError:
                 ui.debug("responses: skipped a body that is not JSON from {url}",
                          url=_text.redact(url))
+                continue
+            self._waiting.append(value)
+            self._cursors.read(value)
+
+
+class _Cursors:
+    """What a feed's pages said about the next one, and whether the site said there is none.
+
+        cursors = _Cursors(lambda page: (page["more"], page.get("next")))
+        cursors.read({"more": True, "next": "c2"})
+        cursors.ended                                # False
+        cursors.read({"more": False})
+        cursors.ended                                # True
+
+    Used by `Feed`, and by test fakes that stand in for one, so both end the same way.
+
+    Args:
+        reader: the source's cursor reader (see `Reader`); None reads nothing and never ends.
+    """
+
+    def __init__(self, reader: Reader | None):
+        self._reader = reader
+        self._seen: Counter[str] = Counter()
+        self.ended = False
+
+    def read(self, value: Any) -> None:
+        """Read one parsed value: a page with no next one, or a cursor seen too often, ends it.
+
+        Args:
+            value: one body, or one line of an NDJSON body.
+        """
+        if self._reader is None or self.ended:
+            return
+        state = self._reader(value)
+        if state is None:
+            return
+        more, cursor = state
+        if not more:
+            self.ended = True
+            return
+        if cursor is not None:
+            self._seen[cursor] += 1
+            self.ended = self._seen[cursor] > 1 + REPEATS
 
 
 # ---------------------------------------------------------------------------------------------
