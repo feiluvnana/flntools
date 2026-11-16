@@ -22,13 +22,14 @@ import os
 import sqlite3
 import threading
 from collections.abc import Iterator, MutableMapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar, Union, overload
 
 import msgspec
 
 import shared
+from shared import _fs as fs
 from shared._query import Plan, Query, run as run_plan
 
 __all__ = ["ClosedError", "Db", "Error", "Row", "Rows", "Table", "open"]
@@ -355,6 +356,18 @@ def _is_sqlite(path: Path) -> bool:
 
 def _convert(path: Path) -> None:
     """Rewrite a JSON store (`{table: {key: value}}`) as SQLite, in place and atomically."""
+    held = path.with_name(f".{path.name}.convert.lock")
+    try:
+        # Two openers of one old store would each rebuild the same staged file.
+        with fs.lock(held):
+            if not _is_sqlite(path):
+                _rewrite(path)
+    finally:
+        with suppress(OSError):
+            held.unlink(missing_ok=True)
+
+
+def _rewrite(path: Path) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:

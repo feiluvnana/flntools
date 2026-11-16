@@ -225,6 +225,42 @@ class ConvertTest(unittest.TestCase):
                 gc.collect()
             self.assertEqual([w for w in caught if w.category is ResourceWarning], [])
 
+    def test_two_openers_convert_a_json_store_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "old.db"
+            path.write_text(json.dumps({"kv": {"a": 1}}))
+            real = store._convert
+            first = threading.Event()
+
+            def slow(target):
+                # The first opener converts slowly; the second arrives while it is still writing.
+                if not first.is_set():
+                    first.set()
+                    time.sleep(0.2)
+                real(target)
+
+            with mock.patch.object(store, "_convert", side_effect=slow):
+                opened, errors = [], []
+
+                def open_it():
+                    try:
+                        opened.append(store.open(path))
+                    except store.Error as error:
+                        errors.append(error)
+
+                threads = [threading.Thread(target=open_it) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                    first.wait()
+                for thread in threads:
+                    thread.join()
+            self.assertEqual((len(opened), errors), (2, []))
+            for db in opened:
+                db["kv"]["b"] = 2
+                db.close()
+            with store.open(path) as db:
+                self.assertEqual(dict(db["kv"].items()), {"a": 1, "b": 2})
+
     def test_a_damaged_json_store_raises(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "bad.db"
