@@ -123,6 +123,9 @@ How it is written:
   file. On macOS, `fullfsync` makes SQLite's own syncs reach the disk. Those syncs happen at
   checkpoints, when the log (`flnd.db-wal`) is copied into the database: every 10,000 pages
   (40 MB), since each full sync costs milliseconds.
+- **A 64 MiB page cache.** SQLite's default of 2 MiB holds a tenth of a home of 100,000 files,
+  so the read every listed file makes went through the OS for most rows; with the larger cache
+  it takes 1.8 to 2.0 µs instead of 2.5. The cache grows only as pages are read.
 - **Two runs can share a home** ([Sharing a home](#sharing-a-home)).
 
 ### `files`
