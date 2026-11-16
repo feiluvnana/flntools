@@ -32,14 +32,13 @@ import datetime
 import os
 import re
 import threading
-import tomllib
 import weakref
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd._events import Login, Record, Tracked
+from flnd._events import Checked, Login, Record, Tracked
 from flnd._run import Run
 from flnd.errors import UsageError
 
@@ -54,8 +53,6 @@ HOME_VARIABLE = "FLND_HOME"
 DEFAULT_HOME = ".flnd"
 # The kinds `files(kind=...)` filters by.
 KINDS = ("image", "video", "audio")
-# The home's settings file; `again` under `[defaults]` is the one setting the library reads.
-CONFIG = "config.toml"
 # What `when` takes; the message of its usage error.
 WHEN_USAGE = ("when takes a year (2026), a month (2026-06), a day (2026-06-15), a range of "
               "those (2026-01..2026-03, 2026-01.., ..2026-03), or a span back from today "
@@ -382,30 +379,34 @@ class Flnd:
             found.append(record)
         return found
 
-    def check(self, *, fix: bool = False) -> list[Record]:
+    def check(self, *, fix: bool = False) -> Checked:
         """Compare the history with the disk: files missing, unknown, or of the wrong size.
 
-        Not built yet: it comes with the home's single database.
+        It reads every row and walks the home's `media/` folder once; nothing is fetched.
+        `fix=True` makes the history match the disk, and never deletes, moves or downloads a
+        file: a missing file's row goes, a file of the wrong size gets its row's size and hash
+        from the disk, and an unknown file is adopted, by its `(target, post, file)` key where
+        a failed run recorded one (docs/storage, "Checking a home").
 
         Args:
-            fix: also repair what can be repaired.
+            fix: also repair the history; False only reports.
 
         Returns:
-            Never returns today.
+            What was found; `checked.ok` says whether history and disk now agree.
 
         Raises:
-            UsageError: always, until it is built.
+            DiskError: the media folder can't be read, or `flnd.db` written.
 
         Example:
             >>> import flnd
             >>> with flnd.open("example-home") as fl:
-            ...     fl.check()
-            Traceback (most recent call last):
-            ...
-            flnd.errors.UsageError: check isn't built yet
+            ...     fl.check().ok
+            True
         """
-        raise UsageError("check isn't built yet",
-                         hint="a download or sync already finds files missing from the disk")
+        from flnd import _check, _home
+
+        with _home.open(self.home) as db:
+            return _check.check(self.home, db, fix=fix)
 
     # -----------------------------------------------------------------------------------------
     # Logins and sources
@@ -676,20 +677,11 @@ def _settings(home: Path) -> bool:
         The setting.
 
     Raises:
-        UsageError: the file isn't TOML, or `again` isn't true or false.
+        UsageError: the file isn't TOML, or one of its settings has a value it doesn't take.
     """
-    path = home / CONFIG
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
-    defaults = data.get("defaults", {})
-    again = defaults.get("again", False) if isinstance(defaults, dict) else False
-    if not isinstance(again, bool):
-        raise UsageError(f"{path}: again is true or false, not {again!r}")
-    return again
+    from flnd.options import config
+
+    return config(home).again
 
 
 def _when(text: str | None) -> Range:

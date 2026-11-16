@@ -325,9 +325,6 @@ flnd/job.py:Ledger._first_key: no Returns:
 flnd/job.py:Ledger._held: Args: no dest
 flnd/job.py:Ledger._held: Args: no item_key
 flnd/job.py:Ledger._held: no Returns:
-flnd/job.py:Ledger._link: Args: no category
-flnd/job.py:Ledger._link: Args: no dest
-flnd/job.py:Ledger._link: Args: no holder
 flnd/job.py:Ledger._load_asked: no Returns:
 flnd/job.py:Ledger._name: Args: no path
 flnd/job.py:Ledger._name: no Returns:

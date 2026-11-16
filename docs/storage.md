@@ -14,7 +14,7 @@ side by side in it.
   flnd.db          what the home remembers: files, posts, targets, runs, failures, …
   secrets.db       the vault: logins and tokens, each sealed (AES-256-GCM)
   secret.key       the vault's key (mode 0600)
-  config.toml      settings (optional)
+  config.toml      settings (optional): `[defaults]` again, dedupe, sidecars
   media/
     <code>/<target>/<category>/…   the downloaded files
   cache/           things safe to delete
@@ -55,7 +55,9 @@ digest: `<head>.<digest>.part`.
 A download's part:
 1. is opened and locked before any request is sent (see [Sharing a home](#sharing-a-home));
 2. is written as the bytes arrive, from every mirror and retry of the file, and checked through
-   the open file: a web page where a photo was expected is removed, never renamed;
+   the open file: a web page where a photo was expected is removed, never renamed. Its SHA-256
+   is computed from the same bytes as they are written; a part resumed from an earlier run, or
+   written by a tool (ffmpeg joining a DASH video), is read back once instead;
 3. gets its post's day, at noon UTC, as its modified time, set on the open file just before it
    closes (the rename keeps it); with no post date, the server's `Last-Modified` day;
 4. is renamed under the name its content calls for (`a.jpg` holding a WebP lands as `a.webp`);
@@ -105,7 +107,8 @@ How it is written:
 - **One transaction per post.** A post's files are downloaded side by side; their rows are
   committed together, in one statement, once the post's last file is in place. A row is never written before its
   file, so a crash leaves at worst a whole file without a row, which the next run finds on disk
-  and skips. The `flnd.Saved` events of a post follow its commit.
+  and skips. The `flnd.Saved` events of a post follow its commit, each once the steps after
+  its file (compress, the sidecar) are done.
 - **WAL with `synchronous = NORMAL`.** A power cut can lose the last commits, never corrupt the
   file. On macOS, `fullfsync` makes SQLite's own syncs reach the disk. Those syncs happen at
   checkpoints, when the log (`flnd.db-wal`) is copied into the database: every 10,000 pages
@@ -130,22 +133,80 @@ while the file at its `path` is there, and also a file already on disk at its pl
 | `estimated` | 1 when the day was guessed from the posts around it |
 | `kind` | `image`, `video` or `audio`, by its name |
 | `files` | on the first file of a post of several, how many files the post has: it tells a run whether a post listed again is whole |
-| `state` | where it stands with the site: `saved`, or `gone` when the site answered 404 or 410 |
+| `state` | where it stands with the site: `saved`, or `gone` when the site answered 404 or 410; `link` for a second name of a saved file in another category's folder (see [Links](#links)) |
 | `at` | when it was saved, in UTC, ISO 8601 |
 | `shrink` | what `--compress` did: `compressed`, `kept` (nothing smaller passed) or `failed`; empty when it never ran ([media.md](media.md)) |
 | `tools` | with `shrink`: the encoders and versions it ran with, such as `pillow 13.0.0 libavif 1.4.2`; a `kept` or `failed` file is tried again when these change |
 | `before` | on a compressed file: the original's size in bytes (`size` is the new one, and `path` the new path when the suffix changed) |
 | `unpacked` | on an archive: `extracted`, or `failed` (a wrong password, a damaged or unsafe archive, no 7-Zip) |
 | `folder` | on an extracted archive: the folder it was extracted into. With `--compress` the archive itself is removed, and this folder counts as the saved file |
-| `hash`, `format`, `sidecar` | for steps that don't exist yet; empty |
+| `hash` | the SHA-256 of its bytes (32 bytes); after `--compress`, of the compressed file. Empty on a row from before hashes |
+| `sidecar` | where its sidecar is, `<path>.json`, when sidecars are on (see [Sidecars](#sidecars)) |
+| `format` | for a step that doesn't exist yet; empty |
 
 Indexed on `(target, post_id)`, on `hash` where there is one, and on the undated rows of each
 target, so the source's `date` hook finds them without reading the rest. There is no index on
-`path` yet: nothing looks a file up by its path, and each index costs every commit a page.
+`path` yet: `check` reads every row once instead of looking files up by path, and each index
+costs every commit a page.
 
 **Gone files.** When the site answers 404 or 410 for a file (deleted, private, never there), its
 row is `gone`: later runs skip it without asking. The CLI's `--again`, or `again = true` under
 `[defaults]` in `config.toml` for the library, asks for it again (and lists every post again).
+
+### Dedupe
+
+The same file is often saved twice: a repost under another account, a photo in two albums. When
+a file lands, its hash is looked up (one indexed query); if a saved file has the same bytes and
+is on disk at the size its row says, the new file is replaced, atomically, by a **hard link** to
+it. Both paths stay real files, both rows stay, and the bytes are on disk once. A hard link has
+one modified time, so the second file shows the first one's day, and its row says so.
+
+- It is on by default. `dedupe = "off"` under `[defaults]` in `config.toml` keeps both copies.
+- A file system that can't hard-link (FAT and exFAT drives, a link across two volumes) keeps both
+  copies, with one warning per run.
+- A hard link is one file: editing it in one folder edits it in the other.
+- **Compress keeps the links.** A file and its links are compressed once: the result is linked at
+  every path that shared the original (each with the new suffix: `a.jpg` and `b.jpg` become
+  `a.avif` and `b.avif`, still one file), and every row moves in one transaction, before the old
+  names are removed. A copy with the same bytes that isn't linked to it is left alone.
+
+### Links
+
+A file listed in two categories of one target (a video that is also a reel) is downloaded once,
+into the first category's folder, and the second gets a relative symlink to it (or a hard link
+where symlinks are refused). The link has a row of its own, keyed `<file's key>@<category>`, in
+state `link`, with the file's hash: so `check` knows it, and when compress gives the file a new
+suffix, the link is made again pointing at the new name, instead of dangling. A `link` row counts
+toward no post and no target's files.
+
+### Sidecars
+
+With `sidecars = true` under `[defaults]` in `config.toml` (off by default), each saved file gets
+`<file>.json` beside it, with its post's metadata:
+
+```json
+{
+  "source": "ins",
+  "target": "ins:example_user",
+  "post": "C1abc",
+  "category": "posts",
+  "date": "2026-01-02",
+  "url": "https://example.com/p/C1abc",
+  "file": "https://cdn.example.com/v/1.jpg",
+  "caption": "a day out",
+  "author": "example_user",
+  "tags": ["beach"],
+  "fields": {"caption": "a day out", "author": "example_user", "tags": ["beach"]}
+}
+```
+
+`caption`, `author` and `tags` are read from the post's fields under the names sources give
+them (`caption`, `text`, `description` or `title`; `author`, `user`, `username`, `owner` or
+`channel`; `tags` or `hashtags`), and are `null` when the source gives none; `fields` holds every
+field as the source gave it. `file` is the file's own URL without its query, which may carry a
+signature. The sidecar is written after compress, so it is named after the final file, and a
+later `sync --compress` that renames the file renames its sidecar too. Its path is in the row's
+`sidecar`.
 
 ### `posts`
 
@@ -227,6 +288,30 @@ The first time flnd opens such a home, it migrates it:
 **The old files are never changed or deleted**, so the previous flnd still runs on the home if
 you go back to it (it won't see what the new one downloaded). Once you're sure you won't go back,
 delete `metadata/`.
+
+## Checking a home
+
+`flnd check` (`fl.check()` in a script) compares the history with the disk, and `--fix`
+(`fix=True`) makes the history match the disk. It reads every row once, with one `stat` each, and
+walks `media/` once. It never deletes, moves or downloads a file.
+
+| found | what it means | what `--fix` does |
+| --- | --- | --- |
+| missing | a row's file isn't there (removed by hand, or a disk lost it) | removes the row, so `flnd download <target> --again` can fetch it again |
+| wrong size | a saved file's size isn't its row's (cut short, or changed by another program) | takes the size, time and hash from the disk |
+| unknown | a file under `media/` no row names | adopts it: gives it a row |
+
+An unknown file is usually one a run renamed into place and then crashed before writing its
+row. It is adopted by its `(target, post, file)` key: when a run recorded a failure for that
+path, the file takes the failure's key, target and post; else its target is the folder it is in
+(`media/<code>/<target>/…`) and its key is `<code>:<target folder>/<path under it>`, numbered
+(`#2`) if that key is taken. Either way, a later run that lists the file finds it on disk and
+skips it, so nothing is downloaded twice.
+
+These are never unknown: parts and what sits beside them, hidden files (`.DS_Store`), symlinks,
+a hard link of a known file, a known file's sidecar, anything inside the folder an archive was
+extracted to, and a file renamed into place in the last minute (another run may be about to
+write its row). An archive removed once extracted isn't missing while its folder is there.
 
 ## Sharing a home
 

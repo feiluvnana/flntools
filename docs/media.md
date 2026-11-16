@@ -10,19 +10,24 @@ Every saved file goes through one fixed chain of steps. Each is on or off by its
 order never changes, so no combination can compress a file before dedupe has linked it:
 
 ```
-download → dedupe → unpack → compress → date → place → record → sidecar → exec → Saved
+download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → Saved → --exec
 ```
 
 | step | when | what it does |
 | --- | --- | --- |
-| download | always | the file streams into `<name>.part` beside its final name |
-| dedupe | not built yet | the same bytes saved elsewhere become a link |
+| download | always | the file streams into `<name>.part` beside its final name, and its SHA-256 is computed from the same bytes |
+| dedupe | on unless `[defaults] dedupe = "off"` | a file whose bytes are already saved becomes a hard link to them ([storage.md](storage.md#dedupe)) |
 | unpack | an archive | extracts it into a folder of its name (below) |
 | compress | `--compress` | a smaller file that still looks the same replaces it (below) |
 | date | always | the post's day becomes the file's modified time |
 | place | always | the part is renamed onto the final name |
 | record | always | the file's history row is written |
-| sidecar, exec | not built yet | |
+| sidecar | `[defaults] sidecars = true` | the post's metadata as `<file>.json` beside it ([storage.md](storage.md#sidecars)) |
+| Saved | always | the run's `flnd.Saved` event, with the file's final path and size |
+| exec | `--exec CMD` (the CLI) | runs CMD for the `Saved` file, never through a shell ([cli.md](cli.md#running-a-command-per-file)) |
+
+A file and the hard links dedupe made of it are compressed once: the result is linked at every
+one of their paths, and their rows move together in one transaction.
 
 Unpack and compress are slow (seconds for a video, minutes for a large archive), so they don't
 run on the download's thread. Once a file's history row is written, it is handed to the run's

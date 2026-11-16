@@ -12,6 +12,13 @@ flnd.Changed.response: attribute
 flnd.Changed.retryable: attribute
 flnd.Changed.status: attribute
 flnd.Changed.target: attribute
+flnd.Checked(files: int = 0, missing: tuple[flnd._events.Record, ...] = (), unknown: tuple[pathlib.Path, ...] = (), resized: tuple[flnd._events.Record, ...] = (), fixed: bool = False)
+flnd.Checked.files: attribute -> int
+flnd.Checked.fixed: attribute -> bool
+flnd.Checked.missing: attribute -> tuple[Record, ...]
+flnd.Checked.ok: property -> bool
+flnd.Checked.resized: attribute -> tuple[Record, ...]
+flnd.Checked.unknown: attribute -> tuple[Path, ...]
 flnd.DiskError(flnd.Error)
 flnd.DiskError.hint: attribute
 flnd.DiskError.retryable: attribute
@@ -28,7 +35,7 @@ flnd.Failed.post: attribute -> str
 flnd.Failed.target: attribute -> Target
 flnd.Flnd(home: str | os.PathLike[str] | None = None, *, again: bool | None = None)
 flnd.Flnd.add(source: type[Source]) -> None
-flnd.Flnd.check(*, fix: bool = False) -> list[Record]
+flnd.Flnd.check(*, fix: bool = False) -> Checked
 flnd.Flnd.close() -> None
 flnd.Flnd.download(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, limit: int | None = None, compress: bool = False, dry: bool = False) -> Run
 flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: str | None = None) -> list[Record]

@@ -68,7 +68,7 @@ flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] 
 | `--compress` | off | replace each saved photo and video by a smaller copy that looks the same, when one passes every check, and remove each archive once it is extracted ([media.md](media.md)) |
 | `--dry` | off | list what would be downloaded (each file `new` or `saved`, or the targets a search finds), and download and write nothing |
 | `--again` | off | list every post again, past the stop at saved posts and the saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise recorded gone and skipped ([storage.md](storage.md)); `again = true` under `[defaults]` in the home's `config.toml` makes it the default |
-| `--exec CMD` | none | run a command for each saved file, without a shell. Not built yet: a usage error |
+| `--exec CMD` | none | run a command once for each saved file, after every step (compress included), without a shell: see [Running a command per file](#running-a-command-per-file) |
 
 Archives (`.zip`, `.7z`, `.rar`, `.tar*`) are always extracted beside themselves, into a folder
 of their name; without `--compress` the archive is kept too. 7z and RAR need 7-Zip (`7zz`), and
@@ -85,7 +85,37 @@ flnd download ins:example_user --only posts --compress
 cat targets.txt | flnd download
 ```
 
-A file already saved is skipped, so downloading a target again fetches only what is new.
+A file already saved is skipped, so downloading a target again fetches only what is new. A
+file whose bytes another target already saved becomes a hard link to that file, so it takes no
+more space ([storage.md](storage.md#dedupe)).
+
+### Running a command per file
+
+`--exec CMD` runs CMD for each saved file, as the run goes, one at a time and in the order the
+files finish. It never starts a shell: CMD is split into arguments once, the way a POSIX shell
+splits words (`shlex`), and then run directly. A file name comes from a site, so it can't be
+trusted; it only ever fills a placeholder inside one argument, and is never read as a command.
+
+| placeholder | environment | what it becomes |
+| --- | --- | --- |
+| `{path}` | `FLND_PATH` | the file's final path: after `--compress`, the compressed file's |
+| `{target}` | `FLND_TARGET` | the target it was saved for, `ins:example_user` |
+| `{post}` | `FLND_POST` | the post's id, as the site gives it |
+
+```sh
+flnd download ins:example_user --exec 'cp {path} /Volumes/backup/'
+flnd sync --exec 'notify-me --title {target} {path}'
+flnd sync --exec 'sh -c "echo \"$FLND_PATH\" >> saved.txt"'
+```
+
+A placeholder is filled inside the argument it is in, and the value is never read again, so a
+name holding `;`, `$(…)` or `{post}` stays plain text. To use a shell's features, call the shell
+yourself, as the last example does, and read the values from the environment, never by pasting
+`{path}` into the shell's script. CMD's program must be on your PATH (or a full path), and a
+mistake in CMD (unclosed quotes, no such program) is a usage error before anything is
+downloaded. A command that exits non-zero prints a line on standard error and the run goes on.
+With `--json`, the command's output goes to standard error, so standard output stays JSON. On
+Windows, backslashes in CMD are kept as they are, for paths, and only double quotes group words.
 
 ## `flnd follow`
 
@@ -133,7 +163,30 @@ flnd ls
 flnd ls ins:example_user --json
 ```
 
-## `flnd status`, `flnd retry`, `flnd check`
+## `flnd check`
+
+Compare the history with the disk: files missing, unknown, or of the wrong size.
+
+```sh
+flnd check [--fix]
+```
+
+It reads every row of `flnd.db` and walks the home's `media/` folder once; nothing is fetched.
+Each problem prints one line (`missing`, `unknown` or `wrong size`, then the path), and a last
+line counts them. It exits 0 when history and disk agree, and 1 when they don't.
+
+`--fix` makes the history match the disk. It never deletes, moves or downloads a file:
+
+- a **missing** file's row is removed, so `flnd download <target> --again` can fetch it again;
+- a file of the **wrong size** gets its row's size and hash from the disk;
+- an **unknown** file under `media/` is adopted into the history, so a later run skips it. A
+  crash between a file's rename and its row leaves such a file: if the run recorded a failure
+  for that path, the file takes that failure's key, target and post.
+
+[storage.md](storage.md#checking-a-home) says what check passes over and how a file is adopted.
+With `--json`, it prints one `{"type": "Checked", ...}` object.
+
+## `flnd status`, `flnd retry`
 
 Not built yet; each is a usage error for now.
 
@@ -141,8 +194,6 @@ Not built yet; each is a usage error for now.
   failures.
 - `flnd retry` will download again the files the last run failed on. Today the next download or
   sync of a target takes its failed files again.
-- `flnd check [--fix]` will compare the history with the disk: files missing, unknown, or of the
-  wrong size; `--fix` repairs what it can.
 
 ## `flnd login`
 
@@ -187,7 +238,8 @@ With `--json`, one object per source.
 
 ## What a run prints
 
-- **`--ui plain`** writes one line per file on standard output: `saved <path>`, or
+- **`--ui plain`** writes one line per file on standard output: `saved <path>` (the file's final
+  path, once every step after it is done), or
   `failed <target> <post>: <message>` with the hint on the next line; with `--dry`,
   `new <path>` or `saved <path>`. With `-v`, a skipped file gets a line too.
 - **`--ui inline`** draws a live view on standard error: one row per target and category, with
@@ -195,7 +247,10 @@ With `--json`, one object per source.
   above it as they happen. The rows stay on the screen at the end.
 - **`--json`** writes each event as one JSON object per line, its class in `"type"` (`Saved`,
   `Skipped`, `Failed`, `Progress`, `Planned`), then the run's report as `{"type": "Report", …}`.
-  `ls`, `login`, `logout`, `unfollow` and `sources` write their rows the same way.
+  `ls`, `login`, `logout`, `unfollow`, `sources` and `check` write their rows the same way. An
+  error that ends a command is a line too, `{"type": "Error", "error": {"class", "message",
+  "hint"}}`, besides its text on standard error. So every line on standard output is one JSON
+  object with a `type`.
 
 The end of a run prints a summary: `done: 3 files saved (1.2 MB), 2 already saved`, and on
 standard error how many failed and of which kind. flnd's own warnings (a wait a site asked for, a

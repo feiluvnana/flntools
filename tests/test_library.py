@@ -16,8 +16,10 @@ import threading
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 from flnd import _net
+from flnd import site as site_module
 
 import flnd
 from flnd._events import encode
@@ -202,6 +204,9 @@ class RunTest(LibraryCase):
         self.assertEqual(list(run), [])
 
     def test_stop_ends_the_run_without_an_error(self):
+        # One place, so most files are still queued when the first lands: a stop drops those and
+        # finishes only what is downloading. At the default of 32 places all 30 would be in flight.
+        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         run = self.fl.download("exs:example_user", only="posts")
         for event in run:
@@ -214,6 +219,8 @@ class RunTest(LibraryCase):
     def test_ctrl_c_while_reading_stops_the_run_and_raises_stopped(self):
         import signal
 
+        # One place, as above: at 32 places every file could be in flight before the first lands.
+        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
         self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
         run = self.fl.download("exs:example_user", only="posts")
         with self.assertRaises(flnd.Stopped):
@@ -362,7 +369,7 @@ class ReadsTest(LibraryCase):
         self.assertFalse((self.home / "new" / "media").exists())
 
     def test_what_is_not_built_yet_says_so(self):
-        for call in (self.fl.retry, self.fl.check):
+        for call in (self.fl.retry,):
             with self.subTest(call=call.__name__), self.assertRaises(flnd.UsageError) as caught:
                 call()
             self.assertIn("isn't built yet", str(caught.exception))

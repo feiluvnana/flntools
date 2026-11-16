@@ -6,9 +6,10 @@ This module is flnd's own storage, built on two library modules: `flnd._db` (a S
 
 What `flnd.db` holds (the storage guide in `docs/` shows every column):
 - `files`: one row per saved file, keyed `<code>:<key>` (the source's `key` template), with its
-  target, post, path, size, day, and `state`: `saved`, `gone` (the site answered 404 or 410) or
-  `failed`. The columns the steps after a file lands fill in (`hash`, `shrink`, `unpacked`,
-  `before`, `format`, `tools`, `sidecar`) stay empty until those steps exist.
+  target, post, path, size, day, its bytes' SHA-256 (`hash`), and `state`: `saved`, `gone` (the
+  site answered 404 or 410), `failed`, or `link` (a second name for a saved file, in another
+  category's folder, keyed `<file's key>@<category>`). The steps after a file lands fill in
+  `shrink`, `tools`, `before`, `unpacked`, `folder` and `sidecar` (`flnd._steps`).
 - `posts`: a view of `files`, one row per post of a target with its category, day and how
   many files it has. The first file of a post of several holds the count (`files.files`),
   which tells whether a post listed again is whole: a table of its own would cost every commit
@@ -40,7 +41,8 @@ How a home opens (`open`):
 Rules a change must keep:
 - One transaction per post: a post's file rows commit together, after every file of it is
   in place (`save`). A commit per file would cost 14 µs each, and a writer thread would add a
-  window in which saved rows are invisible.
+  window in which saved rows are invisible. A step that moves several files at once (compress,
+  which keeps the links dedupe made) moves their rows in one transaction too (`change`).
 - A row is written only after its file: a crash in between leaves a whole file without a row,
   which the next run finds on disk and skips.
 - One connection per `Home`, shared by the lister and the download threads behind one lock.
@@ -97,8 +99,8 @@ CHECKPOINT_PAGES = 10_000
 # The schema's version, in `meta`; a later change of a table bumps it and migrates.
 VERSION = "1"
 
-# A file's `state`: where it stands with the site.
-SAVED, GONE, FAILED = "saved", "gone", "failed"
+# A file's `state`: where it stands with the site; a `link` row is another name of a saved file.
+SAVED, GONE, FAILED, LINK = "saved", "gone", "failed", "link"
 # Headers that log a request in. A failure's `request` keeps what a retry needs, never these:
 # `flnd.db` isn't encrypted like the vault.
 SECRET_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization"})
@@ -155,15 +157,17 @@ CREATE TABLE IF NOT EXISTS probes (
 
 # The columns `save` writes, in order.
 FILE_COLUMNS = ("key", "target", "source", "post_id", "category", "path", "size", "mtime",
-                "date", "estimated", "kind", "state", "at", "files")
+                "date", "estimated", "kind", "state", "at", "files", "hash")
 INSERT_FILE = (f"INSERT OR REPLACE INTO files ({', '.join(FILE_COLUMNS)}) "
                f"VALUES ({', '.join('?' * len(FILE_COLUMNS))})")
 # The columns `FileRow` reads, in its order.
 ROW_SELECT = ("key, target, path, size, mtime, post_id, category, date, estimated, kind, state,"
-              " at, files, shrink, tools, before, unpacked, folder")
-# The columns the steps after landing write (`Home.update`).
+              " at, files, shrink, tools, before, unpacked, folder, hash, sidecar")
+# The columns the steps after landing write (`Home.update`, `Home.change`).
 STEP_COLUMNS = frozenset({"path", "size", "mtime", "shrink", "tools", "before", "unpacked",
-                          "folder"})
+                          "folder", "hash", "sidecar"})
+# The rows that name a file on disk: saved files and their links.
+ON_DISK = "state IN ('saved', 'link')"
 # The vault name an archive's password is kept under, before its file's key.
 PASSWORD = "password:"
 # The most files `save` writes in one statement; SQLite takes up to 32,766 values in one.
@@ -216,6 +220,10 @@ class FileRow(msgspec.Struct):
     # For an archive: "", "extracted" or "failed"; and the folder it was extracted to.
     unpacked: str = ""
     folder: str | None = None
+    # The SHA-256 of its bytes (32 bytes), from the download; None for a row from before.
+    hash: bytes | None = None
+    # Its metadata sidecar, `<path>.json`, when sidecars are on; None for none.
+    sidecar: str | None = None
 
     @property
     def source(self) -> str:
@@ -507,11 +515,116 @@ class Home:
                                 " WHERE shrink IN ('compressed', 'kept')")
         return [_file_row(row) for row in found]
 
+    def row(self, item: str) -> FileRow | None:
+        """A file's whole row, by its key; None when the home has none.
+
+        Args:
+            item: the file's key.
+
+        Returns:
+            The row, in whatever state it is.
+        """
+        found = self._store.one(f"SELECT {ROW_SELECT} FROM files WHERE key = ?", (item,))
+        return _file_row(found) if found else None
+
+    def twins(self, digest: bytes, *, besides: str, limit: int = -1) -> list[FileRow]:
+        """The files on disk with the same bytes as another: what dedupe links to, and what
+        compress must keep linked.
+
+        Args:
+            digest: the bytes' SHA-256.
+            besides: the key of the file asking, which is left out.
+            limit: at most this many rows; -1 for all. Dedupe needs one holder, and a file
+                saved thousands of times must not cost it thousands of rows per landing.
+
+        Returns:
+            The saved and link rows with that hash, through the `hash` index.
+        """
+        found = self._store.all(f"SELECT {ROW_SELECT} FROM files WHERE hash = ? AND key != ?"
+                                f" AND {ON_DISK} LIMIT ?", (digest, besides, limit))
+        return [_file_row(row) for row in found]
+
+    def link(self, holder: str, path: Path, category: str) -> None:
+        """Record a second name of a saved file, made in another category's folder.
+
+        The row copies the holder's, under the key `<holder>@<category>` and the state `link`,
+        so compress finds it by its hash and keeps it linked, and `check` knows the file. It
+        counts toward no post and no target: those read `saved` rows only.
+
+        Args:
+            holder: the saved file's key; with no row for it, nothing is recorded.
+            path: where the link is.
+            category: the category whose folder holds the link.
+
+        Raises:
+            DiskError: the database can't be written.
+        """
+        self._store.write(
+            "INSERT OR REPLACE INTO files (key, target, source, post_id, category, path, size,"
+            " mtime, date, estimated, kind, state, at, hash) SELECT ?, target, source, post_id,"
+            " ?, ?, size, mtime, date, estimated, kind, ?, ?, hash FROM files WHERE key = ?",
+            (f"{holder}@{category}", category, str(path), LINK, now(), holder))
+
+    def on_disk(self) -> list[FileRow]:
+        """Every row that names a file on disk (saved files and their links), for `check`."""
+        found = self._store.all(f"SELECT {ROW_SELECT} FROM files WHERE {ON_DISK}")
+        return [_file_row(row) for row in found]
+
+    def failed_at(self) -> dict[str, tuple[str, str, str]]:
+        """The key, target and post of each failed file, by the path it was to have.
+
+        `check` adopts a file found on disk with no row through this: a file a run renamed into
+        place and then crashed before its row (its failure, if any, names it).
+
+        Returns:
+            `{path: (key, target, post_id)}`; the latest failure wins.
+        """
+        found = self._store.all("SELECT file, key, target, post_id FROM failures"
+                                " WHERE file != '' ORDER BY at")
+        return {path: (item, target, post) for path, item, target, post in found}
+
+    def drop(self, items: Sequence[str]) -> None:
+        """Remove files' rows, in one transaction: `check --fix` for files gone from the disk.
+
+        Args:
+            items: the keys.
+
+        Raises:
+            DiskError: the database can't be written.
+        """
+        with self._store.transaction() as sql:
+            sql.executemany("DELETE FROM files WHERE key = ?", [(item,) for item in items])
+
+    def change(self, changes: Sequence[tuple[str, Mapping[str, Any]]]) -> None:
+        """Record what a step did to several files, in one transaction.
+
+        Compress uses it to move a file and every hard link of it together, so no row ever
+        names a file the others no longer share.
+
+        Args:
+            changes: each file's key with the columns to set, of `STEP_COLUMNS`.
+
+        Raises:
+            ValueError: a field isn't one of them: a bug in the caller.
+            DiskError: the database can't be written.
+        """
+        for _, fields in changes:
+            unknown = set(fields) - STEP_COLUMNS
+            if unknown:
+                raise ValueError(f"no step writes {', '.join(sorted(unknown))}")
+        with self._store.transaction() as sql:
+            for item, fields in changes:
+                if fields:
+                    sets = ", ".join(f"{name} = ?" for name in fields)
+                    sql.execute(f"UPDATE files SET {sets} WHERE key = ?",
+                                (*fields.values(), item))
+
     def update(self, item: str, **fields: Any) -> None:
         """Record what a step after landing did to a saved file, in one statement.
 
         This is how the steps (`flnd._steps`) write: compress moves a file and sets `shrink`,
-        `tools` and `before`; unpack sets `unpacked` and `folder`.
+        `tools`, `before` and its new `hash`; unpack sets `unpacked` and `folder`; the sidecar
+        step sets `sidecar`.
 
         Args:
             item: the file's key; a key with no row changes nothing.
@@ -828,7 +941,8 @@ def _insert_files(count: int) -> str:
 
 def _file_values(row: FileRow) -> tuple[Any, ...]:
     return (row.key, row.target, row.source, row.post_id, row.category, row.path, row.size,
-            row.mtime, row.date, int(row.estimated), row.kind, row.state, row.at, row.files)
+            row.mtime, row.date, int(row.estimated), row.kind, row.state, row.at, row.files,
+            row.hash)
 
 
 def _target_row(found: tuple[Any, ...]) -> TargetRow:
@@ -859,9 +973,9 @@ def _file_row(found: tuple[Any, ...]) -> FileRow:
         The row.
     """
     (item, target, path, size, mtime, post, category, date, estimated, kind, state, at, files,
-     shrink, tools, before, unpacked, folder) = found
+     shrink, tools, before, unpacked, folder, digest, sidecar) = found
     return FileRow(item, target, path, size, mtime, post, category, date, bool(estimated), kind,
-                   state, at, files, shrink, tools, before, unpacked, folder)
+                   state, at, files, shrink, tools, before, unpacked, folder, digest, sidecar)
 
 
 def _request(request: Mapping[str, Any]) -> str:

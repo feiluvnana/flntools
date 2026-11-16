@@ -37,7 +37,7 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/__init__.py` | the public names, each imported from its module on first use | scripts |
 | `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine | scripts |
 | `flnd/_run.py` | `Run`: a command on its own thread, read as a stream of events | `Flnd` |
-| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked` | the engine, the job, `Run` |
+| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked`, `Checked` | the engine, the job, `Run` |
 | `flnd/engine.py` | `Engine`: every command as a method, and target resolution | `Flnd` |
 | `flnd/job.py` | one target's run: listing, planning, the download pool, history rows | the engine |
 | `flnd/site.py` | `SourceRun` (a source's cookies, clients and browser for a run) and `TargetSite` (the `Site` a route sees) | the engine, the job |
@@ -49,7 +49,8 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
 | `flnd/common/` | `paths` (content sniffing) | the engine, the site, the job |
 | `flnd/_*.py` | the private toolkit: HTTP over curl_cffi on the run's loop (`_net`), the run's browser on async Playwright (`_browser`), a SQLite store (`_db`), sealed secrets (`_vault`), atomic files (`_files`), the run's asyncio loop (`_loop`), the terminal UI (`_ui`) | everything above |
-| `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes, archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
+| `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes (dedupe, unpack, compress, the sidecar, `Saved`), archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
+| `flnd/_check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 
 The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,
 the toolkit (`flnd._*`) and the standard library, and nothing of the engine. The engine imports the sources
@@ -93,15 +94,29 @@ only through `flnd.sources.SOURCES`.
    (`<name>.part`, see `docs/storage`), skipping a file another run is saving, then streams the
    file into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
    with its audio through ffmpeg, checks the content (a web page instead of a photo is a
-   failure, not a file) and gives it the extension its content calls for. The part gets its
-   post's date (at noon UTC) as its modified time and is renamed onto the real name.
+   failure, not a file) and gives it the extension its content calls for, hashing the bytes
+   (SHA-256) as they are written. The part gets its post's date (at noon UTC) as its modified
+   time and is renamed onto the real name.
 10. **Finishing a file.** Once every file of its post is in place, the post's rows are written
     to `flnd.db` in one statement: path, size and modified time (from the part, so nothing stats
-    the file again), post id, category and date. The same file in two categories is saved once
-    and linked from the second (a relative symlink, or a hard link where symlinks aren't
-    allowed). The file is then handed to the run's step chain (`flnd._steps`), which extracts an
-    archive and, with `--compress`, compresses a photo or video on threads of its own
-    ([media.md](media.md)).
+    the file again), hash, post id, category and date. Before that, as each file lands, dedupe
+    replaces a file whose bytes are already saved by a hard link to them (the link on a worker
+    thread, off the loop). The same file in two categories is saved
+    once and linked from the second (a relative symlink, or a hard link where symlinks aren't
+    allowed), with a `link` row. The file is then handed to the run's step chain
+    (`flnd._steps`), which extracts an archive and, with `--compress`, compresses a photo or
+    video on threads of its own ([media.md](media.md)), then writes its sidecar when sidecars
+    are on, and only then sends `Saved`, with the file's final path.
+
+    The whole chain, in its one fixed order:
+
+    ```
+    download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → Saved → --exec
+    ```
+
+    date, place and record run with the download, and again for a file a slow step changes.
+    `--exec` is the CLI's: it runs a command for each `Saved` event it reads, never through a
+    shell ([cli.md](cli.md#running-a-command-per-file)).
 11. **Ending the target.** The job saves the categories it listed to their end and the cursors
     of those it didn't in `flnd.db` (each failed file was written there as it failed), counts the
     target's files for `flnd ls`, then prints one summary line.
@@ -140,8 +155,10 @@ A run uses a few threads, and every rule below protects one of them:
   awaiting `site.tab` instead of calling the verbs.
 - **The step chain's lanes** (`flnd._steps`): one thread for archives, two for photos and one
   for videos, fed by bounded queues once a file's history row is written. They update that row
-  when they change the file; the engine closes the chain, waiting for them, before it closes
-  history.
+  when they change the file, and send the file's `Saved` event when they are done with it (a
+  file with no slow step sends it on its download thread). Two hard links of one file are never
+  compressed at once: a lock per hash makes the second wait, then find it already done. The
+  engine closes the chain, waiting for them, before it closes history.
 - **Ctrl-C** is handled by `flnd._run.stopping`: the first one sets `stop.soon` (stop listing,
   let running files finish), the second sets `stop.now` (stop at once, keep the parts).
 

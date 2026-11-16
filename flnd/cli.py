@@ -18,8 +18,9 @@ How a command runs (`main`):
 2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
    one library call with the flags.
 3. A run's events become output (`_Plain`, `_Inline` or `_Json`): a line per saved or failed
-   file, a live view on a terminal, or one JSON object per line. The end of a run prints a
-   short summary, and its failures decide the exit code.
+   file, a live view on a terminal, or one JSON object per line. With `--exec CMD`, each
+   `Saved` event also runs CMD, without a shell (`_Exec`). The end of a run prints a short
+   summary, and its failures decide the exit code.
 4. Whatever ends the command becomes an exit code (`exit_code`): 0 ok, 1 some files or targets
    failed, 2 usage, 3 a login is needed, 4 flnd itself stopped (a full disk, a missing tool, a
    broken source, a bug), 130 Ctrl-C. A `flnd.Error` prints its message and its hint, never a
@@ -30,7 +31,10 @@ Rules a change must keep:
   the command that needs it, so `flnd --help` pays for none of it.
 - One flag, one spelling: no aliases. The docs' CLI page (docs/cli) names every command and
   flag, and `tests/test_docs.py` checks it against this parser.
-- `--json` never asks a question: a command that would ask is a usage error instead.
+- `--json` never asks a question: a command that would ask is a usage error instead. Every
+  line it prints on standard output is one JSON object with a `type`, an error included.
+- `--exec` never starts a shell: CMD is split once with `shlex`, and a value from a site (a
+  file name, a post id) only ever fills a placeholder inside one argument.
 """
 
 from __future__ import annotations
@@ -97,7 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         import flnd
 
         if isinstance(error, flnd.Error):
-            _report(error)
+            _report(error, as_json=args.json)
             return exit_code(error)
         return _crashed(error, args)
 
@@ -148,8 +152,18 @@ def _settle(args: argparse.Namespace) -> None:
         args.ui = "inline" if sys.stderr.isatty() else "plain"
 
 
-def _report(error: Any) -> None:
-    """Print an error a person can act on: its message, then its hint; never a traceback."""
+def _report(error: Any, *, as_json: bool = False) -> None:
+    """Print an error a person can act on: its message, then its hint; never a traceback.
+
+    Args:
+        error: the `flnd.Error` that ended the command.
+        as_json: also print it on standard output as `{"type": "Error", ...}`, for `--json`.
+    """
+    if as_json:
+        from flnd._events import encode
+
+        sys.stdout.write('{"type":"Error","error":' + encode(error).decode() + "}\n")
+        sys.stdout.flush()
     print(f"error: {error}", file=sys.stderr)
     if error.hint:
         print(f"  {error.hint}", file=sys.stderr)
@@ -202,18 +216,23 @@ def download(args: argparse.Namespace) -> int:
     With no targets, they are read from standard input, one per line; blank lines and lines
     starting with # are skipped.
 
+    --exec CMD runs CMD once for each saved file, after every step (compress included), with
+    no shell: {path}, {target} and {post} inside an argument become the file's values, which
+    are also in $FLND_PATH, $FLND_TARGET and $FLND_POST.
+
     Args:
         args: the parsed flags.
 
     Returns:
         The run's exit code.
     """
-    _no_exec(args)
+    # Read before the run is made, so a mistake in CMD is a usage error, not one per file.
+    runner = _runner(args)
     targets = _targets(args.targets)
     with _open(args) as fl:
         run = fl.download(targets, only=args.only, when=args.when, limit=args.limit,
                           compress=args.compress, dry=args.dry)
-        return _watch(run, args)
+        return _watch(run, args, runner=runner)
 
 
 def follow(args: argparse.Namespace) -> int:
@@ -246,9 +265,9 @@ def sync(args: argparse.Namespace) -> int:
     Returns:
         The run's exit code.
     """
-    _no_exec(args)
+    runner = _runner(args)
     with _open(args) as fl:
-        return _watch(fl.sync(args.targets, compress=args.compress), args)
+        return _watch(fl.sync(args.targets, compress=args.compress), args, runner=runner)
 
 
 def unfollow(args: argparse.Namespace) -> int:
@@ -334,17 +353,46 @@ def retry(args: argparse.Namespace) -> int:
 def check(args: argparse.Namespace) -> int:
     """Compare the history with the disk: files missing, unknown, or of the wrong size.
 
-    Not built yet.
+    --fix makes the history match the disk, and never deletes, moves or downloads a file: a
+    missing file's row goes, a file of the wrong size gets its size from the disk, and an
+    unknown file under media/ is adopted into the history.
 
     Args:
         args: the parsed flags.
 
     Returns:
-        0 once it is built.
+        0 when history and disk agree (or --fix made them), else 1.
     """
+    from flnd import _text
+
     with _open(args) as fl:
-        fl.check(fix=args.fix)
-    return OK
+        found = fl.check(fix=args.fix)
+    if args.json:
+        from flnd._events import encode
+
+        sys.stdout.write('{"type":"Checked",' + encode(found).decode()[1:] + "\n")
+        sys.stdout.flush()
+        return OK if found.ok else FAILED
+    for record in found.missing:
+        print(f"missing     {_shown(record.path)}")
+    for path in found.unknown:
+        print(f"unknown     {_shown(path)}")
+    for record in found.resized:
+        print(f"wrong size  {_shown(record.path)}")
+    problems = [f"{len(found.missing)} missing"] if found.missing else []
+    if found.unknown:
+        problems.append(f"{len(found.unknown)} unknown")
+    if found.resized:
+        problems.append(f"{len(found.resized)} of the wrong size")
+    line = f"checked {_text.count(found.files, 'file')}: "
+    if not problems:
+        print(line + "history and disk agree")
+    elif found.fixed:
+        print(line + ", ".join(problems) + "; the history now matches the disk")
+    else:
+        print(line + ", ".join(problems) + "; flnd check --fix makes the history match",
+              file=sys.stderr)
+    return OK if found.ok else FAILED
 
 
 def login(args: argparse.Namespace) -> int:
@@ -551,7 +599,8 @@ def _compress(sub: argparse.ArgumentParser) -> None:
 
 def _exec(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--exec", metavar="CMD",
-                     help="run CMD for each saved file, without a shell (not built yet)")
+                     help="run CMD for each saved file, without a shell; {path}, {target} and "
+                          "{post} become the file's")
 
 
 def _help(function: Callable[..., Any]) -> str:
@@ -628,14 +677,6 @@ def _targets(given: Sequence[str]) -> list[str]:
     import flnd
 
     raise flnd.UsageError("give at least one target, or pipe targets on stdin")
-
-
-def _no_exec(args: argparse.Namespace) -> None:
-    """Refuse `--exec`, which has no implementation yet."""
-    if args.exec is not None:
-        import flnd
-
-        raise flnd.UsageError("--exec isn't built yet", hint="leave --exec out")
 
 
 def _ask_how(args: argparse.Namespace) -> str:
@@ -737,7 +778,7 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
 # Watching a run
 # ---------------------------------------------------------------------------------------------
 
-def _watch(run: flnd.Run, args: argparse.Namespace) -> int:
+def _watch(run: flnd.Run, args: argparse.Namespace, *, runner: _Exec | None = None) -> int:
     """Read a run's events into the chosen view, print its end, and return its exit code.
 
     flnd's own log lines are held to warnings for the run (a wait, a login about to expire),
@@ -746,6 +787,7 @@ def _watch(run: flnd.Run, args: argparse.Namespace) -> int:
     Args:
         run: the run, not started yet.
         args: the parsed flags: `--json`, `--ui`, `-v`.
+        runner: `--exec`'s command, run for each `Saved` event; None runs nothing.
 
     Returns:
         0 when nothing failed, 3 when a target needs a login, else 1.
@@ -766,11 +808,122 @@ def _watch(run: flnd.Run, args: argparse.Namespace) -> int:
     with ui.scope(level="debug" if args.verbose else "warn"), view:
         for event in run:
             view.show(event)
+            # The run waits while this runs, so one command at a time, in the order files end.
+            if runner is not None and type(event).__name__ == "Saved":
+                runner.run(event)
     report = run.report
     view.end(report)
     if any(_kind(failed.error) == "LoginError" for failed in report.failed):
         return LOGIN
     return FAILED if report.failed else OK
+
+
+class _Exec:
+    """`--exec CMD`: a command run once per saved file, never through a shell.
+
+    CMD is split into arguments once, here, with `shlex` (POSIX rules; on Windows, quotes are
+    kept by the split and then dropped, and backslashes stay as they are, for paths). For each
+    file, `{path}`, `{target}` and `{post}` inside each argument become its values in one pass,
+    so a value that itself holds `{post}` or `;` or `$(...)` stays literal text inside its one
+    argument. The same values are in the environment as `FLND_PATH`, `FLND_TARGET` and
+    `FLND_POST`.
+
+    Args:
+        command: CMD as given.
+        quiet: send the command's output to standard error, so `--json` keeps standard
+            output to JSON lines.
+
+    Raises:
+        UsageError: CMD is empty, its quotes don't close, or its program isn't found.
+    """
+
+    # The placeholders, matched in one pass so a substituted value is never read again.
+    FIELDS = ("path", "target", "post")
+
+    def __init__(self, command: str, *, quiet: bool = False) -> None:
+        import re
+        import shlex
+        import shutil
+
+        import flnd
+
+        posix = os.name != "nt"
+        try:
+            argv = shlex.split(command, posix=posix)
+        except ValueError as error:
+            raise flnd.UsageError(f"--exec: {error}: {command!r}") from None
+        if not posix:
+            argv = [arg[1:-1] if len(arg) > 1 and arg[0] == arg[-1] == '"' else arg
+                    for arg in argv]
+        if not argv:
+            raise flnd.UsageError("--exec needs a command", hint="--exec 'echo {path}'")
+        if shutil.which(argv[0]) is None:
+            raise flnd.UsageError(f"--exec: {argv[0]}: no such program",
+                                  hint="give a program on PATH, or its full path")
+        self.argv = argv
+        self.quiet = quiet
+        self._pattern = re.compile(r"\{(" + "|".join(self.FIELDS) + r")\}")
+
+    def argv_for(self, event: Any) -> list[str]:
+        """The command's arguments for one saved file.
+
+        Args:
+            event: the `flnd.Saved` event.
+
+        Returns:
+            CMD's arguments with the placeholders filled in.
+        """
+        values = self._values(event)
+        return [self._pattern.sub(lambda found: values[found[1]], arg) for arg in self.argv]
+
+    def run(self, event: Any) -> int:
+        """Run the command for one saved file and wait for it.
+
+        A command that can't start or fails is reported on standard error, and the run goes
+        on: the file is saved either way.
+
+        Args:
+            event: the `flnd.Saved` event.
+
+        Returns:
+            The command's exit code; 127 when it couldn't start.
+        """
+        import subprocess
+
+        values = self._values(event)
+        env = {**os.environ, "FLND_PATH": values["path"], "FLND_TARGET": values["target"],
+               "FLND_POST": values["post"]}
+        argv = self.argv_for(event)
+        try:
+            done = subprocess.run(argv, env=env, shell=False, stdin=subprocess.DEVNULL,
+                                  stdout=sys.stderr if self.quiet else None, check=False)
+        except OSError as error:
+            print(f"--exec: {argv[0]}: {error.strerror or error}", file=sys.stderr)
+            return 127
+        if done.returncode:
+            print(f"--exec: {argv[0]} exited {done.returncode} for {_shown(event.path)}",
+                  file=sys.stderr)
+        return done.returncode
+
+    @staticmethod
+    def _values(event: Any) -> dict[str, str]:
+        return {"path": str(event.path), "target": str(event.target), "post": event.post}
+
+
+def _runner(args: argparse.Namespace) -> _Exec | None:
+    """`--exec`'s command, read from the flags; None without `--exec`.
+
+    Args:
+        args: the parsed flags.
+
+    Returns:
+        The command, ready to run per file.
+
+    Raises:
+        UsageError: CMD is empty, its quotes don't close, or its program isn't found.
+    """
+    command = getattr(args, "exec", None)
+    return _Exec(command, quiet=args.json) if command is not None else None
 
 
 def _kind(error: BaseException) -> str:

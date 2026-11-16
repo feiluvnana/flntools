@@ -176,10 +176,14 @@ class DownloadTest(RunsCase):
                 self.assertNotIn("Traceback", out)
         self.assertEqual(self.runs, [])
 
-    def test_exec_is_not_built_yet(self):
-        code, _, out = self.run_app("download", "ins:a", "--exec", "echo {path}")
-        self.assertEqual(code, 2)
-        self.assertIn("error: --exec isn't built yet", out)
+    def test_a_broken_exec_is_a_usage_error_before_the_run(self):
+        for command, message in (("no-such-program-here {path}", "no such program"),
+                                 ("echo 'unclosed", "No closing quotation"), ("", "needs a command")):
+            with self.subTest(command=command):
+                code, _, out = self.run_app("download", "ins:a", "--exec", command)
+                self.assertEqual(code, 2)
+                self.assertIn(message, out)
+                self.assertNotIn("Traceback", out)
         self.assertEqual(self.runs, [])
 
     def test_compress_reaches_the_library(self):
@@ -473,7 +477,7 @@ class HelpTest(FlndCase):
         self.assertEqual([row["code"] for row in rows], ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht"])
 
     def test_commands_not_built_yet_are_usage_errors(self):
-        for verb in ("status", "retry", "check"):
+        for verb in ("status", "retry"):
             with self.subTest(verb=verb):
                 code, _, out = self.run_app(verb)
                 self.assertEqual(code, 2)

@@ -140,7 +140,7 @@ class CompressTest(StepsCase):
 
 class BacklogTest(StepsCase):
     def chain(self):
-        settings = mock.Mock(db=None, stop=None)
+        settings = mock.Mock(db=None, stop=None, home=self.home)
         return _steps.attached(settings)
 
     def rows(self, **found):

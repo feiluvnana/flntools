@@ -106,7 +106,9 @@ async def save(client: _net.Client, file: File, dest: Path, *, label: str,
 
 @asynccontextmanager
 async def _held(dest: Path) -> AsyncIterator[_files.Part]:
-    """`flnd._files.part(dest, resume=True)`, opened and landed on a worker thread.
+    """`flnd._files.part(dest, resume=True, digest=True)`, opened and landed on a worker thread.
+
+    The part hashes what it is written (SHA-256), for dedupe and `check`.
 
     Opening and locking a part, and renaming it into place, are file-system calls of 50 to
     150 µs each, more on a busy disk; on the loop they would run one at a time and hold up every
@@ -122,7 +124,7 @@ async def _held(dest: Path) -> AsyncIterator[_files.Part]:
         BusyError: another run is saving this file.
         DiskError: the part can't be opened, locked or renamed.
     """
-    manager = _files.part(dest, resume=True)
+    manager = _files.part(dest, resume=True, digest=True)
     held = await _through(manager.__enter__)
     try:
         yield held

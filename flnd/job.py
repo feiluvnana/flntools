@@ -32,7 +32,7 @@ from flnd.source import (
 )
 from flnd import _files, _home, _text
 from flnd._events import Failed, Progress, Saved, Skipped
-from flnd._steps import Landed, landed
+from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._ui import ui
 
 if TYPE_CHECKING:
@@ -585,7 +585,7 @@ class Ledger:
             self.board.count(self.target, category, later=1)
         else:
             candidate = self.folder.joinpath(*held.split("/"))
-            self._link(dest, candidate if candidate.is_file() else Path(held), category)
+            self._link(dest, candidate if candidate.is_file() else Path(held), category, item_key)
 
     def link_queued(self, written: Mapping[str, Path]) -> None:
         """Create deferred links for files queued earlier in this run."""
@@ -596,12 +596,22 @@ class Ledger:
             if found is not None and found[0]:
                 holder = Path(found[0])
             if holder is not None:
-                self._link(dest.with_suffix(holder.suffix), holder, category)
+                self._link(dest.with_suffix(holder.suffix), holder, category, item_key)
             self.board.count(self.target, category, later=-1)
         self._later = []
 
-    def _link(self, dest: Path, holder: Path, category: str) -> None:
-        """Link `holder` at `dest` via relative symlink or hard link across folders."""
+    def _link(self, dest: Path, holder: Path, category: str, item_key: str) -> None:
+        """Link `holder` at `dest`, in another category's folder, and record the link.
+
+        The link's row (`Home.link`) carries the holder's hash, so a later compress of the
+        holder moves the link with it, and `check` knows the file.
+
+        Args:
+            dest: where the file would go in this category's folder.
+            holder: the file saved in another category's folder.
+            category: this category.
+            item_key: the file's key, whose row is the holder's.
+        """
         if not holder.is_file() or not _distinct_folders(self.folder, dest, holder):
             return
         if dest.exists() or dest.is_symlink():
@@ -612,6 +622,8 @@ class Ledger:
                 self._link_warned = True
                 self.site.warn("can't link files found in two folders here")
             return
+        if self._db is not None:
+            self._db.link(item_key, dest, category)
         self.board.count(self.target, category, linked=1)
         ui.debug("link {name} -> {held}", name=self._name(dest), held=self._name(holder))
 
@@ -1078,7 +1090,8 @@ class Downloads:
         """Write one post's landed files in one transaction, then count and report each.
 
         Each file is already in place, so a row is never written before its file. The `Saved`
-        events follow the commit, so a script that reads `fl.files()` on one finds its row.
+        events follow the commit and the chain's steps, so a script that reads `fl.files()` on
+        one finds its row, at the file's final path.
 
         Args:
             items: the post's files in place; empty does nothing.
@@ -1088,9 +1101,10 @@ class Downloads:
         """
         if not items:
             return
+        rows = [item.row for item in items]
         try:
             if self.settings.db is not None:
-                self.settings.db.save([item.row for item in items])
+                self.settings.db.save(rows)
         except BaseException:
             with self._writing:
                 for item in items:
@@ -1098,14 +1112,18 @@ class Downloads:
             for item in items:
                 self._count(item.queued, downloading=-1, failed=1)
             raise
+        metadata = sidecars(self.settings)
         for item in items:
             self._count(item.queued, downloading=-1, saved=1, bytes=item.row.size)
             placed = item.queued.placed
-            self.settings.emit(Saved(self.target, placed.post.category, placed.post.id,
-                                     item.path, item.day, item.row.size))
-            # The slow steps (unpack, compress) run on the chain's own threads from here.
-            landed(self.settings, Landed(item.queued.key, item.path,
-                                         password=placed.file.password, compress=self.compress))
+            event = Saved(self.target, placed.post.category, placed.post.id, item.path,
+                          item.day, item.row.size)
+            # The steps after the row: unpack and compress on the chain's own threads, then
+            # the sidecar, then `Saved` with the file's final path (`flnd._steps`).
+            landed(self.settings, Landed(
+                item.queued.key, item.path, password=placed.file.password,
+                compress=self.compress, hash=item.row.hash, event=event,
+                meta=_metadata(self.source, self.target, placed) if metadata else None))
 
     async def _download(self, queued: _Queued) -> bool:
         """Download one file, refreshing an expired lazy link once if needed."""
@@ -1145,11 +1163,18 @@ class Downloads:
         if saved is None:
             self._count(queued, downloading=-1)
             return False
-        self._downloaded(queued, saved, received)
+        row = self._row(queued, saved)
+        # The dedupe step: a file whose bytes are already saved becomes a hard link to them.
+        # The lookup is one indexed query; the link is file-system work, kept off the loop.
+        found = holder(self.settings, row)
+        if found is not None:
+            await asyncio.to_thread(dedupe, self.settings, row, found)
+        self._downloaded(queued, saved, received, row)
         return True
 
     def _downloaded(
-        self, queued: _Queued, saved: _files.Saved, received: Mapping[str, str]
+        self, queued: _Queued, saved: _files.Saved, received: Mapping[str, str],
+        row: _home.FileRow,
     ) -> None:
         """Hold a landed file's row until its post's last file settles, which commits it.
 
@@ -1160,10 +1185,10 @@ class Downloads:
             saved: where it landed, with its size and modified time from the landing.
             received: the response's headers; `Last-Modified` dates a post the site gave
                 no day.
+            row: its row, after dedupe.
         """
         post = queued.placed.post
         dated = day(post.date) or _transfer.served_day(received.get("last-modified"))
-        row = self._row(queued, saved)
         with self._writing:
             self._written[queued.key] = saved.path
             self._landed.setdefault(post.id, []).append(_Landed(queued, saved.path, dated, row))
@@ -1187,6 +1212,7 @@ class Downloads:
             date=posted.isoformat() if posted is not None else None,
             estimated=queued.estimated, kind=paths.kind_of(saved.path.name), at=_home.now(),
             files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
+            hash=saved.hash,
         )
 
     async def _fetch(
@@ -1492,6 +1518,41 @@ def _redated(
         return dest
     path.rename(dest)
     return dest
+
+
+def _metadata(source: Source, target: Target, placed: Placed) -> dict[str, Any]:
+    """What a saved file's sidecar holds: its post's caption, author, tags, day and link.
+
+    `caption`, `author` and `tags` are read from the post's fields under the names sources
+    give them; `fields` keeps every field as the source gave it. A file's URL is kept without
+    its query, which may carry a signature.
+
+    Args:
+        source: the file's source.
+        target: the target it was saved for.
+        placed: the file, with its post.
+
+    Returns:
+        The sidecar's fields, for JSON.
+    """
+    post = placed.post
+    fields = dict(post.fields)
+
+    def first(*names: str) -> Any:
+        return next((fields[name] for name in names if fields.get(name)), None)
+
+    posted = day(post.date)
+    url = placed.file.url if isinstance(placed.file.url, str) else None
+    return {
+        "source": source.code, "target": str(target), "post": post.id,
+        "category": post.category, "date": posted.isoformat() if posted else None,
+        "url": first("url", "link", "permalink"),
+        "file": _text.redact(url) if url else None,
+        "caption": first("caption", "text", "description", "title"),
+        "author": first("author", "user", "username", "owner", "channel"),
+        "tags": first("tags", "hashtags"),
+        "fields": fields,
+    }
 
 
 def _set_mtime(path: Path, dated: datetime.date) -> None:

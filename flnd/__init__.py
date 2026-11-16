@@ -10,7 +10,7 @@
 What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
 `Flnd`, whose methods are the CLI's commands; a download returns a `Run`, whose events
 (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`) are the only output; `Report`, `Login`,
-`Record` and `Tracked` are what the reads return; the errors are the one hierarchy of
+`Record`, `Tracked` and `Checked` are what the reads return; the errors are the one hierarchy of
 `flnd.errors`. A source is written against `flnd.source` instead (see the docs' guide to
 writing a source).
 
@@ -33,6 +33,7 @@ _HOMES = {
     "Flnd": "flnd._library",
     "open": "flnd._library",
     "Run": "flnd._run",
+    "Checked": "flnd._events",
     "Event": "flnd._events",
     "Failed": "flnd._events",
     "Login": "flnd._events",
@@ -61,15 +62,15 @@ _HOMES = {
 # Written out, not built from `_HOMES`, so linters and editors can read it; a test checks that
 # the two agree.
 __all__ = [
-    "Blocked", "Changed", "DiskError", "Error", "Event", "Failed", "Flnd", "Login", "LoginError",
-    "NetworkError", "NotFound", "Planned", "Progress", "Record", "Report", "Run", "Saved",
-    "SiteError", "Skipped", "SourceError", "Stopped", "Target", "ToolError", "Tracked",
+    "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Flnd", "Login",
+    "LoginError", "NetworkError", "NotFound", "Planned", "Progress", "Record", "Report", "Run",
+    "Saved", "SiteError", "Skipped", "SourceError", "Stopped", "Target", "ToolError", "Tracked",
     "UsageError", "__version__", "open",
 ]
 
 if TYPE_CHECKING:
     from flnd._events import (
-        Event, Failed, Login, Planned, Progress, Record, Report, Saved, Skipped, Tracked,
+        Checked, Event, Failed, Login, Planned, Progress, Record, Report, Saved, Skipped, Tracked,
     )
     from flnd._library import Flnd, open
     from flnd._run import Run

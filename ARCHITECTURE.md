@@ -298,14 +298,14 @@ Every finished file goes through the same fixed chain. Each step is on or off by
 
 | step | when | what it does |
 | --- | --- | --- |
-| dedupe | `[defaults] dedupe = "link"` | the same bytes already saved elsewhere become a hard link |
+| dedupe | `[defaults] dedupe = "link"`, the default (`"off"` keeps both) | the same bytes already saved elsewhere become a hard link; compress keeps the links |
 | unpack | an archive | extracts beside the archive, refusing escaping paths, links and bombs |
 | compress | `--compress` | a smaller file that still looks the same, checked before it replaces the original |
 | date | always | the post's date becomes the file's modified time |
 | place | always | the part is renamed into place, atomically |
 | record | always | the row is written, in the post's transaction |
 | sidecar | `[defaults] sidecars = true` | the post's fields as `<file>.json` |
-| exec | `--exec CMD` | runs a command with the file's path, never through a shell |
+| exec | `--exec CMD` | the CLI runs a command for each `Saved` event, which comes once the chain is done with the file, never through a shell |
 
 This is gallery-dl's post-processor idea with one fixed order, so steps can't be combined in an order that breaks. It isn't a plugin API yet: the steps are flnd's own until a real need for a custom one appears.
 

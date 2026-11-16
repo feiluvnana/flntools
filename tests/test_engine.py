@@ -518,7 +518,7 @@ class ApiTest(EngineCase):
         import flnd
 
         self.assertEqual(sorted(flnd.__all__), [
-            "Blocked", "Changed", "DiskError", "Error", "Event", "Failed", "Flnd", "Login",
+            "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Flnd", "Login",
             "LoginError", "NetworkError", "NotFound", "Planned", "Progress", "Record", "Report",
             "Run", "Saved", "SiteError", "Skipped", "SourceError", "Stopped", "Target",
             "ToolError", "Tracked", "UsageError", "__version__", "open",

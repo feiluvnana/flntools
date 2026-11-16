@@ -1,4 +1,5 @@
-"""What a run reports, and the rows the library reads: events, `Report`, `Login`, `Record`.
+"""What a run reports, and the rows the library reads: events, `Report`, `Login`, `Record`,
+`Checked`.
 
 Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
 run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
@@ -9,7 +10,8 @@ Who makes them:
 1. the job and the engine make `Saved`, `Skipped`, `Failed`, `Progress` and `Planned` as a run
    goes, and hand them to the run's sink (`flnd._run.Run._emit`);
 2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
-3. `Flnd` makes `Login`, `Record` and `Tracked` from today's stores, for its reads.
+3. `Flnd` makes `Login`, `Record` and `Tracked` from today's stores, for its reads, and
+   `Checked` from `fl.check()`.
 
 The one rule a change must keep: an event holds data, never a live object (a site, a file
 handle, a lock), because a script may keep it after the run ends, and `encode` must turn it
@@ -31,8 +33,8 @@ from flnd.errors import Error
 from flnd.source import Target
 
 __all__ = [
-    "Event", "Failed", "Login", "Planned", "Progress", "Record", "Report", "Saved", "Skipped",
-    "Tracked", "encode",
+    "Checked", "Event", "Failed", "Login", "Planned", "Progress", "Record", "Report", "Saved",
+    "Skipped", "Tracked", "encode",
 ]
 
 
@@ -41,7 +43,8 @@ __all__ = [
 # ---------------------------------------------------------------------------------------------
 
 class Saved(msgspec.Struct, frozen=True, tag=True):
-    """A file was downloaded and placed: it is on disk under its final name, with its row.
+    """A file was downloaded and went through every step after: it is on disk under its final
+    name (after `--compress`, the compressed file's), with its row.
 
     Example:
         >>> import datetime, pathlib
@@ -59,11 +62,12 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
     category: str
     # The post's id, as the site gives it.
     post: str
-    # Where the file is now, under the home's `media/` folder.
+    # Where the file is now, under the home's `media/` folder; for an archive removed once
+    # extracted (`--compress`), the folder it was extracted to.
     path: Path
     # The post's day, which is also the file's modified time; None when the site gave none.
     date: datetime.date | None
-    # The file's size in bytes.
+    # The file's size in bytes, as it is now (after `--compress`, the compressed size).
     size: int
 
 
@@ -180,7 +184,7 @@ class Report(msgspec.Struct, frozen=True):
     saved: int = 0
     # Files (or whole posts) already saved, so not downloaded again.
     skipped: int = 0
-    # Bytes downloaded.
+    # The bytes of the saved files, as they are on disk (after `--compress`, compressed).
     bytes: int = 0
     # Files a dry run planned.
     planned: int = 0
@@ -277,6 +281,35 @@ class Tracked(msgspec.Struct, frozen=True):
     categories: dict[str, str] = {}
     # Whether it is a search (`<source>?<words>`) rather than one account or post.
     query: bool = False
+
+
+class Checked(msgspec.Struct, frozen=True):
+    """What `fl.check()` found comparing the history with the disk, and whether it fixed it.
+
+    A missing file's and a wrong-sized file's `Record` is its row, as the history holds it.
+
+    Example:
+        >>> import pathlib
+        >>> found = Checked(files=3, unknown=(pathlib.Path("media/ins/example_user/x.jpg"),))
+        >>> found.ok, len(found.unknown)
+        (False, 1)
+    """
+
+    # How many rows were checked: saved files and their links.
+    files: int = 0
+    # Files the history has and the disk doesn't.
+    missing: tuple[Record, ...] = ()
+    # Files under `media/` the history doesn't have.
+    unknown: tuple[Path, ...] = ()
+    # Files whose size on disk isn't the history's.
+    resized: tuple[Record, ...] = ()
+    # Whether `fix=True` made the history match the disk.
+    fixed: bool = False
+
+    @property
+    def ok(self) -> bool:
+        """Whether history and disk agree, now: nothing was found, or all of it was fixed."""
+        return self.fixed or not (self.missing or self.unknown or self.resized)
 
 
 # ---------------------------------------------------------------------------------------------

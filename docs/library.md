@@ -82,7 +82,7 @@ with flnd.open(home) as fl:
 
 | event | when | fields |
 | --- | --- | --- |
-| `flnd.Saved` | a file is downloaded and in place | `target`, `category`, `post`, `path`, `date`, `size` |
+| `flnd.Saved` | a file is downloaded, and every step after it is done (dedupe, unpack, compress, the sidecar) | `target`, `category`, `post`, `path` (its final path: after `compress`, the compressed file's), `date`, `size` (as it is now) |
 | `flnd.Skipped` | a file (or a whole post) is already saved | `target`, `category`, `post`, `path` (None for a post) |
 | `flnd.Failed` | a file failed, or a whole target did | `target`, `error`, and for a file `post` and `path` |
 | `flnd.Progress` | a category's counts changed, or its listing ended | `target`, `category`, `found`, `saved`, `skipped`, `failed`, `bytes`, `listed` |
@@ -91,6 +91,12 @@ with flnd.open(home) as fl:
 Events are frozen msgspec structs. A failed file is an event, never an exception: the run goes
 on with the rest. `flnd.Failed.error` is a `flnd.Error`, whose `str()` is the message and `hint`
 what to do.
+
+There are no hooks: to act on each saved file, act on its `Saved` event, which comes once the
+file is final. The CLI's `--exec CMD` does exactly that ([cli.md](cli.md#running-a-command-per-file));
+a script that runs a program per file should pass `event.path` as one item of an argument list
+(`subprocess.run(["tool", str(event.path)])`), never through a shell, since the name comes from
+a site.
 
 `run.wait()` runs to the end without the events and returns the `flnd.Report`; `run.report`
 holds the counts so far at any time.
@@ -105,7 +111,7 @@ with flnd.open(home) as fl:
 | `Report` field | what it is |
 | --- | --- |
 | `saved`, `skipped` | files downloaded, and files (or posts) already saved |
-| `bytes` | bytes downloaded |
+| `bytes` | the saved files' bytes, as they are on disk (after `compress`, compressed) |
 | `planned` | files a dry run planned |
 | `failed` | each `Failed` event, in order: a strict script checks it, or `report.ok` |
 | `stopped` | whether `run.stop()` ended the run early |
@@ -204,7 +210,7 @@ with flnd.open(home) as fl:
 | `fl.targets(source=None)` | a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last sync), `files`, `size`, `seen` (for a search), `categories` (each one's state), `query` |
 | `fl.files(target=None, kind=None, since=None)` | read from the home's `flnd.db`: a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`) |
 | `fl.logins` | a `flnd.Login` per source: `source`, `name`, `state`, `origin`, `expiring` |
-| `fl.check(fix=False)` | **not built yet** |
+| `fl.check(fix=False)` | a `flnd.Checked`: the history against the disk. `missing` and `resized` (each a `Record`, as the history has it), `unknown` (paths under `media/` no row names), `files` (rows checked), `fixed`, and `ok`. `fix=True` makes the history match the disk, and never deletes, moves or downloads a file ([storage.md](storage.md#checking-a-home)) |
 
 ## Logins and sources
 
@@ -237,11 +243,15 @@ This block isn't run by the docs test: it reads a real browser's cookies and ask
 | `flnd login S HOW` | `fl.login(S, HOW)` |
 | `flnd logout S` | `fl.logout(S)` |
 | `flnd login` (no source) | `fl.logins` |
+| `flnd check [--fix]` | `fl.check(fix=…)` |
+| `--exec CMD` | `for event in run:` on each `flnd.Saved` |
 
 `--again` (the CLI's flag on `download` and `follow`) is `flnd.open(home, again=True)`: every
 `download` and `follow` then lists each post again and asks again for files the site answered
 404 or 410 for (recorded as gone, [storage.md](storage.md)). Without it, `again = true` under
-`[defaults]` in the home's `config.toml` does the same. A run draws nothing on the terminal:
+`[defaults]` in the home's `config.toml` does the same. The same table turns off dedupe
+(`dedupe = "off"`) and turns on sidecars (`sidecars = true`), [storage.md](storage.md#dedupe).
+A run draws nothing on the terminal:
 the CLI draws it from the run's events, and flnd's own warnings (a wait a site asked for, a
 login about to expire) go to standard error.
 
@@ -255,7 +265,7 @@ a `Failed` event instead, and the run goes on.
 ```python
 with flnd.open(home) as fl:
     try:
-        fl.check()
+        fl.retry()
     except flnd.Error as error:
-        print(type(error).__name__, error, "-", error.hint)    # UsageError check isn't built yet - …
+        print(type(error).__name__, error, "-", error.hint)    # UsageError retry isn't built yet - …
 ```

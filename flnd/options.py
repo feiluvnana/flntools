@@ -1,9 +1,11 @@
-"""Each target's options, the settings every source of a run shares, and their checks."""
+"""Each target's options, the settings every source of a run shares, the home's config file,
+and their checks."""
 
 from __future__ import annotations
 
 import datetime
 import re
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Formatter
@@ -65,6 +67,68 @@ class RunShared:
     # The steps after a file lands (`flnd._steps.Chain`); None outside a run, so nothing is
     # unpacked or compressed.
     chain: Any = field(default=None, repr=False)
+
+
+# ---------------------------------------------------------------------------------------------
+# The home's config file
+# ---------------------------------------------------------------------------------------------
+
+# The home's settings file (docs/storage).
+CONFIG = "config.toml"
+# What `[defaults] dedupe` takes: "link" (the default) hard-links a file whose bytes are already
+# saved; "off" keeps both copies.
+DEDUPE = ("link", "off")
+
+
+@dataclass(frozen=True)
+class Config:
+    """The `[defaults]` of a home's `config.toml` that flnd reads, with their defaults.
+
+    The library's calls keep to five options each, so a setting past those lives here.
+    """
+
+    # List every post again and ask again for files recorded gone (the CLI's `--again`).
+    again: bool = False
+    # Hard-link a saved file whose bytes another saved file already has (docs/storage).
+    dedupe: bool = True
+    # Write each saved file's post as `<file>.json` beside it (docs/storage).
+    sidecars: bool = False
+
+
+def config(home: Path) -> Config:
+    """Read the `[defaults]` of a home's `config.toml`.
+
+    Args:
+        home: the home folder; a home without the file reads as every default.
+
+    Returns:
+        The settings.
+
+    Raises:
+        UsageError: the file isn't TOML, or a setting has a value it doesn't take.
+
+    Example:
+        >>> config(Path("no-such-home"))
+        Config(again=False, dedupe=True, sidecars=False)
+    """
+    path = home / CONFIG
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return Config()
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
+    defaults = data.get("defaults", {})
+    if not isinstance(defaults, dict):
+        defaults = {}
+    for name in ("again", "sidecars"):
+        if not isinstance(defaults.get(name, False), bool):
+            raise UsageError(f"{path}: {name} is true or false, not {defaults[name]!r}")
+    dedupe = defaults.get("dedupe", "link")
+    if dedupe not in DEDUPE:
+        raise UsageError(f"{path}: dedupe is \"link\" or \"off\", not {dedupe!r}")
+    return Config(again=defaults.get("again", False), dedupe=dedupe == "link",
+                  sidecars=defaults.get("sidecars", False))
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
