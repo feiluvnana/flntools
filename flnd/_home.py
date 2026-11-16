@@ -34,7 +34,9 @@ What `flnd.db` holds (the storage guide in `docs/` shows every column):
 
 The logins: a cookie source logs in by `from_browser` or `from_file`; `store` checks the jar
 proves a login and `save` seals it in the source's slot of the vault (`secrets`); a run calls
-`load` for the jar, and `write_back` saves the cookies the site refreshed.
+`load` for the jar, and `write_back` saves the cookies the site refreshed. The vault's key is
+`secret.key`, or the OS keychain when the home's config.toml says `[vault] key = "keychain"`
+(`vault_key`, which also moves the key once when that setting changes).
 
 Who calls it: the engine (`flnd/engine.py`), the job (`flnd/job.py`), the steps after landing
 (`flnd/_steps.py`), `check` (`flnd/_check.py`) and the library (`flnd/_library.py`) for files,
@@ -83,7 +85,7 @@ import msgspec
 
 from flnd import _cookies, _db, _text, _vault
 from flnd._ui import ui
-from flnd.errors import DiskError, Error, LoginError
+from flnd.errors import DiskError, Error, LoginError, UsageError
 
 if TYPE_CHECKING:
     from flnd.options import Options
@@ -1273,7 +1275,7 @@ def _date(text: Any) -> datetime.date | None:
 # Browsers `from_browser` reads cookies from, by `flnd._cookies` name with display name.
 BROWSERS = {
     "chrome": "Chrome", "firefox": "Firefox", "edge": "Edge",
-    "brave": "Brave", "chromium": "Chromium",
+    "brave": "Brave", "chromium": "Chromium", "safari": "Safari",
 }
 # The folder of the plain cookie files of much older versions, moved into the vault on first use.
 COOKIE_FOLDER = "cookies"
@@ -1308,12 +1310,16 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
     """
     try:
         return _own(source, _cookies.load(browser, profile=profile))
+    # Safari off macOS: a usage error as it is.
+    except UsageError:
+        raise
     # Every way reading a browser fails: missing file, platform refusal, bad decrypt, no crypto.
+    # An error with its own advice (Safari's Full Disk Access) keeps it.
     except (OSError, RuntimeError, ValueError, ImportError, Error) as error:
+        hint = getattr(error, "hint", "") or "try a cookie file instead"
         raise LoginError(
-            f"{source.code}: can't read {BROWSERS.get(browser, browser)}'s cookies: {error}; "
-            "try a cookie file instead"
-        ) from None
+            f"{source.code}: can't read {BROWSERS.get(browser, browser)}'s cookies: {error}",
+            hint=hint) from None
 
 
 def from_file(source: Source, path: Path) -> _cookies.Jar:
@@ -1682,7 +1688,65 @@ def secrets(home: Path, code: str) -> _vault.Vault:
     """
     if _old(home):
         open(home).close()
-    return _vault.Vault(home / SECRETS, home / KEY, code, hint=LOGIN_HINT)
+    return _vault.Vault(home / SECRETS, vault_key(home), code, hint=LOGIN_HINT)
+
+
+def vault_key(home: Path) -> Path | _vault.Keychain:
+    """Where the home's vault key is: `secret.key`, or the OS keychain (`[vault] key`).
+
+    The home's config.toml decides (`flnd.options.config`). A change of it moves the key once:
+    1. `key = "keychain"`: a `secret.key` there is copied into the keychain, and deleted only
+       once the keychain reads it back (`flnd._vault.to_keychain`).
+    2. `key = "file"` (the default): when `secret.key` is missing but the home has a vault, the
+       key may be in the keychain from before; if a keychain is there and holds the home's
+       item, it is written to `secret.key`, and the item deleted once the file reads back
+       (`flnd._vault.to_file`). A home with its key file never asks the keychain anything.
+
+    The keychain item is the service `flnd` with an account named from the home's absolute path
+    (`keychain_account`), so a home moved elsewhere looks for another item: set `key = "file"`
+    before moving it.
+
+    Args:
+        home: the home folder.
+
+    Returns:
+        The key file's path, or the home's `flnd._vault.Keychain` item.
+
+    Raises:
+        UsageError: `key = "keychain"` on a system without one, or a bad config.toml.
+        ToolError: the keychain refused to give or keep the key.
+    """
+    from flnd.options import KEYCHAIN, config
+
+    path = home / KEY
+    hint = 'set key = "file" under [vault] in config.toml'
+    chain = _vault.Keychain(keychain_account(home), hint=hint)
+    if config(home).vault == KEYCHAIN:
+        chain.require()
+        _vault.to_keychain(path, chain)
+        return chain
+    if not path.exists() and (home / SECRETS).is_file() and chain.available():
+        _vault.to_file(chain, path)
+    return path
+
+
+def keychain_account(home: Path) -> str:
+    """The account of a home's key in the OS keychain: `home-` and a hash of its absolute path.
+
+    A hash, not the path itself, so the name has no spaces (`security -i` splits at them) and
+    shows no folder names to whoever lists the keychain.
+
+    Args:
+        home: the home folder; `~` and links are resolved first, so one folder has one name.
+
+    Returns:
+        The account name.
+
+    Example:
+        >>> keychain_account(Path("/example/home")) == keychain_account(Path("/example/home/"))
+        True
+    """
+    return f"home-{_vault.digest(str(home.expanduser().resolve()))[:24]}"
 
 
 # ---------------------------------------------------------------------------------------------

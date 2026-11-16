@@ -454,8 +454,8 @@ Everything lives in the home folder, `.flnd` in the current folder unless `--hom
   `<code>:<key>`, with its hash), `targets` (followed or not, its options, cursors, heads and
   gaps), `runs`, `failures` (the one record of what failed, which status, the automatic retry
   and `flnd retry` all read), each source's `state`, and how each source logged in;
-- `secrets.db` with `secret.key`: the login vault (`flnd._vault`), whose values never reach a
-  message, a log line or `flnd.db`;
+- `secrets.db` with `secret.key` (or the key in the OS keychain, `[vault] key`): the login
+  vault (`flnd._vault`), whose values never reach a message, a log line or `flnd.db`;
 - `logs/`: each run's scrubbed samples of answers a source couldn't read, kept a month.
 
 Two rules hold every write together: a post's rows commit in one transaction once all its
@@ -576,7 +576,8 @@ The choices that explain how flnd behaves, made with its user in November 2026:
    project.
 10. **Plugins load from the user's folder or installed packages, never from a home**, since a
     home is often the current folder, and code there may not be the user's own.
-11. **The vault's key is a file** beside it (`secret.key`), so an unattended sync can open it.
+11. **The vault's key is a file** beside it (`secret.key`), so an unattended sync can open it;
+    `[vault] key = "keychain"` keeps it in the OS keychain instead.
 12. **`--compress` encodes videos to AV1**, with `[compress] video = "hevc"` in config.toml
     for devices that can't play it, and photos in-process with Pillow and pyoxipng, which are
     part of the core install ([media.md](media.md)).

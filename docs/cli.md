@@ -222,7 +222,9 @@ flnd login [source] [how]
 
 `how` is one of:
 
-- **a browser**: `chrome`, `firefox`, `edge`, `brave` or `chromium`. flnd reads the site's
+- **a browser**: `chrome`, `firefox`, `edge`, `brave`, `chromium`, or `safari` on macOS
+  (which needs Full Disk Access for the terminal, in System Settings › Privacy & Security; the
+  error says so when it is missing). flnd reads the site's
   cookies from it and keeps only those of the site's domains;
 - **a cookie file's path**: a Netscape `cookies.txt` or a JSON export;
 - **the source's own way**: Telegram (`tlg`) logs in by `browser` (Telegram Web's session),

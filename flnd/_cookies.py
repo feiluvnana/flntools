@@ -5,8 +5,9 @@ What it offers any caller:
   `domain`, `path`, `expires`, `secure`, `httpOnly`, `sameSite`). It filters by domain and name,
   reads a value by name, builds a `Cookie:` header and saves itself as a Netscape `cookies.txt`.
 - `load`, which reads a Netscape or JSON cookie file, raw cookie text, or the cookie database of
-  an installed browser (`BROWSERS`: Chrome, Chromium, Edge, Brave and Firefox), decrypting
-  Chromium's encrypted values with the operating system's key store.
+  an installed browser (`BROWSERS`: Chrome, Chromium, Edge, Brave, Firefox and, on macOS,
+  Safari), decrypting Chromium's encrypted values with the operating system's key store.
+- `parse_binarycookies`, a stdlib reader of Safari's `Cookies.binarycookies` format.
 - `refuse_profile`, the guard that stops a test suite from reading a real browser profile.
 
 Who calls it: in flnd, the login code (`flnd/site.py`, `flnd/_home.py`) loads a jar at
@@ -16,7 +17,8 @@ value), and the `_files` (atomic writes) and `_ui` (a debug line) libraries. Its
 `flnd.errors.LoginError` and `UsageError`, so a caller can show them as they are.
 
 How `load` reads a browser:
-1. find the profile folder for the platform (`_chromium_root`, `_firefox_profile`);
+1. find the profile folder for the platform (`_chromium_root`, `_firefox_profile`, or Safari's
+   cookie file, `SAFARI_FILES`);
 2. copy the cookie database into memory with SQLite's backup API, read-only, so a running
    browser's lock or write-ahead log never blocks or corrupts the read;
 3. read every row; for Chromium, fetch the AES key from the Keychain (macOS), the keyring
@@ -40,6 +42,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import struct
 import subprocess
 import sys
 from collections.abc import Iterable, Iterator
@@ -51,7 +54,7 @@ from flnd import _files
 from flnd._ui import ui
 from flnd.errors import LoginError, UsageError
 
-__all__ = ["BROWSERS", "Jar", "load"]
+__all__ = ["BROWSERS", "Jar", "load", "parse_binarycookies"]
 
 Cookie = dict[str, Any]
 PathLike = str | Path
@@ -72,7 +75,24 @@ _CHROMIUM = {
               "BraveSoftware/Brave-Browser/User Data"),
 }
 # Every browser `load` reads cookies from, by the name `flnd login <source> <browser>` takes.
-BROWSERS = (*_CHROMIUM, "firefox")
+# Safari is read on macOS only.
+BROWSERS = (*_CHROMIUM, "firefox", "safari")
+# Safari's cookie file, under the home folder: in its sandbox container since Safari 14, and
+# where older versions kept it. The first that exists is read.
+SAFARI_FILES = (
+    Path("Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies"),
+    Path("Library/Cookies/Cookies.binarycookies"),
+)
+# What a binarycookies file and each of its pages start with.
+SAFARI_MAGIC = b"cook"
+SAFARI_PAGE = b"\x00\x00\x01\x00"
+# Safari's times count seconds from 2001-01-01 (Apple's reference date), not from 1970.
+APPLE_EPOCH_OFFSET = 978_307_200
+# A Safari cookie's flags: bit 0 secure, bit 2 HTTP-only.
+SAFARI_SECURE, SAFARI_HTTP_ONLY = 0x1, 0x4
+# What to do when macOS's privacy protection keeps Safari's file from the terminal.
+FULL_DISK_ACCESS = ("give your terminal Full Disk Access (System Settings > Privacy & Security "
+                    "> Full Disk Access), or export a cookie file from Safari instead")
 # Chromium and Firefox `samesite`: 0 none, 1 lax, 2 strict; -1 (unspecified) is Lax.
 _SAME_SITE = {0: "None", 1: "Lax", 2: "Strict"}
 # The spellings JSON exports use: Playwright and extensions ("no_restriction" in Chrome).
@@ -279,9 +299,11 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
         A new jar with every cookie read, in the source's order.
 
     Raises:
-        UsageError: `profile` is given but `source` isn't a known browser.
+        UsageError: `profile` is given but `source` isn't a known browser, or Safari is asked
+            for off macOS.
         LoginError: the file is too big, not UTF-8 or not a cookie file; the browser's database
-            can't be read, or none of its encrypted values can be decrypted.
+            can't be read, or none of its encrypted values can be decrypted; macOS's privacy
+            protection keeps Safari's file from this program (the hint says how to allow it).
         FileNotFoundError: the file, the browser's profile or its cookie database is missing.
         OSError: the file can't be read.
     """
@@ -290,6 +312,8 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
         if lower in BROWSERS:
             if lower == "firefox":
                 return Jar(_load_firefox(profile))
+            if lower == "safari":
+                return Jar(_load_safari())
             return Jar(_load_chromium(lower, profile or "Default"))
         if profile is not None:
             raise UsageError(f"unknown browser {source!r}: use one of {', '.join(BROWSERS)}")
@@ -365,6 +389,143 @@ def _load_firefox(profile: str | None) -> list[Cookie]:
         same = _SAME_SITE.get(same_site, "Lax")
         jar.append(_cookie(name, value, host, path, expires or -1, secure, http_only, same))
     return jar
+
+
+def _load_safari() -> list[Cookie]:
+    """Read Safari's cookies from its `Cookies.binarycookies` file, on macOS.
+
+    1. Find the file: Safari's container first, then the older place (`SAFARI_FILES`).
+    2. Read it whole; macOS refuses a program without Full Disk Access, which is a
+       `LoginError` whose hint says how to allow it.
+    3. Parse it (`parse_binarycookies`). Safari keeps values in plain text: no key is needed.
+
+    Returns:
+        The cookies, in the file's order.
+
+    Raises:
+        UsageError: not on macOS.
+        LoginError: the file can't be read, or isn't a binarycookies file.
+        FileNotFoundError: Safari has no cookie file.
+    """
+    if _PLATFORM != "darwin":
+        raise UsageError("Safari's cookies are read on macOS only",
+                         hint="use another browser, or a cookie file")
+    for relative in SAFARI_FILES:
+        path = Path.home() / relative
+        refuse_profile(path.parent)
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            # macOS's privacy protection (TCC) answers EPERM for Safari's container to any
+            # program the person hasn't given Full Disk Access, even with the file's mode open.
+            raise LoginError(f"macOS doesn't let this program read {path}",
+                             hint=FULL_DISK_ACCESS) from None
+        if len(data) > MAX_SIZE:
+            raise LoginError(f"{path}: a cookie file over {MAX_SIZE // (1024 * 1024)} MB is "
+                             "refused")
+        try:
+            return parse_binarycookies(data)
+        except ValueError as error:
+            raise LoginError(f"{path}: {error}") from None
+    raise FileNotFoundError(f"Safari has no cookie file in {Path.home() / 'Library'}")
+
+
+def parse_binarycookies(data: bytes) -> list[Cookie]:
+    """Parse Safari's binarycookies format, with the stdlib alone.
+
+    The layout, as Safari writes it (big-endian where marked, little-endian elsewhere):
+    1. `cook`, then the number of pages (4 bytes, big-endian) and each page's size (4 bytes
+       each, big-endian); the pages follow, back to back.
+    2. A page: `00 00 01 00`, the number of cookies (4 bytes), each cookie's offset from the
+       page's start (4 bytes each), then 4 zero bytes; the cookies follow.
+    3. A cookie: its size, a version, its flags (`SAFARI_SECURE`, `SAFARI_HTTP_ONLY`), a word
+       that tells whether it names a port, then the offsets from the cookie's start of its
+       domain, name, path and value (4 bytes each), a comment's offset and 4 more bytes, then
+       its expiry and creation times as doubles from 2001-01-01; the four strings follow,
+       each ending in a zero byte.
+    4. After the pages: a checksum and a property list, which aren't needed.
+
+    Args:
+        data: the whole file.
+
+    Returns:
+        The cookies, in the file's order; a session cookie (no expiry) has `expires` -1.
+
+    Raises:
+        ValueError: the data isn't a binarycookies file, or a page or cookie runs past its end;
+            the message names the page and cookie, never a value.
+    """
+    if data[:4] != SAFARI_MAGIC or len(data) < 8:
+        raise ValueError("not a Safari binarycookies file")
+    (pages,) = struct.unpack_from(">I", data, 4)
+    sizes_end = 8 + 4 * pages
+    if len(data) < sizes_end:
+        raise ValueError("the page table runs past the end of the file")
+    sizes = struct.unpack_from(f">{pages}I", data, 8)
+    jar: list[Cookie] = []
+    at = sizes_end
+    for number, size in enumerate(sizes, 1):
+        page = data[at:at + size]
+        at += size
+        if len(page) != size or page[:4] != SAFARI_PAGE:
+            raise ValueError(f"page {number} is damaged")
+        jar.extend(_safari_page(page, number))
+    return jar
+
+
+def _safari_page(page: bytes, number: int) -> Iterator[Cookie]:
+    """The cookies of one page of a binarycookies file (see `parse_binarycookies`).
+
+    Args:
+        page: the page's bytes.
+        number: its number from 1, for messages.
+
+    Yields:
+        Each cookie.
+
+    Raises:
+        ValueError: the page or one of its cookies runs past its end.
+    """
+    index = 0
+    try:
+        (count,) = struct.unpack_from("<I", page, 4)
+        offsets = struct.unpack_from(f"<{count}I", page, 8)
+        for start in offsets:
+            # Counted by hand, so the error below can name the cookie that broke.
+            index += 1
+            size, _, flags, _, domain, name, path, value = struct.unpack_from("<8I", page, start)
+            expiry, _ = struct.unpack_from("<2d", page, start + 40)
+            cookie = page[start:start + size]
+            if len(cookie) != size:
+                raise struct.error("short cookie")
+            expires = int(expiry) + APPLE_EPOCH_OFFSET if expiry > 0 else -1
+            yield _cookie(_safari_text(cookie, name), _safari_text(cookie, value),
+                          _safari_text(cookie, domain), _safari_text(cookie, path) or "/",
+                          expires, flags & SAFARI_SECURE, flags & SAFARI_HTTP_ONLY, "Lax")
+    except (struct.error, IndexError):
+        place = f"cookie {index} of page {number}" if index else f"page {number}"
+        raise ValueError(f"{place} is damaged") from None
+
+
+def _safari_text(cookie: bytes, offset: int) -> str:
+    """The zero-ended text at `offset` in one cookie's bytes.
+
+    Args:
+        cookie: the cookie's bytes, from its size field on.
+        offset: where the text starts, from the cookie's start.
+
+    Returns:
+        The text; a byte that isn't UTF-8 becomes U+FFFD.
+
+    Raises:
+        IndexError: the offset is past the cookie, or the text has no end.
+    """
+    end = cookie.find(b"\0", offset)
+    if offset >= len(cookie) or end < 0:
+        raise IndexError(offset)
+    return cookie[offset:end].decode("utf-8", "replace")
 
 
 def _firefox_profile(profile: str | None) -> Path:

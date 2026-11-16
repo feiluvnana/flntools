@@ -176,7 +176,9 @@ downloads a file.
 
 ## Logging in
 `flnd login <source> <how>` reads your login for that site from a browser (`chrome`, `firefox`,
-`edge`, `brave` or `chromium`), or from a `cookies.txt` or JSON cookie file you exported. It
+`edge`, `brave`, `chromium`, or `safari` on macOS), or from a `cookies.txt` or JSON cookie file
+you exported. Reading Safari needs Full Disk Access for your terminal (System Settings › Privacy
+& Security › Full Disk Access); without it, flnd says so and how to allow it. It
 keeps only the site's cookies, and refuses a login that lacks the site's login cookie. Telegram
 logs in its own way: `browser` (Telegram Web's session), `qr` or `phone`. Left out in a
 terminal, `how` is asked with numbered choices.
@@ -190,7 +192,18 @@ flnd logout ins
 ```
 
 Logins are stored encrypted in `<home>/secrets.db`, with the key in `<home>/secret.key` beside
-it, so keep the home as private as the logins in it.
+it, so keep the home as private as the logins in it. To keep the key in the OS keychain instead
+(macOS's Keychain, or the Secret Service on Linux through `secret-tool`), set it in the home's
+`config.toml`:
+
+```toml
+[vault]
+key = "keychain"                # "file", the default, keeps secret.key
+```
+
+The next command moves the key there and deletes `secret.key` once the keychain reads it back;
+setting `"file"` again moves it back. A keychain may be locked when no one is logged in, so a
+cron or launchd `sync` is safest with the file.
 
 ## The home folder
 Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./.flnd`.
@@ -199,7 +212,7 @@ Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./
   media/<source>/<target>/…   downloaded files, by category (posts/, reels/, stories/, …)
   flnd.db                     what was saved, the targets, run history and failures (SQLite)
   secrets.db                  logins, encrypted
-  secret.key                  the key to secrets.db
+  secret.key                  the key to secrets.db, unless [vault] keeps it in the keychain
   config.toml                 optional settings (below)
   logs/                       crash reports and samples of changed site answers, kept 30 days
 ```

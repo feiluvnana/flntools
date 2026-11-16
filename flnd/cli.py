@@ -424,10 +424,10 @@ def check(args: argparse.Namespace) -> int:
 def login(args: argparse.Namespace) -> int:
     """Log in to a source, or with no source list every source's login.
 
-    HOW is a browser to read the site's cookies from (chrome, firefox, edge, brave, chromium),
-    the path of a cookies.txt or JSON cookie export, or the source's own way (tlg: browser, qr,
-    phone). Left out in a terminal, it is asked with numbered choices. The login is saved
-    encrypted in the home.
+    HOW is a browser to read the site's cookies from (chrome, firefox, edge, brave, chromium,
+    or safari on macOS), the path of a cookies.txt or JSON cookie export, or the source's own
+    way (tlg: browser, qr, phone). Left out in a terminal, it is asked with numbered choices.
+    The login is saved encrypted in the home.
 
     Args:
         args: the parsed flags.
@@ -759,7 +759,9 @@ def _ask_how(args: argparse.Namespace) -> str:
         return _prompt.choose(f"Log in to {entry['name']} with", list(ways))
     from flnd._cookies import BROWSERS
 
-    choices = {f"cookies from {browser}": browser for browser in BROWSERS}
+    # Safari is read on macOS only, so it is offered only there.
+    choices = {f"cookies from {browser}": browser for browser in BROWSERS
+               if browser != "safari" or sys.platform == "darwin"}
     choices["a cookie file (cookies.txt or JSON)"] = "file"
     picked = _prompt.choose(f"Log in to {entry['name']} with", choices)
     if picked == "file":
@@ -770,7 +772,7 @@ def _ask_how(args: argparse.Namespace) -> str:
 def _ways(ways: Sequence[str]) -> str:
     """A source's login ways as `flnd login` takes them, for a hint."""
     if "file" in ways:
-        return "chrome, firefox, edge, brave, chromium, or a cookie file's path"
+        return "chrome, firefox, edge, brave, chromium, safari (macOS), or a cookie file's path"
     return ", ".join(ways)
 
 

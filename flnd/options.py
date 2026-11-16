@@ -413,6 +413,10 @@ UIS = ("full", "inline", "plain")
 # What `[compress] video` takes: the codec `--compress` turns videos into (docs/media). "hevc"
 # is x265, for devices that can't play AV1.
 VIDEOS = ("av1", "hevc")
+# What `[vault] key` takes: where the vault's key is kept, `secret.key` in the home (the
+# default, which an unattended sync can always open) or the OS keychain (docs/storage).
+FILE, KEYCHAIN = "file", "keychain"
+VAULTS = (FILE, KEYCHAIN)
 # The proxy schemes `[sources.<code>] proxy` takes: the ones curl speaks. `socks5h` also looks
 # host names up through the proxy.
 PROXIES = ("http", "https", "socks5", "socks5h")
@@ -423,6 +427,7 @@ STOP_AFTER = 5
 KEYS = {
     "defaults": ("again", "dedupe", "sidecars", "ui", "compress", "when"),
     "compress": ("video",),
+    "vault": ("key",),
 }
 SOURCE_KEYS = ("pace", "scroll", "limits", "proxy", "stop_after")
 
@@ -472,6 +477,8 @@ class Config:
     when: str = ""
     # The codec `--compress` turns videos into: "av1" or "hevc".
     video: str = "av1"
+    # Where the vault's key is kept: "file" (`secret.key` in the home) or "keychain".
+    vault: str = FILE
     # Each source's own settings, by code; a source not named has `SourceConfig()`.
     sources: Mapping[str, SourceConfig] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -546,6 +553,7 @@ def _parsed(path: Path, text: str) -> Config:
     _warn_unknown(path, data)
     defaults = _table(path, data, "defaults")
     compress = _table(path, data, "compress")
+    vault = _table(path, data, "vault")
     sources = _table(path, data, "sources")
     where = "defaults"
     ui = defaults.get("ui")
@@ -559,6 +567,7 @@ def _parsed(path: Path, text: str) -> Config:
         compress=_flag(path, where, "compress", defaults.get("compress", False)),
         when=_when_text(path, defaults.get("when", "")),
         video=_choice(path, "compress", "video", compress.get("video", "av1"), VIDEOS),
+        vault=_choice(path, "vault", "key", vault.get("key", FILE), VAULTS),
         sources=MappingProxyType({
             code: _source(path, code, _table(path, sources, code, within="sources"))
             for code in sources

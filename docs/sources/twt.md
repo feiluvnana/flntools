@@ -64,7 +64,8 @@ it quotes and its card's image.
 `flnd login twt <how>` takes a browser or a cookie file's path. Left out in a terminal,
 the way is asked with numbered choices:
 
-- **From your browser**: reads X's cookies from Chrome, Firefox, Edge, Brave or Chromium.
+- **From your browser**: reads X's cookies from Chrome, Firefox, Edge, Brave, Chromium, or
+  Safari on macOS.
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
 
 The source declares `login = cookies("auth_token")`: the login is accepted only when the

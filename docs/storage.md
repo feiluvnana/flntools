@@ -13,8 +13,8 @@ side by side in it.
 .flnd/
   flnd.db          what the home remembers: files, posts, targets, runs, failures, …
   secrets.db       the vault: logins and tokens, each sealed (AES-256-GCM)
-  secret.key       the vault's key (mode 0600)
-  config.toml      settings (optional): `[defaults]`, `[compress]`, `[sources.<code>]`
+  secret.key       the vault's key (mode 0600), unless `[vault]` keeps it in the keychain
+  config.toml      settings (optional): `[defaults]`, `[compress]`, `[vault]`, `[sources.<code>]`
                    (see Settings, below)
   media/
     <code>/<target>/<category>/…   the downloaded files
@@ -291,6 +291,9 @@ when = ""            # the days every download, follow and sync takes, as --when
 [compress]
 video = "av1"        # "av1", or "hevc" (x265) for devices that can't play AV1
 
+[vault]
+key = "file"         # "file" (secret.key), or "keychain" (the OS keychain), below
+
 [sources.ins]        # one table per source, by its code
 pace = 1.0           # seconds between its page requests (over the source's own pace)
 scroll = "human"     # "human" or "fast": how its browser feeds scroll
@@ -342,6 +345,34 @@ them, and `flnd/_home.py` holds the logins that use both.
 
 `flnd logout <code>` removes a source's rows. Deleting `secret.key` makes every saved login
 unreadable; log in again after.
+
+### The key in the keychain
+
+With `key = "keychain"` under `[vault]` in `config.toml`, the key lives in the operating system's
+keychain instead of `secret.key`:
+
+- **On macOS**, a generic password in the login keychain, through `/usr/bin/security`; **on
+  Linux**, an item of the Secret Service (GNOME Keyring, KWallet), through `secret-tool`. Its
+  service is `flnd` and its account `home-` and a hash of the home's absolute path, so each
+  home has its own; the key is kept as base64 text. Elsewhere (Windows), or without the tool,
+  the setting is a usage error saying the keychain isn't available here.
+- **The key never goes on a command line**, where another process could read it: `security`
+  reads the command that stores it on its standard input (`security -i`), and `secret-tool`
+  reads the secret there. Each tool runs from an argument list, never a shell, and its output
+  is never logged.
+- **The move is once, and safe.** The first command after setting `"keychain"` stores the
+  file's key in the keychain, reads it back, and only then deletes `secret.key`; a keychain
+  that didn't keep it leaves the file, with an error. Setting `"file"` again writes the key to
+  a new `secret.key` (mode 0600), reads it back, and then deletes the keychain item. A home
+  that has its `secret.key` never asks the keychain anything.
+- **A moved home** looks for another item, since the account names the path: set `"file"`
+  before moving a home, then `"keychain"` again after.
+- **Unattended runs**: a keychain is often locked for a cron job or a headless box, and a
+  locked one makes the tool fail (or wait, up to 30 s, for a password nobody types). That is
+  why the file is the default.
+
+The code: `flnd/_vault.py` (`Keychain`, `to_keychain`, `to_file`) does the keychain, and
+`flnd/_home.py` (`vault_key`) picks the place from the config.
 
 ## Migrating an old home
 

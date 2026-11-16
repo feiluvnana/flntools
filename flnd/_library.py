@@ -464,9 +464,9 @@ class Flnd:
         Args:
             source: the source's code (`"ins"`).
             how: a browser to read its cookies from (`"chrome"`, `"firefox"`, `"edge"`,
-                `"brave"`, `"chromium"`), the path of a cookies.txt or JSON export, or the
-                source's own way (`"qr"`, `"phone"` for tlg), which asks its questions in
-                the terminal.
+                `"brave"`, `"chromium"`, `"safari"` on macOS), the path of a cookies.txt or
+                JSON export, or the source's own way (`"qr"`, `"phone"` for tlg), which asks
+                its questions in the terminal.
 
         Returns:
             The source's `Login` after it.

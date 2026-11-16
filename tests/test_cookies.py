@@ -236,7 +236,7 @@ class ChromiumLinuxTest(BrowserTestCase):
 class BrowserChoiceTest(BrowserTestCase):
     def test_unknown_browser(self):
         with self.assertRaises(UsageError):
-            _cookies.load("safari", profile="Default")
+            _cookies.load("opera", profile="Default")
 
     @unittest.skipUnless(HAS_CRYPTOGRAPHY, "needs cryptography")
     def test_windows_chromium_dpapi_aesgcm(self):

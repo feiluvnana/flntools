@@ -78,8 +78,8 @@ names its album under `albums/<album>/`, whichever tab found it.
 `flnd login fbk <how>` takes a browser or a cookie file's path. Left out in a terminal,
 the way is asked with numbered choices:
 
-- **From your browser**: reads Facebook's cookies from Chrome, Firefox, Edge, Brave or
-  Chromium.
+- **From your browser**: reads Facebook's cookies from Chrome, Firefox, Edge, Brave,
+  Chromium, or Safari on macOS.
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
 
 The login is accepted when the cookies hold `c_user` or `xs`. They are stored encrypted in
