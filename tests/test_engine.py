@@ -343,7 +343,7 @@ class HttpTest(EngineCase):
                     results.append((error.status, str(error)[:40]))
                 except Error as error:
                     results.append((None, str(error)[:40]))
-            results.append(site.fetch("https://api.aaa.example/html").html.css("h1").text)
+            results.append(site.fetch("https://api.aaa.example/html").html.first("h1").text)
 
         self.routes["https://api.aaa.example/gone"] = _net.reply(404)
         self.routes["https://api.aaa.example/html"] = _net.reply(200, html="<h1>Hi</h1>")

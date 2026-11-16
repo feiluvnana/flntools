@@ -5,7 +5,7 @@
 
 The manifest lets `flnd --help`, `flnd sources` and target resolution know each built-in source
 (its code, name, domains, target forms and categories) without importing it. Importing the
-seven sources costs tens of milliseconds (parsel, lxml, the sources' own tables), which `--help`
+seven sources costs tens of milliseconds (the source API and the sources' own tables), which `--help`
 can't afford. The manifest is generated, never edited: `tests/test_manifest.py` checks that the
 file matches what this module makes from the code, so a change to a source's routes fails the
 tests until `make manifest` is run.

@@ -18,7 +18,7 @@ from fakes import FakeSite, Seen, collect
 from flnd.options import Options
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
-from flnd import _html as selector
+from flnd import _html
 
 DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")
 PROFILE = "https://www.tiktok.com/@example_creator"
@@ -136,7 +136,7 @@ class TabSite(FakeSite):
         return self._seen.scrolls
 
     def document(self):
-        return selector.parse(self.tab_html(self) if callable(self.tab_html) else self.tab_html)
+        return _html.parse(self.tab_html(self) if callable(self.tab_html) else self.tab_html)
 
 
 def run(text, *, feeds=(), html: Any = "", pages=None, json=None, options=Options(), cookies=None, site=TabSite):

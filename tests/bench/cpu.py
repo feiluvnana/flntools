@@ -3,10 +3,10 @@
 What it times, in order:
 1. JSON: decoding and encoding a 2 MiB feed page shaped like an Instagram timeline, with the
    stdlib and with msgspec (untyped, and typed to the few fields a source reads);
-2. a JSON path: `flnd._html`'s jmespath query against plain dict access for the same nodes;
-3. HTML: parsing a 2 MiB Meta-style page (40 scripts, 6 of them JSON, and 20,000 posts) and
-   reading its JSON script blocks and its 20,000 `img[src]`, with parsel (today) and with
-   selectolax when it is installed (the planned replacement);
+2. a JSON path: `dig` against plain dict access for the same nodes;
+3. HTML: parsing a 2 MiB Meta-style page (40 scripts, 6 of them JSON, and 20,000 posts) with
+   `flnd._html` (selectolax), then decoding its JSON script blocks (`html_meta`, the number a
+   Facebook or Instagram page costs) or reading its 20,000 `img[src]` (`html_images`);
 4. hashing 256 MiB in memory, per MiB;
 5. the loop bridge: a thread calling a coroutine on an event loop thread and waiting for it;
 6. flnd's per-file work: `job.place` (paths and names), `text.filename` and `day()`;
@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.util
 import io
 import json
 import os
@@ -39,8 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from example_source import CDN, Example  # noqa: E402
 from flnd import job  # noqa: E402
-from flnd.source import File, Post, day  # noqa: E402
-from flnd import _html as selector, _text as text  # noqa: E402
+from flnd.source import File, Post  # noqa: E402
+from flnd._time import day  # noqa: E402
+from flnd import _html, _text as text  # noqa: E402
 from flnd._loop import Loop  # noqa: E402
 from flnd._ui import ui
 
@@ -110,35 +110,20 @@ def json_and_paths(report: kit.Report) -> None:
     page = json.loads(raw)
     report.add("json_encode", kit.best(lambda: json.dumps(page)) * 1e3, "ms")
     report.add("msgspec_encode", kit.best(lambda: msgspec.json.encode(page)) * 1e3, "ms")
-    report.add("jmespath", kit.best(lambda: selector.parse(page).jmespath(EDGES).get()) * 1e6,
-               "us")
+    report.add("dig", kit.best(lambda: _html.dig(page, EDGES)) * 1e6, "us")
     edges = page["data"]["user"]["edge_owner_to_timeline_media"]["edges"]
     report.add("dict_access", kit.best(lambda: [e["node"] for e in edges]) * 1e6, "us")
 
 
 def html(report: kit.Report) -> None:
-    """Time step 3: the Meta-style page with parsel, and with selectolax when installed."""
-    from parsel import Selector
-
+    """Time step 3: the Meta-style page, parsed and read as the sources read it."""
     page = meta_page()
-    scripts = 'script[type="application/json"]::text'
-    report.add("html_meta",
-               kit.best(lambda: Selector(text=page).css(scripts).getall()) * 1e3, "ms")
-    report.add("html_images",
-               kit.best(lambda: Selector(text=page).css("img::attr(src)").getall()) * 1e3, "ms")
-    if importlib.util.find_spec("selectolax") is None:
-        return
-    from selectolax.lexbor import LexborHTMLParser
+    report.add("html_meta", kit.best(lambda: _html.parse(page).blocks("__bbox")) * 1e3, "ms")
 
-    def lexbor_scripts() -> list[str]:
-        found = LexborHTMLParser(page).css('script[type="application/json"]')
-        return [node.text() for node in found]
+    def images() -> list[str | None]:
+        return [image.attr("src") for image in _html.parse(page).css("img")]
 
-    def lexbor_images() -> list[str | None]:
-        return [node.attributes.get("src") for node in LexborHTMLParser(page).css("img")]
-
-    report.add("html_meta_selectolax", kit.best(lexbor_scripts) * 1e3, "ms")
-    report.add("html_images_selectolax", kit.best(lexbor_images) * 1e3, "ms")
+    report.add("html_images", kit.best(images) * 1e3, "ms")
 
 
 def hashes(report: kit.Report) -> None:

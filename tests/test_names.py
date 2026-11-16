@@ -236,13 +236,13 @@ def history_breaches(source: str) -> list[str]:
     return found
 
 
-# The aliases the fold keeps (`from flnd import _html as selector`): each old `shared` name, so that the
+# The aliases the fold keeps (`from flnd import _text as text`): each old `shared` name, so that the
 # code lines using it didn't change. Each pair is (the alias, the private module it names). A row
 # that renames the uses removes its pairs here, so the list can only shrink. AGENTS.md says no
 # aliases; this is the one exception, and it is temporary.
 TRANSITIONAL_ALIASES = {
     ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"),
-    ("selector", "_html"), ("text", "_text"),
+    ("text", "_text"),
 }
 
 

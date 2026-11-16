@@ -79,7 +79,7 @@ CPython 3.14.6. The numbers a planned change is gated on:
 | `e2e.sync_nothing_new` | 4 ms (4,000 files) | ≤ 0.3 s (100k files) |
 | `e2e.latency_500_posts` (150 ms a page, 40 ms a file) | 7.16 s | ≤ 5.5 s |
 | `browser.scroll_default` (the synthetic feed) | 26.0 s | ≤ 16 s human-like, ≤ 3 s fast (`scroll_fast`); see "Browser feeds" |
-| `cpu.html_meta` (a 2 MiB Meta-style page) | 18.0 ms | ≤ 8 ms |
+| `cpu.html_meta` (a 2 MiB Meta-style page) | 18.0 ms | ≤ 8 ms (now 6.6 ms; "HTML and JSON paths") |
 | `media.jpegs_1000` (compressing 1,000 JPEGs) | 23.2 s (measured under load, below) | ≤ 2 min |
 | `media.sync_compress_100k` (`sync --compress` over 100k done files) | 0.44 s | ≤ 3 s |
 
@@ -199,6 +199,27 @@ a 0.3 s pause and a jiggle), and the end cost the whole idle window. Now a step 
 the next matching response or the page growing, and the read ends on the last batch's own "no
 more". With `human`, nearly all of what is left is the pauses a person would make: 29 steps at
 a median of 0.4 s each. `fast` is the 30 answers of 50 ms each, plus the scrolling.
+
+## HTML and JSON paths
+
+Pages are parsed by selectolax (lexbor, a C parser with its own CSS engine) through
+`flnd._html`, and JSON paths walked by `dig`, which replaced parsel (lxml), jmespath and
+python-jsonpath. Measured A/B against the old reads on the M5 above while other work ran (load
+about 5), the median of 9 alternating rounds, each the best of 3:
+
+| metric | parsel / jmespath | selectolax / `dig` |
+| --- | ---: | ---: |
+| `cpu.html_meta` (a 2 MiB Meta-style page: parse, then its JSON blocks) | 18.1 ms | 6.6 ms |
+| `cpu.html_images` (the same page: parse, then 20,000 `img[src]`) | 32.1 ms | 10.8 ms |
+| `cpu.dig` (`edges[].node` over 1,500 posts; plain dict access is 18 µs) | 238 µs | 46 µs |
+
+- **The old `html_meta` read only the blocks' text**; the new one also decodes the six that
+  hold `__bbox`, as Facebook and Instagram do, and is still 2.7× faster.
+- **`dig` compiles a path once** and caches it, and walks the commonest shape (`a[].b`) in one
+  comprehension. The old 682 µs baseline went through parsel's JSON selectors; jmespath alone
+  is the 238 µs above.
+- **Neither parser loads at startup**: `flnd._html` imports selectolax on the first parse and
+  msgspec on the first decode, so `flnd --help` and `import flnd.source` load neither.
 
 ## Compression
 

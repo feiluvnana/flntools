@@ -21,7 +21,7 @@ from flnd import _net
 from fakes import FakeSite, Seen, collect
 from test_source import INSTAGRAM
 
-from flnd import _html as selector
+from flnd import _html
 from flnd._time import day
 from flnd.engine import Engine
 from flnd.options import Options
@@ -184,7 +184,7 @@ class MediaTest(unittest.TestCase):
         self.assertEqual(tab_media({"data": {}}, "posts"), [])
 
     def test_embedded_results_are_found_in_the_page(self):
-        page = selector.parse(embedded(PROFILE, HIGHLIGHTS))
+        page = _html.parse(embedded(PROFILE, HIGHLIGHTS))
         self.assertEqual(embedded_results(page), [PROFILE, HIGHLIGHTS])
 
     def test_a_file_is_named_here_only_when_the_formats_would_name_it_otherwise(self):

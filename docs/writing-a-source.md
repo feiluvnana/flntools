@@ -221,8 +221,8 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 | `site.open(url)`, `site.url` | load a page in the target's browser tab (False when it didn't load), and where the tab is now |
 | `site.feed(match, scroll=…, lines=…, cursor=…)` | the JSON of the responses whose URL matches, as the page receives them; with `scroll=True` it scrolls for more until the feed ends, which `cursor` reads from the site's own pages (below). Open it before the page that sends them |
 | `site.warm(urls)` | start loading pages the source opens next, in background tabs |
-| `site.document()`, `site.html(text)` | the tab's page now, or any text, parsed: `.css(…)`, `.xpath(…)`, `.script(…)`, `.text` |
-| `dig(data, "a.b[].c")` | walk JSON: keys, `[0]`, `[]` for every item, `||` for the first that isn't empty |
+| `site.document()`, `site.html(text)` | the tab's page now, or any HTML text, parsed: `.css(…)`, `.first(…)`, `.script(id)`, `.blocks(…)`, `.text`, `.visible` (below) |
+| `dig(data, "a.b[].c")` | walk JSON: keys, `[0]`, `[]` for every item, `..[field=value]` at any depth, `||` for the first that finds something (below) |
 | `site.wait(css=…, url=…)`, `site.scroll(until=…)` | wait for an element or a URL; scroll, in the source's `scroll` style, until the page stops growing |
 | `site.evaluate(js)`, `site.click(css)` | run a script in the page; click an element |
 | `site.handoff(until=…, message=…)` | ask a person to do a step in the browser window, such as a captcha |
@@ -236,6 +236,52 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 
 A source never sleeps, retries, writes files, touches the history, or decides when a listing
 stops.
+
+### Reading a page and its JSON
+
+`site.html(text)` parses HTML, and `site.document()` parses the tab's page now; both give a
+page with CSS queries and the JSON it embeds. There is no XPath, and no `::text` or `::attr()`.
+
+| on the page | gives |
+| --- | --- |
+| `page.css(query)` | every element that matches the CSS selector, in page order (a list) |
+| `page.first(query)` | the first match, or None |
+| `element.text` | all its text, whitespace collapsed |
+| `element.attr(name)` | one attribute's value, or None |
+| `page.script(id)` | the JSON in `<script id="…">`, or None; `Changed` when it isn't JSON |
+| `page.blocks(contains)` | the JSON of every `<script type="application/json">` that holds `contains` |
+| `page.visible` | the text a reader sees, without scripts and styles |
+
+`dig(data, path)` walks the decoded JSON. A path is a few forms, chained:
+
+- `a.b` reads a key, and `[0]` an index (`[-1]` is the last);
+- `[]` reads the rest from every item of a list, and joins the lists it reaches:
+  `edges[].node.media[]` is every media of every node;
+- `..[field=value]` finds every dict, at any depth, whose `field` is the text `value`, and reads
+  the rest from each, as `[]` does;
+- `a || b` gives the first alternative that finds something (not None, "", [] or {}).
+
+A missing key gives None, and a path with `[]` or `..[]` gives a list, empty when nothing
+matched. A malformed path raises `SourceError`.
+
+```python
+from flnd import _html
+from flnd.source import dig
+
+page = _html.parse('''<a href="/video/1">one</a><a href="/about">about</a>
+<script id="__NEXT_DATA__" type="application/json">
+{"props": {"items": [{"__typename": "Video", "id": "1"}, {"__typename": "Ad"}]}}
+</script>''')
+
+assert [a.attr("href") for a in page.css('a[href*="/video/"]')] == ["/video/1"]
+data = page.script("__NEXT_DATA__")
+assert dig(data, "props.items[].id") == ["1"]
+assert dig(data, "..[__typename=Video].id") == ["1"]
+assert dig(data, "props.next || props.items[0].id") == "1"
+```
+
+A source parses through `site.html`, not `flnd._html`; the example imports it only to run
+without a site.
 
 ### A feed in the browser: name its responses and its cursor
 

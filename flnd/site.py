@@ -46,7 +46,7 @@ from flnd._ui import ui
 if TYPE_CHECKING:
     from flnd import _cookies
     from flnd._run import Stop
-    from flnd._html import Selection
+    from flnd._html import Document
 
     from flnd.options import RunShared
 
@@ -319,8 +319,8 @@ class TargetSite:
         return paged(self.fetch, url, cursor=cursor, params=params, send=send,
                      listing=self.listing)
 
-    def html(self, text: str | bytes) -> Selection:
-        """Parse HTML or JSON text; see `flnd.source.Site.html`."""
+    def html(self, text: str | bytes) -> Document:
+        """Parse HTML text; see `flnd.source.Site.html`."""
         from flnd._html import parse
 
         return parse(text)
@@ -428,11 +428,11 @@ class TargetSite:
         """See `flnd.source.Site.feed`; it scrolls in the source's `scroll` style."""
         return _browser.Feed(self._verbs(), match, scroll=scroll, lines=lines, cursor=cursor)
 
-    def document(self) -> Selection:
+    def document(self) -> Document:
         """The tab's page now, parsed; see `flnd.source.Site.document`.
 
         Returns:
-            The page as a `Selection`, parsed here, on the listing thread, not on the loop.
+            The page as a `flnd._html.Document`, parsed on the listing thread, not on the loop.
         """
         from flnd._html import parse
 

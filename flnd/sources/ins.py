@@ -55,7 +55,6 @@ ins page in docs/sources/.
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -131,8 +130,6 @@ GRAPHQL = "graphql"
 # sticker's asset, or the story's own music metadata.
 STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_url || "
                "music_metadata.music_info.music_asset_info.progressive_download_url")
-# The page blocks Meta's server fills with GraphQL results.
-SCRIPTS = 'script[type="application/json"]::text'
 # A desktop Chrome's User-Agent for flnd's own client, which Instagram expects of its web API.
 CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -995,15 +992,7 @@ def embedded_results(page: Any) -> list[Any]:
     Returns:
         The results, in page order. A block that isn't JSON holds none; the others still count.
     """
-    found: list[Any] = []
-    for text in page.css(SCRIPTS).get():
-        if "__bbox" not in text:
-            continue
-        try:
-            found.extend(_boxed(json.loads(text)))
-        except ValueError:
-            continue
-    return found
+    return [result for block in page.blocks("__bbox") for result in _boxed(block)]
 
 
 def _boxed(node: Any) -> Iterator[Any]:

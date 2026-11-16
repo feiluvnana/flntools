@@ -85,36 +85,6 @@ flnd/_files.py:_scan: no Yields:
 flnd/_files.py:_unlink: Args: no path
 flnd/_files.py:_unlink: no Raises:
 flnd/_files.py:_unlink: no Returns:
-flnd/_html.py:Selection.jmespath: Args: no query
-flnd/_html.py:Selection.jmespath: no Raises:
-flnd/_html.py:Selection.jmespath: no Returns:
-flnd/_html.py:Selection.jsonpath: Args: no query
-flnd/_html.py:Selection.jsonpath: no Raises:
-flnd/_html.py:Selection.jsonpath: no Returns:
-flnd/_html.py:Selection.match: Args: no pattern
-flnd/_html.py:Selection.match: no Raises:
-flnd/_html.py:Selection.match: no Returns:
-flnd/_html.py:Selection: Args: no raw
-flnd/_html.py:_compile_jmespath: Args: no query
-flnd/_html.py:_compile_jmespath: no Raises:
-flnd/_html.py:_compile_jmespath: no Returns:
-flnd/_html.py:_compile_jsonpath: Args: no query
-flnd/_html.py:_compile_jsonpath: no Raises:
-flnd/_html.py:_compile_jsonpath: no Returns:
-flnd/_html.py:_jsonpath: no Raises:
-flnd/_html.py:_jsonpath: no Returns:
-flnd/_html.py:_loads: Args: no text
-flnd/_html.py:_loads: no Raises:
-flnd/_html.py:_loads: no Returns:
-flnd/_html.py:_msgspec_json: no Raises:
-flnd/_html.py:_msgspec_json: no Returns:
-flnd/_html.py:_response_selector: Args: no response
-flnd/_html.py:_response_selector: no Returns:
-flnd/_html.py:_selector: Args: no source
-flnd/_html.py:_selector: no Raises:
-flnd/_html.py:_selector: no Returns:
-flnd/_html.py:_text_selector: Args: no text
-flnd/_html.py:_text_selector: no Returns:
 flnd/_loop.py:_cancel_pending: no docstring
 flnd/_text.py:_rough_redact: Args: no url
 flnd/_text.py:_rough_redact: no Returns:

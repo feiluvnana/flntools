@@ -563,7 +563,7 @@ class DigTest(unittest.TestCase):
         self.assertEqual(dig(self.PAGE, "data.user.edges[].node.id || alt"), [1, 2])
 
     def test_a_bad_bracket_is_a_source_error(self):
-        with self.assertRaisesRegex(SourceError, r"\[x\] isn't \[\] or an index"):
+        with self.assertRaisesRegex(SourceError, r"can't read '\[x\]'"):
             dig(self.PAGE, "data[x]")
 
 

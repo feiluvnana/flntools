@@ -103,7 +103,7 @@ from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteErr
 from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from flnd._html import Selection
+    from flnd._html import Document
 
 __all__ = [
     "Cap", "Client", "Headers", "Limits", "Load", "Place", "Reply", "Request", "Response",
@@ -317,8 +317,8 @@ class Response:
         return self._cached("json", self._json)
 
     @property
-    def html(self) -> Selection:
-        """The body as a `flnd._html` `Selection`."""
+    def html(self) -> Document:
+        """The body parsed as HTML: a `flnd._html.Document`."""
         from flnd import _html
 
         return self._cached("html", lambda: _html.parse(self.text))

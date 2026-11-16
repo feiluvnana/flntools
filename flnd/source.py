@@ -56,7 +56,7 @@ from typing import (
 )
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from flnd import _text, _time
+from flnd import _html, _text, _time
 from flnd.errors import (
     Blocked, Changed, Error, LoginError, NetworkError, NotFound, SiteError, SourceError, UsageError,
 )
@@ -923,7 +923,7 @@ class Site(Protocol):
         for page in site.pages(f"{API}/users/{user}/posts", cursor="next"):
             ...
         if site.open(f"https://www.example.com/{user}/"):
-            title = site.document().css("h1::text").first
+            title = site.document().first("h1").text
 
     The engine's is `flnd.site.TargetSite`; tests use `tests.fakes.FakeSite`. Every request to the
     source's own `domains` waits its turn under the source's `pace`, and a rate limit or a 5xx is
@@ -1102,7 +1102,11 @@ class Site(Protocol):
         ...
 
     def document(self) -> Any:
-        """The tab's page now, parsed: a selection with `css`, `xpath`, `script` and `text`."""
+        """The tab's page now, parsed, as `html` parses it.
+
+        Returns:
+            The page, with `css`, `first`, `script`, `blocks`, `text` and `visible`; see `html`.
+        """
         ...
 
     def evaluate(self, js: str, *, arg: Any = None) -> Any:
@@ -1154,13 +1158,29 @@ class Site(Protocol):
         ...
 
     def html(self, text: str | bytes) -> Any:
-        """Parse HTML (or JSON) text into a selection with `css`, `xpath`, `script` and `text`.
+        """Parse an HTML page, to read its elements and the JSON it embeds.
+
+        The page answers CSS queries: `css(query)` gives every matching element and
+        `first(query)` the first one, or None. An element has `text` (its text, whitespace
+        collapsed), `attr(name)` (an attribute, None when absent), and `css` and `first` of its
+        own. The page also has `script(id)`, the JSON of `<script id=...>` (None when absent);
+        `blocks(contains)`, the JSON of every `<script type="application/json">` holding
+        `contains`; and `visible`, the text a reader sees, without scripts and styles. There is
+        no XPath. A path through the decoded JSON is `dig`'s job.
+
+            page = site.html(site.fetch(f"{SITE}/embed/{video}").text)
+            data = dig(page.script("__NEXT_DATA__"), "props.pageProps.item")
+            links = [a.attr("href") for a in page.css('a[href*="/video/"]')]
 
         Args:
-            text: the page's text.
+            text: the page's HTML, as text or UTF-8 bytes.
 
         Returns:
-            The selection.
+            The parsed page.
+
+        Raises:
+            SourceError: a CSS query on it isn't valid CSS.
+            Changed: `script` found a script that doesn't hold JSON.
 
         Example:
             >>> import inspect
@@ -1256,106 +1276,9 @@ class Site(Protocol):
 # JSON paths
 # ---------------------------------------------------------------------------------------------
 
-def dig(data: Any, path: str) -> Any:
-    """Walk JSON by a path: `a.b` for keys, `[0]` for an index, `[]` for every item, `||` for or.
-
-    A path with `[]` gives a list: the rest of the path is read from each item, missing ones
-    are left out, and lists it reaches are flattened, so `edges[].node.media[]` is every media
-    of every node. `a || b` gives the first alternative that isn't empty (None, "", [] or {}).
-
-    Args:
-        data: parsed JSON: dicts, lists and values.
-        path: the path, such as `"data.user.edge_owner.edges[].node"`.
-
-    Returns:
-        What the path reaches: None when a key or index is missing (or a list, for `[]`).
-
-    Example:
-        >>> page = {"data": {"items": [{"id": 1}, {"id": 2}, {"x": 3}]}, "next": None}
-        >>> dig(page, "data.items[].id"), dig(page, "data.items[0].id")
-        ([1, 2], 1)
-        >>> dig(page, "next || data.items[1].id")
-        2
-    """
-    for alternative in path.split("||"):
-        steps = _steps(alternative.strip())
-        found = _walk(data, steps)
-        # A path with `[]` always gives a list, empty when a key before it is missing.
-        if found is None and None in steps:
-            found = []
-        if found not in (None, "", [], {}):
-            return found
-    return found
-
-
-def _steps(path: str) -> list[str | int | None]:
-    """A path as steps: a key, an index, or None for `[]`.
-
-    Args:
-        path: one alternative of a `dig` path, such as `"data.items[].id"`.
-
-    Returns:
-        The steps, in order.
-
-    Raises:
-        SourceError: a bracket holds anything but nothing or a whole number.
-    """
-    steps: list[str | int | None] = []
-    for part in path.split("."):
-        name, _, rest = part.partition("[")
-        if name:
-            steps.append(name)
-        while rest:
-            inside, _, rest = rest.partition("]")
-            if inside == "":
-                steps.append(None)
-            elif inside.lstrip("-").isdigit():
-                steps.append(int(inside))
-            else:
-                raise SourceError(f"dig: [{inside}] isn't [] or an index, in {path!r}")
-            rest = rest.removeprefix("[")
-    return steps
-
-
-def _walk(data: Any, steps: list[str | int | None]) -> Any:
-    """Follow `steps` from `data`; a `[]` step maps the rest over each item, and flattens.
-
-    As in JMESPath, `a[]` flattens one level (a list of lists becomes one list), and a `[]`
-    later in the path flattens the lists the items give.
-
-    Args:
-        data: the JSON to walk.
-        steps: what `_steps` made of the path.
-
-    Returns:
-        What the steps reach; None when a key or index is missing, a list after a `[]`.
-    """
-    for position, step in enumerate(steps):
-        if step is None:
-            if not isinstance(data, list):
-                return []
-            rest = steps[position + 1:]
-            found: list[Any] = []
-            for item in data:
-                value = _walk(item, rest)
-                if value is None:
-                    continue
-                if isinstance(value, list) and (not rest or None in rest):
-                    found.extend(value)
-                else:
-                    found.append(value)
-            return found
-        if isinstance(step, int):
-            if not isinstance(data, list) or not -len(data) <= step < len(data):
-                return None
-            data = data[step]
-        elif isinstance(data, dict):
-            data = data.get(step)
-        else:
-            return None
-        if data is None:
-            return None
-    return data
+# `dig` lives in the `flnd._html` library, beside the HTML reader; this is its public name.
+# Importing `_html` loads neither selectolax nor msgspec.
+dig = _html.dig
 
 
 # ---------------------------------------------------------------------------------------------

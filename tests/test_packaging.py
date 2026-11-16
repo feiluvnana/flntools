@@ -91,9 +91,17 @@ class MissingDependencyTest(unittest.TestCase):
                 "print(before, flnd.open.__module__, 'open' in dir(flnd))")
         self.assertEqual(run_python(code).stdout.strip(), "False flnd._library True")
 
-    def test_missing_parsel_names_the_package_to_install(self):
-        message = missing_dependency_message("_html", "parsel")
-        self.assertEqual(message, "flnd._html needs parsel: pip install parsel")
+    def test_missing_selectolax_names_the_package_to_install(self):
+        # `flnd._html` imports selectolax on its first parse, so that is where it is missed.
+        code = ("import sys; sys.modules['selectolax'] = None\n"
+                "from flnd import _html\n"
+                "try:\n    _html.parse('<p>a</p>')\nexcept ImportError as error:\n    print(error)")
+        self.assertEqual(run_python(code).stdout.strip(),
+                         "flnd._html needs selectolax: pip install selectolax")
+
+    def test_importing_the_html_library_loads_no_parser(self):
+        # `flnd.source` imports `flnd._html` for `dig`, so the import must stay free.
+        self.assertEqual(loaded_after("from flnd import _html") & {"selectolax", "msgspec"}, set())
 
 
 

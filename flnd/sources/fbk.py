@@ -45,7 +45,6 @@ Rules a change must keep:
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from itertools import chain
@@ -128,8 +127,6 @@ NOT_MEDIA = {"profile_header_renderer"}
 TIMESTAMPS = ("creation_time", "publish_time", "post_timestamp", "timestamp", "created_time")
 # The Comet GraphQL endpoint's responses carry the feed; any other response is not read.
 FEED = "graphql"
-# The embedded results' blocks.
-SCRIPTS = 'script[type="application/json"]::text'
 # A photo page's own day: taken to be the first `created_time` it holds. Unverified until a hand
 # check on a live page; a wrong guess only dates a photo that would otherwise be estimated.
 CREATED_TIME = re.compile(r'"created_time":(\d{9,11})\b')
@@ -527,15 +524,7 @@ def embedded_results(page: Any) -> list[Any]:
         The results of every `<script type="application/json">` block holding `__bbox`, in page
         order. A block that isn't JSON holds none; the page's other blocks still count.
     """
-    found: list[Any] = []
-    for text in page.css(SCRIPTS).get():
-        if "__bbox" not in text:
-            continue
-        try:
-            found.extend(_boxed(json.loads(text)))
-        except ValueError:
-            continue
-    return found
+    return [result for block in page.blocks("__bbox") for result in _boxed(block)]
 
 
 def _boxed(node: Any) -> Iterator[Any]:
@@ -791,30 +780,12 @@ def post_of(item: Item, part: str, *, album: str | None = None) -> Post:
     return Post(item.id, [file], date=item.date, headers=CDN_HEADERS, part=part, album=album)
 
 
-def _walk_dicts(node: Any) -> Iterator[dict]:
-    """Every dict in parsed JSON, depth first, `node` itself included.
-
-    Args:
-        node: parsed JSON.
-
-    Yields:
-        Each dict, a parent before its children.
-    """
-    if isinstance(node, dict):
-        yield node
-        for value in node.values():
-            yield from _walk_dicts(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _walk_dicts(value)
-
-
 def album_links(data: Any) -> dict[str, str]:
     """The albums a result lists, as {url: title}: each album's tile on the albums tab."""
     return {
         tile["url"]: dig(tile, "title.text") or "album"
-        for tile in _walk_dicts(data)
-        if tile.get("__typename") == TILE and dig(tile, "node.__typename") == "Album"
+        for tile in dig(data, f"..[__typename={TILE}]")
+        if dig(tile, "node.__typename") == "Album"
         and tile.get("url")
     }
 

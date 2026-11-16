@@ -244,10 +244,10 @@ class ResponseTest(unittest.TestCase):
         page = _net.Response(200, SITE, {}, b'{"a": [1, 2.5, null, true, "\\u00e9"]}')
         self.assertEqual(page.json, {"a": [1, 2.5, None, True, "é"]})
 
-    def test_html_is_a_selection(self):
+    def test_html_is_a_document(self):
         page = _net.Response(200, SITE, {"Content-Type": "text/html"}, b"<h1>Hello</h1><a href='/a'>a</a>")
-        self.assertIsInstance(page.html, _html.Selection)
-        self.assertEqual(page.html.css("h1::text").first, "Hello")
+        self.assertIsInstance(page.html, _html.Document)
+        self.assertEqual(page.html.first("h1").text, "Hello")
 
     def test_text_uses_the_charset(self):
         page = _net.Response(200, SITE, {"Content-Type": "text/plain; charset=latin-1"}, "café".encode("latin-1"))

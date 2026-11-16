@@ -190,10 +190,9 @@
       "better": "lower",
       "baseline": 0.3059
     },
-    "cpu.jmespath": {
+    "cpu.dig": {
       "unit": "us",
-      "better": "lower",
-      "baseline": 681.9579
+      "better": "lower"
     },
     "cpu.dict_access": {
       "unit": "us",

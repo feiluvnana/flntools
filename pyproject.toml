@@ -12,8 +12,8 @@ dependencies = [
     # The HTTP client: libcurl with Chrome's TLS and HTTP/2 fingerprint, on the run's asyncio loop.
     "curl_cffi>=0.13",
     "playwright==1.65.*",
-    "parsel>=1.9.0",
-    "python-jsonpath",
+    # HTML parsing: lexbor's C parser and CSS engine, imported only by `flnd._html`.
+    "selectolax>=0.3.27",
     "cryptography>=42",
     "telethon>=1.36",
     "cryptg>=0.5",

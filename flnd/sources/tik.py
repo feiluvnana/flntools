@@ -64,9 +64,8 @@ CAPTCHA_CSS = ('#captcha-verify-container-main-page, #captcha_container, [id*="c
 CAPTCHA_TEXT = re.compile(
     r"Drag the slider|Drag the puzzle|Verify to continue|Select 2 objects", re.IGNORECASE,
 )
-# The page's visible text: scripts and styles hold strings no reader sees.
-VISIBLE_TEXT = "//body//text()[not(ancestor::script) and not(ancestor::style)]"
-POST_LINKS = 'a[href*="/video/"]::attr(href), a[href*="/photo/"]::attr(href)'
+# The links to a profile's posts, read from the page when its API is walled.
+POST_LINKS = 'a[href*="/video/"], a[href*="/photo/"]'
 # Seconds to let profile settle before looking for captcha or tab click.
 SETTLE = 5.0
 CLICK_TIMEOUT = 10.0
@@ -122,9 +121,7 @@ def has_captcha(site: Site) -> bool:
         site: the target's site, whose open page is checked.
     """
     page = site.document()
-    has_captcha_css = bool(page.css(CAPTCHA_CSS))
-    visible = " ".join(page.xpath(VISIBLE_TEXT).get())
-    return has_captcha_css or bool(CAPTCHA_TEXT.search(visible))
+    return page.first(CAPTCHA_CSS) is not None or bool(CAPTCHA_TEXT.search(page.visible))
 
 
 def has_more(data: Any) -> bool | None:
@@ -296,7 +293,7 @@ class Profile:
         self.site.pause(SETTLE, "letting the profile settle")
         self.wait_out_captcha()
         # Reload finding no data keeps earlier data, preserving secUid.
-        self.user = page_user(self.site.document().script(PAGE_DATA).first) or self.user or {}
+        self.user = page_user(self.site.document().script(PAGE_DATA)) or self.user or {}
         return True
 
     def _read_posts(self, wanted: str) -> Iterator[Dict[str, Any]]:
@@ -409,8 +406,8 @@ class TikTok(Source):
             yield post_of(site, item, "videos")
         if not profile.found["videos"] and profile.on_page:
             # A walled API gave nothing: read each post linked on the page from its embed page.
-            links = [match.group(2) for href in site.document().css(POST_LINKS).get()
-                     if (match := re.search(r"/(video|photo)/(\d+)", href))]
+            links = [match.group(2) for link in site.document().css(POST_LINKS)
+                     if (match := re.search(r"/(video|photo)/(\d+)", link.attr("href") or ""))]
             for video_id in dict.fromkeys(links):
                 yield from embed_posts(site, video_id)
 
@@ -515,7 +512,7 @@ def embed_posts(site: Site, video_id: str) -> Iterator[Post]:
     except (SiteError, NetworkError, LoginError) as error:
         site.warn("{err} on embed endpoint for {id}", err=error, id=video_id)
         return
-    item_struct = dig(page.script("__NEXT_DATA__").first, "props.pageProps.itemStruct")
+    item_struct = dig(page.script("__NEXT_DATA__"), "props.pageProps.itemStruct")
     if not item_struct:
         site.warn("Could not extract item data from embed HTML for {id}", id=video_id)
         return
