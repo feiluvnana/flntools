@@ -92,7 +92,7 @@ Every request goes to `https://mimihentai.moe/api/`:
    empty or repeats.
 
 **Pacing:** `pace` is 0.5, so requests to `mimihentai.moe` are at least half a second apart.
-It sets no `limits`: up to 8 files download at once from each host.
+It sets no `limits`: each host's files download 8 at once, adapting up to 32.
 
 ## Where files go
 

@@ -18,10 +18,11 @@ login's cookies, the source's user agent and its `prepare` hook (for requests to
 domains), and one `flnd._net.Limits` with two pools:
 - *pages*, the listing's requests to the source's own `domains`: a token bucket at the
   source's `pace`, which a 429's wait holds and halves;
-- *media*, every file download, and the listing's requests to other hosts: `MEDIA_CAP`
-  transfers at once per host, or the cap the source's `limits` gives it. A site's files often
-  come from its own domain (TikTok's CDN hosts), and holding them to the listing's pace would
-  serialize them.
+- *media*, every file download, and the listing's requests to other hosts: a cap per host
+  that starts at `MEDIA_CAP` transfers at once and adapts (`flnd._net.Cap`): it halves when
+  the host is overloaded, and grows up to `MEDIA_MOST`, or the source's own `limits` for that
+  host, while the host's throughput still rises. A site's files often come from its own domain
+  (TikTok's CDN hosts), and holding them to the listing's pace would serialize them.
 Two clients share them: `web` lists (paced), and stops at the first Ctrl-C; `files` downloads
 (capped), and stops at the second.
 """
@@ -50,9 +51,11 @@ if TYPE_CHECKING:
 __all__ = ["LoginSite", "SourceRun", "TargetSite", "shared_browser", "source_run"]
 
 T = TypeVar("T")
-# Transfers at once to one media host (a CDN) that the source gives no cap of its own in
-# `limits`. Adapting it per host is for later; 8 is the per-target default it replaces.
+# Transfers at once to one media host (a CDN): where its cap starts, and the most it grows to
+# while the host's throughput still rises. A source's `limits` sets the most for its hosts.
+# 32 is the ceiling the real-CDN check in docs/performance ("Concurrency per host") confirms.
 MEDIA_CAP = 8
+MEDIA_MOST = 32
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
 # `flnd sync` warns the run before the one that meets the login wall.
 EXPIRY_WARNING = 24 * 3600
@@ -94,9 +97,16 @@ class SourceRun:
 
     @property
     def jobs(self) -> int:
-        """The most files of one target downloading at once: the source's largest cap, else
-        `MEDIA_CAP`. A target's queue holds 4 times as many before its listing waits."""
-        return max(self.source.limits.values(), default=MEDIA_CAP)
+        """The most files of one target downloading at once: as many as one host's cap may
+        grow to (`MEDIA_MOST`, or the source's largest `limits` above it), so a target never
+        holds a host below its cap. A target's queue holds 4 times as many before its listing
+        waits."""
+        return max([MEDIA_MOST, *self.source.limits.values()])
+
+    @property
+    def load(self) -> Mapping[str, _net.Load]:
+        """Each media host's cap now, and its transfers in flight and waiting: a snapshot."""
+        return self.files.limits.load
 
     def gate(self) -> Any:
         """A place under the cap of the source's first domain, for a file the source fetches
@@ -183,7 +193,7 @@ def _network(source: Source,
     """
     rate = 1.0 / source.pace if source.pace > 0 else None
     limits = _net.Limits(paced=lambda host: _matches_domain(source, host), rate=rate,
-                         caps=source.limits, cap=MEDIA_CAP)
+                         caps=source.limits, cap=MEDIA_CAP, most=MEDIA_MOST)
 
     def prepare(request: _net.Request) -> _net.Request | None:
         # Runs on the loop before each try; the hook only adds headers, so it costs little.

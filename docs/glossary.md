@@ -82,8 +82,8 @@ encrypted in the home's vault (`secrets.db`, with its key in `secret.key`).
 
 ## Pace
 The least time between two requests to a source's own domains, in seconds (`Source.pace`, 0.5 by
-default). File downloads aren't paced; they are capped per host, 8 at once unless the source's
-`limits` says otherwise.
+default). File downloads aren't paced; they are capped per host, from 8 at once up to 32 as the
+host keeps up, or up to the source's `limits` for that host.
 
 ## Part
 A file being written: `<name>.part` beside its destination, locked by the run writing it and

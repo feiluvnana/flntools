@@ -1082,9 +1082,10 @@ class Source:
     # How the browser scrolls this source's feeds: "human" (wheel steps, pauses about 0.4 s, at
     # most two tabs at once), so the site flags it less as a bot, or "fast" (no pauses).
     scroll: ClassVar[str] = "human"
-    # Files downloading at once from a host, by host name (a subdomain counts as its parent):
-    # `{"cdn.example": 4}`. A host not named takes 8 at once. A file the source fetches itself
-    # (a `fetch` function) counts against its first domain.
+    # The most files downloading at once from a host, by host name (a subdomain counts as its
+    # parent): `{"cdn.example": 4}`. Each host's cap adapts, from 8 (or less) up to this, or up
+    # to 32 for a host not named. A file the source fetches itself (a `fetch` function) counts
+    # against its first domain.
     limits: ClassVar[Mapping[str, int]] = MappingProxyType({})
     # `unsupported`, compiled when the class is created.
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()

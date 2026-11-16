@@ -38,7 +38,7 @@ BIG = 1 << 30
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.
 PIECE = 64 << 20
 SMALL, COUNT = 100 * 1024, 2000
-# Transfers at once to one host: flnd's default cap (`flnd.site.MEDIA_CAP`).
+# Transfers at once to one host: where flnd's cap starts (`flnd.site.MEDIA_CAP`), held there.
 AT_ONCE = 8
 # The slow disk: four files of 16 MiB written at 20 MB/s.
 MEDIUM, SLOW_FILES, DISK_RATE = 16 << 20, 4, 20e6
@@ -113,8 +113,10 @@ def main() -> None:
         # Any line the client logs goes to a buffer: the terminal's speed is no part of this.
         with kit.serve(data) as base, Loop() as loop, ui.scope(dest=io.StringIO(), color=False):
             session = _net.Session(handles=_net.PAGES + AT_ONCE)
-            one = _net.Client(session, limits=_net.Limits(cap=1), pace=False)
-            capped = _net.Client(session, limits=_net.Limits(cap=AT_ONCE), pace=False)
+            # Fixed caps (`most` = `cap`), so the numbers don't depend on how a cap adapts.
+            one = _net.Client(session, limits=_net.Limits(cap=1, most=1), pace=False)
+            capped = _net.Client(session, limits=_net.Limits(cap=AT_ONCE, most=AT_ONCE),
+                                 pace=False)
 
             took = kit.best(lambda: loop.run(fill(capped, f"{base}/big.bin", out / "big")),
                             before=empty)

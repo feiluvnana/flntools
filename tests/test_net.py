@@ -18,8 +18,7 @@ from typing import Iterator
 from unittest import mock
 
 from fakes import download, fetch
-from flnd import _files, _net, _time as clock
-from flnd import _html as selector
+from flnd import _files, _html, _net, _time
 from flnd._ui import _brief, ui
 from flnd.errors import Blocked, Error, NetworkError, NotFound, SiteError, Stopped
 
@@ -30,7 +29,7 @@ BODY = bytes(range(256)) * 16 + b"tail"
 
 class NetCase(unittest.TestCase):
     def setUp(self) -> None:
-        self.clock = self.enterContext(clock.use(clock.Fake()))
+        self.clock = self.enterContext(_time.use(_time.Fake()))
         self.enterContext(mock.patch.object(_net.random, "uniform", lambda low, high: high))
         self.enterContext(ui.scope(dest=io.StringIO(), color=False, width=80))
         self.seen: list[_net.Request] = []
@@ -141,9 +140,9 @@ class FetchTest(NetCase):
         # The first wait is the site's: a date a minute away, a reset 20 s away (and a second
         # more, for clocks a little apart), or the backoff's 1 s when it says nothing.
         for header, low, high in (("date", 55.0, 61.0), ("reset", 21.0, 21.0), (None, 1.0, 1.0)):
-            later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(clock.wall() + 60))
+            later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(_time.wall() + 60))
             given = {"date": {"Retry-After": later},
-                     "reset": {"x-rate-limit-reset": str(int(clock.wall()) + 20)}}.get(header, {})
+                     "reset": {"x-rate-limit-reset": str(int(_time.wall()) + 20)}}.get(header, {})
             self.clock.slept.clear()
             with self.subTest(header=header), \
                     _net.fake({SITE + "/": self.serve(_net.reply(429, headers=given), _net.reply(200))}):
@@ -247,7 +246,7 @@ class ResponseTest(unittest.TestCase):
 
     def test_html_is_a_selection(self):
         page = _net.Response(200, SITE, {"Content-Type": "text/html"}, b"<h1>Hello</h1><a href='/a'>a</a>")
-        self.assertIsInstance(page.html, selector.Selection)
+        self.assertIsInstance(page.html, _html.Selection)
         self.assertEqual(page.html.css("h1::text").first, "Hello")
 
     def test_text_uses_the_charset(self):
@@ -466,9 +465,9 @@ class LimitsTest(NetCase):
 
     def test_a_cap_holds_transfers_to_a_host_and_its_subdomains(self):
         limits = _net.Limits(caps={"cdn.example": 2}, cap=3)
-        self.assertEqual((limits.capped("cdn.example"), limits.capped("v1.cdn.example"),
-                          limits.capped("other.example")), (2, 2, 3))
-        self.assertEqual(limits.total, _net.PAGES + 3 + 2)
+        self.assertEqual((limits._most("cdn.example"), limits._most("v1.cdn.example"),
+                          limits._most("other.example")), (2, 2, _net.MOST))
+        self.assertEqual(limits.total, _net.PAGES + _net.SPREAD * _net.MOST + 2)
         at_once, most = 0, 0
 
         async def one():
@@ -495,6 +494,163 @@ class LimitsTest(NetCase):
 
         asyncio.run(run())
         self.assertEqual(self.clock.slept, [])
+
+
+CDN_FILE = "https://cdn.example.com/a.bin"
+
+
+class CapTest(NetCase):
+    """The adaptive cap per host: halving on overload, growth while throughput rises."""
+
+    def windows(self, cap, count, seconds):
+        """Close `count` windows of clean 1,000-byte transfers, each taking `seconds(value)`;
+        return the cap after each."""
+        seen = []
+        for _ in range(count):
+            for _ in range(_net.STEP):
+                cap.done(1000, seconds(cap.value))
+            seen.append(cap.value)
+        return seen
+
+    def test_it_grows_by_one_a_window_while_throughput_rises_up_to_most(self):
+        cap = _net.Cap(8, most=12)
+        # A host that scales: every transfer takes 1 s however many run, so the rate is the cap.
+        self.assertEqual(self.windows(cap, 6, lambda value: 1.0), [9, 10, 11, 12, 12, 12])
+
+    def test_a_step_that_doesnt_raise_throughput_is_taken_back_and_held(self):
+        cap = _net.Cap(8, most=32)
+        # A saturated link: a transfer takes as long as the cap is wide, so the rate is flat.
+        seen = self.windows(cap, 3, lambda value: value / 8)
+        self.assertEqual(seen, [9, 8, 8])
+        # Held for HOLD clean transfers from the step taken back, then it probes again.
+        held = self.windows(cap, _net.HOLD // _net.STEP - 2, lambda value: value / 8)
+        self.assertEqual(set(held), {8})
+        self.assertEqual(self.windows(cap, 1, lambda value: value / 8), [9])
+
+    def test_a_small_rise_is_noise_not_growth(self):
+        cap = _net.Cap(8, most=32)
+        # 9 at once moves 3% more than 8: under half of the 12.5% a scaling host would add.
+        seen = self.windows(cap, 2, lambda value: 1.0 if value == 8 else 9 / 8 / 1.03)
+        self.assertEqual(seen, [9, 8])
+
+    def test_a_window_with_a_free_place_says_nothing(self):
+        cap = _net.Cap(8, most=32)
+
+        async def run():
+            await cap.take()
+            cap.give()                  # nobody waited: the host wasn't kept busy
+
+        asyncio.run(run())
+        self.assertEqual(self.windows(cap, 2, lambda value: 1.0), [8, 9])
+
+    def test_a_failure_halves_once_a_round(self):
+        cap = _net.Cap(8, most=32)
+
+        async def run():
+            first, second = await cap.take(), await cap.take()
+            cap.failed(first)
+            cap.failed(second)          # started with the first: the same overload
+            third = await cap.take()
+            cap.failed(third)
+            return cap.value
+
+        self.assertEqual(asyncio.run(run()), 2)
+        cap = _net.Cap(3, most=32)
+        for _ in range(3):
+            cap.failed(cap._round)
+        self.assertEqual(cap.value, 1)
+
+    def test_a_lower_cap_holds_the_next_transfer_until_enough_finish(self):
+        cap = _net.Cap(2, most=32)
+        order = []
+
+        async def one(name, hold):
+            round = await cap.take()
+            order.append(name)
+            if hold:
+                cap.failed(round)
+                await asyncio.sleep(0.001)
+            cap.give()
+
+        async def run():
+            await asyncio.gather(one("a", True), one("b", True), one("c", False))
+
+        asyncio.run(run())
+        self.assertEqual((order, cap.value, cap.busy), (["a", "b", "c"], 1, 0))
+
+    def test_each_kind_of_overload_halves_the_hosts_cap_and_others_dont(self):
+        cases = [
+            (_net.reply(429), 4), (_net.reply(503), 4), (ConnectionResetError("reset"), 4),
+            (TimeoutError("slow"), 4), (_net.reply(500), 8), (_net.reply(404), 8),
+        ]
+        for answer, left in cases:
+            with self.subTest(answer=answer):
+                limits = _net.Limits()
+                with _net.fake({CDN_FILE: self.serve(answer, b"ok")}):
+                    try:
+                        fetch(CDN_FILE, limits=limits, retries=1)
+                    except NotFound:
+                        pass
+                self.assertEqual(limits.load["cdn.example.com"].cap, left)
+
+    def test_a_cut_off_download_halves_the_cap(self):
+        limits = _net.Limits()
+        routes = {CDN_FILE: self.serve(
+            _net.reply(200, headers={"content-length": "99"}, chunks=cut(b"half")), b"ok")}
+
+        async def run():
+            session = _net.Session()
+            client = _net.Client(session, limits=limits, retries=0)
+            try:
+                with _files.part(self.dest, resume=False) as held:
+                    await client.fill(CDN_FILE, held)
+            finally:
+                await session.close()
+
+        with _net.fake(routes), self.assertRaises(NetworkError):
+            asyncio.run(run())
+        self.assertEqual(limits.load["cdn.example.com"].cap, 4)
+
+    def test_a_client_measures_a_saturated_host_and_stops_growing_on_its_plateau(self):
+        # The fake serves one file at a time, each 10 ms: a link that is already full, so the
+        # cap may probe once but never stays above where it started.
+        limits = _net.Limits(cap=4)
+        peak = 0
+
+        async def route(request):
+            nonlocal peak
+            # Let every other transfer start (or queue) before this one ends.
+            await asyncio.sleep(0)
+            self.clock.advance(0.01)
+            peak = max(peak, limits.load["cdn.example.com"].cap)
+            return b"x" * 1000
+
+        async def run():
+            session = _net.Session()
+            client = _net.Client(session, limits=limits)
+            try:
+                await asyncio.gather(*(client.fetch(f"{CDN_FILE}?n={n}") for n in range(200)))
+            finally:
+                await session.close()
+
+        with _net.fake(route):
+            asyncio.run(run())
+        load = limits.load["cdn.example.com"]
+        self.assertLessEqual(peak, 5)
+        self.assertEqual((load.cap, load.busy, load.waiting, load.most), (4, 0, 0, _net.MOST))
+
+    def test_a_hosts_own_cap_bounds_where_it_starts_and_how_far_it_grows(self):
+        limits = _net.Limits(caps={"cdn.example": 10, "small.example": 4})
+
+        async def open_both():
+            async with limits.slot("v1.cdn.example"), limits.slot("small.example"):
+                pass
+
+        asyncio.run(open_both())
+        grown = limits._caps["v1.cdn.example"]
+        self.assertEqual(self.windows(grown, 5, lambda value: 1.0)[-1], 10)
+        self.assertEqual(limits.load["small.example"].cap, 4)
+        self.assertEqual(limits.load["v1.cdn.example"].most, 10)
 
 
 # ---------------------------------------------------------------------------------------------

@@ -99,8 +99,8 @@ session, and reads the first `created_time` in the answer. The engine asks this 
 post as its category ends, and again on `flnd sync` for files saved undated.
 
 **Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between requests to Facebook's
-domains, page loads included. Up to 8 files download at once from each CDN host (no `limits`
-of its own). The CDN gets a `Referer: https://www.facebook.com/` header, which it requires.
+domains, page loads included. Each CDN host's files download 8 at once, adapting up to 32
+(no `limits` of its own). The CDN gets a `Referer: https://www.facebook.com/` header, which it requires.
 
 ## Where files go
 

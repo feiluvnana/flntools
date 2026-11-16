@@ -5,7 +5,9 @@ What it offers, for any caller:
   fingerprint), its default headers, its cookies, and a `prepare` hook that may add headers to
   each request before it goes out (a signature, a CSRF token).
 - `Limits`: how hard the session may press each host. A *paced* host gets a token bucket at a
-  rate in requests per second; any other host gets a cap on its transfers at once.
+  rate in requests per second; any other host gets a `Cap` on its transfers at once, which
+  adapts to what the host can take (AIMD, below). `Limits.load` is a read-only snapshot of
+  each host's cap and transfers in flight.
 - `Client`: a session with limits, a retry policy and a stop event. `fetch` sends one request;
   `call` paces and retries any coroutine (a page loaded in a browser, a request sent by a page);
   `fill` streams a file, or the first of its mirrors that works, into a `flnd._files.Part`.
@@ -13,9 +15,10 @@ What it offers, for any caller:
 - `fake(routes)`: answers every request in the block from routes or a handler, never the
   network; `reply(...)` builds an answer for a handler.
 
-    session = Session(headers={"User-Agent": agent}, cookies=jar, prepare=sign)
     limits = Limits(paced=lambda host: host.endswith("example.com"), rate=2.0,
                     caps={"cdn.example.com": 4})
+    session = Session(headers={"User-Agent": agent}, cookies=jar, prepare=sign,
+                      handles=limits.total)
     client = Client(session, limits=limits, stop=event)
     page = await client.fetch("https://example.com/api", body={"q": "x"})   # page.json
     with _files.part(dest, resume=True) as held:
@@ -45,6 +48,20 @@ The retry policy (docs/errors):
 - a 404 or 410 is `NotFound`, any other 4xx a `SiteError`; neither is tried again;
 - a malformed URL, a name that doesn't resolve or a certificate that fails is a `NetworkError`
   that isn't tried again; a write the disk refuses is a `DiskError`; a set `stop` is `Stopped`.
+A host under a cap also tells its `Cap` how each try went:
+- it starts at `cap` (8 by default) transfers at once, and is halved on a 429, a 503, a reset, a
+  timeout or a cut-off transfer: once per round of transfers, so a burst of failures that
+  started together halves it once, not once each;
+- every `STEP` clean transfers it measures the host's throughput (the cap times the bytes those
+  transfers moved over the seconds they took), and adds one place, up to `most` (32 by
+  default), while each step still raised the throughput by at least half of what one more
+  place would add on a host that scales;
+- a step that didn't is taken back, and the cap holds for `HOLD` clean transfers before it
+  probes again; a window in which the host wasn't kept busy (a place stood free with nobody
+  waiting) says nothing about the cap, and is dropped.
+The session's handles (`Limits.total`) leave room for `SPREAD` hosts at their most at once, and
+every host with a cap of its own, so curl doesn't hold transfers below the caps.
+
 Every message names the URL redacted (`flnd._text.redact`), and any secret the request carried
 (a cookie, a token, a query value) is scrubbed from a library's error text.
 
@@ -54,7 +71,8 @@ Rules a change must keep:
   stalls the loop (and the browser and every other transfer on it); see docs/performance.
 - A write in flight on the writer thread always finishes before its transfer gives the part
   back, even when the transfer is cancelled: the part's descriptor is closed only after it.
-- `Limits` and its buckets are used from the loop's thread only, so they need no lock.
+- `Limits`, its buckets and its caps are used from the loop's thread only, so they need no
+  lock.
 """
 
 from __future__ import annotations
@@ -68,6 +86,7 @@ import math
 import random
 import re
 import urllib.request
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from collections.abc import MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -87,8 +106,8 @@ if TYPE_CHECKING:
     from flnd._html import Selection
 
 __all__ = [
-    "Client", "Headers", "Limits", "Reply", "Request", "Response", "Session", "URL", "fake",
-    "follow", "reply",
+    "Cap", "Client", "Headers", "Limits", "Load", "Place", "Reply", "Request", "Response",
+    "Session", "URL", "fake", "follow", "reply",
 ]
 
 A = TypeVar("A")
@@ -107,10 +126,25 @@ EPOCH = 1_000_000_000.0
 CLEAN = 20
 # One token at most: a rate is a floor between two requests to a host, never a burst after a lull.
 BURST = 1.0
-# Transfers at once to a host that isn't paced and has no cap of its own.
+# Transfers at once to a host that isn't paced and has no cap of its own: where its `Cap`
+# starts, and the most it grows to. 8 is what one host took at once before caps adapted; 32 is
+# the ceiling the real-CDN check (docs/performance, "Concurrency per host") is to confirm.
 CAP = 8
+MOST = 32
+# A cap measures its host's throughput, and may grow by one, every STEP clean transfers.
+STEP = 10
+# A step must raise the throughput by this share of what one more place adds on a host that
+# scales linearly (1 / the old cap), or it is taken back: a half, so noise isn't growth.
+RISE = 0.5
+# After a step that was taken back, clean transfers before the cap probes again.
+HOLD = 100
+# Statuses that say a host is overloaded, so its cap halves (with a reset and a timeout).
+OVERLOADED = (429, 503)
 # Room in the session for requests to the paced hosts, on top of the caps (`Limits.total`).
 PAGES = 4
+# Hosts without a cap of their own that `Limits.total` leaves room for at their most at once.
+# curl makes a handle only when one is needed, so room that is never used costs nothing.
+SPREAD = 8
 # Seconds before a connection counts as dead: to connect, or with no byte received.
 TIMEOUT = 30.0
 # The file system's writes go to the writer thread this many bytes at a time.
@@ -362,16 +396,192 @@ class Bucket:
             self._slow -= 1
 
 
+@dataclass(frozen=True)
+class Load:
+    """One host's transfers now, as `Limits.load` shows them.
+
+    Attributes:
+        cap: the transfers at once the host may have now.
+        busy: the transfers in flight to it.
+        waiting: the transfers waiting for a place.
+        most: the most its cap may grow to.
+    """
+
+    cap: int
+    busy: int
+    waiting: int
+    most: int
+
+
+class Cap:
+    """Transfers at once to one host, adapted to what the host can take (AIMD).
+
+        cap = Cap(8, most=32)
+        round = await cap.take()        # waits while `cap.value` transfers are in flight
+        try:
+            ...                         # the transfer
+            cap.done(size, seconds)     # it went through: its bytes, and how long it took
+        except Error:                   # for a 429, a 503, a reset or a timeout only:
+            cap.failed(round)           # halve
+        finally:
+            cap.give()
+
+    How the cap moves:
+    1. It starts at `start` and stays between 1 and `most`.
+    2. A failure halves it, rounded down, but once per round: `take` returns the round a
+       transfer started in, and only a failure of the current round halves it (and starts the
+       next). Transfers that started together and fail together halve it once.
+    3. Every `STEP` clean transfers close a window. Its throughput is what Little's law gives a
+       host kept busy: the cap times the bytes those transfers moved over the seconds they took,
+       each from its place to its last byte. Bytes over the wall time of so few transfers would
+       depend on where in their run the window closed; this doesn't.
+    4. A window in which a place stood free with nobody waiting (`give` found no one) wasn't
+       bound by the cap, so it says nothing about it: it is dropped.
+    5. Otherwise, if the window before it grew the cap, this one judges that step: a rate that
+       didn't rise by `RISE` of what one more place adds on a host that scales (1 / the old
+       cap) takes the step back, and holds the cap for `HOLD` clean transfers.
+    6. Else the rate is kept for the next judgement and, unless held or at `most`, the cap
+       grows by one.
+    A failure also forgets the rate and any hold, so growth starts afresh from the halved cap.
+
+    Used from the loop's thread only. Places are handed over in the order they were asked for.
+
+    Args:
+        start: transfers at once to begin with; more than `most` starts at `most`.
+        most: the most transfers at once it grows to.
+    """
+
+    def __init__(self, start: int, *, most: int) -> None:
+        if start < 1 or most < 1:
+            raise ValueError(f"a cap needs a start and a most of 1 or more, not {start}, {most}")
+        self.most = most
+        self.value = min(start, most)
+        self.busy = 0
+        self._waiting: deque[asyncio.Future[None]] = deque()
+        # The round transfers start in; a failure of the current round halves and ends it.
+        self._round = 0
+        # The open window: its clean transfers, their bytes and seconds, and whether a place
+        # stood free in it.
+        self._clean = 0
+        self._bytes = 0
+        self._seconds = 0.0
+        self._slack = False
+        # The throughput at `value` from the last window that counted, in bytes a second.
+        self._rate: float | None = None
+        # Whether the last window ended by growing the cap, so the next one judges that step.
+        self._grown = False
+        # Clean transfers left before a cap whose step was taken back probes again.
+        self._held = 0
+
+    @property
+    def waiting(self) -> int:
+        """Transfers waiting for a place."""
+        return len(self._waiting)
+
+    async def take(self) -> int:
+        """Wait for a place, and take it.
+
+        Returns:
+            The round the transfer starts in, for `failed`.
+        """
+        if self.busy < self.value and not self._waiting:
+            self.busy += 1
+            return self._round
+        place: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiting.append(place)
+        try:
+            await place
+        except asyncio.CancelledError:
+            if place.done() and not place.cancelled():
+                # The place was handed over just as the waiter was cancelled: pass it on.
+                self.give()
+            else:
+                self._waiting.remove(place)
+            raise
+        return self._round
+
+    def give(self) -> None:
+        """Give a place back, to the first transfer waiting when the cap allows."""
+        self.busy -= 1
+        if not self._waiting:
+            self._slack = True
+        self._wake()
+
+    def done(self, size: int, seconds: float) -> None:
+        """Count a clean transfer; the `STEP`-th closes the window.
+
+        Args:
+            size: the bytes it moved; 0 for none.
+            seconds: how long it held its place.
+        """
+        self._clean += 1
+        self._bytes += size
+        self._seconds += seconds
+        if self._held:
+            self._held -= 1
+        if self._clean >= STEP:
+            self._judge()
+
+    def failed(self, round: int) -> None:
+        """A transfer that started in `round` met an overloaded host: halve, once a round.
+
+        Args:
+            round: what `take` returned for it.
+        """
+        if round != self._round:
+            return
+        self._round += 1
+        self.value = max(1, self.value // 2)
+        self._rate, self._grown, self._held = None, False, 0
+        self._open()
+
+    def _judge(self) -> None:
+        """Close the window: drop it, take its step back, or grow (the class's steps 4 to 6)."""
+        rate = self.value * self._bytes / self._seconds if self._seconds > 0 else None
+        grown, self._grown = self._grown, False
+        slack = self._slack
+        self._open()
+        if slack or rate is None:
+            return
+        if grown and self._rate is not None and \
+                rate <= self._rate * (1 + RISE / (self.value - 1)):
+            self.value -= 1
+            self._held = HOLD
+            return
+        self._rate = rate
+        if self._held or self.value >= self.most:
+            return
+        self.value += 1
+        self._grown = True
+        self._wake()
+
+    def _open(self) -> None:
+        """Open a new window."""
+        self._clean = self._bytes = 0
+        self._seconds = 0.0
+        self._slack = False
+
+    def _wake(self) -> None:
+        """Hand free places to the transfers waiting, first come first served."""
+        while self._waiting and self.busy < self.value:
+            place = self._waiting.popleft()
+            if not place.done():
+                self.busy += 1
+                place.set_result(None)
+
+
 class Limits:
     """How hard a session may press each host: a bucket for paced hosts, a cap for the others.
 
     Each paced host has a bucket of its own, so a site's page host and its API host keep their
-    own pace, and a 429 from one doesn't slow the other.
+    own pace, and a 429 from one doesn't slow the other. Every other host has a `Cap` of its
+    own, which adapts to what the host takes.
 
         limits = Limits(paced=lambda host: host.endswith("example.com"), rate=2.0,
                         caps={"cdn.example.com": 4})
-        async with limits.slot("cdn.example.com"):
+        async with limits.slot("cdn.example.com") as place:
             ...                     # at most 4 transfers to that host at once
+            place.done(size)        # a clean transfer, for the cap's measure
 
     A client that doesn't pace (`Client(pace=False)`, for downloads) treats a paced host as any
     other: under its cap. So a site's media served from its own domain isn't held to its pace.
@@ -379,36 +589,41 @@ class Limits:
     Args:
         paced: whether a host is paced: its requests share its bucket at `rate`, with no cap.
         rate: requests a second to the paced hosts; None paces nothing.
-        caps: transfers at once to a host and its subdomains, by host name.
-        cap: transfers at once to any other host.
+        caps: the most transfers at once to a host and its subdomains, by host name. Each such
+            host starts at `cap`, or at its own when that is lower, and grows no further.
+        cap: transfers at once a host starts at.
+        most: the most transfers at once a host not in `caps` grows to; `most=cap` keeps every
+            such host at `cap` until a failure halves it.
     """
 
     def __init__(self, *, paced: Callable[[str], bool] = lambda host: False,
                  rate: float | None = None, caps: Mapping[str, int] | None = None,
-                 cap: int = CAP) -> None:
+                 cap: int = CAP, most: int = MOST) -> None:
         self._paced = paced
         self.rate = rate
         self._buckets: dict[str, Bucket] = {}
         self.caps = dict(caps or {})
         self.cap = cap
-        self._gates: dict[str, asyncio.Semaphore] = {}
+        self.most = max(cap, most)
+        self._caps: dict[str, Cap] = {}
 
     @property
     def total(self) -> int:
-        """Transfers at once in all, for the session's handles: one host at the default cap,
-        every capped host, and room for the paced hosts."""
-        return PAGES + self.cap + sum(self.caps.values())
+        """Transfers at once in all, for the session's handles: `SPREAD` hosts at `most`, every
+        host in `caps` at its own, and room for the paced hosts."""
+        return PAGES + SPREAD * self.most + sum(self.caps.values())
 
-    def capped(self, host: str) -> int:
-        """The cap of `host`: its own, a parent domain's, or the default."""
-        for name, value in self.caps.items():
-            if host == name or host.endswith(f".{name}"):
-                return value
-        return self.cap
+    @property
+    def load(self) -> Mapping[str, Load]:
+        """A snapshot of each capped host's cap, and its transfers in flight and waiting."""
+        return MappingProxyType({
+            host: Load(cap.value, cap.busy, cap.waiting, cap.most)
+            for host, cap in self._caps.items()
+        })
 
     @asynccontextmanager
     async def slot(self, host: str, stop: Any = None, *,
-                   pace: bool = True) -> AsyncIterator[None]:
+                   pace: bool = True) -> AsyncIterator[Place]:
         """Hold a place for one request to `host` for the block.
 
         Args:
@@ -417,7 +632,8 @@ class Limits:
             pace: whether a paced host takes a token; False puts it under its cap instead.
 
         Yields:
-            Nothing: the place is held while the block runs.
+            The place: tell it how the try went (`done`, `failed`), for the host's cap. A
+            block that tells it nothing counts for nothing.
 
         Raises:
             Stopped: `stop` was set while waiting for a token.
@@ -426,13 +642,16 @@ class Limits:
             bucket = self._bucket(host)
             if bucket is not None:
                 await bucket.take(stop)
-            yield
+            yield Place(None, 0, 0.0)
             return
-        gate = self._gates.get(host)
-        if gate is None:
-            gate = self._gates[host] = asyncio.Semaphore(self.capped(host))
-        async with gate:
-            yield
+        cap = self._caps.get(host)
+        if cap is None:
+            cap = self._caps[host] = Cap(self.cap, most=self._most(host))
+        round = await cap.take()
+        try:
+            yield Place(cap, round, _time.now())
+        finally:
+            cap.give()
 
     def blocked(self, host: str, wait: float | None) -> None:
         """A 429 from `host`: hold a paced host's bucket for `wait`, and halve its rate.
@@ -453,6 +672,13 @@ class Limits:
         if bucket is not None:
             bucket.clean()
 
+    def _most(self, host: str) -> int:
+        """The most transfers at once to `host`: its own cap, a parent domain's, or `most`."""
+        for name, value in self.caps.items():
+            if host == name or host.endswith(f".{name}"):
+                return value
+        return self.most
+
     def _bucket(self, host: str) -> Bucket | None:
         """A paced host's bucket, made on first use.
 
@@ -468,6 +694,42 @@ class Limits:
         if bucket is None:
             bucket = self._buckets[host] = Bucket(self.rate)
         return bucket
+
+
+@dataclass
+class Place:
+    """A place `Limits.slot` holds: what a try tells its host's cap, when it has one.
+
+    Attributes:
+        cap: the host's cap; None for a paced host, whose bucket learns from `Limits` instead.
+        round: the cap's round the place was taken in.
+        began: when the place was taken, on `flnd._time`'s clock.
+    """
+
+    cap: Cap | None
+    round: int
+    began: float
+
+    def done(self, size: int) -> None:
+        """The try went through, moving `size` bytes."""
+        if self.cap is not None:
+            self.cap.done(size, _time.now() - self.began)
+
+    def failed(self, error: BaseException) -> None:
+        """The try failed: halve the cap when `error` says the host is overloaded.
+
+        Overloaded is a 429 or a 503, or a retryable `NetworkError`: a reset, a timeout or a
+        transfer cut short. Any other failure (a 404, a 500, a URL that is wrong) leaves the
+        cap alone, since fewer transfers at once wouldn't mend it.
+
+        Args:
+            error: what the try raised.
+        """
+        if self.cap is None:
+            return
+        if getattr(error, "status", None) in OVERLOADED or (
+                isinstance(error, NetworkError) and error.retryable):
+            self.cap.failed(self.round)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -526,13 +788,15 @@ class Session:
             another `Request`, or None to keep its argument.
         timeout: seconds to connect, and seconds with no byte received, before a transfer
             counts as dead.
-        handles: transfers at once in all; more wait for a handle.
+        handles: transfers at once in all; more wait for a handle. curl makes a handle only
+            when a transfer needs one, so a large number costs nothing until it is used; give
+            `Limits.total`, so the session never holds transfers below the caps.
     """
 
     def __init__(self, *, headers: Mapping[str, str] | None = None,
                  cookies: Iterable[Mapping[str, Any]] = (),
                  prepare: Callable[[Request], Request | None] | None = None,
-                 timeout: float = TIMEOUT, handles: int = PAGES + CAP) -> None:
+                 timeout: float = TIMEOUT, handles: int = PAGES + SPREAD * MOST) -> None:
         self.headers = Headers(headers or {})
         self.prepare = prepare
         self.timeout = timeout
@@ -823,7 +1087,7 @@ class Client:
         return await self.call(url, send, method=method, check=check)
 
     async def call(self, url: str, send: Callable[[], Awaitable[A]], *, method: str = "GET",
-                   check: bool = True) -> A:
+                   check: bool = True, moved: Callable[[], int] | None = None) -> A:
         """Pace and send, trying again as the policy allows; `check=False` returns a refusal.
 
         `send` makes a new attempt each call: a request, or anything else sent to `url`'s host
@@ -835,6 +1099,9 @@ class Client:
             method: the attempt's method: only the safe ones are tried again after a failure,
                 but any after a 429, which the server didn't act on.
             check: False returns the response of a refusal that isn't tried again.
+            moved: the bytes the attempts have moved so far, read before and after each one,
+                for the host's cap to measure its throughput; None counts a `Response`'s body,
+                and nothing for anything else.
 
         Returns:
             What the attempt that went through returned.
@@ -846,12 +1113,18 @@ class Client:
         host = _host(url)
         tries = rounds = 0
         while True:
-            async with self.limits.slot(host, self.stop, pace=self.pace):
+            async with self.limits.slot(host, self.stop, pace=self.pace) as place:
+                before = moved() if moved is not None else 0
                 try:
                     result = await send()
                 except Error as error:
                     failure = error
+                    place.failed(error)
                 else:
+                    if moved is not None:
+                        place.done(moved() - before)
+                    else:
+                        place.done(len(result.content) if isinstance(result, Response) else 0)
                     if self.pace:
                         self.limits.clean(host)
                     return result
@@ -904,14 +1177,16 @@ class Client:
         for mirror in mirrors[:-1]:
             try:
                 return await self.call(
-                    mirror, lambda m=mirror: self._file(m, held, headers, resume, meter))
+                    mirror, lambda m=mirror: self._file(m, held, headers, resume, meter),
+                    moved=meter.moved)
             except Error as error:
                 ui.debug("{url} failed: {reason}; trying the next mirror",
                          url=_text.redact(mirror), reason=error)
                 # The next mirror may serve other bytes: a Range on this part would splice.
                 held.reset()
         last = mirrors[-1]
-        return await self.call(last, lambda: self._file(last, held, headers, resume, meter))
+        return await self.call(last, lambda: self._file(last, held, headers, resume, meter),
+                               moved=meter.moved)
 
     async def _open(self, request: Request) -> _Answer:
         """Prepare `request` with the session's hook, send it, and raise for its stop.
@@ -1066,6 +1341,12 @@ class _Meter:
     def __init__(self, sink: Any):
         self._sink = sink
         self._at = 0
+        # Every byte the download's tries received, for the host's cap (`Client.call`).
+        self._moved = 0
+
+    def moved(self) -> int:
+        """The bytes every try of this download has received so far."""
+        return self._moved
 
     def start(self, total: int | None, at: int) -> None:
         """A try begins: set the sink's total, and move it to where the try starts.
@@ -1082,6 +1363,7 @@ class _Meter:
         self._at = at
 
     def add(self, n: int) -> None:
+        self._moved += n
         if self._sink is not None:
             self._sink.advance(n)
             self._at += n

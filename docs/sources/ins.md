@@ -110,8 +110,8 @@ A video is saved from its DASH manifest when it has one (the best video and audi
 merged), else from its largest MP4. A photo is its largest image candidate.
 
 **Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between requests to
-`instagram.com`, page loads included. Up to 8 files download at once from each CDN host (no
-`limits` of its own). The CDN gets a `Referer: https://www.instagram.com/` header, which it requires.
+`instagram.com`, page loads included. Each CDN host's files download 8 at once, adapting up to 32
+(no `limits` of its own). The CDN gets a `Referer: https://www.instagram.com/` header, which it requires.
 
 ## Where files go
 

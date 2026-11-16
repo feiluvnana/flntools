@@ -87,8 +87,8 @@ only through `flnd.sources.SOURCES`.
    in the history is skipped. On a sync, 5 saved posts in a row end a `newest_first` category.
    A lazy post's files are listed only once the post is known to be new.
 9. **Downloading** (`Downloads`). Each new file becomes a task on the run's loop, which waits
-   for one of the target's places (8 by default, or the source's largest `limits`). The queue
-   holds 4 times as many, so the listing waits when downloads fall behind and memory stays flat.
+   for one of the target's places (32, as many as one host's cap grows to, or the source's
+   largest `limits` above that). The queue holds 4 times as many, so the listing waits when downloads fall behind and memory stays flat.
    `_transfer.save` opens and locks the file's part
    (`<name>.part`, see `docs/storage`), skipping a file another run is saving, then streams the
    file into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
@@ -191,9 +191,24 @@ One HTTP library (`flnd/_net.py`) does every request and download, on the run's 
 - **Two pools** (`_net.Limits`). *Pages*: the listing's requests to the source's own domains
   share a token bucket per host at the source's `pace`; a 429's `Retry-After` (or X's
   `x-rate-limit-reset`) holds it, and halves its rate until 20 requests go through. *Media*:
-  every file, and the listing's requests to other hosts, at most 8 at once per host, or the
-  cap the source's `limits` gives the host. A target's downloads also take one of its own
-  places (8, or the source's largest cap), and its queue holds 4 times as many.
+  every file, and the listing's requests to other hosts, under an adaptive cap per host
+  (below). A target's downloads also take one of its own places (32, or the source's largest
+  cap above that), and its queue holds 4 times as many.
+- **Adaptive concurrency per host** (`_net.Cap`, AIMD). Each media host starts at 8 transfers
+  at once (`site.MEDIA_CAP`) and may grow to 32 (`site.MEDIA_MOST`), or to the cap the source's
+  `limits` gives it:
+  - a 429, a 503, a reset, a timeout or a transfer cut short halves it, once per round of
+    transfers that started together;
+  - every 10 clean transfers close a window, whose throughput is the cap times the bytes
+    moved over the seconds the transfers took (Little's law, for a host kept busy). A window
+    in which a place stood free with nobody waiting is dropped: the cap didn't bind;
+  - otherwise the cap grows by one. A step that didn't raise the throughput by half of what
+    one more place would add on a host that scales is taken back, and the cap holds for 100
+    clean transfers before it probes again.
+
+  The session's curl handles (`Limits.total`) leave room for 8 hosts at 32, plus every host in
+  `limits`; curl makes a handle only when a transfer needs one. `SourceRun.load` (from
+  `Limits.load`) is a snapshot of each host's cap, transfers in flight and waiting.
 - **Two clients** share the session and the pools: `web` lists and stops at the first Ctrl-C;
   `files` downloads and stops at the second.
 - **The retry policy** is the library's ([errors.md](errors.md)): 4 more tries after waits of

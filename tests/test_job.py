@@ -29,13 +29,14 @@ from test_engine import EngineCase, make_source
 from flnd import sources
 from flnd import engine as engine_module
 from flnd import job
+from flnd import site as site_module
 from flnd.engine import Engine
 from flnd import _home
 from flnd.options import Options
 from flnd.source import (
     File, LoginError, NotFound, Post, SiteError, Source, SourceError, Target, pages, target,
 )
-from flnd import _run, _time as clock
+from flnd import _run, _time
 from flnd._ui import ui
 from flnd.errors import UsageError
 
@@ -873,7 +874,7 @@ class CtrlCTest(JobCase):
             code, name, domains = "slw", "Slow", ("example.com",)
             folder = ""
             # One download at a time: post 1's runs, posts 2 to 4 wait in the queue (4 times as
-            # many as run).
+            # many as run, with the target's places held to 1 below).
             limits = {"cdn.example": 1}
 
             @target("{user}")
@@ -897,6 +898,8 @@ class CtrlCTest(JobCase):
             return _net.reply(200, content=b"one")
 
         self.routes[f"{CDN}/1.7z"] = first
+        # A target's places follow the most a host's cap grows to, which would queue 128 files.
+        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
         thread, outcome = self.start(Slow, "slw:example_user")
         # Post 5 waits for room in the queue: 1 is downloading and 2 to 4 are queued.
         self.until(lambda: started.is_set() and len(listed) == 5)
@@ -1286,7 +1289,7 @@ class BoardTest(unittest.TestCase):
     def setUp(self):
         self.dest = io.StringIO()
         self.enterContext(ui.scope(dest=self.dest, width=200, color=False))
-        self.enterContext(clock.use(clock.Fake()))
+        self.enterContext(_time.use(_time.Fake()))
         self.target = Target("aaa", "user", "example_user")
 
     def lines(self):

@@ -121,6 +121,49 @@ How a file is written, and why:
 - `net.stall_20mbs` charges every write of a part as a disk write at 20 MB/s, the last piece's
   copy into memory included, so it overstates a real slow disk.
 
+## Concurrency per host
+
+Each media host's cap adapts (`flnd._net.Cap`, docs/architecture "Network"): it starts at 8
+transfers at once, halves on a 429, a 503, a reset or a timeout, and grows by one every 10
+clean transfers, up to 32, while the host's throughput still rises. The `net` group holds its
+caps fixed (`Limits(cap=8, most=8)`), so its numbers don't move with the adaptation.
+
+Throughput is measured by Little's law: the cap times the bytes over the seconds the window's
+transfers took. A first version took bytes over the window's wall time; with only 10 transfers
+a window, that rate swung with where in their run the window closed, and on the e2e run the cap
+stalled at 9 to 10. With durations it climbs to about 27 there, and holds where a step brings
+nothing.
+
+`e2e.latency_500_posts` (500 posts, 150 ms a page, 40 ms a file, the default pace of 0.5 s),
+A/B on the M5 above while other work ran (load about 5), the median of 5 alternating runs:
+
+| caps | seconds |
+| --- | ---: |
+| 8 at once per host (before) | 6.01 |
+| 8, adapting to 32 | 4.87 |
+
+The listing's 10 pages, half a second apart, take about 4.65 s, so the run now ends about
+0.2 s after its last page. The `net` group is unchanged within noise (`small_8_at_once` 602 to
+607 ms before and after).
+
+### The real-CDN check
+
+Loopback can't show where a real CDN stops giving more for more transfers at once, so the
+ceiling of 32 is confirmed by hand with `tests/bench/cdn_real.py`:
+
+1. Collect the URLs of about 200 files on one CDN host from the authorized test accounts (the
+   browser's network panel shows them), one per line, in a file outside the repo, such as
+   `~/flnd-cdn.txt`.
+2. Run `make cdn-real ARGS="--urls ~/flnd-cdn.txt --rounds 3"`. Add
+   `--header "Referer: https://www.example.com/"` with the site's own address when its CDN
+   needs one (Facebook's and Instagram's do), and `--caps 8,16,24,32,48` to look further.
+3. It downloads the list through flnd's client at each fixed cap, then once with the adaptive
+   default, alternating over the rounds, and prints the median seconds and MiB/s per cap, the
+   failures, and the cap each run ended at. It prints no URL, name or host.
+4. Pick the smallest cap past which MiB/s stops rising by more than a few per cent. If it is
+   well under 32, lower `flnd.site.MEDIA_MOST`; if a cap ended below the one asked, the host
+   overloaded there.
+
 ## Disk
 
 What writing one downloaded file costs beyond the write itself, per file of 100 KiB, measured

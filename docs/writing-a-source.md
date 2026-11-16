@@ -56,9 +56,13 @@ What each part does:
 - **`code`, `name`, `domains`** say what the source is. `domains` also decides which requests
   get the source's `prepare` headers, and which of its listing's requests wait for its `pace`.
 - **`pace`** (0.5 by default) is the least time between two listing requests to the source's
-  own domains. **`limits`** caps the files downloading at once from a host, such as
-  `limits = {"cdn.example.com": 4}`; a host not named takes 8 at once, and a file the source
-  fetches itself (a `fetch` function) counts against its first domain. Every request goes out
+  own domains. **`limits`** caps the files downloading at once from a host and its
+  subdomains, such as `limits = {"cdn.example.com": 4}`. Every host's cap adapts: it starts at
+  8 (or the host's own cap, when lower), halves when the host answers 429 or 503 or drops
+  connections, and grows while its throughput still rises, up to 32 for a host not named and
+  up to its own cap for one that is. Name a host only when it is known to refuse more, as
+  Telegram's flood limit does. A file the source fetches itself (a `fetch` function) counts
+  against its first domain. Every request goes out
   with Chrome's TLS and HTTP/2 fingerprint.
 - **`@target(...)`** makes `user` a **route**: a method that reads one kind of target. Each
   pattern is one way to write it. `{user}` alone means `exm:<user>`; `example.com/{user}` is a
