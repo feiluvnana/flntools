@@ -325,7 +325,9 @@ class OutputTest(FlndCase):
                 return _net.reply(503)
             return _net.reply(200, content=jpeg)
 
-        self.enterContext(_net.fake(serve))
+        # A lambda, so a test that replaces `self.serve` is answered by its own.
+        self.serve = serve
+        self.enterContext(_net.fake(lambda request: self.serve(request)))
         from flnd import _time as clock
 
         self.enterContext(clock.use(clock.Fake()))
@@ -368,7 +370,30 @@ class OutputTest(FlndCase):
         code, out, err = self.run_app("download", "exs:example_user", "--ui", "plain")
         self.assertEqual(code, 1, err)
         self.assertIn("failed exs:example_user bad: ", out)
-        self.assertIn("1 failed: ", err)
+        self.assertIn("✗ 1 file failed: 1 site (retry: flnd retry). Details: flnd status", err)
+
+    def test_status_shows_the_failure_and_retry_brings_it_back(self):
+        self.listing[("example_user", "posts")] = ["p1", "bad"]
+        self.run_app("download", "exs:example_user", "--ui", "plain")
+        code, out, _ = self.run_app("status")
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertRegex(lines[0], r"^last run: download exs:example_user, .+: 2 saved, 1 failed$")
+        self.assertIn("  exs:example_user bad (site): ", lines[1])
+        self.assertEqual(lines[-1], "✗ 1 file failed: 1 site (retry: flnd retry)")
+        code, out, _ = self.run_app("--json", "status")
+        status = json.loads(out)
+        self.assertEqual((status["type"], status["saved"]), ("Status", 2))
+        [failure] = status["failures"]
+        self.assertEqual((failure["target"], failure["post"], failure["error"]["class"]),
+                         ("exs:example_user", "bad", "SiteError"))
+        # The site answers now: a retry lists the post again and saves the one file.
+        self.serve = lambda request: _net.reply(200, content=noise("JPEG"))
+        code, out, err = self.run_app("retry", "--ui", "plain")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[-1], "done: 1 file saved (%s), 1 brought back by a retry"
+                         % out.splitlines()[-1].split("(")[1].split(")")[0])
+        self.assertRegex(self.run_app("status")[1], r"^last run: retry exs:example_user, .+: 1 saved, 0 failed\n$")
 
     def test_the_inline_view_draws_the_rows_and_ends_with_the_summary(self):
         code, out, err = self.run_app("download", "exs:example_user", "--ui", "inline")
@@ -476,12 +501,12 @@ class HelpTest(FlndCase):
         rows = [json.loads(line) for line in out.splitlines()]
         self.assertEqual([row["code"] for row in rows], ["tik", "fbk", "ins", "twt", "loi", "tlg", "mht"])
 
-    def test_commands_not_built_yet_are_usage_errors(self):
-        for verb in ("status", "retry"):
-            with self.subTest(verb=verb):
-                code, _, out = self.run_app(verb)
-                self.assertEqual(code, 2)
-                self.assertIn(f"error: {verb} isn't built yet", out)
+    def test_status_and_retry_on_a_home_with_no_run(self):
+        self.assertEqual(self.run_app("status")[:2], (0, "no run yet\n"))
+        code, out, _ = self.run_app("--json", "status")
+        self.assertEqual((code, json.loads(out)), (0, {"type": "Status"}))
+        code, out, _ = self.run_app("retry", "--ui", "plain")
+        self.assertEqual((code, out), (0, "done: 0 files saved\n"))
 
 
 # ---------------------------------------------------------------------------------------------

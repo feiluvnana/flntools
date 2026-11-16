@@ -12,11 +12,11 @@ options a call takes.
 How a call flows:
 1. The method checks its arguments at once: targets are resolved, `only`, `when` and `limit`
    are read, and a mistake raises `flnd.UsageError` before anything is fetched.
-2. A command that downloads (`download`, `follow`, `sync`) returns a `flnd.Run` that hasn't
-   started. Its work is a closure that makes an `Engine` with the run's event sink and stop
-   state, and calls the engine's command; the run starts it on its own thread when read.
-3. A read (`targets`, `files`, `logins`) or a quick change (`unfollow`, `login`, `logout`) runs
-   on the caller's thread and returns plain rows from `flnd._events`.
+2. A command that downloads (`download`, `follow`, `sync`, `retry`) returns a `flnd.Run` that
+   hasn't started. Its work is a closure that makes an `Engine` with the run's event sink and
+   stop state, and calls the engine's command; the run starts it on its own thread when read.
+3. A read (`targets`, `files`, `logins`, `status`) or a quick change (`unfollow`, `login`,
+   `logout`) runs on the caller's thread and returns plain rows from `flnd._events`.
 
 Rules a change must keep:
 - Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
@@ -38,11 +38,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd._events import Checked, Installed, Login, Record, Tracked
+from flnd._events import Checked, Failure, Installed, Login, Record, Status, Tracked
 from flnd._run import Run
 from flnd.errors import UsageError
 
 if TYPE_CHECKING:
+    from flnd._home import FailureRow
     from flnd.engine import Engine
     from flnd.source import Range, Site, Source, Target
 
@@ -258,26 +259,51 @@ class Flnd:
         return self._run(named, lambda engine: engine.sync(resolved, compress=compress))
 
     def retry(self) -> Run:
-        """Download again the files the last run failed on.
+        """Download again every file the home's failures name, however many runs failed it.
 
-        Not built yet: a failed file is retried by the next download or sync of its target.
+        A download or sync already retries a target's failed files first, on at most 3 runs
+        each; this takes every one, at once. Each failed post is listed again through its
+        source, for fresh URLs, and only its failed files are downloaded: a retry never uses a
+        stored URL, which `flnd.db` keeps redacted (docs/errors). A target whose listing failed
+        whole is downloaded again. A gone file (a 404 or 410) isn't retried; `again=True`
+        asks for those.
 
         Returns:
-            Never returns today.
-
-        Raises:
-            UsageError: always, until the home keeps a failure report.
+            The `Run`, not started yet. With nothing to retry, it ends at once with an empty
+            report; `report.retried` counts the files it brought back.
 
         Example:
             >>> import flnd
             >>> with flnd.open("example-home") as fl:
-            ...     fl.retry()
-            Traceback (most recent call last):
-            ...
-            flnd.errors.UsageError: retry isn't built yet
+            ...     fl.retry().wait().retried
+            0
         """
-        raise UsageError("retry isn't built yet",
-                         hint="download or sync the target again: its failed files go first")
+        return self._run("retry", lambda engine: engine.retry())
+
+    @property
+    def status(self) -> Status | None:
+        """The last run that downloaded, with the failures it left: what `flnd status` shows.
+
+        A failure that a later run saved is left out, so this is what still needs doing.
+
+        Returns:
+            The `Status`; None when the home has never downloaded.
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:
+            ...     fl.status is None
+            True
+        """
+        from flnd import _home
+
+        with _home.open(self.home) as db:
+            run = db.last_run()
+            rows = db.failures(run.id) if run is not None else []
+        if run is None:
+            return None
+        return Status(run.command, run.started, run.ended, saved=run.saved,
+                      failures=tuple(_failure(row) for row in rows))
 
     # -----------------------------------------------------------------------------------------
     # Targets and files
@@ -834,6 +860,25 @@ def _period(text: str) -> tuple[datetime.date, datetime.date]:
 # ---------------------------------------------------------------------------------------------
 # Reading saved files
 # ---------------------------------------------------------------------------------------------
+
+def _failure(row: FailureRow) -> Failure:
+    """A failure's row of `flnd.db` as a `Failure`, its error made again from its class.
+
+    Args:
+        row: the row.
+
+    Returns:
+        The `Failure`; an error class flnd no longer has comes back as a plain `flnd.Error`.
+    """
+    from flnd import errors
+
+    kind = getattr(errors, row.error, None)
+    if not (isinstance(kind, type) and issubclass(kind, errors.Error)):
+        kind = errors.Error
+    return Failure(row.target, kind(row.message, hint=row.hint, target=row.target),
+                   post=row.post, path=Path(row.file) if row.file else None,
+                   attempts=row.attempts, url=row.url, at=row.at)
+
 
 def _day(record: Record) -> datetime.date | None:
     """The day a record counts by for `since`: its post's, else the day it was saved.

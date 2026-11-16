@@ -99,12 +99,14 @@ and code there may not be yours.
    (Telegram's client). A source whose `login` is `required` and missing fails here, for each of
    its targets; any other source without a login warns and goes on with public access.
 6. **One target** (`job.download`). The job removes the stale parts an interrupted run left in
-   the target's folder (a week old, and held by no run), and queues the files that failed last
-   time, so they are tried first. Nothing locks the target: each file's part locks itself.
-7. **Listing.** The route runs and returns the profile; then each wanted category yields its
-   posts, page by page. A category whose listing was interrupted resumes from its saved cursor,
-   then catches up from the newest post. `--when` drops posts outside the range; after 5 posts
-   in a row older than the range, a `newest_first` category stops.
+   the target's folder (a week old, and held by no run). Nothing locks the target: each file's
+   part locks itself.
+7. **Listing.** The route runs and returns the profile. The files earlier runs failed on go
+   first: each failed post is listed again from the cursor of its page, and its failed files
+   queued (see "Smart sync" below). Then each wanted category yields its posts, page by page. A
+   category whose full download was interrupted resumes from its saved cursor, then catches up
+   from the newest post. `--when` drops posts outside the range; after 5 posts in a row older
+   than the range, a `newest_first` category stops.
 8. **Planning each post** (`Ledger.take`). Each file is given its path (from the source's
    `folder` and `filename` templates) and its history key (`<code>:<key>`). A file whose key is
    in the history is skipped. Once a `newest_first` category was read to its end, a later run
@@ -143,15 +145,45 @@ and code there may not be yours.
     date, place and record run with the download, and again for a file a slow step changes.
     `--exec` is the CLI's: it runs a command for each `Saved` event it reads, never through a
     shell ([cli.md](cli.md#running-a-command-per-file)).
-11. **Ending the target.** The job saves the categories it listed to their end and the cursors
-    of those it didn't in `flnd.db` (each failed file was written there as it failed), counts the
-    target's files for `flnd ls`, then prints one summary line.
+11. **Ending the target.** The job saves the categories it listed to their end, the cursors of
+    those a download cut short, the gaps a sync left and the heads in `flnd.db` (each failed
+    file was written there as it failed), counts the target's files for `flnd ls`, then prints
+    one summary line.
 12. **The end.** The engine writes refreshed cookies back to the vault, prints "Complete" with the
     count of files, and the CLI exits with 0, or 1 if a target failed.
 
 `flnd sync` runs steps 5 to 12 for every target whose row has `sync` on, always stopping at
 saved posts. A query target (`mht?words`) first lists the targets it finds, then runs each one;
-on a sync, only the targets it hadn't seen before.
+on a sync, only the targets it hadn't seen before. `flnd retry` runs them for every target with
+failed files, listing only the failed posts' pages.
+
+## Smart sync
+
+A run remembers enough, per target and category, in `flnd.db` (`targets.heads`, `gaps`,
+`cursors`, and the `failures` table), to do as little as it can and still miss nothing. Each of
+the three is in the events and in the run's report.
+
+1. **Failures first.** Every download and sync of a target first retries the files that failed
+   on earlier runs (`job._retry_failed`), before its new posts. It works from `(target, post,
+   file)`, never from a stored URL: it groups the failures by category and by the cursor of the
+   page each post was on, lists from that cursor until it has met each failed post (or
+   `RETRY_WINDOW` posts past it), and queues the post like any other, which downloads only its
+   files that aren't saved. A file is retried this way on at most 3 runs, then left for `flnd
+   retry`; a gone file never. A post the listing no longer has is recorded gone. Each file
+   brought back is a `Saved` event with `retried=True` (`report.retried`).
+2. **Nothing new.** A `newest_first` listing keeps its head: the newest post a run that read it
+   from the top saw. A sync stops after the head and the post after it, so a target with
+   nothing new costs one page, which on a site that pages by cursor is one request. It says so
+   with a `Skipped` event whose `reason` is `"nothing new"` (`report.unchanged`).
+3. **No gap.** A full download cut short keeps the cursor of the page it was reading, and the
+   next run resumes there, then lists from the newest down to the posts it had. A sync cut short
+   (Ctrl-C, an error, `--limit`) keeps a gap instead (`job._sync_one`): the next sync starts
+   from the newest page, since that is where new posts are, and once it meets saved posts on
+   top, jumps to the gap's cursor and goes on from there until it meets saved posts again: a
+   `Progress` event with the note `"resuming from the last run"` (`report.resumed`). Gaps stack,
+   newest first, when syncs are cut short twice. A feed that isn't paged by cursor leaves a gap
+   without one, and the next sync reads past saved posts down to the head instead. The head
+   moves only when a sync leaves no gap, so every gap lies above it.
 
 ## Threads
 

@@ -10,10 +10,10 @@
 What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
 `Flnd`, whose methods are the CLI's commands; a download returns a `Run`, whose events
 (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`, and a `Stats` snapshot once a second) are
-the only output; `Report`, `Login`, `Record`, `Tracked`, `Checked` and `Installed` are what the
-reads return; the errors are the one hierarchy of `flnd.errors`. A source is written against
-`flnd.source` instead (see the docs' guide to writing a source), and tested with
-`flnd.testing`.
+the only output; `Report`, `Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked` and
+`Installed` are what the reads return; the errors are the one hierarchy of `flnd.errors`. A
+source is written against `flnd.source` instead (see the docs' guide to writing a source), and
+tested with `flnd.testing`.
 
 How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first
 use of a name (`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine,
@@ -37,6 +37,7 @@ _HOMES = {
     "Checked": "flnd._events",
     "Event": "flnd._events",
     "Failed": "flnd._events",
+    "Failure": "flnd._events",
     "Installed": "flnd._events",
     "Login": "flnd._events",
     "Planned": "flnd._events",
@@ -46,6 +47,7 @@ _HOMES = {
     "Saved": "flnd._events",
     "Skipped": "flnd._events",
     "Stats": "flnd._events",
+    "Status": "flnd._events",
     "Tracked": "flnd._events",
     "Target": "flnd.source",
     "Blocked": "flnd.errors",
@@ -65,17 +67,16 @@ _HOMES = {
 # Written out, not built from `_HOMES`, so linters and editors can read it; a test checks that
 # the two agree.
 __all__ = [
-    "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Flnd", "Installed",
-    "Login", "LoginError", "NetworkError", "NotFound", "Planned", "Progress", "Record", "Report",
-    "Run", "Saved", "SiteError", "Skipped", "SourceError", "Stats", "Stopped", "Target",
-    "ToolError",
-    "Tracked", "UsageError", "__version__", "open",
+    "Blocked", "Changed", "Checked", "DiskError", "Error", "Event", "Failed", "Failure", "Flnd",
+    "Installed", "Login", "LoginError", "NetworkError", "NotFound", "Planned", "Progress",
+    "Record", "Report", "Run", "Saved", "SiteError", "Skipped", "SourceError", "Stats", "Status",
+    "Stopped", "Target", "ToolError", "Tracked", "UsageError", "__version__", "open",
 ]
 
 if TYPE_CHECKING:
     from flnd._events import (
-        Checked, Event, Failed, Installed, Login, Planned, Progress, Record, Report, Saved,
-        Skipped, Stats, Tracked,
+        Checked, Event, Failed, Failure, Installed, Login, Planned, Progress, Record, Report,
+        Saved, Skipped, Stats, Status, Tracked,
     )
     from flnd._library import Flnd, open
     from flnd._run import Run

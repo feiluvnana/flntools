@@ -58,11 +58,26 @@ by default.
 Downloading only what is new, for followed targets. `flnd follow` follows a target, and
 `flnd sync` updates them: it downloads what is new for every followed target. On a sync, a
 category marked
-`newest_first` stops after 5 saved posts in a row.
+`newest_first` stops after 5 saved posts in a row, or sooner at its head
+([architecture.md](architecture.md#smart-sync)).
 
 ## Cursor
 Where a paged listing got to. flnd saves each category's cursor when a run is interrupted, and the
 next run resumes from it, then catches up from the newest post.
+
+## Head
+The newest post of a `newest_first` category, as the last run that read it from the top saw
+it. A sync stops after the head and the post after it, so a target with nothing new costs one
+page.
+
+## Gap
+Where a sync was cut short before it met the posts saved before it. The next sync, once it
+meets saved posts on top, jumps to the gap's cursor and goes on there, so no post is left
+behind.
+
+## Failure
+A file or target that failed and isn't saved since: one row of `flnd.db`'s `failures`, which
+`flnd status` shows and the next runs retry ([errors.md](errors.md#the-failure-report)).
 
 ## Event
 A report of something a run did: a file saved (`flnd.Saved`), skipped (`flnd.Skipped`) or

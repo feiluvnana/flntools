@@ -216,11 +216,12 @@ class SavedTest(JobCase):
         before = len(listed)
         self.requests.clear()
         self.run_engine(Carousel, targets=["crs:example_user"])
-        self.assertEqual(len(listed), before)
+        # The retry lists the post once more, for fresh links, and fetches the failed file alone.
+        self.assertEqual(len(listed), before + 1)
         self.assertEqual([str(request.url) for request in self.requests], [f"{CDN}/c1.jpg"])
         self.requests.clear()
         self.run_engine(Carousel, targets=["crs:example_user"])
-        self.assertEqual((len(listed), self.requests), (before, []))
+        self.assertEqual((len(listed), self.requests), (before + 1, []))
 
     def test_failed_file_is_retried_directly_under_sync(self):
         class Feed(Source):
@@ -1248,17 +1249,20 @@ class ResumeTest(JobCase):
         self.assertEqual(self.row().cursors, {})
         self.assertIn("posts", self.row().complete)
 
-    def test_the_newest_are_read_only_down_to_5_saved_posts_in_a_row(self):
+    def test_a_cursor_kept_for_a_listing_read_to_its_end_is_a_gap(self):
         self.interrupted()
         # Every post the failed run listed is saved meanwhile, as a later run would have.
         self.fail_on = "c2-unused"
         self.engine.download(["pgd:example_user"], categories="all")
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
+        # An earlier flnd kept a cut-short sync's cursor as the listing's cursor.
         self.sql("UPDATE targets SET cursors = ? WHERE key = ?", '{"posts":"c2"}', "pgd:example_user")
         self.cursors_fetched = []
         self.engine.download(["pgd:example_user"], categories="all")
-        self.assertEqual(self.cursors_fetched, ["c2", None, "c0"])
+        # The newest down to 5 saved posts in a row, then the gap.
+        self.assertEqual(self.cursors_fetched, [None, "c0", "c2"])
+        self.assertEqual((self.row().cursors, self.row().gaps), ({}, {}))
 
     def test_a_refused_cursor_is_dropped_and_the_listing_starts_over(self):
         self.interrupted()

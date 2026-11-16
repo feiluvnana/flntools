@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from flnd import job
 from flnd.job import TargetReport
-from flnd.options import Options, RunShared, categories_by_source, validate
+from flnd.options import Options, Retry, RunShared, categories_by_source, validate
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.source import Cookies, Range, Source, Target, _Unmatched
@@ -94,7 +94,7 @@ class _Planned:
 
 
 class Engine:
-    """flnd's commands as methods: `resolve`, `download`, `sync`, `login`, and `logout`."""
+    """flnd's commands as methods: `resolve`, `download`, `sync`, `retry`, `login`, `logout`."""
 
     def __init__(
         self,
@@ -224,6 +224,49 @@ class Engine:
             if compress:
                 self._compress_saved([target for target, _ in chosen], stop)
             report = Report(tuple(results[i] for i in range(len(chosen))))
+            ended.append(report)
+            return self._finish_report(report, stop)
+
+    def retry(self) -> Report:
+        """Retry every failure the home keeps, however many runs failed it (`flnd retry`).
+
+        Each target with failed files lists each failed post again, from the cursor of the page
+        it was on, and downloads the files that failed, from `(target, post, file)`: never a
+        stored URL (docs/errors). A target whose listing failed whole is downloaded again, its
+        failed files first. A gone file (`NotFound`) isn't retried; `--again` asks for those.
+
+        Returns:
+            One `TargetReport` per target retried; none when nothing failed.
+
+        Raises:
+            KeyboardInterrupt: Ctrl-C (or the run's stop) ended it.
+        """
+        with _home.open(self.home) as db:
+            failed = db.failed()
+            rows = db.targets()
+        chosen: list[tuple[Target, Options]] = []
+        for item, whole in failed.items():
+            row = rows.get(item)
+            # A target a search found has no row of its own: its key resolves it.
+            recorded = self._recorded({item: row}) if row is not None else []
+            try:
+                target = recorded[0] if recorded else self._one(item)
+            except Error as error:
+                ui.warn("{target}: can't retry: {error}", target=item, error=error)
+                continue
+            if target.source not in self.sources or self._is_query(target):
+                continue
+            # A failed file may be in any category, so a retry lists the ones it failed in; a
+            # target that failed whole is downloaded as its last run would have been.
+            options = (Options(categories=row.only if row else None, stop_at_saved=True)
+                       if whole else Options(retry=Retry.ONLY))
+            chosen.append((target, options))
+        if not chosen:
+            ui.info("nothing to retry")
+            return Report(())
+        with stopping(self.stop) as stop, \
+                self._recording("retry", [target for target, _ in chosen]) as ended:
+            report = Report(tuple(self._run(chosen, stop=stop)))
             ended.append(report)
             return self._finish_report(report, stop)
 
@@ -814,6 +857,8 @@ class Engine:
             A list the command appends its report to, for the row's count of saved files.
         """
         named = " ".join([command, *map(str, targets[:3])])
+        # Each run's logs and samples are kept for a month (docs/storage).
+        _home.sweep(self.home)
         with _home.open(self.home) as db:
             self.run = db.start(named if len(targets) <= 3 else f"{named} …")
         ended: list[Report] = []

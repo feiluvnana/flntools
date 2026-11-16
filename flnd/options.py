@@ -16,6 +16,7 @@ import datetime
 import functools
 import tomllib
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
@@ -28,6 +29,16 @@ if TYPE_CHECKING:
 
 # `--only all` takes every category of every source.
 ALL = "all"
+
+
+class Retry(Enum):
+    """What a target's run does with the files earlier runs failed on (docs/errors)."""
+
+    # List each of their posts again first, for those failed on at most `_home.RETRIES` runs;
+    # then the target's listings: every download and sync.
+    FIRST = "first"
+    # List each of their posts again, every one of them, and nothing else: `flnd retry`.
+    ONLY = "only"
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,9 @@ class Options:
     # Compress each saved photo and video once it is recorded (`--compress`, docs/media),
     # and remove an archive once it is extracted.
     compress: bool = False
+    # What to do with the files earlier runs failed on; `again` skips them, since it lists
+    # every post anyway.
+    retry: Retry = Retry.FIRST
 
 
 @dataclass

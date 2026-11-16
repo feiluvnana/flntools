@@ -347,10 +347,6 @@ flnd/job.py:_resolve_name: Args: no filename
 flnd/job.py:_resolve_name: Args: no post
 flnd/job.py:_resolve_name: Args: no values
 flnd/job.py:_resolve_name: no Returns:
-flnd/job.py:_retry_failed: Args: no options
-flnd/job.py:_retry_failed: Args: no run
-flnd/job.py:_retry_failed: Args: no target
-flnd/job.py:_retry_failed: Args: no work
 flnd/job.py:_run_discovered: Args: no board
 flnd/job.py:_run_discovered: Args: no items
 flnd/job.py:_run_discovered: Args: no options
@@ -360,8 +356,6 @@ flnd/job.py:_run_download: Args: no options
 flnd/job.py:_run_download: Args: no run
 flnd/job.py:_run_download: Args: no target
 flnd/job.py:_run_download: no Returns:
-flnd/job.py:_serialize_failed: Args: no queued
-flnd/job.py:_serialize_failed: no Returns:
 flnd/job.py:_set_mtime: Args: no dated
 flnd/job.py:_set_mtime: Args: no path
 flnd/job.py:_steps: Args: no run_async

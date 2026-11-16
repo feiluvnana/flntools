@@ -1,7 +1,8 @@
 """Values as short text for a person to read, safe file names and URLs, and name templates.
 
 A library module: it imports nothing of flnd, and any program may use it.
-- `filename` turns any text into a file name every OS accepts; `redact` strips a URL's secrets.
+- `filename` turns any text into a file name every OS accepts; `redact` strips a URL's secrets,
+  and `scrub` the values under secret-looking names in a body (JSON, HTML or a form).
 - `size`, `duration` and `count` say a number the way a person reads it.
 - `fill` formats a name template (`"{date}_{post}"`) from fields, dropping the separators
   around a field that came out empty; `fields` lists the fields a template names.
@@ -16,9 +17,12 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 
-__all__ = ["count", "duration", "fields", "filename", "fill", "fold", "redact", "size"]
+__all__ = ["count", "duration", "fields", "filename", "fill", "fold", "redact", "scrub", "size"]
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
+# What the name of a secret looks like, for `scrub`: a token, a CSRF value, a session, a cookie,
+# an auth or API key, a password, a signature.
+SECRET_NAMES = re.compile(r"token|csrf|session|cookie|auth|passw|secret|key|sig", re.IGNORECASE)
 UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f-\x9f]')
 SEPARATOR_RUNS = re.compile(r"[\s_]+")
 # Windows refuses these names with any extension, in any case.
@@ -106,6 +110,67 @@ def _rough_redact(url: str) -> str:
         return head
     authority, slash, path = rest.partition("/")
     return f"{scheme}{sep}{authority.rpartition('@')[2]}{slash}{path}"
+
+
+def scrub(text: str, *, secrets: re.Pattern[str] = SECRET_NAMES) -> str:
+    """`text` with every value under a name that looks like a secret replaced by "…".
+
+    For a body kept to show what an answer looked like (a bug report's sample) without what it
+    must not show. Over-scrubbing is the safe side: `key` also matches `monkey`, and its value
+    goes too.
+    - JSON is parsed, and each value under a matching key becomes "…", a whole object or list
+      included; it comes back indented.
+    - Any other text (HTML, a form, a script) has its `name: value`, `name=value` and
+      `"name": "value"` pairs scrubbed, and the `value` of an HTML input whose `name` matches.
+
+    Args:
+        text: the body, as text.
+        secrets: what a secret's name matches, anywhere in it, in any case.
+
+    Returns:
+        The scrubbed text.
+
+    Example:
+        >>> scrub('{"user": "example_user", "csrf_token": "s3cr3t"}')
+        '{\\n "user": "example_user",\\n "csrf_token": "…"\\n}'
+        >>> scrub("<input name=csrf value=abc> next=page2&auth_key=xyz")
+        '<input name=csrf value=…> next=page2&auth_key=…'
+    """
+    import json
+
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, (dict, list)):
+        return json.dumps(_scrubbed(data, secrets), indent=1, ensure_ascii=False)
+    # 1. An input's value, wherever its matching name stands before it.
+    text = re.sub(r"""(<input[^>]*?\bname=["']?([^"'\s>]*)["']?[^>]*?\bvalue=["']?)([^"'\s>]*)""",
+                  lambda m: m[1] + ("…" if secrets.search(m[2]) else m[3]), text,
+                  flags=re.IGNORECASE)
+    # 2. Any `name = value` or `"name": "value"` pair: the value runs to a quote, a space or a
+    # separator, so a query string's next pair stays.
+    return re.sub(r"""(["']?)([\w.-]+)\1(\s*[:=]\s*)(["']?)([^"'\s&,;<>{}]*)""",
+                  lambda m: m[0] if not secrets.search(m[2]) or not m[5]
+                  else f"{m[1]}{m[2]}{m[1]}{m[3]}{m[4]}…", text)
+
+
+def _scrubbed(data: Any, secrets: re.Pattern[str]) -> Any:
+    """A JSON value with the values under secret-looking keys replaced by "…", at any depth.
+
+    Args:
+        data: the parsed JSON: an object, a list, or a plain value.
+        secrets: what a secret's key matches.
+
+    Returns:
+        A scrubbed copy; `data` itself is left as it is.
+    """
+    if isinstance(data, dict):
+        return {key: "…" if secrets.search(str(key)) else _scrubbed(value, secrets)
+                for key, value in data.items()}
+    if isinstance(data, list):
+        return [_scrubbed(value, secrets) for value in data]
+    return data
 
 
 # ---------------------------------------------------------------------------------------------

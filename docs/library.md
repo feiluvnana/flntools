@@ -248,7 +248,25 @@ with flnd.open(home) as fl:
 | `follow(targets, only=, when=, compress=)` | `Run` | follow, then download; `only` is kept for later syncs, `when` bounds this download alone |
 | `sync(targets=(), compress=)` | `Run` | download what is new for followed targets |
 | `unfollow(targets)` | `list[Target]` | stop following; files and history stay |
-| `retry()` | | **not built yet**: a failed file is retried by the next download or sync of its target |
+| `retry()` | `Run` | download again every file that failed, however many runs failed it ([errors.md](errors.md#retrying)) |
+
+A download or sync is smart about what it already has ([architecture.md](architecture.md#smart-sync)):
+
+- it first retries the target's files that failed on earlier runs (on at most 3 runs each),
+  listing each failed post again for fresh links; a file it brings back is a `Saved` event
+  with `retried=True`, and `report.retried` counts them;
+- a sync with nothing new reads one page and stops: a `Skipped` event with
+  `reason="nothing new"`, counted in `report.unchanged` (not in `report.skipped`, which counts
+  files);
+- a sync that was cut short is finished by the next one, which jumps to where it stopped: a
+  `Progress` event with `note="resuming from the last run"`, counted in `report.resumed`.
+
+```python
+with flnd.open(home) as fl:
+    fl.add(Notes)
+    report = fl.retry().wait()           # nothing failed in this home
+    print(report.retried, report.ok)     # 0 True
+```
 
 ## Reading the home
 
@@ -266,6 +284,7 @@ with flnd.open(home) as fl:
 | `fl.targets(source=None)` | a `flnd.Tracked` per target the home knows: `target`, `follow`, `at` (last sync), `files`, `size`, `seen` (for a search), `categories` (each one's state), `query` |
 | `fl.files(target=None, kind=None, since=None)` | read from the home's `flnd.db`: a `flnd.Record` per saved file: `key`, `path`, `size`, `post`, `category`, `date`, `at`, and `kind` (`"image"`, `"video"`, `"audio"`) |
 | `fl.logins` | a `flnd.Login` per source: `source`, `name`, `state`, `origin`, `expiring` |
+| `fl.status` | the last run that downloaded, as a `flnd.Status`: `command`, `started`, `ended`, `saved`, and `failures`, a `flnd.Failure` per file or target it left failed (`target`, `post`, `path`, `error`, `attempts`, `url`, `at`); `None` before the first run ([errors.md](errors.md#the-failure-report)) |
 | `fl.check(fix=False)` | a `flnd.Checked`: the history against the disk. `missing` and `resized` (each a `Record`, as the history has it), `unknown` (paths under `media/` no row names), `files` (rows checked), `fixed`, and `ok`. `fix=True` makes the history match the disk, and never deletes, moves or downloads a file ([storage.md](storage.md#checking-a-home)) |
 
 ## Logins and sources
@@ -301,6 +320,8 @@ This block isn't run by the docs test: it reads a real browser's cookies and ask
 | `flnd logout S` | `fl.logout(S)` |
 | `flnd login` (no source) | `fl.logins` |
 | `flnd check [--fix]` | `fl.check(fix=…)` |
+| `flnd status` | `fl.status` |
+| `flnd retry` | `fl.retry()` |
 | `--exec CMD` | `for event in run:` on each `flnd.Saved` |
 
 `--again` (the CLI's flag on `download` and `follow`) is `flnd.open(home, again=True)`: every
@@ -322,7 +343,7 @@ a `Failed` event instead, and the run goes on.
 ```python
 with flnd.open(home) as fl:
     try:
-        fl.retry()
+        fl.download("zzz:example_user")
     except flnd.Error as error:
-        print(type(error).__name__, error, "-", error.hint)    # UsageError retry isn't built yet - …
+        print(type(error).__name__, error, "-", error.hint)    # UsageError unknown source 'zzz'…
 ```

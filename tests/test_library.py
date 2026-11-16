@@ -365,13 +365,6 @@ class ReadsTest(LibraryCase):
             self.assertEqual(fl.sync().wait(), flnd.Report())
         self.assertFalse((self.home / "new" / "media").exists())
 
-    def test_what_is_not_built_yet_says_so(self):
-        for call in (self.fl.retry,):
-            with self.subTest(call=call.__name__), self.assertRaises(flnd.UsageError) as caught:
-                call()
-            self.assertIn("isn't built yet", str(caught.exception))
-            self.assertTrue(caught.exception.hint)
-
     def test_add_refuses_a_taken_code_or_a_non_source(self):
         with self.assertRaises(flnd.UsageError):
             self.fl.add(self.source)

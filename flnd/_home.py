@@ -16,9 +16,14 @@ What `flnd.db` holds (the storage guide in `docs/` shows every column):
   another statement and another page.
 - `targets`: every target the home knows: followed or not, its options, which categories were
   listed to their end, the cursors of cut-short listings, each listing's head (the newest post
-  a run that read it from the top saw), a search's found targets, and its file count and bytes
-  for `flnd ls`.
-- `runs` and `failures`: each run that downloaded, and each failure in it.
+  a run that read it from the top saw) and its gaps (where syncs cut short stopped), a search's
+  found targets, and its file count and bytes for `flnd ls`.
+- `runs`: each run that downloaded, with what it saved and how many failures it left.
+- `failures`: one row per file (or target) that failed and isn't saved since: its target, post,
+  category, the cursor of the page its post was on, the error's class, message and hint, how
+  many runs failed it, and its redacted URL. It is the only record of a failure, so the report
+  (`flnd status`), the automatic retry and `flnd retry` can't disagree. No row holds a
+  request: a retry lists the post again for fresh URLs (`flnd.job`).
 - `state`: each source's own values between runs (`site.state`).
 - `logins`: how each source logged in, and when; never a secret (those are in `secrets.db`).
 - `probes`: what ffmpeg found in a file, kept so it isn't asked twice; safe to empty.
@@ -59,6 +64,8 @@ import datetime
 import functools
 import json
 import os
+import re
+import shutil
 import sqlite3
 import time
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
@@ -76,7 +83,8 @@ if TYPE_CHECKING:
     from flnd.options import Options
     from flnd.source import Source, Target
 
-__all__ = ["FileRow", "Home", "TargetRow", "open", "secrets"]
+__all__ = ["FailureRow", "FileRow", "Home", "RunRow", "TargetRow", "open", "sample", "secrets",
+           "sweep"]
 
 # ---------------------------------------------------------------------------------------------
 # The home's layout
@@ -102,9 +110,15 @@ VERSION = "1"
 
 # A file's `state`: where it stands with the site; a `link` row is another name of a saved file.
 SAVED, GONE, FAILED, LINK = "saved", "gone", "failed", "link"
-# Headers that log a request in. A failure's `request` keeps what a retry needs, never these:
-# `flnd.db` isn't encrypted like the vault.
-SECRET_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization"})
+# The runs a failed file is retried on by itself, at the start of its target's next downloads and
+# syncs; past them it waits for `flnd retry`, which always tries (docs/errors).
+RETRIES = 3
+# Logs and samples older than this are swept at the start of each run that downloads.
+LOG_DAYS = 30
+# A response whose URL looks like this is a login's, and is never kept as a sample: its body may
+# hold the session it just made.
+LOGIN_URL = re.compile(r"login|logon|signin|sign_in|oauth|auth|session|token|password|account",
+                       re.IGNORECASE)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
@@ -132,7 +146,7 @@ CREATE TABLE IF NOT EXISTS targets (
     complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
     seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
     files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
-    heads TEXT NOT NULL DEFAULT '{}'
+    heads TEXT NOT NULL DEFAULT '{}', gaps TEXT NOT NULL DEFAULT '{}'
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
@@ -140,9 +154,10 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE TABLE IF NOT EXISTS failures (
     run INTEGER, key TEXT NOT NULL, target TEXT NOT NULL, post_id TEXT NOT NULL DEFAULT '',
-    file TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '', class TEXT NOT NULL,
-    message TEXT NOT NULL, hint TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 1,
-    at TEXT NOT NULL, request TEXT
+    category TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '', class TEXT NOT NULL, message TEXT NOT NULL,
+    hint TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 1, at TEXT NOT NULL,
+    cursor TEXT
 );
 CREATE INDEX IF NOT EXISTS failures_target ON failures (target, key);
 CREATE INDEX IF NOT EXISTS failures_run ON failures (run);
@@ -175,7 +190,10 @@ PASSWORD = "password:"
 # The most files `save` writes in one statement; SQLite takes up to 32,766 values in one.
 ONE_STATEMENT = 500
 TARGET_COLUMNS = ("key", "source", "value", "kind", "follow", "options", "query", "complete",
-                  "cursors", "seen", "last_sync", "files", "bytes", "heads")
+                  "cursors", "seen", "last_sync", "files", "bytes", "heads", "gaps")
+# The columns `FailureRow` reads, in its order.
+FAILURE_SELECT = ("key, target, post_id, category, file, cursor, attempts, class, message, hint,"
+                  " url, run, at")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -270,6 +288,64 @@ class TargetRow(msgspec.Struct):
     # Each `newest_first` listing's head: the newest post the last run that read it from the
     # top saw, where a later sync stops (`flnd.job`); "" for a route's own listing.
     heads: dict[str, str] = {}
+    # Each listing's gaps: where syncs that were cut short stopped, newest first, for the next
+    # sync to jump to once it meets saved posts at the top. "" is a gap with no cursor (a feed
+    # that isn't paged by cursor, or one cut on its first page): the next sync reads down to
+    # the head instead.
+    gaps: dict[str, list[str]] = {}
+
+
+class FailureRow(msgspec.Struct):
+    """One failure the home keeps, as `pending` and `failures` read it.
+
+    Example:
+        >>> row = FailureRow("ins:9001_0", "ins:example_user", "9001", "posts")
+        >>> row.attempts, row.error
+        (1, 'Error')
+    """
+
+    # The file's key, or the target's key for a failure of the whole target.
+    key: str
+    target: str
+    # The post's id and category; "" for a failure of the whole target.
+    post: str = ""
+    category: str = ""
+    # Where the file would have gone; "" for a failure of the whole target.
+    file: str = ""
+    # The cursor of the page the post was listed on; None for the first page, or a listing
+    # that isn't paged by cursor.
+    cursor: str | None = None
+    # The runs that tried it and failed: 1 after the first.
+    attempts: int = 1
+    # The error's class name, message and hint.
+    error: str = "Error"
+    message: str = ""
+    hint: str = ""
+    # The file's URL, redacted (no query, no user info); "" for none.
+    url: str = ""
+    # The run it last failed in; None outside a recorded run.
+    run: int | None = None
+    # When it last failed, ISO 8601 in UTC.
+    at: str = ""
+
+
+class RunRow(msgspec.Struct):
+    """One run that downloaded, as `last_run` reads it.
+
+    Example:
+        >>> RunRow(7, "sync", "2026-11-16T10:00:00+00:00").saved
+        0
+    """
+
+    id: int
+    # What ran: the command and its first targets (`download ins:example_user`).
+    command: str
+    started: str
+    # When it ended; "" while it runs, or when it never ended (a crash).
+    ended: str = ""
+    saved: int = 0
+    # Failures it left, counted when it ended.
+    failed: int = 0
 
 
 def key(target: Target) -> str:
@@ -384,10 +460,7 @@ class Home:
         # 40 MB log) rather than SQLite's 1,000. A commit per post writes about 6 pages.
         sql.execute(f"PRAGMA wal_autocheckpoint = {CHECKPOINT_PAGES}")
         sql.execute("INSERT OR IGNORE INTO meta VALUES ('version', ?)", (VERSION,))
-        # A database made before listings kept their heads lacks the column; it is added, empty.
-        columns = {row[1] for row in sql.execute("PRAGMA table_info(targets)")}
-        if "heads" not in columns:
-            sql.execute("ALTER TABLE targets ADD COLUMN heads TEXT NOT NULL DEFAULT '{}'")
+        _upgrade(sql)
         if _old(self.home):
             _migrate(sql, self.home)
 
@@ -672,69 +745,107 @@ class Home:
     # -- failures ---------------------------------------------------------------------------
 
     def fail(self, *, run: int | None, item: str, target: str, error: BaseException,
-             post: str = "", file: str = "", url: str = "",
-             request: Mapping[str, Any] | None = None) -> None:
+             post: str = "", category: str = "", file: str = "", url: str = "",
+             cursor: str | None = None) -> None:
         """Write one failure, and mark a file the site no longer has as gone.
 
-        A `NotFound` (a 404 or 410) records the file as `gone`, so later runs skip it until
-        they are told to ask again (`--again`). Its own transaction: a failure is rare, and its
-        row must outlive a run that stops right after.
+        A file has one row, however often it fails: a later failure replaces the message and
+        counts one more run in `attempts`, which the automatic retry reads (`RETRIES`). A file
+        saved since starts again from 1. A `NotFound` (a 404 or 410) also records the file as
+        `gone`, so later runs skip it until they are told to ask again (`--again`). Its own
+        transaction: a failure is rare, and its row must outlive a run that stops right after.
 
         Args:
             run: the run it happened in; None outside one.
             item: the file's key, or the target's key for a failure of the whole target.
             target: the target's key.
-            error: what failed; a `flnd.Error` gives its hint and `attempts`.
+            error: what failed; a `flnd.Error` gives its hint.
             post: the post's id; "" for a failure of the whole target.
+            category: the category the post was listed in; "" for a route's own posts.
             file: where the file would have gone; "" for a failure of the whole target.
             url: the file's URL; only its redacted form is kept.
-            request: what a retry needs (the URL, its headers, the post's fields); login
-                headers are dropped first, and an archive's password goes to the vault, never
-                to `flnd.db`. None when it can't be retried from here.
+            cursor: the cursor of the page the post was listed on, where a retry starts
+                listing; None for the first page.
+
+        Raises:
+            DiskError: the database can't be written.
         """
         from flnd.errors import NotFound
 
-        kept = None
-        if request is not None:
-            password = request.get("password")
-            if password:
-                with secrets(self.home, item.partition(":")[0]) as vault:
-                    vault[PASSWORD + item] = password
-            kept = _request({**request, "password": bool(password)})
         at = now()
         with self._store.transaction() as sql:
-            sql.execute("INSERT INTO failures (run, key, target, post_id, file, url, class,"
-                        " message, hint, attempts, at, request)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (run, item, target, post, file, _text.redact(url) if url else "",
-                         type(error).__name__, str(error), getattr(error, "hint", "") or "",
-                         getattr(error, "attempts", 1) or 1, at, kept))
+            sql.execute(
+                "INSERT INTO failures (run, key, target, post_id, category, file, url, class,"
+                " message, hint, attempts, at, cursor)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+                " ON CONFLICT (key) DO UPDATE SET run = excluded.run, target = excluded.target,"
+                " post_id = excluded.post_id, category = excluded.category,"
+                " file = excluded.file, url = excluded.url, class = excluded.class,"
+                " message = excluded.message, hint = excluded.hint, at = excluded.at,"
+                " cursor = excluded.cursor, attempts = CASE WHEN EXISTS (SELECT 1 FROM files"
+                " WHERE files.key = excluded.key AND files.state = 'saved') THEN 1"
+                " ELSE failures.attempts + 1 END",
+                (run, item, target, post, category, file, _text.redact(url) if url else "",
+                 type(error).__name__, str(error), getattr(error, "hint", "") or "", at, cursor))
             if isinstance(error, NotFound) and file:
                 sql.execute(INSERT_FILE, _file_values(FileRow(
-                    item, target, file, post_id=post, state=GONE, at=at)))
+                    item, target, file, post_id=post, category=category, state=GONE, at=at)))
 
-    def pending(self, target: str) -> dict[str, dict[str, Any]]:
+    def clear(self, item: str) -> None:
+        """Drop a failure's row: a target that failed whole, and has now run to its end."""
+        self._store.write("DELETE FROM failures WHERE key = ?", (item,))
+
+    def pending(self, target: str, *, every: bool = False) -> list[FailureRow]:
         """The files of a target that failed and may be retried: not saved or gone since.
 
         Args:
             target: the target's key.
+            every: take every one, as `flnd retry` does; False takes only those failed on at
+                most `RETRIES` runs, as the automatic retry does. A `NotFound` is never taken.
 
         Returns:
-            Each file's latest retry request, by its key, with an archive's password read back
-            from the vault.
+            The rows, in the order they first failed.
         """
-        found = self._store.all("SELECT f.key, f.request FROM failures f WHERE f.target = ?"
-                          " AND f.request IS NOT NULL AND NOT EXISTS"
-                          " (SELECT 1 FROM files WHERE files.key = f.key) ORDER BY f.rowid",
-                          (target,))
-        pending = {item: json.loads(request) for item, request in found}
-        for item, request in pending.items():
-            if request.get("password") is True:
-                with secrets(self.home, item.partition(":")[0]) as vault:
-                    request["password"] = vault.get(PASSWORD + item)
-            else:
-                request["password"] = None
-        return pending
+        limit = "" if every else f" AND f.attempts <= {RETRIES}"
+        found = self._store.all(f"SELECT {FAILURE_SELECT} FROM failures f WHERE f.target = ?"
+                                " AND f.post_id != '' AND f.class != 'NotFound'" + limit +
+                                " AND NOT EXISTS (SELECT 1 FROM files WHERE files.key = f.key)"
+                                " ORDER BY f.rowid", (target,))
+        return [FailureRow(*row) for row in found]
+
+    def failed(self) -> dict[str, bool]:
+        """The targets `flnd retry` takes: those with a failure that isn't gone or saved since.
+
+        Returns:
+            Each target's key, with whether the whole target failed (its listing, not only
+            some files), in the order they first failed.
+        """
+        found = self._store.all("SELECT target, max(post_id = '') FROM failures f"
+                                " WHERE f.class != 'NotFound' AND NOT EXISTS"
+                                " (SELECT 1 FROM files WHERE files.key = f.key)"
+                                " GROUP BY target ORDER BY min(f.rowid)")
+        return {target: bool(whole) for target, whole in found}
+
+    def failures(self, run: int) -> list[FailureRow]:
+        """The failures a run left: what `flnd status` shows.
+
+        Args:
+            run: the run's id.
+
+        Returns:
+            Its rows that still stand (a file saved since is left out), in the order they
+            first failed.
+        """
+        found = self._store.all(f"SELECT {FAILURE_SELECT} FROM failures f WHERE f.run = ?"
+                                " AND NOT EXISTS (SELECT 1 FROM files WHERE files.key = f.key"
+                                " AND files.state = 'saved') ORDER BY f.rowid", (run,))
+        return [FailureRow(*row) for row in found]
+
+    def last_run(self) -> RunRow | None:
+        """The latest run that downloaded; None when the home has none."""
+        found = self._store.one("SELECT id, command, started, coalesce(ended, ''), saved, failed"
+                                " FROM runs ORDER BY id DESC LIMIT 1", ())
+        return RunRow(*found) if found else None
 
     # -- targets ----------------------------------------------------------------------------
 
@@ -812,7 +923,8 @@ class Home:
             self._put(row)
 
     def progress(self, target: Target, *, cursors: Mapping[str, str | None],
-                 complete: Sequence[str], heads: Mapping[str, str] | None = None) -> None:
+                 complete: Sequence[str], heads: Mapping[str, str] | None = None,
+                 gaps: Mapping[str, Sequence[str]] | None = None) -> None:
         """Keep where a target's listings stopped, after its run.
 
         Args:
@@ -821,8 +933,10 @@ class Home:
             complete: the categories listed to their end today.
             heads: each listing's newest post, for the listings this run read from the top;
                 None or empty keeps the heads the row has.
+            gaps: each listing's gaps after this run, newest first; an empty list drops them.
+                A listing left out keeps the gaps it has.
         """
-        if not cursors and not complete and not heads:
+        if not cursors and not complete and not heads and not gaps:
             return
         today = datetime.date.today().isoformat()
         with self._store.transaction():
@@ -834,6 +948,8 @@ class Home:
             row.cursors = {name: value for name, value in merged.items() if value}
             row.complete = {**row.complete, **dict.fromkeys(complete, today)}
             row.heads = {**row.heads, **(heads or {})}
+            kept = {**row.gaps, **{name: list(found) for name, found in (gaps or {}).items()}}
+            row.gaps = {name: found for name, found in kept.items() if found}
             self._put(row)
 
     def tally(self, target: Target) -> None:
@@ -862,7 +978,8 @@ class Home:
                     f" VALUES ({', '.join('?' * len(TARGET_COLUMNS))})",
                     (row.key, row.source, row.value, row.kind, int(row.follow), _json(options),
                      row.query, _json(row.complete), _json(row.cursors), _json(row.seen),
-                     row.last_sync, row.files, row.bytes, _json(row.heads)))
+                     row.last_sync, row.files, row.bytes, _json(row.heads),
+                     _json(row.gaps)))
 
     # -- runs, logins and sources' state ----------------------------------------------------
 
@@ -944,6 +1061,134 @@ class State(MutableMapping[str, Any]):
         return found[0] if found else 0
 
 
+def _upgrade(sql: sqlite3.Connection) -> None:
+    """Bring the tables of a `flnd.db` an earlier flnd made up to today's columns.
+
+    1. `targets` gains `heads` and `gaps`, empty, when it lacks them.
+    2. `failures` gains `category` and `cursor`. A table that still has `request` (each
+       failure's URL and headers, kept for a retry before retries listed the post again)
+       keeps only each key's latest row, and loses the column: an unredacted URL never stays
+       in the database.
+    3. `failures` is keyed by its file: one row per key, however often it fails.
+
+    Two runs may open an old database at once, so a column the other one added first is not an
+    error.
+
+    Args:
+        sql: the connection, its tables made, in `Home._setup`.
+    """
+    def add(table: str, column: str, kind: str) -> None:
+        try:
+            sql.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        except sqlite3.OperationalError as error:
+            if "duplicate column" not in str(error):
+                raise
+
+    targets = {row[1] for row in sql.execute("PRAGMA table_info(targets)")}
+    for column in ("heads", "gaps"):
+        if column not in targets:
+            add("targets", column, "TEXT NOT NULL DEFAULT '{}'")
+    failures = {row[1] for row in sql.execute("PRAGMA table_info(failures)")}
+    if "category" not in failures:
+        add("failures", "category", "TEXT NOT NULL DEFAULT ''")
+    if "cursor" not in failures:
+        add("failures", "cursor", "TEXT")
+    if "request" in failures:
+        sql.execute("DELETE FROM failures WHERE rowid NOT IN"
+                    " (SELECT max(rowid) FROM failures GROUP BY key)")
+        try:
+            sql.execute("ALTER TABLE failures DROP COLUMN request")
+        except sqlite3.OperationalError:
+            # Another run dropped it first, or an SQLite older than 3.35 can't: the values
+            # go either way.
+            if "request" in {row[1] for row in sql.execute("PRAGMA table_info(failures)")}:
+                sql.execute("UPDATE failures SET request = NULL")
+    sql.execute("CREATE UNIQUE INDEX IF NOT EXISTS failures_key ON failures (key)")
+
+
+# ---------------------------------------------------------------------------------------------
+# Logs and samples
+# ---------------------------------------------------------------------------------------------
+
+def sample(home: Path, run: int | None, error: BaseException) -> Path | None:
+    """Keep the answer a `Changed` error was raised on, scrubbed, in `logs/<run>/samples/`.
+
+    A parse failure is a site that changed or a source's bug, and the answer is what shows
+    which. It is kept only when it is safe to:
+    - values under keys that look like secrets (`token`, `csrf`, `session`, `cookie`, `auth`,
+      `password`, `key`, …) become "…" (`flnd._text.scrub`);
+    - a login's answer is never kept: one whose URL looks like a login (`LOGIN_URL`), or that
+      sets a cookie, may hold the session it made;
+    - the file is named by a count, never by anything the site sent.
+
+    Args:
+        home: the home folder.
+        run: the run's id; None (outside a recorded run) keeps nothing.
+        error: what failed; anything but a `Changed` with a response keeps nothing.
+
+    Returns:
+        The sample's path; None when nothing was kept.
+    """
+    from flnd.errors import Changed
+
+    response = getattr(error, "response", None)
+    if run is None or not isinstance(error, Changed) or response is None:
+        return None
+    url = str(getattr(response, "url", "") or "")
+    headers = getattr(response, "headers", None) or {}
+    if LOGIN_URL.search(_text.redact(url)) or "set-cookie" in {str(k).lower() for k in headers}:
+        return None
+    content = getattr(response, "content", b"")
+    body = content.decode("utf-8", "replace") if isinstance(content, bytes) else str(content)
+    folder = home / LOGS / str(run) / "samples"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{len(list(folder.iterdir())) + 1}.txt"
+        path.write_text(f"{_text.redact(url)}\n\n{_text.scrub(body)}", encoding="utf-8")
+    except OSError as failed:
+        # A sample is a help for a bug report, never worth failing the run over.
+        ui.debug("sample not kept: {error}", error=failed)
+        return None
+    return path
+
+
+def sweep(home: Path, *, days: int = LOG_DAYS) -> int:
+    """Remove the logs older than `days`: each run's folder (its samples) and crash files.
+
+    Called at the start of each run that downloads, so a home that runs every day keeps a
+    month of them. An entry that can't be removed is left for the next sweep.
+
+    Args:
+        home: the home folder.
+        days: how old, by its modified time, an entry may get.
+
+    Returns:
+        How many entries were removed.
+
+    Example:
+        >>> import tempfile
+        >>> sweep(Path(tempfile.mkdtemp()))
+        0
+    """
+    logs = home / LOGS
+    if not logs.is_dir():
+        return 0
+    oldest = time.time() - days * 86_400
+    removed = 0
+    for entry in logs.iterdir():
+        try:
+            if entry.lstat().st_mtime >= oldest:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed += 1
+        except OSError as error:
+            ui.debug("{name}: not swept: {error}", name=entry.name, error=error)
+    return removed
+
+
 def stamp(path: Path) -> tuple[int, int]:
     """A finished file's size and modified time in nanoseconds, as its row keeps them.
 
@@ -986,13 +1231,13 @@ def _target_row(found: tuple[Any, ...]) -> TargetRow:
         The row.
     """
     (item, source, value, kind, follow, options, query, complete, cursors, seen, last_sync,
-     files, size, heads) = found
+     files, size, heads, gaps) = found
     settings = json.loads(options)
     only = settings.get("only")
     return TargetRow(item, source, value, kind, bool(follow), tuple(only) if only else None,
                      query, json.loads(complete), json.loads(cursors), json.loads(seen),
                      last_sync, files, size, compress=settings.get("compress") is True,
-                     heads=json.loads(heads))
+                     heads=json.loads(heads), gaps=json.loads(gaps))
 
 
 def _file_row(found: tuple[Any, ...]) -> FileRow:
@@ -1008,24 +1253,6 @@ def _file_row(found: tuple[Any, ...]) -> FileRow:
      shrink, tools, before, unpacked, folder, digest, sidecar) = found
     return FileRow(item, target, path, size, mtime, post, category, date, bool(estimated), kind,
                    state, at, files, shrink, tools, before, unpacked, folder, digest, sidecar)
-
-
-def _request(request: Mapping[str, Any]) -> str:
-    """A failed file's retry request as JSON, without the headers that log a request in.
-
-    Args:
-        request: the URL, its headers and the post's fields, as the job keeps them.
-
-    Returns:
-        The JSON; `headers` is None when none is left.
-    """
-    if isinstance(request.get("password"), str):
-        # An archive's password lives in the vault (`Home.fail`); a plain one is dropped here.
-        request = {**request, "password": False}
-    headers = request.get("headers")
-    clean = {name: value for name, value in (headers.items() if isinstance(headers, dict) else ())
-             if str(name).lower() not in SECRET_HEADERS}
-    return _json({**request, "headers": clean or None})
 
 
 def _json(value: Any) -> str:
@@ -1540,16 +1767,18 @@ def _copy(sql: sqlite3.Connection, home: Path, vault: bool) -> None:
                     (item, code, value, str(row.get("kind") or ""),
                      int(row.get("sync", True) is True), _json({"only": only} if only else {}),
                      query, _json(complete), _json(cursors), _json(seen),
-                     str(row.get("at") or ""), 0, 0, "{}"))
+                     str(row.get("at") or ""), 0, 0, "{}", "{}"))
         failed = row.get("failed")
         for file_key, entry in (failed.items() if isinstance(failed, dict) else ()):
             if isinstance(entry, dict):
-                sql.execute("INSERT INTO failures (key, target, post_id, file, url, class,"
-                            " message, at, request) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                # Only what a retry lists the post again by: the old request (its URL and
+                # headers) is left behind, since a retry never reuses it.
+                sql.execute("INSERT OR REPLACE INTO failures (key, target, post_id, category,"
+                            " file, url, class, message, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             (file_key, item, str(entry.get("id") or ""),
-                             str(entry.get("dest") or ""),
+                             str(entry.get("category") or ""), str(entry.get("dest") or ""),
                              _text.redact(str(entry.get("url") or "")), "Error",
-                             "failed before flnd.db", str(row.get("at") or ""), _request(entry)))
+                             "failed before flnd.db", str(row.get("at") or "")))
     for item, row in _read_old(home / OLD_HISTORY, "downloads").items():
         if not isinstance(row, dict) or not isinstance(row.get("path"), str):
             continue

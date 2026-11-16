@@ -6,19 +6,25 @@ What it calls: the source's route and categories through a `TargetSite`, the dow
 
 How one target goes (`download`):
 1. Sweep stale parts from the target's folder, and read the target's row: which categories
-   were listed to their end, the cursors of cut-short listings, and each listing's head (the
-   newest post an earlier run saw).
-2. Retry the files earlier runs failed on (`_retry_failed`).
+   were listed to their end, the cursors of cut-short listings, each listing's head (the
+   newest post an earlier run saw) and its gaps (where syncs cut short stopped).
+2. Call the route, then retry the files earlier runs failed on (`_retry_failed`): each failed
+   post is listed again, from the cursor of the page it was on, for fresh URLs, and its failed
+   files are queued. A file is retried this way on at most `_home.RETRIES` runs; `flnd retry`
+   (`Retry.ONLY`) takes every one and lists nothing else. A gone file (`NotFound`) never is.
 3. List the route, or each wanted category (`_list_one`), queueing each post's files that
    aren't saved. The engine owns the early stops, never the source (`_Stops`):
    - a sync of a `newest_first` listing stops after `stop_after` saved posts in a row (5, or
      `[sources.<code>] stop_after` in the home's config.toml), and sooner, after the head and
-     one more saved post, once it meets the head an earlier run saw;
+     one more saved post, once it meets the head an earlier run saw. With nothing new, that
+     is one page: one request (a `Skipped` event with the reason "nothing new");
+   - a sync whose listing has gaps, once it meets saved posts at the top, jumps to each gap's
+     cursor and goes on there, so a sync cut short never leaves posts behind (`_sync_one`);
    - a `newest_first` listing stops after 5 posts in a row older than `--when`;
    - `--limit` cuts it.
-4. Wait for the downloads, then keep where each listing stopped: its cursor when it was cut
-   short, `complete` when it ran out or caught up, and its new head when it was read from the
-   top (`Home.progress`).
+4. Wait for the downloads, then keep where each listing stopped: its cursor when a full
+   download was cut short, its gaps when a sync was, `complete` when it ran out or caught up,
+   and its new head when it was read from the top and left no gap (`Home.progress`).
 
 Targets a listing yields (a post linking to another site) are handed back in the report's
 `found`, and the engine downloads them after the run's own targets.
@@ -26,8 +32,12 @@ Targets a listing yields (a post linking to another site) are handed back in the
 Rules a change must keep:
 - A source never decides when a listing stops: it yields, and the job closes its generator.
 - A cursor is kept only for a listing cut short; a listing that ran out drops it.
-- A head is kept only for a listing read from its newest post: a run that resumed from a cursor
-  read the middle of the listing, not its top.
+- A head is kept only for a listing read from its newest post, with no gap left: a run that
+  resumed from a cursor read the middle of the listing, not its top, and a gap lies above the
+  old head, which a later sync with no cursor to jump to reads down to.
+- A retry never uses a stored URL: `flnd.db` keeps only a redacted one, and a CDN's signed URL
+  expires within hours. It lists the post again, through the source, from `(target, post,
+  file)` and the cursor of the post's page.
 """
 
 from __future__ import annotations
@@ -35,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import filecmp
+import functools
 import inspect
 import os
 import re
@@ -56,12 +67,12 @@ from flnd._time import day
 from flnd.errors import (
     Blocked, Error, LoginError, NetworkError, SiteError, SourceError, Stopped, classify,
 )
-from flnd.options import Options, selected, stop_after
+from flnd.options import Options, Retry, stop_after
 from flnd.site import Listing, SourceRun, TargetSite
-from flnd.source import Category, File, Post, Range, Route, Site, Source, Target
+from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
 from flnd import _events, _stats
-from flnd._events import Failed, Progress, Saved, Skipped
+from flnd._events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._ui import ui
 
@@ -100,6 +111,10 @@ QUEUE = 4
 ASKED_TTL = 30 * 24 * 3600
 ASKED_KEY = "redate.asked"
 ALL = "all"
+# Posts a retry reads past the cursor of a failed post's page before it gives the post up for
+# this run: the post was on that page, and a page holds at most a few dozen, so a hundred
+# allows for posts the site inserted since.
+RETRY_WINDOW = 100
 _FORMATTER = string.Formatter()
 
 RunAsync = Callable[[Coroutine[Any, Any, Any]], Any]
@@ -353,6 +368,23 @@ class Board:
             line.how = how
             event = self._progress(target, category, line)
         self._show(line)
+        self.emit(event)
+
+    def say(self, target: Target, category: str, note: str) -> None:
+        """Send a `Progress` event with a note about how a listing goes ("resuming …").
+
+        Args:
+            target: the target.
+            category: the listing's category; "" for a route's own posts.
+            note: what the event's `note` says.
+        """
+        owner = self.parent or target
+        with self._lock:
+            line = self._lines.get((owner, category)) or self._open(owner, category)
+            c = line.counts
+            event = Progress(owner, category, found=c.found, saved=c.saved + c.linked,
+                             skipped=c.skipped, failed=c.failed, bytes=c.bytes,
+                             listed=line.listed, note=note)
         self.emit(event)
 
     def note(self, target: Target, note_text: str) -> None:
@@ -650,6 +682,9 @@ class Ledger:
         self._link_warned = False
         self._later: list[tuple[Path, str, str]] = []
         self._asked: dict[str, float] = self._load_asked()
+        # Whether the files queued now are a retry's (`_retry_failed`), which their `Saved`
+        # events say.
+        self.retrying = False
 
     def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
         """Queue unsaved files of `post`, skipping already-saved or held posts."""
@@ -698,7 +733,11 @@ class Ledger:
                 continue
             self.board.count(self.target, post.category, found=1)
             self._queued.update(dict.fromkeys((dest, item_key), placed.path))
-            todo.append(_Queued(placed, dest, item_key, estimated=first in self._estimated))
+            # The cursor of the page the post is on, which a failure keeps for its retry.
+            listing = self.site.listing
+            todo.append(_Queued(placed, dest, item_key, estimated=first in self._estimated,
+                                cursor=listing.cursor if listing is not None else None,
+                                retried=self.retrying))
         if todo:
             todo.sort(key=lambda queued: queued.placed.kind != _files.VIDEO)
             return Outcome.QUEUED, todo
@@ -1242,7 +1281,7 @@ class Downloads:
             self._count(item.queued, downloading=-1, saved=1, bytes=item.row.size)
             placed = item.queued.placed
             event = Saved(self.target, placed.post.category, placed.post.id, item.path,
-                          item.day, item.row.size)
+                          item.day, item.row.size, retried=item.queued.retried)
             # The steps after the row: unpack and compress on the chain's own threads, then
             # the sidecar, then `Saved` with the file's final path (`flnd._steps`).
             landed(self.settings, Landed(
@@ -1419,11 +1458,27 @@ class Downloads:
         db = self.settings.db
         if db is None:
             return
+        sampled(self.settings, error)
         placed = queued.placed
         url = placed.file.url if isinstance(placed.file.url, str) else ""
         db.fail(run=self.settings.run, item=queued.key, target=_home.key(self.target),
-                error=error, post=placed.post.id, file=str(queued.dest), url=url,
-                request=_serialize_failed(queued))
+                error=error, post=placed.post.id, category=placed.post.category,
+                file=str(queued.dest), url=url, cursor=queued.cursor)
+
+
+def sampled(settings: Any, error: BaseException) -> None:
+    """Keep a `Changed` error's answer as a scrubbed sample, and point its hint at it.
+
+    Called before the failure is written and its `Failed` event sent, so both name the sample.
+
+    Args:
+        settings: the run's `RunShared`: its home and run id.
+        error: what failed; anything but a `Changed` with a response is left as it is.
+    """
+    path = _home.sample(settings.home, settings.run, error)
+    if path is not None and isinstance(error, Error):
+        saved = f"the answer is saved, scrubbed, in {path}"
+        error.hint = f"{error.hint}; {saved}" if error.hint else saved
 
 
 def download(run: SourceRun, target: Target, board: Board, options: Options) -> TargetReport:
@@ -1448,14 +1503,16 @@ def _run_download(
     db = run.settings.db
     row = db.target(target) if db is not None else None
     progress = _Progress(row, again=options.again)
-    _retry_failed(work, run, target, options)
     error = _execute_listing(work, run, site, target, options, progress)
     written = downloads.finish(error)
     ledger.link_queued(downloads.written)
     # A target a search found has no row of its own: the search's row keeps what it found.
     if db is not None and not options.query:
         db.progress(target, cursors=progress.cursors(), complete=progress.complete,
-                    heads=progress.heads)
+                    heads=progress.heads, gaps=progress.gaps)
+    if db is not None and error is None and not run.settings.stop.soon.is_set():
+        # A failure of the whole target is over once it ran to its end.
+        db.clear(_home.key(target))
         # Counting reads every row of the target (35 ms for 100,000), so a run that saved
         # nothing keeps the count it has, unless it has none yet.
         if written or row is None or not row.files:
@@ -1485,83 +1542,45 @@ class _Progress:
         self.started: Mapping[str, str] = earlier.cursors if earlier is not None else {}
         # The newest post each listing had when an earlier run read it from the top.
         self.seen_heads: Mapping[str, str] = earlier.heads if earlier is not None else {}
+        # Where earlier syncs of each listing were cut short, newest first.
+        self._gaps: Mapping[str, list[str]] = earlier.gaps if earlier is not None else {}
         # This run's listings, by name ("" for a route's own), the ones it read to their end,
-        # and their heads.
+        # their heads, and the gaps the syncs leave.
         self.listings: dict[str, Listing] = {}
         self.complete: list[str] = []
         self.heads: dict[str, str] = {}
+        self.gaps: dict[str, list[str]] = {}
+
+    def gaps_of(self, name: str) -> list[str]:
+        """A listing's gaps from earlier syncs, newest first.
+
+        A cursor kept for a listing already read to its end is a gap too: a sync cut short,
+        from a flnd that kept it as the listing's cursor.
+
+        Args:
+            name: the listing's name; "" for a route's own posts.
+
+        Returns:
+            The gaps' cursors; "" for a gap with no cursor.
+        """
+        found = list(self._gaps.get(name, ()))
+        old = self.started.get(name)
+        if old and name in self.listed and old not in found:
+            found.append(old)
+        return found
 
     def cursors(self) -> dict[str, str | None]:
-        """Each listing's cursor to keep: the page it was reading, or None when it ran out."""
+        """Each listing's cursor to keep: the page it was reading, or None when it ran out.
+
+        A sync keeps gaps instead (`gaps`), so its listing's cursor is dropped.
+
+        Returns:
+            Each listing's cursor by name, as `Home.progress` takes them.
+        """
         return {
-            name: None if name in self.complete else listing.cursor
+            name: None if name in self.complete or name in self.gaps else listing.cursor
             for name, listing in self.listings.items()
         }
-
-
-def _serialize_failed(queued: _Queued) -> dict[str, Any] | None:
-    """What the next run needs to retry a failed file from its URL; None without one."""
-    placed = queued.placed
-    if not isinstance(placed.file.url, str):
-        return None
-    posted = day(placed.post.date)
-    return {
-        "url": placed.file.url,
-        "audio": placed.file.audio,
-        "name": placed.file.name,
-        "size": placed.file.size,
-        "password": placed.file.password,
-        "dest": str(queued.dest),
-        "path": placed.path,
-        "kind": placed.kind,
-        "id": placed.post.id,
-        "category": placed.post.category,
-        "date": posted.isoformat() if posted is not None else None,
-        "headers": dict(placed.post.headers) if placed.post.headers else None,
-        "estimated": queued.estimated,
-        "num": placed.num,
-        "count": placed.values.get("count", 1),
-    }
-
-
-def _retry_failed(work: _Work, run: SourceRun, target: Target, options: Options) -> None:
-    """Enqueue previously failed downloads for `target` before listing."""
-    if run.settings.dry or options.again or run.settings.db is None:
-        return
-    pending = run.settings.db.pending(_home.key(target))
-    if not pending:
-        return
-    allowed = set(selected(options, type(run.source))) if options.categories else None
-    for item_key, entry in pending.items():
-        category = str(entry.get("category") or "")
-        if allowed is not None and category and category not in allowed:
-            continue
-        url = entry.get("url")
-        dest_raw = entry.get("dest")
-        if not isinstance(url, str) or not isinstance(dest_raw, str):
-            continue
-        dest = Path(dest_raw)
-        if work.ledger._held(dest, item_key) is not None:
-            continue
-        post = Post(
-            str(entry.get("id") or ""), (),
-            date=entry.get("date"), headers=entry.get("headers") or {},
-        ).filed(category)
-        file = File(
-            url, audio=entry.get("audio"), name=entry.get("name"), size=entry.get("size"),
-            password=entry.get("password"),
-        )
-        path = str(entry.get("path") or dest.name)
-        placed = Placed(
-            post=post, file=file, num=int(entry.get("num") or 0),
-            path=path, key=item_key, kind=entry.get("kind"),
-            values={"count": entry.get("count", 1)},
-        )
-        work.ledger._queued[dest] = path
-        work.ledger._queued[item_key] = path
-        work.downloads.submit(
-            _Queued(placed, dest, key=item_key, estimated=bool(entry.get("estimated"))),
-        )
 
 
 def _execute_listing(
@@ -1608,10 +1627,11 @@ def _ended(
         if not isinstance(error, Exception):
             raise error
         failed = failure(error, target, run.source)
-        tell(target, failed, run.settings.emit)
         if run.settings.db is not None:
+            sampled(run.settings, failed)
             run.settings.db.fail(run=run.settings.run, item=_home.key(target),
                                  target=_home.key(target), error=failed)
+        tell(target, failed, run.settings.emit)
         board.end(target, failed=True)
         return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
@@ -1641,7 +1661,7 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
     if totals.skipped:
         parts.append(f"{totals.skipped} skipped")
     if totals.failed:
-        parts.append(f"{totals.failed} failed (retried next run)")
+        parts.append(f"{totals.failed} failed (retried on the next runs)")
     body = ", ".join(parts) or "nothing new"
     line = f"{body} in {_text.duration(seconds)}"
     ui.debug("{target}: {line}", target=str(target), line=line)
@@ -1748,6 +1768,10 @@ class _Queued:
     key: str
     estimated: bool = False
     refreshed: SiteError | None = None
+    # The cursor of the page its post was listed on; None for the first page.
+    cursor: str | None = None
+    # Whether a retry queued it (`_retry_failed`).
+    retried: bool = False
 
     def __str__(self) -> str:
         return self.placed.path
@@ -1805,6 +1829,8 @@ class _Kept:
         # later sync stops at.
         self.newest: str | None = None
         self._newest_day: datetime.date | None = None
+        # Posts it queued files of, counted by `_queue_listed`: none means nothing new.
+        self.queued = 0
         self._steps = _steps(yielded, run_async)
 
     def __iter__(self) -> Iterator[Post]:
@@ -1943,12 +1969,13 @@ class _Stops:
     Args:
         sync: whether the listing stops at saved posts at all: any run (but `--again`) of a
             `newest_first` listing an earlier run read to its end, not resumed from a cursor.
-        streak: saved posts in a row that end it (`stop_after`).
+        streak: saved posts in a row that end it (`stop_after`); None for no such stop, only
+            the head's: a sync with a gap it has no cursor for reads down to the head.
         head: the newest post an earlier run saw in this listing; None when none did.
     """
 
     sync: bool = False
-    streak: int = 5
+    streak: int | None = 5
     head: str | None = None
 
 
@@ -1999,7 +2026,7 @@ def _queue_listed(
         How the listing ended, and how many posts it took (queued or saved).
     """
     saved_in_a_row = 0
-    taken = queued = 0
+    taken = 0
     met_head = False
     # Consecutive parts of one post (the same id, as `_Kept` says) count once, for `--limit` too.
     last: str | None = None
@@ -2017,10 +2044,10 @@ def _queue_listed(
                 if part:
                     # A part saved like the rest leaves the streak as it was; a new part breaks it.
                     if outcome is Outcome.QUEUED:
-                        queued, saved_in_a_row = queued + 1, 0
+                        kept.queued, saved_in_a_row = kept.queued + 1, 0
                     continue
                 taken += 1
-                queued += outcome is Outcome.QUEUED
+                kept.queued += outcome is Outcome.QUEUED
                 saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
             work.downloads.board.seen(work.downloads.target, kept.category,
                                       streak=saved_in_a_row)
@@ -2030,11 +2057,9 @@ def _queue_listed(
             if not stops.sync:
                 continue
             if met_head and saved_in_a_row >= HEAD_IN_A_ROW:
-                # Row 15.16's smart sync adds its "nothing new" event and the gap fill here.
-                if not queued:
-                    ui.info("{category}: nothing new", category=kept.category or "posts")
+                # The caller says "nothing new", or jumps into the listing's gaps.
                 return Ended.CAUGHT_UP, taken
-            if saved_in_a_row >= stops.streak:
+            if stops.streak is not None and saved_in_a_row >= stops.streak:
                 ui.info("{category}: {count} saved posts in a row, caught up",
                         category=kept.category or "posts", count=saved_in_a_row)
                 return Ended.CAUGHT_UP, taken
@@ -2051,14 +2076,16 @@ def _read(
 
     A discovering route downloads each target it yields; a route without categories is one
     listing (named ""); otherwise the route is called once, and each wanted category listed
-    with what it returned, sharing `--limit`.
+    with what it returned, sharing `--limit`. The files earlier runs failed on go first
+    (`_retry_failed`), once the route has run, since a category needs what it returned.
 
     Args:
         work: the target's ledger and downloads, which queue each post's files.
         run: the source's resources for the run.
         site: the target's site; its `listing` is set while a listing runs.
         target: the target.
-        options: the target's options: `--when`, `--only`, `--limit`, `--again`.
+        options: the target's options: `--when`, `--only`, `--limit`, `--again`, and what to do
+            with earlier failures (`retry`).
         progress: where the earlier runs left the target's listings, and this run's.
     """
     route = next(r for r in run.source.routes if r.kind == target.kind)
@@ -2067,30 +2094,44 @@ def _read(
                         _steps(_context(run.source, route, site, target, run.run_async),
                                run.run_async))
         return
+    listings: list[_Listed]
     if not route.categories:
-        _list_one(work, run, site, target, options, progress, name="",
-                  newest_first=route.newest_first,
-                  items=lambda: getattr(run.source, route.kind)(site, target.value),
-                  remaining=options.limit)
+        listings = [_Listed("", route.newest_first,
+                            lambda: getattr(run.source, route.kind)(site, target.value))]
+    else:
+        categories = wanted(type(run.source), route, options)
+        if not categories:
+            return
+        context = _context(run.source, route, site, target, run.run_async)
+        listings = [_Listed(category.name, category.newest_first,
+                            functools.partial(getattr(run.source, category.name), site, context))
+                    for category in categories]
+    _retry_failed(work, run, site, target, options, listings)
+    if options.retry is Retry.ONLY:
         return
-    categories = wanted(type(run.source), route, options)
-    if not categories:
-        return
-    context = _context(run.source, route, site, target, run.run_async)
     remaining = options.limit
-    for category in categories:
+    for listed in listings:
         if remaining is not None and remaining <= 0:
             return
-        method = getattr(run.source, category.name)
         ended, taken = _list_one(
-            work, run, site, target, options, progress, name=category.name,
-            newest_first=category.newest_first,
-            items=lambda method=method: method(site, context), remaining=remaining,
+            work, run, site, target, options, progress, name=listed.name,
+            newest_first=listed.newest_first, items=listed.items, remaining=remaining,
         )
         if remaining is not None:
             remaining -= taken
         if ended is Ended.STOPPED:
             return
+
+
+@dataclass(frozen=True)
+class _Listed:
+    """One listing of a target: a category, or a route's own posts."""
+
+    # The category's name; "" for a route's own posts.
+    name: str
+    newest_first: bool
+    # Calls the category (or route) method, returning what it yields.
+    items: Callable[[], Any]
 
 
 def _list_one(
@@ -2101,11 +2142,12 @@ def _list_one(
     """List one category (or a route's own posts) into `work`, and note where it ended.
 
     How it goes:
-    1. A `newest_first` listing an earlier run cut short resumes from its saved cursor: the
-       site's `Listing` hands it to the first `pages` call.
-    2. A sync of a `newest_first` listing an earlier run read to its end stops at saved posts
-       (`_Stops`); any other listing reads to its end, `--limit` or `--when`.
-    3. A listing that ran out or caught up is complete; one read from the top keeps its head.
+    1. A `newest_first` listing an earlier run read to its end is synced (`_sync_one`): from
+       the newest, stopping at saved posts, then into its gaps.
+    2. Any other `newest_first` listing an earlier run cut short resumes from its saved
+       cursor: the site's `Listing` hands it to the first `pages` call. Any other listing reads
+       to its end, `--limit` or `--when`.
+    3. A listing that ran out is complete; one read from the top keeps its head.
     4. A resumed listing that ran out lists again from the newest, down to the posts it saved
        before, since new posts may have come while it was interrupted.
 
@@ -2125,18 +2167,25 @@ def _list_one(
         How the listing ended, and how many posts it took.
     """
     ui.debug("{target}: list {name}", target=str(target), name=name or target.kind)
-    start = progress.started.get(name) if newest_first else None
     stops = _Stops(
-        sync=newest_first and name in progress.listed and not start,
+        sync=newest_first and name in progress.listed,
         streak=stop_after(run.settings.home, run.source.code),
         head=progress.seen_heads.get(name),
     )
+    if stops.sync:
+        ended, taken = _sync_one(work, run, site, target, options, progress, name=name,
+                                 items=items, stops=stops, remaining=remaining)
+        if ended is not Ended.STOPPED:
+            work.ledger.board.listed(target, name, how=_early(ended))
+        return ended, taken
+    start = progress.started.get(name) if newest_first else None
     listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
     # The board's line shows the pages this listing reads, in the live stats.
     work.ledger.board.start(target, name, slots=run.jobs, listing=listing)
     if start:
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
+        work.ledger.board.say(target, name, RESUMING)
     ended, taken, kept = _listed(work, run, site, name, newest_first, items, listing, stops,
                                  options, remaining)
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
@@ -2163,6 +2212,245 @@ def _list_one(
 def _early(ended: Ended) -> str:
     """How a listing stopped early, as the live stats show it; "" for one that ran out."""
     return "" if ended is Ended.RAN_OUT else ended.value
+
+
+def _sync_one(
+    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    progress: _Progress, *, name: str, items: Callable[[], Any], stops: _Stops,
+    remaining: int | None,
+) -> tuple[Ended, int]:
+    """Sync a `newest_first` listing an earlier run read to its end: the newest, then its gaps.
+
+    A gap is where an earlier sync was cut short (Ctrl-C, an error, `--limit`) before it met
+    the posts saved before it: the posts between are unsaved, and a sync that stopped at the
+    saved posts on top would never reach them. Every gap lies above the listing's head, since a
+    head is kept only by a run that leaves no gap.
+
+    How it goes:
+    1. List from the newest, stopping at saved posts (`_Stops`). A gap with no cursor (a feed
+       that isn't paged by cursor, or one cut on its first page) turns the stop at 5 saved posts
+       off, so the listing reads down to the head, past every gap; with no head, to its end.
+    2. Once it met saved posts on top, jump to each gap's cursor, newest first, and list from
+       there until it meets saved posts again ("resuming from the last run").
+    3. Keep what is left: a listing cut short at the top leaves a new gap above the old ones,
+       and one cut inside a gap leaves that gap from where it was cut.
+    4. A listing that met saved posts with nothing queued and no gap had nothing new: one page,
+       on a site that pages, so one request. It says so with a `Skipped` event.
+
+    Args:
+        work: the target's ledger and downloads.
+        run: the source's resources for the run.
+        site: the target's site.
+        target: the target.
+        options: the target's options.
+        progress: where the earlier runs left the target's listings; this run's gaps, heads and
+            completeness are written to it.
+        name: the category's name; "" for a route's own posts.
+        items: calls the category (or route) method, returning what it yields.
+        stops: the sync's stops, with the head an earlier run saw.
+        remaining: posts the target may still take under `--limit`; None for no limit.
+
+    Returns:
+        How the listing ended, and how many posts it took.
+    """
+    gaps = progress.gaps_of(name)
+    label = f"{target}: {name or target.kind}"
+    cursorless = "" in gaps
+    if cursorless:
+        stops = replace(stops, streak=None) if stops.head is not None else replace(stops,
+                                                                                    sync=False)
+    listing = progress.listings[name] = Listing(None, label=label)
+    # The board's line shows the pages this listing reads, in the live stats.
+    work.ledger.board.start(target, name, slots=run.jobs, listing=listing)
+    # 1. The newest posts. A listing that raises (the site failed it) is cut short like any:
+    # where it was is kept as a gap before the error goes on to fail the target.
+    try:
+        ended, taken, kept = _listed(work, run, site, name, True, items, listing, stops,
+                                     options, remaining)
+    except BaseException:
+        progress.gaps[name] = list(dict.fromkeys([listing.cursor or "", *gaps]))
+        raise
+    queued = kept.queued
+    left: list[str]
+    if ended is Ended.RAN_OUT or (ended is Ended.CAUGHT_UP and cursorless):
+        left = []
+    elif ended is Ended.CAUGHT_UP:
+        # 2. Into each gap, newest first.
+        left = list(gaps)
+        while left:
+            rest = None if remaining is None else remaining - taken
+            if rest is not None and rest <= 0:
+                ended = Ended.CUT
+                break
+            ui.info("{target}: resuming from the last run", target=label)
+            work.ledger.board.say(target, name, RESUMING)
+            jump = progress.listings[name] = Listing(left[0], label=label)
+            work.ledger.board.start(target, name, slots=run.jobs, listing=jump)
+            try:
+                ended, extra, filled = _listed(work, run, site, name, True, items, jump, stops,
+                                               options, rest)
+            except BaseException:
+                progress.gaps[name] = [jump.cursor or left[0], *left[1:]]
+                raise
+            taken, queued = taken + extra, queued + filled.queued
+            if jump.refused:
+                # The site no longer pages from the gap's cursor, and listed from the newest
+                # instead: the next sync reads down to the head, past the gap.
+                left = list(dict.fromkeys(["", *left[1:]]))
+                break
+            if ended is Ended.RAN_OUT:
+                # The listing's end is below every gap.
+                left = []
+            elif ended is Ended.CAUGHT_UP:
+                left = left[1:]
+            else:
+                left = [jump.cursor or left[0], *left[1:]]
+                break
+    else:
+        # 3. Cut short at the top: a new gap above the old ones.
+        left = list(dict.fromkeys([listing.cursor or "", *gaps]))
+    progress.gaps[name] = left
+    if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
+        progress.complete.append(name)
+        if not left and kept.newest is not None:
+            progress.heads[name] = kept.newest
+    if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and not queued and not gaps:
+        # 4. Nothing new.
+        ui.info("{category}: nothing new", category=name or "posts")
+        run.settings.emit(Skipped(target, name, "", None, reason=NOTHING_NEW))
+    return ended, taken
+
+
+def _retry_failed(
+    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    listings: Sequence[_Listed],
+) -> None:
+    """List again each post earlier runs failed on, and queue its failed files, before new posts.
+
+    A retry works from `(target, post, file)` and never from a stored URL: `flnd.db` keeps only
+    a redacted one, and a CDN's signed URL expires within hours. So each failed post is listed
+    again through its source, for fresh URLs.
+
+    How it goes:
+    1. Read the target's failures (`Home.pending`): those failed on at most `_home.RETRIES`
+       runs, or every one for `flnd retry`. A gone file (`NotFound`) is never among them.
+    2. Group them by listing, and by the cursor of the page their post was on.
+    3. For each group, list from that cursor (`_relist`): each failed post met is queued like
+       any post, which downloads only its files that aren't saved: the ones that failed.
+    4. A post the listing no longer has is a failure of its own: gone when the listing ran out
+       without it, else one more run tried, so the post is given up after its last.
+
+    Args:
+        work: the target's ledger and downloads.
+        run: the source's resources for the run.
+        site: the target's site; its `listing` is set while a retry lists.
+        target: the target.
+        options: the target's options: `retry` says which failures; `--only` which listings.
+        listings: the listings this run reads; a failure of another one waits.
+    """
+    db = run.settings.db
+    if run.settings.dry or options.again or db is None:
+        return
+    failed = db.pending(_home.key(target), every=options.retry is Retry.ONLY)
+    by_name = {listed.name: listed for listed in listings}
+    groups: dict[tuple[str, str | None], dict[str, list[_home.FailureRow]]] = {}
+    for row in failed:
+        if row.category in by_name:
+            groups.setdefault((row.category, row.cursor), {}).setdefault(row.post, []).append(row)
+    if not groups:
+        return
+    files = sum(len(rows) for posts in groups.values() for rows in posts.values())
+    ui.info("{target}: retrying {files} earlier runs failed on", target=str(target),
+            files=_text.count(files, "file"))
+    work.ledger.retrying = True
+    try:
+        for (name, cursor), posts in groups.items():
+            if run.settings.stop.soon.is_set():
+                return
+            listed = by_name[name]
+            missing, ran_out = _relist(work, run, site, listed, cursor, set(posts))
+            for post in missing:
+                _lost(work, run, target, posts[post], ran_out=ran_out)
+    finally:
+        work.ledger.retrying = False
+
+
+def _relist(
+    work: _Work, run: SourceRun, site: TargetSite, listed: _Listed, cursor: str | None,
+    posts: set[str],
+) -> tuple[set[str], bool]:
+    """List one listing from `cursor` until it has met every post of `posts`, queueing each.
+
+    From a cursor, it gives up `RETRY_WINDOW` posts past the last one it met: the posts were on
+    that cursor's page. From the newest (no cursor), it reads until it met them all or the
+    listing ran out. `--when` doesn't apply: the posts were within it when they failed.
+
+    Args:
+        work: the target's ledger and downloads.
+        run: the source's resources for the run.
+        site: the target's site, whose `listing` is set for the listing, then cleared.
+        listed: the listing.
+        cursor: where to start; None for the newest.
+        posts: the ids of the posts to meet.
+
+    Returns:
+        The posts it didn't meet, and whether the listing ran out (rather than being given
+        up or stopped). A run told to stop returns none missing.
+    """
+    left, past, last = set(posts), 0, None
+    site.listing = Listing(cursor, label=f"{site.target}: {listed.name or site.target.kind}")
+    kept = _Kept(listed.items(), listed.name, newest_first=listed.newest_first, span=Range(),
+                 run_async=run.run_async)
+    try:
+        for post in kept:
+            if run.settings.stop.soon.is_set():
+                return set(), False
+            # A post the source yields in parts (one id) is queued part by part.
+            if post.id in left or post.id == last:
+                # Not held for a day from the posts around it: a retry reads too few of them.
+                if work.queue(post, hold=False) is Outcome.STOPPED:
+                    return set(), False
+                left.discard(post.id)
+                last, past = post.id, 0
+                continue
+            if not left:
+                return left, False
+            last, past = None, past + 1
+            if cursor is not None and past > RETRY_WINDOW:
+                return left, False
+    finally:
+        kept.close()
+        site.listing = None
+    return left, kept.ran_out
+
+
+def _lost(
+    work: _Work, run: SourceRun, target: Target, rows: Sequence[_home.FailureRow], *,
+    ran_out: bool,
+) -> None:
+    """Record that a retry didn't meet a failed post: a failure of each of its files.
+
+    Args:
+        work: the target's ledger and downloads, whose board counts each file failed.
+        run: the source's resources for the run, with its database and event sink.
+        target: the target.
+        rows: the post's failures, one per file.
+        ran_out: whether its listing ran out without it: it is gone (`NotFound`), never asked
+            for again unless told to. Otherwise this run counts as one more that tried it.
+    """
+    db = run.settings.db
+    for row in rows:
+        error: SiteError
+        if ran_out:
+            error = NotFound(f"post {row.post} is no longer in its listing")
+        else:
+            error = SiteError(f"post {row.post} wasn't found near where it was listed",
+                              hint="flnd retry tries again", retryable=True)
+        if db is not None:
+            db.fail(run=run.settings.run, item=row.key, target=row.target, error=error,
+                    post=row.post, category=row.category, file=row.file, cursor=row.cursor)
+        work.ledger.board.count(target, row.category, found=1, failed=1)
+        run.settings.emit(Failed(target, error, post=row.post, path=Path(row.file)))
 
 
 def _listed(

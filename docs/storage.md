@@ -226,7 +226,9 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 | `options` | JSON: `only`, the categories a followed target syncs, and `compress`, whether `sync` compresses its new files (`flnd follow --compress`) |
 | `query` | for a target a search found: the search's words |
 | `complete` | JSON: each category listed to its end, with the day it was |
-| `cursors` | JSON: each category's cursor, saved when a listing was cut short, so the next run resumes |
+| `cursors` | JSON: each category's cursor, saved when a full download of it was cut short, so the next run resumes |
+| `heads` | JSON: each `newest_first` category's head: the newest post the last run that read it from the top saw, and left no gap; a sync stops after it and the post after it |
+| `gaps` | JSON: each category's gaps, newest first: the cursor where a sync of it was cut short, which the next sync jumps to once it meets saved posts on top; `""` is a gap without a cursor (a feed that isn't paged by cursor), which makes the next sync read down to the head |
 | `seen` | JSON: for a search, the targets it found, so a sync downloads only new ones |
 | `last_sync` | when it was last downloaded or synced, in UTC |
 | `files`, `bytes` | its saved files and their bytes, counted at the end of each of its runs; `flnd ls` shows them |
@@ -236,14 +238,18 @@ One row per target the home knows, keyed `<code>:<value>` (`ins:example_user`).
 `runs` has one row per command that downloads: `id`, `command`, `started`, `ended`, the files
 it `saved`, and how many `failed`.
 
-`failures` has one row per failure: the `run`, the file's `key`, its `target`, `post_id` and
-`file` (where it would have gone), the `url` with its query and user info removed, the error's
-`class`, `message` and `hint`, `attempts`, and `at`. A failure of a whole target has the target's
-key and no post. `request` keeps what the next run needs to try the file again from its URL,
-with the headers that log a request in (`Cookie`, `Authorization`) removed. An archive's
-password is never in `flnd.db`: it is sealed in the vault, as the source's
-`password:<key>` secret, and `request` only says that there is one. The next download or sync
-of the target tries again every failed file that has no row in `files` since.
+`failures` has one row per failed file, keyed by its `key` however often it fails: the `run`
+it last failed in, its `target`, `post_id`, `category` and `file` (where it would have gone),
+the `cursor` of the page its post was listed on, the `url` with its query and user info
+removed, the error's `class`, `message` and `hint`, `attempts` (the runs that failed it: 1 after
+the first, and back to 1 for a file saved since that fails again), and `at`. A failure of a
+whole target has the target's key and no post; the target's next run to its end drops it.
+
+No row holds a request to send again, nor a URL with its query: a retry lists the post again
+through its source, from `cursor`, for fresh links ([errors.md](errors.md#retrying)). A home an
+earlier flnd made had a `request` column; opening it keeps each key's latest row and drops the
+column. The next download or sync of the target retries every failed file that has no row in
+`files` since and `attempts` of at most 3; `flnd retry` takes every one.
 
 ### `state`, `logins`, `probes`, `meta`
 

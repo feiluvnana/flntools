@@ -188,12 +188,24 @@ With `--json`, it prints one `{"type": "Checked", ...}` object.
 
 ## `flnd status`, `flnd retry`
 
-Not built yet; each is a usage error for now.
+The end of a run that left failures prints one line on standard error, by kind:
 
-- `flnd status` will show the last run: what failed and why. Today the end of each run lists its
-  failures.
-- `flnd retry` will download again the files the last run failed on. Today the next download or
-  sync of a target takes its failed files again.
+```
+✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
+```
+
+- `flnd status` shows the last run that downloaded: its command and times, what it saved, and
+  each failure it left, with its message, how many runs failed it, and what to do. A file a
+  later run saved is left out. With `--json`, it prints one `{"type": "Status", ...}` object,
+  its `failures` a list of `{target, post, path, error: {class, message, hint}, attempts, url,
+  at}`. It exits 0.
+- `flnd retry` downloads again every file that failed, however many runs failed it: each failed
+  post is listed again for fresh links, from the page it was on, and only its failed files are
+  downloaded. A target whose listing failed is downloaded again. A gone file (404 or 410) isn't
+  retried; `download --again` asks for those. It exits like a download.
+
+Every `download` and `sync` also retries a target's failed files by itself first, on at most 3
+runs per file ([errors.md](errors.md#retrying)).
 
 ## `flnd login`
 
@@ -334,7 +346,9 @@ instead.
 - The **first** Ctrl-C (or `q` on the full screen) stops listing and lets the files in
   progress finish.
 - The **second** stops at once. Unfinished files stay as parts (`<name>.part`), which the next
-  run resumes, and it resumes each category from its saved cursor.
+  run resumes, and it resumes each category from its saved cursor; a sync cut short this way is
+  finished by the next sync, which jumps to where it stopped
+  ([architecture.md](architecture.md#smart-sync)).
 
 ## For contributors
 

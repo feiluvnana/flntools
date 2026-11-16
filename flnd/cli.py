@@ -322,31 +322,55 @@ def ls(args: argparse.Namespace) -> int:
 
 
 def status(args: argparse.Namespace) -> int:
-    """Show the last run: what failed and why. Not built yet.
+    """Show the last run: what it saved, and each failure it left, with why and what to do.
+
+    A failure a later run saved is left out. A failed file is retried by itself at the start of
+    its target's next 3 downloads or syncs; `flnd retry` tries every one at once. With --json,
+    one JSON object: the run's command and times, what it saved, and its failures.
 
     Args:
         args: the parsed flags.
 
     Returns:
-        Never returns today.
-
-    Raises:
-        UsageError: always, until the home keeps a failure report.
+        0.
     """
-    import flnd
+    from flnd._events import encode
 
-    raise flnd.UsageError("status isn't built yet",
-                          hint="the end of each run lists what failed")
+    with _open(args) as fl:
+        found = fl.status
+    if args.json:
+        body = encode(found).decode() if found is not None else "{}"
+        sys.stdout.write('{"type":"Status"' + ("," + body[1:] if body != "{}" else "}") + "\n")
+        return OK
+    if found is None:
+        print("no run yet")
+        return OK
+    ended = f", ended {found.ended[11:19]}" if found.ended else ", never ended"
+    print(f"last run: {found.command}, {found.started[:10]} {found.started[11:19]}{ended}: "
+          f"{found.saved} saved, {len(found.failures)} failed")
+    for failure in found.failures:
+        where = f"{failure.target} {failure.post}" if failure.post else failure.target
+        runs = f", {failure.attempts} runs" if failure.attempts > 1 else ""
+        print(f"  {where} ({_word(failure.error)}{runs}): {failure.error}")
+        if failure.error.hint:
+            print(f"    {failure.error.hint}")
+    if found.failures:
+        print(_summary([(failure.error, bool(failure.post)) for failure in found.failures]))
+    return OK
 
 
 def retry(args: argparse.Namespace) -> int:
-    """Download again the files the last run failed on. Not built yet.
+    """Download again every file that failed, however many runs failed it.
+
+    Each failed post is listed again for fresh links, and only its failed files are downloaded.
+    A target whose listing failed is downloaded again. A gone file (the site answered 404 or
+    410) isn't retried: `flnd download --again` asks for those.
 
     Args:
         args: the parsed flags.
 
     Returns:
-        The run's exit code, once it is built.
+        The run's exit code: 0 when nothing failed again.
     """
     with _open(args) as fl:
         return _watch(fl, fl.retry(), args)
@@ -1022,14 +1046,14 @@ class _View:
             done[0] += f" ({_text.size(report.bytes)})"
         if report.skipped:
             done.append(f"{report.skipped} already saved")
+        if report.retried:
+            done.append(f"{report.retried} brought back by a retry")
+        if report.unchanged:
+            done.append(f"nothing new in {_text.count(report.unchanged, 'listing')}")
         print("done: " + ", ".join(done))
         if report.failed:
-            kinds: dict[str, int] = {}
-            for failed in report.failed:
-                name = type(failed.error).__name__
-                kinds[name] = kinds.get(name, 0) + 1
-            listed = ", ".join(f"{count} {name}" for name, count in kinds.items())
-            print(f"{len(report.failed)} failed: {listed}", file=sys.stderr)
+            failed = [(event.error, bool(event.post)) for event in report.failed]
+            print(_summary(failed, details=True), file=sys.stderr)
 
 
 class _Plain(_View):
@@ -1195,6 +1219,64 @@ def _failed(event: Any, write: Callable[..., None]) -> None:
     hint = getattr(event.error, "hint", "")
     if hint:
         write(f"  {hint}")
+
+
+# Each error class's word in a failure summary, by class name; the first class in an error's MRO
+# that is listed wins.
+WORDS = {
+    "NotFound": "gone", "Blocked": "blocked", "Changed": "changed", "LoginError": "login",
+    "SiteError": "site", "NetworkError": "network", "DiskError": "disk", "ToolError": "tool",
+    "SourceError": "bug", "UsageError": "usage",
+}
+# The words of failures a retry won't bring back: a gone file is never asked for again.
+FINAL = frozenset({"gone"})
+
+
+def _word(error: BaseException) -> str:
+    """The word a failure summary counts an error under: "network", "gone", …; else "error"."""
+    return next((WORDS[kind.__name__] for kind in type(error).__mro__ if kind.__name__ in WORDS),
+                "error")
+
+
+def _summary(failed: Sequence[tuple[BaseException, bool]], *, details: bool = False) -> str:
+    """The one line that sums a run's failures up, by kind, saying which a retry may bring back.
+
+        ✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
+
+    Args:
+        failed: each failure's error, with whether it was a file's (else a whole target's).
+        details: whether to end with where the details are (`flnd status`).
+
+    Returns:
+        The line.
+    """
+    from flnd import _text
+
+    files = sum(is_file for _, is_file in failed)
+    nouns = [_text.count(count, noun) for count, noun in
+             ((files, "file"), (len(failed) - files, "target")) if count]
+    kinds: dict[str, int] = {}
+    for error, _ in failed:
+        word = _word(error)
+        kinds[word] = kinds.get(word, 0) + 1
+    retried = [f"{count} {word}" for word, count in kinds.items() if word not in FINAL]
+    final = [f"{count} {word}" for word, count in kinds.items() if word in FINAL]
+    parts = [f"{', '.join(retried)} (retry: flnd retry)"] if retried else []
+    line = f"{_mark()} {' and '.join(nouns)} failed: {', '.join(parts + final)}"
+    return line + ". Details: flnd status" if details else line
+
+
+def _mark() -> str:
+    """The mark a failure summary starts with.
+
+    Returns:
+        "✗"; "x" when standard error's encoding has no "✗" (a pipe on Windows, in cp1252).
+    """
+    try:
+        "✗".encode(getattr(sys.stderr, "encoding", None) or "utf-8")
+    except (LookupError, UnicodeEncodeError):
+        return "x"
+    return "✗"
 
 
 def _shown(path: Any) -> str:

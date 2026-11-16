@@ -78,9 +78,9 @@ declared twice) raises `SourceError` when its class is made.
 What "fails" means at each level:
 
 - **A file** that fails (after its tries) is counted as failed, written to `flnd.db`'s
-  `failures` with its request, and tried again first on the target's next run. A 404 or 410
-  (`NotFound`) records the file as gone instead: it isn't asked for again unless told to
-  (`--again`). The rest of the target goes on.
+  `failures`, and retried at the start of the target's next runs ([Retrying](#retrying)). A
+  404 or 410 (`NotFound`) records the file as gone instead: it isn't asked for again unless told
+  to (`--again`). The rest of the target goes on.
 - **A target** whose listing fails ends with its error printed, then its hint on the next line,
   and `TargetReport.error` holds the error. The other targets still run.
 - **A source** whose login fails, or that can't start (its `connect` fails), fails each of its
@@ -115,13 +115,66 @@ prints instead. A bug inside one target's listing doesn't stop the run: it becom
 - A cookie's value is never printed, logged or put in an error, even when a cookie file is
   broken: the message names the file and the line.
 
+## The failure report
+
+Every failure is a row of `flnd.db`'s `failures` table ([storage.md](storage.md)):
+its target, post, category, the file it was to be, the error's class, message and hint, how
+many runs failed it (`attempts`), and its URL, redacted. That row is the only record, so the
+end of a run, `flnd status` and `flnd retry` can't disagree. A file has one row however often
+it fails, and a file saved since drops out of the report.
+
+The end of a run sums its failures up in one line on standard error, by kind, saying which a
+retry may bring back:
+
+```
+✗ 3 files failed: 2 network (retry: flnd retry), 1 gone. Details: flnd status
+```
+
+The kinds are `network`, `blocked`, `site`, `changed`, `login`, `disk`, `tool`, `bug` (a
+`SourceError`), `usage` and `gone` (a `NotFound`, which no retry asks for again).
+
+`flnd status` shows the last run that downloaded: what it saved, and each failure it left,
+with its message and hint. `flnd status --json` prints the same as one JSON object for other
+tools, and `fl.status` returns it as a `flnd.Status` ([library.md](library.md#reading-the-home)).
+
+### Samples of changed answers
+
+An answer that doesn't have the shape a source expects (`Changed`, with the answer in
+`e.response`) is kept as a sample, so a bug report can show what the site sent:
+`logs/<run>/samples/<n>.txt`, its first line the redacted URL. The failure's hint names the
+file. A sample is scrubbed before it is written:
+
+- every value under a key that looks like a secret (`token`, `csrf`, `session`, `cookie`,
+  `auth`, `password`, `secret`, `key`, `sig`, anywhere in the name and in any case) becomes `"…"`,
+  in JSON at any depth, and in HTML forms and `name=value` text;
+- a login's answer is never kept: one whose URL looks like a login (`login`, `auth`, `session`,
+  `token`, `account`, …), or that sets a cookie;
+- the file is named by a count, never by anything the site sent.
+
+Each run's logs and samples are swept after 30 days, at the start of a later run.
+
+## Retrying
+
+A retry never reuses a stored URL: the one `flnd.db` keeps is redacted, and a CDN's signed URL
+expires within hours anyway. It works from `(target, post, file)` instead: it lists the failed
+post again through its source, starting from the cursor of the page the post was on, so a post
+deep in a long listing costs one page, and downloads the post's files that aren't saved, which
+are the ones that failed. A post the listing no longer has is recorded gone.
+
+- **By itself.** Every `download` and `sync` of a target first retries that target's failed
+  files, before its new posts. A file is retried this way on at most 3 runs (its `attempts`
+  reach 4: the first failure and three retries); after that it waits for `flnd retry`. A gone
+  file (`NotFound`) is never retried.
+- **`flnd retry`** (`fl.retry()`) retries every failed file of every target at once, however
+  many runs failed it, and lists nothing but the failed posts' pages. A target whose whole
+  listing failed is downloaded again.
+
+A file a retry brought back is a `Saved` event with `retried=True`; the end of the run says
+`N brought back by a retry`.
+
 ## Not built yet
 
-- The `failures` table in `flnd.db`, `flnd status` and `flnd retry`, and the short failure
-  summary at the end of a run.
-- A sample of a response that didn't parse, saved scrubbed to `logs/<run>/samples/`.
 - One cookie refresh from the browser before a 401 or 403 becomes a `LoginError`.
-- Recording a `NotFound` item as gone, so a later run doesn't ask again.
 - The third stage of Ctrl-C; today the first stops listing and finishes the files in progress,
   and the second stops at once ([cli.md](cli.md#ctrl-c)).
 

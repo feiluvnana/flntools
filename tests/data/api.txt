@@ -33,6 +33,14 @@ flnd.Failed.error: attribute -> Error
 flnd.Failed.path: attribute -> Path | None
 flnd.Failed.post: attribute -> str
 flnd.Failed.target: attribute -> Target
+flnd.Failure(target: str, error: flnd.errors.Error, post: str = '', path: pathlib.Path | None = None, attempts: int = 1, url: str = '', at: str = '')
+flnd.Failure.at: attribute -> str
+flnd.Failure.attempts: attribute -> int
+flnd.Failure.error: attribute -> Error
+flnd.Failure.path: attribute -> Path | None
+flnd.Failure.post: attribute -> str
+flnd.Failure.target: attribute -> str
+flnd.Failure.url: attribute -> str
 flnd.Flnd(home: str | os.PathLike[str] | None = None, *, again: bool | None = None)
 flnd.Flnd.add(source: type[Source]) -> None
 flnd.Flnd.check(*, fix: bool = False) -> Checked
@@ -47,6 +55,7 @@ flnd.Flnd.logout(source: str) -> bool
 flnd.Flnd.retry() -> Run
 flnd.Flnd.site(source: str) -> Iterator[Site]
 flnd.Flnd.sources: property -> list[Installed]
+flnd.Flnd.status: property -> Status | None
 flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = (), *, compress: bool = False) -> Run
 flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
 flnd.Flnd.ui: property -> str | None
@@ -89,12 +98,13 @@ flnd.Planned.path: attribute -> Path | None
 flnd.Planned.post: attribute -> str
 flnd.Planned.state: attribute -> str
 flnd.Planned.target: attribute -> Target
-flnd.Progress(target: flnd.source.Target, category: str, found: int = 0, saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, listed: bool = False)
+flnd.Progress(target: flnd.source.Target, category: str, found: int = 0, saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, listed: bool = False, note: str = '')
 flnd.Progress.bytes: attribute -> int
 flnd.Progress.category: attribute -> str
 flnd.Progress.failed: attribute -> int
 flnd.Progress.found: attribute -> int
 flnd.Progress.listed: attribute -> bool
+flnd.Progress.note: attribute -> str
 flnd.Progress.saved: attribute -> int
 flnd.Progress.skipped: attribute -> int
 flnd.Progress.target: attribute -> Target
@@ -107,14 +117,17 @@ flnd.Record.kind: property -> str | None
 flnd.Record.path: attribute -> Path
 flnd.Record.post: attribute -> str
 flnd.Record.size: attribute -> int
-flnd.Report(saved: int = 0, skipped: int = 0, bytes: int = 0, planned: int = 0, failed: tuple[flnd._events.Failed, ...] = (), stopped: bool = False)
+flnd.Report(saved: int = 0, skipped: int = 0, bytes: int = 0, planned: int = 0, failed: tuple[flnd._events.Failed, ...] = (), stopped: bool = False, retried: int = 0, resumed: int = 0, unchanged: int = 0)
 flnd.Report.bytes: attribute -> int
 flnd.Report.failed: attribute -> tuple[Failed, ...]
 flnd.Report.ok: property -> bool
 flnd.Report.planned: attribute -> int
+flnd.Report.resumed: attribute -> int
+flnd.Report.retried: attribute -> int
 flnd.Report.saved: attribute -> int
 flnd.Report.skipped: attribute -> int
 flnd.Report.stopped: attribute -> bool
+flnd.Report.unchanged: attribute -> int
 flnd.Run(work: Callable[[Callable[[Any], None], Stop], Any], *, name: str, closed: threading.Event | None = None)
 flnd.Run.name: attribute
 flnd.Run.report: property -> Report
@@ -123,11 +136,12 @@ flnd.Run.stats: property -> Stats | None
 flnd.Run.stop() -> None
 flnd.Run.suspend() -> None
 flnd.Run.wait() -> Report
-flnd.Saved(target: flnd.source.Target, category: str, post: str, path: pathlib.Path, date: datetime.date | None, size: int)
+flnd.Saved(target: flnd.source.Target, category: str, post: str, path: pathlib.Path, date: datetime.date | None, size: int, retried: bool = False)
 flnd.Saved.category: attribute -> str
 flnd.Saved.date: attribute -> datetime.date | None
 flnd.Saved.path: attribute -> Path
 flnd.Saved.post: attribute -> str
+flnd.Saved.retried: attribute -> bool
 flnd.Saved.size: attribute -> int
 flnd.Saved.target: attribute -> Target
 flnd.SiteError(flnd.Error)
@@ -136,10 +150,11 @@ flnd.SiteError.response: attribute
 flnd.SiteError.retryable: attribute
 flnd.SiteError.status: attribute
 flnd.SiteError.target: attribute
-flnd.Skipped(target: flnd.source.Target, category: str, post: str, path: pathlib.Path | None = None)
+flnd.Skipped(target: flnd.source.Target, category: str, post: str, path: pathlib.Path | None = None, reason: str = 'saved')
 flnd.Skipped.category: attribute -> str
 flnd.Skipped.path: attribute -> Path | None
 flnd.Skipped.post: attribute -> str
+flnd.Skipped.reason: attribute -> str
 flnd.Skipped.target: attribute -> Target
 flnd.SourceError(flnd.Error)
 flnd.SourceError.hint: attribute
@@ -159,6 +174,12 @@ flnd.Stats.stopping: attribute -> str
 flnd.Stats.suspended: attribute -> bool
 flnd.Stats.system: attribute -> System
 flnd.Stats.transfers: attribute -> Transfers
+flnd.Status(command: str, started: str, ended: str = '', saved: int = 0, failures: tuple[flnd._events.Failure, ...] = ())
+flnd.Status.command: attribute -> str
+flnd.Status.ended: attribute -> str
+flnd.Status.failures: attribute -> tuple[Failure, ...]
+flnd.Status.saved: attribute -> int
+flnd.Status.started: attribute -> str
 flnd.Stopped(KeyboardInterrupt)
 flnd.Target(text: str, *, kind: str = '')
 flnd.Target.kind: field -> str

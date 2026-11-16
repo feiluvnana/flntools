@@ -54,7 +54,7 @@ class FilesTest(DbCase):
     def test_reading_a_new_home_creates_nothing(self):
         with _home.open(self.home) as db:
             self.assertIsNone(db.held("aaa:x"))
-            self.assertEqual((db.targets(), db.records(), db.pending("aaa:example_user")), ({}, [], {}))
+            self.assertEqual((db.targets(), db.records(), db.pending("aaa:example_user")), ({}, [], []))
             self.assertEqual(dict(db.state("aaa")), {})
         self.assertFalse(self.home.exists())
 
@@ -111,48 +111,83 @@ class FilesTest(DbCase):
 
 
 class FailuresTest(DbCase):
+    def failure(self, db, item="aaa:1", error=None, run=None, **fields):
+        fields = {"post": "p1", "category": "posts", "file": f"/m/{item}.jpg", **fields}
+        db.fail(run=run, item=item, target="aaa:example_user",
+                error=error or NetworkError("reset"), **fields)
+
     def test_a_not_found_file_is_gone_and_never_pending(self):
         db = self.open()
-        db.fail(run=None, item="aaa:1", target="aaa:example_user", error=NotFound("HTTP 404"),
-                post="p1", file="/m/1.jpg", url="https://cdn.example/1.jpg?sig=secret",
-                request={"url": "https://cdn.example/1.jpg?sig=secret"})
+        self.failure(db, error=NotFound("HTTP 404"), file="/m/1.jpg",
+                  url="https://cdn.example/1.jpg?sig=secret")
         self.assertEqual(db.held("aaa:1"), ("/m/1.jpg", "gone", None))
-        self.assertEqual(db.pending("aaa:example_user"), {})
+        self.assertEqual(db.pending("aaa:example_user"), [])
+        self.assertEqual(db.pending("aaa:example_user", every=True), [])
+        self.assertEqual(db.failed(), {})
         # A gone file isn't a saved one.
         self.assertEqual(db.records(), [])
 
-    def test_a_failure_is_pending_until_saved_and_keeps_no_login(self):
+    def test_a_failure_keeps_what_a_retry_lists_again_never_a_url_to_reuse(self):
         db = self.open()
         run = db.start("download aaa:example_user")
-        headers = {"Referer": "https://example.com/", "Cookie": "sessionid=secret",
-                   "authorization": "Bearer secret"}
-        db.fail(run=run, item="aaa:1", target="aaa:example_user", error=NetworkError("reset"),
-                post="p1", file="/m/1.jpg", url="https://user:pw@cdn.example/1.jpg?token=t",
-                request={"url": "https://cdn.example/1.jpg", "headers": headers})
+        self.failure(db, run=run, url="https://user:pw@cdn.example/1.jpg?token=secret", cursor="c4")
         db.end(run, saved=0)
-        self.assertEqual(db.pending("aaa:example_user")["aaa:1"]["headers"],
-                         {"Referer": "https://example.com/"})
+        [pending] = db.pending("aaa:example_user")
+        self.assertEqual((pending.key, pending.post, pending.category, pending.cursor,
+                          pending.attempts, pending.error, pending.url),
+                         ("aaa:1", "p1", "posts", "c4", 1, "NetworkError", "https://cdn.example/1.jpg"))
         sql = db._store.connection()
-        stored = sql.execute("SELECT * FROM failures").fetchall()
-        self.assertNotIn("secret", repr(stored))
-        self.assertEqual(sql.execute("SELECT url, class FROM failures").fetchone(),
-                         ("https://cdn.example/1.jpg", "NetworkError"))
+        self.assertNotIn("secret", repr(sql.execute("SELECT * FROM failures").fetchall()))
+        self.assertNotIn("request", {row[1] for row in sql.execute("PRAGMA table_info(failures)")})
         self.assertEqual(sql.execute("SELECT saved, failed FROM runs").fetchone(), (0, 1))
+        self.assertEqual([row.key for row in db.failures(run)], ["aaa:1"])
+        self.assertEqual(db.last_run().command, "download aaa:example_user")
         db.save([row("aaa:1")])
-        self.assertEqual(db.pending("aaa:example_user"), {})
+        self.assertEqual((db.pending("aaa:example_user"), db.failures(run), db.failed()), ([], [], {}))
+
+    def test_one_row_per_file_counting_the_runs_and_retried_on_three(self):
+        db = self.open()
+        for attempt in range(1, 6):
+            self.failure(db, run=db.start("sync"), error=NetworkError(f"reset {attempt}"))
+            [found] = db.pending("aaa:example_user", every=True)
+            self.assertEqual((found.attempts, found.message), (attempt, f"reset {attempt}"))
+        # The first failure and three retries: the automatic retry leaves it to `flnd retry`.
+        self.assertEqual(db.pending("aaa:example_user"), [])
+        self.assertEqual(db._store.one("SELECT count(*) FROM failures", ())[0], 1)
+        # A file saved since, failing again (`--again`), starts from 1.
+        db.save([row("aaa:1")])
+        self.failure(db)
+        self.assertEqual(db._store.one("SELECT attempts FROM failures", ())[0], 1)
+
+    def test_a_whole_target_failure_is_retried_whole_and_cleared(self):
+        db = self.open()
+        db.fail(run=None, item="aaa:example_user", target="aaa:example_user",
+                error=NetworkError("listing reset"))
+        self.assertEqual(db.pending("aaa:example_user"), [])
+        self.assertEqual(db.failed(), {"aaa:example_user": True})
+        db.clear("aaa:example_user")
+        self.assertEqual(db.failed(), {})
+
+    def test_an_old_failures_table_loses_its_request_column(self):
+        sql = sqlite3.connect(self.home.parent / "old.db")
+        sql.executescript(_home.SCHEMA.replace("    cursor TEXT\n", "    request TEXT\n")
+                          .replace("    category TEXT NOT NULL DEFAULT '', file", "    file"))
+        for at in ("1", "2"):
+            sql.execute("INSERT INTO failures (key, target, post_id, class, message, at, request)"
+                        " VALUES ('aaa:1', 'aaa:example_user', 'p1', 'Error', 'x', ?,"
+                        " '{\"url\": \"https://cdn.example/1.jpg?token=secret\"}')", (at,))
+        sql.commit()
+        sql.close()
+        self.home.mkdir()
+        os.replace(self.home.parent / "old.db", self.home / _home.DB)
+        db = self.open()
+        rows = db._store.all("SELECT * FROM failures", ())
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("secret", repr(rows))
+        self.assertEqual(db.failed(), {"aaa:example_user": False})
 
 
 class TargetsTest(DbCase):
-    def test_an_archives_password_goes_to_the_vault_never_to_the_database(self):
-        db = self.open()
-        db.fail(run=None, item="aaa:a.zip", target="aaa:example_user", error=NetworkError("reset"),
-                post="p1", file="/m/a.zip", url="https://cdn.example/a.zip",
-                request={"url": "https://cdn.example/a.zip", "password": "pa55word"})
-        self.assertNotIn(b"pa55word", (self.home / _home.DB).read_bytes())
-        stored = db._store.all("SELECT request FROM failures")
-        self.assertNotIn("pa55word", repr(stored))
-        self.assertEqual(db.pending("aaa:example_user")["aaa:a.zip"]["password"], "pa55word")
-
     def test_follow_keeps_compress_for_later_syncs(self):
         db = self.open()
         db.record([(USER, Options(compress=True))], follow=True, keep=True)
@@ -284,7 +319,7 @@ class MigrationTest(DbCase):
         self.assertEqual(db._store.one("SELECT files FROM posts WHERE post_id = ?", ("p1",)), (2,))
         self.assertEqual(db.state("aaa")["redate.asked"], {"p3": 1.0})
         pending = db.pending("aaa:example_user")
-        self.assertEqual(list(pending), ["aaa:9"])
+        self.assertEqual([row.key for row in pending], ["aaa:9"])
         self.assertNotIn("secret", repr(db._store.connection().execute("SELECT * FROM failures").fetchall()))
 
     def test_the_vault_moves_with_its_key_and_still_opens(self):

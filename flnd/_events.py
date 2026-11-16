@@ -1,5 +1,5 @@
 """What a run reports, and the rows the library reads: events, `Report`, `Login`, `Record`,
-`Checked`.
+`Tracked`, `Checked`, `Status` and `Failure`.
 
 Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
 run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
@@ -10,8 +10,9 @@ Who makes them:
 1. the job and the engine make `Saved`, `Skipped`, `Failed`, `Progress` and `Planned` as a run
    goes, and hand them to the run's sink (`flnd._run.Run._emit`);
 2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
-3. `Flnd` makes `Login`, `Record` and `Tracked` from today's stores, for its reads,
-   `Checked` from `fl.check()`, and `Installed` from the sources it knows (`fl.sources`).
+3. `Flnd` makes `Login`, `Record`, `Tracked`, `Status` and `Failure` from the home's
+   `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the sources it
+   knows (`fl.sources`).
 
 The one rule a change must keep: an event holds data, never a live object (a site, a file
 handle, a lock), because a script may keep it after the run ends, and `encode` must turn it
@@ -33,9 +34,16 @@ from flnd.errors import Error
 from flnd.source import Target
 
 __all__ = [
-    "Checked", "Event", "Failed", "Installed", "Login", "Planned", "Progress", "Record",
-    "Report", "Saved", "Skipped", "Tracked", "encode",
+    "NOTHING_NEW", "RESUMING", "Checked", "Event", "Failed", "Failure", "Installed", "Login",
+    "Planned", "Progress", "Record", "Report", "Saved", "Skipped", "Status", "Tracked", "encode",
 ]
+
+# `Skipped.reason` for a listing a sync found nothing new in.
+NOTHING_NEW = "nothing new"
+# `Skipped.reason` for a file or post already saved, or being saved by another run.
+SAVED = "saved"
+# `Progress.note` for a listing that goes on from where an earlier run was cut short.
+RESUMING = "resuming from the last run"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -69,24 +77,33 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
     date: datetime.date | None
     # The file's size in bytes, as it is now (after `--compress`, the compressed size).
     size: int
+    # Whether a retry brought it back: an earlier run failed on it (docs/errors).
+    retried: bool = False
 
 
 class Skipped(msgspec.Struct, frozen=True, tag=True):
-    """A file or a whole post wasn't downloaded: it is already saved, or another run is saving it.
+    """Something wasn't downloaded: a file or post already saved, or a listing with nothing new.
+
+    `reason` says which: `"saved"` for a file or a whole post that is already saved (or that
+    another run is saving), `"nothing new"` for a listing a sync found nothing new in, which has
+    no post and no path.
 
     Example:
         >>> from flnd.source import Target
-        >>> Skipped(Target("ins:example_user", kind="user"), "posts", "9001").path is None
-        True
+        >>> event = Skipped(Target("ins:example_user", kind="user"), "posts", "9001")
+        >>> event.path is None, event.reason
+        (True, 'saved')
     """
 
     target: Target
     # The category the post came from; "" for a target without categories.
     category: str
-    # The post's id; "" when the listing gave the same post twice.
+    # The post's id; "" for a listing with nothing new.
     post: str
     # The file that was skipped; None when the whole post was (it was saved before).
     path: Path | None = None
+    # Why: "saved" or "nothing new".
+    reason: str = SAVED
 
 
 class Failed(msgspec.Struct, frozen=True, tag=True):
@@ -135,6 +152,9 @@ class Progress(msgspec.Struct, frozen=True, tag=True):
     bytes: int = 0
     # Whether the listing is done: what is still found is only finishing downloads.
     listed: bool = False
+    # How the listing goes, when it is worth saying: "resuming from the last run" when it goes
+    # on where an earlier run was cut short; "" otherwise.
+    note: str = ""
 
 
 class Planned(msgspec.Struct, frozen=True, tag=True):
@@ -381,6 +401,12 @@ class Report(msgspec.Struct, frozen=True):
     failed: tuple[Failed, ...] = ()
     # Whether `run.stop()` ended the run before it was done.
     stopped: bool = False
+    # Files a retry brought back: earlier runs failed on them (they count in `saved` too).
+    retried: int = 0
+    # Listings that went on from where an earlier run was cut short.
+    resumed: int = 0
+    # Listings a sync found nothing new in.
+    unchanged: int = 0
 
     @property
     def ok(self) -> bool:
@@ -507,6 +533,58 @@ class Tracked(msgspec.Struct, frozen=True):
     categories: dict[str, str] = {}
     # Whether it is a search (`<source>?<words>`) rather than one account or post.
     query: bool = False
+
+
+class Failure(msgspec.Struct, frozen=True):
+    """A file or target that failed and isn't saved since, as `fl.status` lists it.
+
+    It is read from `flnd.db`, which keeps one row per failed file: the run it last failed in,
+    and how many runs failed it.
+
+    Example:
+        >>> import flnd, pathlib
+        >>> failure = Failure("ins:example_user", flnd.NetworkError("connection reset"),
+        ...                   post="9001", path=pathlib.Path("media/ins/example_user/9001.jpg"))
+        >>> type(failure.error).__name__, failure.attempts
+        ('NetworkError', 1)
+    """
+
+    # The target, as written (`ins:example_user`).
+    target: str
+    # Why: the `flnd.Error` it failed with, made again from its class, message and hint.
+    error: Error
+    # The post's id, for a failed file; "" for a failed target.
+    post: str = ""
+    # Where the file would have gone, for a failed file; None for a failed target.
+    path: Path | None = None
+    # The runs that tried it and failed. A file is retried by itself on at most 3 runs; past
+    # them, `flnd retry` still tries it.
+    attempts: int = 1
+    # The file's URL, redacted: no query and no user info; "" for none.
+    url: str = ""
+    # When it last failed, as an ISO 8601 time in UTC.
+    at: str = ""
+
+
+class Status(msgspec.Struct, frozen=True):
+    """The last run that downloaded, and the failures it left: `fl.status`, `flnd status`.
+
+    Example:
+        >>> status = Status("sync", "2026-11-16T10:00:00+00:00", saved=12)
+        >>> status.saved, status.failures
+        (12, ())
+    """
+
+    # What ran: the command and its first targets (`download ins:example_user`).
+    command: str
+    # When it started and ended, as ISO 8601 times in UTC; `ended` is "" while it runs, or when
+    # it never ended (a crash).
+    started: str
+    ended: str = ""
+    # Files it saved.
+    saved: int = 0
+    # The failures it left that still stand: a file saved since is left out.
+    failures: tuple[Failure, ...] = ()
 
 
 class Checked(msgspec.Struct, frozen=True):

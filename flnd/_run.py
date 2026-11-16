@@ -46,7 +46,7 @@ from collections.abc import AsyncIterator, Callable, Generator, Iterator
 from typing import TYPE_CHECKING, Any
 
 from flnd import _stats
-from flnd._events import Failed, Planned, Report, Saved, Skipped
+from flnd._events import NOTHING_NEW, RESUMING, Failed, Planned, Progress, Report, Saved, Skipped
 
 if TYPE_CHECKING:
     from flnd._events import Event, Stats
@@ -113,8 +113,9 @@ class Run:
 
     Example:
         >>> run = Run(lambda emit, stop: None, name="nothing")
-        >>> run.wait()
-        Report(saved=0, skipped=0, bytes=0, planned=0, failed=(), stopped=False)
+        >>> report = run.wait()
+        >>> report.saved, report.failed, report.stopped
+        (0, (), False)
     """
 
     def __init__(
@@ -140,6 +141,7 @@ class Run:
         self._asked = False
         # The report's counts, kept under `_lock`.
         self._saved = self._skipped = self._bytes = self._planned = 0
+        self._retried = self._resumed = self._unchanged = 0
         self._failed: list[Failed] = []
         # The live stats: what the run's parts track themselves in (through the context, as
         # the clock reaches them), and the latest sample.
@@ -259,7 +261,8 @@ class Run:
         with self._lock:
             return Report(saved=self._saved, skipped=self._skipped, bytes=self._bytes,
                           planned=self._planned, failed=tuple(self._failed),
-                          stopped=self._asked)
+                          stopped=self._asked, retried=self._retried, resumed=self._resumed,
+                          unchanged=self._unchanged)
 
     @property
     def stats(self) -> Stats | None:
@@ -350,8 +353,15 @@ class Run:
             if isinstance(event, Saved):
                 self._saved += 1
                 self._bytes += event.size
+                self._retried += event.retried
             elif isinstance(event, Skipped):
-                self._skipped += 1
+                # A listing with nothing new is no file skipped.
+                if event.reason == NOTHING_NEW:
+                    self._unchanged += 1
+                else:
+                    self._skipped += 1
+            elif isinstance(event, Progress):
+                self._resumed += event.note == RESUMING
             elif isinstance(event, Failed):
                 self._failed.append(event)
             elif isinstance(event, Planned):
