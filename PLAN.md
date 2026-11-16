@@ -1,4 +1,4 @@
-# PROPOSAL: flnd, one fast package
+# PLAN: flnd, one fast package
 
 The user's brief, 2026-11-16, gathered from one session:
 - **One package, flnd.** It is a library plus a thin CLI. There is no `shared` toolkit, and anything flnd needs lives inside flnd.
@@ -9,9 +9,10 @@ The user's brief, 2026-11-16, gathered from one session:
 - **Built in:** compression, archive extraction, and slideshows, cards and albums.
 - **The Makefile instead of `scripts/`.**
 - **Type hints for readers, not a checking gate.**
+- **Extensive comments and docs for human readers** (user, 2026-11-16: "the codebase should have extensive comment and docs for human to read").
 - **Everything is open.** The old API, CLI and data format don't constrain this design.
 
-Nothing here is built until the user approves it. Section 15 lists the decisions to confirm.
+This is the plan for the rebuild. Its steps are the commits of section 15, but nothing is built until the user approves it; section 16 lists the decisions to confirm first.
 
 ## Contents
 1. Summary
@@ -62,6 +63,7 @@ Nothing here is built until the user approves it. Section 15 lists the decisions
   - free-threaded 3.14t runs CPU work 3.6× faster, but httpx crashes on it. It comes later.
 - **Plugins:** a Python file in `<home>/sources/`, an installed package (the `flnd.sources` entry point), or `fl.add(MySource)`. Each is validated at load time, versioned (`api = 1`) and isolated. Authors get a test kit, `flnd.testing`.
 - **Errors:** one hierarchy. Every failure is classified as retryable, permanent, login, or fatal for the run. A failure report says what failed, why, and how to retry; Ctrl-C has three stages. A user error never prints a traceback.
+- **Docs for humans:** guides in `docs/`, full docstrings on every module and function, and comments that explain why and how wherever the code isn't obvious. A test keeps them in step with the code (section 14.6).
 - **Size:** the 6,366 lines of `shared` and the 11,124 lines of flnd become about 12,000 lines in one package (estimated, section 4.4). The wrappers, generic `Query`, `Sink` and Protocols written for pyright, and the error trees and fakes that existed only to make `shared` stand alone, all go.
 
 **Expected effect on a real run.** Take a 1,000-post Instagram profile, 2,000 files, and a CDN latency of about 100 ms:
@@ -272,6 +274,8 @@ flnd/
   _ui.py           plain and inline progress (Rich, lazy), prompts (input/getpass)
   _text.py _time.py                file names, templates, days, sizes; the clock and its fake
   _plugins.py      discovery, validation, versioning and isolation of external sources
+docs/              guides for people: architecture, library, CLI, writing a source, errors, storage, performance, one page per site (14.6)
+examples/          a runnable script and a 40-line plugin with its test
 ```
 A leading `_` marks a private module. Only `flnd`, `flnd.source` and `flnd.testing` are public: the API snapshot lists those three, and nothing else is promised.
 
@@ -298,7 +302,7 @@ A leading `_` marks a private module. Only `flnd`, `flnd.source` and `flnd.testi
 | `flnd/common/`, `flnd/sources/common/` | layering | `_net`, `_files`, and helpers in `flnd.source` |
 
 ### 4.4 Size
-| | today | proposed (est.) |
+| | today | planned (est.) |
 | --- | ---: | ---: |
 | `shared/` | 6,366 | 0 |
 | flnd engine side | 7,095 | ~4,800 |
@@ -758,10 +762,11 @@ check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
 manifest: ; $(RUN) python -m flnd.sources._manifest --write
 bench:    ; $(RUN) python tests/bench/run.py $(ARGS)
+docs:     ; $(RUN) --group dev pdoc flnd flnd.source flnd.testing -o build/docs
 try:      ; $(RUN) flnd --home .try $(ARGS)
 dist:     ; $(RUN) --group dist pyinstaller --onefile --name flnd flnd/__main__.py
 clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
-.PHONY: setup test lint check api manifest bench try dist clean
+.PHONY: setup test lint check api manifest bench docs try dist clean
 ```
 - **Each recipe is one `uv` command**, so it runs the same in bash, zsh, PowerShell and cmd. There is no `rm`, no `&&` chain and no shell globbing.
 - **Windows** has no make by default. The README says to `winget install ezwinports.make`, or use the `make` that ships with Git for Windows, and lists each recipe's command for anyone without make. `dev.py` existed partly for Windows; one-command recipes cover that.
@@ -779,6 +784,7 @@ clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('
   - the CLI imports only `flnd`;
   - built-in sources import only `flnd.source`, the stdlib and their own helpers;
   - no public module imports a heavy module at import time (`-X importtime` against a list).
+- **`tests/test_docs.py`** keeps the docs in step with the code (14.6).
 - **`tests/typing/` and pyright are removed**, and so is `type` from `check`. Ruff (lint, about 50 ms) catches the mistakes a type checker found most often: undefined names, unused imports, bugbear patterns.
 
 ### 14.3 Type hints
@@ -807,19 +813,61 @@ clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('
   - modules imported by `flnd --help`.
 
 ### 14.5 AGENTS.md
-Rewrite the layout section for one package and the public/private split. Then:
-- drop the pyright and type rules;
-- replace `scripts/dev.py` with make targets;
+Rewrite it for the plan:
+- the layout for one package and the public/private split;
+- `make` targets instead of `scripts/dev.py`, and no pyright gate;
+- the writing rules of section 14.6, replacing "a docstring is one sentence" and "more code than prose";
 - keep the commit format, privacy, example handles and the low-cost-model rule;
 - add "a performance commit states its benchmark before and after".
 
+### 14.6 Documentation for human readers
+The user, 2026-11-16: "the codebase should have extensive comment and docs for human to read." Anyone who opens a file should understand what it does, why it is built that way, and how it fits with the rest, without asking anyone or reading the git history. This replaces the old rules: one-sentence docstrings, "more code than prose", and comments only for why.
+
+**Three layers:**
+1. **Guides in `docs/`**, written for people:
+   - `README.md`: an index, and where to start for a user, a script author, a source author and a contributor;
+   - `architecture.md`: the layout of section 4, one download traced from the CLI to the disk, and the threads and the loop, with a diagram;
+   - `library.md`: every public call, its options, its events and a runnable example;
+   - `cli.md`: every command, flag, default and exit code, with examples;
+   - `writing-a-source.md`: a tutorial that builds the example source step by step, then packages it as a plugin and tests it with `flnd.testing`;
+   - `errors.md`: each error class, what causes it and what to do;
+   - `storage.md`: the home layout, `flnd.db`'s tables and columns, and the migration from an old `.flnd`;
+   - `performance.md`: section 2's numbers, how to run `make bench`, and why each performance choice was made;
+   - `sources/<code>.md`: per site, what it downloads, how login works, its quirks with the date they were seen, the endpoints it uses, and its limits.
+2. **Docstrings on every module, class, function and method**, private ones included unless the body is a few obvious lines:
+   - **A module docstring** says what the module holds, who calls it, what it calls, its main flow in numbered steps, and any rule a change must keep (threads, locks, ordering, invariants). There is no length cap.
+   - **A function docstring** in Google style: a summary line; a paragraph on behaviour and edge cases; `Args:`, `Returns:`, `Raises:`; and an `Example:` on public names. Editors show these, and they are the API reference.
+3. **Comments** explain *why*, and also *how* wherever the code isn't obvious at a glance:
+   - a site quirk, with the date it was seen;
+   - a magic number and where it comes from;
+   - a lock, the thread a call runs on, the order two writes must keep;
+   - a platform branch;
+   - the steps of a long algorithm, as numbered comments;
+   - how a failure is handled, and why it is safe.
+
+   Section comments split a long module into parts. A comment never restates the line under it, and never cites a plan step or a commit (those change); it may point to a `docs/` page.
+
+**Style.** Plain English and short sentences; examples use the example handles only (`example_user`, `example.com`, …). Every term is defined where it first appears, and the docs keep a glossary: target, source, route, category, post, file, event, home.
+
+**Kept in step with the code:**
+- a change of behaviour updates its docstrings and `docs/` page in the same commit;
+- `tests/test_docs.py` checks that:
+  - every module, public class and public function has a docstring, and a public function documents each argument;
+  - every `python` block in `docs/*.md` runs against the fakes, like a doctest;
+  - every CLI flag that argparse knows appears in `docs/cli.md`, and every `docs/` link resolves;
+  - every built-in source has its `docs/sources/<code>.md`.
+- `make docs` builds an HTML API reference with pdoc, a dev-only dependency, into `build/docs/`.
+
+**Cost.** There is more prose to maintain, which is what the test above is for. Comments also make files longer, but a reader's time is the scarcer resource.
+
 ## 15. Migration: ranked commits with gates
-Each commit is one logical change with `make check` green. A performance commit quotes `make bench` before and after in its message. Mechanical moves go to a low-cost model.
+Each commit is one logical change with `make check` green, and it documents what it touches: its docstrings, its comments and its `docs/` page. A performance commit quotes `make bench` before and after in its message. Mechanical moves go to a low-cost model.
 
 | # | commit | gate |
 | ---: | --- | --- |
 | 15.1 | `chore:add make bench and the benchmark suite` (section 2's scripts in `tests/bench/`) | baseline recorded in `gates.json` |
 | 15.2 | `chore:replace scripts with the makefile and drop the type gate` (14.1–14.3) | `make check` green without pyright |
+| 15.2a | `docs:add the docs folder, the glossary and the docs test` (14.6) | `tests/test_docs.py` runs; the gaps it lists drive 15.16 |
 | 15.3 | `refactor:fold shared into flnd's private modules` (moves only; imports updated) | tests green; `make bench` unchanged ±5% |
 | 15.4 | `perf:start the cli with argparse, lazy imports and a source manifest` | `flnd --help` ≤ 40 ms (from 173) |
 | 15.5 | `perf:run network and browser on one asyncio loop with curl_cffi` | 2,000 × 100 KiB ≤ 300 ms (from 1,009); 1 GiB ≥ 4 GiB/s (from 1.9) |
@@ -833,7 +881,8 @@ Each commit is one logical change with `make check` green. A performance commit 
 | 15.13 | `feat:compress media and extract archives as files land` | 1,000 JPEGs on 8 cores ≤ 2 min; `sync --compress` over 100k done files ≤ 3 s |
 | 15.14 | `feat:make slideshows, cards and albums` | 100 photos at 1080p ≤ 60 s cold; one added ≤ 5 s |
 | 15.15 | `feat:add check, dedupe, sidecars, hooks and json events` | per-feature tests |
-| 15.16 | `docs:rewrite the readme and agents for one package` | — |
+| 15.16 | `docs:document every module, function and source for human readers` (14.6) | `tests/test_docs.py` passes with an empty allowlist |
+| 15.17 | `docs:rewrite the readme for the rebuilt flnd` | every README example runs in `test_docs` |
 
 The order puts the biggest measured wins first (15.4–15.8). 15.3 is a pure move, so every later commit's diff stays readable.
 
