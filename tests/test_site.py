@@ -199,7 +199,8 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(len(members), 26)
         fake = FakeSite(Target("exm:example_user", kind="user"))
         # `listing` is the engine's: the job sets it, for `pages` to resume; no source reads it.
-        self.assertEqual(public(fake) - {"listing"}, members)
+        # `seen` is what a test reads back.
+        self.assertEqual(public(fake) - {"listing", "seen"}, members)
         self.assertEqual(public(TargetSite) | {"target", "time"}, members | {"close"})
 
 

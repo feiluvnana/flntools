@@ -7,7 +7,7 @@
 
 Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. What it calls:
 the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
-script can do too; `flnd.sources._manifest` for the sources `--help` and `flnd sources` list;
+script can do too; `flnd.sources._manifest` for the built-in sources `--help` lists;
 and the library modules `flnd._prompt` (`flnd login`'s questions) and `flnd._ui` (the level of
 flnd's own log lines, and the live view).
 
@@ -440,7 +440,12 @@ def logout(args: argparse.Namespace) -> int:
 
 
 def sources(args: argparse.Namespace) -> int:
-    """List the sources: their names, the targets they read, and their categories.
+    """List every source: built in, from a package or from the plugin folder, and its login.
+
+    Each shows where it came from and its version, the targets it reads, its categories and
+    its login. A plugin that is disabled is listed with the reason, naming its file and line.
+    Plugins load from $FLND_SOURCES, else ~/.config/flnd/sources (APPDATA's flnd/sources on
+    Windows), and from installed packages; never from a home.
 
     Args:
         args: the parsed flags.
@@ -448,19 +453,26 @@ def sources(args: argparse.Namespace) -> int:
     Returns:
         0.
     """
-    from flnd.sources import _manifest
+    from flnd._events import encode
 
-    for code, entry in _manifest.SOURCES.items():
+    with _open(args) as fl:
+        found = fl.sources
+    for row in found:
         if args.json:
-            _json({"type": "Source", "code": code, "name": entry["name"],
-                   "domains": entry["domains"], "forms": entry["forms"],
-                   "categories": entry["categories"], "logins": entry["logins"]})
+            sys.stdout.write('{"type":"Source",' + encode(row).decode()[1:] + "\n")
             continue
-        print(f"{code}  {entry['name']}")
-        print(f"  targets:    {', '.join(entry['forms'][:3])}" +
-              (", …" if len(entry["forms"]) > 3 else ""))  # type: ignore[arg-type]
-        print(f"  categories: {', '.join(entry['categories'])}")  # type: ignore[arg-type]
-        print(f"  logins:     {', '.join(entry['logins'])}")  # type: ignore[arg-type]
+        version = f" {row.version}" if row.version else ""
+        print(f"{row.code}  {row.name}  ({row.origin}{version})")
+        if row.disabled:
+            print(f"  disabled:   {row.disabled}")
+            continue
+        if row.origin != "built-in":
+            print(f"  from:       {row.where}")
+        more = ", …" if len(row.forms) > 3 else ""
+        ways = f" ({', '.join(row.logins)})" if row.logins else ""
+        print(f"  targets:    {', '.join(row.forms[:3])}{more}")
+        print(f"  categories: {', '.join(row.categories)}")
+        print(f"  login:      {row.login}{ways}")
     return OK
 
 
@@ -698,11 +710,17 @@ def _ask_how(args: argparse.Namespace) -> str:
     from flnd import _prompt
     from flnd.sources import _manifest
 
-    entry = _manifest.SOURCES.get(args.source)
+    entry: Any = _manifest.SOURCES.get(args.source)
     if entry is None:
-        codes = ", ".join(_manifest.SOURCES)
-        raise flnd.UsageError(f"unknown source {args.source!r}. Sources: {codes}")
-    ways: tuple[str, ...] = entry["logins"]  # type: ignore[assignment]
+        # Not built in: a plugin's ways are read from its class, which this imports.
+        with _open(args) as fl:
+            rows = [row for row in fl.sources if not row.disabled]
+        found = next((row for row in rows if row.code == args.source), None)
+        if found is None:
+            codes = ", ".join(row.code for row in rows)
+            raise flnd.UsageError(f"unknown source {args.source!r}. Sources: {codes}")
+        entry = {"name": found.name, "logins": found.logins}
+    ways: tuple[str, ...] = tuple(entry["logins"])
     hint = f"name it: flnd login {args.source} <how>, with how one of {_ways(ways)}"
     if args.json or not _prompt.interactive():
         raise flnd.UsageError(f"{args.source}: how to log in?", hint=hint)

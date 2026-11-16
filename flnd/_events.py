@@ -10,8 +10,8 @@ Who makes them:
 1. the job and the engine make `Saved`, `Skipped`, `Failed`, `Progress` and `Planned` as a run
    goes, and hand them to the run's sink (`flnd._run.Run._emit`);
 2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
-3. `Flnd` makes `Login`, `Record` and `Tracked` from today's stores, for its reads, and
-   `Checked` from `fl.check()`.
+3. `Flnd` makes `Login`, `Record` and `Tracked` from today's stores, for its reads,
+   `Checked` from `fl.check()`, and `Installed` from the sources it knows (`fl.sources`).
 
 The one rule a change must keep: an event holds data, never a live object (a site, a file
 handle, a lock), because a script may keep it after the run ends, and `encode` must turn it
@@ -33,8 +33,8 @@ from flnd.errors import Error
 from flnd.source import Target
 
 __all__ = [
-    "Checked", "Event", "Failed", "Login", "Planned", "Progress", "Record", "Report", "Saved",
-    "Skipped", "Tracked", "encode",
+    "Checked", "Event", "Failed", "Installed", "Login", "Planned", "Progress", "Record",
+    "Report", "Saved", "Skipped", "Tracked", "encode",
 ]
 
 
@@ -219,6 +219,43 @@ class Login(msgspec.Struct, frozen=True):
     origin: str = ""
     # Each cookie that expires soon, with the seconds it has left (0 or less: expired).
     expiring: tuple[tuple[str, float], ...] = ()
+
+
+class Installed(msgspec.Struct, frozen=True):
+    """One source flnd knows, as `fl.sources` lists it: where it came from, and whether it works.
+
+    A plugin that failed to load or was refused is listed too, with `disabled` saying why, so
+    `flnd sources` can show it; its other fields are what its name told (its code, its origin).
+
+    Example:
+        >>> row = Installed("exm", "Example", "file", where="/plugins/exm.py", api=1)
+        >>> row.origin, row.disabled
+        ('file', '')
+    """
+
+    # The source's code.
+    code: str
+    # The site's name, as people know it; the code for a plugin that didn't load.
+    name: str
+    # "built-in", "package" (an installed package's entry point), "file" (the plugin folder)
+    # or "script" (`fl.add`).
+    origin: str
+    # The module, entry point (`flnd_example:Example`) or file it comes from.
+    where: str = ""
+    # The package's version (flnd's own for a built-in), or a file plugin's `__version__`;
+    # "" when there is none.
+    version: str = ""
+    # The source API it was written for; 0 for one that didn't load.
+    api: int = 0
+    # Its login: "logged in", "not logged in" or "needs no login"; "" for one that didn't load.
+    login: str = ""
+    # Its domains, the target forms it reads, its categories and its ways to log in.
+    domains: tuple[str, ...] = ()
+    forms: tuple[str, ...] = ()
+    categories: tuple[str, ...] = ()
+    logins: tuple[str, ...] = ()
+    # Why it is disabled, with the file and line of the failure; "" when it works.
+    disabled: str = ""
 
 
 class Record(msgspec.Struct, frozen=True):

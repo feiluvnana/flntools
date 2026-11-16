@@ -270,7 +270,9 @@ def validate(
     Raises:
         UsageError: a category is unknown, or given for a single post.
     """
-    by_code = ({code: src for code, src in sources.items()} if isinstance(sources, Mapping)
+    # The mapping itself, not a copy: a copy would import every source and plugin, where the
+    # check needs only the targets' own (`flnd.sources.Registry` loads each on first lookup).
+    by_code = (sources if isinstance(sources, Mapping)
                else {src.code: src for src in sources})
     if from_selection is not None:
         _validate_from(by_code, from_selection, targets)

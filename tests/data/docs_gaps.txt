@@ -455,28 +455,12 @@ flnd/site.py:shared_browser: no Yields:
 flnd/site.py:source_run: Args: no settings
 flnd/site.py:source_run: Args: no source
 flnd/site.py:source_run: no Yields:
-flnd/source.py:Feed.close: no Example:
-flnd/source.py:Feed: no Example:
 flnd/source.py:Login: no Example:
 flnd/source.py:Post.filed: Args: no category
 flnd/source.py:Post.filed: no Example:
 flnd/source.py:Post.filed: no Returns:
 flnd/source.py:Route.category: no Example:
 flnd/source.py:Route.forms: no Example:
-flnd/source.py:Site.back_off: no Example:
-flnd/source.py:Site.click: no Example:
-flnd/source.py:Site.document: no Example:
-flnd/source.py:Site.evaluate: no Example:
-flnd/source.py:Site.feed: no Example:
-flnd/source.py:Site.fetch: no Example:
-flnd/source.py:Site.handoff: no Example:
-flnd/source.py:Site.info: no Example:
-flnd/source.py:Site.open: no Example:
-flnd/source.py:Site.pause: no Example:
-flnd/source.py:Site.scroll: no Example:
-flnd/source.py:Site.wait: no Example:
-flnd/source.py:Site.warn: no Example:
-flnd/source.py:Site: no Example:
 flnd/source.py:Source.connect: no Example:
 flnd/source.py:Source.connect: no Returns:
 flnd/source.py:Source.date: no Example:

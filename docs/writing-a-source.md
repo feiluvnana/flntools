@@ -5,10 +5,11 @@ posts each target has. flnd does everything else: pacing and retrying requests, 
 naming and dating files, skipping what is saved, stopping a sync early, resuming, progress and
 logins.
 
-This page builds a small source step by step against **source API 1**, `flnd.source`. Every
-`python` block on it runs in the docs test, so it stays true. `tests/example_source.py` is a
-bigger example with the same shape, and the seven built-in sources in `flnd/sources/` are real
-ones. `flnd/source.py`'s docstrings are the reference.
+This page builds a small source step by step against **source API 1**, `flnd.source`, tests it
+with `flnd.testing`, and ships it as a plugin. Every `python` block on it runs in the docs test,
+so it stays true. `examples/plugin/` is a whole plugin with its test, `tests/example_source.py`
+is a bigger example with the same shape, and the seven built-in sources in `flnd/sources/` are
+real ones. `flnd/source.py`'s and `flnd/testing.py`'s docstrings are the reference.
 
 ## 1. The class
 
@@ -134,13 +135,13 @@ assert (found.source, found.kind, found.value) == ("exm", "user", "example_user"
 
 ## 4. Testing it without the network
 
-`tests/fakes.py` runs a source on a `FakeSite`, which answers each request from fixtures keyed
-by URL without its query. `collect` runs the route and its categories as the engine would, and
-lists every file it would save, with its path and history key. Nothing is downloaded.
+`flnd.testing` is the test kit. `collect` runs a source on a `FakeSite`, which answers each
+request from fixtures keyed by URL without its query; it runs the route and its categories as
+the engine would, and lists every file a download would save, with its path, history key and
+day. Nothing is downloaded, and no home is touched.
 
 ```python
-from fakes import collect
-from flnd.options import Options
+from flnd.testing import FakeSite, check, collect
 
 FIXTURES = {
     f"{API}/users/example_user": {"id": "42"},
@@ -151,15 +152,43 @@ FIXTURES = {
     },
 }
 
-saved = collect(Example, "exm:example_user", json=FIXTURES,
-                options=Options(categories=("posts",)))
+saved = collect(Example, "exm:example_user", json=FIXTURES, only=["posts"])
 assert [file.path for file in saved] == ["posts/2026-01-02_p1_0.jpg", "posts/2026-01-02_p1_1.mp4"]
 assert [file.key for file in saved] == ["p1_0", "p1_1"]
+assert str(saved[0].date) == "2026-01-02"
 ```
 
-A request no fixture answers raises a 404 `NotFound`, as a missing page would. Each built-in
-source has a test like this in `tests/test_<code>.py`. Live runs against the real site are done
-by hand, on test accounts, never in a unit test.
+A request no fixture answers raises a 404 `NotFound`, as a missing page would. A fixture may also
+be a function of `(url, request)`, to answer each page of a listing by its cursor, or a
+`SiteError` to raise. For pages opened in the browser, feeds, cookies, a client or `--when`,
+make the `FakeSite` yourself and pass it in; it records what the source did in `site.seen`:
+
+```python
+site = FakeSite(json=FIXTURES, cookies={"token": "t"})
+collect(Example, "exm:example_user", site=site)
+assert [url for _, url, _ in site.seen.requests][0] == f"{API}/users/example_user"
+```
+
+`check(Example)` checks the class, and resolves every example target its routes' docstrings
+give in backticks (`exm:example_user`, or a link on its domains): each must be read by the route
+whose docstring gives it, so the examples in a docstring can't go stale. `fake_clock()` gives a
+clock that only moves when something sleeps on it, for code that paces itself.
+
+```python
+class Photos(Source):
+    code, domains, api = "pho", ("photos.example.com",), 1
+
+    @target("pho:{user}", "photos.example.com/{user}")
+    def user(self, site: Site, user: str):
+        """A user's photos: `pho:example_user`, or `https://photos.example.com/example_user`."""
+        yield from ()
+
+assert [str(found) for found in check(Photos)] == ["pho:example_user", "pho:example_user"]
+```
+
+Each built-in source has a test like this in `tests/test_<code>.py`, and `examples/plugin/`
+has one for a plugin. Live runs against the real site are done by hand, on test accounts, never
+in a unit test.
 
 ## 5. Where files go
 
@@ -382,3 +411,51 @@ and run `make manifest`. Then:
    until it exists);
 3. run `make check`;
 4. try it by hand on a test account: `make try ARGS=exm:example_user`.
+
+## 10. Shipping it as a plugin
+
+A source that isn't built in is a **plugin**. flnd finds them, after its built-ins, in this
+order:
+
+1. **A package.** Declare an entry point in the `flnd.sources` group, named by the source's
+   code, and publish it; `pip install` it where flnd is installed:
+
+   ```toml
+   [project.entry-points."flnd.sources"]
+   exm = "flnd_example:Example"
+   ```
+
+2. **A file.** Save it as `exm.py` in the plugin folder: `$FLND_SOURCES`, else
+   `~/.config/flnd/sources/` (`%APPDATA%\flnd\sources\` on Windows). A source that needs
+   more files is a folder, `exm/`, with an `__init__.py` that imports its class; its modules
+   import each other relatively (`from .api import read`), since the folder is never put on
+   `sys.path`. A file's `__version__` is shown as its version.
+3. **A script.** `fl.add(Example)` adds it to one `Flnd` ([library.md](library.md)).
+
+The entry point's name, or the file's, is the source's code, and must match the class's `code`.
+That is how `exm:example_user` finds its plugin without importing any other, and a link imports
+the plugins only when no built-in reads it. A code that is taken already (by a built-in, or by
+a plugin found before it) is refused with a warning: a plugin never replaces another source.
+`flnd sources` lists every source with where it came from, its version, and its login.
+
+**Never from a home.** flnd never loads code from a home folder. A home is often `./.flnd` in
+the folder you are in, which may be a cloned repository or an unpacked archive: loading
+`<home>/sources/*.py` would run whatever that folder holds. Install a plugin as you would any
+code, into your own plugin folder or with pip.
+
+**A broken plugin disables only itself.** An import error, or a class that fails its checks (a
+bad pattern, a newer source API), disables that plugin alone, with a warning naming its file
+and line, which `flnd sources` repeats. An exception inside its listing fails that target alone,
+as a `SourceError` whose hint names the plugin. An `async def` route that runs 10 s without
+awaiting (a blocking call) holds up the whole run, and is warned about.
+
+This is containment, not a security boundary: a plugin runs in flnd's process, with your
+logins, and can do anything you can. Install only plugins you trust.
+
+### Source API versions
+
+A source says which major version of the source API it was written for: `api = 1`. This flnd
+has `flnd.source.API = 1`. A plugin for a newer version is refused ("exm needs source API 2;
+this flnd has 1: update flnd"), and one for an older version is refused with a pointer here.
+Additions that don't break a written source keep the version. When a version changes, this
+section lists what to change, version by version; source API 1 is the first.

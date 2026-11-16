@@ -50,15 +50,16 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
-from flnd import _files, _home, _text, _transfer
+from flnd import _files, _home, _loop, _text, _transfer
 from flnd._text import fill
 from flnd._time import day
 from flnd.errors import (
-    Blocked, Error, LoginError, NetworkError, SiteError, Stopped, classify,
+    Blocked, Error, LoginError, NetworkError, SiteError, SourceError, Stopped, classify,
 )
 from flnd.options import Options, selected, stop_after
 from flnd.site import Listing, SourceRun, TargetSite
 from flnd.source import Category, File, Post, Range, Route, Site, Source, Target
+from flnd.sources import SOURCES
 from flnd._events import Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._ui import ui
@@ -90,6 +91,8 @@ EXPIRED = frozenset({403, 410})
 STOPPED = "stopped by Ctrl-C"
 FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
 WAKE = 0.1
+# Seconds an async listing may run without awaiting before it is warned about (`_steps`).
+HELD = 10.0
 # A target's queue holds this many times its `jobs` files, queued or downloading, before its
 # listing waits: enough that a burst of small files never starves the transfers.
 QUEUE = 4
@@ -148,6 +151,11 @@ def failure(error: BaseException, target: Target, source: Source | None = None) 
     """
     made = classify(error, target=str(target))
     assert isinstance(made, Error), made
+    # A bug in a plugin is its author's to fix, not flnd's: the hint says whose code it is.
+    plugin = SOURCES.plugin(type(source)) if source is not None else None
+    if plugin is not None and isinstance(made, SourceError) and made.__cause__ is error:
+        made.hint = (f"a bug in the plugin {plugin.code} ({plugin.where}), not in flnd; "
+                     "report it to its author")
     if (source is not None and type(made) is SiteError and made.status in LOGIN_WALLS
             and _on_domains(made, source.domains)):
         login = logged_out(target, f"{source.code}: the site refused the login "
@@ -2126,10 +2134,17 @@ def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:
             if close is not None:
                 close()
         return
+    # Async code runs on the run's loop, so a blocking call in it stalls every download: each
+    # stretch it runs without awaiting is timed, and one past `HELD` seconds warns.
+    name = getattr(yielded, "__qualname__", "an async listing")
+
+    def slow(seconds: float) -> None:
+        ui.warn("{name} held the loop {seconds:.1f} s without awaiting; await, or use a plain "
+                "def, which runs on its own thread", name=name, seconds=seconds)
     try:
         while True:
             try:
-                yield run_async(yielded.__anext__())
+                yield run_async(_loop.held(yielded.__anext__(), limit=HELD, slow=slow))
             except StopAsyncIteration:
                 return
     finally:

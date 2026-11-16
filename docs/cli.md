@@ -233,8 +233,35 @@ flnd logout ins
 
 ## `flnd sources`
 
-List the sources: their names, the targets they read, their categories and their ways to log in.
-With `--json`, one object per source.
+List every source: the built-ins, the plugins, and where each came from (`built-in`, `package`
+for an installed package's entry point, `file` for the plugin folder), its version, the targets
+it reads, its categories, and its login state with its ways to log in. A plugin that is
+disabled is listed with the reason, naming its file and line:
+
+```sh
+flnd sources
+```
+
+```text
+ins  Instagram  (built-in 0.1.0)
+  targets:    ins:me, ins:<user>, https://www.instagram.com/p/<code>/, …
+  categories: posts, reels, tagged, reposts, stories, highlights, profile
+  login:      logged in (browser, file)
+exm  Example  (file 1.0)
+  from:       /home/example_user/.config/flnd/sources/exm.py
+  targets:    exm:<user>, https://www.example.com/p/<id>/, https://www.example.com/<user>/
+  categories: posts
+  login:      needs no login
+bad  bad  (file)
+  disabled:   /home/example_user/.config/flnd/sources/bad.py, line 3: NameError: name 'Sorce' is not defined
+```
+
+Plugins load from `$FLND_SOURCES`, else `~/.config/flnd/sources/` (`%APPDATA%\flnd\sources\`
+on Windows), and from installed packages; never from a home
+([writing-a-source.md](writing-a-source.md#10-shipping-it-as-a-plugin)). This command imports
+every one of them; `flnd --help` imports none. `flnd login`, `flnd ls` and every download know
+the plugin sources as they know the built-ins. With `--json`, one object per source, with
+`"type": "Source"` and the fields of `flnd.Installed`.
 
 ## What a run prints
 

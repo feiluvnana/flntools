@@ -1167,7 +1167,8 @@ def owner(target_text: str, sources: Mapping[str, type[Source]]) -> type[Source]
     """Return the source whose domains `target_text` belongs to, or None.
 
     A built-in source's domains come from the manifest, so matching a link imports only the
-    source that owns it; a source added at run time is asked for its own.
+    source that owns it. The built-ins are asked first: only a link none of them owns asks the
+    other sources, which imports every plugin (`flnd.sources.Registry`).
 
     Args:
         target_text: a link, or a target written without its source.
@@ -1178,11 +1179,13 @@ def owner(target_text: str, sources: Mapping[str, type[Source]]) -> type[Source]
     """
     from flnd.sources import _manifest
 
-    for code in sources:
-        known = _manifest.SOURCES.get(code)
-        domains = known["domains"] if known is not None else sources[code].domains
-        if _on(target_text, domains):  # type: ignore[arg-type]
+    for code, known in _manifest.SOURCES.items():
+        if code in sources and _on(target_text, known["domains"]):  # type: ignore[arg-type]
             return sources[code]
+    for code in sources:
+        cls = None if code in _manifest.SOURCES else sources.get(code)
+        if cls is not None and _on(target_text, cls.domains):
+            return cls
     return None
 
 

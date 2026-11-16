@@ -26,6 +26,7 @@ here also changes this page, so the page always describes the code you have chec
         └── flnd/job.py         one target: list its posts, plan its files, download, record
                 │
                 └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API)
+                    and the plugins: <code>.py files in the plugin folder, or installed packages
 
    flnd/_*.py   the private toolkit the rest is built on: http, browser, db, files, loop, ui,
              cookies, vault, unpack, html, prompt, cli, text, time and a few more
@@ -37,12 +38,14 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/__init__.py` | the public names, each imported from its module on first use | scripts |
 | `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine | scripts |
 | `flnd/_run.py` | `Run`: a command on its own thread, read as a stream of events | `Flnd` |
-| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked`, `Checked` | the engine, the job, `Run` |
+| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked`, `Checked`, `Installed` | the engine, the job, `Run` |
 | `flnd/engine.py` | `Engine`: every command as a method, and target resolution | `Flnd` |
 | `flnd/job.py` | one target's run: listing, the early stops and the listing's head, resuming cursors, planning, the download pool, history rows | the engine |
 | `flnd/site.py` | `SourceRun` (a source's cookies, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`) and `LoginSite` | the engine, the job |
 | `flnd/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
-| `flnd/sources/` | the seven built-in sources, one module each | the engine, through `SOURCES` |
+| `flnd/sources/` | the seven built-in sources, one module each, and `SOURCES`, the registry of every source, plugins included, each imported on first use | the engine and the library |
+| `flnd/_plugins.py` | finding plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line ([writing-a-source.md](writing-a-source.md#10-shipping-it-as-a-plugin)) | `SOURCES` |
+| `flnd/testing.py` | the public test kit: `FakeSite`, `collect`, `check`, `fake_clock` | a source's tests, flnd's own (`tests/fakes.py`) |
 | `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
 | `flnd/_home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
 | `flnd/options.py` | `Options` and `RunShared`, the check of `--only` before any work, and `stop_after` from config.toml | the engine, the job |
@@ -54,6 +57,24 @@ here also changes this page, so the page always describes the code you have chec
 The rule between them: a source imports `flnd.source` and the standard library (and, lazily, an
 SDK its site needs), and nothing else of flnd. The engine imports the sources only through
 `flnd.sources.SOURCES`.
+
+## Plugins
+
+A plugin is a source that isn't built in. `SOURCES` knows the built-ins from the manifest, and
+looks for plugins the first time a code that isn't built in is needed: first the `flnd.sources`
+entry points of installed packages, then `<code>.py` files and `<code>/` packages in the plugin
+folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`, `%APPDATA%\flnd\sources\` on
+Windows). Finding them reads names only, since a plugin's code is its entry point's or its
+file's name; `exm:example_user` then imports `exm` alone. A link imports the plugins only when no
+built-in's domains match it, `flnd sources` imports them all, and `--help` none. A code that is
+taken already is refused, never replaced.
+
+A plugin runs in flnd's process. A broken one (an import error, a class that fails its checks,
+a newer source API) is disabled alone, with a warning naming its file and line. An error inside
+its listing fails that target alone, like a built-in's, with a hint naming the plugin. Its async
+code runs on the run's loop, so a stretch that runs 10 s without awaiting is warned about
+(`flnd._loop.held`). flnd never loads code from a home: a home is often the folder you are in,
+and code there may not be yours.
 
 ## One download, start to finish
 
@@ -266,6 +287,7 @@ others; a refused login stops its source, and a full disk stops the run.
 
 - [cli.md](cli.md): every command and flag.
 - [library.md](library.md): flnd from a Python script.
-- [writing-a-source.md](writing-a-source.md): adding a site.
+- [writing-a-source.md](writing-a-source.md): adding a site, testing it, and shipping it as a
+  plugin.
 - [performance.md](performance.md): what is fast, what isn't, and how it is measured.
 - [sources/](README.md#sites): what each site's source does.

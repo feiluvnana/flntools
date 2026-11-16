@@ -13,8 +13,14 @@ kind and its captured value (`example_user`).
 ## Source
 The code for one site, as one `flnd.source.Source` subclass in `flnd/sources/<code>.py`. Its
 **code** is the three-letter prefix of its targets (`ins`, `tik`, `twt`, `fbk`, `tlg`, `loi`,
-`mht`). `flnd.sources.SOURCES` lists every built-in source. See
+`mht`). `flnd.sources.SOURCES` lists every source, built in or a plugin. See
 [writing-a-source.md](writing-a-source.md).
+
+## Plugin
+A source that isn't built in: an installed package's `flnd.sources` entry point, or a
+`<code>.py` file (or `<code>/` package) in the user's plugin folder, `$FLND_SOURCES`, else
+`~/.config/flnd/sources/`. Never a file in a home. See
+[writing-a-source.md](writing-a-source.md#10-shipping-it-as-a-plugin).
 
 ## Route
 A method of a source that reads one kind of target, made with the `@target(...)` decorator. Its

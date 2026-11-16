@@ -16,6 +16,10 @@ Rules a change must keep:
 - A coroutine handed over runs in a copy of its caller's context (`contextvars`), so the clock a
   test installed (`flnd._time.use`) and any other context variable reach it.
 - Closing cancels whatever still runs on the loop, then stops its thread.
+
+`held(awaitable, limit=…, slow=…)` wraps a coroutine to time each stretch it runs without
+awaiting, so a caller can warn about code that holds the loop up (a blocking call in an `async
+def`): every other task of the run waits while it does.
 """
 
 from __future__ import annotations
@@ -25,10 +29,11 @@ import concurrent.futures
 import contextvars
 import inspect
 import threading
-from collections.abc import Awaitable
+import time
+from collections.abc import Awaitable, Callable, Generator
 from typing import Any, TypeVar
 
-__all__ = ["Loop"]
+__all__ = ["Loop", "held"]
 
 R = TypeVar("R")
 
@@ -170,6 +175,79 @@ class Loop:
                 )
                 self._thread.start()
             return self._loop
+
+
+def held(awaitable: Awaitable[R], *, limit: float,
+         slow: Callable[[float], None]) -> Awaitable[R]:
+    """`awaitable`, timed: `slow(seconds)` is called after each stretch that held the loop too long.
+
+    A coroutine runs in stretches: from one `await` that suspends it to the next. While a
+    stretch runs, nothing else on the loop does. This drives the coroutine one stretch at a time,
+    as `await` would, and measures each on the real monotonic clock (a fake clock can't see a
+    blocking call). It costs two clock reads per stretch.
+
+    The check comes when the stretch ends, so code that never yields is caught only once it
+    does; until then the loop is stuck, and Ctrl-C still ends the run.
+
+    Args:
+        awaitable: the coroutine (or any awaitable) to run.
+        limit: the seconds a stretch may take before `slow` is told.
+        slow: called on the loop's thread with the stretch's seconds; it must not raise.
+
+    Returns:
+        An awaitable giving what `awaitable` gives, raising what it raises.
+
+    Example:
+        >>> async def busy():
+        ...     time.sleep(0.02)
+        ...     return "done"
+        >>> told = []
+        >>> asyncio.run(_awaited(held(busy(), limit=0.01, slow=told.append))), len(told)
+        ('done', 1)
+    """
+    return _Held(awaitable, limit, slow)
+
+
+class _Held:
+    """What `held` returns: an awaitable that times each stretch of the one it wraps.
+
+    Args:
+        awaitable: the awaitable to run.
+        limit: the seconds a stretch may take.
+        slow: told the seconds of each stretch over `limit`.
+    """
+
+    def __init__(self, awaitable: Awaitable[Any], limit: float,
+                 slow: Callable[[float], None]) -> None:
+        self._awaitable, self._limit, self._slow = awaitable, limit, slow
+
+    def __await__(self) -> Generator[Any, Any, Any]:
+        # What `yield from` does, one step at a time: each `send` or `throw` runs the inner
+        # coroutine until it suspends (giving the future it waits on) or ends.
+        inner = self._awaitable.__await__()
+        sent: Any = None
+        thrown: BaseException | None = None
+        while True:
+            start = time.monotonic()
+            try:
+                waits = inner.send(sent) if thrown is None else inner.throw(thrown)
+            except StopIteration as done:
+                self._check(start)
+                return done.value
+            except BaseException:
+                self._check(start)
+                raise
+            self._check(start)
+            try:
+                sent, thrown = (yield waits), None
+            except BaseException as error:
+                # A cancel or a close reaches the inner coroutine, as `yield from` passes it.
+                sent, thrown = None, error
+
+    def _check(self, start: float) -> None:
+        took = time.monotonic() - start
+        if took >= self._limit:
+            self._slow(took)
 
 
 def _settled(task: asyncio.Task[Any], future: concurrent.futures.Future[Any]) -> None:

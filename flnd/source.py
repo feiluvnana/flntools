@@ -893,6 +893,14 @@ class Feed(Protocol):
                 ...
 
     Iterate it for each body, oldest first. Leaving `with`, or the end of the iteration, stops it.
+
+    Example:
+        >>> from flnd.testing import FakeSite
+        >>> site = FakeSite(feeds=[("https://www.example.com/graphql?page=1", {"items": [1]}),
+        ...                        ("https://www.example.com/graphql?page=2", {"items": [2]})])
+        >>> with site.feed("/graphql", scroll=True) as pages:
+        ...     [page["items"] for page in pages]
+        [[1], [2]]
     """
 
     def __iter__(self) -> Iterator[Any]:
@@ -912,7 +920,14 @@ class Feed(Protocol):
         ...
 
     def close(self) -> None:
-        """Stop watching; a second call does nothing."""
+        """Stop watching; a second call does nothing.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> pages = FakeSite().feed("/graphql")
+            >>> pages.close()
+            >>> pages.close()
+        """
         ...
 
 
@@ -925,7 +940,7 @@ class Site(Protocol):
         if site.open(f"https://www.example.com/{user}/"):
             title = site.document().first("h1").text
 
-    The engine's is `flnd.site.TargetSite`; tests use `tests.fakes.FakeSite`. Every request to the
+    The engine's is `flnd.site.TargetSite`; tests use `flnd.testing.FakeSite`. Every request to the
     source's own `domains` waits its turn under the source's `pace`, and a rate limit or a 5xx is
     waited out and tried again here, so a source never sleeps or retries itself. A login wall
     (a 401 or 403 from the source's own domains) raises `LoginError`.
@@ -933,6 +948,15 @@ class Site(Protocol):
     The browser verbs (`open`, `wait`, `scroll`, `feed`, `warm`, `document`, `evaluate`,
     `click`) drive the target's tab in the run's one browser, launched the first time a target
     needs it. They are for a plain `def` route or category; an `async def` one awaits `site.tab`.
+
+    Example:
+        >>> from flnd.testing import FakeSite
+        >>> site = FakeSite(Target("exm:example_user", kind="user"),
+        ...                 json={"https://api.example.com/users/example_user": {"id": "42"}})
+        >>> site.fetch("https://api.example.com/users/example_user").json["id"]
+        '42'
+        >>> site.target.value
+        'example_user'
     """
 
     @property
@@ -975,6 +999,14 @@ class Site(Protocol):
             Blocked: a 429 still refused after its waits.
             SiteError: another refusal, with its `status` and `response`.
             NetworkError: no answer, after the tries.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite(json={"https://api.example.com/users/example_user": {"id": "42"}})
+            >>> site.fetch("https://api.example.com/users/example_user").json
+            {'id': '42'}
+            >>> site.fetch("https://api.example.com/users/nobody", check=False).ok
+            False
         """
         ...
 
@@ -1025,6 +1057,12 @@ class Site(Protocol):
         Returns:
             Whether it loaded. A page that didn't is a warning line, not an error, and the tab
             stays where it was. A 429 is waited out and the page loaded again, a few times.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite(pages={"https://www.example.com/example_user/": "<h1>Hi</h1>"})
+            >>> site.open("https://www.example.com/example_user/"), site.url
+            (True, 'https://www.example.com/example_user/')
         """
         ...
 
@@ -1046,6 +1084,13 @@ class Site(Protocol):
 
         Raises:
             NetworkError: `timeout` passed first; the message names what was waited for.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite(pages={"https://www.example.com/": "<main>posts</main>"})
+            >>> site.open("https://www.example.com/")
+            True
+            >>> site.wait("main", url="**/www.example.com/**", timeout=10)
         """
         ...
 
@@ -1059,6 +1104,12 @@ class Site(Protocol):
 
         Returns:
             How many scrolls it made.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> seen = []
+            >>> FakeSite().scroll(until=lambda: len(seen) > 10)
+            0
         """
         ...
 
@@ -1082,6 +1133,16 @@ class Site(Protocol):
 
         Returns:
             The `Feed`, to iterate and close.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite(feeds=[("https://www.example.com/api/posts", {"more": False})])
+            >>> with site.feed("/api/posts", scroll=True,
+            ...                cursor=lambda page: (page["more"], None)) as pages:
+            ...     site.open("https://www.example.com/example_user/")
+            ...     list(pages)
+            True
+            [{'more': False}]
         """
         ...
 
@@ -1106,6 +1167,14 @@ class Site(Protocol):
 
         Returns:
             The page, with `css`, `first`, `script`, `blocks`, `text` and `visible`; see `html`.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite(pages={"https://www.example.com/": "<h1>Hi</h1>"})
+            >>> site.open("https://www.example.com/")
+            True
+            >>> site.document().first("h1").text
+            'Hi'
         """
         ...
 
@@ -1118,6 +1187,11 @@ class Site(Protocol):
 
         Returns:
             The value, as JSON carries it.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> FakeSite().evaluate("(n) => n + 1", arg=1) is None   # a fake page runs nothing
+            True
         """
         ...
 
@@ -1130,6 +1204,10 @@ class Site(Protocol):
 
         Raises:
             NetworkError: nothing clickable matched within `timeout`, or the tab closed.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> FakeSite().click("button.more", timeout=5)
         """
         ...
 
@@ -1145,6 +1223,11 @@ class Site(Protocol):
 
         Returns:
             True when `until` came true; False when `timeout` passed first.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> FakeSite().handoff(until=lambda: True, message="solve the captcha")
+            True
         """
         ...
 
@@ -1195,6 +1278,10 @@ class Site(Protocol):
         Args:
             seconds: how long.
             reason: why, for the people watching the run.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> FakeSite().pause(2, "the page settles")
         """
         ...
 
@@ -1212,6 +1299,13 @@ class Site(Protocol):
 
         Raises:
             Blocked: the site kept blocking after three waits in a row.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite()
+            >>> site.back_off("please wait a few minutes", retry_after=60)
+            >>> site.seen.back_offs
+            ['please wait a few minutes']
         """
         ...
 
@@ -1259,6 +1353,13 @@ class Site(Protocol):
         Args:
             message: the text, with `{name}` fields filled in from `fields`.
             **fields: the values of the message's fields.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite()
+            >>> site.info("{n} stories", n=3)
+            >>> site.seen.messages
+            ['3 stories']
         """
         ...
 
@@ -1268,6 +1369,13 @@ class Site(Protocol):
         Args:
             message: the text, with `{name}` fields filled in from `fields`.
             **fields: the values of the message's fields.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> site = FakeSite()
+            >>> site.warn("{n} posts are hidden", n=2)
+            >>> site.seen.messages
+            ['! 2 posts are hidden']
         """
         ...
 
@@ -1589,7 +1697,7 @@ def _check_api(cls: type[Source], label: str) -> None:
                           hint="update flnd")
     if api < API:
         raise SourceError(f"{label} was written for source API {api}; this flnd has {API}",
-                          hint="see docs/writing-a-source for the changes")
+                          hint="see docs/writing-a-source.md#source-api-versions")
 
 
 def _check_templates(cls: type[Source], label: str) -> None:

@@ -19,7 +19,7 @@ setup:    ; $(UV) sync --python $(PY) --all-extras
 # While set, flnd refuses to read or copy a real browser profile (tests/no_profiles.py).
 test: export FLND_TEST_NO_PROFILES = 1
 test:     ; $(RUN) python -m unittest discover -s tests $(ARGS)
-lint:     ; $(RUN) ruff check flnd tests
+lint:     ; $(RUN) ruff check flnd tests examples
 check: lint test
 api:      ; $(RUN) python tests/api_snapshot.py --write
 # The data `flnd --help` and target resolution read instead of importing every source; run it
@@ -32,9 +32,9 @@ media-real: ; $(RUN) python tests/bench/media_real.py $(ARGS)
 # A hand check: throughput from one real CDN host at caps 8, 16, 24 and 32, from URLs kept
 # outside the repo: `make cdn-real ARGS="--urls ~/flnd-cdn.txt"` (docs/performance.md).
 cdn-real: ; $(RUN) python tests/bench/cdn_real.py $(ARGS)
-# pdoc walks a package's public submodules, so `flnd` covers `flnd.source` too.
-docs:     ; $(RUN) pdoc -d google flnd -o build/docs
-type:     ; $(RUN) pyright flnd/__init__.py flnd/source.py
+# The reference of the three public modules: the library, the source API and the test kit.
+docs:     ; $(RUN) pdoc -d google flnd flnd.source flnd.testing -o build/docs
+type:     ; $(RUN) pyright flnd/__init__.py flnd/source.py flnd/testing.py
 # Lists, live, what a download would save, without saving anything, in a scratch home `.try`:
 # `make try ARGS="ins:example_user --only reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try login ins chrome`); `make clean` removes it.

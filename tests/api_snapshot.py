@@ -42,8 +42,8 @@ from typing import Any, NamedTuple
 ROOT = Path(__file__).resolve().parent.parent
 
 # The modules the snapshot lists, each through its `__all__`: the API a source is written
-# against, and the library a script imports.
-API_MODULES = ("flnd.source", "flnd")
+# against, the library a script imports, and the kit a source is tested with.
+API_MODULES = ("flnd.source", "flnd", "flnd.testing")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.

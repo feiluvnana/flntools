@@ -260,7 +260,7 @@ A route or category may be `def` or `async def`. Plain `def` runs on its own lis
 from flnd.testing import FakeSite, collect
 
 site = FakeSite(json={"https://api.example.com/users/example_user/photos": PAGE})
-saved = collect(Example, "exm:example_user", site)
+saved = collect(Example, "exm:example_user", site=site)
 assert saved[0].path == "exm/example_user/123_1.jpg"
 ```
 Tests never touch the network. `check(Example)` validates the class and resolves every example in its route docstrings. Live runs against real sites are done by hand, on test accounts.

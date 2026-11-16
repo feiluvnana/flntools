@@ -46,9 +46,23 @@ flnd.Flnd.logins: property -> list[Login]
 flnd.Flnd.logout(source: str) -> bool
 flnd.Flnd.retry() -> Run
 flnd.Flnd.site(source: str) -> Iterator[Site]
+flnd.Flnd.sources: property -> list[Installed]
 flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = (), *, compress: bool = False) -> Run
 flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
 flnd.Flnd.unfollow(targets: str | Target | Sequence[str | Target]) -> list[Target]
+flnd.Installed(code: str, name: str, origin: str, where: str = '', version: str = '', api: int = 0, login: str = '', domains: tuple[str, ...] = (), forms: tuple[str, ...] = (), categories: tuple[str, ...] = (), logins: tuple[str, ...] = (), disabled: str = '')
+flnd.Installed.api: attribute -> int
+flnd.Installed.categories: attribute -> tuple[str, ...]
+flnd.Installed.code: attribute -> str
+flnd.Installed.disabled: attribute -> str
+flnd.Installed.domains: attribute -> tuple[str, ...]
+flnd.Installed.forms: attribute -> tuple[str, ...]
+flnd.Installed.login: attribute -> str
+flnd.Installed.logins: attribute -> tuple[str, ...]
+flnd.Installed.name: attribute -> str
+flnd.Installed.origin: attribute -> str
+flnd.Installed.version: attribute -> str
+flnd.Installed.where: attribute -> str
 flnd.Login(source: str, name: str, state: str, origin: str = '', expiring: tuple[tuple[str, float], ...] = ())
 flnd.Login.expiring: attribute -> tuple[tuple[str, float], ...]
 flnd.Login.name: attribute -> str
@@ -317,3 +331,50 @@ flnd.source.UsageError.target: attribute
 flnd.source.cookies(*names: str, required: bool = False) -> Cookies
 flnd.source.dig(data: Any, path: str) -> Any
 flnd.source.target(*patterns: str, newest_first: bool = False, shown: str | None = None, discovers: bool = False, folder: str | None = None) -> Callable[..., Route]
+flnd.testing: module
+flnd.testing.Collected(path: str, url: Any, post: Post, key: str, file: File)
+flnd.testing.Collected.date: property -> datetime.date | None
+flnd.testing.Collected.file: field -> File
+flnd.testing.Collected.key: field -> str
+flnd.testing.Collected.path: field -> str
+flnd.testing.Collected.post: field -> Post
+flnd.testing.Collected.url: field -> Any
+flnd.testing.FakeSite(target: Target | None = None, *, json: Mapping[str, Answer] | None = None, html: Mapping[str, Answer] | None = None, pages: Mapping[str, str] | None = None, feeds: Iterable[tuple[str, Any]] = (), cookies: Mapping[str, str] | None = None, time: Range = Range(since=None, until=None), client: Any = None, state: MutableMapping[str, Any] | None = None, seen: Seen | None = None)
+flnd.testing.FakeSite.ask(message: str, *, secret: bool = False, description: str = '') -> str
+flnd.testing.FakeSite.back_off(reason: str, *, retry_after: float | None = None) -> None
+flnd.testing.FakeSite.click(css: str, *, timeout: float = 10.0) -> None
+flnd.testing.FakeSite.client: attribute
+flnd.testing.FakeSite.cookies: property -> Mapping[str, str]
+flnd.testing.FakeSite.document() -> Any
+flnd.testing.FakeSite.evaluate(js: str, *, arg: Any = None) -> Any
+flnd.testing.FakeSite.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = False, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> Any
+flnd.testing.FakeSite.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> _net.Response
+flnd.testing.FakeSite.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
+flnd.testing.FakeSite.html(text: str | bytes) -> Any
+flnd.testing.FakeSite.info(message: str, **fields: Any) -> None
+flnd.testing.FakeSite.interactive: attribute
+flnd.testing.FakeSite.listing: attribute -> Any
+flnd.testing.FakeSite.open(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
+flnd.testing.FakeSite.pages(url: str, *, cursor: str | Callable[[Any], Any], params: Mapping[str, Any] | None = None, send: str | Callable[[Any], Mapping[str, Any]] = 'cursor') -> Iterator[Any]
+flnd.testing.FakeSite.pause(seconds: float, reason: str) -> None
+flnd.testing.FakeSite.scroll(*, until: Callable[[], bool] | None = None, idle: float = 2.0) -> int
+flnd.testing.FakeSite.secrets: attribute -> MutableMapping[str, str]
+flnd.testing.FakeSite.seen: property -> Seen
+flnd.testing.FakeSite.state: attribute -> MutableMapping[str, Any]
+flnd.testing.FakeSite.tab: property -> Any
+flnd.testing.FakeSite.target: attribute
+flnd.testing.FakeSite.time: property -> Range
+flnd.testing.FakeSite.url: property -> str
+flnd.testing.FakeSite.wait(css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None, idle: bool = False, timeout: float = 30.0) -> None
+flnd.testing.FakeSite.warm(urls: Iterable[str]) -> None
+flnd.testing.FakeSite.warn(message: str, **fields: Any) -> None
+flnd.testing.Seen(requests: list[tuple[str, str, dict[str, Any]]] = <factory>, visited: list[str] = <factory>, scrolls: int = 0, messages: list[str] = <factory>, back_offs: list[str] = <factory>, warmed: list[str] = <factory>)
+flnd.testing.Seen.back_offs: field -> list[str]
+flnd.testing.Seen.messages: field -> list[str]
+flnd.testing.Seen.requests: field -> list[tuple[str, str, dict[str, Any]]]
+flnd.testing.Seen.scrolls: field -> int
+flnd.testing.Seen.visited: field -> list[str]
+flnd.testing.Seen.warmed: field -> list[str]
+flnd.testing.check(source: type[Source]) -> list[Target]
+flnd.testing.collect(source: type[Source], target: str, *, site: FakeSite | None = None, json: Mapping[str, Answer] | None = None, html: Mapping[str, Answer] | None = None, only: Sequence[str] | None = None) -> list[Collected]
+flnd.testing.fake_clock(start: float = 0.0) -> Iterator[_time.Fake]

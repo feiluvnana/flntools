@@ -38,7 +38,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from flnd._events import Checked, Login, Record, Tracked
+from flnd._events import Checked, Installed, Login, Record, Tracked
 from flnd._run import Run
 from flnd.errors import UsageError
 
@@ -484,8 +484,37 @@ class Flnd:
                       expiring=tuple((name, left) for name, left in info.expiring))
                 for info in self._engine().auth_ls()]
 
+    @property
+    def sources(self) -> list[Installed]:
+        """Every source: the built-ins, the plugins (disabled ones too, saying why), then `add`'s.
+
+        Reading it imports every source and plugin, as `flnd sources` does.
+
+        Example:
+            >>> import flnd
+            >>> with flnd.open("example-home") as fl:
+            ...     [row.origin for row in fl.sources if row.code == "ins"]
+            ['built-in']
+        """
+        from flnd import _plugins
+        from flnd.sources import SOURCES
+
+        logins = self._engine().logins
+        plugins = SOURCES.plugins
+        by_code = {plugin.code: plugin for plugin in plugins if not plugin.error}
+        rows = [_installed(SOURCES[code], by_code.get(code), logins) for code in SOURCES]
+        rows += [Installed(plugin.code, plugin.code, plugin.origin, where=plugin.where,
+                           version=plugin.version, disabled=plugin.error)
+                 for plugin in plugins if plugin.error]
+        rows += [_installed(cls, None, logins, origin=_plugins.SCRIPT)
+                 for cls in self._added.values()]
+        return rows
+
     def add(self, source: type[Source]) -> None:
         """Add a source for this `Flnd` alone: its targets resolve and download like a built-in's.
+
+        It comes after the built-ins and the plugins, so a code one of them has is refused,
+        never replaced.
 
         Args:
             source: the `flnd.source.Source` subclass.
@@ -511,7 +540,9 @@ class Flnd:
         if not (isinstance(source, type) and issubclass(source, Source)):
             raise UsageError(f"add takes a flnd.source.Source subclass, not {source!r}")
         if source.code in self._sources():
-            raise UsageError(f"a source with the code {source.code!r} is already there")
+            taken = self._sources()[source.code]
+            raise UsageError(f"{source.code}: the code is taken by {taken.__module__}."
+                             f"{taken.__qualname__}", hint="give the class another code")
         self._added[source.code] = source
 
     @contextmanager
@@ -651,6 +682,37 @@ class Flnd:
         run = Run(work, name=name, closed=self._closed)
         self._runs.add(run)
         return run
+
+
+def _installed(cls: type[Source], plugin: Any, logins: Mapping[str, str], *,
+               origin: str | None = None) -> Installed:
+    """A working source's row for `Flnd.sources`.
+
+    Args:
+        cls: the source's class.
+        plugin: its `flnd._plugins.Plugin` when it is one; None for a built-in or `add`'s.
+        logins: the login state of each source with one saved (`Engine.logins`).
+        origin: where it came from, when `plugin` doesn't say; None for a built-in.
+
+    Returns:
+        The row.
+    """
+    import flnd
+
+    if plugin is not None:
+        origin, where, version = plugin.origin, plugin.where, plugin.version
+    else:
+        where = f"{cls.__module__}:{cls.__qualname__}"
+        version = flnd.__version__ if origin is None else ""
+        origin = origin or "built-in"
+    if cls.login is None:
+        login = "needs no login"
+    else:
+        login = logins.get(cls.code, "not logged in")
+    methods = cls.login.methods if cls.login is not None else ()
+    return Installed(cls.code, cls.name, origin, where=where, version=version, api=cls.api,
+                     login=login, domains=tuple(cls.domains), forms=tuple(cls.forms),
+                     categories=tuple(cls.categories), logins=tuple(methods))
 
 
 # ---------------------------------------------------------------------------------------------
