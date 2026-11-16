@@ -9,7 +9,7 @@ import datetime
 import json
 import unittest
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from fakes import FakeSite, Seen, collect
@@ -494,6 +494,40 @@ class ProfileTest(unittest.TestCase):
         self.assertIn("flnd login fbk", seen.back_offs[0])
         self.assertEqual([s.key for s in saved], ["1"])
 
+
+class AlternatingSite:
+    """A site whose tab shows the given pages in turn, one per load, and counts its back-offs."""
+
+    def __init__(self, *shown):
+        self.shown, self.loads, self.back_offs = shown, 0, []
+
+    @property
+    def page(self):
+        url, text = self.shown[self.loads % len(self.shown)]
+        return SimpleNamespace(url=url, document=SimpleNamespace(text=text))
+
+    def back_off(self, reason):
+        self.back_offs.append(reason)
+        self.loads += 1
+
+
+class ReadPageTest(unittest.TestCase):
+    def test_a_login_wall_and_a_block_in_turn_still_give_up(self):
+        from flnd.sources import fbk
+
+        site = AlternatingSite((f"{SITE}/login/", ""), (f"{SITE}/a", "temporarily blocked"))
+        with mock.patch.object(fbk, "meta_results", return_value=[]):
+            with self.assertRaises((LoginError, FetchError)):
+                fbk.read_page(cast(Any, site), f"{SITE}/a")
+        self.assertLessEqual(len(site.back_offs), fbk.WALL_ATTEMPTS + fbk.BLOCK_ATTEMPTS)
+
+    def test_a_profile_named_like_the_login_page_is_no_wall(self):
+        from flnd.sources import fbk
+
+        site = AlternatingSite((f"{SITE}/login.example", ""))
+        with mock.patch.object(fbk, "meta_results", return_value=[]):
+            self.assertEqual(fbk.read_page(cast(Any, site), f"{SITE}/login.example"), [])
+        self.assertEqual(site.back_offs, [])
 
 def info_line(cursor):
     """A streamed line with the timeline's `page_info`; "" for the last page."""

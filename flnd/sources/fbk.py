@@ -298,18 +298,20 @@ def read_page(site: Site, url: str) -> list[Any] | None:
             return results
         # Check tab url to see if page failed to load vs refusal vs empty page.
         page = site.page
-        if "/login" in urlsplit(page.url).path:
+        # The first segment: a profile like `/login.example` is no wall. The counts never reset
+        # each other, so a wall and a block in turn still give up.
+        if urlsplit(page.url).path.split("/")[1:2] in (["login"], ["login.php"]):
             if walls >= WALL_ATTEMPTS:
                 raise LoginError(
                     "fbk: Facebook kept asking for a login; run flnd auth login fbk"
                 )
-            walls, blocks = walls + 1, 0
+            walls += 1
             site.back_off(LOGIN_WALL)
             continue
         if BLOCKED in page.document.text.lower():
             if blocks >= BLOCK_ATTEMPTS:
                 raise FetchError(TEMPORARILY_BLOCKED)
-            blocks, walls = blocks + 1, 0
+            blocks += 1
             site.back_off(TEMPORARILY_BLOCKED)
             continue
         # Site.goto keeps tab where it was on failure; wrong URL means page didn't load.
