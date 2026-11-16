@@ -104,7 +104,7 @@ x ins:example_user: not logged in
 ```
 
 An unexpected exception is a bug. The CLI prints one line naming a crash file,
-`.flnd/logs/crash-<time>.txt`, which holds the traceback, and exits 4; with `-v` the traceback
+`.flnd/log/crash-<time>.txt`, which holds the traceback, and exits 4; with `-v` the traceback
 prints instead. A bug inside one target's listing doesn't stop the run: it becomes that target's
 `SourceError`, and its cause is printed with `-v`.
 
@@ -143,7 +143,7 @@ tools, and `fl.status` returns it as a `flnd.Status` ([library.md](library.md#re
 
 An answer that doesn't have the shape a source expects (`Changed`, with the answer in
 `e.response`) is kept as a sample, so a bug report can show what the site sent:
-`logs/<run>/samples/<n>.txt`, its first line the redacted URL. The failure's hint names the
+`log/<run>/samples/<n>.txt`, its first line the redacted URL. The failure's hint names the
 file. A sample is scrubbed before it is written:
 
 - every value under a key that looks like a secret (`token`, `csrf`, `session`, `cookie`,

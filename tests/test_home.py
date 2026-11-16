@@ -5,24 +5,18 @@ Every test runs on a temporary home. An old home is written here the way flnd wr
 `flnd.db`: SQLite stores of `t_<table>` rows of JSON values, in `metadata/`.
 """
 
-import base64
 import datetime
-import hashlib
-import json
 import os
-import shutil
 import sqlite3
-import stat
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from test_engine import CDN, EngineCase, make_source, noise
 
-from flnd import _home, _net, _vault
+from flnd import _home, _net
 from flnd.engine import Engine
 from flnd.errors import NetworkError, NotFound
 from flnd.options import Options
@@ -177,7 +171,7 @@ class FailuresTest(DbCase):
                         " '{\"url\": \"https://cdn.example/1.jpg?token=secret\"}')", (at,))
         sql.commit()
         sql.close()
-        self.home.mkdir()
+        (self.home / _home.DB).parent.mkdir(parents=True, exist_ok=True)
         os.replace(self.home.parent / "old.db", self.home / _home.DB)
         db = self.open()
         rows = db._store.all("SELECT * FROM failures", ())
@@ -239,145 +233,7 @@ class TargetsTest(DbCase):
             del state["asked"]
 
 
-# ---------------------------------------------------------------------------------------------
-# An old home
-# ---------------------------------------------------------------------------------------------
 
-def old_store(path, tables, *, json_store=False):
-    """Write an old store as flnd wrote it before `flnd.db`: tables of JSON values by key."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if json_store:
-        path.write_text(json.dumps(tables))
-        return
-    db = sqlite3.connect(path, isolation_level=None)
-    db.execute("PRAGMA journal_mode = WAL")
-    for name, rows in tables.items():
-        db.execute(f'CREATE TABLE "t_{name}" (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID')
-        db.executemany(f'INSERT INTO "t_{name}" VALUES (?, ?)',
-                       [(key, json.dumps(value)) for key, value in rows.items()])
-    db.close()
-
-
-def hashes(folder):
-    """Every file under `folder` with its SHA-256, so a test sees any change at all."""
-    return {path.relative_to(folder).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted(folder.rglob("*")) if path.is_file()}
-
-
-class MigrationTest(DbCase):
-    def setUp(self):
-        super().setUp()
-        old = self.home / "metadata"
-        media = ".flnd/media/aaa"
-        old_store(old / "targets.db", {"targets": {
-            # A row from before `sync` existed counts as followed.
-            "aaa:example_user": {"kind": "user", "at": "2026-01-01T00:00:00+00:00",
-                                 "complete": {"posts": "2026-01-01"}, "only": ["posts"],
-                                 "failed": {"aaa:9": {"url": "https://cdn.example/9.jpg?sig=s",
-                                                      "dest": f"{media}/example_user/9.jpg",
-                                                      "id": "p9", "headers": {"Cookie": "c=secret"}}}},
-            "aaa:other": {"kind": "user", "sync": False, "cursors": {"posts": "c3"}},
-            "aaa:cats": {"kind": "query", "seen": ["aaa:example_user"]},
-        }})
-        old_store(old / "history.db", {"downloads": {
-            "aaa:1": {"path": f"{media}/example_user/posts/1.jpg", "size": 3, "mtime": 5,
-                      "at": "2026-01-02T00:00:00+00:00", "id": "p1", "category": "posts",
-                      "date": "2026-01-02", "files": 2},
-            "aaa:2": {"path": f"{media}/example_user/posts/2.mp4", "size": 4,
-                      "at": "2026-01-02T00:00:00+00:00", "id": "p1", "category": "posts"},
-            # A folder no target row names any more.
-            "aaa:3": {"path": f"{media}/gone_user/3.jpg", "size": 1, "id": "p3",
-                      "estimated": True, "date": "2026-01-01"},
-        }})
-        old_store(old / "sources.db", {"aaa": {"redate.asked": {"p3": 1.0}}}, json_store=True)
-        self.key = os.urandom(32)
-        (old / "secret.key").write_bytes(self.key)
-        sealed = {name: base64.b64encode(_vault.encrypt(value, self.key, context=f"aaa\0{name}".encode())).decode()
-                  for name, value in (("cookies", json.dumps([{"name": "sid", "value": "v", "domain": "aaa.example"}])),
-                                      ("origin", "Chrome"))}
-        old_store(old / "secrets.db", {"secrets": {f"aaa:{name}": value for name, value in sealed.items()}})
-        self.before = hashes(old)
-
-    def test_an_old_home_is_copied_and_its_files_never_change(self):
-        db = self.open()
-        self.assertEqual(hashes(self.home / "metadata"), self.before)
-        targets = db.targets()
-        self.assertEqual(sorted(targets), ["aaa:cats", "aaa:example_user", "aaa:other"])
-        user = targets["aaa:example_user"]
-        self.assertEqual((user.follow, user.only, user.complete, user.files, user.bytes),
-                         (True, ("posts",), {"posts": "2026-01-01"}, 2, 7))
-        self.assertEqual((targets["aaa:other"].follow, targets["aaa:other"].cursors), (False, {"posts": "c3"}))
-        self.assertEqual(targets["aaa:cats"].seen, ["aaa:example_user"])
-        files = {r.key: r for r in db.records()}
-        self.assertEqual((files["aaa:1"].target, files["aaa:1"].kind, files["aaa:2"].kind),
-                         ("aaa:example_user", "image", "video"))
-        self.assertEqual((files["aaa:3"].target, files["aaa:3"].estimated), ("aaa:gone_user", True))
-        self.assertEqual(db.files_of_post("aaa:1"), 2)
-        self.assertEqual(db._store.one("SELECT files FROM posts WHERE post_id = ?", ("p1",)), (2,))
-        self.assertEqual(db.state("aaa")["redate.asked"], {"p3": 1.0})
-        pending = db.pending("aaa:example_user")
-        self.assertEqual([row.key for row in pending], ["aaa:9"])
-        self.assertNotIn("secret", repr(db._store.connection().execute("SELECT * FROM failures").fetchall()))
-
-    def test_the_vault_moves_with_its_key_and_still_opens(self):
-        self.assertEqual([c["name"] for c in _home.load(self.home, "aaa")], ["sid"])
-        self.assertEqual(_home.origin(self.home, "aaa"), "Chrome")
-        key = self.home / "secret.key"
-        self.assertEqual(key.read_bytes(), self.key)
-        if os.name != "nt":
-            self.assertEqual(stat.S_IMODE(key.stat().st_mode), 0o600)
-        self.assertEqual(hashes(self.home / "metadata"), self.before)
-
-    def test_a_second_open_does_not_migrate_again(self):
-        self.open().close()
-        with _home.open(self.home) as db:
-            sql = db._store.connection()
-            counts = [sql.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("files", "failures", "targets")]
-            migrated = sql.execute("SELECT value FROM meta WHERE key = 'migrated'").fetchone()
-        with _home.open(self.home) as db:
-            sql = db._store.connection()
-            self.assertEqual(
-                [sql.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("files", "failures", "targets")],
-                counts)
-            self.assertEqual(sql.execute("SELECT value FROM meta WHERE key = 'migrated'").fetchone(), migrated)
-        self.assertEqual(counts, [3, 1, 3])
-
-    def test_two_runs_opening_at_once_migrate_once(self):
-        errors = []
-
-        def opening():
-            try:
-                _home.open(self.home).close()
-            except Exception as error:  # noqa: BLE001 - the test reports it
-                errors.append(error)
-
-        threads = [threading.Thread(target=opening) for _ in range(4)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        self.assertEqual(errors, [])
-        with _home.open(self.home) as db:
-            self.assertEqual(len(db.records()), 3)
-            self.assertEqual(len(db.pending("aaa:example_user")), 1)
-
-    def test_rows_an_old_run_left_in_its_log_are_read_without_writing_the_store(self):
-        # An old run that stopped without a checkpoint leaves rows in `history.db-wal`. Copying the
-        # files while a connection holds them leaves exactly that.
-        scratch = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, scratch)
-        old_store(scratch / "history.db", {"downloads": {}})
-        live = sqlite3.connect(scratch / "history.db", isolation_level=None)
-        live.execute("PRAGMA wal_autocheckpoint = 0")
-        live.execute("INSERT INTO t_downloads VALUES ('aaa:7', ?)",
-                     (json.dumps({"path": ".flnd/media/aaa/example_user/7.jpg", "size": 1, "id": "p7"}),))
-        for name in ("history.db", "history.db-wal"):
-            shutil.copy(scratch / name, self.home / "metadata" / name)
-        live.close()
-        store = hashlib.sha256((self.home / "metadata" / "history.db").read_bytes()).hexdigest()
-        with _home.open(self.home) as db:
-            self.assertEqual([r.key for r in db.records()], ["aaa:7"])
-        self.assertEqual(hashlib.sha256((self.home / "metadata" / "history.db").read_bytes()).hexdigest(), store)
 
 
 # ---------------------------------------------------------------------------------------------

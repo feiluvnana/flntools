@@ -91,7 +91,9 @@ async def save(client: _net.Client, file: File, dest: Path, *, label: str,
             held.mtime = noon(day)
         for number, mirror in enumerate(mirrors, start=1):
             try:
-                await _mirror(client, mirror, file, held, label, headers, kind, received, halt)
+                audio = file.audio if number == 1 else None
+                await _mirror(client, mirror, file, held, label, headers, kind, received, halt,
+                              audio=audio)
                 break
             # The last mirror's failure is the file's; an earlier one's is a warning, and the
             # next mirror is tried. A `Stopped` is a KeyboardInterrupt, so it is never caught.
@@ -202,6 +204,7 @@ async def _mirror(
     client: _net.Client, mirror: str | Fetch, file: File, held: _files.Part, label: str,
     headers: Mapping[str, str] | None, kind: str | None,
     received: MutableMapping[str, str] | None, stop: threading.Event | None,
+    *, audio: str | None = None,
 ) -> None:
     """Download one mirror (fetch function, DASH pair, or URL) into the part `held`.
 
@@ -215,6 +218,7 @@ async def _mirror(
         kind: what the file must be, or None.
         received: filled with the response's headers.
         stop: set to stop the transfer.
+        audio: separate audio track URL for DASH merge, or None for progressive download.
 
     Returns:
         None, once the part holds the file.
@@ -222,8 +226,13 @@ async def _mirror(
     if callable(mirror):
         attempt = partial(_save_fetch, mirror, held, label, file.size, kind, stop)
         return await _again(attempt, worth=_fetch_again)
-    if file.audio is not None:
-        return await _save_dash(client, mirror, file.audio, held, label, headers, stop)
+    dash_audio = (
+        audio
+        if audio is not None
+        else (file.audio if not isinstance(file.url, tuple) or mirror == file.url[0] else None)
+    )
+    if dash_audio is not None:
+        return await _save_dash(client, mirror, dash_audio, held, label, headers, stop)
     return await _save_url(client, mirror, held, label, headers, file.size, kind, received,
                            stop)
 
@@ -317,6 +326,8 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
                 running.cancel()
             await asyncio.gather(*fills, return_exceptions=True)
             raise
+        for stream in streams:
+            stream.flush()
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
         row.caption("merging")
@@ -324,13 +335,52 @@ async def _dash_merge(client: _net.Client, video: str, audio: str, held: _files.
         fmt = "webm" if dest.suffix.lower() == ".webm" else "mp4"
         flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
         try:
-            # ffmpeg truncates and rewrites the locked part in place (`-y`), by its name. It
-            # runs on a worker thread, so the loop goes on with other transfers meanwhile.
-            await asyncio.to_thread(
-                ffmpeg.run,
-                "-y", "-i", str(streams[0].path), "-i", str(streams[1].path),
-                "-c", "copy", *flags, "-f", fmt, str(held.path),
-            )
+            # When the audio stream is empty (0 bytes) or invalid, merge only the video stream
+            # so the video is saved instead of failing the download. If the video stream is
+            # empty, raise so another mirror or retry can handle it.
+            video_size = streams[0].size
+            if video_size == 0:
+                raise _tools.RunError(
+                    f"video stream is empty (0 bytes): {streams[0].path}"
+                )
+            audio_path = streams[1].path
+            audio_size = streams[1].size
+            if audio_size == 0:
+                await asyncio.to_thread(
+                    ffmpeg.run,
+                    "-y", "-i", str(streams[0].path),
+                    "-c", "copy", *flags, "-f", fmt, str(held.path),
+                )
+            else:
+                try:
+                    await asyncio.to_thread(
+                        ffmpeg.run,
+                        "-y", "-i", str(streams[0].path), "-i", str(audio_path),
+                        "-c", "copy", *flags, "-f", fmt, str(held.path),
+                    )
+                except _tools.RunError as error:
+                    err_text = str(error)
+                    is_video_err = (
+                        "in#0" in err_text
+                        or str(streams[0].path) in err_text
+                    )
+                    is_audio_err = not is_video_err and (
+                        "in#1" in err_text
+                        or str(audio_path) in err_text
+                        or ("Invalid data found" in err_text and "in#0" not in err_text)
+                    )
+                    if is_audio_err:
+                        ui.debug(
+                            "audio stream invalid for {dest}; saving video only",
+                            dest=dest.name,
+                        )
+                        await asyncio.to_thread(
+                            ffmpeg.run,
+                            "-y", "-i", str(streams[0].path),
+                            "-c", "copy", *flags, "-f", fmt, str(held.path),
+                        )
+                    else:
+                        raise
         finally:
             # Merged or not, the streams go: a failed merge (a short stream, a container that
             # can't hold them) is tried again from new downloads.
@@ -523,8 +573,9 @@ class _Row:
         """
         with self._lock:
             if self.bar is None:
+                drawn = ui._progress_enabled()
                 self.bar = self.stack.enter_context(
-                    ui.progress(self.label, total=total, unit="bytes", drawn=False),
+                    ui.progress(self.label, total=total, unit="bytes", drawn=drawn),
                 )
                 return
             self.base = self.bar.count
@@ -566,8 +617,9 @@ class _Row:
         """
         with self._lock:
             if self.bar is None:
+                drawn = ui._progress_enabled()
                 self.bar = self.stack.enter_context(
-                    ui.progress(self.label, total=new, unit="bytes", drawn=False),
+                    ui.progress(self.label, total=new, unit="bytes", drawn=drawn),
                 )
             elif new is None or self.bar.total is None:
                 self.bar.total = None

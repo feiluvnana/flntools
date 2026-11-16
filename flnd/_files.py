@@ -732,9 +732,8 @@ def _leave(held: Part) -> None:
             with suppress(OSError):
                 os.unlink(held.side_path)
     finally:
-        if not WINDOWS:
-            with suppress(OSError):
-                _end(held)
+        with suppress(OSError):
+            _end(held)
 
 
 def _replace(source: Path, dest: Path) -> None:
@@ -755,6 +754,10 @@ def _replace(source: Path, dest: Path) -> None:
             if not WINDOWS or attempt == REPLACE_TRIES:
                 raise
             _time.sleep(REPLACE_PAUSE)
+        except FileNotFoundError:
+            if WINDOWS and dest.exists():
+                return
+            raise
 
 
 def _read_side(path: Path) -> dict[str, Any]:

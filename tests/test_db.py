@@ -1,7 +1,5 @@
 """flnd/_db.py, the SQLite store library: lazy files, transactions, threads, read-only opens."""
 
-import hashlib
-import sqlite3
 import tempfile
 import threading
 import unittest
@@ -59,17 +57,6 @@ class DbTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         with self.assertRaises(RuntimeError):
             db.write("INSERT INTO t VALUES ('b', 2)")
-
-    def test_read_only_never_changes_the_file(self):
-        self.db.write("INSERT INTO t VALUES ('a', 1)")
-        self.db.close()
-        before = hashlib.sha256(self.path.read_bytes()).hexdigest()
-        with _db.read_only(self.path) as sql:
-            self.assertEqual(sql.execute("SELECT k FROM t").fetchall(), [("a",)])
-            with self.assertRaises(sqlite3.Error):
-                sql.execute("INSERT INTO t VALUES ('b', 2)")
-        self.assertEqual(hashlib.sha256(self.path.read_bytes()).hexdigest(), before)
-        self.assertEqual(sorted(p.name for p in self.path.parent.iterdir()), ["x.db"])
 
 
 if __name__ == "__main__":

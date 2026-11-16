@@ -28,8 +28,6 @@ import kit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rich.console import Console  # noqa: E402
-from rich.theme import Theme  # noqa: E402
 
 from flnd import (  # noqa: E402
     _net,
@@ -37,8 +35,7 @@ from flnd import (  # noqa: E402
     _time,  # noqa: E402
 )
 from flnd._events import Host, Listing, Pause, Stats, System, Transfer, Transfers  # noqa: E402
-from flnd._screen import Screen  # noqa: E402
-from flnd._ui import PALETTE  # noqa: E402
+from flnd._ui import ui  # noqa: E402
 from flnd.source import Target  # noqa: E402
 
 ROWS = 1000
@@ -61,42 +58,21 @@ def big_stats() -> Stats:
                                ffmpeg=1, pillow=2, disk=100 << 30))
 
 
-def screen(width: int, height: int) -> tuple[Screen, Console]:
-    console = Console(file=io.StringIO(), width=width, height=height, force_terminal=True,
-                      color_system="truecolor", theme=Theme(PALETTE))
-    view = Screen("sync", console=console)
-    for n in range(50):
-        view.log.write(f"! www.example.com: rate limited; waiting {n}s\n")
-    return view, console
-
-
 def frames(report: kit.Report) -> None:
-    stats = big_stats()
-    view, console = screen(200, 60)
-    view.show(stats)
+    dest = io.StringIO()
+    with ui.scope(dest=dest, width=200):
+        with ui.group("sync") as grp:
+            for n in range(ROWS):
+                grp.add(f"example_user/{n}.mp4", total=1000)
 
-    def draw() -> None:
-        console.file.seek(0)
-        console.file.truncate()
-        console.print(view)
+            def draw() -> None:
+                dest.seek(0)
+                dest.truncate()
 
-    draw()
-    report.add("frame_1000", kit.best(draw, runs=50) * 1e3, "ms")
-
-    def new() -> None:
-        view.show(stats)
-        draw()
-
-    report.add("frame_1000_new", kit.best(new, runs=50) * 1e3, "ms")
-    small, small_console = screen(80, 24)
-    small.show(stats)
-
-    def draw_small() -> None:
-        small_console.file.seek(0)
-        small_console.file.truncate()
-        small_console.print(small)
-
-    report.add("frame_80x24", kit.best(draw_small, runs=50) * 1e3, "ms")
+            draw()
+            report.add("frame_1000", kit.best(draw, runs=50) * 1e3, "ms")
+            report.add("frame_1000_new", kit.best(draw, runs=50) * 1e3, "ms")
+            report.add("frame_80x24", kit.best(draw, runs=50) * 1e3, "ms")
 
 
 class _Board:

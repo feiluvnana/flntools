@@ -33,7 +33,7 @@ flnd's modules sit in four layers. Each layer imports only from the layers below
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
    │ 3. the engine side       engine, job, site, options, _home, _transfer,       │
    │                          _steps, _run, _events, _stats, _check, _plugins,    │
-   │                          _screen, sources/                                   │
+   │                          sources/                                            │
    └──────────────┬───────────────────────────────────────────────────────────────┘
                   │
    ┌──────────────┴───────────────────────────────────────────────────────────────┐
@@ -102,7 +102,6 @@ The rules between them:
 | `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
 | `flnd/_steps.py` | the step chain and its lanes: dedupe, unpack, compress, the sidecar, `Saved` ([media.md](media.md)) | the job and the engine |
 | `flnd/_stats.py` | live stats: what a run's parts track (limits, browser, boards, the chain, transfers, the home), sampled into a `flnd.Stats` once a second while the run is read, with psutil for RAM and CPU | `Run` |
-| `flnd/_screen.py` | the full-screen view (`--ui full`): Rich on the alternate screen, drawn from the events and `Stats`, with `q` and `p` read by a key thread | the CLI |
 | `flnd/_check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 | `flnd/errors.py` | the one error hierarchy, `Stopped`, and `classify` and `disk`, which turn any exception into one of them | every module |
 
@@ -313,9 +312,6 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   read on the reader's thread, so the system calls never hold up a transfer. The parts of a
   run show themselves to the meter (`_stats.tracked`) through the run's context, as the clock
   reaches them. A `Stats` never goes through the event queue.
-- **The full screen** (`flnd._screen`) draws on Rich's refresh thread at 10 frames a second
-  from what the events stored; a key thread reads `q` and `p` in cbreak mode and puts the
-  terminal's mode back when the screen closes, however the run ended.
 
 ## The step chain
 
@@ -455,13 +451,9 @@ Everything lives in the home folder, `.flnd` in the current folder unless `--hom
 
 - `media/<code>/<target>/<category>/…`: the files, each written as `<name>.part` first, which
   locks itself, so two runs may share a home and never write one file twice;
-- `flnd.db`: what the home remembers (`flnd/_home.py`): `files` (one row per saved file, keyed
-  `<code>:<key>`, with its hash), `targets` (followed or not, its options, cursors, heads and
-  gaps), `runs`, `failures` (the one record of what failed, which status, the automatic retry
-  and `flnd retry` all read), each source's `state`, and how each source logged in;
-- `secrets.db` with `secret.key` (or the key in the OS keychain, `[vault] key`): the login
-  vault (`flnd._vault`), whose values never reach a message, a log line or `flnd.db`;
-- `logs/`: each run's scrubbed samples of answers a source couldn't read, kept a month.
+- `metadata/`: the databases: `flnd.db` for what the home remembers (`files`, `targets`, `runs`,
+  `failures`, `state`, `logins`), and `secret.db` for source logins and credentials in plaintext;
+- `log/`: each run's scrubbed samples of answers a source couldn't read, kept a month.
 
 Two rules hold every write together: a post's rows commit in one transaction once all its
 files are in place, and a row is written only after its file, so a crash in between leaves a
@@ -572,8 +564,8 @@ The choices that explain how flnd behaves, made with its user in November 2026:
 5. **Concurrency per media host starts at 8 and adapts up to 32** while throughput still rises
    ([performance.md](performance.md#concurrency-per-host)). Segmented downloads of big files
    are built but off, until a real-CDN check shows they pay.
-6. **Old homes are migrated on first open**, reading the old files and never changing them
-   ([storage.md](storage.md#migrating-an-old-home)).
+6. **SQLite stores everything** in `metadata/`: `flnd.db` for the library state and `secret.db`
+   for source logins and secrets ([storage.md](storage.md)).
 7. **Dedupe hard-links** a file whose bytes are already saved; a file system without hard links
    keeps both copies ([storage.md](storage.md#dedupe)).
 8. **Sidecars are off** by default; `sidecars = true` turns them on.
@@ -581,8 +573,8 @@ The choices that explain how flnd behaves, made with its user in November 2026:
    project.
 10. **Plugins load from the user's folder or installed packages, never from a home**, since a
     home is often the current folder, and code there may not be the user's own.
-11. **The vault's key is a file** beside it (`secret.key`), so an unattended sync can open it;
-    `[vault] key = "keychain"` keeps it in the OS keychain instead.
+11. **Secrets are stored in `metadata/secret.db`** in plaintext, so an unattended sync can open it
+    without passwords or key files.
 12. **`--compress` encodes videos to AV1**, with `[compress] video = "hevc"` in config.toml
     for devices that can't play it, and photos in-process with Pillow and pyoxipng, which are
     part of the core install ([media.md](media.md)).

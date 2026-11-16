@@ -17,7 +17,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from flnd import _prompt, _run, _ui, cli
+from flnd import _home, _prompt, _run, _ui, cli
 from flnd.errors import (
     Blocked,
     Changed,
@@ -78,7 +78,7 @@ class ExitCodeTest(TerminalCase):
                 _, out, err = self.fail_with(error)
                 self.assertEqual(out, "")
                 self.assertEqual(err.splitlines(), [f"error: {error}", f"  {error.hint}"])
-                self.assertFalse(Path(".flnd/logs").exists())
+                self.assertFalse((Path(".flnd") / _home.LOGS).exists())
 
     def test_a_flag_mistake_exits_2_with_the_usage(self) -> None:
         err = io.StringIO()
@@ -90,7 +90,7 @@ class ExitCodeTest(TerminalCase):
     def test_a_bug_writes_a_crash_file_and_exits_4(self) -> None:
         code, _, err = self.fail_with(RuntimeError("an example bug"))
         self.assertEqual(code, 4)
-        crashes = list(Path(".flnd/logs").glob("crash-*.txt"))
+        crashes = list((Path(".flnd") / _home.LOGS).glob("crash-*.txt"))
         self.assertEqual(len(crashes), 1)
         self.assertIn("Traceback", crashes[0].read_text(encoding="utf-8"))
         self.assertEqual(err.splitlines(), ["error: unexpected RuntimeError: an example bug; "
@@ -101,11 +101,11 @@ class ExitCodeTest(TerminalCase):
         self.assertEqual(code, 4)
         self.assertIn("Traceback", err)
         self.assertIn("RuntimeError: an example bug", err)
-        self.assertFalse(Path(".flnd/logs").exists())
+        self.assertFalse((Path(".flnd") / _home.LOGS).exists())
 
     def test_the_crash_file_goes_in_the_home_given(self) -> None:
         self.fail_with(RuntimeError("an example bug"), "--home", "elsewhere")
-        self.assertEqual(len(list(Path("elsewhere/logs").glob("crash-*.txt"))), 1)
+        self.assertEqual(len(list((Path("elsewhere") / _home.LOGS).glob("crash-*.txt"))), 1)
 
 
 class StoppingTest(unittest.TestCase):

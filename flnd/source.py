@@ -2002,22 +2002,50 @@ def _best_streams(manifest: Any) -> tuple[str, str] | None:
     """
     import xml.etree.ElementTree as ElementTree
 
-    namespace = "{urn:mpeg:dash:schema:mpd:2011}"
     if not isinstance(manifest, str) or not manifest:
         return None
     try:
         root = ElementTree.fromstring(manifest)
     except ElementTree.ParseError:
         return None
-    if (root.find(f".//{namespace}SegmentTemplate") is not None
-            or root.find(f".//{namespace}SegmentList") is not None):
-        return None
+
+    # Any segmented manifest cannot be downloaded as single files.
+    for elem in root.iter():
+        tag = elem.tag.split("}")[-1]
+        if tag in ("SegmentTemplate", "SegmentList", "SegmentTimeline"):
+            return None
+
     found: dict[str, list[tuple[int, int, str, str]]] = {"video": [], "audio": []}
-    for adaptation in root.iter(f"{namespace}AdaptationSet"):
-        for representation in adaptation.iter(f"{namespace}Representation"):
-            mime = representation.get("mimeType") or adaptation.get("mimeType") or ""
-            url = (representation.findtext(f"{namespace}BaseURL") or "").strip()
-            kind = mime.split("/")[0]
+    for adaptation in root.iter():
+        if adaptation.tag.split("}")[-1] != "AdaptationSet":
+            continue
+        for representation in adaptation.iter():
+            if representation.tag.split("}")[-1] != "Representation":
+                continue
+            mime = (representation.get("mimeType")
+                    or adaptation.get("mimeType")
+                    or representation.get("contentType")
+                    or adaptation.get("contentType") or "")
+            url = ""
+            for child in representation:
+                if child.tag.split("}")[-1] == "BaseURL" and child.text:
+                    url = child.text.strip()
+                    break
+            if not url:
+                for child in adaptation:
+                    if child.tag.split("}")[-1] == "BaseURL" and child.text:
+                        url = child.text.strip()
+                        break
+            if (not url or url.endswith(("/", ".mpd", ".m4s"))
+                    or "$" in url):
+                continue
+            kind = mime.split("/")[0].lower()
+            if kind not in found:
+                codecs = (representation.get("codecs") or adaptation.get("codecs") or "").lower()
+                if any(codecs.startswith(p) for p in ("avc", "mp4v", "hev", "hvc", "vp", "av01")):
+                    kind = "video"
+                elif any(codecs.startswith(p) for p in ("mp4a", "opus", "vorbis", "aac")):
+                    kind = "audio"
             if kind in found and url.startswith("https://"):
                 found[kind].append((_number(representation.get("height")),
                                     _number(representation.get("bandwidth")), url, mime))

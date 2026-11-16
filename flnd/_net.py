@@ -1952,11 +1952,11 @@ def _streamed(answer: Reply, url: str, request: Request) -> _Answer:
 # ---------------------------------------------------------------------------------------------
 
 
-def with_query(url: str, params: Mapping[str, Any] | None) -> str:
+def with_query(url: str, params: Mapping[str, Any] | Sequence[tuple[str, Any]] | None) -> str:
     """`url` with `params` added to its query; a name already there takes the new value.
 
     A value of None is sent empty, a bool as `true` or `false`, and a list or tuple as the name
-    once per item.
+    once per item. `params` may be a mapping, or a sequence of (name, value) pairs.
 
     Args:
         url: the URL, with or without a query.
@@ -1974,9 +1974,15 @@ def with_query(url: str, params: Mapping[str, Any] | None) -> str:
         parts = urlsplit(url)
     except ValueError as error:
         raise NetworkError(f"{_text.redact(url)}: invalid URL: {error}") from None
+    if isinstance(params, Mapping):
+        pairs = list(params.items())
+        new_names = set(params)
+    else:
+        pairs = list(params)
+        new_names = {name for name, _ in pairs}
     kept = [(name, value) for name, value in parse_qsl(parts.query, keep_blank_values=True)
-            if name not in params]
-    for name, value in params.items():
+            if name not in new_names]
+    for name, value in pairs:
         values = value if isinstance(value, (list, tuple)) else [value]
         kept += [(name, _query_value(item)) for item in values]
     return urlunsplit(parts._replace(query=urlencode(kept)))

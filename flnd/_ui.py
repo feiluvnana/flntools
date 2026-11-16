@@ -41,7 +41,7 @@ import os
 import re
 import string
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from functools import lru_cache
 from typing import IO, Any, Literal
@@ -230,7 +230,7 @@ class Row:
         self._unit = unit
         self._reason: str | None = None
         self._outcome: Level | None = None
-        self._task: TaskID = group._add_task(label, total)
+        self._task: TaskID = group._add_task(self, label, total)
 
     @property
     def raw(self) -> TaskID:
@@ -413,19 +413,22 @@ class Group:
         self._lock = threading.Lock()
         self._rows: list[Row] = []
         self._tasks: dict[TaskID, Row] = {}
-        self._progress: RichProgress | None = None
-        if drawn and owner._progress_enabled():
-            self._progress = RichProgress(
-                _RowColumn(owner, self._tasks.get),
-                console=owner.raw,
-                transient=True,
-            )
+        self._live = False
+
+    @property
+    def _progress(self) -> RichProgress | None:
+        return self._ui._live_progress if self._live else None
 
     def _start(self) -> None:
+        """Start the group: log title if any, and register with UI for live rendering."""
         if self.title and self.drawn and self._ui._allows("info"):
             self._ui.info(self.title)
-        if self._progress is not None:
-            self._progress.start()
+        self._live = self._ui._register_group(self.drawn)
+        if self._live:
+            for row in self._rows:
+                if row._task == TaskID(0):
+                    row._task = self._ui._add_task(row, row.label, row._total)
+                    self._tasks[row._task] = row
 
     def _stop(self, outcome: Level = "ok") -> None:
         """End the group: give each open row `outcome`, and leave one line per row.
@@ -440,35 +443,49 @@ class Group:
         for row in self._rows:
             if row._outcome is None:
                 row._outcome = outcome
-        if self._progress is not None:
-            self._progress.stop()
-            if self._ui._allows("ok"):
-                for row in self._rows:
-                    if row._outcome is not None and self._ui._allows(row._outcome):
-                        self._ui._console.print(row._render(self._ui))
+        if self._live:
+            self._ui._unregister_group(self._rows, outcome)
             return
         if not self.drawn:
             return
         for row in self._rows:
             self._ui._log(row._outcome or outcome, row.label)
 
-    def _add_task(self, label: str, total: float | None) -> TaskID:
-        if self._progress is None:
+    def _add_task(self, row: Row, label: str, total: float | None) -> TaskID:
+        """Add a row task to the UI live progress display.
+
+        Args:
+            row: the row owning the task.
+            label: what the row is about.
+            total: expected total units or None.
+
+        Returns:
+            The allocated TaskID, or TaskID(0) if not running live.
+        """
+        if not self._live:
             return TaskID(0)
-        with self._lock:
-            return self._progress.add_task(_sanitize(label), total=total)
+        return self._ui._add_task(row, label, total)
 
     def _update(self, task_id: TaskID, **kwargs: Any) -> None:
-        if self._progress is None:
+        """Update a live task's progress units.
+
+        Args:
+            task_id: task to update.
+            **kwargs: arguments passed to Rich `Progress.update`.
+        """
+        if not self._live:
             return
-        with self._lock:
-            self._progress.update(task_id, **kwargs)
+        self._ui._update_task(task_id, **kwargs)
 
     def _stop_task(self, task_id: TaskID) -> None:
-        if self._progress is None:
+        """Stop tracking a live task.
+
+        Args:
+            task_id: task to stop.
+        """
+        if not self._live:
             return
-        with self._lock:
-            self._progress.stop_task(task_id)
+        self._ui._stop_task(task_id)
 
     def add(
         self, label: str, *, total: float | None = None, unit: str | None = None,
@@ -504,6 +521,114 @@ class UI:
         self._lock = threading.RLock()
         self._level: Level = "info"
         self._console = self._make_console()
+        self._live_tasks: dict[TaskID, Row] = {}
+        self._live_progress: RichProgress | None = None
+        self._live_count = 0
+
+    def _register_group(self, drawn: bool) -> bool:
+        """Register a group for live progress display.
+
+        Starts the shared `RichProgress` instance if drawn and progress is enabled.
+
+        Args:
+            drawn: whether the group draws its progress rows.
+
+        Returns:
+            True if the group is participating in live progress display.
+        """
+        if not drawn or not self._progress_enabled():
+            return False
+        with self._lock:
+            if self._live_progress is None:
+                self._live_progress = RichProgress(
+                    _RowColumn(self, self._live_tasks.get),
+                    console=self.raw,
+                    transient=True,
+                )
+                self._live_progress.start()
+            self._live_count += 1
+            return True
+
+    def _unregister_group(self, rows: Sequence[Row], outcome: Level) -> None:
+        """Unregister a group, removing its live tasks and printing completed lines.
+
+        Args:
+            rows: rows belonging to the finished group.
+            outcome: fallback outcome for rows without one.
+        """
+        with self._lock:
+            for row in rows:
+                if row._outcome is None:
+                    row._outcome = outcome
+            try:
+                if self._live_progress is not None:
+                    for row in rows:
+                        if row._task in self._live_tasks:
+                            try:
+                                self._live_progress.remove_task(row._task)
+                            except KeyError:
+                                pass
+                            del self._live_tasks[row._task]
+            finally:
+                self._live_count -= 1
+                if self._live_count <= 0:
+                    self._live_count = 0
+                    if self._live_progress is not None:
+                        try:
+                            self._live_progress.stop()
+                        finally:
+                            self._live_progress = None
+                elif self._live_progress is not None:
+                    self._live_progress.refresh()
+
+            if self._allows("ok"):
+                for row in rows:
+                    if row._outcome is not None and self._allows(row._outcome):
+                        self._console.print(row._render(self))
+            if hasattr(self._console.file, "flush"):
+                try:
+                    self._console.file.flush()
+                except (OSError, ValueError):
+                    pass
+
+    def _add_task(self, row: Row, label: str, total: float | None) -> TaskID:
+        """Add a task row to the live progress display if active.
+
+        Args:
+            row: the Row instance owning the task.
+            label: what the row is about.
+            total: expected total units or None.
+
+        Returns:
+            The allocated TaskID, or TaskID(0) if not running live.
+        """
+        with self._lock:
+            if self._live_progress is None:
+                return TaskID(0)
+            task_id = self._live_progress.add_task(_sanitize(label), total=total)
+            self._live_tasks[task_id] = row
+            return task_id
+
+    def _update_task(self, task_id: TaskID, **kwargs: Any) -> None:
+        """Update progress for a live task.
+
+        Args:
+            task_id: the task to update.
+            **kwargs: arguments passed to Rich `Progress.update`.
+        """
+        with self._lock:
+            if self._live_progress is not None:
+                self._live_progress.update(task_id, **kwargs)
+
+    def _stop_task(self, task_id: TaskID) -> None:
+        """Stop tracking progress for a live task.
+
+        Args:
+            task_id: the task to stop.
+        """
+        with self._lock:
+            if self._live_progress is not None:
+                self._live_progress.stop_task(task_id)
 
     @staticmethod
     def _make_console(
@@ -614,6 +739,8 @@ class UI:
                     (colon + detail, f"dim {_kind}") if colon else ("", ""),
                 )
             self._console.print(line)
+            if hasattr(self._console.file, "flush"):
+                self._console.file.flush()
 
     def debug(self, message: str = "", /, *args: Any, **fields: Any) -> None:
         """Log a debug message."""

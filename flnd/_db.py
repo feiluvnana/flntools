@@ -8,7 +8,6 @@ What it offers, for any caller:
   makes the file and runs `schema`, then `setup`.
 - `Db.transaction()`: `BEGIN IMMEDIATE` … `COMMIT`, rolled back on an error; nested blocks join
   the outer one. `Db.one`, `Db.all` and `Db.write` run single statements.
-- `read_only(path)`: another program's SQLite file, opened so that nothing on disk changes.
 
     db = Db(Path("notes.db"), schema="CREATE TABLE IF NOT EXISTS notes (key TEXT, text TEXT)")
     with db.transaction() as sql:
@@ -16,8 +15,8 @@ What it offers, for any caller:
     db.one("SELECT text FROM notes WHERE key = ?", ("a",))      # ("hello",)
 
 A library: it knows no table but the ones a caller passes in. In flnd, `flnd/_home.py` keeps
-the home's `flnd.db` in a `Db` (with flnd's schema and migrations as `schema` and `setup`) and
-reads an older home's files with `read_only`; `flnd/_vault.py` keeps `secrets.db` in another.
+the home's `flnd.db` in a `Db` (with flnd's schema as `schema` and `setup`); `flnd/_vault.py`
+keeps `secret.db` in another.
 
 How a `Db` is used, from first call to close:
 1. `Db(path, …)` only remembers the path: nothing is opened or made;
@@ -47,7 +46,7 @@ from typing import Any
 
 from flnd.errors import DiskError
 
-__all__ = ["Db", "connect", "read_only"]
+__all__ = ["Db", "connect"]
 
 # How long a writer waits for another process's transaction before giving up, in ms.
 BUSY_MS = 30_000
@@ -284,32 +283,4 @@ class Db:
                 raise DiskError(f"{self.path}: {error}") from error
 
 
-@contextmanager
-def read_only(path: Path) -> Iterator[sqlite3.Connection]:
-    """Another program's SQLite file, opened so that nothing on disk changes.
 
-    `immutable=1` reads the file as it is, with no lock, no `-shm` and no `-wal`. A program that
-    stopped without a checkpoint leaves rows in `<file>-wal`, which only a normal read-only
-    connection sees; SQLite may then make a `-shm` beside it, but the file itself is unchanged.
-
-    Args:
-        path: the database's file.
-
-    Yields:
-        A connection that can only read it.
-
-    Raises:
-        DiskError: SQLite can't open or read it.
-    """
-    wal = Path(f"{path}-wal")
-    mode = "mode=ro" if wal.is_file() and wal.stat().st_size else "immutable=1"
-    try:
-        old = sqlite3.connect(f"{path.absolute().as_uri()}?{mode}", uri=True)
-    except sqlite3.Error as error:
-        raise DiskError(f"{path}: cannot read: {error}") from error
-    try:
-        yield old
-    except sqlite3.Error as error:
-        raise DiskError(f"{path}: cannot read: {error}") from error
-    finally:
-        old.close()

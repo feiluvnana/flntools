@@ -120,6 +120,7 @@ class LockTest(FsCase):
         self.assertIn("being saved by another run", str(ctx.exception))
         self.assertEqual(self.dest.read_bytes(), b"mine")
 
+    @unittest.skipIf(os.name == "nt", "Windows cannot rename an open file")
     def test_a_part_landed_between_open_and_lock_is_busy_not_rewritten(self):
         """The second run opened the old part just before the first renamed it into place."""
         first = _files.part(self.dest, resume=True)

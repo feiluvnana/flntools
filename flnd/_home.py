@@ -1,10 +1,11 @@
 """The home: its layout, `flnd.db` (what the home remembers) and the logins in its vault.
 
-The home folder holds `flnd.db`, `secrets.db` and `secret.key`, `media/` (the downloads) and
-`logs/` (crash files and each run's samples), and an optional `config.toml`; `cache/` is
+The home folder holds `media/` (the downloads), `metadata/` (`flnd.db` and `secret.db`), and
+`log/` (crash files and each run's samples), and an optional `config.toml`; `cache/` is
 reserved. This module is flnd's own storage, not a library: it knows flnd's tables, targets and
 sources. It is built on three library modules: `flnd._db` (a SQLite store), `flnd._vault`
-(sealed secrets) and `flnd._cookies` (cookie jars). `docs/storage` is the guide to it.
+(source secrets in `secret.db`) and `flnd._cookies` (cookie jars). `docs/storage` is the guide
+to it.
 
 What `flnd.db` holds (the storage guide in `docs/` shows every column):
 - `files`: one row per saved file, keyed `<code>:<key>` (the source's `key` template), with its
@@ -28,15 +29,13 @@ What `flnd.db` holds (the storage guide in `docs/` shows every column):
   (`flnd status`), the automatic retry and `flnd retry` can't disagree. No row holds a
   request: a retry lists the post again for fresh URLs (`flnd.job`).
 - `state`: each source's own values between runs (`site.state`).
-- `logins`: how each source logged in, and when; never a secret (those are in `secrets.db`).
+- `logins`: how each source logged in, and when; never a secret (those are in `secret.db`).
 - `probes`: what ffmpeg found in a file, kept so it isn't asked twice; safe to empty.
-- `meta`: the schema's version and when an old home was migrated.
+- `meta`: the schema's version.
 
 The logins: a cookie source logs in by `from_browser` or `from_file`; `store` checks the jar
-proves a login and `save` seals it in the source's slot of the vault (`secrets`); a run calls
-`load` for the jar, and `write_back` saves the cookies the site refreshed. The vault's key is
-`secret.key`, or the OS keychain when the home's config.toml says `[vault] key = "keychain"`
-(`vault_key`, which also moves the key once when that setting changes).
+proves a login and `save` stores it in the source's slot of `secret.db` (`secrets`); a run calls
+`load` for the jar, and `write_back` saves the cookies the site refreshed.
 
 Who calls it: the engine (`flnd/engine.py`), the job (`flnd/job.py`), the steps after landing
 (`flnd/_steps.py`), `check` (`flnd/_check.py`) and the library (`flnd/_library.py`) for files,
@@ -45,11 +44,8 @@ targets, runs and failures; the engine also for logins (`flnd login`, `flnd logo
 state and secrets.
 
 How a home opens (`open`):
-1. A home with a `flnd.db` connects to it, and makes any table it lacks.
-2. A home with an old `metadata/` folder (flnd before `flnd.db`) is migrated first: its
-   `history.db`, `targets.db`, `sources.db` and `secrets.db` are read, never written, and
-   `flnd.db` and `secrets.db` are written in one `BEGIN IMMEDIATE` transaction (`_migrate`).
-3. A new home connects on its first write, so reading one (`fl.targets()`, a dry run) leaves
+1. A home with `metadata/flnd.db` connects to it, and makes any table it lacks.
+2. A new home connects on its first write, so reading one (`fl.targets()`, a dry run) leaves
    the folder as it was.
 
 Rules a change must keep:
@@ -61,8 +57,6 @@ Rules a change must keep:
   which the next run finds on disk and skips.
 - One connection per `Home`, shared by the lister and the download threads behind one lock.
   SQLite serializes writers across processes; a writer waits for another run (`flnd._db`).
-- The old files of a migrated home are never changed: they are opened `immutable` (or
-  read-only when an old run left a write-ahead log), so the previous flnd still runs there.
 - A secret's value never reaches a message, a log line or `flnd.db`.
 """
 
@@ -71,7 +65,6 @@ from __future__ import annotations
 import datetime
 import functools
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -98,18 +91,11 @@ __all__ = ["FailureRow", "FileRow", "Home", "RunRow", "TargetRow", "open", "samp
 # The home's layout
 # ---------------------------------------------------------------------------------------------
 
-# Under the home: the database, the vault and its key, the downloads, and each run's log. A
-# `cache/` folder is reserved for things safe to delete; nothing writes there yet.
-DB, SECRETS, KEY = Path("flnd.db"), Path("secrets.db"), Path("secret.key")
-MEDIA, LOGS = Path("media"), Path("logs")
-# An old home kept its stores in `metadata/`: tables of JSON values, keyed by text.
-OLD = Path("metadata")
-OLD_HISTORY, OLD_TARGETS, OLD_STATE = OLD / "history.db", OLD / "targets.db", OLD / "sources.db"
-OLD_SECRETS, OLD_KEY = OLD / "secrets.db", OLD / "secret.key"
-# Each old store's table, by its SQL name: a table `x` was stored as `t_x`.
-OLD_TABLES = {OLD_HISTORY: "t_downloads", OLD_TARGETS: "t_targets", OLD_SECRETS: "t_secrets"}
-# SQLite's header; an old store without it is a JSON store (`{table: {key: value}}`).
-SQLITE_MAGIC = b"SQLite format 3\x00"
+# Under the home: media/ for downloads, metadata/ for stores (flnd.db and secret.db), and
+# log/ for run logs and crash reports. A cache/ folder is reserved; nothing writes there yet.
+MEDIA, METADATA, LOGS = Path("media"), Path("metadata"), Path("log")
+DB = METADATA / "flnd.db"
+SECRETS = METADATA / "secret.db"
 
 # How many pages the log grows to before SQLite checkpoints it into the database (4 KiB each).
 CHECKPOINT_PAGES = 10_000
@@ -405,10 +391,10 @@ def now() -> str:
 # ---------------------------------------------------------------------------------------------
 
 def open(home: Path) -> Home:
-    """Open a home's `flnd.db`, migrating an old home first.
+    """Open a home's `flnd.db`.
 
-    A home with neither `flnd.db` nor an old `metadata/` is left untouched: the `Db` connects
-    on its first write, and reads it as empty until then.
+    A home without `flnd.db` is left untouched: the `Db` connects on its first write, and
+    reads it as empty until then.
 
     Args:
         home: the home folder.
@@ -417,7 +403,7 @@ def open(home: Path) -> Home:
         The `Db`, to use in a `with` block.
 
     Raises:
-        DiskError: `flnd.db` or an old store can't be read or written.
+        DiskError: `flnd.db` can't be read or written.
 
     Example:
         >>> import tempfile
@@ -427,7 +413,7 @@ def open(home: Path) -> Home:
     """
     db = Home(home)
     try:
-        if (home / DB).is_file() or _old(home):
+        if (home / DB).is_file():
             db._store.connection()
     except BaseException:
         db.close()
@@ -448,7 +434,7 @@ class Home:
     def __init__(self, home: Path) -> None:
         self.home = home
         self.path = home / DB
-        # The store: one connection, its tables made, and an old home migrated, on first use.
+        # The store: one connection, its tables made on first use.
         self._store = _db.Db(self.path, schema=SCHEMA, setup=self._setup)
 
     def __enter__(self) -> Home:
@@ -462,7 +448,7 @@ class Home:
         self._store.close()
 
     def _setup(self, sql: sqlite3.Connection) -> None:
-        """Set the connection up, mark the schema's version, and migrate an old home.
+        """Set the connection up, and mark the schema's version.
 
         Args:
             sql: the new connection, its tables made, before anything else uses it.
@@ -475,8 +461,6 @@ class Home:
         sql.execute(f"PRAGMA cache_size = -{CACHE_KIB}")
         sql.execute("INSERT OR IGNORE INTO meta VALUES ('version', ?)", (VERSION,))
         _upgrade(sql)
-        if _old(self.home):
-            _migrate(sql, self.home)
 
     # -- files ------------------------------------------------------------------------------
 
@@ -1580,8 +1564,8 @@ def logout(home: Path, code: str) -> bool:
 
 
 def _has_vault(home: Path) -> bool:
-    """Whether the home has a vault: its own, or an old one the migration will copy."""
-    return (home / SECRETS).is_file() or (home / OLD_SECRETS).is_file()
+    """Whether the home has a vault in `metadata/secret.db`."""
+    return (home / SECRETS).is_file()
 
 
 def _secret_names(home: Path, code: str) -> set[str]:
@@ -1678,10 +1662,8 @@ def _own(source: Source, jar: _cookies.Jar) -> _cookies.Jar:
 def secrets(home: Path, code: str) -> _vault.Vault:
     """The secrets of one source, as a mapping of `str` to `str`, for a `with` block.
 
-    An old home is migrated first, so the logins of its old vault are there.
-
     Args:
-        home: the home folder; `secrets.db` and `secret.key` are made in it on the first write.
+        home: the home folder; `metadata/secret.db` is made in it on the first write.
         code: the source's code; another source's secrets aren't visible.
 
     Returns:
@@ -1693,325 +1675,7 @@ def secrets(home: Path, code: str) -> _vault.Vault:
         ...     dict(saved)
         {}
     """
-    if _old(home):
-        open(home).close()
-    return _vault.Vault(home / SECRETS, vault_key(home), code, hint=LOGIN_HINT)
-
-
-def vault_key(home: Path) -> Path | _vault.Keychain:
-    """Where the home's vault key is: `secret.key`, or the OS keychain (`[vault] key`).
-
-    The home's config.toml decides (`flnd.options.config`). A change of it moves the key once:
-    1. `key = "keychain"`: a `secret.key` there is copied into the keychain, and deleted only
-       once the keychain reads it back (`flnd._vault.to_keychain`).
-    2. `key = "file"` (the default): when `secret.key` is missing but the home has a vault, the
-       key may be in the keychain from before; if a keychain is there and holds the home's
-       item, it is written to `secret.key`, and the item deleted once the file reads back
-       (`flnd._vault.to_file`). A home with its key file never asks the keychain anything.
-
-    The keychain item is the service `flnd` with an account named from the home's absolute path
-    (`keychain_account`), so a home moved elsewhere looks for another item: set `key = "file"`
-    before moving it.
-
-    Args:
-        home: the home folder.
-
-    Returns:
-        The key file's path, or the home's `flnd._vault.Keychain` item.
-
-    Raises:
-        UsageError: `key = "keychain"` on a system without one, or a bad config.toml.
-        ToolError: the keychain refused to give or keep the key.
-    """
-    from flnd.options import KEYCHAIN, config
-
-    path = home / KEY
-    hint = 'set key = "file" under [vault] in config.toml'
-    chain = _vault.Keychain(keychain_account(home), hint=hint)
-    if config(home).vault == KEYCHAIN:
-        chain.require()
-        _vault.to_keychain(path, chain)
-        return chain
-    if not path.exists() and (home / SECRETS).is_file() and chain.available():
-        _vault.to_file(chain, path)
-    return path
-
-
-def keychain_account(home: Path) -> str:
-    """The account of a home's key in the OS keychain: `home-` and a hash of its absolute path.
-
-    A hash, not the path itself, so the name has no spaces (`security -i` splits at them) and
-    shows no folder names to whoever lists the keychain.
-
-    Args:
-        home: the home folder; `~` and links are resolved first, so one folder has one name.
-
-    Returns:
-        The account name.
-
-    Example:
-        >>> keychain_account(Path("/example/home")) == keychain_account(Path("/example/home/"))
-        True
-    """
-    return f"home-{_vault.digest(str(home.expanduser().resolve()))[:24]}"
-
-
-# ---------------------------------------------------------------------------------------------
-# Migrating an old home
-# ---------------------------------------------------------------------------------------------
-# An old home (flnd before flnd.db) kept four stores in `metadata/`, each a table of JSON values
-# keyed by text: the history (`downloads`, by file key), the targets (`targets`, by target key),
-# each source's state (a table per source) and the vault (`secrets`, base64 of sealed values).
-# The migration reads them and never writes them, so the old flnd still runs on the home. It can
-# be deleted one release after it ships.
-
-def _old(home: Path) -> bool:
-    """Whether a home has an old store; `_migrate` then checks whether it was copied yet."""
-    return any((home / path).is_file() for path in (*OLD_TABLES, OLD_STATE))
-
-
-def _migrate(sql: sqlite3.Connection, home: Path) -> None:
-    """Copy an old home's stores into `flnd.db` and `secrets.db`, once.
-
-    Steps:
-    1. Attach `secrets.db` when there is an old vault, so one transaction writes both files.
-    2. `BEGIN IMMEDIATE` takes the write lock; a second run opening the same home waits here,
-       then finds the migration done and does nothing.
-    3. Copy the vault's key to `<home>/secret.key` (0600), unless one is there: the sealed values
-       are copied as they are, which needs the same key, and no value is ever decrypted here.
-    4. Read each old store (`_read_old`) and insert its rows; `INSERT OR IGNORE`, so a home
-       half-written by a crash between the two files' commits is completed, never doubled.
-    5. Count each target's files, mark the migration done in `meta`, and commit.
-
-    Args:
-        sql: the new `flnd.db`'s connection, outside any transaction.
-        home: the home folder.
-
-    Raises:
-        DiskError: an old store can't be read, or a new file written.
-    """
-    if sql.execute("SELECT 1 FROM meta WHERE key = 'migrated'").fetchone():
-        return
-    vault = (home / OLD_SECRETS).is_file()
-    if vault:
-        sql.execute("ATTACH DATABASE ? AS vault", (str(home / SECRETS),))
-    try:
-        sql.execute("BEGIN IMMEDIATE")
-        try:
-            if not sql.execute("SELECT 1 FROM meta WHERE key = 'migrated'").fetchone():
-                if (home / OLD_KEY).is_file():
-                    _copy_key(home / OLD_KEY, home / KEY)
-                _copy(sql, home, vault)
-                sql.execute("INSERT INTO meta VALUES ('migrated', ?)", (now(),))
-            sql.execute("COMMIT")
-        except BaseException:
-            if sql.in_transaction:
-                sql.execute("ROLLBACK")
-            raise
-    finally:
-        if vault:
-            sql.execute("DETACH DATABASE vault")
-
-
-def _copy(sql: sqlite3.Connection, home: Path, vault: bool) -> None:
-    """Insert every old row into the new tables, inside the migration's transaction.
-
-    Args:
-        sql: the new `flnd.db`'s connection, in the migration's transaction.
-        home: the home folder.
-        vault: whether an old vault is there; its rows go to the attached `vault` database.
-    """
-    targets = _read_old(home / OLD_TARGETS, "targets")
-    folders = {}
-    for item, row in targets.items():
-        code, _, value = item.partition(":")
-        if not isinstance(row, dict) or not value:
-            continue
-        folders[(code, _text.filename(value))] = item
-        complete = row.get("complete") if isinstance(row.get("complete"), dict) else {}
-        cursors = row.get("cursors") if isinstance(row.get("cursors"), dict) else {}
-        seen = row.get("seen") if isinstance(row.get("seen"), list) else []
-        only = row.get("only") if isinstance(row.get("only"), list) else None
-        query = row.get("query") if isinstance(row.get("query"), str) else None
-        sql.execute(f"INSERT OR IGNORE INTO targets ({', '.join(TARGET_COLUMNS)})"
-                    f" VALUES ({', '.join('?' * len(TARGET_COLUMNS))})",
-                    (item, code, value, str(row.get("kind") or ""),
-                     int(row.get("sync", True) is True), _json({"only": only} if only else {}),
-                     query, _json(complete), _json(cursors), _json(seen),
-                     str(row.get("at") or ""), 0, 0, "{}", "{}"))
-        failed = row.get("failed")
-        for file_key, entry in (failed.items() if isinstance(failed, dict) else ()):
-            if isinstance(entry, dict):
-                # Only what a retry lists the post again by: the old request (its URL and
-                # headers) is left behind, since a retry never reuses it.
-                sql.execute("INSERT OR REPLACE INTO failures (key, target, post_id, category,"
-                            " file, url, class, message, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (file_key, item, str(entry.get("id") or ""),
-                             str(entry.get("category") or ""), str(entry.get("dest") or ""),
-                             _text.redact(str(entry.get("url") or "")), "Error",
-                             "failed before flnd.db", str(row.get("at") or "")))
-    for item, row in _read_old(home / OLD_HISTORY, "downloads").items():
-        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
-            continue
-        target = _owner(item, row["path"], folders)
-        name = Path(row["path"]).name
-        # An old row held its post's count on the post's first file, as `files` does now.
-        sql.execute(INSERT_FILE.replace("OR REPLACE", "OR IGNORE"), _file_values(FileRow(
-            item, target, row["path"], int(row.get("size") or 0), _int(row.get("mtime")),
-            str(row.get("id") or ""), str(row.get("category") or ""),
-            row["date"] if isinstance(row.get("date"), str) else None,
-            row.get("estimated") is True, _kind(name), SAVED, str(row.get("at") or ""),
-            _int(row.get("files")))))
-        # What the steps after landing recorded in the old row (`--compress`, extraction).
-        steps = {name: row[name] for name in ("shrink", "tools", "before", "unpacked", "folder")
-                 if isinstance(row.get(name), (str, int)) and not isinstance(row[name], bool)}
-        if steps:
-            sets = ", ".join(f"{name} = ?" for name in steps)
-            sql.execute(f"UPDATE files SET {sets} WHERE key = ?", (*steps.values(), item))
-    for code, table in _read_old_state(home / OLD_STATE).items():
-        sql.executemany("INSERT OR IGNORE INTO state VALUES (?, ?, ?)",
-                        [(code, name, _json(value)) for name, value in table.items()])
-    if vault:
-        import base64
-
-        sql.execute(_vault.SCHEMA.format("vault."))
-        rows = []
-        for slot, sealed in _read_old(home / OLD_SECRETS, "secrets").items():
-            code, _, name = slot.partition(":")
-            if isinstance(sealed, str) and name:
-                rows.append((code, name, base64.b64decode(sealed)))
-        sql.executemany("INSERT OR IGNORE INTO vault.secrets VALUES (?, ?, ?)", rows)
-    sql.execute("UPDATE targets SET (files, bytes) = (SELECT count(*), coalesce(sum(size), 0)"
-                " FROM files WHERE files.target = targets.key AND state = 'saved')")
-
-
-def _owner(item: str, path: str, folders: Mapping[tuple[str, str], str]) -> str:
-    """The target an old history row belongs to, from where its file was saved.
-
-    An old row didn't name its target, but its path did: `…/media/<code>/<folder>/…`, where
-    the folder is the target's value made a safe name. A folder no target row names (a target
-    deleted from the old `targets.db`) becomes `<code>:<folder>`, as `flnd ls` reads it.
-
-    Args:
-        item: the row's key, `<code>:<key>`.
-        path: where its file was saved.
-        folders: each old target's key, by `(code, folder name)`.
-
-    Returns:
-        The target's key; `<code>:` when the path names no target's folder.
-    """
-    code = item.partition(":")[0]
-    parts = Path(path).parts
-    for at in range(len(parts) - 2, -1, -1):
-        if parts[at] == MEDIA.name and parts[at + 1] == code and at + 2 < len(parts) - 1:
-            folder = parts[at + 2]
-            return folders.get((code, folder), f"{code}:{folder}")
-    return f"{code}:"
-
-
-def _read_old(path: Path, table: str) -> dict[str, Any]:
-    """One table of an old store, without changing the file: `{key: value}`.
-
-    Args:
-        path: the old store; missing reads as empty.
-        table: the table's name, without its `t_` prefix.
-
-    Returns:
-        Each row's value, decoded, by its key.
-
-    Raises:
-        DiskError: the file is neither SQLite nor JSON, or can't be read.
-    """
-    if not path.is_file():
-        return {}
-    if not _is_sqlite(path):
-        found = _read_json(path).get(table)
-        return dict(found) if isinstance(found, dict) else {}
-    with _db.read_only(path) as old:
-        names = {name for (name,) in old.execute("SELECT name FROM sqlite_master")}
-        if f"t_{table}" not in names:
-            return {}
-        rows = old.execute(f'SELECT key, value FROM "t_{table}"').fetchall()
-    return {item: json.loads(value) for item, value in rows}
-
-
-def _read_old_state(path: Path) -> dict[str, dict[str, Any]]:
-    """Every source's table of an old `sources.db`, by the source's code.
-
-    Args:
-        path: the old store; missing reads as empty.
-
-    Returns:
-        Each source's values, by name, by the source's code.
-    """
-    if not path.is_file():
-        return {}
-    if not _is_sqlite(path):
-        return {code: dict(table) for code, table in _read_json(path).items()
-                if isinstance(table, dict)}
-    with _db.read_only(path) as old:
-        names = [name for (name,) in old.execute("SELECT name FROM sqlite_master"
-                                                 " WHERE type = 'table'") if name.startswith("t_")]
-        return {name[2:]: {item: json.loads(value) for item, value in
-                           old.execute(f'SELECT key, value FROM "{name}"')} for name in names}
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    """An old JSON store, read whole.
-
-    Args:
-        path: the store, a JSON object of tables: `{table: {key: value}}`.
-
-    Returns:
-        The tables.
-
-    Raises:
-        DiskError: the file can't be read, or isn't a JSON object.
-    """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise DiskError(f"{path}: cannot read: {error}") from error
-    if not isinstance(data, dict):
-        raise DiskError(f"{path}: expected a JSON object")
-    return data
-
-
-def _is_sqlite(path: Path) -> bool:
-    with path.open("rb") as handle:
-        return handle.read(len(SQLITE_MAGIC)) == SQLITE_MAGIC
-
-
-def _copy_key(old: Path, new: Path) -> None:
-    """Copy the vault's key file, mode 0600, unless the new home has one already.
-
-    Args:
-        old: the old key, `metadata/secret.key`.
-        new: where the home keeps it now, `secret.key`.
-
-    Raises:
-        DiskError: the new file can't be made.
-    """
-    secret = old.read_bytes()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    try:
-        handle = os.open(new, flags, 0o600)
-    except FileExistsError:
-        return
-    except OSError as error:
-        raise DiskError(f"{new}: {error.strerror or error}") from error
-    with os.fdopen(handle, "wb") as file:
-        file.write(secret)
-
-
-def _int(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _kind(name: str) -> str | None:
-    from flnd._files import kind_of
-
-    return kind_of(name)
+    return _vault.Vault(home / SECRETS, code, hint=LOGIN_HINT)
 
 
 def _login_names(source: Source) -> tuple[str, ...]:

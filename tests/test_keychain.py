@@ -19,7 +19,7 @@ from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles and the real keychain)
 
-from flnd import _home, _vault
+from flnd import _vault
 from flnd.errors import ToolError, UsageError
 
 # The stand-ins share one body: `security` reads `-i` commands on standard input, and
@@ -121,9 +121,8 @@ class MacTest(KeychainCase):
         self.assertEqual(self.items(), {"flnd/home-example": base64.b64encode(made).decode()})
         self.assertNotIn(base64.b64encode(made).decode(), self.logged())
 
-    def test_read_is_none_without_an_item_and_delete_is_quiet(self):
+    def test_read_is_none_without_an_item(self):
         self.assertIsNone(self.chain.read())
-        self.chain.delete()
 
     def test_write_replaces_and_reads_back(self):
         first, second = bytes(range(32)), bytes(range(1, 33))
@@ -166,24 +165,17 @@ class LinuxTest(KeychainCase):
         made = self.chain.key()
         self.assertEqual(self.chain.read(), made)
         self.assertNotIn(base64.b64encode(made).decode(), self.logged())
-        self.chain.delete()
-        self.assertIsNone(self.chain.read())
 
 
 class NoKeychainTest(KeychainCase):
     platform = "win32"
 
     def test_a_system_without_one_is_a_usage_error(self):
-        self.assertFalse(_vault.Keychain.available())
+        self.assertIsNone(_vault.Keychain.tool())
         with self.assertRaises(UsageError) as caught:
             self.chain.key()
         self.assertIn("the OS keychain isn't available here", str(caught.exception))
 
-    def test_a_home_that_asks_for_one_says_what_to_set(self):
-        self.configure("keychain")
-        with self.assertRaises(UsageError) as caught:
-            _home.secrets(self.home, "tlg")
-        self.assertIn('key = "file" under [vault]', caught.exception.hint)
 
 
 class GuardTest(unittest.TestCase):
@@ -195,63 +187,6 @@ class GuardTest(unittest.TestCase):
             with self.assertRaises(UsageError):
                 _vault.Keychain("home-example").read()
         run.assert_not_called()
-
-
-@unittest.skipIf(sys.platform == "win32", "the stand-ins are POSIX scripts")
-class HomeTest(KeychainCase):
-    """`[vault] key` in a home's config.toml, and the one move between file and keychain."""
-
-    def seal(self):
-        with _home.secrets(self.home, "tlg") as saved:
-            saved["session"] = "example-session"
-
-    def opened(self):
-        with _home.secrets(self.home, "tlg") as saved:
-            return saved["session"]
-
-    def account(self):
-        return f"flnd/{_home.keychain_account(self.home)}"
-
-    def test_the_default_is_the_key_file_and_the_keychain_is_never_asked(self):
-        self.seal()
-        self.assertTrue((self.home / "secret.key").is_file())
-        self.assertEqual(self.logged(), "")
-
-    def test_moving_to_the_keychain_and_back_keeps_every_secret(self):
-        self.seal()
-        key = (self.home / "secret.key").read_bytes()
-        self.configure("keychain")
-        self.assertEqual(self.opened(), "example-session")
-        self.assertFalse((self.home / "secret.key").exists())
-        self.assertEqual(self.items(), {self.account(): base64.b64encode(key).decode()})
-        self.configure("file")
-        self.assertEqual(self.opened(), "example-session")
-        self.assertEqual((self.home / "secret.key").read_bytes(), key)
-        self.assertEqual(self.items(), {})
-
-    def test_a_new_home_on_the_keychain_never_makes_a_key_file(self):
-        self.configure("keychain")
-        self.seal()
-        self.assertEqual(self.opened(), "example-session")
-        self.assertFalse((self.home / "secret.key").exists())
-        self.assertIn(self.account(), self.items())
-
-    def test_the_file_stays_when_the_keychain_doesnt_keep_the_key(self):
-        self.seal()
-        self.configure("keychain")
-        (self.tools / "forgetful").touch()
-        with self.assertRaises(ToolError):
-            self.opened()
-        self.assertTrue((self.home / "secret.key").is_file())
-        (self.tools / "forgetful").unlink()
-        self.configure("file")
-        self.assertEqual(self.opened(), "example-session")
-
-    def test_a_bad_vault_setting_names_the_values(self):
-        self.configure("cloud")
-        with self.assertRaises(UsageError) as caught:
-            _home.secrets(self.home, "tlg")
-        self.assertIn('[vault] key is "file" or "keychain"', str(caught.exception))
 
 
 if __name__ == "__main__":

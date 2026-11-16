@@ -66,7 +66,7 @@ import sys
 import tempfile
 import threading
 from collections import Counter, deque
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -2056,10 +2056,11 @@ async def _local_storage(url: str, profile: str) -> dict[str, str] | None:
 # Helpers
 # ---------------------------------------------------------------------------------------------
 
-def _with_query(url: str, params: Mapping[str, Any]) -> str:
+def _with_query(url: str, params: Mapping[str, Any] | Sequence[tuple[str, Any]]) -> str:
     parts = urlsplit(url)
     pairs = parse_qsl(parts.query, keep_blank_values=True)
-    pairs.extend((str(key), str(value)) for key, value in params.items() if value is not None)
+    items = params.items() if isinstance(params, Mapping) else params
+    pairs.extend((str(key), str(value)) for key, value in items if value is not None)
     return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 

@@ -20,9 +20,8 @@ How a profile (`ins:example_user`) is read:
    its files only when the post isn't saved yet, and they come from the media API by its `pk`.
    A post the API can't give needs its own page, which can't be opened in the tab while that
    tab scrolls, so it is listed again once the scroll ends (`Profile.read_tab`).
-4. `stories` and `highlights` load the profile page once for the user's id and highlights
-   (`Profile.describe`), then ask the story and `reels_media` APIs; a refused API is left alone
-   for a day, and the story pages are read instead.
+4. `stories` and `highlights` load the profile page once for the highlights (`Profile.describe`),
+   then read the story and highlight pages directly.
 5. `profile` yields the largest picture the profile page's results name.
 
 A post link (`post` route) asks the media API by the `pk` its code spells, then reads the
@@ -60,9 +59,8 @@ Site quirks, each with the date it was seen (the ins page in docs/sources/ has t
 - flnd's own client may be refused (by its TLS fingerprint, it seems) while the tab's fetch
   is answered, so calls move into the tab (2026-11-12).
 - `x-ig-set-www-claim` rotates and must be echoed as `X-IG-WWW-Claim` (2026-11-12).
-- The story and `reels_media` APIs may refuse for long stretches, so a refusal is kept for a
-  day and the story pages are read (2026-11-13). `reels_media` takes at most 5 reels a call
-  (2026-11-12).
+- The story and reels REST APIs fail with HTTP 500 on live Instagram, so stories and
+  highlights are read directly from their pages (2026-11).
 - The profile page stopped embedding the user and its highlights; its own GraphQL calls bring
   them (2026-11).
 - A grid item may carry only a thumbnail; an image under 90% of `original_width` is read again
@@ -96,7 +94,6 @@ ins page in docs/sources/.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -158,11 +155,6 @@ WALLS = ("/accounts/login", "/challenge")
 WALL_ATTEMPTS = 2
 # What an API answer's `message` holds when it is a login wall rather than a result.
 CHECKPOINTS = ("checkpoint_required", "challenge_required", "login_required")
-# Seconds a refused API is left alone: Instagram's refusals last, and asking again each run only
-# costs a request and its retries before the story pages are read anyway.
-REFUSAL_LIFETIME = 24 * 60 * 60
-# Reels asked for in one `reels_media` call: more is refused (gallery-dl's chunk size).
-REELS_PER_CALL = 5
 # Accounts asked for in one page of the friendships API, as the web client asks.
 FOLLOWING_COUNT = 100
 # A grid image within this share of the post's `original_width` is its full size, not a thumbnail.
@@ -315,28 +307,21 @@ class Instagram(Source):
 
     @user.category(key="")
     def stories(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The profile's active stories, from the story API or the story page; keyed by path.
+        """The profile's active stories, from the story page; keyed by path.
 
         Args:
             site: the target's site.
-            profile: the user's `Profile`; its page is loaded for the user's id if no tab was.
+            profile: the user's `Profile`.
 
         Yields:
             One post per story, its music beside it.
         """
         profile.describe(site)
-        stories = self.api.stories(site, profile.id) if profile.id else None
-        if stories is None:
-            yield from story_posts(site, f"{SITE}/stories/{profile.user}/", "stories")
-            return
-        yield from reel_posts(site, stories, "stories")
+        yield from story_posts(site, f"{SITE}/stories/{profile.user}/", "stories")
 
     @user.category(key="")
     def highlights(self, site: Site, profile: Profile) -> Iterator[Post]:
         """Each highlight's stories, in the highlight's own folder; keyed by path.
-
-        Highlights are asked for `REELS_PER_CALL` at a time. When the reels API refuses, each
-        highlight's page is read instead, the pages of a batch warmed in background tabs.
 
         Args:
             site: the target's site.
@@ -347,21 +332,12 @@ class Instagram(Source):
         """
         profile.describe(site)
         found = profile.highlights
-        for start in range(0, len(found), REELS_PER_CALL):
-            chunk = found[start:start + REELS_PER_CALL]
-            ids = [f"highlight:{highlight}" for highlight, _ in chunk]
-            reels = self.api.reels(site, ids, "highlights")
-            if reels is None:
-                site.warm([f"{SITE}/stories/highlights/{highlight}/" for highlight, _ in chunk])
-            for highlight, title in chunk:
-                # The engine makes the title safe for a folder name (`album` in `folder`).
-                where = f"highlights/{title}"
-                if reels is None:
-                    posts = story_posts(site, f"{SITE}/stories/highlights/{highlight}/", where)
-                else:
-                    posts = reel_posts(site, reels.get(f"highlight:{highlight}", []), where)
-                for post in posts:
-                    yield post.replace(album=title)
+        site.warm([f"{SITE}/stories/highlights/{highlight}/" for highlight, _ in found])
+        for highlight, title in found:
+            # The engine makes the title safe for a folder name (`album` in `folder`).
+            where = f"highlights/{title}"
+            for post in story_posts(site, f"{SITE}/stories/highlights/{highlight}/", where):
+                yield post.replace(album=title)
 
     @user.category(folder="profile", key="")
     def profile(self, site: Site, profile: Profile) -> Iterator[Post]:
@@ -513,60 +489,6 @@ class Api:
             return media
         return post_page(site, code)
 
-    def reels(self, site: Site, reel_ids: list[Any], what: str) -> dict[str, list[dict]] | None:
-        """The stories of up to `REELS_PER_CALL` reels, from `/api/v1/feed/reels_media/`.
-
-        Args:
-            site: the target's site.
-            reel_ids: the reels, such as `highlight:<id>`.
-            what: the category asking, for the line said when the API refuses.
-
-        Returns:
-            Each reel's stories by its id; None when the API refused (now or within a day).
-        """
-        if self._refused(site, "reels"):
-            return None
-        try:
-            params = [("reel_ids", str(reel)) for reel in reel_ids]
-            data = self.get(site, f"{API}/feed/reels_media/", params=params)
-        except (SiteError, NetworkError):
-            self._refuse(site, "reels", what)
-            return None
-        # An answer without the reels' JSON is a refusal too, so the same fallback applies.
-        if not isinstance(data, dict):
-            self._refuse(site, "reels", what)
-            return None
-        found: dict[str, list[dict]] = {}
-        for reel in data.get("reels_media") or list((data.get("reels") or {}).values()):
-            if isinstance(reel, dict):
-                items = [item for item in reel.get("items") or [] if isinstance(item, dict)]
-                found[str(reel.get("id", ""))] = items
-        return found
-
-    def stories(self, site: Site, user_id: Any) -> list[dict] | None:
-        """One user's active stories, from `/api/v1/feed/user/<id>/story/`.
-
-        Args:
-            site: the target's site.
-            user_id: the user's `pk`.
-
-        Returns:
-            The stories, [] for none; None when the API refused (now or within a day).
-        """
-        if self._refused(site, "story"):
-            return None
-        try:
-            data = self.get(site, f"{API}/feed/user/{user_id}/story/")
-        except (SiteError, NetworkError):
-            self._refuse(site, "story", "stories")
-            return None
-        # `reel` is null while the user has no story; an answer without `reel` isn't this API's.
-        if (not isinstance(data, dict) or "reel" not in data
-                or not isinstance(data["reel"], (dict, type(None)))):
-            self._refuse(site, "story", "stories")
-            return None
-        return [item for item in (data["reel"] or {}).get("items") or [] if isinstance(item, dict)]
-
     def following(self, site: Site) -> Iterator[Target]:
         """Every account the login follows, page by page from the friendships API.
 
@@ -627,38 +549,6 @@ class Api:
         if found:
             return str(found)
         raise LoginError("ins: not logged in, so there is no account to read", hint=LOGIN_HINT)
-
-    def _refused(self, site: Site, api: str) -> bool:
-        """Whether `api` was refused this run, or in an earlier run less than a day ago.
-
-        Args:
-            site: the target's site, whose `state` keeps when each API was refused.
-            api: the API's short name: "reels" or "story".
-
-        Returns:
-            True to leave the API alone and read the story pages.
-        """
-        if api in self.refused:
-            return True
-        since = site.state.get(f"refused.{api}")
-        if isinstance(since, (int, float)) and time.time() - since < REFUSAL_LIFETIME:
-            self.refused.add(api)
-            return True
-        return False
-
-    def _refuse(self, site: Site, api: str, what: str) -> None:
-        """Leave `api` alone for a day, and say once that `what` is read from the story pages.
-
-        Args:
-            site: the target's site, whose `state` keeps the refusal's time across runs.
-            api: the API's short name: "reels" or "story".
-            what: the category that falls back, for the line.
-        """
-        self.refused.add(api)
-        site.state[f"refused.{api}"] = time.time()
-        # Expected while Instagram refuses these APIs, so an info line, not a warning.
-        site.info("{what}: reading the story pages, as Instagram's {api} API is refusing",
-                  what=what, api=api)
 
     def _waited(self, site: Site, response: Any, *, refused: bool, walls: int) -> int | None:
         """Wait out what `response` says, or move the calls into the tab; None to take it as is.
@@ -1142,7 +1032,8 @@ def files_of(media: dict, *, pinned: bool = False) -> list[File]:
     files = []
     for index, (url, extension, audio) in enumerate(found):
         stem = f"{code}_{index}" if len(found) > 1 else code
-        named = pinned or PurePosixPath(urlsplit(url).path).suffix.lower() != f".{extension}"
+        first_url = url[0] if isinstance(url, (list, tuple)) else url
+        named = pinned or PurePosixPath(urlsplit(first_url).path).suffix.lower() != f".{extension}"
         files.append(File(url, audio=audio, name=file_name(taken, stem, extension) if named
                           else None))
     return files
@@ -1416,14 +1307,17 @@ def profile_picture(result: Any) -> str | None:
     return found if isinstance(found, str) else None
 
 
-def post_files(media: dict) -> list[tuple[str, str, str | None]]:
+def post_files(media: dict) -> list[tuple[str | tuple[str, ...], str, str | None]]:
     """Each file of a post as `(url, extension, audio)`: every carousel item, or the post itself."""
     children = media.get("carousel_media") or [media]
     return [file for child in children if (file := best_file(child)) is not None]
 
 
-def best_file(media: dict) -> tuple[str, str, str | None] | None:
+def best_file(media: dict) -> tuple[str | tuple[str, ...], str, str | None] | None:
     """An item's best file as `(url, extension, audio)`: its DASH streams, its MP4, or its image.
+
+    If both DASH streams and direct progressive video versions are present, the progressive
+    URL is kept as a fallback mirror in case DASH merge fails on video.
 
     Args:
         media: one post's or carousel item's JSON.
@@ -1431,14 +1325,16 @@ def best_file(media: dict) -> tuple[str, str, str | None] | None:
     Returns:
         The file; None for an item without any.
     """
+    videos = media.get("video_versions") or []
+    progressive = max(videos, key=_area)["url"] if videos else None
     if streams := File.dash(media.get("video_dash_manifest")):
         # The joined file takes the video's extension: WebM for a WebM stream, else MP4.
         video = str(streams.url)
         webm = PurePosixPath(urlsplit(video).path).suffix.lower() == ".webm"
-        return video, "webm" if webm else "mp4", streams.audio
-    videos = media.get("video_versions") or []
-    if videos:
-        return max(videos, key=_area)["url"], "mp4", None
+        urls = (video, progressive) if progressive and progressive != video else video
+        return urls, "webm" if webm else "mp4", streams.audio
+    if progressive:
+        return progressive, "mp4", None
     images = _candidates(media)
     if images:
         url = max(images, key=_area)["url"]

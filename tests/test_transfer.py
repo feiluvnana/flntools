@@ -303,6 +303,7 @@ class MediaDownloadTest(NetCase):
 
 class DashDownloadTest(NetCase):
     VIDEO, AUDIO = "https://cdn.example/v.mp4", "https://cdn.example/a.mp4"
+    PROGRESSIVE = "https://cdn.example/p.mp4"
 
     def serve(self, request):
         self.requests.append(request)
@@ -310,17 +311,27 @@ class DashDownloadTest(NetCase):
         return items.pop(0) if len(items) > 1 else items[0]
 
     def client(self, **bodies):
+        progressive_body = b"\0\0\0\x18ftypisomprogressive"
         self.bodies = {self.VIDEO: [_net.reply(200, content=b"\0\0\0\x18ftypisomvideo")],
-                       self.AUDIO: [_net.reply(200, content=b"\0\0\0\x18ftypisomaudio")], **bodies}
+                       self.AUDIO: [_net.reply(200, content=b"\0\0\0\x18ftypisomaudio")],
+                       self.PROGRESSIVE: [_net.reply(200, content=progressive_body)],
+                       **bodies}
         return super().client(_net.reply(500))
 
-    def fake_ffmpeg(self, *, fail=False):
+    def fake_ffmpeg(self, *, fail=False, fail_video=False):
         calls = []
 
         def ffmpeg(args):
             calls.append(args[1:])
             if fail:
                 return 1, "", "bad container"
+            if fail_video:
+                in0 = args[args.index("-i") + 1]
+                return 1, "", (
+                    f"[in#0 @ 0x123] Error opening input: Invalid data found\n"
+                    f"Error opening input file {in0}.\n"
+                    f"Error opening input files: Invalid data found when processing input"
+                )
             Path(args[-1]).write_bytes(b"\0\0\0\x18ftypisommerged")
             return 0, "", ""
 
@@ -375,6 +386,25 @@ class DashDownloadTest(NetCase):
         with self.client() as client, patcher, self.assertRaises(_tools.RunError):
             self.merged(client, "r.webm")
         self.assertEqual(list((self.tmp / "reels").iterdir()), [])
+
+    def test_invalid_video_stream_falls_back_to_progressive_mirror(self):
+        """When ffmpeg fails opening video.part, falls back to direct progressive video."""
+        patcher, _ = self.fake_ffmpeg(fail_video=True)
+        file = File([self.VIDEO, self.PROGRESSIVE], audio=self.AUDIO)
+        dest = self.tmp / "reels" / "r.mp4"
+        with self.client() as client, patcher:
+            saved = save(client, file, dest, label="reels/r.mp4", kind="video")
+        self.assertEqual(saved.path.read_bytes(), b"\0\0\0\x18ftypisomprogressive")
+
+    def test_empty_video_stream_falls_back_to_progressive_mirror(self):
+        """When the DASH video stream is empty (0 bytes), it falls back to progressive mirror."""
+        patcher, calls = self.fake_ffmpeg()
+        file = File([self.VIDEO, self.PROGRESSIVE], audio=self.AUDIO)
+        dest = self.tmp / "reels" / "r.mp4"
+        with self.client(**{self.VIDEO: [_net.reply(200, content=b"")]}) as client, patcher:
+            saved = save(client, file, dest, label="reels/r.mp4", kind="video")
+        self.assertEqual(calls, [])
+        self.assertEqual(saved.path.read_bytes(), b"\0\0\0\x18ftypisomprogressive")
 
 
 class FollowTest(NetCase):

@@ -1019,7 +1019,9 @@ class Ledger:
         """
         if not holder.is_file() or not _distinct_folders(self.folder, dest, holder):
             return
-        if dest.exists() or dest.is_symlink():
+        if dest.is_symlink() and not dest.exists():
+            dest.unlink(missing_ok=True)
+        elif dest.exists() or dest.is_symlink():
             return
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not _try_link(dest, holder):

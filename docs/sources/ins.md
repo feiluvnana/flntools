@@ -91,8 +91,6 @@ The source mixes three ways of reading:
    bottom stays quiet) ends the scroll too.
 3. **The REST API** at `https://www.instagram.com/api/v1/`, the one the web client uses:
    - `media/<pk>/info/` for one post (`pk` is the post's numeric id, decoded from its code);
-   - `feed/user/<id>/story/` for a user's active stories;
-   - `feed/reels_media/?reel_ids=…` for highlights, at most 5 per call;
    - `friendships/<id>/following/?count=100` for `ins:me`, page by page.
 
 API calls carry the web client's headers: `X-IG-App-ID` and `X-ASBD-ID` (the `APP_ID` and
@@ -109,10 +107,9 @@ How each category is read:
   `/p/<code>/`, and the tab can't be navigated while it scrolls, so such a post is listed again
   once the scroll ends and its page is read then. The tabs not yet read are opened in
   background tabs meanwhile, so they are loaded when their turn comes.
-- **`stories`**: load the profile page for the user's id, then ask the story API; if it refuses,
-  read the story page `/stories/<user>/`.
-- **`highlights`**: the profile page lists them; each batch of 5 comes from `reels_media`, or,
-  if it refuses, from each highlight's page `/stories/highlights/<id>/`.
+- **`stories`**: load the story page `/stories/<user>/`.
+- **`highlights`**: the profile page lists them; each highlight is read from
+  `/stories/highlights/<id>/`.
 - **`profile`**: the largest picture the profile page's results name.
 - **`post` target**: the media API, then the post's page.
 
@@ -121,7 +118,8 @@ merged), else from its largest MP4. A photo is its largest image candidate.
 
 **Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between requests to
 `instagram.com`, page loads included. Each CDN host's files download 8 at once, adapting up to 32
-(no `limits` of its own). The CDN gets a `Referer: https://www.instagram.com/` header, which it requires.
+(no `limits` of its own). The CDN gets a `Referer: https://www.instagram.com/` header,
+which it requires.
 
 ## Where files go
 
@@ -163,10 +161,8 @@ Example:
   this move is always tried first. Handled since 2026-11-12.
 - **Rotating claim.** Instagram sends a new `x-ig-set-www-claim` header, which must be echoed
   as `X-IG-WWW-Claim` on the next call. Handled since 2026-11-12.
-- **Refused story and highlight APIs.** When the story or `reels_media` API refuses, flnd
-  leaves it alone for 24 hours (remembered across runs) and reads story pages instead, saying so
-  in one info line. Handled since 2026-11-13.
-- **`reels_media` takes at most 5 reels a call**; more is refused. Handled since 2026-11-12.
+- **Story and highlight pages.** Because Instagram's story and reels REST APIs fail with
+  HTTP 500, stories and highlights are read directly from their pages (2026-11).
 - **Profile page no longer embeds the user or highlights** (2026-11, per the code comment). flnd
   also reads the page's own GraphQL calls, once the network is quiet.
 - **Thumbnail-only grid items.** A grid item may carry only a small image. flnd treats an image

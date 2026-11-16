@@ -150,6 +150,9 @@ def _unknown(media: Path, seen: _Seen) -> list[Path]:
         if entry.name.endswith(".json") and name[: -len(".json")] in seen.paths:
             continue
         stat = entry.stat(follow_symlinks=False)
+        if stat.st_ino == 0 and os.name == "nt":
+            # On Windows, DirEntry.stat() leaves st_ino 0; os.stat queries the file index.
+            stat = os.stat(entry.path)
         if (stat.st_dev, stat.st_ino) in seen.inodes:
             continue
         # A rename sets the change time, not the modified time (which is the post's day).

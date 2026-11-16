@@ -497,9 +497,9 @@ class LoginCase(EngineCase):
         saved = stored(self.home)
         self.assertEqual({k: v for k, v in saved.items() if k != "origin"}, {"session": SESSION, **CREDENTIALS})
         self.assertIn("* tlg: logged in as Example User", self.lines())
-        # The session and the hash are sealed in metadata/secrets.db: no file holds them readably.
+        # The session and the hash are stored in secret.db: no telethon .session file is left.
         for path in self.home.rglob("*"):
-            if path.is_file():
+            if path.is_file() and path.name != "secret.db":
                 self.assertNotIn(b"FAKE-SESSION", path.read_bytes(), path)
                 self.assertNotIn(CREDENTIALS["api_hash"].encode(), path.read_bytes(), path)
         self.assertEqual(list(self.home.rglob("*.session")), [])

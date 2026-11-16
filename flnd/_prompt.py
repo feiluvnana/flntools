@@ -18,46 +18,38 @@ How a question goes:
    again. Input that ends (Ctrl-D) is a `UsageError`.
 
 Rule a change must keep: a question never runs under a live display (`_paused`), which would
-draw over it. A display that covers the whole terminal (a full-screen view, which also reads
-keys) says so with `covering`, and is stopped for the question too.
+draw over it.
 """
 
 from __future__ import annotations
 
 import getpass
+import io
 import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
+import questionary
+
 from flnd.errors import UsageError
 
-__all__ = ["ask", "choose", "confirm", "covering", "interactive"]
+__all__ = ["ask", "choose", "confirm", "interactive"]
 
-# The displays covering the terminal now (`covering`), innermost last: each has `stop()` and
-# `start()`, and a question stops them first.
-_covers: list[Any] = []
+CHARM_STYLE = questionary.Style([
+    ("qmark", "fg:#7D84D6 bold"),
+    ("question", "fg:#D0D0D0 bold"),
+    ("answer", "fg:#02BF87 bold"),
+    ("pointer", "fg:#7D84D6 bold"),
+    ("highlighted", "fg:#7D84D6 bold"),
+    ("selected", "fg:#02BF87"),
+    ("separator", "fg:#767676"),
+    ("instruction", "fg:#767676"),
+    ("text", "fg:#D0D0D0"),
+])
+QMARK = "•"
+POINTER = "❯"
 
-
-@contextmanager
-def covering(display: Any) -> Iterator[None]:
-    """Say that `display` covers the terminal for the block, so a question stops it first.
-
-    A full-screen view takes the screen and the keys: a question asked under it (from any
-    thread) would be neither seen nor typed. `display.stop()` gives the terminal back before
-    the question, and `display.start()` takes it again after.
-
-    Args:
-        display: anything with `stop()` and `start()`.
-
-    Yields:
-        Nothing; the display is known for the block.
-    """
-    _covers.append(display)
-    try:
-        yield
-    finally:
-        _covers.remove(display)
 
 def interactive() -> bool:
     """Whether a person can answer a prompt: standard input is a terminal.
@@ -73,6 +65,11 @@ def interactive() -> bool:
     """
     stdin = sys.stdin
     return bool(stdin and stdin.isatty())
+
+
+def _is_mock() -> bool:
+    """Whether standard input is a mock stream used in unit tests."""
+    return isinstance(sys.stdin, io.StringIO)
 
 
 def ask(message: str, *, secret: bool = False, default: str | None = None) -> str:
@@ -94,8 +91,24 @@ def ask(message: str, *, secret: bool = False, default: str | None = None) -> st
     """
     if not interactive():
         return _required(message, default)
-    shown = f"{message} [{default}]: " if default else f"{message}: "
     with _paused():
+        if not _is_mock():
+            try:
+                fn = questionary.password if secret else questionary.text
+                answer = fn(
+                    message, default=default or "",
+                    qmark=QMARK, style=CHARM_STYLE,
+                ).unsafe_ask()
+                if answer is None:
+                    raise UsageError("the input ended before an answer")
+                return answer or default or ""
+            except KeyboardInterrupt:
+                raise
+            except EOFError:
+                raise UsageError("the input ended before an answer") from None
+            except Exception:
+                pass
+        shown = f"{message} [{default}]: " if default else f"{message}: "
         try:
             answer = getpass.getpass(shown) if secret else _line(shown)
         except EOFError:
@@ -118,17 +131,31 @@ def confirm(message: str, *, default: bool = True) -> bool:
     """
     if not interactive():
         return default
-    shown = f"{message}? [{'Y/n' if default else 'y/N'}] "
-    while True:
-        with _paused():
+    with _paused():
+        if not _is_mock():
+            try:
+                answer = questionary.confirm(
+                    message, default=default, qmark=QMARK, style=CHARM_STYLE,
+                ).unsafe_ask()
+                if answer is None:
+                    raise UsageError("the input ended before an answer")
+                return bool(answer)
+            except KeyboardInterrupt:
+                raise
+            except EOFError:
+                raise UsageError("the input ended before an answer") from None
+            except Exception:
+                pass
+        shown = f"{message}? [{'Y/n' if default else 'y/N'}] "
+        while True:
             try:
                 answer = _line(shown).strip().lower()
             except EOFError:
                 raise UsageError("the input ended before an answer") from None
-        if not answer:
-            return default
-        if answer in ("y", "yes", "n", "no"):
-            return answer.startswith("y")
+            if not answer:
+                return default
+            if answer in ("y", "yes", "n", "no"):
+                return answer.startswith("y")
 
 
 def choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *,
@@ -159,23 +186,40 @@ def choose(message: str, choices: Sequence[Any] | Mapping[str, Any], *,
         raise UsageError(f"{default!r} is not a choice for {message!r}")
     if not interactive():
         return _required(message, default)
-    labels = [str(label) for label, _ in pairs]
-    numbered = "\n".join(f"  {number}. {label}" for number, label in enumerate(labels, 1))
-    shown = f"{message} [1-{len(pairs)}]: "
-    while True:
-        with _paused():
+    with _paused():
+        if not _is_mock():
+            try:
+                items = [questionary.Choice(title=str(label), value=val) for label, val in pairs]
+                initial = next((item for item in items if item.value == default), None)
+                answer = questionary.select(
+                    message, choices=items, default=initial,
+                    qmark=QMARK, pointer=POINTER, style=CHARM_STYLE,
+                ).unsafe_ask()
+                if answer is None:
+                    raise UsageError("the input ended before an answer")
+                return answer
+            except KeyboardInterrupt:
+                raise
+            except EOFError:
+                raise UsageError("the input ended before an answer") from None
+            except Exception:
+                pass
+        labels = [str(label) for label, _ in pairs]
+        numbered = "\n".join(f"  {number}. {label}" for number, label in enumerate(labels, 1))
+        shown = f"{message} [1-{len(pairs)}]: "
+        while True:
             print(numbered, file=sys.stderr)
             try:
                 answer = _line(shown).strip()
             except EOFError:
                 raise UsageError("the input ended before an answer") from None
-        if not answer and default is not None:
-            return default
-        if answer.isdigit() and 1 <= int(answer) <= len(pairs):
-            return values[int(answer) - 1]
-        if answer in labels:
-            return values[labels.index(answer)]
-        print(f"pick a number from 1 to {len(pairs)}", file=sys.stderr)
+            if not answer and default is not None:
+                return default
+            if answer.isdigit() and 1 <= int(answer) <= len(pairs):
+                return values[int(answer) - 1]
+            if answer in labels:
+                return values[labels.index(answer)]
+            print(f"pick a number from 1 to {len(pairs)}", file=sys.stderr)
 
 
 def _line(shown: str) -> str:
@@ -223,8 +267,8 @@ def _paused() -> Iterator[None]:
     """
     module = sys.modules.get("flnd._ui")
     console = getattr(getattr(module, "ui", None), "raw", None)
-    lives = [*_covers, *(live for live in getattr(console, "_live_stack", ())
-                         if getattr(live, "is_started", False))]
+    lives = [live for live in getattr(console, "_live_stack", ())
+             if getattr(live, "is_started", False)]
     stopped = []
     for live in reversed(lives):
         try:

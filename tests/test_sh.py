@@ -122,7 +122,7 @@ class FakeTest(ShCase):
             self.assertEqual(_tools.find("7zz").run("x", check=False).args, ("7zz", "x"))
             with self.assertRaises(_tools.MissingError):
                 _tools.find("unrar")
-        self.assertEqual(seen, [("ffmpeg", "-i", "a.mp4"), ("/usr/bin/ffmpeg", "-y")])
+        self.assertEqual(seen, [("ffmpeg", "-i", "a.mp4"), (str(Path("/usr/bin/ffmpeg")), "-y")])
 
     def test_a_failing_fake_stream_raises_after_its_lines(self):
         with _tools.fake({"ffmpeg": lambda args: (1, "a\n", "broken")}):

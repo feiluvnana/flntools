@@ -301,6 +301,8 @@ CALLED_FROM_OUTSIDE: dict[str, str] = {
                          "block, through state the request path reads; flnd's own tests use it",
     "flnd/_tools.py:fake": "the tools library's test seam: a caller's tests answer program runs "
                            "in a block, through state `run` reads; flnd's own tests use it",
+    "flnd/_run.py:restoring": "registers an undo function to run on hard exit (Ctrl-C); "
+                              "flnd's own tests use it",
 }
 
 

@@ -655,7 +655,7 @@ class ApiLoginTest(EngineCase):
         # A source without a login (bbb) has nothing to log in to.
         self.assertEqual(self.engine.cookie_logins, ("aaa",))
         self.assertEqual(self.engine.login("aaa", "browser", browser="chrome"), "aaa: logged in from Chrome (1 cookie)")
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.key", "secrets.db"])
+        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.db"])
         self.assertEqual(self.engine.logins, {"aaa": "logged in"})
         self.assertEqual({cookie["name"] for cookie in _home.load(self.home, "aaa")}, {"sid"})
 
@@ -664,7 +664,7 @@ class ApiLoginTest(EngineCase):
         path.write_text("# Netscape HTTP Cookie File\n.aaa.example\tTRUE\t/\tTRUE\t1825861327\tsid\tv\n")
         self.assertEqual(self.engine.login("aaa", "file", path=path), "aaa: logged in from cookies.txt (1 cookie)")
         self.assertTrue(path.is_file())
-        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.key", "secrets.db"])
+        self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.db"])
 
     def test_a_failed_login_and_bad_answers(self):
         with mock.patch("flnd._cookies.load",

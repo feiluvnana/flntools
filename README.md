@@ -62,7 +62,7 @@ flnd login [source] [how]     log in; alone, lists every source's login
 flnd logout <source>          remove a saved login
 flnd sources                  every source: built in, from a package or the plugin folder
 
-global flags: --home DIR · --ui full|inline|plain · -v/--verbose · --json · -V/--version
+global flags: --home DIR · -v/--verbose · --json · -V/--version
 ```
 
 `flnd --help` lists every command and every form of target each site reads, and
@@ -89,15 +89,6 @@ global flags: --home DIR · --ui full|inline|plain · -v/--verbose · --json · 
 - **`--json`** prints one JSON object per line: every event, then the run's report; `ls`,
   `status`, `check`, `login` and `sources` print their rows the same way. It never asks a
   question, which suits scripts and cron.
-- **`--ui`** picks how a run shows:
-  - `full`, the default on a terminal, takes the whole screen with live stats: the totals and
-    speed, each target and category with its pages and posts, each file in flight and the
-    busiest hosts, the browser's tabs, RAM, CPU and free disk, and the waits a site asked for.
-    Press **`q`** to stop gracefully and **`p`** to pause and resume. On exit the terminal is
-    put back, and the failures and the summary are printed.
-  - `inline` draws a live row per target and category under the prompt;
-  - `plain`, the default off a terminal, writes one line per file: `saved <path>` or
-    `failed <target> <post>: <message>`.
 - **Exit codes:** 0 everything worked, 1 some files or targets failed, 2 a usage error, 3 a login
   is needed, 4 flnd stopped on an error (a full disk, a missing browser, a broken source, a bug),
   130 stopped with Ctrl-C.
@@ -136,7 +127,7 @@ A sync is smart about what it has:
 - **Logins:** a login that is missing or expired stops that site only, with the command that
   fixes it. A site whose login is optional downloads what's public, and says so.
 - **Mistakes** you can fix (usage, login, disk, a tool) print `error: …` and what to do, never a
-  traceback. A bug writes its traceback to `<home>/logs/crash-<time>.txt` (`-v` prints it).
+  traceback. A bug writes its traceback to `<home>/log/crash-<time>.txt` (`-v` prints it).
 - **Ctrl-C** works in three stages:
   1. the first (or `q` on the full screen) stops listing and lets the files in progress finish;
   2. the second stops at once. Unfinished files stay as `<name>.part` and resume on the next
@@ -216,7 +207,7 @@ Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./
   secrets.db                  logins, encrypted
   secret.key                  the key to secrets.db, unless [vault] keeps it in the keychain
   config.toml                 optional settings (below)
-  logs/                       crash reports and samples of changed site answers, kept 30 days
+  log/                        crash reports and samples of changed site answers, kept 30 days
 ```
 A home made by an older flnd (with `metadata/`) is migrated on first use, so nothing is
 downloaded again. The old files are only read, so the older flnd still works on it.

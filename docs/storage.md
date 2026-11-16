@@ -4,39 +4,35 @@ Everything flnd keeps lives in one folder, the **home**: `$FLND_HOME`, else `.fl
 flnd runs from; the library takes `flnd.open(home)`. This page lists every file in it and what
 each holds, so you can back it up, move it, or read it with your own tools.
 
-Never share a home with someone you wouldn't give your logins to: the vault and its key sit
-side by side in it.
+Never share a home with someone you wouldn't give your logins to: `metadata/secret.db`
+holds your logins and cookies.
 
 ## The layout
 
 ```
 .flnd/
-  flnd.db          what the home remembers: files, posts, targets, runs, failures, …
-  secrets.db       the vault: logins and tokens, each sealed (AES-256-GCM)
-  secret.key       the vault's key (mode 0600), unless `[vault]` keeps it in the keychain
-  config.toml      settings (optional): `[defaults]`, `[compress]`, `[vault]`, `[sources.<code>]`
-                   (see Settings, below)
+  metadata/
+    flnd.db          what the home remembers: files, posts, targets, runs, failures, …
+    secret.db        the vault: logins, cookies and tokens stored unencrypted
   media/
     <code>/<target>/<category>/…   the downloaded files
-  cache/           reserved for things safe to delete; nothing writes there yet
-  logs/
+  log/
     crash-<time>.txt     the traceback of a crash, for a bug report
     <run>/samples/<n>.txt  the answer a site change was found in, scrubbed (see below)
+  config.toml      settings (optional): `[defaults]`, `[compress]`, `[sources.<code>]`
+                   (see Settings, below)
+  cache/           reserved for things safe to delete; nothing writes there yet
 ```
 
-`logs/` is swept at the start of each run that downloads: an entry older than 30 days goes.
+`log/` is swept at the start of each run that downloads: an entry older than 30 days goes.
 A sample is kept only for a parse failure (`flnd.Changed`) inside a recorded run: values under
 keys that look like secrets (`token`, `session`, `cookie`, …) are replaced by "…", an answer
 from a login URL or one that sets a cookie is never kept, and the file is named by a count,
 never by anything the site sent.
 
-A home made by flnd before `flnd.db` also has `metadata/` (see [Migrating an old
-home](#migrating-an-old-home)).
-
 The code: `flnd/_home.py` is flnd's storage (the layout, `flnd.db`'s tables and queries, the
-migration, the logins). It is built on two library modules: `flnd/_db.py`, a SQLite store (WAL,
-one connection shared by threads, transactions), and `flnd/_vault.py`, sealed secrets in a
-database under a key file.
+logins). It is built on two library modules: `flnd/_db.py`, a SQLite store (WAL, one connection
+shared by threads, transactions), and `flnd/_vault.py`, secrets stored in `secret.db`.
 
 ## `media/`
 
@@ -286,7 +282,6 @@ environment only says where things are (`FLND_HOME`, `FLND_SOURCES`), so it neve
 again = false        # list every post again, and ask again for files recorded gone (--again)
 dedupe = "link"      # "link" a file whose bytes are saved already, or "off" to keep both
 sidecars = false     # write <file>.json beside each saved file
-ui = "full"          # "full", "inline" or "plain": how a run shows on a terminal (--ui)
 compress = false     # compress what download, follow and sync save (--compress, --no-compress)
 when = ""            # the days every download, follow and sync takes, as --when writes them
                      # ("1y", "2026", "2026-01.."); "" for every day
@@ -324,82 +319,25 @@ stop_after = 5       # saved posts in a row that end a sync of a newest-first li
 
 The code: `flnd/options.py` (`config`) reads and checks the whole file, in one place.
 
-## The vault: `secrets.db` and `secret.key`
+## The vault: `secret.db`
 
-`secrets.db` has one table, `secrets`: a row per secret of a source, keyed `(slot, name)`, where
-the slot is the source's code. A cookie source keeps its jar as `cookies`, a JSON list of
-cookies in Playwright's shape (each domain with a leading dot); Telegram keeps its `session`
-and its API credentials. Each value is sealed with AES-256-GCM under the 32-byte key in
-`secret.key`, with `<slot>\0<name>` as associated data, so a value copied to another row doesn't
-open. A sealed value is a version byte (1), a 12-byte random nonce, then the ciphertext and its
-16-byte tag. The key file is made on first use with mode 0600, and opening the vault makes
-neither file: `secrets.db` comes with the first secret, the key with the first value sealed or
-opened.
+`secret.db` in `metadata/` has one table, `secrets`: a row per secret of a source, keyed
+`(slot, name)`, where the slot is the source's code. A cookie source keeps its jar as `cookies`,
+a JSON list of cookies in Playwright's shape (each domain with a leading dot); Telegram keeps its
+`session` and its API credentials. Secrets are stored unencrypted in plaintext, so no key file
+is needed.
 
 A cookie login (`flnd login <code> chrome`, or a cookie file) keeps only the cookies of the
 source's domains and their subdomains, and is refused unless one of the cookies the source's
 login names is there. When a run ends, the cookies the site refreshed are written back into the
 jar, for the names already in it. A plain cookie file a much older flnd left,
-`cookies/<code>.txt` (or `.json`), is moved into the vault the first time the source is used,
-and deleted once it is sealed.
+`cookies/<code>.txt` (or `.json`), is moved into `secret.db` the first time the source is used,
+and deleted once it is saved.
 
-The code: `flnd/_cookies.py` reads cookies from a file or a browser, `flnd/_vault.py` seals
-them, and `flnd/_home.py` holds the logins that use both.
+The code: `flnd/_cookies.py` reads cookies from a file or a browser, `flnd/_vault.py` stores
+them in `secret.db`, and `flnd/_home.py` holds the logins that use both.
 
-`flnd logout <code>` removes a source's rows. Deleting `secret.key` makes every saved login
-unreadable; log in again after.
-
-### The key in the keychain
-
-With `key = "keychain"` under `[vault]` in `config.toml`, the key lives in the operating system's
-keychain instead of `secret.key`:
-
-- **On macOS**, a generic password in the login keychain, through `/usr/bin/security`; **on
-  Linux**, an item of the Secret Service (GNOME Keyring, KWallet), through `secret-tool`. Its
-  service is `flnd` and its account `home-` and a hash of the home's absolute path, so each
-  home has its own; the key is kept as base64 text. Elsewhere (Windows), or without the tool,
-  the setting is a usage error saying the keychain isn't available here.
-- **The key never goes on a command line**, where another process could read it: `security`
-  reads the command that stores it on its standard input (`security -i`), and `secret-tool`
-  reads the secret there. Each tool runs from an argument list, never a shell, and its output
-  is never logged.
-- **The move is once, and safe.** The first command after setting `"keychain"` stores the
-  file's key in the keychain, reads it back, and only then deletes `secret.key`; a keychain
-  that didn't keep it leaves the file, with an error. Setting `"file"` again writes the key to
-  a new `secret.key` (mode 0600), reads it back, and then deletes the keychain item. A home
-  that has its `secret.key` never asks the keychain anything.
-- **A moved home** looks for another item, since the account names the path: set `"file"`
-  before moving a home, then `"keychain"` again after.
-- **Unattended runs**: a keychain is often locked for a cron job or a headless box, and a
-  locked one makes the tool fail (or wait, up to 30 s, for a password nobody types). That is
-  why the file is the default.
-
-The code: `flnd/_vault.py` (`Keychain`, `to_keychain`, `to_file`) does the keychain, and
-`flnd/_home.py` (`vault_key`) picks the place from the config.
-
-## Migrating an old home
-
-A home made before `flnd.db` kept its stores in `metadata/`: `history.db` (every saved file),
-`targets.db` (every target, with its cursors and failed files), `sources.db` (each source's
-state), `secrets.db` and `secret.key`. They are SQLite tables of JSON values (or JSON files, in
-the oldest homes).
-
-The first time flnd opens such a home, it migrates it:
-
-1. It takes `flnd.db`'s write lock (`BEGIN IMMEDIATE`). A second run opening the home at the same
-   time waits, then finds the work done.
-2. It reads every old store, opened so that nothing on disk changes, and writes their rows into
-   `flnd.db`: files keep their paths, and each gets the target whose folder its path is in;
-   targets keep whether they were followed (a row from before following existed counts as
-   followed), their categories, cursors and found targets; failed files become `failures`.
-3. It copies `metadata/secret.key` to `secret.key` (unless the home has one) and the sealed
-   logins into the new `secrets.db`, as they are: the same key opens them, and nothing is
-   decrypted on the way.
-4. It records the migration in `meta` and commits. Every later open skips it.
-
-**The old files are never changed or deleted**, so the previous flnd still runs on the home if
-you go back to it (it won't see what the new one downloaded). Once you're sure you won't go back,
-delete `metadata/`.
+`flnd logout <code>` removes a source's rows.
 
 ## Checking a home
 

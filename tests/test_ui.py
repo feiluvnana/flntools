@@ -119,6 +119,30 @@ class ProgressTest(UICase):
         self.assertIn("Metadata", out)
         self.assertIn("Media", out)
 
+    def test_concurrent_groups_share_single_live_progress(self) -> None:
+        buf = io.StringIO()
+        with ui.scope(color=True, dest=buf, width=80, level="info"):
+            self.assertTrue(ui._progress_enabled())
+            with ui.progress("item1.jpg", total=10) as row1:
+                self.assertIsNotNone(ui._live_progress)
+                self.assertEqual(ui._live_count, 1)
+                live_prog = ui._live_progress
+                with ui.progress("item2.jpg", total=20) as row2:
+                    self.assertIs(ui._live_progress, live_prog)
+                    self.assertEqual(ui._live_count, 2)
+                    self.assertIn(row1.raw, ui._live_tasks)
+                    self.assertIn(row2.raw, ui._live_tasks)
+                    row1.advance(5)
+                    row2.advance(10)
+                self.assertEqual(ui._live_count, 1)
+                self.assertIs(ui._live_progress, live_prog)
+                self.assertNotIn(row2.raw, ui._live_tasks)
+            self.assertEqual(ui._live_count, 0)
+            self.assertIsNone(ui._live_progress)
+        out = buf.getvalue()
+        self.assertIn("item1.jpg", out)
+        self.assertIn("item2.jpg", out)
+
 
 class ScopeTest(UICase):
     """Tests for `scope`."""
@@ -129,6 +153,25 @@ class ScopeTest(UICase):
             ui.debug("colored")
         self.assertIn("\x1b[", buf2.getvalue())
         self.assertEqual(ui.level, "info")
+
+    def test_scope_dest_flushed_immediately(self) -> None:
+        flushed: list[str] = []
+
+        class FlushStream(io.StringIO):
+            def flush(self) -> None:
+                flushed.append(self.getvalue())
+                super().flush()
+
+        stream = FlushStream()
+        with ui.scope(dest=stream, level="info"):
+            self.assertEqual(flushed, [])
+            ui.info("message one")
+            self.assertGreaterEqual(len(flushed), 1)
+            self.assertIn("message one", flushed[-1])
+            count = len(flushed)
+            ui.warn("message two")
+            self.assertGreater(len(flushed), count)
+            self.assertIn("message two", flushed[-1])
 
 
 if __name__ == "__main__":

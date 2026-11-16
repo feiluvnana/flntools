@@ -362,7 +362,7 @@ class CliTest(FlndCase):
     def test_a_login_the_source_needs_exits_3(self):
         source = make_source("aaa", login=login_cookies("sid", required=True))
         with mock.patch.dict(sources.SOURCES, {"aaa": source}):
-            code, out, err = self.run_app("download", "aaa:example_user", "--ui", "plain")
+            code, out, err = self.run_app("download", "aaa:example_user")
         self.assertEqual(code, 3)
         self.assertIn("  run flnd login aaa", out)
         self.assertNotIn("Traceback", out + err)

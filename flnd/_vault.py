@@ -7,8 +7,7 @@ A library: it knows nothing of flnd's sources or homes. What it offers, for any 
   sealed in its own row of the database at `path`, under the key in `key_path`.
 - `key(path)`: the key in a key file, made with mode 0600 on first use.
 - `Keychain(account)`: the key in the operating system's keychain instead (macOS's
-  `security`, Linux's `secret-tool`), and `to_keychain` and `to_file`, which move a key
-  between the two once, removing the old copy only after the new one reads back.
+  `security`, Linux's `secret-tool`).
 - `digest`: the hex hash of text, bytes, a file or a stream.
 
     with Vault(Path("secrets.db"), Path("secret.key"), "tlg") as saved:
@@ -57,7 +56,7 @@ from flnd.errors import DiskError, LoginError, ToolError, UsageError
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-__all__ = ["Keychain", "Vault", "decrypt", "digest", "encrypt", "key", "to_file", "to_keychain"]
+__all__ = ["Keychain", "Vault", "decrypt", "digest", "encrypt", "key"]
 
 # ---------------------------------------------------------------------------------------------
 # Sealing
@@ -201,10 +200,10 @@ def _aes_gcm(key: bytes) -> AESGCM:
 # The vault: sealed values in a database, under a key file
 # ---------------------------------------------------------------------------------------------
 
-# The vault's one table: each value sealed under the key, bound to its slot and name. `{}` takes
+# The vault's one table: each value stored in plaintext, bound to its slot and name. `{}` takes
 # a schema name ("" or "<name>." for an attached database).
 SCHEMA = ("CREATE TABLE IF NOT EXISTS {}secrets (slot TEXT NOT NULL, name TEXT NOT NULL,"
-          " value BLOB NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
+          " value TEXT NOT NULL, PRIMARY KEY (slot, name)) WITHOUT ROWID")
 # How long a key file shorter than KEY_SIZE may be another process's key still being written, in
 # seconds, before it counts as damaged; 32 bytes are written in microseconds, so 2 s is ample.
 KEY_WAIT = 2.0
@@ -215,31 +214,30 @@ DAMAGED_KEY = "delete it, then seal the secrets again"
 
 
 class Vault(MutableMapping[str, str]):
-    """One slot's secrets: a mapping of `str` to `str`, each value sealed in its own row.
+    """One slot's secrets: a mapping of `str` to `str`, stored in plaintext in SQLite.
 
-    Each value is sealed with AES-256-GCM under the vault's key, with `<slot>\\0<name>` as
-    associated data, so a value copied to another row doesn't open. Opening a vault creates
-    nothing: the database is made on the first write, and the key on the first read or write
-    of a value.
+    Opening a vault creates nothing: the database is made on the first write of a value.
 
     Args:
-        path: the database file (`secrets.db`).
-        key_path: where the key is: a key file, made with mode 0600 when missing, or a
-            `Keychain` item, made when missing.
+        path: the database file (`secret.db`).
+        key_path: optional legacy key path (kept for compatibility with callers).
         slot: whose secrets these are (a source's code); another slot's aren't visible.
-        hint: what a value that doesn't open, or a damaged key, says to do.
+        hint: what a value that doesn't open says to do.
 
     Example:
         >>> import tempfile
         >>> folder = Path(tempfile.mkdtemp())
-        >>> with Vault(folder / "secrets.db", folder / "secret.key", "tlg") as saved:
+        >>> with Vault(folder / "secret.db", "tlg") as saved:
         ...     saved["session"] = "s"
         ...     dict(saved)
         {'session': 's'}
     """
 
-    def __init__(self, path: Path, key_path: Path | Keychain, slot: str, *,
+    def __init__(self, path: Path, key_path: Any = None, slot: str = "", *,
                  hint: str = DAMAGED_KEY):
+        if slot == "" and isinstance(key_path, str):
+            slot = key_path
+            key_path = None
         self._key_path, self._slot, self._hint = key_path, slot, hint
         self._key: bytes | None = None
         self._db = _db.Db(path, schema=SCHEMA.format(""))
@@ -249,15 +247,21 @@ class Vault(MutableMapping[str, str]):
                              (self._slot, name))
         if found is None:
             raise KeyError(name)
-        try:
-            return decrypt(found[0], self._secret_key(), context=self._context(name)).decode()
-        except LoginError as error:
-            raise LoginError(str(error), hint=self._hint) from None
+        val = found[0]
+        if isinstance(val, str):
+            return val
+        if isinstance(val, (bytes, memoryview)):
+            if self._key_path is not None:
+                try:
+                    return decrypt(val, self._secret_key(), context=self._context(name)).decode()
+                except Exception:
+                    pass
+            return bytes(val).decode("utf-8", errors="replace")
+        return str(val)
 
     def __setitem__(self, name: str, value: str) -> None:
-        sealed = encrypt(value, self._secret_key(), context=self._context(name))
         self._db.write("INSERT OR REPLACE INTO secrets VALUES (?, ?, ?)",
-                       (self._slot, name, sealed))
+                       (self._slot, name, str(value)))
 
     def __delitem__(self, name: str) -> None:
         if name not in self:
@@ -350,6 +354,8 @@ def _create_key(path: Path) -> bytes | None:
     Returns:
         The new key; None when the file was there already.
     """
+    if path.is_symlink():
+        return None
     path.parent.mkdir(parents=True, exist_ok=True)
     # O_EXCL makes "the first creator wins" without a hard link.
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
@@ -445,11 +451,6 @@ class Keychain:
             return None
         return found
 
-    @classmethod
-    def available(cls) -> bool:
-        """Whether this system has a keychain tool flnd can use."""
-        return cls.tool() is not None
-
     def read(self) -> bytes | None:
         """The key in the keychain; None when there is no item for this account.
 
@@ -514,25 +515,6 @@ class Keychain:
             raise ToolError(f"the keychain didn't keep the key {self.service}/{self.account}",
                             hint="unlock the keychain, then try again")
 
-    def delete(self) -> None:
-        """Remove the account's key from the keychain; nothing when there is none.
-
-        Raises:
-            UsageError: there is no keychain here.
-            ToolError: the keychain refused.
-        """
-        tool = self.require()
-        if _is_security(tool):
-            done = _call([tool, "delete-generic-password", "-s", self.service, "-a",
-                          self.account])
-            if done.returncode in (0, NOT_FOUND):
-                return
-        else:
-            done = _call([tool, "clear", "service", self.service, "account", self.account])
-            if done.returncode == 0:
-                return
-        raise _refused(tool, done)
-
     def key(self) -> bytes:
         """The account's key: the one stored, or a new one stored now.
 
@@ -564,74 +546,6 @@ class Keychain:
             raise UsageError("the OS keychain isn't available here: it needs macOS's "
                              f"{SECURITY}, or Linux's {SECRET_TOOL}", hint=self._hint)
         return tool
-
-
-def to_keychain(path: Path, chain: Keychain) -> bool:
-    """Move a key file's key into the keychain, once; the file goes only after it reads back.
-
-    1. No key file: nothing to move (the keychain holds the key, or will make one).
-    2. Store the file's key in the keychain (`write` checks that it reads back the same).
-    3. Delete the file. A crash before this leaves both, holding the same key, and the next
-       call moves it again, harmlessly.
-
-    Args:
-        path: the key file.
-        chain: the keychain item to move it to; an item there already is replaced, since the
-            file's key is the one the vault's values are sealed with.
-
-    Returns:
-        Whether a key was moved.
-
-    Raises:
-        DiskError: the key file is damaged.
-        UsageError: there is no keychain here.
-        ToolError: the keychain refused, or didn't keep the key.
-    """
-    if not path.is_file():
-        return False
-    chain.write(key(path))
-    path.unlink()
-    return True
-
-
-def to_file(chain: Keychain, path: Path) -> bool:
-    """Move the keychain's key into a key file, once; the item goes only after the file reads back.
-
-    1. A key file there already, or no keychain item: nothing to move.
-    2. Write the key to the file, mode 0600, made with `O_EXCL` so it never replaces another.
-    3. Read the file back; only when it holds the key is the keychain item deleted.
-
-    Args:
-        chain: the keychain item.
-        path: the key file to make.
-
-    Returns:
-        Whether a key was moved.
-
-    Raises:
-        DiskError: the file can't be made, or doesn't read back the same.
-        ToolError: the keychain refused.
-    """
-    if path.exists():
-        return False
-    secret = chain.read()
-    if secret is None:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    try:
-        handle = os.open(path, flags, 0o600)
-    except FileExistsError:
-        return False
-    except OSError as error:
-        raise DiskError(f"{path}: {error.strerror or error}") from None
-    with os.fdopen(handle, "wb") as file:
-        file.write(secret)
-    if path.read_bytes() != secret:
-        path.unlink(missing_ok=True)
-        raise DiskError(f"{path} didn't keep the key; the keychain still holds it")
-    chain.delete()
-    return True
 
 
 def _call(argv: list[str], *, stdin: str = "") -> subprocess.CompletedProcess[str]:

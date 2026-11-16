@@ -554,8 +554,10 @@ class Chain:
             return None, None
         # A few candidates: the first on disk at its size is enough.
         for twin in self.db.twins(row.hash, besides=row.key, limit=HOLDERS):
+            if twin.state != "saved":
+                continue
             path = Path(twin.path)
-            if path == Path(row.path):
+            if path == Path(row.path) or path.is_symlink():
                 continue
             try:
                 found = path.stat()

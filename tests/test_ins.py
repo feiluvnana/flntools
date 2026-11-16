@@ -164,9 +164,27 @@ class MediaTest(unittest.TestCase):
 
     def test_a_dash_manifest_gives_its_best_video_and_audio(self):
         reel = {**video("https://cdn.example/r.mp4"), "video_dash_manifest": INSTAGRAM}
-        self.assertEqual(best_file(reel), ("https://cdn.example/1080.mp4", "mp4", "https://cdn.example/a95.mp4"))
+        expected = (
+            ("https://cdn.example/1080.mp4", "https://cdn.example/r.mp4"),
+            "mp4",
+            "https://cdn.example/a95.mp4",
+        )
+        self.assertEqual(best_file(reel), expected)
+        # Without progressive video versions, only the DASH stream URL is returned.
+        no_prog = {"video_dash_manifest": INSTAGRAM}
+        expected_no_prog = ("https://cdn.example/1080.mp4", "mp4", "https://cdn.example/a95.mp4")
+        self.assertEqual(best_file(no_prog), expected_no_prog)
         # A manifest dash.best can't use falls back to the progressive file.
-        self.assertEqual(best_file({**reel, "video_dash_manifest": "<MPD/>"}), ("https://cdn.example/r.mp4", "mp4", None))
+        bad = {**reel, "video_dash_manifest": "<MPD/>"}
+        self.assertEqual(best_file(bad), ("https://cdn.example/r.mp4", "mp4", None))
+        # A segmented manifest also falls back to the progressive file.
+        seg = {
+            **video("https://cdn.example/r.mp4"),
+            "video_dash_manifest": INSTAGRAM.replace(
+                "</AdaptationSet>", '<SegmentTemplate media="seg-$Number$.m4s"/></AdaptationSet>', 1
+            ),
+        }
+        self.assertEqual(best_file(seg), ("https://cdn.example/r.mp4", "mp4", None))
 
     def test_only_a_whole_feed_post_is_complete(self):
         """ins.md §3: product_type "feed", dated, and every image within 10% of its original width."""
@@ -269,15 +287,6 @@ STORY_5001 = {"pk": "5001", "taken_at": STAMP, **image("https://cdn.example/s.jp
 STORY_5003 = {"pk": "5003_42", **video("https://cdn.example/s3.mp4")}
 HIGHLIGHT_ITEMS = [{"id": "5002_42", "taken_at": STAMP, **video("https://cdn.example/h.mp4")},
                    {"id": "5004", "taken_at": STAMP, **image("https://cdn.example/h2.jpg")}]
-REELS = {"42": [STORY_5001, STORY_5003], "highlight:9001": HIGHLIGHT_ITEMS}
-
-
-def reels_media(url, request):
-    """The reels API: each reel asked for (`reel_ids`, repeated) with its stories."""
-    return {"reels_media": [{"id": reel, "items": REELS.get(reel, [])} for name, reel in request["params"]
-                            if name == "reel_ids"], "status": "ok"}
-
-
 JSON = {
     **info(PK["CAR"], {"code": "CAR", "taken_at": STAMP, "carousel_media": [
         image("https://cdn.example/c0.jpg"), {**video("https://cdn.example/c1.mp4"), "video_dash_manifest": INSTAGRAM}]}),
@@ -286,8 +295,6 @@ JSON = {
     **info(PK["R2"], {"code": "R2", "taken_at": STAMP, **video("https://cdn.example/r2.mp4")}),
     **info(PK["T1"], {"code": "T1", "taken_at": STAMP, "carousel_media": [
         image("https://cdn.example/t0.jpg"), image("https://cdn.example/t1.jpg")]}),
-    f"{API}/feed/reels_media/": reels_media,
-    f"{API}/feed/user/42/story/": {"reel": {"id": "42", "items": REELS["42"]}, "status": "ok"},
 }
 PAGES = {
     f"{SITE}/example_creator/": embedded(PROFILE, HIGHLIGHTS),
@@ -407,17 +414,19 @@ class NamesAndKeysTest(unittest.TestCase):
         self.assertEqual(sorted((item.path, item.key) for item in saved), OLD_PROFILE)
 
     def test_the_story_pages_name_and_key_them_the_same(self):
-        """The fallback: with the reels API refused, the story pages give the same paths and keys."""
-        refused = {**JSON, f"{API}/feed/reels_media/": SiteError("HTTP 500", status=None)}
-        saved = read(options=Options(categories=("stories", "highlights")), json=refused)
+        """The story pages give the expected paths and keys."""
+        saved = read(options=Options(categories=("stories", "highlights")))
         self.assertEqual(sorted((item.path, item.key) for item in saved),
                          [pair for pair in OLD_PROFILE if pair[0].startswith(("stories/", "highlights/"))])
 
     def test_a_post_is_named_and_keyed_as_before_routes(self):
         saved = read("https://www.instagram.com/p/SINGLE/")
         self.assertEqual([(item.path, item.key) for item in saved], OLD_SINGLE)
-        self.assertEqual((saved[1].file.url, saved[1].file.audio),
-                         ("https://cdn.example/1080.mp4", "https://cdn.example/a95.mp4"))
+        expected_url = ("https://cdn.example/1080.mp4", "https://cdn.example/r.mp4")
+        self.assertEqual(
+            (saved[1].file.url, saved[1].file.audio),
+            (expected_url, "https://cdn.example/a95.mp4"),
+        )
 
     def test_a_post_from_the_media_api_is_named_and_keyed_as_from_its_page(self):
         code = "CuZLd-iMknW"
@@ -492,13 +501,15 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
         self.assertEqual([(item.path, item.key) for item in saved], [("profile/123_456_n.jpg", "profile/123_456_n.jpg")])
 
-    def test_stories_and_highlights_come_from_the_reels_api_with_one_load_of_the_profile(self):
+    def test_stories_and_highlights_come_from_their_pages_directly(self):
         seen = Seen()
         read(options=Options(categories=("stories", "highlights", "profile")), seen=seen)
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
-        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests],
-                         ["/feed/user/42/story/", "/feed/reels_media/"])
-        self.assertEqual(seen.requests[1][2]["params"], [("reel_ids", "highlight:9001")])
+        self.assertEqual(seen.visited, [
+            f"{SITE}/example_creator/",
+            f"{SITE}/stories/example_creator/",
+            f"{SITE}/stories/highlights/9001/",
+        ])
+        self.assertEqual(seen.requests, [])
 
     def test_a_profile_page_that_embeds_nothing_gives_its_user_and_highlights_by_its_own_calls(self):
         # 2026-11, live: the page's HTML holds neither the user nor the highlights; its GraphQL calls do.
@@ -506,72 +517,44 @@ class ProfileTest(unittest.TestCase):
         watch = FakeWatch({f"{SITE}/example_creator/": [PROFILE, HIGHLIGHTS]})
         seen = Seen()
         read(options=Options(categories=("stories", "highlights")), pages=pages, watch=watch, seen=seen)
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
-        self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests],
-                         ["/feed/user/42/story/", "/feed/reels_media/"])
-        self.assertEqual(seen.requests[1][2]["params"], [("reel_ids", "highlight:9001")])
+        self.assertEqual(seen.visited, [
+            f"{SITE}/example_creator/",
+            f"{SITE}/stories/example_creator/",
+            f"{SITE}/stories/highlights/9001/",
+        ])
+        self.assertEqual(seen.requests, [])
 
-    def test_highlights_are_asked_for_five_at_a_time(self):
-        nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(7)]
-        pages = {**PAGES, f"{SITE}/example_creator/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}})}
+    def test_highlights_load_their_story_pages_directly(self):
+        nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(3)]
+        profile = embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}})
+        pages = {
+            **PAGES,
+            f"{SITE}/example_creator/": profile,
+            **{f"{SITE}/stories/highlights/{n}/": "<html></html>" for n in range(3)},
+        }
         seen = Seen()
         read(options=Options(categories=("highlights",)), pages=pages, seen=seen)
-        self.assertEqual([len(options["params"]) for _, _, options in seen.requests], [5, 2])
+        self.assertEqual(seen.visited, [
+            f"{SITE}/example_creator/",
+            f"{SITE}/stories/highlights/0/",
+            f"{SITE}/stories/highlights/1/",
+            f"{SITE}/stories/highlights/2/",
+        ])
+        self.assertEqual(seen.requests, [])
 
-    def test_a_refused_story_api_falls_back_to_the_story_page(self):
+    def test_an_empty_story_page_yields_no_stories(self):
+        pages = {**PAGES, f"{SITE}/stories/example_creator/": "<html></html>"}
         seen = Seen()
-        refused = {**JSON, f"{API}/feed/user/42/story/": SiteError("HTTP 400", status=400)}
-        saved = read(options=Options(categories=("stories",)), json=refused, seen=seen)
-        self.assertEqual([item.path for item in saved], [f"stories/{DAY}_5001.jpg", "stories/5003.mp4"])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
-        # flnd's client was refused first, then the tab's call: one warning each.
-        self.assertIn("! Instagram refused flnd's own client; sending its API calls from the page", seen.messages)
-        self.assertIn("stories: reading the story pages, as Instagram's story API is refusing", seen.messages)
-
-    def test_an_answer_that_is_not_a_reel_is_a_refusal_and_a_missing_reel_is_no_stories(self):
-        # 2026-11, live: the story endpoint can send the home page, which isn't JSON.
-        for answer in ("<html>home</html>", {"status": "ok"}):
-            with self.subTest(answer=answer):
-                seen = Seen()
-                saved = read(options=Options(categories=("stories",)), json={**JSON, f"{API}/feed/user/42/story/": answer},
-                             seen=seen)
-                self.assertEqual(len(saved), 2)
-                self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
-                self.assertEqual(len([m for m in seen.messages if m.startswith("stories: reading the story pages")]), 1)
-        seen = Seen()
-        saved = read(options=Options(categories=("stories",)), seen=seen,
-                     json={**JSON, f"{API}/feed/user/42/story/": {"reel": None, "status": "ok"}})
+        saved = read(options=Options(categories=("stories",)), pages=pages, seen=seen)
         self.assertEqual(saved, [])
-        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
 
-    def test_a_refused_reels_api_is_warned_of_once_and_not_asked_again(self):
-        nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(7)]
-        pages = {**PAGES, f"{SITE}/example_creator/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}}),
-                 **{f"{SITE}/stories/highlights/{n}/": "<html></html>" for n in range(7)}}
+    def test_a_story_page_without_reel_items_yields_no_stories(self):
+        pages = {**PAGES, f"{SITE}/stories/example_creator/": embedded({"data": {}})}
         seen = Seen()
-        refused = {**JSON, f"{API}/feed/reels_media/": SiteError("HTTP 500", status=500)}
-        read(options=Options(categories=("highlights",)), pages=pages, json=refused, seen=seen)
-        # 7 highlights are two calls of 5 and 2; the second is never made.
-        self.assertEqual(len([url for _, url, _ in seen.requests if url.endswith("/reels_media/")]), 1)
-        self.assertEqual(seen.messages.count("highlights: reading the story pages, as Instagram's reels API is refusing"), 1)
-        self.assertFalse([m for m in seen.messages if m.startswith("! highlights")])
-
-    def test_a_refused_api_is_left_alone_for_a_day_then_asked_again(self):
-        refused = {**JSON, f"{API}/feed/user/42/story/": SiteError("HTTP 500", status=500)}
-        state: dict = {}
-        stories = Options(categories=("stories",))
-
-        def story_calls(now):
-            seen = Seen()
-            with mock.patch("flnd.sources.ins.time.time", return_value=now):
-                saved = read(options=stories, json=refused, seen=seen, state=state)
-            self.assertEqual(len(saved), 2)  # the story pages give the stories either way
-            return len([url for _, url, _ in seen.requests if url.endswith("/story/")])
-
-        start = 1_800_000_000.0
-        self.assertEqual(story_calls(start), 1)
-        self.assertEqual(story_calls(start + 60 * 60), 0)          # an hour later: not asked
-        self.assertEqual(story_calls(start + 25 * 60 * 60), 1)     # a day later: asked again
+        saved = read(options=Options(categories=("stories",)), pages=pages, seen=seen)
+        self.assertEqual(saved, [])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
 
     def test_a_throttled_response_backs_off_and_the_scroll_goes_on(self):
         seen = Seen()

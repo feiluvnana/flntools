@@ -692,9 +692,13 @@ class DashTest(unittest.TestCase):
         self.assertEqual(_extension(File.dash(mixed))[0], ".mp4")
 
     def test_segments_a_missing_track_relative_urls_or_junk_give_none(self):
-        for element in ('<SegmentTemplate media="seg-$Number$.m4s"/>', "<SegmentList/>"):
+        for element in ('<SegmentTemplate media="seg-$Number$.m4s"/>', "<SegmentList/>", "<SegmentTimeline/>"):
             self.assertIsNone(File.dash(INSTAGRAM.replace("</AdaptationSet>", element + "</AdaptationSet>", 1)))
         self.assertIsNone(File.dash(manifest(representation("video/mp4", "https://cdn.example/v.mp4", height=720))))
+        # BaseURL ending in / or containing $ is unusable as a progressive file.
+        dir_url = manifest(representation("video/mp4", "https://cdn.example/vid/", height=720),
+                           audios=[representation("audio/mp4", "https://cdn.example/a.mp4")])
+        self.assertIsNone(File.dash(dir_url))
         for text in (None, "", "not xml", "<MPD/>", 42):
             self.assertIsNone(File.dash(text), text)
         relative = INSTAGRAM.replace("https://cdn.example/1080.mp4", "1080.mp4")

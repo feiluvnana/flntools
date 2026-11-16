@@ -124,8 +124,17 @@ def refuse_profile(folder: Path) -> None:
     """
     if not os.environ.get(NO_PROFILES):
         return
+    import tempfile
+
+    resolved = Path(folder).resolve()
+    try:
+        candidates = (os.environ.get("TEMP"), os.environ.get("TMP"), tempfile.gettempdir())
+        if any(c and resolved.is_relative_to(Path(c).resolve()) for c in candidates):
+            return
+    except (ValueError, OSError):
+        pass
     real_home = _real_home().resolve()
-    if Path(folder).resolve().is_relative_to(real_home):
+    if resolved.is_relative_to(real_home):
         raise RuntimeError(f"{NO_PROFILES} is set: a test may not read or copy the real browser "
                            f"profile {folder}; fake the home folder or the browser instead")
 
@@ -138,9 +147,12 @@ def _real_home() -> Path:
     """
     if _PLATFORM == "win32":
         return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
-    import pwd
+    try:
+        import pwd
 
-    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, AttributeError):
+        return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
 
 
 # Errors: cookies are read to log in, so a cookie file that is broken, too big or unreadable, and
