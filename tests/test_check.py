@@ -14,9 +14,10 @@ import time
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
+from test_chain import ChainCase
+
 import flnd
 from flnd import _check, _home, cli
-from test_chain import ChainCase
 
 
 class CheckCase(ChainCase):

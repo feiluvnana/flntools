@@ -66,10 +66,11 @@ import sys
 import tempfile
 import threading
 from collections import Counter, deque
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Iterator, Mapping, Union
+from typing import TYPE_CHECKING, Any, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flnd import _net, _prompt, _text, _time
@@ -80,9 +81,10 @@ from flnd.errors import Changed, NetworkError, Stopped, ToolError, UsageError
 if TYPE_CHECKING:
     import threading as _threading
 
-    from flnd._loop import Loop
     from playwright.async_api import BrowserContext, Locator, Playwright, Response
     from playwright.async_api import Page as RawPage
+
+    from flnd._loop import Loop
 
 __all__ = [
     "FAST", "HUMAN", "Browser", "Capture", "Feed", "Match", "Page", "Reader", "RunBrowser", "Tabs",

@@ -72,14 +72,27 @@ from __future__ import annotations
 import re
 import time
 from collections import deque
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import (
-    TYPE_CHECKING, Any, Callable, Dict, Generator, Iterator, List, Mapping, NamedTuple, Sequence,
+    TYPE_CHECKING,
+    Any,
+    NamedTuple,
 )
 from urllib.parse import urlsplit
 
 from flnd.source import (
-    Blocked, File, LoginError, NetworkError, Post, Site, SiteError, Source, cookies, dig, target,
+    Blocked,
+    File,
+    LoginError,
+    NetworkError,
+    Post,
+    Site,
+    SiteError,
+    Source,
+    cookies,
+    dig,
+    target,
 )
 
 if TYPE_CHECKING:
@@ -200,7 +213,7 @@ class Profile:
         self.site = site
         self.url = f"{SITE}/@{name}"
         # The profile's own data (its `user` with `secUid` and `id`, its `stats`); empty until read.
-        self.user: Dict[str, Any] = {}
+        self.user: dict[str, Any] = {}
         # How many items each feed gave, saved or not, so a second run still sees a list grow.
         self.found = {feed.category: 0 for feed in FEEDS}
         self._loaded: bool | None = None
@@ -210,7 +223,7 @@ class Profile:
         self._stories: flnd.source.Feed | None = None
         self._started = False
         # The post feed's items waiting for the category that wants them: a playlist's or not.
-        self._queues: Dict[str, deque[Dict[str, Any]]] = {"videos": deque(), "playlists": deque()}
+        self._queues: dict[str, deque[dict[str, Any]]] = {"videos": deque(), "playlists": deque()}
         self._told = False
 
     @property
@@ -237,7 +250,7 @@ class Profile:
             return self._watch(posts=True, stories=self._stories is None)
         return self._loaded
 
-    def feed(self, wanted: str) -> Iterator[Dict[str, Any]]:
+    def feed(self, wanted: str) -> Iterator[dict[str, Any]]:
         """Stream items of `wanted` as the post feed scrolls, or drain queued ones.
 
         The first call scrolls the post list, handing each item to the queue of the category
@@ -255,7 +268,7 @@ class Profile:
         while queue:
             yield queue.popleft()
 
-    def stories(self) -> Iterator[Dict[str, Any]]:
+    def stories(self) -> Iterator[dict[str, Any]]:
         """The profile's stories from the page's watched responses.
 
         The stories come with the page load, so the profile is opened with its watchers when it
@@ -275,7 +288,7 @@ class Profile:
             self.found["stories"] += len(items)
             yield from items
 
-    def tab(self, category: str, tab: str) -> Iterator[Dict[str, Any]]:
+    def tab(self, category: str, tab: str) -> Iterator[dict[str, Any]]:
         """Open one profile tab in the browser by a click and read its feed to the end.
 
         Args:
@@ -381,7 +394,7 @@ class Profile:
         self.user = page_user(self.site.document().script(PAGE_DATA)) or self.user or {}
         return True
 
-    def _read_posts(self, wanted: str) -> Iterator[Dict[str, Any]]:
+    def _read_posts(self, wanted: str) -> Iterator[dict[str, Any]]:
         """Scroll the post feed to its end, yielding `wanted` items live.
 
         The engine may close this generator early (`--when`, or a sync that caught up); the
@@ -413,7 +426,7 @@ class Profile:
         finally:
             self._end()
 
-    def _drain_posts(self, wanted: str) -> Generator[Dict[str, Any], None, bool]:
+    def _drain_posts(self, wanted: str) -> Generator[dict[str, Any], None, bool]:
         """Yield `wanted` items batch by batch; return True once a response says it is the end.
 
         Args:
@@ -623,7 +636,7 @@ class TikTok(Source):
             yield Post(picture_id, [f], headers=cdn_headers(site.cookies))
 
 
-def page_user(data: Any) -> Dict[str, Any]:
+def page_user(data: Any) -> dict[str, Any]:
     """The profile's `userInfo` (its `user` and `stats`) from the page's data script, or {}.
 
     Args:
@@ -663,7 +676,7 @@ def embed_posts(site: Site, video_id: str) -> Iterator[Post]:
         yield post_of(site, item, "videos")
 
 
-def post_of(site: Site, item: Dict[str, Any], category: str) -> Post:
+def post_of(site: Site, item: dict[str, Any], category: str) -> Post:
     """One file of an item (a video, or one photo of a photo post) as a post.
 
     The file's name is given without its date (`<post>[_<n>].<ext>`), so the engine names it
@@ -693,7 +706,7 @@ def post_of(site: Site, item: Dict[str, Any], category: str) -> Post:
     )
 
 
-def cdn_headers(cookies: Mapping[str, str]) -> Dict[str, str]:
+def cdn_headers(cookies: Mapping[str, str]) -> dict[str, str]:
     """CDN headers (Referer, user agent and the session's cookies) that keep it from a 403.
 
     Only cookies that have a value are sent: a login with only `sid_tt` has no `sessionid`, and
@@ -731,7 +744,7 @@ def page_state(data: Any) -> tuple[bool, str | None] | None:
     return more, str(cursor) if cursor not in (None, "") else None
 
 
-def items_of(data: Any) -> List[Dict[str, Any]]:
+def items_of(data: Any) -> list[dict[str, Any]]:
     """Media items of one TikTok API response (itemList or storyList).
 
     Args:
@@ -771,7 +784,7 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
     return items
 
 
-def stamp_of(raw: Dict[str, Any], item_id: str) -> int | None:
+def stamp_of(raw: dict[str, Any], item_id: str) -> int | None:
     """Post Unix time from createTime or id's upper 32 bits, or None.
 
     The engine turns it into a day, in UTC: a local day would name the same video differently,
@@ -831,7 +844,7 @@ def mirrors(urls: Sequence[Any]) -> str | tuple[str, ...]:
     return found[0] if len(found) == 1 else found
 
 
-def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
+def best_video(video: dict[str, Any]) -> str | tuple[str, ...] | None:
     """The URL of the video's best file with CDN mirrors: largest MP4 or playAddr.
 
     The whole MP4s of `bitrateInfo` are ranked by pixels, then bitrate; DASH entries are left
@@ -859,7 +872,7 @@ def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
     return address or None
 
 
-def _pixels(entry: Dict[str, Any]) -> int:
+def _pixels(entry: dict[str, Any]) -> int:
     """A `bitrateInfo` entry's width × height, or 0 when TikTok leaves either out.
 
     Args:
@@ -876,7 +889,7 @@ def _pixels(entry: Dict[str, Any]) -> int:
         return 0
 
 
-def _is_dash(entry: Dict[str, Any]) -> bool:
+def _is_dash(entry: dict[str, Any]) -> bool:
     """Whether a `bitrateInfo` entry is a DASH stream (video only, or a manifest), not a whole MP4.
 
     2026-11, unconfirmed until a live check: a DASH entry is taken to be marked by `Format` "dash",

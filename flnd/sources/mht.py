@@ -65,8 +65,9 @@ from __future__ import annotations
 
 import shlex
 import unicodedata
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import PurePosixPath
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from flnd.source import File, NotFound, Post, Site, Source, Target, UsageError, target

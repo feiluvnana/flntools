@@ -70,28 +70,36 @@ import string
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Collection, Coroutine, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import (
-    TYPE_CHECKING, Any, Callable, Collection, Coroutine, Generator, Iterator, Mapping, Sequence,
+    TYPE_CHECKING,
+    Any,
 )
 from urllib.parse import urlsplit
 
-from flnd import _files, _home, _loop, _text, _transfer
+from flnd import _events, _files, _home, _loop, _stats, _text, _transfer
+from flnd._events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
+from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._text import fill
 from flnd._time import day
+from flnd._ui import ui
 from flnd.errors import (
-    Blocked, Error, LoginError, NetworkError, SiteError, SourceError, Stopped, classify,
+    Blocked,
+    Error,
+    LoginError,
+    NetworkError,
+    SiteError,
+    SourceError,
+    Stopped,
+    classify,
 )
 from flnd.options import Options, Retry, stop_after
 from flnd.site import Listing, SourceRun, TargetSite
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
-from flnd import _events, _stats
-from flnd._events import NOTHING_NEW, RESUMING, Failed, Progress, Saved, Skipped
-from flnd._steps import Landed, dedupe, holder, landed, sidecars
-from flnd._ui import ui
 
 if TYPE_CHECKING:
     from flnd._run import Stop
@@ -2237,7 +2245,7 @@ def _set_mtime(path: Path, dated: datetime.date) -> None:
         path: the file.
         dated: its post's day.
     """
-    noon = datetime.datetime.combine(dated, datetime.time(NOON), tzinfo=datetime.timezone.utc)
+    noon = datetime.datetime.combine(dated, datetime.time(NOON), tzinfo=datetime.UTC)
     stamp = noon.timestamp()
     try:
         os.utime(path, (stamp, stamp))

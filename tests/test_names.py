@@ -236,18 +236,12 @@ def history_breaches(source: str) -> list[str]:
     return found
 
 
-# The aliases the fold keeps (`from flnd import _text as text`): each old `shared` name, so that the
-# code lines using it didn't change. Each pair is (the alias, the private module it names). A row
-# that renames the uses removes its pairs here, so the list can only shrink. AGENTS.md says no
-# aliases; this is the one exception, and it is temporary.
-TRANSITIONAL_ALIASES = {
-    ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"),
-    ("text", "_text"),
-}
-
-
 def flnd_import_aliases(source: str) -> list[str]:
-    """Import aliases (`as`) of `flnd` modules or symbols, except the transitional ones."""
+    """Import aliases (`as`) of `flnd` modules or symbols. Every one is a breach.
+
+    AGENTS.md says import a module by its own name. The transitional aliases of the 15.3 move
+    (`from flnd import _text as text`) are gone, so any `as` on a `flnd` import fails here.
+    """
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -258,7 +252,7 @@ def flnd_import_aliases(source: str) -> list[str]:
             mod = node.module or ""
             if node.level > 0 or mod == "flnd" or mod.startswith("flnd."):
                 for alias in node.names:
-                    if alias.asname and (alias.asname, alias.name) not in TRANSITIONAL_ALIASES:
+                    if alias.asname:
                         found.append(f"line {node.lineno}: from {mod} import {alias.name} as {alias.asname}")
     return found
 

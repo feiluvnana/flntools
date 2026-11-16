@@ -13,7 +13,8 @@ from flnd.options import Options, selected
 from flnd.source import Source, Target, target
 from flnd.sources import SOURCES
 from flnd.sources.fbk import Facebook
-from flnd.sources.ins import CHROME as INS_CHROME, Instagram
+from flnd.sources.ins import CHROME as INS_CHROME
+from flnd.sources.ins import Instagram
 from flnd.sources.loi import Loibus
 from flnd.sources.mht import Mimi
 from flnd.sources.tik import TIKTOK_UA, TikTok

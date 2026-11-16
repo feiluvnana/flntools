@@ -21,20 +21,16 @@ from typing import Any
 from unittest import mock
 
 import fakes
-from flnd import _net
 
-from flnd import job
-from flnd import _home
-from flnd import Blocked, LoginError, Target, UsageError
-from flnd.engine import Engine, Report, TargetReport
-from flnd.source import Range
-from flnd.options import Options
-from flnd.site import LoginSite
-from flnd.source import Login, SiteError, File, Post, Source, cookies as login_cookies, target
-from flnd import _run, _time as clock, _cookies as cookies
+from flnd import Blocked, LoginError, Target, UsageError, _cookies, _home, _net, _run, _time, job
 from flnd._events import Failed, Progress
 from flnd._ui import ui
+from flnd.engine import Engine, Report, TargetReport
 from flnd.errors import Error
+from flnd.options import Options
+from flnd.site import LoginSite
+from flnd.source import File, Login, Post, Range, SiteError, Source, target
+from flnd.source import cookies as login_cookies
 
 CDN = "https://cdn.example"
 
@@ -109,7 +105,7 @@ class EngineCase(unittest.TestCase):
         # A lambda, so a test that replaces `self.serve` is answered by its own.
         self.enterContext(_net.fake(lambda request: self.serve(request)))
         # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
-        self.fake = self.enterContext(clock.use(clock.Fake()))
+        self.fake = self.enterContext(_time.use(_time.Fake()))
         # The events of the runs `report` makes: what the CLI shows, now that the engine logs no rows.
         self.events = []
 
@@ -139,7 +135,7 @@ class EngineCase(unittest.TestCase):
 
     def log_in(self, code, **values):
         jar = [{"name": name, "value": value, "domain": f".{code}.example", "path": "/"} for name, value in values.items()]
-        _home.save(self.home, code, cookies.Jar(jar))
+        _home.save(self.home, code, _cookies.Jar(jar))
 
     def lines(self):
         return self.dest.getvalue().splitlines()
@@ -672,7 +668,7 @@ class ApiLoginTest(EngineCase):
         super().setUp()
         self.source = make_source("aaa", login=login_cookies("sid"))
         self.engine = Engine(home=self.home, sources={"aaa": self.source, "bbb": make_source("bbb")})
-        jar = cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
+        jar = _cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
                            {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
         patcher = mock.patch("flnd._cookies.load", lambda browser="chrome", *, profile=None: jar)
         patcher.start()
@@ -694,7 +690,8 @@ class ApiLoginTest(EngineCase):
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.key", "secrets.db"])
 
     def test_a_failed_login_and_bad_answers(self):
-        with mock.patch("flnd._cookies.load", lambda browser="chrome", *, profile=None: cookies.Jar()):
+        with mock.patch("flnd._cookies.load",
+                        lambda browser="chrome", *, profile=None: _cookies.Jar()):
             with self.assertRaisesRegex(LoginError, "no sid for aaa.example in Chrome"):
                 self.engine.login("aaa", "browser", browser="chrome")
         for args, options in ((("aaa", "qr"), {}), (("zzz", "browser"), {}), (("aaa", "browser"), {}),
@@ -707,7 +704,7 @@ class ApiLoginTest(EngineCase):
         self.engine.login("aaa", "browser", browser="chrome")
         self.assertEqual(self.engine.logout(["bbb", "aaa", "aaa"]), ["aaa"])
         self.assertEqual(self.engine.logins, {})
-        self.assertEqual(_home.load(self.home, "aaa"), cookies.Jar())
+        self.assertEqual(_home.load(self.home, "aaa"), _cookies.Jar())
         self.engine.login("aaa", "browser", browser="chrome")
         self.assertEqual(self.engine.logout(["all"]), ["aaa"])
         self.assertEqual(self.engine.logout(["all"]), [])

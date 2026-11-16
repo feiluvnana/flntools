@@ -9,18 +9,18 @@ import json
 import os
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest import mock
 
 from fakes import FakeSite, Seen, collect
 
+from flnd import _html
 from flnd.options import Options
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
-from flnd import _html
 
-DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")
+DAY = datetime.fromtimestamp(1700000000, UTC).strftime("%Y-%m-%d")
 PROFILE = "https://www.tiktok.com/@example_creator"
 VIDEO = "7301234567890123456"
 
@@ -240,8 +240,8 @@ class NamesAndKeysTest(unittest.TestCase):
 
     def test_the_formats_decide_the_dates_in_utc(self):
         """Fix #15: 2026-01-01 23:30 UTC is 2026-01-01 on every machine, not 2026-01-02 in Kiritimati (UTC+14)."""
-        late = int(datetime(2026, 1, 1, 23, 30, tzinfo=timezone.utc).timestamp())
-        early = int(datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc).timestamp())
+        late = int(datetime(2026, 1, 1, 23, 30, tzinfo=UTC).timestamp())
+        early = int(datetime(2026, 1, 1, 0, 30, tzinfo=UTC).timestamp())
         feeds = [(f"{API}/api/post/item_list/", {"hasMore": False, "itemList": [
             video("1", f"{CDN}/a", createTime=late), video("2", f"{CDN}/b", createTime=str(early)),
             video(str(late << 32), f"{CDN}/c")]})]
@@ -468,7 +468,7 @@ class ScrollTest(unittest.TestCase):
             video("7300000000000000099", f"{CDN}/later.mp4", createTime=1700000000)]}
         feeds = [(f"{API}/api/post/item_list/?p=1", p1), (f"{API}/api/post/item_list/?p=2", p2),
                  (f"{API}/api/post/item_list/?p=3", p3)]
-        since = datetime(2023, 11, 14, tzinfo=timezone.utc).date()
+        since = datetime(2023, 11, 14, tzinfo=UTC).date()
         saved, seen, _ = run("tik:example_creator", feeds=feeds, html=profile_page(),
                              options=Options(categories=("videos",), since=since))
         self.assertEqual([item.key for item in saved], ["7300000000000000001"])

@@ -5,7 +5,7 @@ import unittest
 
 from rich.console import Console as RichConsole
 
-from flnd import _time as clock
+from flnd import _time
 from flnd._ui import Group, Row, ui
 
 
@@ -14,8 +14,8 @@ class UICase(unittest.TestCase):
 
     def setUp(self) -> None:
         self.buf = io.StringIO()
-        self.fake_clock = clock.Fake(start=100.0)
-        self.enterContext(clock.use(self.fake_clock))
+        self.fake_clock = _time.Fake(start=100.0)
+        self.enterContext(_time.use(self.fake_clock))
         self.enterContext(ui.scope(color="none", dest=self.buf, width=80, level="info"))
 
     def output(self) -> str:

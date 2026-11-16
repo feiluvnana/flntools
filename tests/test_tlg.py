@@ -28,18 +28,23 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
-from flnd import _home, _transfer
-from flnd.site import LoginSite
+from flnd import _home, _text, _transfer
+from flnd._events import Progress
 from flnd.engine import Engine
 from flnd.options import Options
+from flnd.site import LoginSite
 from flnd.source import LoginError, Target, UsageError
 from flnd.sources import tlg
 from flnd.sources.tlg import (
-    FLOOD_SLEEP, QR_CODES, Telegram, TelegramLogin, fetcher, from_web_storage, half_blocks,
+    FLOOD_SLEEP,
+    QR_CODES,
+    Telegram,
+    TelegramLogin,
+    fetcher,
+    from_web_storage,
+    half_blocks,
     read_telegram_web,
 )
-from flnd import _text as text
-from flnd._events import Progress
 
 DAY = datetime.date(2026, 1, 5)
 SESSION = "1FAKE-SESSION-aGVsbG8"
@@ -88,7 +93,7 @@ ROUTES = [
 
 def message(number, kind, *, day=DAY, name=None, content=b"media", size=None):
     ext = {"photo": ".jpg", "video": ".mp4"}.get(kind, "")
-    when = datetime.datetime.combine(day, datetime.time(12), tzinfo=datetime.timezone.utc)
+    when = datetime.datetime.combine(day, datetime.time(12), tzinfo=datetime.UTC)
     file = SimpleNamespace(name=name, ext=ext or (name and "." + name.rsplit(".", 1)[-1]), size=size or len(content))
     # A video or file is a document, which `iter_download` fetches; a photo isn't.
     document = None if kind == "photo" else SimpleNamespace(id=number, size=len(content),
@@ -249,7 +254,7 @@ class FakeQR:
     async def wait(self, timeout=None):
         outcome = self.client.telegram.qr_outcomes.pop(0)
         if outcome == "timeout":
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         if outcome == "password":
             raise SessionPasswordNeededError(None)
         self.client._signed_in()
@@ -668,7 +673,7 @@ class DownloadTest(DownloadCase):
 
     def test_until_asks_from_the_next_day(self):
         self.download(until=datetime.date(2026, 1, 4))
-        midnight = datetime.datetime(2026, 1, 5, tzinfo=datetime.timezone.utc)
+        midnight = datetime.datetime(2026, 1, 5, tzinfo=datetime.UTC)
         self.assertEqual(self.telegram.asked, [("photo", midnight), ("video", midnight), ("file", midnight)])
         self.assertEqual(self.telegram.downloads, [5])
 
@@ -837,7 +842,7 @@ class ChatTest(DownloadCase):
     def test_by_title_and_by_id(self):
         self.telegram.messages[1001] = [message(11, "photo")]
         self.assertEqual(self.download("tlg:example channel"), 1)
-        by_title = self.target_dir("tlg", text.filename("example channel"))
+        by_title = self.target_dir("tlg", _text.filename("example channel"))
         self.assertTrue((by_title / "Example_Channel" / "photo" / "2026-01-05_11.jpg").is_file())
         self.assertEqual(self.download("tlg:-1001001"), 0)
         # The file is already saved under the title, so the id run's photo counts it skipped.

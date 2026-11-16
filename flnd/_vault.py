@@ -41,7 +41,7 @@ import secrets as _secrets
 import time
 from collections.abc import Iterator, MutableMapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Union, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from flnd import _db
 from flnd.errors import DiskError, LoginError, ToolError
@@ -55,8 +55,8 @@ __all__ = ["Vault", "decrypt", "digest", "encrypt", "key"]
 # Sealing
 # ---------------------------------------------------------------------------------------------
 
-Data = Union[str, bytes, bytearray, memoryview]
-HashInput = Union[str, bytes, bytearray, memoryview, Path, BinaryIO]
+Data = str | bytes | bytearray | memoryview
+HashInput = str | bytes | bytearray | memoryview | Path | BinaryIO
 
 # The blob is one version byte, a 12-byte random nonce (GCM's standard size), then the
 # ciphertext with its 16-byte tag. The format is fixed: vaults hold blobs of version 1.
@@ -282,7 +282,7 @@ class Vault(MutableMapping[str, str]):
         self._db.close()
 
     def _context(self, name: str) -> bytes:
-        return f"{self._slot}\0{name}".encode("utf-8")
+        return f"{self._slot}\0{name}".encode()
 
     def _secret_key(self) -> bytes:
         if self._key is None:

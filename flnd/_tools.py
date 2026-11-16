@@ -54,7 +54,6 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Union
 
 from flnd import _files
 from flnd.errors import DiskError, ToolError
@@ -107,7 +106,7 @@ class Result:
 
 
 # A fake answers with a `Result`, or a function of the arguments returning (code, out, err).
-Handler = Union[Callable[[tuple[str, ...]], tuple[int, str, str]], Result]
+Handler = Callable[[tuple[str, ...]], tuple[int, str, str]] | Result
 
 # The handlers of the innermost `fake` block; a list so threads the block starts see it too.
 _fakes: list[Mapping[str, Handler]] = []

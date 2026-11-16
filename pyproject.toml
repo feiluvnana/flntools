@@ -55,11 +55,6 @@ line-length = 100
 # (B, bugbear), syntax older than the floor version (UP) and import order (I).
 select = ["F", "E9", "B", "UP", "I"]
 ignore = [
-    # Off until every module is rewritten for human readers: sorting imports and moving to the
-    # newer syntax touch about 80 files and 600 lines, which would bury this commit's change.
-    # The pass that documents every module (PLAN.md, row 15.21) turns both on.
-    "I",
-    "UP",
     # `zip(strict=)` needs a decision per call, and many zips here pair a list with its own tail
     # or a pattern with a longer path on purpose.
     "B905",

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 import msgspec
 
@@ -372,7 +372,7 @@ class Stats(msgspec.Struct, frozen=True, tag=True):
 
 
 # Any event a run yields, for a `match` or an annotation.
-Event = Union[Saved, Skipped, Failed, Progress, Planned, Stats]
+Event = Saved | Skipped | Failed | Progress | Planned | Stats
 
 
 # ---------------------------------------------------------------------------------------------

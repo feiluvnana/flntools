@@ -43,9 +43,10 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Union
+from typing import Any
 
 from flnd import _files
 from flnd._ui import ui
@@ -54,7 +55,7 @@ from flnd.errors import LoginError, UsageError
 __all__ = ["BROWSERS", "Jar", "load"]
 
 Cookie = dict[str, Any]
-PathLike = Union[str, Path]
+PathLike = str | Path
 
 _PLATFORM = sys.platform
 

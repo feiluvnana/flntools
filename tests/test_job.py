@@ -14,31 +14,34 @@ import sqlite3
 import threading
 import time
 import unittest
-from pathlib import Path
 from datetime import date
+from pathlib import Path
 from unittest import mock
 
-from flnd import _net
-
-from example_source import API, CDN, FIXTURES, Example
 import fakes
+from example_source import API, CDN, FIXTURES, Example
 from fakes import FakeSite, collect
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
-from flnd import sources
+from flnd import _home, _net, _run, _time, job, sources
 from flnd import engine as engine_module
-from flnd import job
 from flnd import site as site_module
+from flnd._ui import ui
 from flnd.engine import Engine
-from flnd import _home
+from flnd.errors import UsageError
 from flnd.options import Options
 from flnd.source import (
-    File, LoginError, NotFound, Post, SiteError, Source, SourceError, Target, target,
+    File,
+    LoginError,
+    NotFound,
+    Post,
+    SiteError,
+    Source,
+    SourceError,
+    Target,
+    target,
 )
-from flnd import _run, _time
-from flnd._ui import ui
-from flnd.errors import UsageError
 
 
 class JobCase(EngineCase):
@@ -365,14 +368,15 @@ class FilesTest(JobCase):
         folder = self.target_dir("exm", "example_user")
 
         def modified(name):
-            return datetime.datetime.fromtimestamp(os.stat(folder / name).st_mtime, datetime.timezone.utc)
+            return datetime.datetime.fromtimestamp(os.stat(folder / name).st_mtime, datetime.UTC)
 
         self.assertEqual(modified("posts/2026-01-02_C1abc_0.jpg"),
-                         datetime.datetime(2026, 1, 2, 12, tzinfo=datetime.timezone.utc))
+                         datetime.datetime(2026, 1, 2, 12, tzinfo=datetime.UTC))
         self.assertEqual(modified("profile/avatar_42.jpg"),
-                         datetime.datetime(2026, 10, 21, 12, tzinfo=datetime.timezone.utc))
+                         datetime.datetime(2026, 10, 21, 12, tzinfo=datetime.UTC))
         # No date and no Last-Modified: the download day, which is when it was written.
-        self.assertEqual(modified("albums/Summer_2026/A1.jpg").date(), datetime.datetime.now(datetime.timezone.utc).date())
+        self.assertEqual(modified("albums/Summer_2026/A1.jpg").date(),
+                         datetime.datetime.now(datetime.UTC).date())
 
     def test_the_history_row_has_its_path_size_and_time_and_a_first_file_its_posts_count(self):
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
@@ -387,7 +391,8 @@ class FilesTest(JobCase):
         written = datetime.datetime.fromisoformat(row["at"])
         self.assertEqual(written.utcoffset(), datetime.timedelta(0))
         self.assertEqual(written.microsecond, 0)
-        self.assertLess(abs(datetime.datetime.now(datetime.timezone.utc) - written), datetime.timedelta(minutes=1))
+        self.assertLess(abs(datetime.datetime.now(datetime.UTC) - written),
+                        datetime.timedelta(minutes=1))
         # Keys are `<code>:<key>`, one per file, a text file none.
         self.assertEqual(sorted(self.history()), ["exm:B2def_0", "exm:C1abc_0", "exm:C1abc_1"])
 

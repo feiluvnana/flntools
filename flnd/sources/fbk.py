@@ -75,14 +75,25 @@ Rules a change must keep:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import PurePosixPath
-from typing import Any, Callable, Iterator, NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 from flnd.source import (
-    Blocked, File, LoginError, NotFound, Post, Site, Source, Target, UsageError, cookies, dig,
+    Blocked,
+    File,
+    LoginError,
+    NotFound,
+    Post,
+    Site,
+    Source,
+    Target,
+    UsageError,
+    cookies,
+    dig,
     target,
 )
 

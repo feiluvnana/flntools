@@ -60,13 +60,22 @@ import datetime
 import hashlib
 import secrets
 import time
+from collections.abc import Callable, Iterator, Sequence
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from flnd.source import (
-    Changed, File, NotFound, Post, Request, Site, Source, cookies, target,
+    Changed,
+    File,
+    NotFound,
+    Post,
+    Request,
+    Site,
+    Source,
+    cookies,
+    target,
 )
 
 API = "https://api.moegoat.com/api/"

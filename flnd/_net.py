@@ -88,8 +88,16 @@ import random
 import re
 import urllib.request
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
-from collections.abc import MutableMapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -100,8 +108,8 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 import msgspec
 
 from flnd import _cookies, _files, _text, _time
-from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, Stopped, disk
 from flnd._ui import ui
+from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, Stopped, disk
 
 if TYPE_CHECKING:
     from flnd._html import Document

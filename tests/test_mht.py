@@ -10,7 +10,13 @@ from flnd.engine import Engine, resolve
 from flnd.options import Options, categories_by_source, validate
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.mht import (
-    API, Mimi, _resolve_id, cover_name, format_order, lookup_genres, page_name,
+    API,
+    Mimi,
+    _resolve_id,
+    cover_name,
+    format_order,
+    lookup_genres,
+    page_name,
 )
 
 CDN = "https://moe-cdn.example"

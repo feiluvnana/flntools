@@ -97,15 +97,28 @@ ins page in docs/sources/.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, Iterator, Mapping
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 from flnd.source import (
-    Blocked, Changed, File, LoginError, NetworkError, Post, Request, Site, SiteError, Source,
-    Target, cookies, dig, target,
+    Blocked,
+    Changed,
+    File,
+    LoginError,
+    NetworkError,
+    Post,
+    Request,
+    Site,
+    SiteError,
+    Source,
+    Target,
+    cookies,
+    dig,
+    target,
 )
 
 SITE = "https://www.instagram.com"
@@ -1207,7 +1220,7 @@ def utc_day(value: Any) -> str | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
     try:
-        return datetime.fromtimestamp(value, timezone.utc).date().isoformat()
+        return datetime.fromtimestamp(value, UTC).date().isoformat()
     # Each platform refuses a huge timestamp its own way.
     except (OverflowError, OSError, ValueError):
         return None

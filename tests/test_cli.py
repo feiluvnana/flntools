@@ -19,8 +19,18 @@ from unittest import mock
 
 from flnd import _prompt, _run, _ui, cli
 from flnd.errors import (
-    Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError,
-    SourceError, Stopped, ToolError, UsageError,
+    Blocked,
+    Changed,
+    DiskError,
+    Error,
+    LoginError,
+    NetworkError,
+    NotFound,
+    SiteError,
+    SourceError,
+    Stopped,
+    ToolError,
+    UsageError,
 )
 
 

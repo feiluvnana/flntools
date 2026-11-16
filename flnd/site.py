@@ -56,23 +56,25 @@ Two clients share them: `web` lists (paced), and stops at the first Ctrl-C; `fil
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping, TypeVar,
+    TYPE_CHECKING,
+    Any,
+    TypeVar,
 )
 
 from flnd import _browser, _home, _loop, _net, _prompt, _stats, _text, _time, _vault
+from flnd._ui import ui
 from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
 from flnd.source import Range, Request, Source, Target, dig
-from flnd._ui import ui
 
 if TYPE_CHECKING:
     from flnd import _cookies
-    from flnd._run import Stop
     from flnd._html import Document
-
+    from flnd._run import Stop
     from flnd.options import RunShared
 
 __all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "paged",

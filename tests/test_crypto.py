@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _vault as crypto
+from flnd import _vault
 from flnd.errors import LoginError, ToolError
 
 try:
@@ -42,42 +42,42 @@ class HashTest(unittest.TestCase):
             for algorithm in ALGORITHMS:
                 with self.subTest(algorithm):
                     self.assertEqual(
-                        crypto.digest("héllo", algorithm=algorithm),
+                        _vault.digest("héllo", algorithm=algorithm),
                         hashlib.new(algorithm, "héllo".encode()).hexdigest(),
                     )
                     self.assertEqual(
-                        crypto.digest(b"\x00\xff", algorithm=algorithm),
+                        _vault.digest(b"\x00\xff", algorithm=algorithm),
                         hashlib.new(algorithm, b"\x00\xff").hexdigest(),
                     )
                     expected = hashlib.new(algorithm, content).hexdigest()
-                    self.assertEqual(crypto.digest(file, algorithm=algorithm), expected)
+                    self.assertEqual(_vault.digest(file, algorithm=algorithm), expected)
                     with file.open("rb") as handle:
-                        self.assertEqual(crypto.digest(handle, algorithm=algorithm), expected)
+                        self.assertEqual(_vault.digest(handle, algorithm=algorithm), expected)
 
     def test_default_algorithm_is_sha256(self):
-        self.assertEqual(crypto.digest(b"hello"), hashlib.sha256(b"hello").hexdigest())
+        self.assertEqual(_vault.digest(b"hello"), hashlib.sha256(b"hello").hexdigest())
 
     def test_digest_accepts_bytearray(self):
         raw = b"hello world"
         expected = hashlib.sha256(raw).hexdigest()
-        self.assertEqual(crypto.digest(bytearray(raw)), expected)
-        self.assertEqual(crypto.digest(memoryview(raw)), expected)
+        self.assertEqual(_vault.digest(bytearray(raw)), expected)
+        self.assertEqual(_vault.digest(memoryview(raw)), expected)
 
     def test_file_object_is_read_from_its_position(self):
         handle = io.BytesIO(b"skipped|hashed")
         handle.seek(8)
-        self.assertEqual(crypto.digest(handle), hashlib.sha256(b"hashed").hexdigest())
+        self.assertEqual(_vault.digest(handle), hashlib.sha256(b"hashed").hexdigest())
 
     def test_str_is_text_not_a_file_name(self):
-        self.assertEqual(crypto.digest("photo.jpg"), hashlib.sha256(b"photo.jpg").hexdigest())
+        self.assertEqual(_vault.digest("photo.jpg"), hashlib.sha256(b"photo.jpg").hexdigest())
 
     def test_unknown_algorithm_is_a_value_error(self):
         with self.assertRaises(ValueError):
-            crypto.digest(b"abc", algorithm="no-such-hash")
+            _vault.digest(b"abc", algorithm="no-such-hash")
 
     def test_other_types_refused(self):
         with self.assertRaises(TypeError):
-            crypto.digest(123)  # pyright: ignore[reportArgumentType]
+            _vault.digest(123)  # pyright: ignore[reportArgumentType]
 
 
 @unittest.skipUnless(HAS_CRYPTOGRAPHY, "cryptography is not installed")
@@ -86,22 +86,24 @@ class CipherTest(unittest.TestCase):
         self.key = secrets.token_bytes(32)
 
     def test_round_trip(self):
-        self.assertEqual(crypto.decrypt(crypto.encrypt("sessionid=abc", self.key), self.key), b"sessionid=abc")
-        blob = crypto.encrypt(b"\x00\xff", self.key, context=b"slot")
-        self.assertEqual(crypto.decrypt(blob, self.key, context=b"slot"), b"\x00\xff")
+        self.assertEqual(_vault.decrypt(_vault.encrypt("sessionid=abc", self.key), self.key),
+                         b"sessionid=abc")
+        blob = _vault.encrypt(b"\x00\xff", self.key, context=b"slot")
+        self.assertEqual(_vault.decrypt(blob, self.key, context=b"slot"), b"\x00\xff")
 
     def test_a_blob_from_before_the_rename_still_decrypts(self):
-        self.assertEqual(crypto.decrypt(OLD_BLOB, OLD_KEY, context=OLD_CONTEXT), b"session=example-value")
-        self.assertEqual(crypto.decrypt(OLD_EMPTY_BLOB, OLD_KEY), b"")
+        self.assertEqual(_vault.decrypt(OLD_BLOB, OLD_KEY, context=OLD_CONTEXT),
+                         b"session=example-value")
+        self.assertEqual(_vault.decrypt(OLD_EMPTY_BLOB, OLD_KEY), b"")
 
     def test_layout_and_fresh_nonce(self):
-        first, second = crypto.encrypt("same", self.key), crypto.encrypt("same", self.key)
+        first, second = _vault.encrypt("same", self.key), _vault.encrypt("same", self.key)
         self.assertNotEqual(first, second)
         self.assertEqual(first[0], 1)
         self.assertEqual(len(first), 1 + 12 + 4 + 16)
 
     def test_failures_raise_crypto_error(self):
-        blob = crypto.encrypt("secret", self.key, context=b"slot")
+        blob = _vault.encrypt("secret", self.key, context=b"slot")
         flipped = blob[:-1] + bytes([blob[-1] ^ 1])
         damaged = {
             "flipped byte": (flipped, self.key, b"slot"),
@@ -112,14 +114,14 @@ class CipherTest(unittest.TestCase):
         }
         for name, (damaged_blob, key, context) in damaged.items():
             with self.subTest(name), self.assertRaises(LoginError) as caught:
-                crypto.decrypt(damaged_blob, key, context=context)
+                _vault.decrypt(damaged_blob, key, context=context)
             # The library's own advice; flnd's vault replaces it with its own (`LOGIN_HINT`).
             self.assertIn("seal it again", caught.exception.hint)
 
     def test_only_a_32_byte_key(self):
         for size in (16, 20, 24, 33):
-            for call in (lambda size=size: crypto.encrypt("x", b"k" * size),
-                         lambda size=size: crypto.decrypt(b"x" * 40, b"k" * size)):
+            for call in (lambda size=size: _vault.encrypt("x", b"k" * size),
+                         lambda size=size: _vault.decrypt(b"x" * 40, b"k" * size)):
                 with self.subTest(size=size), self.assertRaises(ValueError):
                     call()
 
@@ -128,15 +130,15 @@ class CipherTest(unittest.TestCase):
         cookie, password = "sessionid=8f1c2e5a9b7d4013", "hunter2-example-password"
         key = bytes.fromhex("5a" * 32)
         wrong_key = bytes.fromhex("c3" * 32)
-        blob = crypto.encrypt(cookie, key, context=password.encode())
+        blob = _vault.encrypt(cookie, key, context=password.encode())
         failures = [
-            lambda: crypto.decrypt(blob, wrong_key, context=password.encode()),
-            lambda: crypto.decrypt(blob, key, context=b"other"),
-            lambda: crypto.decrypt(blob[:-1], key, context=password.encode()),
-            lambda: crypto.decrypt(cookie.encode(), key),
-            lambda: crypto.encrypt(cookie, key[:20], context=password.encode()),
-            lambda: crypto.decrypt(blob, wrong_key[:20], context=password.encode()),
-            lambda: crypto.encrypt(123, key),  # pyright: ignore[reportArgumentType]
+            lambda: _vault.decrypt(blob, wrong_key, context=password.encode()),
+            lambda: _vault.decrypt(blob, key, context=b"other"),
+            lambda: _vault.decrypt(blob[:-1], key, context=password.encode()),
+            lambda: _vault.decrypt(cookie.encode(), key),
+            lambda: _vault.encrypt(cookie, key[:20], context=password.encode()),
+            lambda: _vault.decrypt(blob, wrong_key[:20], context=password.encode()),
+            lambda: _vault.encrypt(123, key),  # pyright: ignore[reportArgumentType]
         ]
         secret_texts = [cookie, password, "8f1c2e5a9b7d4013"]
         for key_bytes in (key, wrong_key, key[:20], wrong_key[:20]):
@@ -163,12 +165,12 @@ class MissingExtraTest(unittest.TestCase):
             return real_import(name, *args, **kwargs)
 
         with mock.patch("builtins.__import__", import_without_cryptography):
-            for cipher_call in (lambda: crypto.decrypt(b"x" * 40, secrets.token_bytes(32)),
-                                lambda: crypto.encrypt("x", secrets.token_bytes(32))):
+            for cipher_call in (lambda: _vault.decrypt(b"x" * 40, secrets.token_bytes(32)),
+                                lambda: _vault.encrypt("x", secrets.token_bytes(32))):
                 with self.assertRaises(ToolError) as caught:
                     cipher_call()
                 self.assertEqual(caught.exception.hint, "pip install cryptography")
-            self.assertEqual(crypto.digest("a"), hashlib.sha256(b"a").hexdigest())
+            self.assertEqual(_vault.digest("a"), hashlib.sha256(b"a").hexdigest())
 
 
 if __name__ == "__main__":

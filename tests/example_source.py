@@ -21,7 +21,7 @@ A single post's link (`example.com/p/<code>`) is filed in its own target folder,
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 from flnd.source import File, Post, Request, Site, Source, cookies, target
 

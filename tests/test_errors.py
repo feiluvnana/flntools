@@ -20,22 +20,32 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net
-
-import flnd
-from flnd import job, sources
-from flnd import _files
-from flnd import _time as clock, _tools
-from flnd.errors import (
-    Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
-    Stopped, ToolError, UsageError, classify, disk,
-)
-from flnd.engine import _span
-from flnd.source import File, Source, Target, cookies as login_cookies, target
-from flnd._ui import ui
 from fakes import download, fetch
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
+
+import flnd
+from flnd import _files, _net, _time, _tools, job, sources
+from flnd._ui import ui
+from flnd.engine import _span
+from flnd.errors import (
+    Blocked,
+    Changed,
+    DiskError,
+    Error,
+    LoginError,
+    NetworkError,
+    NotFound,
+    SiteError,
+    SourceError,
+    Stopped,
+    ToolError,
+    UsageError,
+    classify,
+    disk,
+)
+from flnd.source import File, Source, Target, target
+from flnd.source import cookies as login_cookies
 
 SITE = "https://example.com"
 # The secrets the redaction test plants: none may reach a message.
@@ -49,7 +59,7 @@ class HttpCase(unittest.TestCase):
     """The real client on `_net.fake`, a fake clock, and jitter pinned to the full step."""
 
     def setUp(self) -> None:
-        self.clock = self.enterContext(clock.use(clock.Fake()))
+        self.clock = self.enterContext(_time.use(_time.Fake()))
         self.enterContext(mock.patch.object(_net.random, "uniform", lambda low, high: high))
         self.enterContext(ui.scope(dest=io.StringIO(), color=False, width=80))
         self.seen: list[_net.Request] = []
@@ -335,7 +345,7 @@ class CliTest(FlndCase):
 
     def setUp(self):
         super().setUp()
-        self.enterContext(clock.use(clock.Fake()))
+        self.enterContext(_time.use(_time.Fake()))
 
     def test_a_usage_error_from_flnd_itself_has_no_traceback(self):
         with mock.patch.dict(sources.SOURCES, {"aaa": make_source("aaa")}):

@@ -14,13 +14,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+from test_engine import CDN
+from test_library import JPEG, LibraryCase
+
 import flnd
-from flnd import _loop, _net, _stats
-from flnd import _time
+from flnd import _loop, _net, _stats, _time
 from flnd._events import Listing, encode
 from flnd.source import File, Post, Source, Target, target
-from test_library import JPEG, LibraryCase
-from test_engine import CDN
 
 TARGET = Target("exs:example_user", kind="user")
 

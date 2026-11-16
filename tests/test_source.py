@@ -13,15 +13,30 @@ import datetime
 import importlib
 import unittest
 
-from example_source import FIXTURES, Example as RoutedExample
+from example_source import FIXTURES
+from example_source import Example as RoutedExample
 from fakes import FakeSite, collect
 
 from flnd import _text, _time
 from flnd.engine import resolve
 from flnd.site import Listing
 from flnd.source import (
-    API, Cookies, File, Login, NotFound, Post, Range, Request, Source, SourceError, Target,
-    UsageError, _parse, cookies, dig, target,
+    API,
+    Cookies,
+    File,
+    Login,
+    NotFound,
+    Post,
+    Range,
+    Request,
+    Source,
+    SourceError,
+    Target,
+    UsageError,
+    _parse,
+    cookies,
+    dig,
+    target,
 )
 from flnd.sources import SOURCES
 

@@ -16,6 +16,8 @@ import unittest
 from contextlib import redirect_stdout
 
 import fakes
+from test_engine import CDN, EngineCase
+
 import flnd
 from flnd import _home, _net
 from flnd import cli as flnd_cli
@@ -24,7 +26,6 @@ from flnd._ui import ui
 from flnd.engine import Engine
 from flnd.errors import Changed
 from flnd.source import File, Post, Source, cookies, target
-from test_engine import CDN, EngineCase
 
 API = "https://api.example.com"
 # Posts a page of the feed holds.

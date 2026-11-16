@@ -65,8 +65,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from flnd import _files, _text
-from flnd.errors import DiskError, Error
 from flnd._ui import ui
+from flnd.errors import DiskError, Error
 
 if TYPE_CHECKING:
     from flnd._events import Saved
@@ -798,9 +798,8 @@ def attached(settings: Any) -> Iterator[Chain]:
     Raises:
         UsageError: the home's `config.toml` is broken.
     """
-    from flnd.options import config
-
     from flnd import _stats
+    from flnd.options import config
 
     found = config(settings.home)
     chain = Chain(settings.db, settings.stop, emit=settings.emit, dedupe=found.dedupe,

@@ -44,8 +44,17 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from flnd import _time
-from flnd.source import File, NotFound, Post, Range, SiteError, Source, SourceError, Target
-from flnd.source import UsageError
+from flnd.source import (
+    File,
+    NotFound,
+    Post,
+    Range,
+    SiteError,
+    Source,
+    SourceError,
+    Target,
+    UsageError,
+)
 
 if TYPE_CHECKING:
     import datetime

@@ -33,10 +33,11 @@ from __future__ import annotations
 import datetime
 import functools
 import tomllib
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from flnd import _home
 from flnd.errors import UsageError

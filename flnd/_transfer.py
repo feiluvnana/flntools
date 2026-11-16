@@ -38,10 +38,10 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import urlsplit
 
-from flnd.errors import Error, SiteError
-from flnd.source import Fetch, File
 from flnd import _files, _net, _stats, _text, _time, _tools
 from flnd._ui import ui
+from flnd.errors import Error, SiteError
+from flnd.source import Fetch, File
 
 __all__ = ["noon", "same_extension", "save", "served_day"]
 
@@ -166,7 +166,7 @@ async def _through(call: Callable[..., T], *args: Any) -> T:
 
 def noon(day: datetime.date) -> float:
     """Noon UTC of `day`, in epoch seconds: the modified time of a file posted that day."""
-    moment = datetime.datetime.combine(day, datetime.time(NOON), tzinfo=datetime.timezone.utc)
+    moment = datetime.datetime.combine(day, datetime.time(NOON), tzinfo=datetime.UTC)
     return moment.timestamp()
 
 
@@ -186,8 +186,8 @@ def served_day(value: str | None) -> datetime.date | None:
     except (TypeError, ValueError):
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=datetime.timezone.utc)
-    return when.astimezone(datetime.timezone.utc).date()
+        when = when.replace(tzinfo=datetime.UTC)
+    return when.astimezone(datetime.UTC).date()
 
 
 def same_extension(one: str, other: str) -> bool:

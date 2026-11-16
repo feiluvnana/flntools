@@ -46,25 +46,23 @@ Rules a change must keep:
 from __future__ import annotations
 
 import datetime
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Any
 from urllib.parse import urlsplit
 
-
-from flnd import job
+from flnd import _home, _net, _steps, _text, job
+from flnd._events import Failed, Planned
+from flnd._run import Stop, stopping
+from flnd._ui import ui
+from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.job import TargetReport
 from flnd.options import Options, Retry, RunShared, categories_by_source, validate
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
-from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.source import Cookies, Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
-from flnd import _home, _net, _text
-from flnd._run import Stop, stopping
-from flnd._events import Failed, Planned
-from flnd import _steps
-from flnd._ui import ui
 
 __all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
 

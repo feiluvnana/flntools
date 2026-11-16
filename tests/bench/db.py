@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 import kit
+
 from flnd import _home
 
 ROWS = 100_000

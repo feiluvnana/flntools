@@ -36,9 +36,9 @@ from __future__ import annotations
 import re
 import string
 import unicodedata
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
-
 
 __all__ = ["count", "duration", "fields", "filename", "fill", "fold", "redact", "scrub", "size"]
 

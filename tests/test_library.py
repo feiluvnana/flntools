@@ -18,14 +18,15 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net
-from flnd import site as site_module
+from test_engine import CDN, EngineCase, make_source, noise
 
 import flnd
+from flnd import _net
+from flnd import site as site_module
 from flnd._events import encode
 from flnd._library import _when
-from flnd.source import File, Post, Source, cookies as login_cookies, target
-from test_engine import CDN, EngineCase, make_source, noise
+from flnd.source import File, Post, Source, target
+from flnd.source import cookies as login_cookies
 
 JPEG = noise("JPEG")
 

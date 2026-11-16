@@ -27,12 +27,12 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 import no_profiles  # noqa: F401  (also points $FLND_SOURCES away from the real folder)
+from test_engine import EngineCase, noise
 
 import flnd
 from flnd import _net, _plugins, job
 from flnd import cli as flnd_cli
 from flnd.sources import SOURCES, _find
-from test_engine import EngineCase, noise
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = ROOT / "examples"

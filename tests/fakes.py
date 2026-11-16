@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
+from typing import Any
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
+
 from flnd import _net, testing
 from flnd.options import Options
 from flnd.source import Range, Source, Target

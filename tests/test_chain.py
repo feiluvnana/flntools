@@ -13,14 +13,13 @@ import os
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net
+from test_engine import CDN, EngineCase, make_source
+from test_steps import jpeg
 
-from flnd import _shrink
+from flnd import _net, _shrink
 from flnd._events import Saved
 from flnd.engine import Engine
 from flnd.source import File, Post, Source, target
-from test_engine import CDN, EngineCase, make_source
-from test_steps import jpeg
 
 
 def by_target(site, context):

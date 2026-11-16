@@ -39,7 +39,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Protocol, TypeVar
 
-
 __all__ = ["Clock", "Fake", "day", "now", "pause", "sleep", "use", "wall"]
 
 # 2026-01-01 UTC, so a test's formatted dates are repeatable.
@@ -249,13 +248,13 @@ def day(value: object) -> datetime.date | None:
             except ValueError:
                 return None
     if isinstance(value, datetime.datetime):
-        found = (value.astimezone(datetime.timezone.utc) if value.tzinfo else value).date()
+        found = (value.astimezone(datetime.UTC) if value.tzinfo else value).date()
     elif isinstance(value, datetime.date):
         found = value
     elif isinstance(value, (int, float)):
         seconds = value / 1000 if abs(value) >= MILLISECONDS else value
         try:
-            found = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).date()
+            found = datetime.datetime.fromtimestamp(seconds, datetime.UTC).date()
         # Each platform refuses a huge timestamp its own way: OverflowError, OSError or ValueError.
         except (OverflowError, OSError, ValueError):
             return None

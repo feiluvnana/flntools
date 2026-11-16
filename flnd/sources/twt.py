@@ -76,15 +76,27 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
-from typing import Any, Iterator, NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import urlencode, urlsplit
 
 from flnd.source import (
-    Changed, File, LoginError, NetworkError, Post, Request, Site, SiteError, Source, Target,
-    cookies, dig, target,
+    Changed,
+    File,
+    LoginError,
+    NetworkError,
+    Post,
+    Request,
+    Site,
+    SiteError,
+    Source,
+    Target,
+    cookies,
+    dig,
+    target,
 )
 
 # The user agent Twitter's API has always been sent: a desktop Chrome.
@@ -889,7 +901,7 @@ def media_file(
     if suffix and suffix == suffix.lower():
         return File(url)
     # `created_at` is UTC, so its day is the one the engine gives `{date}`.
-    posted_day = posted.astimezone(timezone.utc).date().isoformat() if posted else None
+    posted_day = posted.astimezone(UTC).date().isoformat() if posted else None
     stem = "_".join(str(part) for part in (posted_day, tweet_id, index) if part is not None)
     return File(url, name=f"{stem}.{extension}")
 

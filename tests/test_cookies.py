@@ -18,7 +18,8 @@ from pathlib import Path
 from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
-from flnd import _cookies as cookies
+
+from flnd import _cookies
 from flnd.errors import DiskError, LoginError, UsageError
 
 try:
@@ -93,12 +94,14 @@ class BrowserTestCase(unittest.TestCase):
         self.home = Path(folder.name)
         for patcher in (
             mock.patch("pathlib.Path.home", return_value=self.home),
-            mock.patch.object(cookies, "_PLATFORM", self.platform),
-            mock.patch.object(cookies.subprocess, "run", side_effect=refuse_programs),
+            mock.patch.object(_cookies, "_PLATFORM", self.platform),
+            mock.patch.object(_cookies.subprocess, "run", side_effect=refuse_programs),
         ):
             self.enterContext(patcher)
-        self.keychain = self.enterContext(mock.patch.object(cookies, "_read_keychain_password", return_value="mac-secret"))
-        self.keyring = self.enterContext(mock.patch.object(cookies, "_read_keyring_password", return_value="linux-secret"))
+        self.keychain = self.enterContext(
+            mock.patch.object(_cookies, "_read_keychain_password", return_value="mac-secret"))
+        self.keyring = self.enterContext(
+            mock.patch.object(_cookies, "_read_keyring_password", return_value="linux-secret"))
 
 
 @unittest.skipUnless(HAS_CRYPTOGRAPHY, "needs cryptography")
@@ -116,7 +119,7 @@ class ChromiumMacTest(BrowserTestCase):
 
     def test_decrypts_with_host_hash(self):
         self.chrome_db(24)
-        jar = cookies.load("chrome").filter(domains="instagram.com")
+        jar = _cookies.load("chrome").filter(domains="instagram.com")
         self.assertEqual({cookie["domain"] for cookie in jar}, MATCHING)
         first = jar.list[0]
         self.assertEqual(first, {"name": "c0", "value": "value0", "domain": "instagram.com", "path": "/",
@@ -125,19 +128,19 @@ class ChromiumMacTest(BrowserTestCase):
 
     def test_decrypts_without_host_hash(self):
         self.chrome_db(23)
-        jar = cookies.load("chrome").filter(domains="INSTAGRAM.com")
+        jar = _cookies.load("chrome").filter(domains="INSTAGRAM.com")
         self.assertEqual(sorted(cookie["value"] for cookie in jar),
                          ["value0", "value1", "value2", "value3", "visible"])
 
     def test_plain_session_cookie(self):
         self.chrome_db(24)
-        plain = next(cookie for cookie in cookies.load("chrome") if cookie["name"] == "plain")
+        plain = next(cookie for cookie in _cookies.load("chrome") if cookie["name"] == "plain")
         self.assertEqual((plain["value"], plain["expires"], plain["sameSite"], plain["secure"]),
                          ("visible", -1, "Lax", False))
 
     def test_every_cookie_of_the_profile(self):
         self.chrome_db(24)
-        jar = cookies.load("chrome")
+        jar = _cookies.load("chrome")
         self.assertEqual(len(jar), len(DOMAINS) + 1)
         self.assertEqual({cookie["domain"] for cookie in jar}, {*DOMAINS})
 
@@ -146,7 +149,7 @@ class ChromiumMacTest(BrowserTestCase):
             with self.subTest(version=version):
                 self.chrome_db(version, password="another")
                 with self.assertRaises(LoginError) as caught:
-                    cookies.load("chrome")
+                    _cookies.load("chrome")
                 self.assertIn("chrome", str(caught.exception))
                 self.assertNotIsInstance(caught.exception, ValueError)
                 self.assertNotIn("value0", str(caught.exception))
@@ -155,7 +158,7 @@ class ChromiumMacTest(BrowserTestCase):
     def test_plain_values_need_no_keychain(self):
         database = self.home / "Library/Application Support/Google/Chrome/Default/Network/Cookies"
         make_chromium_db(database, 24, [("example.com", "plain", "visible", b"", "/", 0, 0, 0, 1)])
-        self.assertEqual(cookies.load("chrome")["plain"], "visible")
+        self.assertEqual(_cookies.load("chrome")["plain"], "visible")
         self.keychain.assert_not_called()
 
     def test_old_cookies_location_and_other_profile(self):
@@ -163,13 +166,13 @@ class ChromiumMacTest(BrowserTestCase):
         make_chromium_db(database, 20, [
             ("x.com", "auth", "", encrypt_chromium("token", "mac-secret", 1003), "/", EXPIRES_UTC, 1, 0, 1)
         ])
-        jar = cookies.load("brave", profile="Profile 1").list
+        jar = _cookies.load("brave", profile="Profile 1").list
         self.assertEqual((jar[0]["value"], jar[0]["sameSite"]), ("token", "Lax"))
         self.keychain.assert_called_once_with("Brave Safe Storage")
 
     def test_missing_database(self):
         with self.assertRaises(FileNotFoundError):
-            cookies.load("edge")
+            _cookies.load("edge")
 
 
 @unittest.skipUnless(HAS_CRYPTOGRAPHY, "needs cryptography")
@@ -182,7 +185,7 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("a.example", "old", "", encrypt_chromium("one", "peanuts", 1, "a.example"), "/", 0, 0, 0, 0),
             ("a.example", "new", "", encrypt_chromium("two", "linux-secret", 1, "a.example", b"v11"), "/", 0, 0, 0, 0),
         ])
-        jar = cookies.load("chromium")
+        jar = _cookies.load("chromium")
         self.assertEqual([(cookie["value"], cookie["sameSite"]) for cookie in jar], [("one", "None"), ("two", "None")])
         self.keyring.assert_called_once_with("chromium")
 
@@ -191,7 +194,7 @@ class ChromiumLinuxTest(BrowserTestCase):
         make_chromium_db(self.home / ".config/google-chrome/Default/Cookies", 23, [
             ("a.example", "new", "", encrypt_chromium("two", "peanuts", 1, prefix=b"v11"), "/", 0, 0, 0, 0),
         ])
-        self.assertEqual(cookies.load("chrome")["new"], "two")
+        self.assertEqual(_cookies.load("chrome")["new"], "two")
 
     def test_some_undecryptable_values_are_skipped_and_counted(self):
         database = self.home / ".config/google-chrome/Default/Cookies"
@@ -201,8 +204,8 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("c.example", "damaged", "", encrypt_chromium("two", "another", 1, "c.example"), "/", 0, 0, 0, 0),
             ("d.example", "plain", "visible", b"", "/", 0, 0, 0, 0),
         ])
-        with mock.patch.object(cookies.ui, "debug") as debug:
-            jar = cookies.load("chrome")
+        with mock.patch.object(_cookies.ui, "debug") as debug:
+            jar = _cookies.load("chrome")
         self.assertEqual([c["name"] for c in jar.list], ["good", "plain"])
         self.assertEqual((jar["good"], jar["plain"]), ("one", "visible"))
         debug.assert_called_once()
@@ -218,7 +221,7 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("a.example", "plain", "visible", b"", "/", 0, 0, 0, 0),
         ])
         with self.assertRaises(LoginError) as caught:
-            cookies.load("chrome")
+            _cookies.load("chrome")
         self.assertIn("can't decrypt any of 2 chrome cookies", str(caught.exception))
         self.assertNotIn("s3cr3t-value", str(caught.exception))
 
@@ -227,13 +230,13 @@ class ChromiumLinuxTest(BrowserTestCase):
             ("a.example", "odd", "", b"v99" + b"\0" * 16, "/", 0, 0, 0, 0),
         ])
         with self.assertRaises(LoginError):
-            cookies.load("chrome")
+            _cookies.load("chrome")
 
 
 class BrowserChoiceTest(BrowserTestCase):
     def test_unknown_browser(self):
         with self.assertRaises(UsageError):
-            cookies.load("safari", profile="Default")
+            _cookies.load("safari", profile="Default")
 
     @unittest.skipUnless(HAS_CRYPTOGRAPHY, "needs cryptography")
     def test_windows_chromium_dpapi_aesgcm(self):
@@ -253,10 +256,10 @@ class BrowserChoiceTest(BrowserTestCase):
         make_chromium_db(user_data / "Default/Network/Cookies", 24, [
             ("example.com", "sid", "", encrypted_val, "/", EXPIRES_UTC, 1, 1, 1),
         ])
-        with mock.patch.object(cookies, "_PLATFORM", "win32"), \
+        with mock.patch.object(_cookies, "_PLATFORM", "win32"), \
                 mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app)}), \
-                mock.patch.object(cookies, "_dpapi_unprotect", return_value=master_key) as dpapi:
-            jar = cookies.load("edge")
+                mock.patch.object(_cookies, "_dpapi_unprotect", return_value=master_key) as dpapi:
+            jar = _cookies.load("edge")
         dpapi.assert_called_once_with(b"sealed-key")
         self.assertEqual(jar["sid"], "win-secret")
 
@@ -266,10 +269,10 @@ class BrowserChoiceTest(BrowserTestCase):
         make_chromium_db(user_data / "Default/Network/Cookies", 24, [
             ("example.com", "sid", "", b"v10" + b"\0" * 32, "/", EXPIRES_UTC, 1, 1, 1),
         ])
-        with mock.patch.object(cookies, "_PLATFORM", "win32"), \
+        with mock.patch.object(_cookies, "_PLATFORM", "win32"), \
                 mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app)}):
             with self.assertRaises(LoginError):
-                cookies.load("chrome")
+                _cookies.load("chrome")
 
     def test_missing_cryptography(self):
         make_chromium_db(self.home / "Library/Application Support/Google/Chrome/Default/Network/Cookies", 24, [
@@ -278,7 +281,7 @@ class BrowserChoiceTest(BrowserTestCase):
         blocked = {name: None for name in sys.modules if name.split(".")[0] == "cryptography"}
         with mock.patch.dict(sys.modules, {**blocked, "cryptography": None}):
             with self.assertRaises(ImportError) as caught:
-                cookies.load("chrome")
+                _cookies.load("chrome")
         self.assertIn("pip install cryptography", str(caught.exception))
 
 
@@ -298,7 +301,7 @@ class FirefoxTest(BrowserTestCase):
                                   "[Profile0]\nName=main\nIsRelative=1\nPath=main.default\nDefault=1\n")
         make_firefox_db(root / "main.default/cookies.sqlite", self.firefox_rows())
         make_firefox_db(root / "other.x/cookies.sqlite", [("instagram.com", "wrong", "no", "/", 0, 0, 0, 0)])
-        jar = cookies.load("firefox").filter(domains="instagram.com")
+        jar = _cookies.load("firefox").filter(domains="instagram.com")
         self.assertEqual({cookie["domain"] for cookie in jar}, MATCHING)
         self.assertNotIn("wrong", jar)
         self.assertEqual(jar.list[0], {"name": "f0", "value": "v0", "domain": "instagram.com", "path": "/",
@@ -309,41 +312,42 @@ class FirefoxTest(BrowserTestCase):
         self.write_profiles(root, "[Profile0]\nPath=Profiles/old\nDefault=1\n\n"
                                   "[Install4F96D1932A9F858E]\nDefault=Profiles/new\nLocked=1\n")
         make_firefox_db(root / "Profiles/new/cookies.sqlite", [("a.example", "n", "v", "/", EXPIRES * 1000, 0, 1, 0)])
-        with mock.patch.object(cookies, "_PLATFORM", "darwin"):
-            jar = cookies.load("firefox").list
+        with mock.patch.object(_cookies, "_PLATFORM", "darwin"):
+            jar = _cookies.load("firefox").list
         self.assertEqual((jar[0]["expires"], jar[0]["httpOnly"], jar[0]["sameSite"]), (EXPIRES, True, "None"))
 
     def test_named_profile_on_windows(self):
         root = self.home / "AppData/Roaming/Mozilla/Firefox"
         make_firefox_db(root / "Profiles/work/cookies.sqlite", [("a.example", "n", "v", "/", 0, 0, 0, 2)])
-        with mock.patch.object(cookies, "_PLATFORM", "win32"), mock.patch.dict(os.environ, {"APPDATA": str(root.parents[1])}):
-            jar = cookies.load("firefox", profile="work").list
+        with mock.patch.object(_cookies, "_PLATFORM", "win32"), \
+                mock.patch.dict(os.environ, {"APPDATA": str(root.parents[1])}):
+            jar = _cookies.load("firefox", profile="work").list
         self.assertEqual((jar[0]["expires"], jar[0]["sameSite"]), (-1, "Strict"))
 
     def test_missing_profiles_ini(self):
         with self.assertRaises(FileNotFoundError):
-            cookies.load("firefox")
+            _cookies.load("firefox")
 
 
 class ProgramsTest(unittest.TestCase):
     def test_keychain_failure_raises_cookies_error(self):
         failed = subprocess.CompletedProcess([], 44, stdout="", stderr="not found")
-        with mock.patch.object(cookies.subprocess, "run", return_value=failed) as run:
+        with mock.patch.object(_cookies.subprocess, "run", return_value=failed) as run:
             with self.assertRaises(LoginError):
-                cookies._read_keychain_password("Chrome Safe Storage")
+                _cookies._read_keychain_password("Chrome Safe Storage")
         self.assertEqual(run.call_args.args[0][:2], ["security", "find-generic-password"])
 
     def test_keychain_password(self):
         found = subprocess.CompletedProcess([], 0, stdout="pw==\n", stderr="")
-        with mock.patch.object(cookies.subprocess, "run", return_value=found):
-            self.assertEqual(cookies._read_keychain_password("Chrome Safe Storage"), "pw==")
+        with mock.patch.object(_cookies.subprocess, "run", return_value=found):
+            self.assertEqual(_cookies._read_keychain_password("Chrome Safe Storage"), "pw==")
 
     def test_keyring_missing_or_empty(self):
-        with mock.patch.object(cookies.subprocess, "run", side_effect=FileNotFoundError):
-            self.assertIsNone(cookies._read_keyring_password("chrome"))
+        with mock.patch.object(_cookies.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertIsNone(_cookies._read_keyring_password("chrome"))
         empty = subprocess.CompletedProcess([], 1, stdout="", stderr="")
-        with mock.patch.object(cookies.subprocess, "run", return_value=empty):
-            self.assertIsNone(cookies._read_keyring_password("chrome"))
+        with mock.patch.object(_cookies.subprocess, "run", return_value=empty):
+            self.assertIsNone(_cookies._read_keyring_password("chrome"))
 
 
 class FileTestCase(unittest.TestCase):
@@ -363,7 +367,7 @@ class LoadTest(FileTestCase):
         path = self.write("c.txt", "# Netscape HTTP Cookie File\n\n"
                                    ".x.com\tTRUE\t/\tTRUE\t1700000000\tsid\tabc\n"
                                    "#HttpOnly_x.com\tFALSE\t/a\tFALSE\t0\ttoken\tq\tw\n")
-        self.assertEqual(cookies.load(path).list, [
+        self.assertEqual(_cookies.load(path).list, [
             {"name": "sid", "value": "abc", "domain": ".x.com", "path": "/", "expires": 1700000000,
              "secure": True, "httpOnly": False, "sameSite": "Lax"},
             {"name": "token", "value": "q\tw", "domain": "x.com", "path": "/a", "expires": -1,
@@ -377,7 +381,7 @@ class LoadTest(FileTestCase):
             {"name": "b", "value": "2", "domain": "x.com", "session": True, "sameSite": "strict"},
             {"name": "c", "value": "3", "domain": "x.com", "expires": -1, "sameSite": "Lax"},
         ]
-        jar = cookies.load(self.write("c.txt", "  " + json.dumps(entries))).list
+        jar = _cookies.load(self.write("c.txt", "  " + json.dumps(entries))).list
         self.assertEqual([(c["expires"], c["sameSite"], c["httpOnly"]) for c in jar],
                          [(1700000000, "None", True), (-1, "Strict", False), (-1, "Lax", False)])
         self.assertEqual(jar[1]["path"], "/")
@@ -388,7 +392,7 @@ class LoadTest(FileTestCase):
             with self.subTest(text=text):
                 path = self.write("broken.json", text)
                 with self.assertRaises(LoginError) as caught:
-                    cookies.load(path)
+                    _cookies.load(path)
                 self.assertIn("broken.json", str(caught.exception))
                 self.assertNotIsInstance(caught.exception, ValueError)
 
@@ -396,7 +400,7 @@ class LoadTest(FileTestCase):
         path = self.folder / "binary.txt"
         path.write_bytes(b"\xff\xfe\x00")
         with self.assertRaises(LoginError) as caught:
-            cookies.load(path)
+            _cookies.load(path)
         self.assertIn("binary.txt", str(caught.exception))
 
     def test_over_16_mb_is_refused_unread(self):
@@ -404,9 +408,9 @@ class LoadTest(FileTestCase):
         path = self.folder / "huge.txt"
         with open(path, "wb") as file:
             file.truncate(16 * 1024 * 1024 + 1)
-        with mock.patch.object(cookies, "_parse_netscape", side_effect=AssertionError("parsed")):
+        with mock.patch.object(_cookies, "_parse_netscape", side_effect=AssertionError("parsed")):
             with self.assertRaises(LoginError) as caught:
-                cookies.load(path)
+                _cookies.load(path)
         self.assertIn("huge.txt", str(caught.exception))
         self.assertIsInstance(caught.exception, LoginError)
 
@@ -415,32 +419,32 @@ class LoadTest(FileTestCase):
         line = "x.com\tFALSE\t/\tFALSE\t0\tn\tv\n"
         path.write_text(line + "#" * (16 * 1024 * 1024 - len(line) - 1) + "\n", encoding="utf-8", newline="\n")
         self.assertEqual(path.stat().st_size, 16 * 1024 * 1024)
-        self.assertEqual([c["name"] for c in cookies.load(path).list], ["n"])
+        self.assertEqual([c["name"] for c in _cookies.load(path).list], ["n"])
 
     def test_raw_cookie_text(self):
         netscape = ".x.com\tTRUE\t/\tFALSE\t0\tsid\tabc\n"
-        self.assertEqual(cookies.load(netscape)["sid"], "abc")
+        self.assertEqual(_cookies.load(netscape)["sid"], "abc")
         raw_json = json.dumps([{"name": "tok", "value": "xyz", "domain": ".x.com"}])
-        self.assertEqual(cookies.load(raw_json)["tok"], "xyz")
+        self.assertEqual(_cookies.load(raw_json)["tok"], "xyz")
 
     def test_missing_file(self):
         with self.assertRaises(FileNotFoundError):
-            cookies.load(self.folder / "none.txt")
+            _cookies.load(self.folder / "none.txt")
 
     def test_domain_filter_on_both_formats(self):
         netscape = "".join(f"{domain}\tFALSE\t/\tFALSE\t0\tn{index}\tv\n" for index, domain in enumerate(DOMAINS))
         listed = json.dumps([{"name": f"n{index}", "value": "v", "domain": domain} for index, domain in enumerate(DOMAINS)])
         for path in (self.write("n.txt", netscape), self.write("j.json", listed)):
             with self.subTest(path=path.name):
-                jar = cookies.load(path).filter(domains="Instagram.com")
+                jar = _cookies.load(path).filter(domains="Instagram.com")
                 self.assertEqual({cookie["domain"] for cookie in jar}, MATCHING)
-                self.assertEqual(len(cookies.load(path)), len(DOMAINS))
+                self.assertEqual(len(_cookies.load(path)), len(DOMAINS))
 
     def test_load_reads_a_bom_file_and_an_empty_expiry(self):
         netscape = "\ufeff.x.com\tTRUE\t/\tFALSE\t\tsid\tabc\n"
         path = self.folder / "bom.txt"
         path.write_bytes(netscape.encode("utf-8"))
-        jar = cookies.load(path).list
+        jar = _cookies.load(path).list
         self.assertEqual(len(jar), 1)
         self.assertEqual((jar[0]["domain"], jar[0]["expires"], jar[0]["value"]), (".x.com", -1, "abc"))
 
@@ -455,7 +459,7 @@ class LoadTest(FileTestCase):
         )
         conn.commit()
         try:
-            with cookies._open_copy(db) as copy:
+            with _cookies._open_copy(db) as copy:
                 names = [r[0] for r in copy.execute("SELECT name FROM moz_cookies").fetchall()]
             self.assertEqual(names, ["old", "live"])
         finally:
@@ -469,7 +473,8 @@ def cookie(name, value="v", domain=".example.com", path="/", expires=-1):
 
 class JarTest(unittest.TestCase):
     def test_reads_by_name(self):
-        jar = cookies.Jar([cookie("sid", "1"), cookie("csrf", "2"), cookie("sid", "3", domain="other.example.com")])
+        jar = _cookies.Jar([cookie("sid", "1"), cookie("csrf", "2"),
+                            cookie("sid", "3", domain="other.example.com")])
         self.assertEqual(jar["sid"], "1")
         self.assertIn("csrf", jar)
         self.assertNotIn("nope", jar)
@@ -480,7 +485,7 @@ class JarTest(unittest.TestCase):
 
     def test_immutable(self):
         source = [cookie("sid", "1")]
-        jar = cookies.Jar(source)
+        jar = _cookies.Jar(source)
         source[0]["value"] = "changed"
         next(iter(jar))["value"] = "changed"
         jar.list[0]["value"] = "changed"
@@ -492,11 +497,12 @@ class JarTest(unittest.TestCase):
         for entry in ({"name": "a"}, {"value": "secret-1"}, "a=1"):
             with self.subTest(entry=entry):
                 with self.assertRaises(LoginError) as caught:
-                    cookies.Jar([entry])  # type: ignore[list-item]
+                    _cookies.Jar([entry])  # type: ignore[list-item]
                 self.assertNotIn("secret-1", str(caught.exception))
 
     def test_filter_by_domain_and_names(self):
-        jar = cookies.Jar([cookie(f"n{index}", domain=domain) for index, domain in enumerate(DOMAINS)]
+        jar = _cookies.Jar([cookie(f"n{index}", domain=domain)
+                            for index, domain in enumerate(DOMAINS)]
                           + [{"name": "bare", "value": "1"}])
         self.assertEqual({c["domain"] for c in jar.filter(domains=".INSTAGRAM.com")}, MATCHING)
         self.assertEqual([c["name"] for c in jar.filter(domains=["notinstagram.com", "instagram.com.evil.net"]).list],
@@ -506,13 +512,14 @@ class JarTest(unittest.TestCase):
         self.assertEqual([c["name"] for c in jar.filter(names="n1").list], ["n1"])
         self.assertEqual([c["name"] for c in jar.filter(domains="instagram.com", names=("n0", "n4")).list], ["n0"])
         self.assertEqual(jar.filter(), jar)
-        self.assertIsInstance(jar.filter(names=[]), cookies.Jar)
+        self.assertIsInstance(jar.filter(names=[]), _cookies.Jar)
         self.assertEqual(len(jar.filter(names=[])), 0)
 
     def test_merge_newer_wins_in_place(self):
-        saved = cookies.Jar([cookie("sid", "old"), cookie("ct0", "old", expires=2_000_000_000), cookie("lang", "en")])
+        saved = _cookies.Jar([cookie("sid", "old"), cookie("ct0", "old", expires=2_000_000_000),
+                              cookie("lang", "en")])
         # ct0 was rotated with a shorter expiry: the argument still wins, since it is the newer jar.
-        refreshed = cookies.Jar([cookie("ct0", "new", domain="EXAMPLE.com", expires=1_900_000_000),
+        refreshed = _cookies.Jar([cookie("ct0", "new", domain="EXAMPLE.com", expires=1_900_000_000),
                                  cookie("guest", "g")])
         merged = saved.merge(refreshed)
         self.assertEqual([(c["name"], c["value"]) for c in merged],
@@ -521,28 +528,28 @@ class JarTest(unittest.TestCase):
         self.assertEqual(saved["ct0"], "old")
 
     def test_merge_keeps_other_domains_and_paths_apart(self):
-        saved = cookies.Jar([cookie("sid", "a"), cookie("sid", "b", path="/app")])
+        saved = _cookies.Jar([cookie("sid", "a"), cookie("sid", "b", path="/app")])
         merged = saved.merge([cookie("sid", "c", domain="other.example"), cookie("sid", "d", path="/app")])
         self.assertEqual([c["value"] for c in merged], ["a", "d", "c"])
 
     def test_merge_a_missing_path_is_the_root(self):
-        merged = cookies.Jar([{"name": "sid", "value": "a", "domain": "example.com"}]).merge(
+        merged = _cookies.Jar([{"name": "sid", "value": "a", "domain": "example.com"}]).merge(
             [cookie("sid", "b", domain="example.com")])
         self.assertEqual([c["value"] for c in merged], ["b"])
 
     def test_header_in_order(self):
-        jar = cookies.Jar([{"name": "b", "value": "2"}, {"name": "a", "value": "1"}])
+        jar = _cookies.Jar([{"name": "b", "value": "2"}, {"name": "a", "value": "1"}])
         self.assertEqual(jar.header, "b=2; a=1")
-        self.assertEqual(cookies.Jar().header, "")
+        self.assertEqual(_cookies.Jar().header, "")
 
     def test_equality(self):
-        self.assertEqual(cookies.Jar([cookie("a")]), cookies.Jar([cookie("a")]))
-        self.assertNotEqual(cookies.Jar([cookie("a")]), cookies.Jar([cookie("a", "other")]))
-        self.assertNotEqual(cookies.Jar(), [])
+        self.assertEqual(_cookies.Jar([cookie("a")]), _cookies.Jar([cookie("a")]))
+        self.assertNotEqual(_cookies.Jar([cookie("a")]), _cookies.Jar([cookie("a", "other")]))
+        self.assertNotEqual(_cookies.Jar(), [])
 
 
 class SaveTest(FileTestCase):
-    jar = cookies.Jar([
+    jar = _cookies.Jar([
         {"name": "sid", "value": "a b", "domain": ".x.com", "path": "/", "expires": 1700000000,
          "secure": True, "httpOnly": True, "sameSite": "Lax"},
         {"name": "t", "value": "", "domain": "x.com", "path": "/p", "expires": -1,
@@ -552,7 +559,7 @@ class SaveTest(FileTestCase):
     def test_round_trip_and_mode(self):
         path = self.folder / "nested" / "ins.txt"
         self.assertEqual(self.jar.save(path), path)
-        self.assertEqual(cookies.load(path), self.jar)
+        self.assertEqual(_cookies.load(path), self.jar)
         if os.name == "posix":
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
@@ -561,20 +568,20 @@ class SaveTest(FileTestCase):
         path.write_text("old", encoding="utf-8")
         os.chmod(path, 0o644)
         self.jar.save(str(path))
-        self.assertEqual(cookies.load(path), self.jar)
+        self.assertEqual(_cookies.load(path), self.jar)
         if os.name == "posix":
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_no_temp_file_after_failure(self):
         path = self.folder / "ins.txt"
-        with mock.patch.object(cookies.os, "replace", side_effect=OSError("disk full")):
+        with mock.patch.object(_cookies.os, "replace", side_effect=OSError("disk full")):
             with self.assertRaises(DiskError):
                 self.jar.save(path)
         self.assertEqual(list(self.folder.iterdir()), [])
 
     def test_line_break_refused(self):
         with self.assertRaises(LoginError):
-            cookies.Jar([{**self.jar.list[0], "value": "a\nb"}]).save(self.folder / "ins.txt")
+            _cookies.Jar([{**self.jar.list[0], "value": "a\nb"}]).save(self.folder / "ins.txt")
         self.assertEqual(list(self.folder.iterdir()), [])
 
 
@@ -584,7 +591,7 @@ class SecretsTest(FileTestCase):
     SECRET = "s3cr3t-value"
 
     def test_repr_shows_names_only(self):
-        jar = cookies.Jar([cookie("sessionid", self.SECRET)])
+        jar = _cookies.Jar([cookie("sessionid", self.SECRET)])
         self.assertEqual(repr(jar), "Jar(sessionid)")
         self.assertNotIn(self.SECRET, str(jar))
 
@@ -599,19 +606,19 @@ class SecretsTest(FileTestCase):
         messages = []
         for index, text in enumerate(broken):
             with self.assertRaises(LoginError) as caught:
-                cookies.load(self.write(f"broken{index}.txt", text))
+                _cookies.load(self.write(f"broken{index}.txt", text))
             messages.append(str(caught.exception))
         path = self.folder / "binary.txt"
         path.write_bytes(self.SECRET.encode() + b"\xff")
         with self.assertRaises(LoginError) as caught:
-            cookies.load(path)
+            _cookies.load(path)
         messages.append(str(caught.exception))
         for value in (f"{self.SECRET}\n", f"{self.SECRET}\r"):
             with self.assertRaises(LoginError) as caught:
-                cookies.Jar([cookie("sid", value)]).save(self.folder / "out.txt")
+                _cookies.Jar([cookie("sid", value)]).save(self.folder / "out.txt")
             messages.append(str(caught.exception))
         with self.assertRaises(KeyError) as caught:
-            cookies.Jar([cookie("sid", self.SECRET)])["other"]
+            _cookies.Jar([cookie("sid", self.SECRET)])["other"]
         messages.append(str(caught.exception))
         for message in messages:
             with self.subTest(message=message):

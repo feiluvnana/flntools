@@ -68,14 +68,26 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from typing import Any
 from urllib.parse import urlsplit
 
 from flnd.source import (
-    Error, Fetch, File, Login, LoginError, NetworkError, NotFound, Post, Site, Source, Target,
-    UsageError, target,
+    Error,
+    Fetch,
+    File,
+    Login,
+    LoginError,
+    NetworkError,
+    NotFound,
+    Post,
+    Site,
+    Source,
+    Target,
+    UsageError,
+    target,
 )
 
 TELEGRAM_WEB = "https://web.telegram.org/"
@@ -305,7 +317,7 @@ async def messages(site: Site, chat: Any, kind: str) -> AsyncIterator[Post]:
     if site.time.until:
         until_date = site.time.until + datetime.timedelta(days=1)
         before = datetime.datetime.combine(
-            until_date, datetime.time(), tzinfo=datetime.timezone.utc,
+            until_date, datetime.time(), tzinfo=datetime.UTC,
         )
     # `offset_id` takes the messages older than it; 0 is from the newest.
     last = 0
@@ -781,7 +793,7 @@ async def by_qr(site: Site, client: Any) -> None:
             await qr.wait()
             return
         # A code that ran out is replaced by a new one, and the scan is waited for again.
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await qr.recreate()
         except SessionPasswordNeededError:
             return await two_step(site, client)

@@ -13,13 +13,20 @@ from cryptography.hazmat.primitives.padding import PKCS7
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd import _cookies as cookies
-from flnd import _home, _net, _vault
+from flnd import _cookies, _home, _net, _vault
 from flnd.engine import resolve
 from flnd.options import Options
 from flnd.source import Blocked, Request, SiteError, Target, UsageError
 from flnd.sources.loi import (
-    API, SITE_IV, SITE_KEY, Loibus, Refusal, decode_token, decrypt_field, refusal, sign_request,
+    API,
+    SITE_IV,
+    SITE_KEY,
+    Loibus,
+    Refusal,
+    decode_token,
+    decrypt_field,
+    refusal,
+    sign_request,
 )
 
 # The site's own key and iv, as loix used them: "https://dl.example/a.zip", encrypted.
@@ -449,7 +456,7 @@ class EngineTest(EngineCase):
     def setUp(self):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc", "path": "/"}]
-        _home.save(self.home, "loi", cookies.Jar(jar))
+        _home.save(self.home, "loi", _cookies.Jar(jar))
         self.routes.update({f"{API}lois/5930": _net.reply(200, json={"data": {**POST, "images": []}}),
                             f"{API}user/info": _net.reply(200, json=USER)})
 
@@ -500,7 +507,7 @@ class LoginTest(unittest.TestCase):
         jar = [{"name": name, "value": "v", "domain": "loix.cc", "path": "/"} for name in names]
         jar.append({"name": "access-token", "value": "other", "domain": "example.com", "path": "/"})
         path = self.root / "cookies.txt"
-        cookies.Jar(jar).save(path)
+        _cookies.Jar(jar).save(path)
         return path
 
     def test_the_login_is_the_access_token_cookie(self):
@@ -523,7 +530,7 @@ class LoginTest(unittest.TestCase):
                               "path": "/"}]}
 
         def load(browser="chrome", *, profile=None):
-            return cookies.Jar(cookie for jar in store.values() for cookie in jar)
+            return _cookies.Jar(cookie for jar in store.values() for cookie in jar)
 
         with mock.patch("flnd._cookies.load", load):
             jar = _home.from_browser(Loibus(), browser="chrome")

@@ -16,12 +16,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net, _transfer
-
-from flnd.source import SiteError, File
-from flnd import _time as clock, _tools
+from flnd import _net, _time, _tools, _transfer
 from flnd._ui import ui
 from flnd.errors import Error, NetworkError
+from flnd.source import File, SiteError
 
 
 def broken():
@@ -39,7 +37,7 @@ class NetCase(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.tmp = Path(folder.name)
-        self.fake = self.enterContext(clock.use(clock.Fake()))
+        self.fake = self.enterContext(_time.use(_time.Fake()))
         # The backoff's jitter at its top, so a wait reads 1, 2, 4 s.
         self.enterContext(mock.patch("flnd._net.random.uniform", lambda low, high: high))
         self.enterContext(_net.fake(lambda request: self.serve(request)))
@@ -97,7 +95,7 @@ class BackoffTest(NetCase):
         self.assertIn("! a.example: rate limited; waiting 2m", self.lines())
 
     def test_a_rate_limit_reset_time_is_waited_for(self):
-        reset = str(int(clock.wall()) + 600)
+        reset = str(int(_time.wall()) + 600)
         with self.client(_net.reply(429, headers={"x-rate-limit-reset": reset}),
                          _net.reply(200)) as client:
             fetch(client, "https://a.example/")

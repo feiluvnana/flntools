@@ -20,10 +20,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net
 from test_engine import CDN, EngineCase, make_source, noise
 
-from flnd import _home, _vault
+from flnd import _home, _net, _vault
 from flnd.engine import Engine
 from flnd.errors import NetworkError, NotFound
 from flnd.options import Options

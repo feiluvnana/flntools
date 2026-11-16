@@ -13,14 +13,13 @@ from pathlib import Path
 from unittest import mock
 
 import fakes
-from flnd import _net
-
-from flnd import _home, _steps, _tools
-from flnd.engine import Engine
-from flnd.source import File
 from test_archive import CRYPTO_ZIP
 from test_engine import CDN, EngineCase, make_source
 from test_shrink import photo
+
+from flnd import _home, _net, _steps, _tools
+from flnd.engine import Engine
+from flnd.source import File
 
 
 def zipped(entries: dict[str, bytes]) -> bytes:

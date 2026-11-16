@@ -51,14 +51,16 @@ from rich.console import Console as RichConsole
 from rich.control import strip_control_codes
 from rich.progress import (
     Progress as RichProgress,
+)
+from rich.progress import (
     ProgressColumn,
     Task,
     TaskID,
 )
-from rich.theme import Theme
 from rich.text import Text
+from rich.theme import Theme
 
-from flnd import _time as clock
+from flnd import _time
 from flnd._text import size
 
 __all__ = ["Group", "Row", "UI", "ui"]
@@ -549,7 +551,7 @@ class UI:
 
     def _spinner(self) -> str:
         frames = SPIN_FRAMES[0] if self._use_unicode() else SPIN_FRAMES[1]
-        return frames[int(clock.now() * 10) % len(frames)]
+        return frames[int(_time.now() * 10) % len(frames)]
 
     @property
     def raw(self) -> RichConsole:

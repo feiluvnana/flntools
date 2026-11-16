@@ -10,14 +10,13 @@ import unittest
 from unittest import mock
 
 import fakes
-from flnd import _net
 from test_engine import CDN, EngineCase, make_source, noise
 
+from flnd import _home, _net
 from flnd.engine import Engine, TargetReport
-from flnd.source import Range
 from flnd.options import Options
-from flnd.source import File, Post, Source, Target, target
-from flnd import _home
+from flnd.source import File, Post, Range, Source, Target, target
+
 
 class Site:
     """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""

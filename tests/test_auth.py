@@ -12,19 +12,16 @@ import stat
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net
-
 import no_profiles  # noqa: F401  (refuses real browser profiles)
-from contextlib import contextmanager
 
-from flnd import _home, _vault
-from flnd.sources.ins import Instagram
-from flnd import _cookies as cookies
+from flnd import _cookies, _home, _net, _vault
 from flnd._ui import ui
 from flnd.errors import DiskError, LoginError
+from flnd.sources.ins import Instagram
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".instagram.com\tTRUE\t/\tTRUE\t1825861327\tsessionid\tins-session\n")
@@ -59,7 +56,7 @@ class CookieFileTest(AuthCase):
         previous = Path.cwd()
         os.chdir(self.home.parent)
         try:
-            self.assertEqual(_home.load(self.home, "ins"), cookies.Jar())
+            self.assertEqual(_home.load(self.home, "ins"), _cookies.Jar())
         finally:
             os.chdir(previous)
 
@@ -67,7 +64,7 @@ class CookieFileTest(AuthCase):
         self.assertFalse(_home.logged_in(self.home, "ins"))
         (self.home / "cookies").mkdir(parents=True)
         (self.home / "cookies" / "ins.json").write_text("[]")
-        _home.save(self.home, "twt", cookies.Jar())
+        _home.save(self.home, "twt", _cookies.Jar())
         with _home.secrets(self.home, "tlg") as secrets:
             secrets["session"] = "s"
         # A cookie login counts as logged in (moved from a plain file or not), and so does tlg's session.
@@ -157,19 +154,21 @@ class VaultedCookiesTest(AuthCase):
         self.assertFalse((self.home / "cookies").exists())
 
     def test_a_vaulted_jar_is_newer_than_a_plain_file(self):
-        _home.save(self.home, "ins", cookies.Jar([{"name": "sessionid", "value": "new", "domain": ".instagram.com"}]))
+        _home.save(self.home, "ins", _cookies.Jar([
+            {"name": "sessionid", "value": "new", "domain": ".instagram.com"}]))
         self.write("ins.txt")
         self.assertEqual([cookie["value"] for cookie in _home.load(self.home, "ins")], ["new"])
         self.assertFalse((self.home / "cookies").exists())
 
     def test_logout_clears_the_jar_with_the_other_secrets(self):
-        _home.save(self.home, "ins", cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
+        _home.save(self.home, "ins",
+                   _cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
         with _home.secrets(self.home, "ins") as secrets:
             secrets["token"] = "t"
         self.assertTrue(_home.logout(self.home, "ins"))
         with _home.secrets(self.home, "ins") as secrets:
             self.assertEqual(dict(secrets), {})
-        self.assertEqual(_home.load(self.home, "ins"), cookies.Jar())
+        self.assertEqual(_home.load(self.home, "ins"), _cookies.Jar())
         self.assertFalse(_home.logout(self.home, "ins"))
 
     def test_logout_removes_a_plain_file_the_vault_couldnt_take(self):
@@ -179,7 +178,8 @@ class VaultedCookiesTest(AuthCase):
         self.assertFalse(path.exists())
 
     def test_a_jar_copied_into_another_sources_slot_doesnt_decrypt(self):
-        _home.save(self.home, "ins", cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
+        _home.save(self.home, "ins",
+                   _cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
         with raw(self.home) as db:
             db.execute("INSERT INTO secrets SELECT 'twt', name, value FROM secrets WHERE slot = 'ins'")
         with self.assertRaises(LoginError):
@@ -216,7 +216,7 @@ class WriteBackTest(AuthCase):
         super().setUp()
         self.jar = [{"name": "ct0", "value": "old-ct0", "domain": ".x.example", "path": "/", "expires": 1900000000},
                     {"name": "auth_token", "value": "login-token", "domain": ".x.example", "path": "/"}]
-        _home.save(self.home, "twt", cookies.Jar(self.jar))
+        _home.save(self.home, "twt", _cookies.Jar(self.jar))
 
     def current(self, **values):
         session = _net.Session(cookies=[{"name": name, "value": value, "domain": ".x.example", "path": "/"}
@@ -392,7 +392,7 @@ class OriginAndExpiryTest(AuthCase):
         import time
 
         now = time.time()
-        jar = cookies.Jar([
+        jar = _cookies.Jar([
             {"name": "sessionid", "value": "top-secret-1", "domain": ".instagram.com", "expires": now + 3600},
             {"name": "other", "value": "top-secret-2", "domain": ".instagram.com", "expires": now - 10},
         ])

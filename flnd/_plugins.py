@@ -42,9 +42,10 @@ import inspect
 import os
 import sys
 import traceback
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any
 
 from flnd._ui import ui
 

@@ -16,20 +16,16 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
-from flnd import _net
-
 from example_source import API, CDN, Example
 from fakes import FakeSite
 
-from flnd import _browser
-from flnd import _home
+from flnd import _browser, _cookies, _home, _net, _run, _time, _transfer
+from flnd._browser import Page
+from flnd._ui import ui
+from flnd.errors import Blocked, SourceError, UsageError
 from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import File, LoginError, Site, SiteError, Target
-from flnd import _run, _time as clock, _cookies as cookies, _transfer
-from flnd._ui import ui
-from flnd._browser import Page
-from flnd.errors import Blocked, SourceError, UsageError
 
 PAGE = "https://www.example.com/example_user/"
 
@@ -101,7 +97,7 @@ class FakeBrowser:
         return Page(raw, self, by_script=by_script)
 
     async def cookies(self):
-        return cookies.Jar(self.added)
+        return _cookies.Jar(self.added)
 
     async def add_cookies(self, jar):
         self.added.extend(jar)
@@ -135,7 +131,7 @@ class SiteCase(unittest.TestCase):
         for patcher in (mock.patch("flnd._browser.launch", launch),):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.fake = self.enterContext(clock.use(clock.Fake()))
+        self.fake = self.enterContext(_time.use(_time.Fake()))
 
     @property
     def now(self):
@@ -171,10 +167,10 @@ class ExpiringLoginTest(SiteCase):
     def save(self, **expires):
         jar = [{"name": name, "value": "secret-value", "domain": ".example.com", "path": "/", "expires": when}
                for name, when in expires.items()]
-        _home.save(self.home, Example.code, cookies.Jar(jar))
+        _home.save(self.home, Example.code, _cookies.Jar(jar))
 
     def test_soon_and_expired_login_cookies_are_named_never_their_value(self):
-        now = clock.wall()
+        now = _time.wall()
         self.save(token=now + 3600, other=now + 60)
         self.open()
         self.assertEqual(self.lines(), ["! exm: the login cookie token expires in 1h; run flnd login exm again soon"])
@@ -184,7 +180,7 @@ class ExpiringLoginTest(SiteCase):
         self.assertNotIn("secret-value", "\n".join(self.lines()))
 
     def test_a_login_cookie_far_from_expiry_or_for_the_session_says_nothing(self):
-        for when in (clock.wall() + 30 * 24 * 3600, -1):
+        for when in (_time.wall() + 30 * 24 * 3600, -1):
             self.save(token=when)
             self.open()
         self.assertEqual(self.lines(), [])
@@ -305,7 +301,7 @@ class FetchTest(SiteCase):
 
     def test_sign_runs_for_the_sources_own_domains_only(self):
         jar = [{"name": "token", "value": "t0k", "domain": ".example.com", "path": "/"}]
-        _home.save(self.home, "exm", cookies.Jar(jar))
+        _home.save(self.home, "exm", _cookies.Jar(jar))
         _, site = self.open()
         site.fetch(f"{API}/users/example_user")
         site.fetch(f"{CDN}/a.jpg")
@@ -338,8 +334,9 @@ class FetchTest(SiteCase):
         class Wide(Example):
             stealth = False
 
-        _home.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
-                                                  "path": "/"}]))
+        _home.save(self.home, "exm",
+                   _cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
+                                 "path": "/"}]))
         _, site = self.open(Wide)
         # Nothing opens until a source asks for the page.
         self.assertEqual(self.browsers, [])

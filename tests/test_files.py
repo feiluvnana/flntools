@@ -6,8 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from flnd import _transfer
-from flnd import _files
+from flnd import _files, _transfer
 from flnd._ui import ui
 from flnd.errors import SiteError
 

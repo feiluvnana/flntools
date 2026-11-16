@@ -29,20 +29,23 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import msgspec
-
 import kit
+import msgspec
 
 # `example_source.py`, the test source, lives in tests/, one folder up.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from example_source import CDN, Example  # noqa: E402
-from flnd import job  # noqa: E402
-from flnd.source import File, Post  # noqa: E402
-from flnd._time import day  # noqa: E402
-from flnd import _html, _text as text  # noqa: E402
+
+from flnd import (  # noqa: E402
+    _html,
+    _text,
+    job,  # noqa: E402
+)
 from flnd._loop import Loop  # noqa: E402
+from flnd._time import day  # noqa: E402
 from flnd._ui import ui
+from flnd.source import File, Post  # noqa: E402
 
 EDGES = "data.user.edge_owner_to_timeline_media.edges[].node"
 
@@ -169,7 +172,7 @@ def per_file(report: kit.Report) -> None:
 
     report.add("place", kit.best(place, runs=5) / (2 * len(posts)) * 1e6, "us")
     names = [f"un nom très long / avec: des <caractères> spéciaux {n}" for n in range(20000)]
-    took = kit.best(lambda: [text.filename(name) for name in names], runs=5)
+    took = kit.best(lambda: [_text.filename(name) for name in names], runs=5)
     report.add("filename", took / len(names) * 1e6, "us")
 
     def days() -> None:

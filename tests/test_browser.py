@@ -30,6 +30,7 @@ from typing import Any, cast
 from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
+
 from flnd import _browser, _cookies, _net, _time
 from flnd._loop import Loop
 from flnd._ui import ui

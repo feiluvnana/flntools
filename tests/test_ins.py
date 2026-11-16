@@ -17,17 +17,28 @@ from typing import Any
 from unittest import mock
 
 import fakes
-from flnd import _net
 from fakes import FakeSite, Seen, collect
 from test_source import INSTAGRAM
 
-from flnd import _html
+from flnd import _html, _net
 from flnd._time import day
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import LoginError, Request, SiteError, Target, UsageError
-from flnd.sources.ins import (APP_ID, Instagram, best_file, embedded_results, files_of, full_size, is_complete,
-                              pk_of_code, pk_stamp, post_files, reel_posts, tab_media)
+from flnd.sources.ins import (
+    APP_ID,
+    Instagram,
+    best_file,
+    embedded_results,
+    files_of,
+    full_size,
+    is_complete,
+    pk_of_code,
+    pk_stamp,
+    post_files,
+    reel_posts,
+    tab_media,
+)
 
 SITE = "https://www.instagram.com"
 API = f"{SITE}/api/v1"
@@ -899,9 +910,8 @@ class MeTest(unittest.TestCase):
             list(Instagram().me(site, "me"))
 
     def test_engine_treats_ins_me_as_query_target(self):
-        from flnd import _home
+        from flnd import _cookies, _home
         from flnd.source import File, Post
-        from flnd import _cookies as cookies
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -924,7 +934,7 @@ class MeTest(unittest.TestCase):
                 code = "A1" if profile.user == "example_user" else "B1"
                 yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
 
-            _home.save(home, "ins", cookies.Jar([
+            _home.save(home, "ins", _cookies.Jar([
                 {"name": "sessionid", "value": "99:abc:1", "domain": ".instagram.com", "path": "/"},
             ]))
             engine = Engine(home=home, sources={"ins": Instagram})

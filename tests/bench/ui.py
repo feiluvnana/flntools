@@ -31,8 +31,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from rich.console import Console  # noqa: E402
 from rich.theme import Theme  # noqa: E402
 
-from flnd import _net, _stats  # noqa: E402
-from flnd import _time  # noqa: E402
+from flnd import (  # noqa: E402
+    _net,
+    _stats,
+    _time,  # noqa: E402
+)
 from flnd._events import Host, Listing, Pause, Stats, System, Transfer, Transfers  # noqa: E402
 from flnd._screen import Screen  # noqa: E402
 from flnd._ui import PALETTE  # noqa: E402

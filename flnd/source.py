@@ -66,18 +66,37 @@ from __future__ import annotations
 import datetime
 import inspect
 import re
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType, MethodType
 from typing import (
-    TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, Iterable, Iterator, Mapping,
-    MutableMapping, Protocol, Sequence, Union,
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Protocol,
 )
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from flnd import _html, _text, _time
 from flnd.errors import (
-    Blocked, Changed, Error, LoginError, NetworkError, NotFound, SiteError, SourceError, UsageError,
+    Blocked,
+    Changed,
+    Error,
+    LoginError,
+    NetworkError,
+    NotFound,
+    SiteError,
+    SourceError,
+    UsageError,
 )
 
 if TYPE_CHECKING:
@@ -130,7 +149,7 @@ SCROLLS = ("human", "fast")
 # in bytes. It may return a coroutine (tlg's SDK), which the engine runs on the run's loop.
 Fetch = Callable[["Path", Callable[..., None]], Any]
 # What `Post(date=)` takes: the engine reads every one of these once (`flnd._time.day`).
-DateLike = Union[datetime.date, int, float, str, None]
+DateLike = datetime.date | int | float | str | None
 
 
 # ---------------------------------------------------------------------------------------------

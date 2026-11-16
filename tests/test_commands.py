@@ -19,18 +19,17 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from flnd import _net
-
-from flnd import Blocked, Target, sources
-from flnd import cli as flnd_cli
-from flnd import _cookies as cookies
-from flnd._ui import ui
-from flnd import _home
-from flnd.engine import Engine, TargetReport
-from flnd.options import Options
-from flnd.source import Login, Source, cookies as login_cookies, target as route
 from test_engine import CDN, make_source, noise
 from test_library import example_source
+
+from flnd import Blocked, Target, _cookies, _home, _net, sources
+from flnd import cli as flnd_cli
+from flnd._ui import ui
+from flnd.engine import Engine, TargetReport
+from flnd.options import Options
+from flnd.source import Login, Source
+from flnd.source import cookies as login_cookies
+from flnd.source import target as route
 
 NETSCAPE = (
     "# Netscape HTTP Cookie File\n"
@@ -328,9 +327,9 @@ class OutputTest(FlndCase):
         # A lambda, so a test that replaces `self.serve` is answered by its own.
         self.serve = serve
         self.enterContext(_net.fake(lambda request: self.serve(request)))
-        from flnd import _time as clock
+        from flnd import _time
 
-        self.enterContext(clock.use(clock.Fake()))
+        self.enterContext(_time.use(_time.Fake()))
         self.listing = {key: list(ids) for key, ids in type(self).listing.items()}
         self.enterContext(mock.patch.dict(sources.SOURCES, {"exs": example_source(self.listing)}))
 
@@ -391,8 +390,9 @@ class OutputTest(FlndCase):
         self.serve = lambda request: _net.reply(200, content=noise("JPEG"))
         code, out, err = self.run_app("retry", "--ui", "plain")
         self.assertEqual(code, 0, err)
-        self.assertEqual(out.splitlines()[-1], "done: 1 file saved (%s), 1 brought back by a retry"
-                         % out.splitlines()[-1].split("(")[1].split(")")[0])
+        last = out.splitlines()[-1]
+        self.assertEqual(last, "done: 1 file saved ({}), 1 brought back by a retry".format(
+            last.split("(")[1].split(")")[0]))
         self.assertRegex(self.run_app("status")[1], r"^last run: retry exs:example_user, .+: 1 saved, 0 failed\n$")
 
     def test_the_inline_view_draws_the_rows_and_ends_with_the_summary(self):
@@ -557,7 +557,7 @@ class LoginQuestionsTest(FlndCase):
 
     def test_the_way_is_asked_with_numbered_choices(self):
         path = self.cookie_file(NETSCAPE)
-        choices = list(cookies.BROWSERS)
+        choices = list(_cookies.BROWSERS)
         self.answer(str(len(choices) + 1), str(path))
         code, out, err = self.run_app("login", "twt")
         self.assertEqual(code, 0, err)
@@ -567,12 +567,12 @@ class LoginQuestionsTest(FlndCase):
 
     def test_a_wrong_answer_is_asked_again(self):
         self.answer("9", "nope", "2")
-        with mock.patch("flnd.engine._home.from_browser", return_value=cookies.Jar(
+        with mock.patch("flnd.engine._home.from_browser", return_value=_cookies.Jar(
                 [{"name": "auth_token", "value": "t", "domain": ".x.com", "path": "/"}])) as read:
             code, out, err = self.run_app("login", "twt")
         self.assertEqual(code, 0, err)
         self.assertEqual(err.count("pick a number from 1 to"), 2)
-        self.assertEqual(read.call_args.kwargs["browser"], cookies.BROWSERS[1])
+        self.assertEqual(read.call_args.kwargs["browser"], _cookies.BROWSERS[1])
 
     def test_without_a_terminal_or_with_json_nothing_is_asked(self):
         self.pipe("")
@@ -613,7 +613,7 @@ class LoginsTest(FlndCase):
     def test_login_with_no_source_lists_every_login(self):
         import time
 
-        jar = cookies.Jar([{"name": "sessionid", "value": "secret-val", "domain": ".instagram.com",
+        jar = _cookies.Jar([{"name": "sessionid", "value": "secret-val", "domain": ".instagram.com",
                             "expires": time.time() - 10}])
         _home.store(sources.SOURCES["ins"](), jar, home=Path(".flnd"), origin="cookies.txt")
         with _home.secrets(Path(".flnd"), "tlg") as secrets:
@@ -632,11 +632,11 @@ class LoginsTest(FlndCase):
 
 class LogoutTest(FlndCase):
     def test_logout(self):
-        _home.save(Path(".flnd"), "ins", cookies.Jar([{"name": "a", "value": "1",
+        _home.save(Path(".flnd"), "ins", _cookies.Jar([{"name": "a", "value": "1",
                                                      "domain": ".x.example"}]))
         code, out, _ = self.run_app("logout", "ins")
         self.assertEqual((code, out), (0, "ins: logged out\n"))
-        self.assertEqual(_home.load(Path(".flnd"), "ins"), cookies.Jar())
+        self.assertEqual(_home.load(Path(".flnd"), "ins"), _cookies.Jar())
         self.assertEqual(self.run_app("logout", "ins")[1], "ins: was not logged in\n")
 
     def test_logout_takes_one_known_source(self):

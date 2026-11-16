@@ -13,11 +13,12 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 from unittest import mock
 
 from fakes import download, fetch
+
 from flnd import _files, _html, _net, _time
 from flnd._ui import _brief, ui
 from flnd.errors import Blocked, Error, NetworkError, NotFound, SiteError, Stopped

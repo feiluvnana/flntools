@@ -392,7 +392,7 @@ def target_folder(home: Path, target: Target) -> Path:
 
 def now() -> str:
     """The time now, ISO 8601 in UTC to the second, as every `at` column holds it."""
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------------------------
