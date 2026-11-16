@@ -22,11 +22,12 @@ def label(name: str, count: int) -> str:
     return f"{name}: {count}"
 
 
-with worker.Pool(concurrency=2, progress=lambda done, total: None) as pool:
+with ui.progress("numbers") as row, worker.Pool(jobs=2, progress=row) as pool:
     pool.submit(double, 1)
     pool.submit(label, "a", 2)
-    assert_type(pool.as_completed(), Iterator[worker.Result[Any]])
-    assert_type(pool.join(), list[worker.Result[Any]])
+    assert_type(pool.results, Iterator[worker.Result[Any]])
+    assert_type(pool.call(lambda: 3), int)
+    assert_type(pool.done, int)
 
 assert_type(prompt.choose("Source", {"Instagram": "ins", "TikTok": "tik"}), str)
 assert_type(prompt.choose("Count", [1, 2, 3]), int)
@@ -40,8 +41,8 @@ prompt.input("Name")  # pyright: ignore[reportAttributeAccessIssue]
 ui.level = "debug"
 ui.level = "loud"  # pyright: ignore[reportAttributeAccessIssue]
 
-worker.Pool(concurrency="2")  # pyright: ignore[reportArgumentType]
-worker.Pool(progress="numbers")  # pyright: ignore[reportArgumentType]
+worker.Pool(jobs="2")  # pyright: ignore[reportArgumentType]
+worker.Pool(progress=lambda done, total: None)  # pyright: ignore[reportArgumentType]
 
 with ui.progress("photos", total=2) as bar:
     assert_type(bar.count, float)

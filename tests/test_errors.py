@@ -65,17 +65,13 @@ class TreeTest(unittest.TestCase):
                 for builtin in (ValueError, RuntimeError, TypeError):
                     self.assertEqual(issubclass(error, builtin), old_base is builtin, builtin.__name__)
 
-    def test_a_missing_tool_or_a_stall_is_caught_by_name_and_by_its_old_builtin(self):
+    def test_a_missing_tool_is_caught_by_name_and_by_its_old_builtin(self):
         for error, module in ((sh.MissingError, sh), (archive.MissingError, archive),
                               (browser.MissingError, browser), (cookies.MissingError, cookies)):
             with self.subTest(error.__qualname__):
                 self.assertTrue(issubclass(error, shared.MissingError))
                 self.assertTrue(issubclass(error, module.Error))
                 self.assertTrue(issubclass(error, RuntimeError))
-        for error, module in ((worker.StalledError, worker),):
-            with self.subTest(error.__qualname__):
-                self.assertTrue(issubclass(error, module.Error))
-                self.assertTrue(issubclass(error, TimeoutError))
         self.assertTrue(issubclass(shared.MissingError, shared.Error))
 
     def test_siblings_stay_apart(self):

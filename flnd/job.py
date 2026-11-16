@@ -816,21 +816,20 @@ class Downloads:
     def _drain_pool(self, pool: worker.Pool, error: BaseException | None) -> None:
         """Close `pool` and log any task failures."""
         if error is not None:
-            pool.stop(error)
-        results = pool.join()
-        pool.close()
-        for result in results:
+            pool.stop()
+        for result in pool.results:
             if not result.ok:
                 item = result.item[0] if isinstance(result.item, tuple) else result.item
                 ui.error("{file}: {kind} {error}", file=item,
                          kind=type(result.error).__name__, error=result.error)
                 if result.error is not None:
                     ui.debug("{file}: {chain}", file=item, chain=causes(result.error))
+        pool.close()
 
     def _downloads(self) -> worker.Pool:
         """Lazily create the target's download `worker.Pool`."""
         if self._pool is None:
-            self._pool = worker.Pool(concurrency=self.source.concurrency)
+            self._pool = worker.Pool(jobs=self.source.concurrency)
         return self._pool
 
     def _room(self) -> bool:

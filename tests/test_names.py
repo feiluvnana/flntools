@@ -56,11 +56,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
         "shared.http.download: option progress, a callback, not a sink",
         "shared.http.fetch: 8 options, more than 4",
     ),
-    "shared.worker": (
-        "shared.worker.Pool: option progress, a callback, not a sink",
-        "shared.worker.map: 6 options, more than 4",
-        "shared.worker.map: option progress, a callback, not a sink",
-    ),
 }
 
 

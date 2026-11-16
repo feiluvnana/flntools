@@ -169,7 +169,7 @@ class RealBuildTest(unittest.TestCase):
                 "with worker.Pool() as pool:\n"
                 "    for n in (1, 2, 3):\n"
                 "        pool.submit(lambda x: x * factor, n)\n"
-                "    print([r.value for r in pool.join()])\n"
+                "    print(sorted(r.value for r in pool.results))\n"
                 "Path('note.txt').write_text('hello')\n"
                 "archive.pack('note.txt', 'note.7z', password='pw')\n"
                 "print(Path(archive.unpack('note.7z', 'out', password='pw')[0]).read_text())\n")

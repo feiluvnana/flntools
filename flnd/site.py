@@ -67,7 +67,7 @@ class SourceRun:
     client: Any = None
     _state: store.Db | None = field(default=None, repr=False)
     _secrets: auth.Vault | None = field(default=None, repr=False)
-    _loop: worker.Loop | None = field(default=None, repr=False)
+    _tasks: worker.Pool | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     @property
@@ -86,9 +86,9 @@ class SourceRun:
 
     def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine on this source's own event loop, started on first use."""
-        if self._loop is None:
-            self._loop = worker.Loop()
-        return self._loop.run(coroutine)
+        if self._tasks is None:
+            self._tasks = worker.Pool(jobs=1)
+        return self._tasks.wait(lambda: coroutine)
 
     def close(self) -> None:
         """Close the client, stores and event loop; once."""
@@ -101,8 +101,8 @@ class SourceRun:
             for db in (self._state, self._secrets):
                 if db is not None:
                     db.close()
-            if self._loop is not None:
-                self._loop.close()
+            if self._tasks is not None:
+                self._tasks.close()
 
 
 def _make_client(

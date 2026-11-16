@@ -473,23 +473,24 @@ shared.ui.warn(message: str = '', /, *args: Any, **fields: Any) -> None
 shared.worker: module
 shared.worker.ClosedError(shared.worker.Error, RuntimeError)
 shared.worker.Error(shared.Error)
-shared.worker.Loop()
-shared.worker.Loop.close() -> None
-shared.worker.Loop.raw: property -> asyncio.AbstractEventLoop | None
-shared.worker.Loop.run(coro: Coroutine[Any, Any, R], *, timeout: float | None = None) -> R
-shared.worker.Pool(*, concurrency: int | None = None, retries: int = 0, timeout: float | None = None, progress: Callable[[int, int], Any] | None = None, stop: threading.Event | None = None)
-shared.worker.Pool.as_completed() -> Iterator[Result[Any]]
+shared.worker.Pool(*, jobs: int | Literal['cpu', 'io'] = 'io', retries: int = 0, stop: threading.Event | None = None, progress: Sink | None = None)
+shared.worker.Pool.call(fn: Callable[[], R]) -> R
 shared.worker.Pool.close() -> None
-shared.worker.Pool.join(timeout: float | None = None) -> list[Result[Any]]
-shared.worker.Pool.raw: property -> concurrent.futures.Executor
-shared.worker.Pool.run_on_owner(fn: Callable[[], R]) -> R
-shared.worker.Pool.stop(error: BaseException | None = None) -> None
+shared.worker.Pool.done: property -> int
+shared.worker.Pool.pause() -> None
+shared.worker.Pool.results: property -> Iterator[Result[Any]]
+shared.worker.Pool.resume() -> None
+shared.worker.Pool.stop() -> None
+shared.worker.Pool.stopping: property -> bool
 shared.worker.Pool.submit(fn: Callable[..., Any], *args: Any) -> None
+shared.worker.Pool.total: property -> int
+shared.worker.Pool.wait(fn: Callable[..., Awaitable[R]], *args: Any) -> R
 shared.worker.Result(item: Any, value: R | None = None, error: BaseException | None = None, attempts: int = 0)
 shared.worker.Result.attempts: field -> int
 shared.worker.Result.error: field -> BaseException | None
 shared.worker.Result.item: field -> Any
 shared.worker.Result.ok: property -> bool
 shared.worker.Result.value: field -> R | None
-shared.worker.StalledError(shared.worker.Error, TimeoutError)
-shared.worker.map(fn: Callable[..., R], items: Any, *, concurrency: int | None = None, retries: int = 0, timeout: float | None = None, progress: Callable[[int, int], Any] | None = None, stop: threading.Event | None = None) -> list[Result[R]]
+shared.worker.Sink(*args, **kwargs)
+shared.worker.Sink.advance(n: float) -> Any
+shared.worker.Sink.total: property, settable -> float | None
