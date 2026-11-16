@@ -71,26 +71,37 @@ the commit are in the `recorded` block of `gates.json`. On another machine, reco
 
 ## The baseline
 
-Recorded on 2026-11-16 at `9d1cf13`, on an Apple M5 (10 cores, 32 GB, APFS SSD), macOS 26.2,
-CPython 3.14.6. The numbers a planned change is gated on:
+Recorded on 2026-11-16 at `1e01feb`, the rebuilt flnd, on an Apple M5 (10 cores, 32 GB, APFS
+SSD), macOS 26.2, CPython 3.14.6, with other sessions running (load 4.5 to 6). "Before" is the
+baseline recorded at `9d1cf13`, before the rebuild. The numbers a target is set for:
 
-| metric | baseline | target |
-| --- | ---: | ---: |
-| `startup.help` (`flnd --help`) | 162 ms | ≤ 40 ms |
-| `net.big_rate` (1 GiB to disk) | 1.76 GiB/s | ≥ 4 GiB/s |
-| `net.small_8_at_once` (2,000 × 100 KiB) | 927 ms | ≤ 300 ms |
-| `net.stall_20mbs` (the loop's longest stall, 20 MB/s disk) | (new) | < 100 ms |
-| `disk.part_write` (per file) | 255 µs | ≤ 130 µs |
-| `db.point_read` | 2.39 µs | ≤ 2.2 µs |
-| `db.commit_per_post` (per file) | 8.1 µs | ≤ 15 µs |
-| `e2e.sync_nothing_new` | 4 ms (4,000 files) | ≤ 0.3 s (100k files) |
-| `e2e.latency_500_posts` (150 ms a page, 40 ms a file) | 7.16 s | ≤ 5.5 s |
-| `browser.scroll_default` (the synthetic feed) | 26.0 s | ≤ 16 s human-like, ≤ 3 s fast (`scroll_fast`); see "Browser feeds" |
-| `cpu.html_meta` (a 2 MiB Meta-style page) | 18.0 ms | ≤ 8 ms (now 6.6 ms; "HTML and JSON paths") |
-| `media.jpegs_1000` (compressing 1,000 JPEGs) | 23.2 s (measured under load, below) | ≤ 2 min |
-| `media.sync_compress_100k` (`sync --compress` over 100k done files) | 0.44 s | ≤ 3 s |
+| metric | before | rebuilt | target |
+| --- | ---: | ---: | ---: |
+| `startup.help` (`flnd --help`) | 162 ms | 23.4 ms | ≤ 40 ms, met |
+| `net.big_rate` (1 GiB to disk) | 1.76 GiB/s | 2.40 GiB/s | ≥ 4 GiB/s, **not met** |
+| `net.small_8_at_once` (2,000 × 100 KiB) | 927 ms | 617 ms | ≤ 300 ms, **not met** |
+| `net.stall_20mbs` (the loop's longest stall, 20 MB/s disk) | 54 ms | 9.4 ms | < 100 ms, met |
+| `disk.part_write` (per file) | 255 µs | 123 µs | ≤ 130 µs, met |
+| `db.point_read` | 2.39 µs | 1.96 µs | ≤ 2.2 µs, met |
+| `db.commit_per_post` (per file) | 8.1 µs | 13.1 µs | ≤ 15 µs, met |
+| `e2e.sync_nothing_new_100k` (a sync of 100k files, nothing new) | 4 ms | 5 ms | ≤ 0.3 s, met |
+| `e2e.latency_500_posts` (150 ms a page, 40 ms a file) | 7.16 s | 4.85 s | ≤ 5.5 s, met |
+| `browser.scroll_default` (the synthetic feed, human-like) | 26.0 s | 14.2 s | ≤ 16 s, met |
+| `browser.scroll_fast` (the same feed, fast) | — | 2.0 s | ≤ 3 s, met |
+| `cpu.html_meta` (a 2 MiB Meta-style page) | 18.0 ms | 6.7 ms | ≤ 8 ms, met |
+| `ui.frame_1000` (a frame with 1,000 targets and files) | 1.56 ms | 1.62 ms | ≤ 5 ms, met |
+| `ui.sample_core` (live stats of a busy run, share of a core) | 0.155% | 0.148% | ≤ 1%, met |
+| `media.jpegs_1000` (compressing 1,000 JPEGs) | — | 15.8 s | ≤ 2 min, met |
+| `media.sync_compress_100k` (`sync --compress` over 100k done files) | — | 0.13 s | ≤ 3 s, met |
 
-`gates.json` has the rest: 68 numbers in all.
+The two missed targets, and where their time goes, are under "Targets not met". Three numbers
+with no target are slower than before the rebuild, the price of `flnd.db`'s real columns and
+indexes over the old stores of JSON values: `db.insert` (1.13 to 2.30 µs a row: 15 columns,
+and the `(target, post_id)` index alone costs 0.5 µs), `db.prefix_scan_10k` (4.2 to 15.6 ms:
+each of the 10,000 rows comes back as 20 columns, which is 10 of those ms; the index walk and
+row lookups are under 2) and `db.commit_per_post` (above, still within its target).
+
+`gates.json` has the rest: 77 numbers in all.
 
 ## Network
 
