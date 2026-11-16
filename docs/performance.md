@@ -131,11 +131,48 @@ How a file is written, and why:
   7.2 s).
 - **A part's open and rename run on worker threads.** Each is a file-system call of 50 to 150
   µs, more on a busy disk; on the loop they would run one at a time.
-- **Small files are bound by the disk bookkeeping**, not the client: the client alone fetches
-  2,000 × 100 KiB in about 0.4 s on the same machine, and a part's open, lock and rename add
-  the rest. A rename into one folder is serialized by the file system.
+- **Small files are bound by the loop's own work.** The loop thread is busy for 0.53 s of the
+  0.61 s that `net.small_8_at_once` takes. The client alone (`Client.fetch` of the same 2,000
+  files, no part) takes 0.30 s, all of it the loop's CPU; the part's path adds the rest (see
+  "Targets not met" below).
 - `net.stall_20mbs` charges every write of a part as a disk write at 20 MB/s, the last piece's
   copy into memory included, so it overstates a real slow disk.
+
+## Targets not met
+
+Two network targets are still missed on this machine, after the profiling below. The targets
+stay as they were; the numbers are from the recorded baseline.
+
+**`net.big_rate`: 2.2 to 2.4 GiB/s, against ≥ 4.** One 1 GiB file, one transfer:
+- every byte of a download is hashed (SHA-256, for dedupe and `check`), and one stream can't be
+  hashed faster than one core runs SHA-256: 3.3 GiB/s on the M5 (`cpu.hash_sha256`, 297 µs a
+  MiB). So with the hash, 4 GiB/s can't be reached by one transfer, however it is arranged;
+- without the hash (measured by patching it out), the same transfer runs at 3.2 GiB/s with 1
+  MiB pieces and 4.6 GiB/s with 4 MiB pieces and a 256 KiB curl buffer: the loop alone, with no
+  write at all, reaches 4.8 GiB/s (0.19 s of its CPU per GiB);
+- with the hash on the hasher thread beside the write, the transfer waits for the hash: in 0.43
+  s for 1 GiB the hasher is busy 0.33 s, and every piece it takes waits for the GIL when it
+  comes back, while the loop runs Python. Pipelining the pieces (handing off piece n + 1 while
+  n is hashed), a larger log of waiting bytes (16 and 64 MiB), 8 MiB pieces and a shorter switch
+  interval (0.5 ms) each moved it by under 5%;
+- what would meet it is a hash that isn't on the transfer's path (a faster or parallel hash, or
+  hashing after the file lands), which changes what `flnd.db` stores or when dedupe can run.
+
+**`net.small_8_at_once`: 0.61 s, against ≤ 0.3.** 2,000 files of 100 KiB, 8 at once:
+- the loop thread is the bottleneck: 0.53 s of its CPU for 0.61 s of wall time;
+- the client alone (`Client.fetch` of the same files, no part) takes 0.30 s, which is already
+  the target. Per request, curl_cffi's request layer costs about 150 µs of the loop's time: 15
+  `setopt` and 15 `getinfo` calls through cffi (about 55 µs), re-applying Chrome's fingerprint
+  to the reused handle, and parsing the answer's headers (about 50 µs);
+- a part adds about 115 µs of the loop's time per file: two hops to a worker thread (15 µs
+  each, measured by hopping to a no-op), the last piece's copy into the part's buffer and its
+  hash (about 30 µs), and the transfer's own steps (the range request, the meter, the sink).
+  The file-system calls themselves (open, lock, write, rename, close: about 110 µs a file, a
+  rename into one folder serialized by APFS) run on the worker threads, beside the loop;
+- moving the last piece's write and hash to the landing thread, or the part's calls onto the
+  loop, made it no faster (the second, 5% slower). Meeting the target needs a lighter request
+  path than curl_cffi's `AsyncSession`: driving libcurl's handles directly with only the
+  options a request needs.
 
 ## Concurrency per host
 
@@ -244,8 +281,11 @@ Apple M5 above, with other work running, so read the times as upper bounds:
 
 | number | what | result |
 | --- | --- | ---: |
-| `media.jpegs_1000` | the whole compress step (plan, encode, SSIM check, place, record) over 1,000 synthetic 1080×1350 JPEGs at quality 90, on the photo lane's 2 threads | 23.2 s, every file compressed to AVIF, 76% smaller |
-| `media.sync_compress_100k` | open the store, read 100,000 history rows of done files once, and queue none | 0.44 s |
+| `media.jpegs_1000` | the whole compress step (plan, encode, SSIM check, place, record) over 1,000 synthetic 1080×1350 JPEGs at quality 90 with rows in a home's `flnd.db`, on the photo lane's 2 threads | 15.7 s, every file compressed to AVIF, 76% smaller |
+| `media.sync_compress_100k` | open the home, read the unfinished rows of 100,000 done files in `flnd.db` once (`Home.unfinished`), and queue none | 0.13 s |
+
+The group fails, rather than report a number, when a JPEG wasn't compressed or a done file was
+queued: so the numbers always time the work they name.
 
 A synthetic photo (a gradient, shapes and noise) compresses far better than a real download,
 which the site has already compressed: these savings say nothing about real files, only the
