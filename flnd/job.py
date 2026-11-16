@@ -30,7 +30,7 @@ from flnd.source import (
     Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site, Source, Target,
     day, fill, listing,
 )
-from shared import crypto, fs, text, ui, worker
+from shared import crypto, fs, store, text, ui, worker
 
 if TYPE_CHECKING:
     from shared import cli
@@ -539,8 +539,12 @@ class Ledger:
         """Return undated or estimated history rows belonging to this target's folder."""
         history = self.settings.history
         prefix = f"{self.target.source}:"
-        return [(k, r) for k, r in list(history.items())
-                if k.startswith(prefix) and self._undated(r)]
+        # A store reads only this source's rows, in SQL; any other mapping is filtered here.
+        rows = (
+            history.rows.prefix(prefix).get() if isinstance(history, store.Table)
+            else [(k, r) for k, r in list(history.items()) if k.startswith(prefix)]
+        )
+        return [(k, r) for k, r in rows if self._undated(r)]
 
     def _undated(self, row: Any) -> bool:
         """Return whether `row` is an undated or estimated file in this target's folder."""
