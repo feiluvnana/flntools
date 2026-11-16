@@ -32,6 +32,9 @@ class Options:
     again: bool = False
     # The query text when this target was discovered from a `?query` route.
     query: str | None = None
+    # Compress each saved photo and video once it is recorded (`--compress`, docs/media),
+    # and remove an archive once it is extracted.
+    compress: bool = False
 
 
 @dataclass
@@ -52,6 +55,9 @@ class RunShared:
     # Where the run's events go (`flnd._run.Run._emit`). It may wait while a script handles the
     # event before, so it is never called with a lock held. By default, events are dropped.
     emit: Callable[[Any], None] = field(default=lambda event: None, repr=False)
+    # The steps after a file lands (`flnd._steps.Chain`); None outside a run, so nothing is
+    # unpacked or compressed.
+    chain: Any = field(default=None, repr=False)
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:

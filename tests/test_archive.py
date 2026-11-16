@@ -1,4 +1,4 @@
-"""Tests for `flnd._unpack`: packing, listing, and safe unpacking of archives."""
+"""Tests for `flnd._unpack`: an archive extracts beside itself, safely, or not at all."""
 
 from __future__ import annotations
 
@@ -11,31 +11,48 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from flnd import _unpack as archive, _tools as sh
-from flnd.errors import DiskError, SiteError
+from flnd import _tools, _unpack
+from flnd.errors import SiteError
 
 HAS_7Z = bool(shutil.which("7zz") or shutil.which("7z"))
-HAS_UNRAR = bool(shutil.which("unrar"))
 SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c\x00\x04"
 RAR = b"Rar!\x1a\x07\x00"
 BIG = 16 * 1024 * 1024
+# A zip encrypted with the old ZipCrypto, password "pw", holding `a.txt` = b"secret".
+# Python can't write one, so it was made once with `zip -P pw` and kept here.
+CRYPTO_ZIP = bytes.fromhex(
+    "504b03040a00090000000a7c705de5e8a25c120000000600000005000000612e747874587609"
+    "b3ac5f61a71338bd3fada9df1e2db3504b0708e5e8a25c1200000006000000504b01021e030a"
+    "00090000000a7c705de5e8a25c1200000006000000050000000000000001000000a481000000"
+    "00612e747874504b0506000000000100010033000000450000000000"
+)
 
 
 class FakeTool:
-    """An `sh.fake` handler for 7zz or unrar: it answers `stdout` and records the arguments."""
+    """A `_tools.fake` handler for 7zz: it answers `stdout`, writes `files`, records the calls."""
 
-    def __init__(self, stdout: str = "", made: bytes = b"") -> None:
-        self.stdout, self.made, self.calls = stdout, made, []
+    def __init__(self, stdout: str = "", files: dict[str, bytes] | None = None,
+                 code: int = 0, err: str = "") -> None:
+        self.stdout, self.files, self.code, self.err = stdout, files or {}, code, err
+        self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, argv: tuple[str, ...]) -> tuple[int, str, str]:
         args = argv[1:]
         self.calls.append(args)
-        if args[0] == "a":
-            # 7zz adds to an archive that is already there, so a fresh one must be new.
-            made = Path(args[-2])
-            assert not made.exists(), f"7zz would add to {made}"
-            made.write_bytes(self.made)
-        return 0, self.stdout, ""
+        if args[0] == "x" and self.code == 0:
+            out = Path(next(arg for arg in args if arg.startswith("-o"))[2:])
+            for name, data in self.files.items():
+                (out / name).parent.mkdir(parents=True, exist_ok=True)
+                (out / name).write_bytes(data)
+        return self.code, self.stdout, self.err
+
+
+def listing(path: Path, entries: dict[str, int]) -> str:
+    """What `7zz l -slt` prints for an archive holding `entries` (name to size)."""
+    blocks = [f"Path = {path}\nType = 7z\n"]
+    blocks += [f"Path = {name}\nSize = {size}\nAttributes = A_ -rw-r--r--\n"
+               for name, size in entries.items()]
+    return "\n".join(blocks) + "\n"
 
 
 def peak(work) -> int:
@@ -53,24 +70,21 @@ class ArchiveCase(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
-        self.album = self.root / "album"
-        (self.album / "nested").mkdir(parents=True)
-        (self.album / "a.txt").write_bytes(b"alpha\n")
-        (self.album / "nested" / "b.bin").write_bytes(b"\x00\x01\x02")
-        self.out = self.root / "out"
 
-    def zip_with(self, entries: dict[str, bytes]) -> Path:
-        path = self.root / "made.zip"
-        with zipfile.ZipFile(path, "w") as zf:
-            for name, data in entries.items():
-                zf.writestr(name, data)
+    def zip_with(self, entries: dict[str, bytes], name: str = "made.zip") -> Path:
+        path = self.root / name
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for member, data in entries.items():
+                zf.writestr(member, data)
         return path
 
-    def tar_with(self, entries: dict[str, bytes], *, symlink: bool = False) -> Path:
-        path = self.root / "made.tar"
-        with tarfile.open(path, "w") as tf:
-            for name, data in entries.items():
-                info = tarfile.TarInfo(name)
+    def tar_with(self, entries: dict[str, bytes], *, name: str = "made.tar",
+                 symlink: bool = False) -> Path:
+        path = self.root / name
+        mode = "w:gz" if name.endswith(".tar.gz") else "w"
+        with tarfile.open(path, mode) as tf:
+            for member, data in entries.items():
+                info = tarfile.TarInfo(member)
                 info.size = len(data)
                 tf.addfile(info, io.BytesIO(data))
             if symlink:
@@ -80,226 +94,206 @@ class ArchiveCase(unittest.TestCase):
                 tf.addfile(link)
         return path
 
+    def assert_nothing_extracted(self, archive: Path) -> None:
+        """The archive is untouched, and neither its folder nor a stage was left."""
+        self.assertTrue(archive.is_file())
+        left = sorted(path.name for path in self.root.iterdir() if path != archive)
+        self.assertEqual([name for name in left if not name.startswith("made.")
+                          or name.endswith(".unpack")], [])
+        self.assertFalse(_unpack.folder(archive).exists())
 
-class RoundTripTest(ArchiveCase):
-    def test_zip(self) -> None:
-        packed = archive.pack(self.album, self.root / "album.zip")
-        entries = archive.ls(packed)
-        self.assertEqual(
-            [(e.name, e.size, e.kind) for e in entries],
-            [("album/a.txt", 6, "file"), ("album/nested/b.bin", 3, "file")],
-        )
-        written = archive.unpack(packed, self.out)
-        self.assertEqual(
-            sorted(p.relative_to(self.out).as_posix() for p in written),
-            ["album/a.txt", "album/nested/b.bin"],
-        )
-        self.assertEqual((self.out / "album" / "a.txt").read_bytes(), b"alpha\n")
 
-    def test_tar_family(self) -> None:
-        for suffix in (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"):
-            with self.subTest(suffix=suffix):
-                dest = self.root / f"album{suffix}"
-                packed = archive.pack(self.album, dest)
-                self.assertEqual(len(archive.ls(packed)), 2)
-                out = self.root / f"out-{suffix.lstrip('.')}"
-                archive.unpack(packed, out)
-                self.assertEqual((out / "album" / "nested" / "b.bin").read_bytes(),
-                                 b"\x00\x01\x02")
+class ExtractTest(ArchiveCase):
+    def test_a_zip_extracts_beside_itself_into_a_folder_of_its_name(self) -> None:
+        archive = self.zip_with({"a.txt": b"alpha\n", "nested/b.bin": b"\x00\x01"},
+                                name="post.zip")
+        folder = _unpack.extract(archive)
+        self.assertEqual(folder, self.root / "post")
+        self.assertEqual((folder / "a.txt").read_bytes(), b"alpha\n")
+        self.assertEqual((folder / "nested" / "b.bin").read_bytes(), b"\x00\x01")
+        self.assertTrue(archive.is_file())
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["post", "post.zip"])
 
-    def test_several_sources(self) -> None:
-        other = self.root / "other.txt"
-        other.write_bytes(b"other")
-        packed = archive.pack([self.album / "a.txt", other], self.root / "many.zip")
-        self.assertEqual(
-            sorted(e.name for e in archive.ls(packed)), ["a.txt", "other.txt"]
-        )
+    def test_the_tar_family(self) -> None:
+        for name in ("set.tar", "set.tar.gz"):
+            with self.subTest(name=name):
+                folder = _unpack.extract(self.tar_with({"x/y.txt": b"y"}, name=name))
+                self.assertEqual(folder.name, "set")
+                self.assertEqual((folder / "x" / "y.txt").read_bytes(), b"y")
+                shutil.rmtree(folder)
 
-    def test_progress_reaches_the_total(self) -> None:
-        packed_calls: list[tuple[int, int]] = []
-        archive.pack(self.album, self.root / "bar.zip", progress=lambda d, t: packed_calls.append((d, t)))
-        self.assertEqual(packed_calls, [(1, 2), (2, 2)])
+    def test_folder_names(self) -> None:
+        self.assertEqual(_unpack.folder(Path("a/b.tar.gz")), Path("a/b"))
+        self.assertEqual(_unpack.folder(Path("a/loi-5930.7z")), Path("a/loi-5930"))
+        self.assertEqual(_unpack.folder(Path("a/.zip")), Path("a/.zip_files"))
+        self.assertTrue(_unpack.is_archive(Path("A.ZIP")))
+        self.assertFalse(_unpack.is_archive(Path("a.jpg")))
 
-        unpack_calls: list[tuple[int, int]] = []
-        archive.unpack(self.root / "bar.zip", self.out,
-                       progress=lambda d, t: unpack_calls.append((d, t)))
-        self.assertEqual(unpack_calls, [(1, 2), (2, 2)])
+    def test_extracting_again_replaces_the_files_and_keeps_the_rest(self) -> None:
+        archive = self.zip_with({"a.txt": b"new"}, name="post.zip")
+        (self.root / "post").mkdir()
+        (self.root / "post" / "a.txt").write_bytes(b"old")
+        (self.root / "post" / "mine.txt").write_bytes(b"mine")
+        _unpack.extract(archive)
+        self.assertEqual((self.root / "post" / "a.txt").read_bytes(), b"new")
+        self.assertEqual((self.root / "post" / "mine.txt").read_bytes(), b"mine")
+
+    def test_a_stage_a_crash_left_is_started_again(self) -> None:
+        archive = self.zip_with({"a.txt": b"a"}, name="post.zip")
+        (self.root / ".post.unpack").mkdir()
+        (self.root / ".post.unpack" / "half.txt").write_bytes(b"half")
+        folder = _unpack.extract(archive)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["a.txt"])
+        self.assertFalse((self.root / ".post.unpack").exists())
+
+    def test_nested_archives_are_not_unpacked(self) -> None:
+        inner = self.zip_with({"inner.txt": b"inner"}, name="inner.zip").read_bytes()
+        folder = _unpack.extract(self.zip_with({"nested.zip": inner}))
+        self.assertTrue((folder / "nested.zip").is_file())
+        self.assertFalse((folder / "inner.txt").exists())
+
+    def test_a_zipcrypto_zip_takes_its_password(self) -> None:
+        archive = self.root / "made.zip"
+        archive.write_bytes(CRYPTO_ZIP)
+        with _tools.fake({}):  # no 7-Zip: Python's zipfile reads ZipCrypto itself
+            with self.assertRaisesRegex(SiteError, "wrong or missing password"):
+                _unpack.extract(archive, password="nope")
+            self.assert_nothing_extracted(archive)
+            folder = _unpack.extract(archive, password="pw")
+        self.assertEqual((folder / "a.txt").read_bytes(), b"secret")
+
+    def test_an_encrypted_zip_goes_to_7zip_when_there_is_one(self) -> None:
+        archive = self.root / "made.zip"
+        archive.write_bytes(CRYPTO_ZIP)
+        tool = FakeTool(files={"a.txt": b"secret"})
+        with _tools.fake({"7zz": tool}):
+            folder = _unpack.extract(archive, password="pw")
+        self.assertEqual((folder / "a.txt").read_bytes(), b"secret")
+        self.assertEqual(tool.calls[0][:3], ("x", "-y", "-ppw"))
+
+    def test_a_7z_goes_to_7zip_and_is_verified(self) -> None:
+        archive = self.root / "made.7z"
+        archive.write_bytes(SEVEN_ZIP)
+        tool = FakeTool(listing(archive, {"a.txt": 1}), files={"a.txt": b"a"})
+        with _tools.fake({"7zz": tool}):
+            folder = _unpack.extract(archive)
+        self.assertEqual((folder / "a.txt").read_bytes(), b"a")
+        short = FakeTool(listing(archive, {"a.txt": 5}), files={"a.txt": b"a"})
+        with _tools.fake({"7zz": short}), self.assertRaisesRegex(SiteError, "1 bytes, not 5"):
+            _unpack.extract(archive)
+
+    def test_rar_goes_to_7zip_too(self) -> None:
+        archive = self.root / "made.rar"
+        archive.write_bytes(RAR)
+        tool = FakeTool(listing(archive, {"r.txt": 1}), files={"r.txt": b"r"})
+        with _tools.fake({"7zz": tool}):
+            self.assertEqual((_unpack.extract(archive) / "r.txt").read_bytes(), b"r")
+
+    def test_a_wrong_password_from_7zip_keeps_the_archive(self) -> None:
+        archive = self.root / "made.7z"
+        archive.write_bytes(SEVEN_ZIP)
+        tool = FakeTool(code=2, err="ERROR: Wrong password : a.txt")
+        with _tools.fake({"7zz": tool}), self.assertRaisesRegex(SiteError, "wrong or missing"):
+            _unpack.extract(archive, password="nope")
+        self.assert_nothing_extracted(archive)
+
+    def test_without_7zip_a_7z_is_a_missing_tool(self) -> None:
+        archive = self.root / "made.7z"
+        archive.write_bytes(SEVEN_ZIP)
+        with _tools.fake({}), self.assertRaises(_tools.MissingError) as caught:
+            _unpack.extract(archive)
+        self.assertIn("7zz", caught.exception.hint or "")
 
     @unittest.skipUnless(HAS_7Z, "needs 7zz or 7z")
-    def test_7z(self) -> None:
-        packed = archive.pack(self.album, self.root / "album.7z")
-        entries = [e for e in archive.ls(packed) if e.kind == "file"]
-        self.assertEqual(sorted(e.name.replace("\\", "/") for e in entries),
-                         ["album/a.txt", "album/nested/b.bin"])
-        archive.unpack(packed, self.out)
-        self.assertEqual((self.out / "album" / "a.txt").read_bytes(), b"alpha\n")
-
-    @unittest.skipUnless(HAS_7Z, "needs 7zz or 7z")
-    def test_password(self) -> None:
-        packed = archive.pack(self.root / "album", self.root / "secret.7z", password="pw")
+    def test_a_real_7z_with_a_password(self) -> None:
+        source = self.root / "src"
+        source.mkdir()
+        (source / "a.txt").write_bytes(b"alpha")
+        archive = self.root / "made.7z"
+        _tools.sevenzip().run("a", "-y", "-ppw", "-mhe=on", "--", archive, source / "a.txt")
         with self.assertRaises(SiteError):
-            archive.unpack(packed, self.out)
-        self.assertEqual(len(archive.ls(packed, password="pw")), 4)
-        archive.unpack(packed, self.out, password="pw")
-        self.assertTrue((self.out / "album" / "a.txt").is_file())
-
-    @unittest.skipUnless(HAS_UNRAR, "needs unrar")
-    def test_rar_needs_the_tool(self) -> None:
-        path = self.root / "made.rar"
-        path.write_bytes(b"Rar!\x1a\x07\x00")
-        with self.assertRaises((sh.MissingError, SiteError)):
-            archive.ls(path)
+            _unpack.extract(archive, password="nope")
+        self.assertEqual((_unpack.extract(archive, password="pw") / "a.txt").read_bytes(),
+                         b"alpha")
 
 
 class SafetyTest(ArchiveCase):
-    def assert_refused(self, error: type[BaseException], path: Path) -> None:
-        with self.assertRaises(error):
-            archive.unpack(path, self.out)
+    def assert_refused(self, archive: Path, **options) -> None:
+        with self.assertRaises(SiteError):
+            _unpack.extract(archive, **options)
         self.assertFalse((self.root / "evil").exists())
+        self.assert_nothing_extracted(archive)
 
     def test_traversal_names(self) -> None:
         for name in ("../evil", "a/../../evil", "/abs/evil", "C:/evil", "..\\evil"):
             with self.subTest(name=name):
-                self.assert_refused(SiteError, self.zip_with({name: b"x"}))
+                self.assert_refused(self.zip_with({"ok.txt": b"ok", name: b"x"}))
 
-    def test_symlink_in_a_tar_is_refused(self) -> None:
-        self.assert_refused(SiteError, self.tar_with({"a.txt": b"a"}, symlink=True))
+    def test_a_symlink_in_a_tar_is_refused(self) -> None:
+        self.assert_refused(self.tar_with({"a.txt": b"a"}, symlink=True))
 
-    def test_limits(self) -> None:
-        zipped = self.zip_with({"a.txt": b"aaaa", "b.txt": b"bbbb"})
-        with self.assertRaises(SiteError):
-            archive.ls(zipped, limits=archive.Limits(files=1))
-        with self.assertRaises(SiteError):
-            archive.ls(zipped, limits=archive.Limits(size=3))
-        with self.assertRaises(SiteError):
-            archive.ls(zipped, limits=archive.Limits(ratio=0.01))
+    def test_bombs_are_refused_before_anything_is_written(self) -> None:
+        archive = self.zip_with({"a.txt": b"aaaa", "b.txt": b"bbbb"})
+        self.assert_refused(archive, limits=_unpack.Limits(files=1))
+        self.assert_refused(archive, limits=_unpack.Limits(size=3))
+        bomb = self.zip_with({"zeros.bin": bytes(BIG)}, name="made-bomb.zip")
+        self.assert_refused(bomb)
 
-    def test_links_listed_by_7z_are_refused(self) -> None:
-        listed = self.root / "links.7z"
-        listed.write_bytes(SEVEN_ZIP)
-        for attributes in ("A_ -rwxr-xr-x", "A_ lrwxrwxrwx", "AL"):
-            with self.subTest(attributes=attributes):
-                tool = FakeTool(f"Path = {listed}\n\nPath = link\nAttributes = {attributes}\n")
-                with sh.fake({"7zz": tool}):
-                    if attributes.startswith("A_ -"):
-                        self.assertEqual(archive.ls(listed)[0].name, "link")
-                    else:
-                        self.assert_refused(SiteError, listed)
+    def test_links_listed_by_7zip_are_refused(self) -> None:
+        for name, raw in (("made.7z", SEVEN_ZIP), ("made.rar", RAR)):
+            archive = self.root / name
+            archive.write_bytes(raw)
+            for attributes in ("A_ lrwxrwxrwx", "AL"):
+                with self.subTest(name=name, attributes=attributes):
+                    tool = FakeTool(f"Path = {archive}\n\nPath = link\n"
+                                    f"Attributes = {attributes}\n")
+                    with _tools.fake({"7zz": tool}):
+                        self.assert_refused(archive)
+                    self.assertEqual([call[0] for call in tool.calls], ["l"])
 
-    def test_links_listed_by_unrar_are_refused(self) -> None:
-        listed = self.root / "links.rar"
-        listed.write_bytes(RAR)
-        for kind in ("Unix symbolic link", "Windows junction", "Hard link"):
-            with self.subTest(kind=kind):
-                tool = FakeTool(f"Name: link\nType: {kind}\nSize: 4\n")
-                with sh.fake({"unrar": tool}):
-                    self.assert_refused(SiteError, listed)
-
-    def test_a_path_like_a_switch_reaches_the_tools_as_a_path(self) -> None:
-        sources = self.root / "-sdel"
-        sources.mkdir()
-        listed = self.root / "-x.7z"
-        listed.write_bytes(SEVEN_ZIP)
-        tool = FakeTool()
-        with sh.fake({"7zz": tool}):
-            archive.pack(sources, self.root / "-new.7z")
-            archive.unpack(listed, self.out)
-        unrar = FakeTool()
-        rar = self.root / "-x.rar"
-        rar.write_bytes(RAR)
-        with sh.fake({"unrar": unrar}):
-            archive.unpack(rar, self.out)
-        for call in tool.calls + unrar.calls:
+    def test_a_path_like_a_switch_reaches_7zip_as_a_path(self) -> None:
+        archive = self.root / "-sdel.7z"
+        archive.write_bytes(SEVEN_ZIP)
+        tool = FakeTool(listing(archive, {}))
+        with _tools.fake({"7zz": tool}):
+            _unpack.extract(archive)
+        for call in tool.calls:
             with self.subTest(call=call):
-                paths = [arg for arg in call if "-sdel" in arg or "-x." in arg or "-new" in arg]
-                self.assertTrue(paths)
-                self.assertLess(call.index("--"), min(call.index(arg) for arg in paths))
-
-    def test_packing_a_7z_over_an_old_one_replaces_it(self) -> None:
-        out = self.root / "album.7z"
-        out.write_bytes(b"old")
-        # A crash may leave the stage behind; 7zz must not add to it either.
-        (self.root / ".album.7z.stage").write_bytes(b"left")
-        with sh.fake({"7zz": FakeTool(made=b"new")}):
-            archive.pack(self.album, out)
-        self.assertEqual(out.read_bytes(), b"new")
+                self.assertLess(call.index("--"), call.index(str(archive)))
 
     def test_a_big_entry_is_streamed_not_held_in_memory(self) -> None:
-        zipped = self.root / "big.zip"
-        with zipfile.ZipFile(zipped, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("big.bin", bytes(BIG))
-        loose = archive.Limits(ratio=1e9)
-        self.assertLess(peak(lambda: archive.unpack(zipped, self.out, limits=loose)), BIG // 4)
-        self.assertEqual((self.out / "big.bin").stat().st_size, BIG)
-        tarred = self.tar_with({"big.bin": bytes(BIG)})
-        self.assertLess(peak(lambda: archive.unpack(tarred, self.root / "t", limits=loose)), BIG // 4)
-
-    def test_listing_reads_the_header_not_the_whole_archive(self) -> None:
-        stored = self.root / "stored.zip"
-        with zipfile.ZipFile(stored, "w") as zf:
-            zf.writestr("big.bin", bytes(BIG))
-        self.assertLess(peak(lambda: archive.ls(stored)), BIG // 4)
-
-    def test_nested_archives_are_not_unpacked(self) -> None:
-        inner = self.zip_with({"inner.txt": b"inner"})
-        outer = self.zip_with({"nested.zip": inner.read_bytes()})
-        archive.unpack(outer, self.out)
-        self.assertTrue((self.out / "nested.zip").is_file())
-        self.assertFalse((self.out / "inner.txt").exists())
-
-
-class ConflictTest(ArchiveCase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.zipped = self.zip_with({"a.txt": b"new"})
-        self.out.mkdir()
-        (self.out / "a.txt").write_bytes(b"old")
-
-    def test_error_is_the_default(self) -> None:
-        with self.assertRaises(DiskError):
-            archive.unpack(self.zipped, self.out)
-        self.assertEqual((self.out / "a.txt").read_bytes(), b"old")
-
-    def test_skip_keeps_the_existing_file(self) -> None:
-        self.assertEqual(archive.unpack(self.zipped, self.out, conflict="skip"), [])
-        self.assertEqual((self.out / "a.txt").read_bytes(), b"old")
-
-    def test_overwrite_replaces_it(self) -> None:
-        archive.unpack(self.zipped, self.out, conflict="overwrite")
-        self.assertEqual((self.out / "a.txt").read_bytes(), b"new")
-
-    def test_unknown_conflict_mode(self) -> None:
-        with self.assertRaises(ValueError):
-            archive.unpack(self.zipped, self.out, conflict="maybe")  # type: ignore[arg-type]
+        loose = _unpack.Limits(ratio=1e9)
+        zipped = self.zip_with({"big.bin": bytes(BIG)}, name="big.zip")
+        self.assertLess(peak(lambda: _unpack.extract(zipped, limits=loose)), BIG // 4)
+        self.assertEqual((self.root / "big" / "big.bin").stat().st_size, BIG)
+        tarred = self.tar_with({"big.bin": bytes(BIG)}, name="tbig.tar")
+        self.assertLess(peak(lambda: _unpack.extract(tarred, limits=loose)), BIG // 4)
 
 
 class ErrorTest(ArchiveCase):
-    def test_missing_file(self) -> None:
+    def test_a_missing_or_corrupt_archive_is_the_sites_file(self) -> None:
         with self.assertRaises(SiteError):
-            archive.ls(self.root / "nope.zip")
-
-    def test_corrupt_file(self) -> None:
-        bad = self.root / "bad.zip"
+            _unpack.extract(self.root / "nope.zip")
+        bad = self.root / "made.zip"
         bad.write_bytes(b"not an archive")
         with self.assertRaises(SiteError):
-            archive.ls(bad)
-
-    def test_unsupported_pack_extension(self) -> None:
-        with self.assertRaises(ValueError):
-            archive.pack(self.album, self.root / "album.rar")
-
-    def test_missing_source_leaves_no_file(self) -> None:
-        with self.assertRaises(DiskError):
-            archive.pack(self.root / "missing", self.root / "none.zip")
-        self.assertFalse((self.root / "none.zip").exists())
-
-    def test_an_archive_that_cant_be_extracted_is_the_sites_file(self) -> None:
-        # Broken, unsafe or locked: the file the site served is at fault, so it isn't retried.
-        bad = self.root / "bad.zip"
+            _unpack.extract(bad)
         bad.write_bytes(b"PK\x03\x04 not really a zip")
         with self.assertRaises(SiteError) as caught:
-            archive.unpack(bad, self.root / "out")
+            _unpack.extract(bad)
         self.assertFalse(caught.exception.retryable)
+        self.assert_nothing_extracted(bad)
+
+    def test_a_damaged_entry_leaves_no_half_folder(self) -> None:
+        archive = self.zip_with({"a.txt": b"alpha" * 1000, "b.txt": b"beta" * 1000})
+        raw = bytearray(archive.read_bytes())
+        # Flip bytes in the second entry's compressed data: its CRC check fails mid-extract.
+        at = raw.find(b"b.txt") + 10
+        raw[at:at + 20] = bytes(20)
+        archive.write_bytes(bytes(raw))
+        with self.assertRaises(SiteError):
+            _unpack.extract(archive)
+        self.assert_nothing_extracted(archive)
 
 
 if __name__ == "__main__":

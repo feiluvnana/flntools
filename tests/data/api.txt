@@ -171,10 +171,11 @@ flnd.source.Error.hint: attribute
 flnd.source.Error.retryable: attribute
 flnd.source.Error.target: attribute
 flnd.source.Fetch: _CallableGenericAlias
-flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, name: str | None = None, size: int | None = None)
+flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, name: str | None = None, size: int | None = None, password: str | None = None)
 flnd.source.File.audio: field -> str | None
 flnd.source.File.content: field -> str | None
 flnd.source.File.name: field -> str | None
+flnd.source.File.password: field -> str | None
 flnd.source.File.size: field -> int | None
 flnd.source.File.text(name: str, text: str) -> File
 flnd.source.File.url: field -> str | tuple[str, ...] | Fetch | None

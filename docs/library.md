@@ -119,7 +119,7 @@ Every option is keyword-only:
 | `only` | the categories to take: `["reels"]`, or `"reels,posts"`. None (the default) takes every category. A single post has none, so `only` with one is a usage error |
 | `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"` |
 | `limit` | at most this many posts per target, or targets per search |
-| `compress` | shrink files as they land: **not built yet**, so True is a usage error |
+| `compress` | shrink each photo and video as it lands, when a smaller copy looks the same, and remove each archive once it is extracted ([media.md](media.md)); `sync(compress=True)` also takes files saved before |
 | `dry` | plan instead: `Planned` events, and nothing is written |
 
 ```python

@@ -241,9 +241,7 @@ class RunTest(LibraryCase):
                      lambda: self.fl.download("exs:p/1", only=["posts"]),
                      lambda: self.fl.download("exs:example_user", limit=0),
                      lambda: self.fl.download("exs:example_user", when="yesterday"),
-                     lambda: self.fl.download("exs:example_user", compress=True),
-                     lambda: self.fl.download([]),
-                     lambda: self.fl.sync(compress=True)):
+                     lambda: self.fl.download([])):
             with self.subTest(), self.assertRaises(flnd.UsageError):
                 call()
         self.assertEqual(self.requests, [])
@@ -416,6 +414,35 @@ class WhenTest(unittest.TestCase):
         for text in ("yesterday", "2026-13", "2026-02-30", "2026-03..2026-01", "30", "d30"):
             with self.subTest(text=text), self.assertRaises(flnd.UsageError):
                 _when(text)
+
+
+
+class CompressTest(EngineCase):
+    """`compress=True` through the library: the step chain shrinks what a run saves."""
+
+    def setUp(self):
+        super().setUp()
+        import io
+
+        from test_shrink import photo
+
+        body = io.BytesIO()
+        photo(320, 240).save(body, "JPEG", quality=95)
+        self.routes[f"{CDN}/a.jpg"] = httpx.Response(200, content=body.getvalue())
+        self.fl = self.enterContext(flnd.open(self.home))
+        self.fl.add(make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")]))
+        self.folder = self.home / "media" / "aaa" / "a"
+
+    def test_download_with_compress_replaces_the_photo_with_a_smaller_one(self):
+        report = self.fl.download("aaa:a", compress=True).wait()
+        self.assertEqual(report.saved, 1)
+        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["a.avif"])
+
+    def test_sync_with_compress_takes_the_files_saved_before(self):
+        self.fl.follow("aaa:a").wait()
+        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["a.jpg"])
+        self.fl.sync(compress=True).wait()
+        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), ["a.avif"])
 
 
 if __name__ == "__main__":

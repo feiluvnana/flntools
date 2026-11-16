@@ -210,9 +210,9 @@ class DownloadTest(RunsCase):
         self.assertEqual(self.run_app("login")[0], 2)
         self.assertEqual(self.run_app("logout", "all")[0], 2)
         download_help = self.run_app("download", "--help")[1]
-        for option in ("--from", "--time", "--sync", "--again"):
+        for option in ("--from", "--time", "--sync", "--again", "--compress"):
             self.assertIn(option, download_help)
-        for gone in ("--since", "--until", "unpack", "--zip", "--locale", "--timezone", "--compress", "--format-"):
+        for gone in ("--since", "--until", "unpack", "--zip", "--locale", "--timezone", "--format-"):
             self.assertNotIn(gone, download_help)
         self.assertIn("2026-01-01,2026-06-30", download_help)
         self.assertNotIn("--categories", download_help)

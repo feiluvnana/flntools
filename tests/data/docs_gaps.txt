@@ -321,47 +321,15 @@ flnd/_time.py:Fake.sleep: no Returns:
 flnd/_time.py:Fake: Args: no start
 flnd/_time.py:use: Args: no replacement
 flnd/_time.py:use: no Yields:
-flnd/_tools.py:Tool.stream: Args: no args
-flnd/_tools.py:Tool.stream: Args: no cwd
-flnd/_tools.py:Tool.stream: Args: no env
-flnd/_tools.py:Tool.stream: Args: no timeout
-flnd/_tools.py:Tool.stream: no Yields:
 flnd/_tools.py:_checked: Args: no check
 flnd/_tools.py:_checked: Args: no result
-flnd/_tools.py:_checked: no Raises:
 flnd/_tools.py:_checked: no Returns:
-flnd/_tools.py:_download: Args: no name
-flnd/_tools.py:_download: Args: no specs
-flnd/_tools.py:_download: no Raises:
-flnd/_tools.py:_download: no Returns:
-flnd/_tools.py:_end: Args: no drain
-flnd/_tools.py:_end: Args: no process
-flnd/_tools.py:_extract_tar: no docstring
-flnd/_tools.py:_extract_zip: no docstring
 flnd/_tools.py:_faked: Args: no argv
-flnd/_tools.py:_faked: no Raises:
 flnd/_tools.py:_faked: no Returns:
-flnd/_tools.py:_read_versions: Args: no cache
-flnd/_tools.py:_read_versions: no Returns:
 flnd/_tools.py:_stream: Args: no argv
-flnd/_tools.py:_stream: Args: no cwd
-flnd/_tools.py:_stream: Args: no env
 flnd/_tools.py:_stream: Args: no timeout
 flnd/_tools.py:_stream: no Raises:
 flnd/_tools.py:_stream: no Yields:
-flnd/_tools.py:fake: Args: no handlers
-flnd/_tools.py:fake: no Yields:
-flnd/_tools.py:find: Args: no name
-flnd/_tools.py:find: Args: no specs
-flnd/_tools.py:find: no Raises:
-flnd/_tools.py:find: no Returns:
-flnd/_tools.py:run: Args: no args
-flnd/_tools.py:run: Args: no check
-flnd/_tools.py:run: Args: no cwd
-flnd/_tools.py:run: Args: no env
-flnd/_tools.py:run: Args: no timeout
-flnd/_tools.py:run: no Raises:
-flnd/_tools.py:run: no Returns:
 flnd/_ui.py:Group._stop: no docstring
 flnd/_ui.py:Group.add: Args: no label
 flnd/_ui.py:Group.add: Args: no total
@@ -400,39 +368,6 @@ flnd/_ui.py:_detect_unicode: no Returns:
 flnd/_ui.py:_field_names: Args: no message
 flnd/_ui.py:_field_names: no Returns:
 flnd/_ui.py:_format_count: no docstring
-flnd/_unpack.py:_7z_entry: no docstring
-flnd/_unpack.py:_7z_tool: no docstring
-flnd/_unpack.py:_check_limits: no docstring
-flnd/_unpack.py:_collect_files: no docstring
-flnd/_unpack.py:_detect: no docstring
-flnd/_unpack.py:_ls_7z: no docstring
-flnd/_unpack.py:_ls_unrar: no docstring
-flnd/_unpack.py:_read_entries: no docstring
-flnd/_unpack.py:_safe_dest: no docstring
-flnd/_unpack.py:_seven_zip_pack: no docstring
-flnd/_unpack.py:_unpack_7z: no docstring
-flnd/_unpack.py:_unpack_tar: no docstring
-flnd/_unpack.py:_unpack_unrar: no docstring
-flnd/_unpack.py:_unpack_zip: no docstring
-flnd/_unpack.py:_write_kind: no docstring
-flnd/_unpack.py:ls: Args: no limits
-flnd/_unpack.py:ls: Args: no password
-flnd/_unpack.py:ls: Args: no path
-flnd/_unpack.py:ls: no Returns:
-flnd/_unpack.py:pack: Args: no dest
-flnd/_unpack.py:pack: Args: no password
-flnd/_unpack.py:pack: Args: no progress
-flnd/_unpack.py:pack: Args: no sources
-flnd/_unpack.py:pack: no Raises:
-flnd/_unpack.py:pack: no Returns:
-flnd/_unpack.py:unpack: Args: no conflict
-flnd/_unpack.py:unpack: Args: no dest
-flnd/_unpack.py:unpack: Args: no limits
-flnd/_unpack.py:unpack: Args: no password
-flnd/_unpack.py:unpack: Args: no path
-flnd/_unpack.py:unpack: Args: no progress
-flnd/_unpack.py:unpack: no Raises:
-flnd/_unpack.py:unpack: no Returns:
 flnd/_vault.py:_aes_gcm: Args: no key
 flnd/_vault.py:_aes_gcm: no Raises:
 flnd/_vault.py:_aes_gcm: no Returns:
@@ -631,8 +566,6 @@ flnd/engine.py:Engine.login: no Returns:
 flnd/engine.py:Engine.logout: Args: no codes
 flnd/engine.py:Engine.logout: no Raises:
 flnd/engine.py:Engine.logout: no Returns:
-flnd/engine.py:Engine.sync: Args: no targets
-flnd/engine.py:Engine.sync: no Returns:
 flnd/engine.py:Engine.target_del: Args: no targets
 flnd/engine.py:Engine.target_del: no Raises:
 flnd/engine.py:Engine.target_del: no Returns:
@@ -694,9 +627,6 @@ flnd/job.py:Downloads.finish: no Returns:
 flnd/job.py:Downloads.submit: Args: no queued
 flnd/job.py:Downloads.submit: no Returns:
 flnd/job.py:Downloads.wait: no Raises:
-flnd/job.py:Downloads: Args: no board
-flnd/job.py:Downloads: Args: no run
-flnd/job.py:Downloads: Args: no target
 flnd/job.py:Ledger._ask: Args: no post
 flnd/job.py:Ledger._ask: no Returns:
 flnd/job.py:Ledger._dated: Args: no category

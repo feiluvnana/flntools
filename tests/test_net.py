@@ -17,7 +17,7 @@ import httpx
 
 from flnd.common import net, paths
 from flnd.source import SiteError, File
-from flnd import _time as clock, _http as http, _tools as sh
+from flnd import _time as clock, _http as http, _tools
 from flnd._ui import ui
 from flnd.errors import Error, NetworkError
 
@@ -355,7 +355,7 @@ class DashDownloadTest(NetCase):
             Path(args[-1]).write_bytes(b"\0\0\0\x18ftypisommerged")
             return 0, "", ""
 
-        return sh.fake({"ffmpeg": ffmpeg}), calls
+        return _tools.fake({"ffmpeg": ffmpeg}), calls
 
     def merged(self, client, name="r.mp4"):
         return net.download(client, File(self.VIDEO, audio=self.AUDIO),
@@ -403,7 +403,7 @@ class DashDownloadTest(NetCase):
 
     def test_a_container_that_cant_hold_the_streams_fails(self):
         patcher, _ = self.fake_ffmpeg(fail=True)
-        with self.client() as client, patcher, self.assertRaises(sh.RunError):
+        with self.client() as client, patcher, self.assertRaises(_tools.RunError):
             self.merged(client, "r.webm")
         self.assertEqual(list((self.tmp / "reels").iterdir()), [])
 

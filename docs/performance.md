@@ -35,7 +35,7 @@ Each group is one script in `tests/bench/`, run in a fresh interpreter.
 | `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, the worker pool |
 | `e2e` | a whole run of the real engine on a faked site, with and without latency |
 | `browser` | headless Chromium on a synthetic infinite-scroll feed; skipped without Chromium |
-| `media` | Pillow's AVIF, WebP and JPEG encoders; ffmpeg's video encoders, skipped without ffmpeg |
+| `media` | Pillow's AVIF, WebP and JPEG encoders; the compress step over 1,000 JPEGs; `sync --compress` over 100k done files; ffmpeg's video encoders, skipped without ffmpeg |
 
 Each script's docstring says exactly what it builds and times.
 
@@ -79,8 +79,8 @@ CPython 3.14.6. The numbers a planned change is gated on:
 | `e2e.latency_500_posts` (150 ms a page, 40 ms a file) | 7.16 s | ≤ 5.5 s |
 | `browser.scroll_default` (the synthetic feed) | 26.0 s | ≤ 16 s human-like, ≤ 3 s fast |
 | `cpu.html_meta` (a 2 MiB Meta-style page) | 18.0 ms | ≤ 8 ms |
-| compressing 1,000 JPEGs | not built yet | ≤ 2 min |
-| `sync --compress` over 100k done files | not built yet | ≤ 3 s |
+| `media.jpegs_1000` (compressing 1,000 JPEGs) | 23.2 s (measured under load, below) | ≤ 2 min |
+| `media.sync_compress_100k` (`sync --compress` over 100k done files) | 0.44 s | ≤ 3 s |
 
 `gates.json` has the rest: 68 numbers in all.
 
@@ -100,3 +100,38 @@ the history row takes the file's size and time from the `fstat` before the renam
 stats the file again. A part that a failed run left costs one `stat` more, to check that no
 other run landed it meanwhile. `tests/test_fs.py` counts these calls, so a change that adds one
 fails `make check`.
+
+## Compression
+
+What `--compress` costs and saves ([media.md](media.md)). Measured on 2026-11-16 on the
+Apple M5 above, with other work running, so read the times as upper bounds:
+
+| number | what | result |
+| --- | --- | ---: |
+| `media.jpegs_1000` | the whole compress step (plan, encode, SSIM check, place, record) over 1,000 synthetic 1080×1350 JPEGs at quality 90, on the photo lane's 2 threads | 23.2 s, every file compressed to AVIF, 76% smaller |
+| `media.sync_compress_100k` | open the store, read 100,000 history rows of done files once, and queue none | 0.44 s |
+
+A synthetic photo (a gradient, shapes and noise) compresses far better than a real download,
+which the site has already compressed: these savings say nothing about real files, only the
+times do. One AVIF encode takes about 0.02 s for a 1080×1350 photo and 0.11 s for a 12 MP one
+(`media.image_avif_speed_8`), so 1,000 full-size camera photos take several times longer.
+
+### Real samples (hand check)
+
+The defaults (the candidates, AVIF quality 60, SVT-AV1 CRF 35 preset 8, and which kinds are left
+alone) are confirmed on real downloads: about 100 photos and 20 videos from the authorized test
+accounts, kept in a folder outside the repo. The script copies each sample, compresses the copy
+exactly as `--compress` would, and prints one row per kind: files, compressed / kept / failed,
+median and total saving, the lowest and median SSIM, and the time per file. It prints no file
+names.
+
+```sh
+make media-real ARGS="~/flnd-samples"                # videos to AV1, the default
+make media-real ARGS="~/flnd-samples --video hevc"   # videos to HEVC
+```
+
+Results: not measured yet. A kind whose median saving comes out under 15% is left alone by
+default; the table marks it.
+
+Whether AV1 plays on the user's own devices (Photos and QuickTime on the iPhone and Mac) is
+checked by hand, with a file `--compress` made, before AV1 stays the default.

@@ -33,6 +33,7 @@ from flnd.source import (
 )
 from flnd import _files, _db, _text, _loop
 from flnd._events import Failed, Progress, Saved, Skipped
+from flnd._steps import FOLDER, Landed, landed
 from flnd._ui import ui
 
 if TYPE_CHECKING:
@@ -601,6 +602,10 @@ class Ledger:
         """Create deferred links for files queued earlier in this run."""
         for dest, item_key, category in self._later:
             holder = written.get(item_key)
+            # The compress step may have moved the file to a new suffix; its row says where.
+            row = self.settings.history.get(item_key) if holder is not None else None
+            if isinstance(row, dict) and row.get("path"):
+                holder = Path(row["path"])
             if holder is not None:
                 self._link(dest.with_suffix(holder.suffix), holder, category)
             self.board.count(self.target, category, later=-1)
@@ -840,6 +845,10 @@ class Ledger:
             return self._name(dest)
         row = self.settings.history.get(item_key)
         found = Path(row.get("path", "")) if isinstance(row, dict) and row.get("path") else None
+        # An archive `--compress` removed after extracting it is held by its folder.
+        if found is not None and not found.is_file() and row.get(FOLDER):
+            found = Path(row[FOLDER])
+            return self._name(found) if found.is_dir() else None
         return self._name(found) if found is not None and found.is_file() else None
 
     def _name(self, path: Path) -> str:
@@ -874,10 +883,25 @@ def _try_link(dest: Path, holder: Path) -> bool:
 
 
 class Downloads:
-    """Concurrent download runner for one target."""
+    """Concurrent download runner for one target.
 
-    def __init__(self, run: SourceRun, target: Target, board: Board) -> None:
+    Each file is recorded in history as it finishes, then handed to the run's step chain
+    (`flnd._steps`), which unpacks archives and, under `--compress`, compresses media on its
+    own threads.
+
+    Args:
+        run: the source's run: its settings, client and loop.
+        target: the target the files belong to.
+        board: the status lines counts go to.
+        compress: whether the target's files go through the compress step.
+    """
+
+    def __init__(
+        self, run: SourceRun, target: Target, board: Board, *, compress: bool = False,
+    ) -> None:
         self.run, self.target, self.board = run, target, board
+        # Whether this target's files go through the compress step once recorded.
+        self.compress = compress
         self.source, self.settings = run.source, run.settings
         self._pool: _loop.Pool | None = None
         self._written: dict[str, Path] = {}
@@ -1100,7 +1124,8 @@ class Downloads:
             source = self._sync_fetch(file.url)
             if source is None:
                 return None
-            file = File(source, audio=file.audio, name=file.name, size=file.size)
+            file = File(source, audio=file.audio, name=file.name, size=file.size,
+                        password=file.password)
         try:
             return net.download(
                 self.run.files, file, queued.dest, label=placed.path,
@@ -1184,6 +1209,10 @@ class Downloads:
         self._count(queued, downloading=-1, saved=1, bytes=size)
         post = queued.placed.post
         self.settings.emit(Saved(self.target, post.category, post.id, path, dated, size))
+        # The slow steps (unpack, compress) run on the chain's own threads from here.
+        landed(self.settings, Landed(
+            queued.key, path, password=queued.placed.file.password, compress=self.compress,
+        ))
 
     def _record_failed(self, queued: _Queued) -> None:
         if (entry := _serialize_failed(queued)) is not None:
@@ -1216,7 +1245,7 @@ def _run_download(
     started = time.monotonic()
     site = TargetSite(run, target, time=Range(options.since, options.until))
     ledger = Ledger(run, site, target, board, options=options)
-    downloads = Downloads(run, target, board)
+    downloads = Downloads(run, target, board, compress=options.compress)
     work = _Work(ledger, downloads)
     complete: list[str] = []
     saved = run.settings.targets
@@ -1253,6 +1282,7 @@ def _serialize_failed(queued: _Queued) -> dict[str, Any] | None:
         "audio": placed.file.audio,
         "name": placed.file.name,
         "size": placed.file.size,
+        "password": placed.file.password,
         "dest": str(queued.dest),
         "path": placed.path,
         "kind": placed.kind,
@@ -1292,6 +1322,7 @@ def _retry_failed(work: _Work, run: SourceRun, target: Target, options: Options)
         ).filed(category)
         file = File(
             url, audio=entry.get("audio"), name=entry.get("name"), size=entry.get("size"),
+            password=entry.get("password"),
         )
         path = str(entry.get("path") or dest.name)
         placed = Placed(

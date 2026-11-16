@@ -21,6 +21,10 @@ dependencies = [
     "questionary",
     "cyclopts",
     "msgspec",
+    # Image compression (AVIF, WebP, JPEG) and PNG optimisation, in-process: imported only by
+    # `flnd._shrink`, so `flnd --help` never loads them.
+    "Pillow>=12",
+    "pyoxipng>=9",
 ]
 
 [project.scripts]

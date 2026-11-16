@@ -94,11 +94,13 @@ class Loibus(Source):
         # come after the yield, and can't be told from here.
         if archives:
             count_download(site, post["id"])
+        # The site's unzip password; the unpack step extracts each archive with it.
+        password = str(post["open_key"]) if post.get("open_key") else None
         yield Post(
             post["id"],
             [
                 File.text("info.md", info_md(post, links)),
-                *(File(mirrors, name=name) for name, mirrors in archives),
+                *(File(mirrors, name=name, password=password) for name, mirrors in archives),
             ],
             date=post.get("date"),
             headers=SITE_HEADERS,

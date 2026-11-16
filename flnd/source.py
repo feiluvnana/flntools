@@ -335,7 +335,7 @@ class File:
     """One file of a post: a URL (or mirrors, or a fetch function), and download settings.
 
         File("https://cdn.example.com/a.jpg")
-        File([mirror_a, mirror_b], name="loi-5930.7z")    # kept as the site names it
+        File([mirror_a, mirror_b], name="loi-5930.7z", password=key)  # extracted beside it
         File(video_url, audio=audio_url)                            # DASH: merged into one video
         File.text("info.md", "# Title\\n")                          # written, not downloaded
 
@@ -351,6 +351,8 @@ class File:
             formats must not change (loi's archives, tlg's documents). None names it by the
             source's `filename` format.
         size: its size in bytes, when the site says it; None when unknown.
+        password: an archive's password, when the site gives one; the unpack step extracts
+            the archive with it (docs/media). None for none.
 
     Raises:
         SourceError: `url` is none of those.
@@ -366,16 +368,20 @@ class File:
     size: int | None
     # A text file's text, written as UTF-8; None for a file that is downloaded.
     content: str | None
+    # An archive's password, or None.
+    password: str | None
 
     def __init__(self, url: str | Sequence[str] | Fetch, *, audio: str | None = None,
-                 name: str | None = None, size: int | None = None):
+                 name: str | None = None, size: int | None = None,
+                 password: str | None = None):
         if isinstance(url, str) or callable(url):
             sources: Any = url
         elif isinstance(url, Sequence) and url and all(isinstance(mirror, str) for mirror in url):
             sources = tuple(url)
         else:
             raise SourceError(f"File takes a URL, mirror URLs or a fetch function, not {url!r}")
-        _assign(self, url=sources, audio=audio, name=name, size=size, content=None)
+        _assign(self, url=sources, audio=audio, name=name, size=size, content=None,
+                password=password)
 
     @classmethod
     def text(cls, name: str, text: str) -> File:
@@ -390,7 +396,7 @@ class File:
         It has no history row, so it is written again each time its post is downloaded.
         """
         made = cls.__new__(cls)
-        _assign(made, url=None, audio=None, name=name, size=None, content=text)
+        _assign(made, url=None, audio=None, name=name, size=None, content=text, password=None)
         return made
 
 

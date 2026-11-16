@@ -1,23 +1,39 @@
-"""External tools: run them, find or download them, stream their output, and fake them in tests.
+"""The two outside programs flnd runs: ffmpeg (with ffprobe) and 7-Zip's `7zz`.
 
-    r = sh.run("git", "status", "--short")          # r.code, r.out, r.err
-    ff = sh.find("ffmpeg")
-    for line in ff.stream("-i", src, "-progress", "pipe:1", dest): ...
-    with sh.fake({"ffmpeg": lambda args: (0, "", "")}): ...
+Everything else flnd needs is a Python wheel: images are compressed by Pillow and pyoxipng
+in-process (`flnd._shrink`). Only video, probes, DASH joins and archives leave Python.
+
+Who calls it:
+- `flnd._media` runs `ffmpeg()` and `ffprobe()` for probes and video encodes;
+- `flnd.common.net` runs ffmpeg to join a DASH video's two streams;
+- `flnd._unpack` runs `sevenzip()` for 7z and RAR archives and for encrypted zips;
+- `flnd._shrink` reads `Tool.version` to write the tools string a compressed file records.
+
+How a call goes:
+1. `find(name)` looks the program up on PATH once per process and keeps the answer.
+2. `Tool.run` runs it with an argument list (never a shell) and returns its `Result`;
+   `Tool.stream` yields its stdout lines as they come, which is how ffmpeg's `-progress`
+   reaches the caller while a thread drains stderr so the pipe never fills.
+3. A non-zero exit raises `RunError` with the last lines of output; a missing program raises
+   `MissingError`, whose hint says what to install.
+
+Rules a change must keep:
+- every call takes an argument list, and every caller puts `--` before a path that came from a
+  site where the tool reads switches (7zz), so a file named `-sdel` is never read as one;
+- `fake` answers every run inside its block by tool name, so tests never start a process.
+
+Downloading a pinned ffmpeg or 7zz when neither is on PATH is planned  but
+not built: a pin needs a real checksum per platform, so today a missing tool is a `MissingError`.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import platform
 import re
 import shutil
-import stat
 import subprocess
-import tarfile
 import threading
-import zipfile
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -25,18 +41,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Union
 
-from flnd import _vault as crypto
 from flnd import _files
-from flnd import _http as http
 from flnd.errors import DiskError, ToolError
 
-__all__ = ["MissingError", "Result", "RunError", "Spec", "Tool", "fake", "find", "run"]
+__all__ = [
+    "MissingError", "Result", "RunError", "Tool", "fake", "ffmpeg", "ffprobe", "find", "sevenzip",
+]
 
-PathLike = Union[str, "os.PathLike[str]"]
-
-ARCH_ALIASES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
 # ffmpeg and its siblings take one dash for every long option, `-version` included.
-SINGLE_DASH = frozenset({"ffmpeg", "ffprobe", "ffplay"})
+SINGLE_DASH = frozenset({"ffmpeg", "ffprobe"})
 VERSION = re.compile(r"\d+(?:\.\d+)+")
 VERSIONS_FILE = "versions.json"
 # How much of a streamed tool's stderr a `RunError` keeps.
@@ -45,19 +58,20 @@ TAIL_LINES = 20
 QUOTED_LINES = 3
 
 
-# The two `ToolError`s callers act on get their own class: a missing tool may have another to
-# fall back on (7zz, then 7z), and a failed run's output may say why (a wrong password).
+# The two `ToolError`s callers act on get their own class: a missing tool means "leave this
+# file as it is", and a failed run's output may say why (a wrong password).
 class MissingError(ToolError):
-    """The requested tool is not on PATH and has no download for this platform."""
+    """The program is not on PATH."""
 
 
 class RunError(ToolError):
-    """A subprocess exited non-zero when `check=True`, or timed out.
+    """A program exited non-zero, or ran past its timeout.
 
     Args:
-        message: the tool, its exit status and its last lines of output, on one line.
+        message: the program, its exit status and its last lines of output, on one line.
         code: the exit status; -1 for a timeout.
-        out, err: everything it wrote to stdout and stderr (stderr's tail, when streamed).
+        out: everything it wrote to stdout.
+        err: everything it wrote to stderr (only stderr's tail, when streamed).
     """
 
     def __init__(self, message: str, *, code: int = 1, out: str = "", err: str = ""):
@@ -68,17 +82,8 @@ class RunError(ToolError):
 
 
 @dataclass(frozen=True)
-class Spec:
-    """Download specification for one platform's binary or archive."""
-
-    url: str
-    sha256: str
-    bin: str = ""
-
-
-@dataclass(frozen=True)
 class Result:
-    """Captured outcome of a finished subprocess."""
+    """What a finished program returned: its exit status, its output and its arguments."""
 
     code: int
     out: str
@@ -86,6 +91,7 @@ class Result:
     args: tuple[str, ...] = ()
 
 
+# A fake answers with a `Result`, or a function of the arguments returning (code, out, err).
 Handler = Union[Callable[[tuple[str, ...]], tuple[int, str, str]], Result]
 
 # The handlers of the innermost `fake` block; a list so threads the block starts see it too.
@@ -96,41 +102,83 @@ _versions_lock = threading.Lock()
 
 @dataclass(frozen=True)
 class Tool:
-    """A resolved external executable ready to invoke."""
+    """A program found on PATH, ready to run.
+
+    Args:
+        path: where it is.
+        name: what it is called (`ffmpeg`, `7zz`), which decides its version flag.
+    """
 
     path: Path
     name: str
 
     def run(
-        self,
-        *args: str | os.PathLike[str],
-        cwd: PathLike | None = None,
-        env: Mapping[str, str] | None = None,
-        check: bool = True,
-        timeout: float | None = None,
+        self, *args: str | os.PathLike[str], check: bool = True, timeout: float | None = None,
     ) -> Result:
-        """Invoke this tool with `args`."""
-        return run(self.path, *args, cwd=cwd, env=env, check=check, timeout=timeout)
+        """Run the program with `args` and wait for it.
 
-    def stream(
-        self,
-        *args: str | os.PathLike[str],
-        cwd: PathLike | None = None,
-        env: Mapping[str, str] | None = None,
-        timeout: float | None = None,
-    ) -> Iterator[str]:
-        """Yield this tool's stdout lines as they come; `RunError` after a non-zero exit."""
+        Args:
+            *args: its arguments, each passed as one argument (never through a shell).
+            check: raise `RunError` on a non-zero exit; False returns the `Result` anyway.
+            timeout: seconds before the program is killed; None waits for ever.
+
+        Returns:
+            Its exit status and output.
+
+        Raises:
+            MissingError: the program is gone.
+            RunError: it exited non-zero (when `check`), or timed out.
+        """
+        argv = _argv(self.path, *args)
+        faked = _faked(argv)
+        if faked is not None:
+            return _checked(faked, check=check)
+        try:
+            done = subprocess.run(
+                argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=timeout, check=False,
+            )
+        except FileNotFoundError as error:
+            raise _missing(argv[0]) from error
+        except subprocess.TimeoutExpired as error:
+            raise RunError(f"{argv[0]} timed out after {timeout}s", code=-1) from error
+        except OSError as error:
+            raise ToolError(f"{argv[0]}: {error}") from error
+        return _checked(Result(done.returncode, done.stdout or "", done.stderr or "", argv),
+                        check=check)
+
+    def stream(self, *args: str | os.PathLike[str], timeout: float | None = None) -> Iterator[str]:
+        """Run the program and yield its stdout lines as they come.
+
+        Leaving the loop early kills the program. A thread drains stderr meanwhile, keeping its
+        last `TAIL_LINES` lines for the error.
+
+        Args:
+            *args: its arguments.
+            timeout: seconds before the program is killed; None waits for ever.
+
+        Yields:
+            Each stdout line, without its line ending.
+
+        Raises:
+            MissingError: the program is gone.
+            RunError: it exited non-zero or timed out, raised after its last line.
+        """
         argv = _argv(self.path, *args)
         faked = _faked(argv)
         if faked is not None:
             yield from faked.out.splitlines()
             _checked(faked, check=True)
             return
-        yield from _stream(argv, cwd=cwd, env=env, timeout=timeout)
+        yield from _stream(argv, timeout=timeout)
 
     @property
     def version(self) -> str:
-        """The first version number `<tool> --version` prints, or "" when it prints none."""
+        """The first version number `<tool> --version` prints, or "" when it prints none.
+
+        It is cached in `~/.cache/flnd/tools/versions.json` by the binary's path and modified
+        time, so asking costs one spawn per upgrade, not one per run.
+        """
         try:
             mtime = self.path.stat().st_mtime
         except OSError:
@@ -150,56 +198,93 @@ class Tool:
         return version
 
 
-def run(
-    *args: str | os.PathLike[str],
-    cwd: PathLike | None = None,
-    env: Mapping[str, str] | None = None,
-    check: bool = True,
-    timeout: float | None = None,
-) -> Result:
-    """Run `args` and return its `Result`, raising `RunError` on a non-zero exit when `check`."""
-    argv = _argv(*args)
-    faked = _faked(argv)
-    if faked is not None:
-        return _checked(faked, check=check)
-    try:
-        done = subprocess.run(
-            argv, cwd=_cwd(cwd), env=_env(env), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout, check=False,
-        )
-    except FileNotFoundError as error:
-        raise MissingError(f"{argv[0]}: executable not found",
-                           hint=f"install {argv[0]}, or put it on PATH") from error
-    except subprocess.TimeoutExpired as error:
-        raise RunError(f"{argv[0]} timed out after {timeout}s", code=-1) from error
-    except OSError as error:
-        raise ToolError(f"{argv[0]}: {error}") from error
-    result = Result(done.returncode, done.stdout or "", done.stderr or "", argv)
-    return _checked(result, check=check)
+def find(name: str) -> Tool:
+    """The program `name` on PATH, looked up once per process.
 
+    Args:
+        name: the program's name, without `.exe`.
 
-def find(name: str, *, specs: Mapping[tuple[str, str], Spec] | None = None) -> Tool:
-    """Find `name` on PATH, or download, verify and cache the `Spec` for this platform."""
+    Returns:
+        The program, ready to run.
+
+    Raises:
+        MissingError: it is not on PATH (or not in the innermost `fake`).
+    """
     if _fakes:
         if name in _fakes[-1]:
             return Tool(Path(name), name)
-        raise MissingError(f"{name}: not found; not in sh.fake")
+        raise MissingError(f"{name}: not found; not in the fake")
     if name in _found:
         return _found[name]
     on_path = shutil.which(name)
-    tool = Tool(Path(on_path), name) if on_path else _download(name, specs)
-    _found[name] = tool
+    if on_path is None:
+        raise _missing(name)
+    tool = _found[name] = Tool(Path(on_path), name)
     return tool
+
+
+def ffmpeg() -> Tool:
+    """ffmpeg, which joins DASH tracks and encodes videos.
+
+    Returns:
+        The program, ready to run.
+
+    Raises:
+        MissingError: it is not on PATH; the hint says to install it.
+    """
+    return find("ffmpeg")
+
+
+def ffprobe() -> Tool:
+    """ffprobe, which ships with ffmpeg and reads a video's streams.
+
+    Returns:
+        The program, ready to run.
+
+    Raises:
+        MissingError: it is not on PATH; the hint says to install ffmpeg.
+    """
+    return find("ffprobe")
+
+
+def sevenzip() -> Tool:
+    """7-Zip: `7zz` (the current build), else the older `7z` that many Linux packages ship.
+
+    Returns:
+        The program, ready to run.
+
+    Raises:
+        MissingError: neither is on PATH; the hint says to install 7-Zip.
+    """
+    for name in ("7zz", "7z"):
+        with suppress(MissingError):
+            return find(name)
+    raise MissingError("7z, RAR and encrypted zip archives need 7-Zip (`7zz`) on PATH",
+                       hint="install 7-Zip (7zz), or put it on PATH")
 
 
 @contextmanager
 def fake(handlers: Mapping[str, Handler]) -> Iterator[None]:
-    """Answer every tool run in the block from `handlers`, by tool name, without a subprocess."""
+    """Answer every program run in the block from `handlers`, by name, without a process.
+
+    Args:
+        handlers: by program name, a `Result`, or a function of the arguments returning
+            (code, stdout, stderr). A program not named here is missing inside the block.
+
+    Yields:
+        Nothing; the fake ends with the block.
+    """
     _fakes.append(handlers)
     try:
         yield
     finally:
         _fakes.pop()
+
+
+def _missing(name: str) -> MissingError:
+    """The error for a program that isn't installed, with what to install."""
+    package = "ffmpeg" if name in SINGLE_DASH else name
+    return MissingError(f"{name}: not found on PATH", hint=f"install {package}, or put it on PATH")
 
 
 def _argv(*args: str | os.PathLike[str]) -> tuple[str, ...]:
@@ -210,14 +295,18 @@ def _argv(*args: str | os.PathLike[str]) -> tuple[str, ...]:
 
 
 def _faked(argv: tuple[str, ...]) -> Result | None:
-    """The result the innermost `fake` gives `argv`, or None outside a `fake` block."""
+    """The result the innermost `fake` gives `argv`, or None outside a `fake` block.
+
+    Raises:
+        MissingError: a fake is active and doesn't name this program.
+    """
     if not _fakes:
         return None
     path = PurePosixPath(argv[0].replace("\\", "/"))
     name = path.stem if path.suffix.lower() == ".exe" else path.name
     handler = _fakes[-1].get(name)
     if handler is None:
-        raise MissingError(f"{name}: not found; not in sh.fake")
+        raise MissingError(f"{name}: not found; not in the fake")
     if isinstance(handler, Result):
         return replace(handler, args=argv)
     code, out, err = handler(argv)
@@ -225,7 +314,11 @@ def _faked(argv: tuple[str, ...]) -> Result | None:
 
 
 def _checked(result: Result, *, check: bool) -> Result:
-    """`result`, or a `RunError` when `check` and it exited non-zero."""
+    """`result`, or a `RunError` when `check` is set and it exited non-zero.
+
+    Raises:
+        RunError: `check` and a non-zero exit, quoting the last lines of output.
+    """
     if check and result.code != 0:
         detail = _last_lines(result.err or result.out) or f"exit status {result.code}"
         raise RunError(
@@ -236,41 +329,28 @@ def _checked(result: Result, *, check: bool) -> Result:
 
 
 def _last_lines(output: str) -> str:
-    """The last `QUOTED_LINES` non-empty lines of a tool's output, joined into one line."""
+    """The last `QUOTED_LINES` non-empty lines of a program's output, joined into one line."""
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     return " / ".join(lines[-QUOTED_LINES:])
 
 
-def _cwd(cwd: PathLike | None) -> str | None:
-    return os.fspath(cwd) if cwd is not None else None
-
-
-def _env(env: Mapping[str, str] | None) -> dict[str, str] | None:
-    """The environment with `env` laid over this process's, or None to inherit it."""
-    return {**os.environ, **env} if env else None
-
-
-def _stream(
-    argv: tuple[str, ...], *, cwd: PathLike | None, env: Mapping[str, str] | None,
-    timeout: float | None,
-) -> Iterator[str]:
-    """Run `argv`, yielding stdout lines while a thread keeps stderr's tail."""
+def _stream(argv: tuple[str, ...], *, timeout: float | None) -> Iterator[str]:
+    """Run `argv`, yielding stdout lines while a thread keeps stderr's tail (see `Tool.stream`)."""
     try:
         process = subprocess.Popen(
-            argv, cwd=_cwd(cwd), env=_env(env), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as error:
-        raise MissingError(f"{argv[0]}: executable not found",
-                           hint=f"install {argv[0]}, or put it on PATH") from error
+        raise _missing(argv[0]) from error
     except OSError as error:
         raise ToolError(f"{argv[0]}: {error}") from error
     tail: deque[str] = deque(maxlen=TAIL_LINES)
-    # A full stderr pipe would block the tool, so a thread drains it while stdout is read.
+    # A full stderr pipe would block the program, so a thread drains it while stdout is read.
     drain = threading.Thread(target=tail.extend, args=(process.stderr,), daemon=True)
     drain.start()
     expired = threading.Event()
-    # The lines come from a blocking read, so a timer kills the tool when time runs out.
+    # The lines come from a blocking read, so a timer kills the program when time runs out.
     killer = threading.Timer(timeout or 0, lambda: (expired.set(), process.kill()))
     if timeout is not None:
         killer.start()
@@ -288,7 +368,12 @@ def _stream(
 
 
 def _end(process: subprocess.Popen[str], drain: threading.Thread) -> None:
-    """Kill a tool its reader left early, and close its pipes."""
+    """Kill a program its reader left early, and close its pipes.
+
+    Args:
+        process: the running program.
+        drain: the thread reading its stderr, joined once the pipe closes.
+    """
     if process.poll() is None:
         process.kill()
     process.wait()
@@ -299,7 +384,7 @@ def _end(process: subprocess.Popen[str], drain: threading.Thread) -> None:
 
 
 def _parse_version(tool: Tool) -> str:
-    """Run the tool's version flag and pick the first version number from what it prints."""
+    """Run the program's version flag and pick the first version number it prints."""
     flag = "-version" if tool.name in SINGLE_DASH else "--version"
     result = tool.run(flag, check=False, timeout=30)
     found = VERSION.search(result.out) or VERSION.search(result.err)
@@ -307,7 +392,14 @@ def _parse_version(tool: Tool) -> str:
 
 
 def _read_versions(cache: Path) -> dict[str, object]:
-    """The cached versions by binary path, or none when the file is missing or broken."""
+    """The cached versions by binary path, or none when the file is missing or broken.
+
+    Args:
+        cache: the `versions.json` file.
+
+    Returns:
+        Each binary's `{"mtime": …, "version": …}` by its resolved path.
+    """
     try:
         known = json.loads(cache.read_text("utf-8"))
     except (OSError, ValueError):
@@ -315,109 +407,8 @@ def _read_versions(cache: Path) -> dict[str, object]:
     return known if isinstance(known, dict) else {}
 
 
-def _download(name: str, specs: Mapping[tuple[str, str], Spec] | None) -> Tool:
-    """Download, verify and cache `name` from the spec for this platform."""
-    key = _platform_key()
-    spec = specs.get(key) if specs else None
-    if spec is None:
-        raise MissingError(f"{name}: not on PATH and no download for {key[0]}/{key[1]}",
-                           hint=f"install {name}, or put it on PATH")
-    bin_name = spec.bin or (f"{name}.exe" if key[0] == "windows" else name)
-    target = _cache_root() / name / spec.sha256[:12] / Path(bin_name).name
-    # Two threads finding one tool download it once: the second waits on the binary's part,
-    # then finds the binary there.
-    with _files.part(target) as held:
-        if target.is_file():
-            held.drop()
-        else:
-            _provision(spec, bin_name, held)
-    return Tool(target, name)
-
-
-def _platform_key() -> tuple[str, str]:
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    return system, ARCH_ALIASES.get(machine, machine)
-
-
 def _cache_root() -> Path:
+    """`$XDG_CACHE_HOME/flnd/tools`, else `~/.cache/flnd/tools`."""
     base = os.environ.get("XDG_CACHE_HOME")
     root = Path(base) if base else Path.home() / ".cache"
-    return root / "flntools" / "tools"
-
-
-def _provision(spec: Spec, bin_name: str, held: _files.Part) -> None:
-    """Download the tool's archive, check its sha256, and write the binary into `held`.
-
-    Args:
-        spec: where to download it and its sha256.
-        bin_name: the binary's path inside the archive.
-        held: the binary's part, held so two threads download it once.
-
-    Raises:
-        ToolError: the download's sha256 isn't the spec's.
-    """
-    archive_name = PurePosixPath(spec.url.split("?", 1)[0]).name or "download"
-    stage = held.dest.parent / f".{archive_name}.download"
-    try:
-        http.download(spec.url, stage)
-        actual = crypto.digest(stage, algorithm="sha256")
-        if actual.lower() != spec.sha256.lower():
-            raise ToolError(
-                f"{archive_name}: sha256 mismatch (expected {spec.sha256}, got {actual})"
-            )
-        _install_artifact(stage, archive_name, bin_name, held)
-    finally:
-        stage.unlink(missing_ok=True)
-
-
-def _install_artifact(stage: Path, archive_name: str, bin_name: str, held: _files.Part) -> None:
-    """Write the binary from the downloaded `stage` into `held`, executable.
-
-    Args:
-        stage: the downloaded archive, or the binary itself.
-        archive_name: the download's file name, whose extension says what it is.
-        bin_name: the binary's path inside an archive.
-        held: the binary's part.
-    """
-    lower = archive_name.lower()
-    if lower.endswith(".zip"):
-        held.write(_extract_zip(stage, bin_name))
-    elif lower.endswith((".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tar")):
-        held.write(_extract_tar(stage, bin_name))
-    else:
-        held.write(stage.read_bytes())
-    if os.name != "nt":
-        mode = os.fstat(held.fd).st_mode
-        os.chmod(held.fd, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-
-def _extract_zip(archive_path: Path, bin_name: str) -> bytes:
-    wanted = bin_name.lstrip("./")
-    with zipfile.ZipFile(archive_path) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            member = info.filename.replace("\\", "/").lstrip("./")
-            if ".." in PurePosixPath(member).parts:
-                raise ToolError(f"unsafe zip member {info.filename!r}")
-            if member == wanted or member.endswith(f"/{wanted}"):
-                return zf.read(info)
-    raise MissingError(f"{bin_name!r} not found in {archive_path.name}")
-
-
-def _extract_tar(archive_path: Path, bin_name: str) -> bytes:
-    wanted = bin_name.lstrip("./")
-    with tarfile.open(archive_path) as tf:
-        for member in tf.getmembers():
-            if not member.isfile():
-                continue
-            clean = member.name.replace("\\", "/").lstrip("./")
-            if ".." in PurePosixPath(clean).parts:
-                raise ToolError(f"unsafe tar member {member.name!r}")
-            if clean == wanted or clean.endswith(f"/{wanted}"):
-                stream = tf.extractfile(member)
-                if stream is None:
-                    break
-                return stream.read()
-    raise MissingError(f"{bin_name!r} not found in {archive_path.name}")
+    return root / "flnd" / "tools"

@@ -44,7 +44,7 @@ Download each target once.
 
 ```sh
 flnd download <targets…> --from CATEGORIES [--time SINCE,UNTIL] [--sync] [--again]
-              [--limit N] [--dry] [-v]
+              [--limit N] [--dry] [--compress] [-v]
 ```
 
 | flag | default | what it does |
@@ -56,7 +56,12 @@ flnd download <targets…> --from CATEGORIES [--time SINCE,UNTIL] [--sync] [--ag
 | `--again` | off | ignore saved cursors and the "stop at saved posts" rule, and list every post from the start |
 | `--limit` | no limit | at most N posts per target, or at most N targets found by a search; at least 1 |
 | `--dry` | off | list what would be downloaded (files, or the targets a search finds) and write nothing |
+| `--compress` | off | replace each saved photo and video by a smaller copy that looks the same, when one passes every check, and remove each archive once it is extracted ([media.md](media.md)) |
 | `-v`, `--verbose` | off | show debug lines and every file's progress |
+
+Archives (`.zip`, `.7z`, `.rar`, `.tar*`) are always extracted beside themselves, into a folder
+of their name; without `--compress` the archive is kept too. 7z and RAR need 7-Zip (`7zz`), and
+compressing a video needs ffmpeg, both on your PATH ([media.md](media.md)).
 
 Examples:
 
@@ -65,6 +70,7 @@ flnd download ins:example_user --from all
 flnd download ins:example_user --from reels --time 2026-01-01,2026-06-30
 flnd download tik:example_user twt:example_user --from tik:videos twt:media --sync
 flnd download "mht?example" --from chapters --limit 5 --dry
+flnd download ins:example_user --from posts --compress
 cat targets.txt | flnd download --from all
 ```
 
@@ -77,12 +83,13 @@ given. A target downloaded without `--sync`, and not already synced, gets a hint
 Download what is new for synced targets.
 
 ```sh
-flnd sync [targets…] [-v]
+flnd sync [targets…] [--compress] [-v]
 ```
 
 | flag | default | what it does |
 | --- | --- | --- |
 | `[targets…]` | every synced target | only these targets |
+| `--compress` | off | compress the new files as they land, then the files these targets saved before that aren't done yet; a file compressed, or kept with the same tools, is skipped without being opened ([media.md](media.md)) |
 | `-v`, `--verbose` | off | show debug lines and every file's progress |
 
 A sync lists each target's categories newest first and stops a category after 5 saved posts in

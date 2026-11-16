@@ -123,6 +123,11 @@ The value:
 | `date` | its post's day, `YYYY-MM-DD`; absent when the post had none |
 | `estimated` | true when the day was guessed from the posts around it |
 | `files` | on a post's first file, how many files the post has, when more than one |
+| `shrink` | what `--compress` did: `compressed`, `kept` (nothing smaller passed) or `failed`; absent when it never ran ([media.md](media.md)) |
+| `tools` | with `shrink`: the encoders and versions it ran with, such as `pillow 13.0.0 libavif 1.4.2`; a `kept` or `failed` file is tried again when these change |
+| `before` | on a compressed file: the original's size in bytes (`size` is the new one, and `path` the new path when the suffix changed) |
+| `unpacked` | on an archive: `extracted`, or `failed` (a wrong password, a damaged or unsafe archive, no 7-Zip) |
+| `folder` | on an extracted archive: the folder it was extracted into. With `--compress` the archive itself is removed, and this folder counts as the saved file |
 
 ### `targets.db`, table `targets`
 

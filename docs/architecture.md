@@ -48,6 +48,7 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/common/` | `auth` (the login vault), `net` (the HTTP client and file downloads), `paths` (the home's layout and content sniffing) | the engine, the site, the job |
 | `flnd/dry.py` | a contributor's tool: prints the files one target would save | `make try` |
 | `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), Playwright (`_browser`), SQLite stores (`_db`), atomic files (`_files`), a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
+| `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes, archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
 
 The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,
 the toolkit (`flnd._*`) and the standard library, and nothing of the engine. The engine imports the sources
@@ -96,7 +97,9 @@ only through `flnd.sources.SOURCES`.
 10. **Finishing a file.** Its history row is written: path, size and modified time (from the
     part, so nothing stats the file again), post id, category and date. The same file in two
     categories is saved once and linked from the second (a relative symlink, or a hard link where
-    symlinks aren't allowed).
+    symlinks aren't allowed). The file is then handed to the run's step chain (`flnd._steps`),
+    which extracts an archive and, with `--compress`, compresses a photo or video on threads of
+    its own ([media.md](media.md)).
 11. **Ending the target.** The job saves the categories it listed to their end, the cursors of
     those it didn't, and the files that failed, all in `targets.db`, then prints one summary line.
 12. **The end.** The engine writes refreshed cookies back to the vault, prints "Complete" with the
@@ -121,6 +124,10 @@ A run uses a few threads, and every rule below protects one of them:
   are forwarded to that thread and wait for the answer.
 - **An event loop for async sources.** A source with an async SDK (Telegram's Telethon) runs its
   coroutines on its own loop through `SourceRun.run_async`.
+- **The step chain's lanes** (`flnd._steps`): one thread for archives, two for photos and one
+  for videos, fed by bounded queues once a file's history row is written. They update that row
+  when they change the file; the engine closes the chain, waiting for them, before it closes
+  history.
 - **Ctrl-C** is handled by `flnd._cli.stopping`: the first one sets `stop.soon` (stop listing,
   let running files finish), the second sets `stop.now` (stop at once, keep the parts).
 

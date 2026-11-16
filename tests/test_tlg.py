@@ -784,13 +784,14 @@ def zipped(name, text):
 
 
 class ArchiveTest(DownloadCase):
-    def test_an_archive_sent_as_a_file_is_saved_as_sent(self):
-        # flnd no longer unpacks or zips (--unpack and --zip are gone): the archive stays as Telegram sent it.
+    def test_an_archive_sent_as_a_file_is_kept_as_sent_and_extracted_beside_itself(self):
         packed = zipped("inside.txt", "hello")
         self.telegram.messages[1001] = [message(20, "file", name="set.zip", content=packed)]
         self.assertEqual(self.download(categories=("file",)), 1)
-        self.assertEqual([path.name for path in (self.folder / "file").iterdir()], ["2026-01-05_20_set.zip"])
+        self.assertEqual(sorted(path.name for path in (self.folder / "file").iterdir()),
+                         ["2026-01-05_20_set", "2026-01-05_20_set.zip"])
         self.assertEqual((self.folder / "file" / "2026-01-05_20_set.zip").read_bytes(), packed)
+        self.assertEqual((self.folder / "file" / "2026-01-05_20_set" / "inside.txt").read_text(), "hello")
         self.assertFalse(self.target_dir("tlg", "examplechannel.zip").exists())
 
 

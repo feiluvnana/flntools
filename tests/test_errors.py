@@ -25,7 +25,7 @@ import httpx
 import flnd
 from flnd import job, sources
 from flnd import _files
-from flnd import _cli as cli, _http as http, _time as clock, _tools as sh
+from flnd import _cli as cli, _http as http, _time as clock, _tools
 from flnd.errors import (
     Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
     Stopped, ToolError, UsageError, classify, disk,
@@ -156,8 +156,8 @@ class ClassesTest(HttpCase):
 
     def test_tool_error(self):
         with self.assertRaises(ToolError) as caught:
-            sh.run("flnd-no-such-tool-example")
-        self.assertIn("executable not found", str(caught.exception))
+            _tools.find("flnd-no-such-tool-example")
+        self.assertIn("not found on PATH", str(caught.exception))
         self.assertEqual(caught.exception.hint,
                          "install flnd-no-such-tool-example, or put it on PATH")
 

@@ -72,6 +72,7 @@ def download(
     again: bool = False,
     limit: Optional[int] = None,
     dry: bool = False,
+    compress: bool = False,
     verbose: Annotated[
         bool, cyclopts.Parameter(name=["-v", "--verbose"], negative="")
     ] = False,
@@ -86,6 +87,8 @@ def download(
         again: Ignore saved cursors and run from start to finish.
         limit: Cap discovered targets or downloaded posts.
         dry: List targets or files without downloading.
+        compress: Shrink each saved photo and video when a smaller copy looks the same, and
+            remove each archive once it is extracted.
         verbose: Show debug logs and every file event.
     """
     resolved_targets = _read_targets(targets)
@@ -98,6 +101,7 @@ def download(
             dry=dry,
             sync=sync,
             again=again,
+            compress=compress,
         )
     if not dry:
         ui.ok("Complete. {files}", files=_text.count(report.files, "file"))
@@ -108,6 +112,7 @@ def download(
 def sync(
     targets: list[str] = [],  # noqa: B006 - cyclopts reads it; nothing mutates it
     *,
+    compress: bool = False,
     verbose: Annotated[
         bool, cyclopts.Parameter(name=["-v", "--verbose"], negative="")
     ] = False,
@@ -116,10 +121,11 @@ def sync(
 
     Args:
         targets: Only these targets; every synced target when omitted.
+        compress: Shrink new photos and videos, then those saved before that aren't done.
         verbose: Show debug logs and every file event.
     """
     with ui.scope(level="debug" if verbose else None):
-        report = Engine(home=HOME).sync(targets)
+        report = Engine(home=HOME).sync(targets, compress=compress)
     return _ended(report)
 
 

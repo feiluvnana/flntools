@@ -25,7 +25,7 @@ from flnd.common import paths
 from flnd.errors import Error, SiteError
 from flnd.source import Fetch, File
 from flnd import _files
-from flnd import _time as clock, _http as http, _tools as sh, _text as text
+from flnd import _time as clock, _http as http, _text as text, _tools
 from flnd._ui import ui
 
 # Tries for one `fetch` function of a file, or one DASH merge, before its error is raised.
@@ -255,7 +255,7 @@ def _dash_merge(client: http.Client, video: str, audio: str, held: _files.Part,
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
         row.caption("merging")
-        ffmpeg = sh.find("ffmpeg")
+        ffmpeg = _tools.ffmpeg()
         fmt = "webm" if dest.suffix.lower() == ".webm" else "mp4"
         flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
         try:
@@ -299,7 +299,7 @@ def _merge_again(error: Exception) -> bool:
     Returns:
         True to try again.
     """
-    return isinstance(error, sh.RunError) or (isinstance(error, Error) and error.retryable)
+    return isinstance(error, _tools.RunError) or (isinstance(error, Error) and error.retryable)
 
 
 def _again(attempt: Callable[[], T], *, worth: Callable[[Exception], bool]) -> T:

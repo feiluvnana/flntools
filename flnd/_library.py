@@ -156,14 +156,15 @@ class Flnd:
             when: the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`,
                 `"2026-01..2026-03"` or `"30d"`; None for every day.
             limit: at most this many posts per target, or targets per search; None for all.
-            compress: shrink files as they land. Not built yet: True is a usage error.
+            compress: shrink each photo and video as it lands, when a smaller copy looks the
+                same, and remove each archive once it is extracted (docs/media).
             dry: plan instead: the run yields a `Planned` event per file and writes nothing.
 
         Returns:
             The `Run`, not started yet: iterate it, or call `wait()`.
 
         Raises:
-            UsageError: a target, category, `when` or `limit` is wrong, or `compress` is asked.
+            UsageError: a target, category, `when` or `limit` is wrong.
 
         Example:
             >>> import flnd
@@ -173,13 +174,13 @@ class Flnd:
             ...
             flnd.errors.UsageError: when takes a year (2026), a month (2026-06), ...
         """
-        _no_compress(compress)
         span = _when(when)
         if limit is not None and limit < 1:
             raise UsageError("limit must be at least 1")
         resolved = self._checked(targets, only)
         return self._run(f"download {_names(resolved)}", lambda engine: engine.download(
-            resolved, categories=only, time=span, limit=limit, dry=dry, every=True))
+            resolved, categories=only, time=span, limit=limit, dry=dry, every=True,
+            compress=compress))
 
     def follow(
         self, targets: str | Target | Sequence[str | Target], *,
@@ -195,13 +196,15 @@ class Flnd:
             targets: one target or several, as `download` takes them.
             only: the categories to follow; None follows every category.
             when: the days this first download takes posts from, as `download` reads it.
-            compress: shrink files as they land. Not built yet: True is a usage error.
+            compress: shrink each photo and video of this first download as it lands, and
+                remove each archive once it is extracted (docs/media). Later syncs compress
+                only when they are asked to.
 
         Returns:
             The `Run` of the first download, not started yet.
 
         Raises:
-            UsageError: a target, category or `when` is wrong, or `compress` is asked.
+            UsageError: a target, category or `when` is wrong.
 
         Example:
             >>> import flnd
@@ -211,11 +214,11 @@ class Flnd:
             ...
             flnd.errors.UsageError: unknown source 'zzz'. Sources: tik, fbk, ins, twt, loi, tlg, mht
         """
-        _no_compress(compress)
         span = _when(when)
         resolved = self._checked(targets, only)
         return self._run(f"follow {_names(resolved)}", lambda engine: engine.download(
-            resolved, categories=only, time=span, sync=True, every=True, keep=True))
+            resolved, categories=only, time=span, sync=True, every=True, keep=True,
+            compress=compress))
 
     def sync(self, targets: str | Target | Sequence[str | Target] = (), *,
              compress: bool = False) -> Run:
@@ -223,14 +226,15 @@ class Flnd:
 
         Args:
             targets: the followed targets to sync; empty for every one.
-            compress: shrink files as they land. Not built yet: True is a usage error.
+            compress: shrink the new photos and videos as they land, then those the targets
+                saved before that aren't done yet; a done file is skipped unopened (docs/media).
 
         Returns:
             The `Run`, not started yet. With nothing to sync, it ends at once with an empty
             report.
 
         Raises:
-            UsageError: a target is wrong, or `compress` is asked.
+            UsageError: a target is wrong.
 
         Example:
             >>> import flnd
@@ -238,10 +242,9 @@ class Flnd:
             ...     fl.sync().wait().saved
             0
         """
-        _no_compress(compress)
         resolved = self._resolve(targets)
         named = f"sync {_names(resolved)}" if resolved else "sync"
-        return self._run(named, lambda engine: engine.sync(resolved))
+        return self._run(named, lambda engine: engine.sync(resolved, compress=compress))
 
     def retry(self) -> Run:
         """Download again the files the last run failed on.
@@ -628,19 +631,6 @@ class Flnd:
 # ---------------------------------------------------------------------------------------------
 # Reading options
 # ---------------------------------------------------------------------------------------------
-
-def _no_compress(compress: bool) -> None:
-    """Refuse `compress=True`, which has no implementation yet.
-
-    Args:
-        compress: the option as given.
-
-    Raises:
-        UsageError: when it is asked.
-    """
-    if compress:
-        raise UsageError("compress isn't built yet", hint="leave compress out")
-
 
 def _names(targets: Sequence[Target]) -> str:
     """The targets as a run's name shows them: the first two, then how many more."""
