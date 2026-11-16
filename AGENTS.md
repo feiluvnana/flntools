@@ -45,7 +45,7 @@ All commits must strictly follow this message format:
 - A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib.
 
 ## API and naming
-- Follow PLAN.md §1.1 while the revamp is built:
+- Follow these API rules (PROPOSAL.md has the design being built):
   - short names, one word where one word says it;
   - a read is a property; a read with options is a property returning a `shared.Query`, narrowed by option methods and run with `.get()`;
   - an action is a verb; no `get_`, `to_`, `try_` or `load_from_` names;
@@ -67,7 +67,7 @@ All commits must strictly follow this message format:
 - Plain over clever: declare what code would otherwise guess (a downloader that opens a browser says `browser = True`).
 
 ## Plans
-- `PLAN.md` holds the revamp's design and step order; it is deleted when the revamp is done.
+- `PROPOSAL.md` on branch `next` holds the design being proposed; nothing is built from it until the user approves it.
 
 ## Models
 - **Mechanical changes use a low-cost model** (user, 2026-11-12): Claude Haiku in Claude Code, or the low-cost tier of whichever tool is in use.

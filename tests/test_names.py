@@ -1,4 +1,4 @@
-"""The naming conventions of PLAN.md §1.1, checked over the API snapshot.
+"""The naming conventions of AGENTS.md › API and naming, checked over the API snapshot.
 
 The names are the ones `scripts/dev.py api` writes to tests/data/api.txt (test_api.py keeps that
 file current), read from the same `api_names()` with their objects, so a check can look at a real
@@ -283,7 +283,7 @@ class NamesTest(unittest.TestCase):
     def test_no_new_breach(self):
         allowed = {breach for group in ALLOWED.values() for breach in group}
         new = sorted(breaches() - allowed)
-        self.assertEqual(new, [], "these break PLAN.md §1.1; rename them, don't allow them")
+        self.assertEqual(new, [], "these break AGENTS.md › API and naming; rename them, don't allow them")
 
     def test_no_stale_allowance(self):
         allowed = {breach for group in ALLOWED.values() for breach in group}
