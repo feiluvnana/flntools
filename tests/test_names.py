@@ -26,7 +26,9 @@ dev = load_dev()
 NAMES = dev.api_names()
 
 # W7: prefixes that only say "this is a function".
-PREFIXES = ("get_", "do_", "to_", "load_from_", "make_", "create_")
+PREFIXES = ("get_", "do_", "to_", "try_", "load_from_", "make_", "create_")
+# Rule 6: at most this many options after the first parameter.
+MAX_OPTIONS = 4
 # §2.2: option names the vocabulary has another word for.
 RENAMED = {"out": "dest", "dest_dir": "dest", "preset": "level"}
 POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -34,7 +36,36 @@ POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR
 # Every breach today's code has, by the module it is in. Each module's
 # step-4 commit renames its names and removes its own entries here, with the api.txt diff that shows
 # the renames. Nothing else is exempt: a new name that breaks a convention fails.
-ALLOWED: dict[str, tuple[str, ...]] = {}
+ALLOWED: dict[str, tuple[str, ...]] = {
+    "flnd": (
+        "flnd.Engine.download: 6 options, more than 4",
+        "flnd.download: 7 options, more than 4",
+    ),
+    "flnd.source": ("flnd.source.Site.try_fetch: prefix try_",),
+    "shared.archive": (
+        "shared.archive.pack: option progress, a callback, not a sink",
+        "shared.archive.unpack: 5 options, more than 4",
+        "shared.archive.unpack: option progress, a callback, not a sink",
+    ),
+    "shared.browser": ("shared.browser.Page.fetch: 7 options, more than 4",),
+    "shared.http": (
+        "shared.http.Client.download: 7 options, more than 4",
+        "shared.http.Client.download: option progress, a callback, not a sink",
+        "shared.http.Client.fetch: 8 options, more than 4",
+        "shared.http.download: 7 options, more than 4",
+        "shared.http.download: option progress, a callback, not a sink",
+        "shared.http.fetch: 8 options, more than 4",
+    ),
+    "shared.sh": (
+        "shared.sh.Tool.run: 5 options, more than 4",
+        "shared.sh.run: 5 options, more than 4",
+    ),
+    "shared.worker": (
+        "shared.worker.Pool: option progress, a callback, not a sink",
+        "shared.worker.map: 6 options, more than 4",
+        "shared.worker.map: option progress, a callback, not a sink",
+    ),
+}
 
 
 def breaches() -> set[str]:
@@ -69,8 +100,12 @@ def option_breaches(name: Any) -> set[str]:
         for parameter, scope in expanded(parameters, name.obj, function):
             if parameter.name in RENAMED:
                 found.add(f"{name.name}: option {parameter.name}, not {RENAMED[parameter.name]}")
-            if parameter.name == "progress" and not progress_callback(parameter.annotation, scope):
-                found.add(f"{name.name}: option progress, not a progress(done, total) callback")
+            if parameter.name == "progress" and progress_callback(parameter.annotation, scope):
+                found.add(f"{name.name}: option progress, a callback, not a sink")
+        options = [parameter for parameter in parameters[1:] if parameter.kind is not inspect.Parameter.VAR_KEYWORD
+                   and parameter.kind is not inspect.Parameter.VAR_POSITIONAL]
+        if name.kind != "class" and len(options) > MAX_OPTIONS:
+            found.add(f"{name.name}: {len(options)} options, more than {MAX_OPTIONS}")
     return found
 
 
@@ -392,7 +427,7 @@ class ChecksTest(unittest.TestCase):
                          {"shared.x.f: option out, not dest", "shared.x.f: option dest_dir, not dest",
                           "shared.x.f: option preset, not level"})
 
-    def test_progress_must_be_a_two_argument_callback(self):
+    def test_progress_callback_is_recognised(self):
         scope = {"Progress": typing.Callable[..., Any]}
         self.assertTrue(progress_callback("Callable[[float, float | None], Any] | None", scope))
         self.assertTrue(progress_callback("Progress | None", scope))

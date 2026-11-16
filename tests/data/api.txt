@@ -187,6 +187,13 @@ shared: module
 shared.BrokenError(shared.Error, ValueError)
 shared.Error(Exception)
 shared.MissingError(shared.Error, RuntimeError)
+shared.Query(source: Callable[[], Iterable[T]] | Source[T], plan: Plan = Plan(equal=(), predicates=(), by=None, desc=False, limit=None))
+shared.Query.count: property -> int
+shared.Query.filter(predicate: Predicate | None = None, /, **equal: Any) -> Query[T]
+shared.Query.first: property -> T | None
+shared.Query.get() -> list[T]
+shared.Query.limit(n: int) -> Query[T]
+shared.Query.sort(by: str | Callable[[T], Any], *, desc: bool = False) -> Query[T]
 shared.RefusedError(shared.Error)
 shared.UnsafeError(shared.Error, ValueError)
 shared.archive: module
