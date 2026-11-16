@@ -31,8 +31,8 @@ Decisions (user, 2026-11-16):
 3. **A read with options is a property that returns a `Query`.** Option methods narrow it, and `.get()` runs it. `first` and `count` are properties of the query:
    ```python
    fl.targets.filter(source="ins", sync=True).get()            # list[Target]
-   nc.files.filter(state="kept").sort("saved", desc=True).limit(20).get()
-   nc.files.count
+   fl.files.filter(kind="image").sort("date", desc=True).limit(20).get()
+   fl.files.count
    ```
 4. **An action is a verb**: `download`, `sync`, `track`, `forget`, `compress`, `archive`, `extract`, `login`.
 5. **One spelling.**
@@ -415,44 +415,94 @@ ui.level = "debug"; ui.mode = ui.Mode.FULL
 
 ## 3. flnd
 
+### 3.0 Three roles (user, 2026-11-16)
+> "each source specify how to login (login and saved credentials flow, the source control all of it, engine just invoke), then a way to listing for each target (so target is for listing). and then those listing will be passed to downloader and also show progress"
+
+| role | owns | the engine's part |
+| --- | --- | --- |
+| **login** (per source) | the whole flow (browser cookies, cookie file, QR, API key, password), where the credentials live, refreshing them, and whether the source is logged in | call `source.login/logout/logged_in` once per run, handing the source its own `Auth` |
+| **listing** (per target) | a target names one listing; the source turns it into `Post`s (finders: `Target`s) | resolve, walk, apply `--from`/`--time`/`--limit` and the sync early stop |
+| **downloader** (the engine) | dedupe, resume, dates, history, retries, parallelism, progress rows | everything; a source never touches the disk or the history |
+
+**Routes kept** (user, 2026-11-16):
+- every single-URL route: tik video/photo, ins post/reel, tweet, mht chapter, loi post;
+- each source's main target: tik/ins/twt/fbk profile, tlg chat, loi post, mht manga;
+- finders: `ins:me`, `mht?query`, and a new `loi?words`.
+
+mht's author and genre routes go.
+
+**Today, measured** at `a9b8d31`:
+- 11,084 lines (engine side 6,811, sources 4,273);
+- 102 concepts a source author learns;
+- 5 ways a route can behave;
+- 15 frames and 16 classes per download;
+- 185 public `flnd` names.
+
+**Problems found, each with file:line:**
+
+| # | problem | evidence |
+| --- | --- | --- |
+| P1 | every `from_=` repeats the default (7 of 7) | loi.py:59, mht.py:51,66,106,119,132, tlg.py:73 |
+| P2 | every route `folder=` repeats `Source.folder` (7 of 7) | loi.py:60, mht.py:52…133, tlg.py:74 |
+| P3–4 | `discovers` is needed once (ins:me); `shown` works around the one-placeholder rule | ins.py:146, mht.py:131, source.py:278, 289 |
+| P5 | `--from` validated twice; categories filtered twice | engine.py:122-123, options.py:54/63, targets.py:311, job.py:261 |
+| P6 | folder checks run every download; `FOLDER_FIELDS` knows every source | targets.py:28, 255 |
+| P7 | dead code: `getattr(route, "params")` (gone since e4fc627); `Source.browser` set by 4 sources, read by none | targets.py:283; fbk.py:156, ins.py:108, tik.py:317, twt.py:153 |
+| P8 | the login check in 4 copies | engine.py:437, 810, 941, dry.py:42 |
+| P9–10 | 6 download paths; 8 finder functions in 2 modules | engine.py:156, 418, 463, 495, 581, 755 |
+| P12 | early-stop rules written 4 times; on sync each newest-first post is looked up twice | job.py:48-49, 1573; ins.py:858, tik.py:63, twt.py:457 |
+| P13 | a thread-local carries the cursor between `pages()` and the job | source.py:807-881 |
+| P14 | 184 lines of browser proxies; a thread hop per DOM call | site.py:599-782 |
+| P15 | private coupling through `getattr` into `Site` and `http.Client` | feed.py:40-155, site.py:115-119 |
+| P17 | async bridging in 6 places for one async source (tlg) | engine/job/site |
+
 ### 3.1 The library
 ```python
 import flnd
 
 fl = flnd.Flnd(".flnd")
-report = fl.download("ins:example_user", only=["reels"], time="2026-01-01,", limit=50)
-report.ok, report.files, report.failed
+for saved in fl.download("ins:example_user", only=["reels"], time="2026-01-01,", limit=50):
+    saved.path, saved.target, saved.post, saved.kind     # each file as it lands
+report = flnd.Report.of(fl.download("twt:example_handle"))   # totals: ok, files, failed
 fl.preview("twt:example_handle")             # list[Item]: what download would take, nothing saved
 fl.track("ins:example_user"); fl.untrack("ins:example_user"); fl.forget("ins:example_user")
-fl.sync()                                    # every tracked target
+fl.sync()                                    # every tracked target; yields Saved too
 fl.targets.filter(source="ins", sync=True).get()
-fl.files.filter(target="ins:example_user").sort("date").get()
-fl.move(old, new)                            # keep history in step when a file is renamed
-fl.login("ins", using="chrome:Default")      # or Path("cookies.txt"), or "qr"
+fl.files.filter(target="ins:example_user", kind="image").sort("date").get()
+fl.move(old, new)                            # keep history true when a file is renamed
+fl.login("ins", "chrome:Default")            # or "cookies.txt", or "qr": the source decides
 fl.logout("ins"); fl.logins.get()
 with fl.connect("ins") as site:              # a Site for scripting
     site.fetch("https://www.instagram.com/api/...").json
 flnd.resolve("https://x.com/example_handle") # Target
 ```
+- **`download` is a generator** of `Saved` events, so a script can compress on the fly (§4). The CLI consumes the same events to feed `ui.live`, which makes progress a consumer, not a callback.
+- `flnd.Home` (`media`, `metadata`, `cache`) is the layout that flnc and flns CLIs reuse.
 
 | before | after |
 | --- | --- |
 | `Engine` and the module-level `download`/`open` | `Flnd(home)` |
-| `download(..., dry=, sync=)` | `download`, `preview`, `track` |
+| `download(..., dry=, sync=) -> Report` | `download(...) -> Iterator[Saved]`, `preview`, `track`; `Report.of(events)` |
 | `target_ls`/`target_sync`/`target_del` | `targets`, `track`/`untrack`, `forget` |
 | `auth_ls`, `logins`, `cookie_logins` | `logins` (`Query[Login]`) |
-| `login(code, method, browser=, profile=, path=)` | `login(code, using=)` |
-| `TargetInfo`, `AuthInfo`, `TargetReport` | `Target`, `Login`, `Result` |
+| `login(code, method, browser=, profile=, path=)` | `login(code, how)` |
+| `TargetInfo`, `AuthInfo`, `TargetReport` | `Target`, `Login`, `Saved`, `Report` |
 | `Site.try_fetch` | `Site.fetch(check=False)` |
-| `Post.filed(category)` | `Post.replace(category=)` |
+| `Post.filed(category)` | engine-private |
 
 ### 3.2 Writing a source
 ```python
 class Example(Source):
-    """example.com: a user's posts and avatar."""
-    key, folder = "exm", "{user}"
+    """example.com: a user's posts, one post by URL, and a search."""
+    code, folder = "exm", "{user}"
 
-    @target("https://example.com/{user}", "exm:{user}")
+    def login(self, auth: Auth, how: str, /) -> None:        # optional: the default covers
+        auth.cookies = auth.browser_cookies(how)              # "<browser>:<profile>" and files
+
+    def logged_in(self, auth: Auth, /) -> bool:
+        return "session" in auth.cookies
+
+    @target("exm:{user}", "example.com/{user}")
     def profile(self, site: Site, user: str) -> dict:
         return site.fetch(f"https://example.com/api/{user}").json
 
@@ -461,19 +511,104 @@ class Example(Source):
         for page in site.pages(f"/api/{profile['id']}/posts", cursor="next"):
             for p in page["items"]:
                 yield Post(p["id"], [File(p["url"])], date=p["time"])
-```
-- `site.pages(url, cursor=)` replaces `pages(fetch, cursor)`; the cursor is a key or a function.
-- `site.fetch`, `site.page`, `site.state`, `site.secrets`, `site.info/warn` and `site.back_off` stay.
 
-### 3.3 The CLI
-- `flnd download <targets…> [--from] [--time] [--limit] [--dry] [--sync] [--again]`
+    @target(r"example.com/p/{id:\d+}")
+    def post(self, site: Site, id: str) -> Iterator[Post]: ...
+
+    @target("?{words}")                                       # a finder: yields Targets
+    def search(self, site: Site, words: str) -> Iterator[Target]: ...
+```
+- **One decorator, three behaviours.**
+  - A single post returns `Iterator[Post]`.
+  - A main target has `@<route>.category` methods.
+  - A finder is a `?{…}` pattern, or `finds=True` with a literal pattern (`@target("me", finds=True)`).
+  - `shown`, `discovers`, `from_` and route `folder` go.
+  - `from_` is always the route's categories, and the folder is the category's, then the Source's.
+  - Folder templates are checked once, at class creation (`TypeError`), against `ENGINE_FIELDS | Source.fields`.
+- **`Auth`** is the one credentials object a source gets:
+  - `auth.secrets`, its own encrypted vault;
+  - `auth.cookies`, a `Jar` saved on set;
+  - `auth.browser_cookies(how)`, `auth.cookie_file(path)`, `auth.ask(...)` and `auth.expiring`.
+
+  `auth.py` shrinks to the vault and these helpers (~250 lines est.).
+- **Listings touch the site only**:
+  - `site.pages(url, cursor=)` keeps the cursor in the `Job`, so there's no thread-local;
+  - the early stops (5 older, 5 saved) live in the job only, so `caught_up`, `_hit_saved`, `older_streak` and `OLD_STREAK` leave tik, ins and twt;
+  - `site.fetch`, `site.page`, `site.state`, `site.info/warn` and `site.back_off` stay.
+- **loi search** (`loi?words`), from the API in e4fc627:
+  - it calls `GET {API}user/loi/search/{quote(words)}/latest?page=N`;
+  - it stops on an empty or repeated page;
+  - each result is `loi:<id>`.
+
+  It is words only for now; `author:`/`tag:` terms come later.
+- `Source.browser` and `single_kinds` go.
+
+### 3.3 The engine
+| today | after |
+| --- | --- |
+| `Engine`, `dry.plan`, module functions | `Flnd(home)` |
+| `RunShared`, `shared_browser`, `_BrowserPool`, `_SharedBrowser`, `_SharedCookies`, `_RawProxy`, `_Planned` | **`Run`**: one block's resources (stop trap, stores, one lazily opened `shared.browser`, a `Session` per source) |
+| `SourceRun`, `source_run`, `_make_client`, account `TargetSite`, `_connected`, `_written_back`, 4 login checks | **`Session`**: one source; it calls login once, enters `connect`, owns one `http.Client(rate=, retry=)`, writes credentials back |
+| `job.download` … `_steps`, `Resume`, `listing()` thread-local | **`Job`**: one target; it holds its cursors |
+| 8 finder functions | `Run.find(target)`: one generator for download, preview and sync (seen set, at most 25 new a sync) |
+| `Options`, `categories_by_source`, `_validate_from`, `wanted`, `selected` | `Options` (5 fields); `--from` checked once, at resolve |
+| `TargetSite` + `_PacedPage` + tab stack + warm tabs | `Site` per Job; tabs, watch and warm move into `shared.browser` |
+| `Ledger`, `Downloads`, `Board` | kept (they hold resume, dedupe and dating, and are well tested) |
+
+```
+Flnd.download ─┬─ resolve + check --from once
+               └─ with Run(home) as run:
+                     for target: session = run.session(source)        # login once, connect
+                        ├─ finder? run.find(target) → Job per child
+                        └─ Job(session, target, options).download()     # yields Saved
+                              ├─ Site (fetch, goto, page, pages, warm)
+                              ├─ listing → _kept (--time, streaks)
+                              ├─ Ledger (history, dedupe, links, dates)
+                              └─ Downloads (worker.Pool) → http.download → disk
+```
+
+| measure | today | after |
+| --- | ---: | ---: |
+| lines (engine + sources) | 11,084 | ~8,200 est. |
+| author concepts | 102 | 90 |
+| route behaviours | 5 | 3 |
+| `@target` options | 4 | 1 |
+| frames / classes per download | 15 / 16 | 6 / 9 |
+| public `flnd` names | 185 | ~165 est. |
+| tests (of 531) | — | ~6 deleted, ~95 rewritten, ~12 new |
+
+**Behaviour kept, and its guards:**
+- resume: test_job.py:1007-1049;
+- sync early stop: test_job.py:453-576, test_sync.py:187;
+- dedupe across categories: test_job.py:1188-1256;
+- dates: test_job.py:1094-1157;
+- login and write-back: test_engine.py:205-684;
+- Ctrl-C: test_engine.py:343/367/920, test_job.py:757-896;
+- async source: test_engine.py:401/424;
+- finders: test_ins.py:802-839, test_mht.py:145-244;
+- every source's output names: 221 tests.
+
+**New tests:**
+1. The job closes a newest-first listing before the next batch once 5 saved posts are seen, so there's no extra scroll.
+2. One finder path gives the same children for download, preview and sync.
+3. loi search pagination and stops.
+4. A folder template error is raised at class creation.
+5. One login call covers download, preview, sync and finders.
+6. The browser runs on the job's thread, with refreshes through `Pool.call`.
+
+**Risks:**
+- Removing the source-side `_hit_saved` could add one scroll per stop. If a live run shows that, restore it once, as `site.enough`.
+- Playwright must stay on one thread, so the browser change lands after `shared.browser`/`worker`.
+
+### 3.4 The CLI
+- `flnd download <targets…> [--from] [--time] [--limit] [--dry] [--sync] [--again]` (`--from` is required for profiles, as today; the library spells it `only=`)
 - `flnd sync`, `flnd targets [--source] [--synced]`, `flnd track|untrack|forget <targets…>`
-- `flnd login <src> [--using]`, `flnd logout <src…>`, `flnd logins`
+- `flnd login <src> [how]`, `flnd logout <src…>`, `flnd logins`
 - Global: `--ui`, `-v`, `--home`.
 
-`download`/`sync` run inside `ui.live`. The engine's `Board` writes `ui` rows only, so the library has no TUI code.
+`download`/`sync` iterate the library's `Saved` events inside `ui.live`, so the library has no TUI code.
 
-### 3.4 Performance
+### 3.5 Performance
 - **History** moves to SQLite: a lookup per file instead of loading the whole JSON at start. Target: 50k-file history, start < 100 ms.
 - **`_held`** checks the history row first and touches the disk only once for the candidate path; today it may stat twice.
 - **Downloads**:
@@ -484,33 +619,51 @@ class Example(Source):
 
 ## 4. flnc
 
+flnc and flns are **plain libraries of functions** (user, 2026-11-16: "just a plain lib … can be combine to flnd to script so it can compress on the fly. Same with flns."). They have no home object and no engine. The caller decides where files come from, and an optional `store.Memo` remembers what's done. Each CLI is a thin layer that builds the memo from `--home` and calls `fl.move` for files it renames inside a flnd home.
+
+### 4.0 One shape for the three tools
+| concern | rule |
+| --- | --- |
+| layout | `flnd.Home(".flnd")`: `media/`, `metadata/<tool>.db`, `cache/<tool>/` |
+| selection | `fl.files` (a `Query`), plain paths, or folders (`fs.walk`); no per-tool selection |
+| skip if done | **`shared.store.Memo`**: `memo.fresh(key, inputs, **meta) -> bool`, `memo.record(key, inputs, **meta)`, keyed by input stat or digest, an options digest and a tools string; flnc files, extracts and flns outputs use it |
+| dry run | the library has `plan(...)`; the CLI's `--dry` prints it. No `dry=` switch |
+| tools | `media.tools` (`Query[Tool]`) and `media.install(...)`; each CLI mounts a shared `tools [--install]` command |
+| results | `shared.Report`: `files`, `failed`, `skipped`, `seconds`, `ok`; each tool's `Result` adds its own fields |
+| progress | functions write `ui` rows; only a CLI wraps `ui.live` |
+| CLI globals | `--ui`, `-v`, `--home`, plus shared `--dry`/`--again` flags in `shared.cli` |
+| words | `--from` = categories (flnd only); flns says `--target`; `level` = quality only (no archive `--level`) |
+
 ### 4.1 The library
 ```python
 import flnc
 
-nc = flnc.Flnc(".flnd")                         # the store: .flnd/metadata/flnc.db
-report = nc.compress(".flnd/media/ins", to="auto", level="high", jobs="cpu")
-report.saved, report.files, report.failed
-nc.preview(".flnd/media/ins")                   # list[Plan]: file, candidates, expected action
-nc.archive("photos/", dest="photos.7z", password="pw", split="2g")   # list[Path]
-nc.extract("a.zip", "b.7z", passwords=["pw"], remove=True)          # list[Path]
-nc.files.filter(state="failed").get()
-nc.saved                                        # bytes saved, all time
-nc.forget(".flnd/media/ins/example_user")       # process again next time
-nc.tools                                        # Query[Tool]: name, path, version, missing
-nc.install("caesiumclt", "avifenc", "oxipng", "7zz")
+r = flnc.compress("a.jpg", to="auto", level="high")      # Result(path, before, after, kind, kept)
+flnc.compress(path, memo=memo)                            # skipped when the memo says done
+flnc.plan("a.jpg")                                        # what compress would do
+flnc.archive(["photos/"], "photos.7z", password="pw")     # thin over shared.archive
+flnc.extract("a.zip", passwords=["pw"])                   # also tries a sibling info.md
+
+# composed with flnd: compress each file as it lands
+fl = flnd.Flnd(".flnd")
+memo = store.open(".flnd/metadata/flnc.db")[flnc.Done]
+for saved in fl.download("ins:example_user"):
+    result = flnc.compress(saved.path, memo=memo)
+    if result.path != saved.path:
+        fl.move(saved.path, result.path)
 ```
+Public: `compress`, `plan`, `archive`, `extract`, `Done` (a `store.Row`), `Result`. That's 4 functions, down from a class with 9 members.
 
 ### 4.2 The CLI
 - `flnc compress [paths…] [--to keep|auto|avif|webp|jpeg|png] [--level high|max] [--jobs N] [--dry] [--again]`; the default path is `<home>/media`.
-- `flnc archive <paths…> [-o] [--password] [--split] [--level]`
+- `flnc archive <paths…> [-o] [--password] [--split]`
 - `flnc extract <archives…> [--into] [--password…] [--rm]`
 - `flnc files [--state] [--under]`, `flnc forget <paths…>`, `flnc tools [--install]`
 - Global: `--ui`, `-v`, `--home`.
 
 ### 4.3 The store
 ```python
-class File(store.Row):
+class Done(store.Row):         # a Memo row
     table = "files"
     state: State            # compressed | kept | failed
     src_size: int; src_format: str
@@ -597,44 +750,43 @@ Rejected:
 ```python
 import flns
 
-ns = flns.Flns(".flnd")                    # store .flnd/metadata/flns.db, cache .flnd/cache/flns/
-photos = ns.photos.filter(target="ins:example_user", kind="image").sort("date").limit(60).get()
 show = flns.Show(transition="random", duration=3.0, fade=0.75, size="1080p")
-r = ns.slideshow(photos, dest="show.mp4", style=show, music="song.mp3")
-r.path, r.duration, r.skipped
-ns.card(photos[:4], dest="strip.jpg", layout="strip-4", theme=flns.themes.film)
-ns.card(photos[0], dest="polaroid.jpg", layout="polaroid", caption="{date:%d %b %Y}")
-ns.album(photos, dest="2026.pdf", page=flns.Page(size="a4", row_height=320), title="2026")
-ns.collage(photos[:9], dest="grid.jpg", layout="grid-3x3")
-ns.preview(photos, style=show)             # Plan: slides, seconds, pieces cached or to render
-ns.outputs.filter(kind="slideshow").sort("at", desc=True).get()
-ns.forget("show.mp4"); ns.tools
+r = flns.slideshow(paths, "show.mp4", style=show, music="song.mp3")   # Result(path, duration, skipped)
+flns.card(paths[:4], "strip.jpg", layout="strip-4", theme=flns.themes.film)
+flns.card(paths[:9], "grid.jpg", layout="grid-3x3")         # collages are card layouts
+flns.card(paths[0], "polaroid.jpg", layout="polaroid", caption="{date:%d %b %Y}")
+flns.album(paths, "2026.pdf", page="a4", title="2026")
+flns.plan(paths, style=show)                                # slides, seconds, pieces cached
+
+# composed with flnd
+images = [f.path for f in fl.files.filter(target="ins:example_user", kind="image").sort("date").get()]
+flns.slideshow(images, "example_user.mp4", memo=memo)
 ```
+- Public: `slideshow`, `card`, `album`, `plan`, `Show`, `Theme`, `themes`, `Result`, `Done`. Four functions, down from a class with 9 members.
+  - `collage` folds into `card`'s layouts: `strip-3/4`, `grid-4`, `polaroid`, `postcard`, `grid-NxM` and `mosaic`.
+  - `photos`, `Photo` and `Page` go: selection is `fl.files`, and rotation comes from `media.probe`.
 - `Show` is a frozen record:
   - `size` (1080p, 4k, square, story, `W×H`), `fps` 30;
-  - `duration` 3 s, `fade` 0.75 s, `transition` (an xfade name, `cut` or `random`);
-  - `motion` (`Motion` enum), `fit` (FILL | FIT | BLUR, default BLUR), `crop` (CENTER; SMART and FACE later);
-  - `codec` (H264 | HEVC | AV1), `title`, `clip` 4 s;
-  - `seed`, derived from the inputs, so reruns match.
+  - `duration` 3 s, `fade` 0.75 s;
+  - `transition` (an xfade name, `cut` or `random`), `fit` (FILL | FIT | BLUR, default BLUR);
+  - `codec` (H264 | HEVC | AV1 | HW), `title`, `clip` 4 s;
+  - `seed`, from the inputs.
+
+  `motion` and `crop` come with their later features.
 - `Theme` covers the background, frame, text, font and caption. The themes are `plain`, `film`, `polaroid`, `dark` and `pastel`.
-- `Photo` is `(path, target, date, kind, width, height, rotation)`; `date` is the mtime flnd set.
-- Every verb returns a `Result(path, skipped, seconds, …)`.
-- Progress goes to the sink given to `Flns(progress=…)`, keeping the 4-option rule.
 - Errors: `flns.Error`, and `flns.MissingError` naming the fix.
 
 ### 5.4 The CLI
 ```
 flns slideshow <paths|targets…> [-o] [--transition fade|wipeleft|…|random|cut] [--duration] [--fade]
-               [--motion none|kenburns|zoom-in|…|random] [--size] [--fps] [--fit] [--music]
-               [--title] [--codec h264|hevc|av1] [--hw] [--seed]
-flns card <…> --layout strip-3|strip-4|grid-4|polaroid|postcard [--theme] [--caption] [--dpi 300]
-flns album <…> [-o album.pdf] [--page a4|letter|square] [--per-page N] [--title]
-flns collage <…> [--layout grid-3x3|mosaic] [--size WxH]
-flns transitions | outputs [--kind] | forget <outputs…> | tools
-Selection on every maker: --from-target ins:example_user --time 2026-01-01, --kind --limit --order date|random --dry
+               [--size] [--fps] [--fit] [--music] [--title] [--codec h264|hevc|av1|hw] [--seed]
+flns card <…> --layout strip-3|strip-4|grid-4|polaroid|postcard|grid-3x3|mosaic [--theme] [--caption]
+flns album <…> [-o album.pdf] [--page a4|letter|square] [--title]
+flns outputs [--kind] | forget <outputs…> | tools
+Selection on every maker: --target ins:example_user --time 2026-01-01, --kind --limit --order date|random --dry
 Global: --ui, -v, --home
 ```
-A positional is a file, a folder (`fs.walk`), or a flnd target (through `flnd.Flnd.files`).
+A positional is a file, a folder (`fs.walk`), or a flnd target (through `fl.files`). `--transition`'s help lists the names this ffmpeg offers.
 
 ### 5.5 Animations
 **Transitions** (`xfade`, `duration=fade`):
@@ -709,7 +861,7 @@ Encoders:
 
 ### 5.8 Store
 ```python
-class Output(store.Row):          # key: dest relative to the home, or absolute
+class Done(store.Row):            # a Memo row; key: dest relative to the home, or absolute
     table = "outputs"
     kind: str; inputs: str        # digest of [(path, mtime, size), …]
     options: str; tools: str      # the record's JSON; "ffmpeg 9.0.2; Pillow 11.3"
@@ -732,20 +884,29 @@ Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` r
 3. `perf:` `store` on SQLite: `Db`, `Table`, `Row`, `rows`, `batch`.
 4. `refactor:` / `perf:` one commit per module, in this order: `text`, `clock`, `fs`, `sh`, `worker`, `http`, `cookies`, `selector`, `browser`, `crypto`, `archive`, `prompt`, `cli`, `ui` (without live). Each carries its tests, flnd's call sites, its fake and the snapshot.
 5. `feat:` `ui.live` with the three modes, prompts as modals, `Stop.paused`, `Pool.pause`.
-6. `refactor:` flnd's library as `Flnd`: records, `move`, `site.pages`, the source surface.
-7. `perf:` flnd's history on SQLite, the `_held` fix, segmented downloads, the import-time test.
-8. `feat:` flnd's CLI on the library and `ui.live`; README.
-9. `feat:` `shared.media`, with pinned tool specs.
-10. `feat:` flnc: library, store, image pipeline, CLI.
-11. `feat:` flnc video and audio.
-12. `feat:` flnc archive and extract.
-13. `docs:` README and AGENTS.md for flnc, the UI modes and the API rules.
-14. `feat:` `media.render`, `media.concat`, `media.fit`, `media.font`, probe rotation.
-15. `feat:` flns: library, selection and store.
-16. `feat:` flns slideshow: pieces, transitions, cache, concat, audio, CLI.
-17. `feat:` flns cards and collages: layouts and themes.
-18. `feat:` flns album PDF: justified rows and pages.
-19. `docs:` README for flns. Later, one commit each: motion, clip ducking, `loop`, album HTML, smart/face crop, `reel`, `recap`.
+6. flnd's sources and engine, simplified (§3), one commit each. A–G touch flnd only and may run alongside step 4:
+   - A `refactor:` drop redundant route options (`from_`, route `folder`, mht `discovers`) and the dead `Source.browser` and `params` getattr;
+   - B `refactor:` remove mht's author and genre routes, `job._run_discovered` and the cross-source child branch;
+   - C `refactor:` check `--from` once, and folder templates at class creation;
+   - D `refactor:` one login check and one finder path in the engine;
+   - E `feat:` add the loi search route;
+   - F `refactor:` keep the early-stop rules in the job only;
+   - G `refactor:` allow literal finder patterns and drop `shown`;
+   - H `refactor:` site on shared `http` and `browser`: one client per source; `_BrowserPool` and its proxies → one `shared.browser`; `page.watch`, `site.warm`. This comes after step 4;
+   - I `refactor:` sources own login through `Auth`, and `auth.py` shrinks to the vault and helpers.
+7. `refactor:` flnd's library as `Flnd`: `Run`, `Session`, `Job`, the cursor in `Job` (`site.pages`), `download` yielding `Saved`, `Report.of`, `move`, `Home`, `files`.
+8. `perf:` flnd's history and targets on typed `store.Row`s, the `_held` fix, segmented downloads, the import-time test.
+9. `feat:` flnd's CLI on the library and `ui.live`; README.
+10. `feat:` `shared.media` with pinned tool specs, plus `media.tools`/`install`, `store.Memo`, `shared.Report`, and shared `--dry`/`--again` flags.
+11. `feat:` flnc: `compress`, `plan`, `Done`, the image pipeline, and the CLI.
+12. `feat:` flnc video and audio.
+13. `feat:` flnc `archive`/`extract`, over `shared.archive`.
+14. `docs:` README and AGENTS.md for flnc, the UI modes and the API rules.
+15. `feat:` `media.render`, `media.concat`, `media.fit`, `media.font`, probe rotation.
+16. `feat:` flns: `slideshow` (pieces, transitions, cache, concat, audio), `plan`, `Done`, the CLI.
+17. `feat:` flns `card` (layouts, themes, collages).
+18. `feat:` flns `album` PDF.
+19. `docs:` README for flns. Later, one commit each: motion, crop, clip ducking, `loop`, album HTML, `reel`, `recap`.
 
 ## 7. Verification
 
@@ -754,6 +915,7 @@ Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` r
 - The tests use the fakes (`sh.fake`, `http.fake`, `clock.Fake`, `prompt.fake`), so there is no network.
 - Textual's `run_test()` Pilot covers the keys and the `m` switch in `INLINE` and `FULL`; the `PLAIN` snapshot tests stay.
 - A test checks that `Flnd.move` makes `_held` find a renamed file, so it isn't downloaded again.
+- A script test composes `fl.download` with `flnc.compress` and `fl.move` on fakes: each file is compressed once, and history follows the rename.
 - By hand, on the authorized test accounts:
   - `uv run flnd download <target> --limit 5` with `--ui inline` and `--ui full`: press `p`, `v`, `f`, `m`, then `q` twice, and check that the terminal is restored. Pipe the same command to a file to check that it falls back to `plain`.
   - On a copy of `.flnd/media`, run `flnc compress --dry`, then for real, then again. The rerun must skip everything in < 3 s. Check that mtimes are kept, and that `flnd sync` doesn't download the `.avif`/`.webp` files again.
