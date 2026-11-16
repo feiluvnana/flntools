@@ -10,12 +10,18 @@ make bench ARGS="net disk"              # only these groups
 make bench ARGS=--gate                  # exit 1 on a regression against the baseline
 make bench ARGS="db --gate --tolerance 5"
 make bench ARGS=--record                # store this run as the new baseline
+make bench ARGS=--smoke                 # each group's smallest case once: does it still run?
 ```
 
 `make bench` runs `tests/bench/run.py` inside the project environment
 (`uv run python tests/bench/run.py`). It is never part of `make check`: it takes minutes, and timings are
 noisy. Everything is offline: a loopback HTTP server, synthetic data, and scratch folders that
 are removed afterwards.
+
+`make check` does run every group in **smoke mode** (`tests/test_bench.py`): each at its
+smallest size (a few files, a few rows), each timed once, in a few seconds. Its numbers are
+thrown away; it only proves each script still runs against today's code, so a benchmark can't
+silently break between two full runs.
 
 The run prints one line per number, writes them all to `tests/bench/last.json` (ignored by
 git), and compares each with its **baseline** (the number recorded earlier on the same machine)

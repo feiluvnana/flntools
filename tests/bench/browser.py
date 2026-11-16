@@ -33,7 +33,7 @@ import kit
 from flnd import _browser, _cookies, _html, _net
 from flnd._loop import Loop
 
-BATCHES = 30
+BATCHES = kit.size(30, 3)
 # The feed: each batch appends 10 tall rows, and nearing the bottom asks for the next batch.
 FEED = """<html><body><div id=list></div><script>
 let n = 0, busy = false;

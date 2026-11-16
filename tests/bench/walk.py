@@ -16,10 +16,10 @@ import kit
 
 from flnd import _files
 
-FOLDERS, PER_FOLDER = 100, 1000
+FOLDERS, PER_FOLDER = kit.size(100, 2), kit.size(1000, 50)
 FILES = FOLDERS * PER_FOLDER
 # How many known paths `stat` is called on.
-STATS = 10_000
+STATS = kit.size(10_000, 100)
 
 
 def scandir(root: Path) -> int:

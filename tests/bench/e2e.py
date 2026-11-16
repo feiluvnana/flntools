@@ -32,11 +32,13 @@ from flnd import _home, _net, _run
 from flnd._ui import ui
 from flnd.engine import Engine
 from flnd.options import Options
-from flnd.source import File, Post, Site, Source, Target, pages, target
+from flnd.source import File, Post, Site, Source, Target, target
 
 API, CDN, PER_PAGE = "https://api.bench.example", "https://cdn.bench.example", 50
 # The files the home of run 3 holds: the size of a large followed account.
-LARGE = 100_000
+LARGE = kit.size(100_000, 1000)
+# The posts of the runs without latency (1 to 3), and of the run with it (4).
+POSTS, SLOW_POSTS = kit.size(2000, 20), kit.size(500, 10)
 BODY = b"\0" * (100 * 1024)
 # The first bytes of a JPEG and of an MP4, so the engine's type sniffing sees real media.
 HEADS = {".jpg": (b"\xff\xd8\xff\xe0", "image/jpeg"), ".mp4": (b"\0\0\0\x18ftypmp42", "video/mp4")}
@@ -57,11 +59,11 @@ class Fake:
 class Bench(Source):
     """A minimal source over the fake site: one target, one category, paged by a cursor."""
 
-    code, name = "bnc", "Bench"
+    code, name, api = "bnc", "Bench", 1
     domains = ("bench.example",)
     folder = "{category}"
 
-    @target("{user}")
+    @target("bnc:{user}")
     def user(self, site: Site, user: str) -> dict:
         """The target's profile; the fake site needs nothing but the handle."""
         return {"id": user}
@@ -69,10 +71,7 @@ class Bench(Source):
     @user.category(newest_first=True)
     def posts(self, site: Site, profile: dict) -> Iterator[Post]:
         """Every post, newest first, page by page until the API sends no cursor."""
-        def fetch(cursor: str | None) -> dict:
-            return site.fetch(f"{API}/posts", params={"cursor": cursor or "0"}).json
-
-        for page in pages(fetch, lambda page: page.get("next")):
+        for page in site.pages(f"{API}/posts", cursor="next"):
             for item in page["items"]:
                 yield Post(item["id"], [File(url) for url in item["urls"]], date=item["taken_at"])
 
@@ -136,6 +135,10 @@ def grow(home: Path, files: int) -> None:
         # A transaction per 1,000 rows: the same rows a long run commits post by post.
         for start in range(0, len(rows), 1000):
             db.save(rows[start:start + 1000])
+        # A sync over fewer rows would time the wrong case, so say so instead of reporting it.
+        held = db.count("bnc:example_user")[0]
+        if held != files:
+            raise SystemExit(f"e2e: the grown home holds {held} files, not {files}")
 
 
 def main() -> None:
@@ -145,7 +148,7 @@ def main() -> None:
     with _net.fake(answer), ui.scope(dest=io.StringIO(), color=False), \
             tempfile.TemporaryDirectory(prefix="flnd-bench-") as scratch:
         # 1 and 2: the engine alone.
-        Fake.posts, Bench.pace = 2000, 0.0
+        Fake.posts, Bench.pace = POSTS, 0.0
         home = Path(scratch, "fast", ".flnd")
         took = run(home)
         files = sum(1 for path in (home / "media").rglob("*") if path.is_file())
@@ -157,7 +160,7 @@ def main() -> None:
         grow(home, LARGE)
         report.add("sync_nothing_new_100k", run(home, again=True), "s")
         # 4: latency, at the defaults.
-        Fake.posts, Bench.pace = 500, default_pace
+        Fake.posts, Bench.pace = SLOW_POSTS, default_pace
         Fake.page_latency, Fake.file_latency = 0.150, 0.040
         report.add("latency_500_posts", run(Path(scratch, "slow", ".flnd")), "s")
     report.emit()

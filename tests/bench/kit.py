@@ -10,6 +10,11 @@ group talks to the runner through this module:
 3. it ends with `Report.emit`, which prints one JSON object to stdout, the only thing the runner
    reads; or with `Report.skip` when this machine lacks what it needs (Chromium, ffmpeg).
 
+A smoke run (`make bench ARGS=--smoke`, and `tests/test_bench.py` in `make check`) sets
+`FLND_BENCH_SMOKE=1`: every group then runs its smallest case once (`size` picks each case's
+small size, and `best` and `median_wall` run once), so a group that no longer matches flnd's
+code fails in `make check` instead of rotting until the next full run. Its numbers mean nothing.
+
 Rules a change must keep:
 - stdout carries the JSON report and nothing else, so progress goes to stderr;
 - nothing here touches the network beyond 127.0.0.1, and all data is synthetic;
@@ -19,6 +24,7 @@ Rules a change must keep:
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import subprocess
 import sys
@@ -29,6 +35,21 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
+# Whether this is a smoke run, which checks that a group still runs, not what it measures.
+SMOKE = os.environ.get("FLND_BENCH_SMOKE") == "1"
+
+
+def size(full: int, smoke: int) -> int:
+    """A case's size: `full` in a real run, `smoke` in a smoke run.
+
+    Args:
+        full: the size the group's numbers are measured at, such as 100,000 rows.
+        smoke: the least that still runs every line of the case, such as 200 rows.
+
+    Returns:
+        One of the two.
+    """
+    return smoke if SMOKE else full
 
 
 class Report:
@@ -92,7 +113,7 @@ def best(work: Callable[[], object], *, runs: int = 3,
         The shortest wall time of one run, in seconds.
     """
     fastest = float("inf")
-    for _ in range(runs):
+    for _ in range(1 if SMOKE else runs):
         if before is not None:
             before()
         start = time.perf_counter()
@@ -115,7 +136,7 @@ def median_wall(argv: list[str], *, runs: int = 15) -> float:
         The median wall time, in seconds.
     """
     times = []
-    for _ in range(runs):
+    for _ in range(1 if SMOKE else runs):
         start = time.perf_counter()
         subprocess.run(argv, capture_output=True, check=True)
         times.append(time.perf_counter() - start)

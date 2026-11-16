@@ -25,10 +25,10 @@ import kit
 
 from flnd import _home
 
-ROWS = 100_000
+ROWS = kit.size(100_000, 1000)
 # 10,000 random keys read back, seeded so every run reads the same ones.
-PROBES = 10_000
-COMMIT_ROWS = 50_000
+PROBES = kit.size(10_000, 100)
+COMMIT_ROWS = kit.size(50_000, 1000)
 FILES = ("CREATE TABLE files (key TEXT PRIMARY KEY, target TEXT, post_id TEXT, path TEXT,"
          " size INT, mtime REAL, hash BLOB)")
 INSERT = "INSERT INTO files VALUES (?,?,?,?,?,?,?)"

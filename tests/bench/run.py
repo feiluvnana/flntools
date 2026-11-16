@@ -5,6 +5,7 @@
     make bench ARGS=--gate                    # fail on a regression against gates.json
     make bench ARGS="db --gate --tolerance 5"
     make bench ARGS=--record                  # store this run as the new baseline
+    make bench ARGS=--smoke                   # each group's smallest case once: does it run?
 
 The Makefile runs this file inside the project environment (`uv run python tests/bench/run.py …`).
 The suite is offline: a loopback server, synthetic data and scratch folders. It is never part of
@@ -23,6 +24,10 @@ How a run goes:
    (15% by default): run it by hand before a performance commit.
 5. `--record` writes this run's numbers into `gates.json` as the new baselines, keeping every
    target. Record after a performance commit lands, so the next gate compares against it.
+
+`--smoke` runs every group at its smallest size, once (`kit.SMOKE`), to check that each still
+runs against today's code; it prints no table and writes neither `last.json` nor `gates.json`.
+`tests/test_bench.py` does the same inside `make check`.
 
 A group that fails (a crash, a wrong file count) is reported and makes the run exit 1. A group
 that is skipped (no Chromium, no ffmpeg) is reported and doesn't.
@@ -73,30 +78,44 @@ def parse(argv: list[str]) -> argparse.Namespace:
                              f"(default: {TOLERANCE:g})")
     parser.add_argument("--record", action="store_true",
                         help="write this run's numbers into gates.json as the new baselines")
+    parser.add_argument("--smoke", action="store_true",
+                        help="run each group's smallest case once, only to check it still runs")
     args = parser.parse_args(argv)
     unknown = [group for group in args.groups if group not in GROUPS]
     if unknown:
         parser.error(f"unknown group {', '.join(unknown)}; the groups are {', '.join(GROUPS)}")
+    if args.smoke and args.record:
+        parser.error("--smoke numbers mean nothing, so they can't be recorded")
     args.groups = args.groups or list(GROUPS)
     return args
 
 
-def run_group(group: str) -> dict[str, Any]:
+def run_group(group: str, *, smoke: bool = False) -> dict[str, Any]:
     """Run one group's script in a fresh interpreter and return its report.
 
     Args:
         group: the group's name, the file `<group>.py` in this folder.
+        smoke: run its smallest case once (`kit.SMOKE`) instead of measuring it, with its
+            progress lines kept back unless it fails.
 
     Returns:
         The report: `metrics` and `skipped`, as `kit.Report.emit` printed them, and `failed`,
-        a reason when the script exited with an error or printed no report.
+        a reason when the script exited with an error or printed no report (in a smoke run,
+        with the last lines it printed to stderr).
     """
-    print(f"{group}:", file=sys.stderr, flush=True)
+    if not smoke:
+        print(f"{group}:", file=sys.stderr, flush=True)
+    env = {**os.environ, "FLND_BENCH_SMOKE": "1"} if smoke else None
+    # A smoke run keeps its progress lines quiet, and shows them only when the group failed.
     done = subprocess.run([sys.executable, str(HERE / f"{group}.py")], cwd=ROOT,
-                          stdout=subprocess.PIPE, text=True)
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE if smoke else None,
+                          text=True, env=env)
     lines = done.stdout.strip().splitlines()
     if done.returncode != 0 or not lines:
-        return {"metrics": {}, "skipped": None, "failed": f"exited with {done.returncode}"}
+        failed = f"exited with {done.returncode}"
+        if done.stderr:
+            failed += ":\n" + "\n".join(done.stderr.strip().splitlines()[-20:])
+        return {"metrics": {}, "skipped": None, "failed": failed}
     report = json.loads(lines[-1])
     report["failed"] = None
     return report
@@ -216,17 +235,22 @@ def main(argv: list[str]) -> int:
     metrics: dict[str, dict[str, Any]] = {}
     skipped, failed = {}, {}
     for group in args.groups:
-        report = run_group(group)
+        report = run_group(group, smoke=args.smoke)
         metrics.update(report["metrics"])
         if report["skipped"]:
             skipped[group] = report["skipped"]
         if report["failed"]:
             failed[group] = report["failed"]
     about = {"date": datetime.date.today().isoformat(), "commit": commit(), **machine()}
-    LAST.write_text(json.dumps({**about, "metrics": metrics, "skipped": skipped,
-                                "failed": failed}, indent=2) + "\n", encoding="utf-8")
+    if not args.smoke:
+        LAST.write_text(json.dumps({**about, "metrics": metrics, "skipped": skipped,
+                                    "failed": failed}, indent=2) + "\n", encoding="utf-8")
     gates = json.loads(GATES.read_text(encoding="utf-8"))
-    regressions = table(metrics, gates["metrics"], args.tolerance)
+    # A smoke run's numbers would only mislead next to the baselines.
+    regressions = [] if args.smoke else table(metrics, gates["metrics"], args.tolerance)
+    if args.smoke:
+        print(f"smoke: {len(args.groups) - len(failed)} of {len(args.groups)} groups ran, "
+              f"{len(metrics)} metrics")
     for group, reason in skipped.items():
         print(f"skipped {group}: {reason}")
     for group, reason in failed.items():

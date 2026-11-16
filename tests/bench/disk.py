@@ -21,7 +21,7 @@ import kit
 
 from flnd import _files
 
-COUNT = 5000
+COUNT = kit.size(5000, 50)
 DATA = os.urandom(100 * 1024)
 # A post's date, as the downloader sets it: noon UTC.
 MTIME = 1_767_355_200.0

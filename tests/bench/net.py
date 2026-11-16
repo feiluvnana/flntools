@@ -35,14 +35,14 @@ from flnd import _files, _net, _transfer
 from flnd._loop import Loop
 from flnd._ui import ui
 
-BIG = 1 << 30
+BIG = kit.size(1 << 30, 1 << 20)
 # The big file is written in pieces of this size, so making it never holds 1 GiB in memory.
-PIECE = 64 << 20
-SMALL, COUNT = 100 * 1024, 2000
+PIECE = min(64 << 20, BIG)
+SMALL, COUNT = 100 * 1024, kit.size(2000, 20)
 # Transfers at once to one host: where flnd's cap starts (`flnd.site.MEDIA_CAP`), held there.
 AT_ONCE = 8
 # The slow disk: four files of 16 MiB written at 20 MB/s.
-MEDIUM, SLOW_FILES, DISK_RATE = 16 << 20, 4, 20e6
+MEDIUM, SLOW_FILES, DISK_RATE = kit.size(16 << 20, 1 << 20), 4, 20e6
 PROBE = 0.005
 
 
