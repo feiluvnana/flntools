@@ -21,6 +21,8 @@ COMPLETE = "complete"
 CURSORS = "cursors"
 FAILED = "failed"
 ALL = "all"
+# Headers that log a request in; targets.db isn't encrypted like the vault, so they never reach it.
+SECRET_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization"})
 
 COMMON_FIELDS = frozenset({
     "source", "site", "query", "target", "user", "id", "category", "path",
@@ -233,6 +235,12 @@ def keep_failed(
         current.pop(item_key, None)
     for item_key, entry in failed.items():
         current[item_key] = dict(entry)
+    for entry in current.values():
+        if isinstance(headers := entry.get("headers"), dict):
+            entry["headers"] = {
+                name: value for name, value in headers.items()
+                if str(name).lower() not in SECRET_HEADERS
+            }
     if current:
         row[FAILED] = current
     else:
