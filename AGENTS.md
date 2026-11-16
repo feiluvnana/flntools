@@ -3,8 +3,8 @@
 These rules are for anyone, person or agent, who changes this repository. `PLAN.md` is the design of the rebuild; this file says how to work on it.
 
 ## Status
-- `PLAN.md` on branch `next` is the plan: flnd becomes one fast package (a library plus a thin CLI, no `shared` toolkit), rebuilt in the ranked commits of its section 15.
-- **Nothing is built from it until the user approves it.** Until then, change code only to fix a bug, and say so in the commit.
+- `PLAN.md` on branch `next` is the plan, and `ARCHITECTURE.md` explains the design for readers: flnd becomes one fast package (a library plus a thin CLI, no `shared` toolkit), rebuilt in the ranked commits of its section 15.
+- **The user approved it on 2026-11-16**, with the recommended answer to every question in its section 16. The rebuild follows section 15's commits in order.
 - Until the rebuild lands, the code still has today's layout: `shared/`, `flnd/` and `scripts/dev.py`. The sections below give today's commands and the target rules side by side wherever they differ.
 
 ## Commit convention
@@ -53,7 +53,7 @@ Examples:
 - **Everything else is private**, with a leading underscore: `flnd/_net.py`, `_browser.py`, `_db.py`, `_files.py`, `_download.py` and the rest.
 - **`flnd/cli.py`** is the thin CLI (argparse). It imports only `flnd`, so a script can do anything the CLI can.
 - **`flnd/sources/`** has one module per built-in site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`) and `_manifest.py`, the list `flnd --help` and target resolution read without importing a source. A source imports only `flnd.source` and the stdlib.
-- **`docs/`** holds the guides for people (§14.6). `examples/` holds a runnable script and an example plugin with its test.
+- **`ARCHITECTURE.md`** at the root is the map of the design; keep it true when a change moves a part. **`docs/`** holds the guides for people (§14.6). `examples/` holds a runnable script and an example plugin with its test.
 - **Plugins** live outside the repo: in the user's plugin folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`), or as installed packages with a `flnd.sources` entry point. flnd never loads code from a home folder, since a home may be a folder someone else made.
 
 ## API and naming

@@ -1,8 +1,8 @@
 # flnd
 
-flnd downloads photos, videos and files from the sites you follow and keeps them up to date. It shrinks them without visible loss, unpacks the archives it saves, and turns them into slideshows, photo cards and albums. It is a Python library with a thin command line on top, and new sites can be added as plugins.
+flnd downloads photos, videos and files from the sites you follow and keeps them up to date. It shrinks them without visible loss and unpacks the archives it saves. It is a Python library with a thin command line on top, and new sites can be added as plugins.
 
-> **Status.** This branch (`next`) holds [PLAN.md](PLAN.md), the plan for rebuilding flnd as one fast package. This README describes flnd **as planned**. Until the rebuild lands (PLAN.md §15), the code here still behaves as on `main`: run `git show main:README.md` to read that version. The `docs/` pages linked below are written during the rebuild.
+> **Status.** This branch (`next`) holds [PLAN.md](PLAN.md), the plan for rebuilding flnd as one fast package, and [ARCHITECTURE.md](ARCHITECTURE.md), which explains the design. This README describes flnd **as planned**. Until the rebuild lands (PLAN.md §15), the code here still behaves as on `main`: run `git show main:README.md` to read that version. The `docs/` pages linked below are written during the rebuild.
 
 Sites: **Instagram** (`ins`), **TikTok** (`tik`), **Twitter/X** (`twt`), **Facebook** (`fbk`), **Telegram** (`tlg`), **LOIBUS** (`loi`) and **Mimihentai** (`mht`), plus any site a plugin adds.
 
@@ -19,7 +19,7 @@ uv tool install '.[telegram]'            # with Telegram
 
 From a checkout, `make setup` creates `.venv`, and then `uv run flnd …` runs it. On Windows, install make first with `winget install ezwinports.make`, or type the `uv` command each Makefile target runs (see [Development](#development)).
 
-Photos are compressed in-process, with no tool to install. ffmpeg is used for videos (joining video and sound, compressing, slideshows) and 7zz for archives. flnd finds each on your PATH, or offers to download it the first time it's needed.
+Photos are compressed in-process, with no tool to install. ffmpeg is used for videos (joining video and sound, compressing) and 7zz for archives. flnd finds each on your PATH, or offers to download it the first time it's needed.
 
 ## Quick start
 ```bash
@@ -29,7 +29,6 @@ flnd download ins:example_user --only reels --when 2026
 flnd follow ins:example_user                 # follow it, and download what's there now
 flnd sync                                    # new posts of every followed target
 flnd ls                                      # what you follow: files, size, last sync
-flnd show ins:example_user --by month        # one slideshow per month
 ```
 
 ## Commands
@@ -45,9 +44,6 @@ flnd check [--fix]                   compare the history with the files on disk,
 flnd login [source] [how]            how: chrome | firefox | safari | cookies.txt | qr | phone; alone, lists your logins
 flnd logout <source>
 flnd sources                         built-in and plugin sources
-flnd show  <targets|paths…> [--by post|day|month|year|all] [--style classic|fun|calm|story] [--music FILE]
-flnd card  <targets|paths…> [--by post|day|month] [--style strip|grid|polaroid|postcard]
-flnd album <targets|paths…> [--by month|year|all]
 
 global options: --home DIR · --ui plain|inline · -v · --json
 ```
@@ -83,14 +79,6 @@ global options: --home DIR · --ui plain|inline · -v · --json
 - **`--compress`** makes each file as small as it can without visible loss, as it lands: photos to AVIF or optimized JPEG, videos to AV1 (or HEVC, with `[compress] video = "hevc"`, for devices that can't play AV1). Each result is checked before it replaces the original, and a file that wouldn't get smaller is left alone. `flnd sync --compress` also shrinks files saved earlier.
 - **Archives unpack automatically** into a folder beside them. A site that knows the password (LOIBUS) passes it on. Unpacking refuses archive tricks: paths that escape the folder, links, and zip bombs.
 
-### Slideshows, cards and albums
-```bash
-flnd show ins:example_user --when 2026 --style fun --music song.mp3
-flnd card ins:example_user --by day --style strip        # photobooth strips
-flnd album twt:example_handle --by year                  # a PDF photo book per year
-```
-Outputs go to `<home>/made/<target>/<show|card|album>/`. A rerun only redoes what changed. These three are planned for the release after the first (PLAN.md §16, question 15).
-
 ## Logging in
 `flnd login <source> [how]` reads your login from your browser (Chrome, Firefox, Safari, Edge, Brave), or from a cookies file you exported. Telegram logs in with Telegram Web, a QR code or your phone number. Logins are stored encrypted in `<home>/secrets.db`, with the key in `<home>/secret.key`, so keep the home as private as the logins in it. `[vault] key = "keychain"` in `config.toml` moves the key to your system keychain, though a scheduled sync may not be able to reach it there. `flnd login` alone shows each login and when it expires. A site without a login still downloads what's public, and says so.
 
@@ -99,7 +87,6 @@ Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./
 ```
 <home>/
   media/<source>/<target>/…   downloaded files, by category (posts/, reels/, stories/, …)
-  made/                       slideshows, cards and albums
   flnd.db                     what was saved, followed targets, run history and failures
   secrets.db                  logins, encrypted
   secret.key                  the key to secrets.db
@@ -119,7 +106,6 @@ with flnd.open("~/Media/flnd") as fl:
 
     report = fl.sync().wait()                            # runs it, and returns the counts and failures
     photos = fl.files(target="ins:example_user", kind="image")   # what's saved, from flnd.db
-    fl.show(photos, "example_user.mp4", style="calm")
 ```
 [docs/library.md](docs/library.md) covers every call, its options and its events.
 
@@ -148,8 +134,8 @@ class Example(Source):
 Save it as `exm.py` in your plugin folder (`~/.config/flnd/sources/`, or `$FLND_SOURCES`), publish it as a package with a `flnd.sources` entry point, or call `fl.add(Example)`. A plugin runs with your logins, so install only code you trust; flnd never loads one from a home folder. [docs/writing-a-source.md](docs/writing-a-source.md) walks through it, with the `flnd.testing` kit for its tests.
 
 ## Documentation
-[docs/](docs/README.md) covers:
-- the architecture, the library and the CLI;
+[ARCHITECTURE.md](ARCHITECTURE.md) explains how flnd is built and how to write a source. [docs/](docs/README.md) covers:
+- the library and the CLI;
 - writing a source;
 - errors, storage and performance;
 - a page per site.

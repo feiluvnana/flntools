@@ -6,13 +6,14 @@ The user's brief, 2026-11-16, gathered from one session:
 - **A nice, easy API**, above all the source API. Sources can also be added at runtime, as plugins.
 - **Robust error handling** end to end.
 - **Every good feature**, ranked, with an MVP cut.
-- **Built in:** compression, archive extraction, and slideshows, cards and albums.
+- **Built in:** compression and archive extraction. Slideshows, cards and albums were removed on 2026-11-16, at the user's request.
+- **A simple, feature-rich architecture, with sources that are straightforward to write**, reviewed against gallery-dl, yt-dlp, instaloader and twscrape. [ARCHITECTURE.md](ARCHITECTURE.md) explains the design for readers; this plan keeps the measurements, the dependencies and the order of the work.
 - **The Makefile instead of `scripts/`.**
 - **Type hints for readers, not a checking gate.**
 - **Extensive comments and docs for human readers** (user, 2026-11-16: "the codebase should have extensive comment and docs for human to read").
 - **Everything is open.** The old API, CLI and data format don't constrain this design.
 
-This is the plan for the rebuild. Its steps are the commits of section 15, but nothing is built until the user approves it; section 16 lists the decisions to confirm first.
+This is the plan for the rebuild, and its steps are the commits of section 15. The user approved it on 2026-11-16, taking the recommended answer to every question in section 16.
 
 ## Contents
 1. Summary
@@ -25,7 +26,7 @@ This is the plan for the rebuild. Its steps are the commits of section 15, but n
 8. Errors
 9. The CLI
 10. Storage and the home folder
-11. Compression, extraction and media
+11. Compression and extraction
 12. Features, ranked
 13. Dependencies, native code and compilation
 14. Tooling: the Makefile, tests, benchmarks, AGENTS.md
@@ -65,7 +66,7 @@ This is the plan for the rebuild. Its steps are the commits of section 15, but n
 - **Plugins:** a Python file in the user's plugin folder (`~/.config/flnd/sources/`, never inside a home), an installed package (the `flnd.sources` entry point), or `fl.add(MySource)`. Each is validated at load time and versioned (`api = 1`), and a broken one disables only itself. Authors get a test kit, `flnd.testing`.
 - **Errors:** one hierarchy. Every failure is classified as retryable, permanent, login, or fatal for the run. A failure report says what failed, why, and how to retry; Ctrl-C has three stages. A user error never prints a traceback.
 - **Docs for humans:** guides in `docs/`, full docstrings on every module and function, and comments that explain why and how wherever the code isn't obvious. A test keeps them in step with the code (section 14.6).
-- **Size:** the 6,366 lines of `shared` and the 11,124 lines of flnd become about 13,700 lines in one package (estimated, section 4.4), before the prose that section 14.6 adds. The wrappers, generic `Query`, `Sink` and Protocols written for pyright, and the error trees and fakes that existed only to make `shared` stand alone, all go.
+- **Size:** the 6,366 lines of `shared` and the 11,124 lines of flnd become about 13,000 lines in one package (estimated, section 4.4), before the prose that section 14.6 adds. The wrappers, generic `Query`, `Sink` and Protocols written for pyright, and the error trees and fakes that existed only to make `shared` stand alone, all go.
 
 **Expected effect on a real run.** Take a 1,000-post Instagram profile, 2,000 files, and a CDN latency of about 100 ms:
 - **Today:** about 60–70 s. Listing takes about 34 s (40 scroll steps at 0.6 s, then 10 s of idle), and the downloads take about 25 s at 8 at a time.
@@ -290,8 +291,7 @@ flnd/
   _tools.py        finding, downloading and verifying ffmpeg and 7zz, the only outside tools (was shared/_sh)
   _shrink.py       --compress: plan, encode (Pillow in-process for images, ffmpeg for video), verify, place
   _unpack.py       automatic archive extraction (was shared/_archive)
-  _media.py        probe, render with progress, concat, fit
-  _show.py _stills.py _themes.py   slideshows, cards and albums
+  _media.py        ffmpeg probes, and ffmpeg runs with progress (joining DASH tracks, compressing video)
   _ui.py           plain and inline progress (Rich, lazy), prompts (input/getpass)
   _text.py _time.py                file names, templates, days, sizes; the clock and its fake
   _plugins.py      discovery, validation and versioning of external sources, and containing their failures
@@ -329,8 +329,8 @@ A leading `_` marks a private module. Only `flnd`, `flnd.source` and `flnd.testi
 | flnd engine side | 7,095 | ~4,800 |
 | sources (`flnd/sources/`) | 4,029 | ~3,400: `Site.pages`, the early stops and wall detection move into the engine |
 | internals that were `shared` | — | ~3,000 |
-| new: plugins, testing, compress, extract, media | — | ~2,500 |
-| total | 17,490 | ~13,700 |
+| new: plugins, testing, compress, extract | — | ~1,800 |
+| total | 17,490 | ~13,000 |
 | frames per file download, call to disk | 15 | ~6 |
 
 The total shrinks even though compression, extraction, media and plugins are new; the wrappers and parallel layers pay for them. The planned figures count code. Section 14.6's docstrings and comments come on top, by design, so a fair comparison counts code lines (no docstrings, comments or blank lines) on both sides.
@@ -431,7 +431,7 @@ For each area: the change, the evidence behind it, the risk, and what it does to
 - **Encoders:**
   - **Photos:** Pillow in-process (2.8): AVIF at 0.12 s for 12 MP, against 0.30 s for avifenc, with no spawn and no tool to install. The fallbacks are JPEG through libjpeg-turbo with `optimize=True`, and WebP. PNG goes through `pyoxipng`. Pillow's wheels carry every one of these codecs, so photos need no outside tool at all.
   - **Video:** SVT-AV1 preset 8 is about as fast as x264 medium (1.56 s against 1.44 s) and much smaller at equal quality. x265 is the fallback. The preset and the codec are chosen by commit 15.18's measurement on real downloads (section 11), not on `testsrc2`.
-  - **Hardware encoders** are not faster on M-series for this work (1.2–1.3 s) and give larger files, so they come only with `--hw`, for long shows.
+  - **Hardware encoders** are not faster on M-series for this work (1.2–1.3 s) and give larger files, so they aren't used.
 - **Parallelism:**
   - libavif already spreads one AVIF encode over every core (four at once take 3.5× one), so AVIF runs 2 at a time;
   - WebP scales with threads, so it runs one per core on threads;
@@ -440,7 +440,6 @@ For each area: the change, the evidence behind it, the risk, and what it does to
 
   A slow encode never blocks downloads: a separate bounded queue runs after the history row.
 - **Probe once.** One `ffprobe -show_streams -of json` per file at 15.6 ms each, cached in `flnd.db` by `(path, size, mtime)`. Pillow probes images in-process.
-- **Shows** render in cached pieces (holds and transitions, about 3 s each) on a process pool, then concatenate with `-c copy`. Adding one photo re-renders three pieces.
 
 ### 5.6 Startup
 - **argparse in `cli.py`** (22 ms for `--help`, against cyclopts' 83 ms). Help text comes from each command function's docstring. No Rich in `--help`.
@@ -478,9 +477,6 @@ with flnd.open("~/Media/flnd") as fl:       # Flnd(home); creates the layout on 
     fl.add(MySource)                        # a source for this Flnd, from a script
     with fl.site("ins") as site:            # a logged-in Site for scripting
         site.fetch("https://www.instagram.com/api/v1/...").json
-    fl.show(fl.files(target="ins:example_user", kind="image"), "show.mp4", style="fun")
-    fl.card(paths, "strip.jpg", layout="strip-4")
-    fl.album(paths, "2026.pdf")
 ```
 - **`Flnd` holds resources**: the loop thread, the browser, the database connections. So it is a context manager, and `fl.close()` does the same as leaving the `with`. Leaving it stops any run still going, like a first Ctrl-C, and waits for it.
 - **A `Run` starts when it is first iterated or waited on**, like a generator. One nobody starts warns with a `ResourceWarning` when it's dropped, the way a coroutine nobody awaited does.
@@ -497,7 +493,7 @@ with flnd.open("~/Media/flnd") as fl:       # Flnd(home); creates the layout on 
 ## 7. The source API and plugins
 ### 7.1 Writing a source
 ```python
-from flnd.source import Source, Site, Post, File, target, cookies
+from flnd.source import Source, Site, Post, File, Target, target, cookies
 
 class Example(Source):
     """example.com: a user's posts and photos, one post by URL, and a search."""
@@ -506,8 +502,8 @@ class Example(Source):
     domains = ("example.com",)         # links, cookies, pacing
     api = 1                            # the source API version this was written for
     login = cookies("session")         # logged in when this cookie is there; flnd reads it from a browser
-    pace = 0.5                         # seconds between page requests (the config can override)
-    folder = "{user}/{category}"       # where files go; checked when the class is made
+    pace = 0.5                         # seconds between page requests: the default, which the config can override
+    folder = "{target}/{category}"     # the default; checked when the class is made
 
     @target("exm:{user}", "example.com/{user}")
     def profile(self, site: Site, user: str) -> dict:
@@ -528,10 +524,16 @@ class Example(Source):
 
     @target("exm?{words}")
     def search(self, site: Site, words: str):
-        """A search: yields targets, each downloaded like a profile."""
+        """A search: yields targets, each downloaded as if it had been typed."""
         for hit in site.pages("https://api.example.com/search", params={"q": words}, cursor="next"):
-            yield from (self.target(user=u["name"]) for u in hit["users"])
+            yield from (Target(f"exm:{u['name']}") for u in hit["users"])
 ```
+[ARCHITECTURE.md](ARCHITECTURE.md) §6 walks through writing a source step by step; this section lists the rules.
+- **Only `code`, `domains`, `api` and one route are required.** Everything else has a default: `pace` 0.5 s, `folder = "{target}/{category}"`, `filename = "{post}_{num}"`. A template may use `{source}`, `{target}`, `{category}`, `{post}`, `{num}`, `{date}` and any field of the post.
+- **`newest_first=True`** on a route or category says the listing comes newest first, so a sync may stop at old posts. Without it, a sync reads the whole listing, which is slower but never wrong. The source declares this, so the engine doesn't guess.
+- **`Target(text)`** takes any target, from any source. A search yields its results this way, and a post that links to another site hands the link on. This is gallery-dl's `Queue`, and it is the one way to make a target: there is no `self.target(...)`.
+- **A post's files may be a function** (`Post(id, lambda: fetch_pages(id))`) that runs only if the post is new, so a source never fetches the pages of a post flnd already has. Today's sources do this, and it stays.
+- **`File(url, audio=…)`** downloads a video and its separate audio track at once and joins them with ffmpeg without re-encoding. This replaces the shared DASH helper. **`File(url, password=…)`** marks an archive.
 - **A source declares what it is.** Its hooks are a few named methods:
   - `@target` routes;
   - `@<route>.category` for the parts of a target;
@@ -548,11 +550,11 @@ class Example(Source):
   - the browser verbs of section 5.4: `open`, `wait`, `scroll`, `feed(match)` (captured responses while scrolling), `document`, `evaluate`, `click`, and `site.tab` in async code;
   - `html(text)`, `dig`, `state` (per-source key-value), `warn`, and `pause(seconds, reason)`. That is `pause`, not `wait`, because `wait` already means waiting for the page (`site.wait(css=…)`) or for a run (`run.wait()`).
 - **What a source never does:** touch the disk, the history, retries or concurrency.
-- **The engine owns the early stops** (5 saved in a row on sync, 5 older than `--when` in a row) and wall detection, through `Site`'s calls raising `LoginError` or `Blocked` (section 8). The four copies in ins, tik, twt and fbk go.
+- **The engine owns the early stops** (5 saved in a row on sync, 5 older than `--when` in a row, on a `newest_first` listing; `stop_after` per source in the config, like gallery-dl's `skip = "abort:N"`) and wall detection, through `Site`'s calls raising `LoginError` or `Blocked` (section 8). The four copies in ins, tik, twt and fbk go.
 - **Cursors are resumed only where that is right.** A full download that stopped part-way (the target isn't `complete`) resumes from its last cursor. A sync starts from the newest page, since that is where new posts are.
 - **A post** can carry `caption`, `author`, `tags`, `comments` and `extra`, which feed the sidecars and search (section 12). `date` takes a `datetime`, Unix seconds or an ISO 8601 string; the engine parses it once, so no source carries its own date parser.
 - **Sync or async.** A category may be `def` or `async def`. Sync code runs on the listing thread, and async code runs on the loop. Both get the same `Site`.
-- **Mistakes are caught when the class is made.** A bad pattern, an unknown folder field, a missing `code`, a duplicate route, or a category on a route that yields posts each raise `SourceError` naming the class, the attribute and the fix, e.g. `exm.folder: unknown field {usr}; fields are user, id, date, category, …`.
+- **Mistakes are caught when the class is made.** A bad pattern, an unknown folder field, a missing `code`, a duplicate route, or a category on a route that yields posts each raise `SourceError` naming the class, the attribute and the fix, e.g. `exm.folder: unknown field {usr}; fields are source, target, category, post, num, date, user`.
 
 ### 7.2 Plugins at runtime
 - **Discovery, in order:**
@@ -642,7 +644,7 @@ flnd.Stopped(KeyboardInterrupt) Ctrl-C or run.stop(): not a failure, and not an 
   - A test greps every log, sample and error message produced by the test suite for the fixtures' secret values.
 
 ## 9. The CLI
-The user's current leanings were the `target`/`auth`/`media` groups, `--from`, `--when`, `--by`, `--style` and `--compress`, with inline UI, `.flnd` and quiet output as defaults. They are kept where good. Groups are flattened, because each verb is unique and shorter to type, as in git, uv and cargo. Flat verbs must not differ by a letter, so `login` with no source lists the logins, and there is no `logins`.
+The user's current leanings were the `target` and `auth` groups, `--from`, `--when` and `--compress`, with inline UI, `.flnd` and quiet output as defaults. They are kept where good. The `media` group (`show`, `card`, `album`, with `--by` and `--style`) was removed on 2026-11-16. Groups are flattened, because each verb is unique and shorter to type, as in git, uv and cargo. Flat verbs must not differ by a letter, so `login` with no source lists the logins, and there is no `logins`.
 
 ```
 flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] [--dry] [--exec CMD]
@@ -655,10 +657,7 @@ flnd retry                           retry the last run's retryable failures
 flnd check [--fix]                   history against disk: missing, unknown, wrong size
 flnd login [source] [how]            how: chrome | firefox | safari | cookies.txt | qr | phone; no source: list logins
 flnd logout <source>
-flnd sources                         built-in and plugin sources, versions, why one is disabled
-flnd show  <targets|paths…> [--by post|day|month|year|all] [--style classic|fun|calm|story] [--music FILE] [--when WHEN]
-flnd card  <targets|paths…> [--by post|day|month] [--style strip|grid|polaroid|postcard] [--when WHEN]
-flnd album <targets|paths…> [--by month|year|all] [--when WHEN]
+flnd sources                         built-in and plugin sources, their categories, versions, why one is disabled
 
 global: --home DIR (default: $FLND_HOME, else ./.flnd) · --ui plain|inline (default: inline on a terminal) · -v · --json
 ```
@@ -680,13 +679,12 @@ global: --home DIR (default: $FLND_HOME, else ./.flnd) · --ui plain|inline (def
 ## 10. Storage and the home folder
 ```
 <home>/
-  flnd.db            files, posts, targets, cursors, logins (metadata only), runs, failures, made, probes
+  flnd.db            files, posts, targets, cursors, logins (metadata only), runs, failures, probes
   secrets.db         the encrypted vault: cookies and tokens per source (AES-256-GCM)
   secret.key         the vault's key (mode 0600), unless the config moves it to the OS keychain
   config.toml        defaults and per-source settings (tomllib, stdlib)
   media/<source>/<target>/…   downloaded files; the folder templates decide below
-  made/<target>/<show|card|album>/…
-  cache/             probes, show pieces, frames (swept after 30 days)
+  cache/             ffmpeg probes and anything else safe to delete (swept after 30 days)
   logs/              each run's log, scrubbed samples of changed responses, crash files (swept after 30 days)
 ```
 There is no `sources/` (plugins load from the user's folder, 7.2) and no `.lock` (each part locks itself, 5.2).
@@ -722,9 +720,11 @@ limits = { "cdninstagram.com" = 8 }
 - The old files are read, never changed or deleted, so the previous flnd still runs on that home if the user goes back. `flnd.db` records that the migration ran, and the README says when the old files can be removed.
 - The converter is about 150 lines and is deleted one release later.
 
-## 11. Compression, extraction and media
-- **`--compress`** is one step after a file lands:
-  `download → [extract, if an archive] → [compress] → row → Saved`.
+## 11. Compression and extraction
+- **The steps after a file lands** run in one fixed order (ARCHITECTURE.md §8), each on or off by its flag or setting:
+  `download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → exec → Saved`.
+  A fixed order means steps can't be combined in an order that breaks, such as compressing a file before dedupe has linked it. It is gallery-dl's post-processor chain without the freedom to reorder, and it isn't a plugin API until a real need appears.
+- **`--compress`** is the compress step:
   1. *Plan* the candidates from the probe. Every image codec is Pillow's, in-process (2.8):
      - JPEG goes to AVIF, then an optimized JPEG (libjpeg-turbo), then WebP;
      - PNG goes to oxipng (`pyoxipng`), then lossless WebP for flat art, then AVIF for photos;
@@ -745,26 +745,12 @@ limits = { "cdninstagram.com" = 8 }
   - `testsrc2` and a synthetic photo can't show what that buys. Commit 15.18 measures savings and SSIM on 100 photos and 20 videos from the authorized test accounts, kept outside the repo.
   - A kind of file whose median saving is under 15% is left alone by default.
 - **AV1 doesn't play everywhere.** Apple devices decode it in hardware only from 2023 (A17 Pro, M3), and older iPhones and Macs may not play it in Photos or QuickTime (est.; checked on the user's devices before the default is fixed). `[compress] video = "hevc"` picks x265 instead. The default is section 16, question 14.
-- **Tools.** Images need no tool, since Pillow and `pyoxipng` are dependencies. Only ffmpeg (video, probes, slideshows) and 7zz (archives) come from PATH or are offered for download. Each download is pinned by checksum and cached in `~/.cache/flnd/tools`. Two tools on 6 platforms is a far smaller supply chain to keep pinned than five.
+- **Tools.** Images need no tool, since Pillow and `pyoxipng` are dependencies. Only ffmpeg (video, probes, DASH joins) and 7zz (archives) come from PATH or are offered for download. Each download is pinned by checksum and cached in `~/.cache/flnd/tools`. Two tools on 6 platforms is a far smaller supply chain to keep pinned than five.
 - **Archives extract by themselves.**
   - A source may mark a file `File(url, password=…)`; loi does.
   - The archive extracts beside itself into a folder of its name. The limits on size, ratio and file count stay, links are refused, and `--` comes before paths (as fixed in `daa2354`).
   - The archive is kept, unless `--compress` is on, in which case it is removed after a verified extract.
   - A wrong password or a damaged archive keeps the archive and records `failed`.
-- **Slideshows, cards and albums** (`flnd show`, `card`, `album`) use ffmpeg and Pillow only:
-  - `xfade` transitions, read from the installed ffmpeg;
-  - Pillow-drawn titles and captions, laid on with `overlay`;
-  - music looped, faded and normalised to −16 LUFS;
-  - clips ducked under the music.
-
-  Shows render in cached pieces on a process pool (5.5). Cards and albums lay out boxes with a pure function, then draw them on the pool; albums go to PDF through `save_all`. Outputs are recorded in `made`, so a rerun skips any whose inputs are unchanged. Styles:
-  - `classic`: fade, 3 s;
-  - `fun`: random transitions, 2 s;
-  - `calm`: dissolve, 5 s;
-  - `story`: 9:16 with a blurred fit.
-
-  Card layouts are `strip-3/4`, `grid-NxM`, `polaroid`, `postcard` and `mosaic`.
-
 ## 12. Features, ranked
 Value and cost are on a scale of 1 to 3. The MVP is what the first release ships.
 
@@ -781,7 +767,7 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | 9 | metadata sidecars: post JSON, captions | 2 | 1 | `[defaults] sidecars = true` → `<file>.json` | MVP |
 | 10 | events for scripts; `--exec CMD` per saved file, with no shell | 2 | 1 | `for event in run`; `--exec 'cmd {path}'` | MVP |
 | 11 | `--dry` as a diff: new, already saved, gone | 2 | 1 | `fl.download(…, dry=True)` | MVP |
-| 12 | `show`, `card`, `album` | 2 | 3 | section 11 | second release (16, question 15) |
+| 12 | `show`, `card`, `album` | — | — | — | removed (user, 2026-11-16) |
 | 13 | storage stats (`ls` sizes per target and source, what compression saved) | 2 | 1 | `flnd ls` columns | MVP |
 | 14 | `--json` events for scripting and cron | 2 | 1 | section 9 | MVP |
 | 15 | schedules: `flnd sync --every 6h`, plus a generator for a launchd, systemd or Task Scheduler unit | 2 | 2 | `flnd schedule 6h` | later |
@@ -794,7 +780,8 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | 22 | a library browser: a local web page or a Textual TUI over `flnd.db` and the media | 2 | 3 | `flnd browse` | later |
 | 23 | full-screen Textual UI | 1 | 2 | `--ui full` | later |
 | 24 | process isolation for untrusted plugins | 1 | 2 | — | no: a plugin needs a logged-in `Site`, so a process boundary wouldn't protect the logins (7.2) |
-| 25 | motion (Ken Burns), loops (GIF/WebP), recaps, smart crop | 1 | 3 | `Show(motion=…)` | later |
+| 25 | motion, loops, recaps, smart crop | — | — | — | removed with `show` (user, 2026-11-16) |
+| 27 | a fallback to yt-dlp for single video links no source handles | 2 | 1 | a separate `flnd-ytdlp` plugin package | later (ARCHITECTURE.md §12) |
 | 26 | free-threaded build, if the dependencies support it | ? | 1 | — | later |
 
 ## 13. Dependencies, native code and compilation
@@ -807,7 +794,7 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | `selectolax` | HTML | **adopt** | 2.6–3.3× parsel; replaces parsel, lxml, cssselect, w3lib, python-jsonpath and jmespath |
 | `cryptography` | the vault | keep | AES-GCM |
 | `rich` | inline progress | keep, lazy | imported only for the inline UI |
-| `Pillow` | image compression (AVIF, WebP, JPEG), stills, cards, albums, image probes | **adopt**, in the core | in-process, no avifenc, mozjpeg, caesiumclt or ImageMagick; imported only when used |
+| `Pillow` | image compression (AVIF, WebP, JPEG) and image probes | **adopt**, in the core | in-process, no avifenc, mozjpeg or caesiumclt; imported only when used |
 | `pyoxipng` | PNG optimisation | **adopt**, in the core | oxipng as a wheel, so no tool download |
 | `telethon` + `cryptg` + `qrcode` | Telegram | keep (the `telegram` extra) | |
 | `httpx`, `parsel`, `python-jsonpath` | | **remove** | replaced above |
@@ -820,7 +807,9 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | `rnet` | | no | its 0.x blocking API failed to import as documented; too young |
 | `blake3`, `xxhash` | hashing | no | SHA-256 is hardware-accelerated at 3.3 GiB/s, above any link |
 | `uvloop` | | no | the loop isn't a bottleneck, and there's no Windows support (not measured) |
-| `pillow-simd`, `pyvips` | | no / later | pillow-simd lags CPython releases; pyvips for huge albums later |
+| `pillow-simd`, `pyvips` | | no | pillow-simd lags CPython releases; pyvips was for albums, which are gone |
+| `gallery-dl` (as a library) | site code | **no** | GPL-2.0 would bind flnd's license; synchronous, on `requests` (ARCHITECTURE.md §2) |
+| `yt-dlp` | video links no source knows | **later, as a plugin** | public domain, so reusable; kept out of the core (feature 27) |
 
 Direct runtime dependencies drop from 13 to 11:
 - the core holds 8: curl_cffi, playwright, msgspec, selectolax, cryptography, rich, Pillow and pyoxipng. Compression is built in, so its codecs are too; each is imported only when used, so they don't slow startup;
@@ -929,7 +918,7 @@ The user, 2026-11-16: "the codebase should have extensive comment and docs for h
 **Three layers:**
 1. **Guides in `docs/`**, written for people:
    - `README.md`: an index, and where to start for a user, a script author, a source author and a contributor;
-   - `architecture.md`: the layout of section 4, one download traced from the CLI to the disk, and the threads and the loop, with a diagram;
+   - `ARCHITECTURE.md`, at the repository's root (written 2026-11-16): the parts, one download traced from the CLI to the disk, the threads and the loop, and writing a source; `docs/README.md` links to it;
    - `library.md`: every public call, its options, its events and a runnable example;
    - `cli.md`: every command, flag, default and exit code, with examples;
    - `writing-a-source.md`: a tutorial that builds the example source step by step, then packages it as a plugin and tests it with `flnd.testing`;
@@ -990,7 +979,6 @@ Each commit is one logical change with `make check` green, and it documents what
 | 15.19 | `feat:add check, dedupe, sidecars, exec and json events` | per-feature tests; `--exec` never starts a shell |
 | 15.20 | `docs:document every module, function and source for human readers` (14.6) | `tests/test_docs.py` passes with an empty allowlist |
 | 15.21 | `docs:rewrite the readme for the rebuilt flnd` | every README example runs in `test_docs` |
-| 15.22 | `feat:make slideshows, cards and albums` (second release; 16, question 15) | 100 photos at 1080p ≤ 60 s cold; one added ≤ 5 s |
 
 Why this order:
 - **15.3 is a pure move**, so every later commit's diff stays readable. Pyright leaves only after it (15.4), so the type checker still guards the biggest move.
@@ -999,8 +987,10 @@ Why this order:
 - **15.14 changes all seven sources at once**, because source API 1 breaks every source together, and there are no aliases to bridge it. Its mechanical parts go to a low-cost model, and the live runs are done by hand.
 - **Each commit documents what it touches**, and 15.20 covers whatever no commit touched.
 
-## 16. Open questions, with recommended defaults
-1. **Flat verbs** (`flnd ls`, `flnd login`, `flnd show`) or the groups (`flnd target ls`, `flnd auth login`, `flnd media show`)? *Recommended: flat*, because every verb is unique. `login` with no source lists the logins, so no two verbs differ by one letter.
+## 16. Decisions
+The user took every recommended answer below on 2026-11-16. They are decisions now, not open questions.
+
+1. **Flat verbs** (`flnd ls`, `flnd login`, `flnd follow`) or the groups (`flnd target ls`, `flnd auth login`)? *Recommended: flat*, because every verb is unique. `login` with no source lists the logins, so no two verbs differ by one letter.
 2. **`--only` instead of `--from`?** *Recommended: yes.* Without it a target gets every category, as the user decided on 2026-11-12, so there is no `--all`.
 3. **Scroll default `human` or `fast`?** *Recommended: `human`*, as the user asked on 2026-11-11, with the event-driven loop; `fast` per source in the config.
 4. **Default concurrency per CDN host?** *Recommended: start at 8, and adapt up to 32 while throughput still rises.* The real-CDN check of 15.12 confirms the cap.
@@ -1014,5 +1004,7 @@ Why this order:
 12. **The vault's key: a file (today) or the OS keychain?** *Recommended: the file by default*, with the keychain as a setting, so unattended syncs keep working (10).
 13. **Following: a verb, or a side effect of `download`?** *Recommended: the verb*, `flnd follow`. It keeps the user's opt-in design of 2026-11-13, and a one-off download never grows every later sync (9).
 14. **The video codec for `--compress`: AV1 or HEVC?** *Recommended: AV1*, with `[compress] video = "hevc"` for devices that can't play AV1, confirmed on the user's own devices during 15.18. The user's 2026-11-11 rule, H.265 only when asked, fits this.
-15. **Slideshows, cards and albums in the first release?** *Recommended: the second.* They are the costliest feature (3) and independent of the core, so the first release's gates stay on downloading. They are still built in, as the brief asks, not a plugin.
-16. **Pillow and pyoxipng in the core install, with no `media` extra?** *Recommended: yes.* Compression is built in, and both are imported only when used (13.1).
+15. **Pillow and pyoxipng in the core install, with no `media` extra?** *Recommended: yes.* Compression is built in, and both are imported only when used (13.1).
+16. **One `Source` class per site, with routes and categories**, rather than gallery-dl's class per kind of URL? *Recommended: one class* (ARCHITECTURE.md §2, §6).
+17. **A fixed chain of steps after each file**, rather than a plugin API for steps? *Recommended: fixed, for now* (§11).
+18. **A yt-dlp fallback for single video links no source handles?** *Recommended: later, as a separate plugin package*, so the core's dependencies stay as they are (feature 27).
