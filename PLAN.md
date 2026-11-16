@@ -5,18 +5,18 @@
 The user, 2026-11-16:
 - **`shared`** is a toolkit useful to every script: a minimal, elegant API, fast, with good DX.
 - **flnd** is a TUI app with three UI modes (plain, inline Textual, full-screen Textual), not log lines.
-- **flnc** is a new tool for flnd's output:
-  - it compresses images, video and audio as far as it can, changing format (WebP, AVIF) when that is smaller;
-  - it archives and extracts with 7zz;
-  - it keeps a store of what it has done.
+- **flnd compresses and extracts by itself** (user, 2026-11-16; this replaces the earlier flnc tool):
+  - `--compress` makes every saved image, video and audio file visually lossless and as small as it goes, changing format (WebP, AVIF) when that is smaller;
+  - archives a source downloads (loi's) are extracted automatically, with the password the source knows;
+  - the history remembers what was compressed, so nothing is done twice.
 - **flns** is a new tool that makes slideshows with animations, photobooth cards, albums and collages from flnd's media, with ffmpeg and Pillow (§5).
-- **flnd, flnc and flns are libraries first**; each CLI is a thin layer.
+- **flnd and flns are libraries first**; flnd's CLI is the only command, and it carries flns's commands (`show`, `card`, `album`).
 - **Performance, simplicity and DX** are first-class: code is concise, short and intuitive, and annotations and decorators carry intent where that reads better than options.
 
 Decisions (user, 2026-11-16):
 - Textual for the TUI.
-- flnc replaces files in place after verifying them.
-- The quality is visually lossless with a `level`, and format change is allowed.
+- Compression replaces files in place after verifying them. Its quality is always visually lossless, with no level on the CLI, and format change is allowed.
+- No flnc: compression, archiving and extraction are built into flnd's downloader (user, 2026-11-16).
 - `archive`/`extract` are the verbs.
 - This is a revamp: names and the CLI may change, with no aliases.
 - Old phases are ignored, and `plan/` is gone.
@@ -41,7 +41,7 @@ Decisions (user, 2026-11-16):
 6. **Options are keyword-only**, at most 4 of them. Past that, split the call into two verbs, use a record, or use a decorator.
 7. **Progress goes to a sink, never a bare callback.** A sink is any object with `total` and `advance(n)`; `ui.Row` is one. Pools and transfers also expose `done`/`total` as properties.
 8. **Module-level functions are verbs or pure computations** (`text.size(n)`, `clock.now()`). A module can't have plain properties, so rule 2 applies to objects; this is the one exception.
-9. **Errors.** Each module has one `<module>.Error`, under `shared.UnsafeError`, `BrokenError`, `RefusedError` or `MissingError`. A message names the thing and what to do: `"7zz: not found; run flnc tools --install"`.
+9. **Errors.** Each module has one `<module>.Error`, under `shared.UnsafeError`, `BrokenError`, `RefusedError` or `MissingError`. A message names the thing and what to do: `"7zz: not found; download it now? [Y/n]"`.
 10. **Typed.** Generics flow through: `Query[T]`, `Task[R]`, `Table[T]`, `Result[R]`. Pyright reports 0 errors and 0 warnings, and `reveal_type` tests sit in `tests/typing/`.
 
 ### 1.2 Simplicity
@@ -51,7 +51,7 @@ Decisions (user, 2026-11-16):
 - Records are frozen `msgspec.Struct`s: fast, typed, and they encode to JSON.
 
 ### 1.3 Performance
-- **Import is cheap.** `import shared` loads nothing heavy, and every module is lazy. `flnd --help` and `flnc --help` take < 150 ms, which a test checks with `-X importtime` over a list of heavy modules.
+- **Import is cheap.** `import shared` loads nothing heavy, and every module is lazy. `flnd --help` takes < 150 ms, which a test checks with `-X importtime` over a list of heavy modules.
 - **Disk.** SQLite in WAL mode, not JSON rewrites. `os.scandir`, not `Path.rglob`, plus `stat` results reused. 1 MiB I/O chunks.
 - **Network.** One HTTP/2 client per host, with keep-alive. Segmented range downloads for large files. Retries with jittered backoff and `Retry-After`.
 - **CPU.** Bounded pools with backpressure, so 100k items never mean 100k futures in memory. Subprocess encoders on threads, since a subprocess frees the GIL.
@@ -79,7 +79,7 @@ q.first; q.count
   - `sort(by, desc=False)` and `limit(n)`.
   - `get() -> list[T]`, `first -> T | None`, `count -> int`.
 - **Performance**: a source may implement `Query.push(filters, sort, limit)`. `store` pushes all three into SQL, and `count` becomes `SELECT count(*)`. Plain iterables are filtered lazily, with `heapq.nsmallest` for sort with limit.
-- **Change**: new; every collection read in `shared`, flnd and flnc returns one.
+- **Change**: new; every collection read in `shared`, flnd and flns returns one.
 
 ### 2.2 `text`
 ```python
@@ -139,7 +139,7 @@ for line in ff.stream("-i", src, "-progress", "pipe:1", dest):   # live stdout l
 cz.version                                     # parsed once from `--version`, cached
 with sh.fake({"ffmpeg": handler}): ...         # tests: argv → (code, out, err)
 ```
-- **Performance**: `find` caches its result for the life of the process. `version` is cached on disk, keyed by the binary's path and mtime, so flnc doesn't spawn every tool at each start.
+- **Performance**: `find` caches its result for the life of the process. `version` is cached on disk, keyed by the binary's path and mtime, so `--compress` doesn't spawn every tool at each start.
 - **Change**:
   - `run(cmd: list)` → `run(*args)`.
   - `tool(name, platforms=)` → `find(name, specs=)`.
@@ -149,7 +149,7 @@ with sh.fake({"ffmpeg": handler}): ...         # tests: argv → (code, out, err
 
 ### 2.6 `store`: SQLite, typed tables
 ```python
-db = store.open(".flnc/flnc.db")
+db = store.open(".flnd/metadata/history.db")
 db["state"]["cursor"] = "abc"                  # a Table is a MutableMapping of JSON values
 
 class File(store.Row):                         # a msgspec Struct; the table is named in the class
@@ -368,14 +368,14 @@ with prompt.fake(["example_user", True]): ...     # tests
 
 ### 2.16 `cli`
 ```python
-app = cli.App("flnc", help="Compress and archive flnd's output.")
+app = cli.App("flnd", help="Download, compress and show media.")
 
 @app.command
-def compress(paths: list[Path] = [], *, to: To = To.AUTO, level: Level = "high", dry: bool = False):
-    """Compress images, video and audio in place.
+def show(targets: list[str], *, by: By = By.POST, style: Style = Style.CLASSIC, when: str = ""):
+    """Make a slideshow per group of saved photos.
 
     Args:
-        to: The format to write; auto picks the smallest that passes.
+        by: How photos are grouped: one show per post, day, month, year, or all.
     """
 
 with cli.trap() as stop:      # Ctrl-C: stop.soon, then stop.now; stop.paused for the TUI
@@ -461,7 +461,7 @@ mht's author and genre routes go.
 import flnd
 
 fl = flnd.Flnd(".flnd")
-for saved in fl.download("ins:example_user", only=["reels"], time="2026-01-01,", limit=50):
+for saved in fl.download("ins:example_user", only=["reels"], when="2026", compress=True):
     saved.path, saved.target, saved.post, saved.kind     # each file as it lands
 report = flnd.Report.of(fl.download("twt:example_handle"))   # totals: ok, files, failed
 fl.preview("twt:example_handle")             # list[Item]: what download would take, nothing saved
@@ -476,8 +476,8 @@ with fl.connect("ins") as site:              # a Site for scripting
     site.fetch("https://www.instagram.com/api/...").json
 flnd.resolve("https://x.com/example_handle") # Target
 ```
-- **`download` is a generator** of `Saved` events, so a script can compress on the fly (§4). The CLI consumes the same events to feed `ui.live`, which makes progress a consumer, not a callback.
-- `flnd.Home` (`media`, `metadata`, `cache`) is the layout that flnc and flns CLIs reuse.
+- **`download` is a generator** of `Saved` events, so a script can act on each file as it lands (make a card per post, say). `compress=True` compresses each file in the downloader itself (§4). The CLI consumes the same events to feed `ui.live`, which makes progress a consumer, not a callback.
+- `flnd.Home` (`media`, `metadata`, `cache`, `made`) is the layout flns's commands reuse.
 
 | before | after |
 | --- | --- |
@@ -601,12 +601,53 @@ Flnd.download ─┬─ resolve + check --from once
 - Playwright must stay on one thread, so the browser change lands after `shared.browser`/`worker`.
 
 ### 3.4 The CLI
-- `flnd download <targets…> [--from] [--time] [--limit] [--dry] [--sync] [--again]` (`--from` is required for profiles, as today; the library spells it `only=`)
-- `flnd sync`, `flnd targets [--source] [--synced]`, `flnd track|untrack|forget <targets…>`
-- `flnd login <src> [how]`, `flnd logout <src…>`, `flnd logins`
-- Global: `--ui`, `-v`, `--home`.
+Eleven commands, few flags and good defaults; every other knob is a library option.
 
-`download`/`sync` iterate the library's `Saved` events inside `ui.live`, so the library has no TUI code.
+```
+flnd download <targets…> [--from CATS] [--when WHEN] [--limit N] [--compress] [--dry]
+flnd sync [targets…] [--compress]
+flnd list [targets…]                 # what you follow: files, size, last sync
+flnd forget <targets…>               # stop syncing a target; files stay
+flnd login <source> [how]            # how: chrome | firefox | cookies.txt | qr; asked when left out
+flnd logout <source>
+
+flnd show  <targets|paths…> [--by post|day|month|year|all] [--style classic|fun|calm|story] [--music FILE] [--when WHEN]
+flnd card  <targets|paths…> [--by post|day|month] [--style strip|grid|polaroid|postcard] [--when WHEN]
+flnd album <targets|paths…> [--by month|year|all] [--when WHEN]
+
+global: -v, --ui plain|inline|full, --home DIR
+```
+- **`download` remembers.** Every downloaded target is followed, and `flnd sync` updates them all. `forget` stops following. `--sync`, `track`/`untrack` and `--again` are gone.
+- **`--from` is optional.** The default is the target's own content (posts, reels, videos); `--from all` adds tagged posts, reposts and the rest.
+- **`--when`** takes `2026`, `2026-06`, `2026-06-15`, `2026-01..2026-03`, or `30d` (the last 30 days). It replaces `--time SINCE,UNTIL`.
+- **`--compress`** makes each saved file visually lossless and as small as it goes, as it lands (§4). `sync --compress` also compresses files saved before that aren't compressed yet.
+- **Archives extract by themselves** (§4.3); there's no command for them.
+- **`--by`** groups the output, so one command makes many: one slideshow, card or album per post, day, month, year, or one from everything. The defaults are `show --by post`, `card --by post` and `album --by year`.
+- **`--style`** bundles the knobs.
+  - On `show`: `classic` (3 s, fade), `fun` (random transitions, quicker), `calm` (slow cross-fades) and `story` (vertical 9:16).
+  - On `card`: the layout.
+- **Output** goes to `<home>/made/<target>/<command>/…`, named by group (`2026-06.mp4`, `post_C1abc.jpg`). A rerun skips any output whose inputs are unchanged.
+- **Tools install themselves.** A missing ffmpeg, caesiumclt, avifenc, oxipng or 7zz is offered for download the first time it's needed.
+- `download`, `sync` and the makers iterate the library's events inside `ui.live`, so the library has no TUI code.
+
+```bash
+flnd login ins
+flnd download ins:example_user --compress
+flnd sync --compress
+flnd show ins:example_user --when 2026
+flnd show ins:example_user --by month --style fun --music song.mp3
+flnd card ins:example_user --by day --style strip
+flnd album twt:example_handle
+flnd list
+```
+
+| today | after |
+| --- | --- |
+| `download --time A,B --sync --again` | `download --when …` (always followed) |
+| `target ls`, `sync-on`, `sync-off`, `del` | `list`, `forget` |
+| `auth login`, `logout`, `ls` | `login`, `logout` (`list` shows login state) |
+| `--from` required on profiles | optional; own content by default |
+| PLAN's `flnc` and `flns` binaries | `--compress`, automatic extraction, `show`, `card`, `album` |
 
 ### 3.5 Performance
 - **History** moves to SQLite: a lookup per file instead of loading the whole JSON at start. Target: 50k-file history, start < 100 ms.
@@ -617,103 +658,67 @@ Flnd.download ─┬─ resolve + check --from once
   - video and audio DASH parts download in parallel, then mux.
 - **Browser**: one browser per profile for the run, and tabs are reused.
 
-## 4. flnc
+## 4. Compression and extraction, built into flnd
 
-flnc and flns are **plain libraries of functions** (user, 2026-11-16: "just a plain lib … can be combine to flnd to script so it can compress on the fly. Same with flns."). They have no home object and no engine. The caller decides where files come from, and an optional `store.Memo` remembers what's done. Each CLI is a thin layer that builds the memo from `--home` and calls `fl.move` for files it renames inside a flnd home.
+There is no flnc (user, 2026-11-16): "remove the compress, archive, extract command. It just be built in, so things like loi can extract the archive by itself, and all things back by --compress flag." So the downloader carries two steps after a file lands:
 
-### 4.0 One shape for the three tools
-| concern | rule |
-| --- | --- |
-| layout | `flnd.Home(".flnd")`: `media/`, `metadata/<tool>.db`, `cache/<tool>/` |
-| selection | `fl.files` (a `Query`), plain paths, or folders (`fs.walk`); no per-tool selection |
-| skip if done | **`shared.store.Memo`**: `memo.fresh(key, inputs, **meta) -> bool`, `memo.record(key, inputs, **meta)`, keyed by input stat or digest, an options digest and a tools string; flnc files, extracts and flns outputs use it |
-| dry run | the library has `plan(...)`; the CLI's `--dry` prints it. No `dry=` switch |
-| tools | `media.tools` (`Query[Tool]`) and `media.install(...)`; each CLI mounts a shared `tools [--install]` command |
-| results | `shared.Report`: `files`, `failed`, `skipped`, `seconds`, `ok`; each tool's `Result` adds its own fields |
-| progress | functions write `ui` rows; only a CLI wraps `ui.live` |
-| CLI globals | `--ui`, `-v`, `--home`, plus shared `--dry`/`--again` flags in `shared.cli` |
-| words | `--from` = categories (flnd only); flns says `--target`; `level` = quality only (no archive `--level`) |
+```
+download → [extract, if an archive] → [compress, with --compress] → history row → Saved event
+```
 
 ### 4.1 The library
 ```python
-import flnc
-
-r = flnc.compress("a.jpg", to="auto", level="high")      # Result(path, before, after, kind, kept)
-flnc.compress(path, memo=memo)                            # skipped when the memo says done
-flnc.plan("a.jpg")                                        # what compress would do
-flnc.archive(["photos/"], "photos.7z", password="pw")     # thin over shared.archive
-flnc.extract("a.zip", passwords=["pw"])                   # also tries a sibling info.md
-
-# composed with flnd: compress each file as it lands
 fl = flnd.Flnd(".flnd")
-memo = store.open(".flnd/metadata/flnc.db")[flnc.Done]
-for saved in fl.download("ins:example_user"):
-    result = flnc.compress(saved.path, memo=memo)
-    if result.path != saved.path:
-        fl.move(saved.path, result.path)
+for saved in fl.download("loi:5930", compress=True):   # archives extract, media compress
+    saved.path, saved.kind, saved.compressed            # compressed: Shrink(before, after, format) | None
+fl.compress("ins:example_user")                         # files saved before; yields Saved too
 ```
-Public: `compress`, `plan`, `archive`, `extract`, `Done` (a `store.Row`), `Result`. That's 4 functions, down from a class with 9 members.
+- `compress=True` on `download` and `sync`, and `fl.compress(targets)` for files already saved, all go through one step, `flnd.shrink`.
+- The engine's work is `shared.media.compress` (§2.14) plus verification and placement. flnd only decides when to run it and records the result.
+- There's no `level`: the quality is always visually lossless (`media.compress(..., level="high")`). The library may pass `level="max"`, but the CLI never does.
 
-### 4.2 The CLI
-- `flnc compress [paths…] [--to keep|auto|avif|webp|jpeg|png] [--level high|max] [--jobs N] [--dry] [--again]`; the default path is `<home>/media`.
-- `flnc archive <paths…> [-o] [--password] [--split]`
-- `flnc extract <archives…> [--into] [--password…] [--rm]`
-- `flnc files [--state] [--under]`, `flnc forget <paths…>`, `flnc tools [--install]`
-- Global: `--ui`, `-v`, `--home`.
-
-### 4.3 The store
-```python
-class Done(store.Row):         # a Memo row
-    table = "files"
-    state: State            # compressed | kept | failed
-    src_size: int; src_format: str
-    size: int; mtime: int; format: str
-    level: str; tools: str  # e.g. "avifenc 1.1.1"
-    at: float
-```
-- The key is the path relative to the home, or absolute outside it.
-- What happens to a file depends on its row:
-  - a file whose stat matches its row is skipped without being read;
-  - `kept` isn't tried again;
-  - `failed` is tried again with `--again`, or when the `tools` string changes;
-  - a higher level reprocesses the file.
-- An extract is recorded in its own table, by the archive's path and stat.
-
-### 4.4 The pipeline, per file
-1. **Scan** with `fs.walk`. Skip `.*.part` files, files changed in the last 10 minutes, and rows whose stat matches.
-2. **Plan** from `media.probe`: list the candidates in their expected order of size (AVIF first for photos).
-3. **Encode** the first candidate into `fs.stage`, then verify it:
+### 4.2 Compression, per file
+1. **Skip** files that aren't media, `.*.stage` files, files whose history row says `compressed` or `kept` with an unchanged stat, and files a tool can't improve (a video already AV1/HEVC under 0.08 bits per pixel is `kept`).
+2. **Plan** from `media.probe`: candidates in their expected order of size (AVIF first for photos), from the table in §2.14.
+3. **Encode** the first candidate into `fs.stage`, then **verify** it:
    - it decodes;
    - it has the same dimensions, frames and duration (±0.1 s);
-   - images have SSIM ≥ 0.98 at `high` or ≥ 0.97 at `max`;
+   - images have SSIM ≥ 0.98;
    - it saves ≥ 5%.
 
    If it saves ≥ 40%, stop there; otherwise try the next candidate and keep the smallest that passes.
 4. **Place**:
-   1. `fs.touch` copies the original's mtime, since flnd dates files by post.
+   1. `fs.touch` copies the original's mtime (flnd's post date).
    2. With the same suffix, the result replaces the original atomically.
-   3. With a new suffix, the new file is written, then `Flnd.move(old, new)` runs so `flnd sync` doesn't download it again, then the old file is removed.
+   3. With a new suffix, the new file is written, the history row's path moves to it in the same step, and then the old file is removed. `sync` never downloads it again.
 
    A crash leaves either the old file or the new one, never neither.
-5. **Record** the row, in a `db.batch()` every 100 files.
+5. **Record** on the file's history row: `compressed` (with before, after and format), `kept` (no candidate passed) or `failed` (with the tools string, so a tool upgrade retries it). It is batched with the download's own history write.
 
-### 4.5 Performance
-- **Concurrency**: images run on a `worker.Pool(jobs="cpu")`. Video runs one at a time, since ffmpeg is already threaded, with its progress row fed from `-progress pipe:1`.
-- **Fewer encodes**: an early stop at ≥ 40% saved, and candidates ordered by expected win, mean about 1.3 encodes per image instead of 3.
-- **SSIM** runs on images downscaled to ≤ 1024 px.
-- **Skipping**: a video already AV1/HEVC under 0.08 bits per pixel is `kept` without an encode.
-- **Targets**:
-  - a rerun over 100k processed files finishes in < 3 s (stat only);
-  - 1,000 JPEGs on 8 cores finish in < 2 min.
+- **Concurrency**:
+  - downloads keep their pool;
+  - images compress on a `worker.Pool(jobs="cpu")` fed as files land;
+  - videos compress one at a time (ffmpeg is threaded), with a progress row from `-progress pipe:1`.
 
-### 4.6 Layout
-- A top-level `flnc/`: `__init__` (`Flnc`), `cli`, `compress`, `archive`, `files`.
-- `flnc = "flnc.cli:app"` in `pyproject.toml`.
-- It imports `shared`, the stdlib and flnd's public API only, which `test_layers` checks.
+  A slow encode never blocks the next download.
+- **Targets**: a `sync --compress` over 100k already-compressed files adds < 3 s, since only stats are read. 1,000 JPEGs on 8 cores take < 2 min.
+
+### 4.3 Extraction, automatic
+- A source marks an archive with the password it knows: `File(url, password="…")`. loi gets the password from the post, so its `info.md` no longer has to carry it for a person to type.
+- After the download, the engine extracts it with `archive.open(path, password=…).extract(...)` into a folder named after the archive, beside it. `archive.Limits` stay on, and a nested archive is extracted once.
+- The archive itself:
+  - is kept by default;
+  - with `--compress`, is removed after a verified extract, and the extracted media are compressed instead, since the archive would only double the space.
+- The history row of the archive records `extracted` and the folder, so a rerun doesn't extract again. A failed extract (a wrong password, a damaged archive) keeps the archive, warns, and records `failed`.
+- `shared.archive.create` stays in `shared` for any script; flnd has no archive command.
+
+### 4.4 Layout
+- `flnd/shrink.py` (compress a file: plan, encode, verify, place) and `flnd/unpack.py` (extract a saved archive). Both are called by the job, and both are under 200 lines (est.).
+- The history row gains `state` (`compressed | kept | failed | extracted`), `before`, `format` and `tools`.
 
 ## 5. flns: slideshows, cards, albums
 
-flns turns flnd's media into things to watch, print or share. It is a library first, with a thin CLI, and imports `shared`, the stdlib and flnd's public API only. The user, 2026-11-16: "I can generate slideshow with different animation from cli … like slideshow, create album, create a photobooth card".
+flns turns flnd's media into things to watch, print or share. It is a plain library (`flns.slideshow`, `card`, `album`, `plan`); its commands are flnd's `show`, `card` and `album` (§3.4). It imports `shared`, the stdlib and flnd's public API only. The user, 2026-11-16: "I can generate slideshow with different animation from cli … like slideshow, create album, create a photobooth card".
 
 Defaults adopted without asking (the user may reverse any): verb `slideshow`; a plain fade, 3 s, no motion; H.264; hardware encoding only with `--hw`; video clips in shows (≤ 4 s, sound ducked under music); no smart crop in the MVP; one bundled OFL font (Inter); PDF/JPG albums first; output in `<home>/made/<kind>/`; a top-level `flns/` package.
 
@@ -777,16 +782,11 @@ flns.slideshow(images, "example_user.mp4", memo=memo)
 - Errors: `flns.Error`, and `flns.MissingError` naming the fix.
 
 ### 5.4 The CLI
-```
-flns slideshow <paths|targets…> [-o] [--transition fade|wipeleft|…|random|cut] [--duration] [--fade]
-               [--size] [--fps] [--fit] [--music] [--title] [--codec h264|hevc|av1|hw] [--seed]
-flns card <…> --layout strip-3|strip-4|grid-4|polaroid|postcard|grid-3x3|mosaic [--theme] [--caption]
-flns album <…> [-o album.pdf] [--page a4|letter|square] [--title]
-flns outputs [--kind] | forget <outputs…> | tools
-Selection on every maker: --target ins:example_user --time 2026-01-01, --kind --limit --order date|random --dry
-Global: --ui, -v, --home
-```
-A positional is a file, a folder (`fs.walk`), or a flnd target (through `fl.files`). `--transition`'s help lists the names this ffmpeg offers.
+flns's commands are flnd's `show`, `card` and `album` (§3.4). Each takes `--by` to group photos (post, day, month, year, all) and `--style` to pick a preset, so one command makes many outputs.
+- `show`'s styles map onto `Show`: `classic` (fade, 3 s), `fun` (random transitions, 2 s), `calm` (dissolve, 5 s, 1.5 s fades) and `story` (9:16, blur fit).
+- `card`'s styles are its layouts.
+- The groups come from flnd's history: a post's files, or the files saved on a day or in a month.
+- Every other `Show` field is a library option.
 
 ### 5.5 Animations
 **Transitions** (`xfade`, `duration=fade`):
@@ -853,7 +853,7 @@ Encoders:
   - `flns --help` in < 150 ms.
 
 ### 5.7 `shared` additions, kept general
-- **`media.render(*args, seconds=, progress=)`**: runs ffmpeg with `-progress`, feeding a sink. Its error carries the last stderr lines. flnc's video path uses it too.
+- **`media.render(*args, seconds=, progress=)`**: runs ffmpeg with `-progress`, feeding a sink. Its error carries the last stderr lines. `--compress`'s video path uses it too.
 - **`media.concat(parts, dest)`**: the concat demuxer with stream copy, staged.
 - **`media.fit(src, size, *, mode=, focus=)`** returns a `PIL.Image`.
 - **`media.font(name=None)`** returns a `Path` to a system or bundled font.
@@ -896,29 +896,29 @@ Each step is one logical commit as `feiluvnana`, with `check` green, `api.txt` r
    - I `refactor:` sources own login through `Auth`, and `auth.py` shrinks to the vault and helpers.
 7. `refactor:` flnd's library as `Flnd`: `Run`, `Session`, `Job`, the cursor in `Job` (`site.pages`), `download` yielding `Saved`, `Report.of`, `move`, `Home`, `files`.
 8. `perf:` flnd's history and targets on typed `store.Row`s, the `_held` fix, segmented downloads, the import-time test.
-9. `feat:` flnd's CLI on the library and `ui.live`; README.
-10. `feat:` `shared.media` with pinned tool specs, plus `media.tools`/`install`, `store.Memo`, `shared.Report`, and shared `--dry`/`--again` flags.
-11. `feat:` flnc: `compress`, `plan`, `Done`, the image pipeline, and the CLI.
-12. `feat:` flnc video and audio.
-13. `feat:` flnc `archive`/`extract`, over `shared.archive`.
-14. `docs:` README and AGENTS.md for flnc, the UI modes and the API rules.
+9. `feat:` flnd's new CLI (§3.4: 11 commands, `--when`, `download` remembers, optional `--from`) on the library and `ui.live`; README.
+10. `feat:` `shared.media` with pinned tool specs and self-install on first use, plus `store.Memo`, `shared.Report`, and the `--when`/`--by` parsers in `shared.cli`.
+11. `feat:` `--compress` for images: `flnd/shrink.py`, history states, `fl.compress`, `download`/`sync --compress`.
+12. `feat:` `--compress` for video and audio.
+13. `feat:` automatic extraction: `File.password`, `flnd/unpack.py`, loi passing its password, the archive removed under `--compress`.
+14. `docs:` README and AGENTS.md for the new CLI, the UI modes and the API rules.
 15. `feat:` `media.render`, `media.concat`, `media.fit`, `media.font`, probe rotation.
-16. `feat:` flns: `slideshow` (pieces, transitions, cache, concat, audio), `plan`, `Done`, the CLI.
-17. `feat:` flns `card` (layouts, themes, collages).
-18. `feat:` flns `album` PDF.
-19. `docs:` README for flns. Later, one commit each: motion, crop, clip ducking, `loop`, album HTML, `reel`, `recap`.
+16. `feat:` flns `slideshow` (pieces, transitions, cache, concat, audio) and `plan`; flnd `show` with `--by` and `--style`.
+17. `feat:` flns `card` (layouts, themes, collages); flnd `card`.
+18. `feat:` flns `album` PDF; flnd `album`.
+19. `docs:` README for `show`, `card` and `album`. Later, one commit each: motion, crop, clip ducking, `loop`, album HTML, `reel`, `recap`.
 
 ## 7. Verification
 
 - `uv run --no-project scripts/dev.py check` at every commit: lint, pyright 0/0, unittest and the counters.
-- `scripts/dev.py bench` before and after each `perf:` commit, run offline: store, walk, worker, ui frames, `probe` cache and flnc rerun.
+- `scripts/dev.py bench` before and after each `perf:` commit, run offline: store, walk, worker, ui frames, `probe` cache and the `sync --compress` rerun.
 - The tests use the fakes (`sh.fake`, `http.fake`, `clock.Fake`, `prompt.fake`), so there is no network.
 - Textual's `run_test()` Pilot covers the keys and the `m` switch in `INLINE` and `FULL`; the `PLAIN` snapshot tests stay.
 - A test checks that `Flnd.move` makes `_held` find a renamed file, so it isn't downloaded again.
-- A script test composes `fl.download` with `flnc.compress` and `fl.move` on fakes: each file is compressed once, and history follows the rename.
+- `download(compress=True)` on fakes: each file is compressed once, a format change moves the history row with it, and an archive with a password is extracted once.
 - By hand, on the authorized test accounts:
   - `uv run flnd download <target> --limit 5` with `--ui inline` and `--ui full`: press `p`, `v`, `f`, `m`, then `q` twice, and check that the terminal is restored. Pipe the same command to a file to check that it falls back to `plain`.
-  - On a copy of `.flnd/media`, run `flnc compress --dry`, then for real, then again. The rerun must skip everything in < 3 s. Check that mtimes are kept, and that `flnd sync` doesn't download the `.avif`/`.webp` files again.
-  - `flnc archive`/`extract` round trip, with a password, a split and a sibling `info.md`.
+  - On a copy of `.flnd`, run `flnd sync --compress`, then again. The rerun must add < 3 s. Check that mtimes are kept, and that `flnd sync` doesn't download the `.avif`/`.webp` files again.
+  - `flnd download loi:<id> --compress` on the authorized account: the archive is extracted with its password and removed, and its photos are compressed.
   - flns: render a 20-photo show with `--transition random --music`, add one photo and rerun (only three pieces re-render), and make a `strip-4` card at 300 dpi.
 - flns tests fake ffmpeg with `sh.fake` and check filter strings and layout boxes; nothing is rendered for real.
