@@ -3,7 +3,7 @@
 What it times, in order:
 1. JSON: decoding and encoding a 2 MiB feed page shaped like an Instagram timeline, with the
    stdlib and with msgspec (untyped, and typed to the few fields a source reads);
-2. a JSON path: `shared.selector`'s jmespath query against plain dict access for the same nodes;
+2. a JSON path: `flnd._html`'s jmespath query against plain dict access for the same nodes;
 3. HTML: parsing a 2 MiB Meta-style page (40 scripts, 6 of them JSON, and 20,000 posts) and
    reading its JSON script blocks and its 20,000 `img[src]`, with parsel (today) and with
    selectolax when it is installed (the planned replacement);
@@ -40,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from example_source import CDN, Example  # noqa: E402
 from flnd import job  # noqa: E402
 from flnd.source import File, Post, day  # noqa: E402
-from shared import selector, text, ui, worker  # noqa: E402
+from flnd import _html as selector, _text as text, _loop as worker  # noqa: E402
+from flnd._ui import ui
 
 EDGES = "data.user.edge_owner_to_timeline_media.edges[].node"
 

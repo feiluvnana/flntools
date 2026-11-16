@@ -21,9 +21,9 @@ from flnd.sources.tlg import Telegram
 from flnd.sources.twt import CHROME, Twitter
 
 SOURCES_DIR = Path(__file__).resolve().parent.parent / "flnd" / "sources"
-FORBIDDEN = ("httpx", "playwright", "shared.worker", "shared.kv", "shared.log", "shared.prompt",
-             "shared._worker", "shared._kv", "shared._log", "shared._prompt")
-FORBIDDEN_NAMES = {"worker", "kv", "log", "prompt"}
+# A source may not reach the loop (threads) or ask the user (prompts) itself: the engine does that.
+FORBIDDEN = ("httpx", "playwright", "flnd._loop", "flnd._prompt")
+FORBIDDEN_NAMES = {"_loop", "_prompt"}
 
 
 class RegistryTest(unittest.TestCase):
@@ -108,8 +108,8 @@ def runtime_imports(tree):
         if isinstance(node, ast.Import):
             yield from (alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module == "shared":
-                yield from (f"shared.{alias.name}" for alias in node.names if alias.name in FORBIDDEN_NAMES)
+            if node.module == "flnd":
+                yield from (f"flnd.{alias.name}" for alias in node.names if alias.name in FORBIDDEN_NAMES)
             yield node.module
 
 

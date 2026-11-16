@@ -19,7 +19,8 @@ import httpx
 
 from flnd.common import auth, paths
 from flnd.sources.ins import Instagram
-from shared import cookies, crypto, store, ui
+from flnd import _cookies as cookies, _vault as crypto, _db as store
+from flnd._ui import ui
 
 NETSCAPE = ("# Netscape HTTP Cookie File\n"
             ".instagram.com\tTRUE\t/\tTRUE\t1825861327\tsessionid\tins-session\n")

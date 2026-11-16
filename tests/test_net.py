@@ -17,7 +17,8 @@ import httpx
 
 from flnd.common import net, paths
 from flnd.source import FetchError, File
-from shared import clock, http, sh, ui
+from flnd import _time as clock, _http as http, _tools as sh
+from flnd._ui import ui
 
 
 class Broken(httpx.SyncByteStream):
@@ -39,7 +40,7 @@ class NetCase(unittest.TestCase):
         self.tmp = Path(folder.name)
         self.fake = self.enterContext(clock.use(clock.Fake()))
         # The backoff's jitter at its top, so a wait reads 1, 2, 4 s.
-        self.enterContext(mock.patch("shared._http.random.uniform", lambda low, high: high))
+        self.enterContext(mock.patch("flnd._http.random.uniform", lambda low, high: high))
         self.stop = threading.Event()
         self.requests = []
         self.signatures = []
@@ -367,7 +368,7 @@ class DashDownloadTest(NetCase):
         self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
 
     def test_merge_temp_files_are_named_part(self):
-        """Every file a DASH download writes before its rename matches the part names `shared.fs.sweep` removes."""
+        """Every file a DASH download writes before its rename matches the part names `flnd._files.sweep` removes."""
         real_replace, moved = os.replace, []
 
         def spy(src, dst):

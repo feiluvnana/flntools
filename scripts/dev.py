@@ -13,7 +13,7 @@ script only uses the stdlib and runs under `--no-project`, outside the environme
 The Makefile is a shortcut to it and holds no logic of its own.
 
 `api` is the one task that needs the project's own code: it writes the API snapshot, which imports
-`shared` and `flnd`, so it runs `api_text` inside the environment through `uv run python`. The same
+`flnd`, so it runs `api_text` inside the environment through `uv run python`. The same
 `api_names` feed `tests/test_api.py` (the snapshot is current) and `tests/test_names.py` (it follows
 the naming conventions of AGENTS.md › API and naming).
 
@@ -45,11 +45,11 @@ DEFAULT_PYTHON = "3.14"
 
 # The modules the API snapshot lists, each through its `__all__`: the toolkit, the module sources
 # are written against, and the engine API (`flnd`'s own `__all__`, redesign B1).
-API_MODULES = ("shared", "flnd.source", "flnd")
+API_MODULES = ("flnd.source", "flnd")
 API_FILE = ROOT / "tests" / "data" / "api.txt"
 # Classes whose members are listed: the project's own. A base from the stdlib (MutableMapping,
 # NamedTuple, Exception) adds its own methods, which aren't this project's API.
-PROJECT_PACKAGES = ("shared", "flnd")
+PROJECT_PACKAGES = ("flnd",)
 # What `api` runs inside the environment: this file, imported from scripts/, writing the snapshot.
 WRITE_API = "import sys; sys.path.insert(0, 'scripts'); import dev; dev.write_api()"
 
@@ -68,8 +68,8 @@ def test(python: str, args: list[str]) -> None:
 
 
 def lint(python: str, args: list[str]) -> None:
-    """Byte-compile `flnd` and `shared`."""
-    run(["uv", "run", "--python", python, "python", "-m", "compileall", "-q", "flnd", "shared"])
+    """Byte-compile `flnd`."""
+    run(["uv", "run", "--python", python, "python", "-m", "compileall", "-q", "flnd"])
 
 
 def type(python: str, args: list[str]) -> None:  # noqa: A001 - the task's name; the snapshot code says `builtins.type`
@@ -104,7 +104,7 @@ def try_(python: str, args: list[str]) -> None:
 def api(python: str, args: list[str]) -> None:
     """Write `tests/data/api.txt`, the API snapshot, from inside the project environment.
 
-    The snapshot imports `shared` and `flnd`, which this script can't do under `--no-project`, so it
+    The snapshot imports `flnd`, which this script can't do under `--no-project`, so it
     runs `write_api` through `uv run python`. Commit the file with the change it shows: a rename is a
     one-line diff there, and `tests/test_api.py` fails until the file matches the code.
     """
@@ -116,7 +116,7 @@ def bench(python: str, args: list[str]) -> None:
 
         dev.py bench net disk --gate
 
-    The runner imports `shared` and `flnd`, so it runs inside the environment. It is never part
+    The runner imports `flnd`, so it runs inside the environment. It is never part
     of `check`: it takes minutes, and its timings are noisy. `tests/bench/run.py` says what the
     groups and the flags are, and `docs/performance.md` how to read the numbers.
     """
@@ -128,16 +128,16 @@ def dist(python: str, args: list[str]) -> None:
     # PyInstaller lives in the `dist` group, which `setup` leaves out; `uv run` below keeps it installed.
     run(["uv", "sync", "--python", python, "--group", "dist"])
     # This script runs outside the project environment, so the build runs inside it, through uv.
-    build = "from shared import bundler; bundler.build('flnd/__main__.py', name='flnd', dest='dist')"
+    build = "from flnd import _bundler as bundler; bundler.build('flnd/__main__.py', name='flnd', dest='dist')"
     run(["uv", "run", "--python", python, "--group", "dist", "python", "-c", build])
 
 
 class ApiName(NamedTuple):
     """One public name: one line of the API snapshot, and the object the line was made from."""
 
-    # The dotted name a caller types, such as "shared.kv.Store.keys".
+    # The dotted name a caller types, such as "flnd.source.Source.fetch".
     name: str
-    # "module" (also an object standing in for one, such as `shared.log`), "function", "method",
+    # "module" (also an object standing in for one, such as `flnd.ui`), "function", "method",
     # "class", "error", "property", "field", "attribute" or "value".
     kind: str
     # The function (taken out of a staticmethod or classmethod), class, property or value.
@@ -163,9 +163,9 @@ def write_api() -> None:
 def api_text() -> str:
     """The API snapshot: one line per public name, sorted, as `tests/data/api.txt` holds it.
 
-        shared.kv.Store.keys(prefix: str = '') -> KeysView[str]
-        shared.archive.BombError(shared.archive.Error, shared.UnsafeError)
-        shared.log.level: property, settable -> Level
+        flnd.db.Store.keys(prefix: str = '') -> KeysView[str]
+        flnd._unpack.BombError(flnd._unpack.Error, flnd._base.UnsafeError)
+        flnd.ui.level: property, settable -> Level
 
     Functions and methods show their signature without `self`, classes their constructor's, errors
     their bases, and the rest their kind and type. Annotations are shown as written in the source.
@@ -177,12 +177,12 @@ def api_names() -> list[ApiName]:
     """Every public name of `API_MODULES`, sorted by name.
 
         names = {name.name: name for name in api_names()}
-        names["shared.kv.Store.keys"].kind     # "method"
+        names["flnd.db.Store.keys"].kind     # "method"
 
     A module's names are its `__all__`. A class's are its public methods, properties, fields and
     class attributes, its own and its project bases', and the public attributes its `__init__`
-    sets on `self`. An object that stands in for a module (`shared.log` is the `log` object of
-    `shared/_log.py`) has its class's members, then the rest of its file's `__all__`, under its
+    sets on `self`. An object that stands in for a module (`flnd.ui` is the `ui` object of
+    `flnd/_ui.py`) has its class's members, then the rest of its file's `__all__`, under its
     name. Imports every module listed, so it runs inside the project environment.
 
     Returns:
@@ -228,7 +228,7 @@ def _add(name: str, value: Any, names: dict[str, ApiName], owner: Any = None) ->
         for member in value.__all__:
             member_value = getattr(value, member)
             # A public name that is an object, not a module, stands for the private file `_<name>`
-            # beside it, the way `shared.log` is the `log` object of `shared/_log.py`.
+            # beside it, the way `flnd.ui` is the `ui` object of `flnd/_ui.py`.
             backing = sys.modules.get(f"{value.__name__}._{member}")
             if backing is not None and not isinstance(member_value, types.ModuleType):
                 _add_stand_in(f"{name}.{member}", member_value, backing, names)

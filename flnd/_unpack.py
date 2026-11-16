@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Callable, Literal, Sequence, Union
 
-import shared
-from shared import _fs as fs
-from shared import _sh as sh
+from flnd import _base
+from flnd import _files as fs
+from flnd import _tools as sh
 
 __all__ = [
     "BrokenError", "Entry", "Error", "Limits", "MissingError", "PasswordError",
@@ -33,23 +33,23 @@ CHUNK = 1024 * 1024
 RAR_LINKS = ("link", "junction", "reference")
 
 
-class Error(shared.Error):
-    """The base of every error `shared.archive` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._unpack` raises."""
 
 
-class UnsafeError(Error, shared.UnsafeError):
+class UnsafeError(Error, _base.UnsafeError):
     """An entry would land outside `dest`, is a link/special file, or exceeds `Limits`."""
 
 
-class BrokenError(Error, shared.BrokenError):
+class BrokenError(Error, _base.BrokenError):
     """The archive is truncated, corrupt, or unsupported."""
 
 
-class PasswordError(Error, shared.RefusedError, ValueError):
+class PasswordError(Error, _base.RefusedError, ValueError):
     """The archive is encrypted and needs a valid password."""
 
 
-class MissingError(Error, shared.MissingError):
+class MissingError(Error, _base.MissingError):
     """Reading or writing this archive format needs an external tool (`7zz`, `unrar`)."""
 
 

@@ -20,7 +20,7 @@ from flnd import Engine, Range, TargetReport
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import File, Post, Source, Target, target
-from shared import clock, store
+from flnd import _time as clock, _db as store
 
 class Site:
     """A test source's posts: `files` maps a name to its body; its `posts` category yields every one."""

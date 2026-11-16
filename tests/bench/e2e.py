@@ -30,7 +30,8 @@ import kit
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import File, Post, Site, Source, pages, target
-from shared import cli, ui
+from flnd import _cli as cli
+from flnd._ui import ui
 
 API, CDN, PER_PAGE = "https://api.bench.example", "https://cdn.bench.example", 50
 BODY = b"\0" * (100 * 1024)

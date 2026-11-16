@@ -25,9 +25,9 @@ from collections.abc import Awaitable, Iterator
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, Literal, TypeVar
 
-import shared
-from shared import _clock as clock
-from shared._sink import Sink
+from flnd import _base
+from flnd import _time as clock
+from flnd._sink import Sink
 
 __all__ = ["ClosedError", "Error", "Pool", "Result"]
 
@@ -41,8 +41,8 @@ WAKE = 0.1
 LOOP_GRACE = 10.0
 
 
-class Error(shared.Error):
-    """The base of every error `shared.worker` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._loop` raises."""
 
 
 class ClosedError(Error, RuntimeError):
@@ -246,7 +246,7 @@ class Pool:
         self._changed.notify_all()
 
     def _start_thread(self) -> None:
-        thread = threading.Thread(target=self._serve, name="shared-worker", daemon=True)
+        thread = threading.Thread(target=self._serve, name="flnd-worker", daemon=True)
         self._threads.append(thread)
         thread.start()
 
@@ -299,7 +299,7 @@ class Pool:
             if self._loop is None:
                 self._loop = asyncio.new_event_loop()
                 self._loop_thread = threading.Thread(
-                    target=_serve_loop, args=(self._loop,), name="shared-worker-loop", daemon=True,
+                    target=_serve_loop, args=(self._loop,), name="flnd-worker-loop", daemon=True,
                 )
                 self._loop_thread.start()
             return self._loop

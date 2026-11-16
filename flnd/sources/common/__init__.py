@@ -1,4 +1,4 @@
-"""What a source may import besides `flnd.source`, `shared` and the stdlib.
+"""What a source may import besides `flnd.source` and the stdlib: the private `flnd._x` toolkit.
 
 Helpers more than one source shares: `dash` picks a DASH manifest's best streams, `relay` reads
 the GraphQL results Meta embeds in its pages (`meta_results` loads one and reads them), and

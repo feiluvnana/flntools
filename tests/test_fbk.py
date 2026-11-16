@@ -18,7 +18,7 @@ from test_dash import INSTAGRAM
 from flnd.options import Options
 from flnd.source import FetchError, LoginError, Post, Target, TargetError
 from flnd.sources.fbk import Facebook, image_extension, media_items
-from shared import browser
+from flnd import _browser as browser
 
 SITE = "https://www.facebook.com"
 STAMP = 1700000000

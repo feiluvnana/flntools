@@ -5,7 +5,7 @@
 on first use.
 
     import secrets
-    from shared import crypto
+    from flnd import _vault as crypto
 
     key = secrets.token_bytes(32)
     blob = crypto.encrypt("sessionid=abc", key, context=b"cookies")
@@ -20,7 +20,7 @@ import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Union, cast
 
-import shared
+from flnd import _base
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -39,16 +39,16 @@ GCM_TAG_SIZE = 16
 KEY_SIZE = 32
 # One message for every way decryption fails, so it says nothing about the key or the data.
 DECRYPT_FAILED = "cannot decrypt: wrong key or damaged data"
-MISSING_CRYPTOGRAPHY = "shared.crypto needs cryptography: pip install 'flntools[browser]'"
+MISSING_CRYPTOGRAPHY = "flnd._vault needs cryptography: pip install cryptography"
 
 
 # Subclasses ValueError so callers expecting bad input exceptions catch it.
-class Error(shared.Error, ValueError):
+class Error(_base.Error, ValueError):
     """Data could not be decrypted, key length is wrong, or the hash algorithm is unknown."""
 
 
-class MissingError(Error, shared.MissingError):
-    """`cryptography` isn't installed (`pip install 'flntools[browser]'`)."""
+class MissingError(Error, _base.MissingError):
+    """`cryptography` isn't installed (`pip install cryptography`)."""
 
 
 def digest(data: HashInput, *, algorithm: str = "sha256") -> str:

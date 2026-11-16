@@ -27,7 +27,7 @@ from flnd.source import FetchError, File, LoginError, Post, Site, Source, day, t
 from flnd.sources.common import dash
 from flnd.sources.common.relay import meta_results
 from flnd.sources.common.feed import warm_tabs, watch_responses
-from shared import selector
+from flnd import _html as selector
 
 SITE = "https://www.facebook.com"
 # What a single post, reel or video is refused with: only a profile is read.

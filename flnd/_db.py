@@ -28,9 +28,9 @@ from typing import Any, ClassVar, Generic, TypeVar, Union, overload
 
 import msgspec
 
-import shared
-from shared import _fs as fs
-from shared._query import Plan, Query, run as run_plan
+from flnd import _base
+from flnd import _files as fs
+from flnd._query import Plan, Query, run as run_plan
 
 __all__ = ["ClosedError", "Db", "Error", "Row", "Rows", "Table", "open"]
 
@@ -46,8 +46,8 @@ BUSY_MS = 30_000
 SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
-class Error(shared.Error):
-    """The base of every error `shared.store` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._db` raises."""
 
 
 class ClosedError(Error, RuntimeError):

@@ -30,7 +30,8 @@ from flnd import Engine, job, site as site_module
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import FetchError, File, LoginError, Post, Source, Target, pages, target
-from shared import cli, clock, store, ui
+from flnd import _cli as cli, _time as clock, _db as store
+from flnd._ui import ui
 
 
 class JobCase(EngineCase):
@@ -272,7 +273,7 @@ class SavedTest(JobCase):
         class Same(Source):
             code, name, domains = "sme", "Same", ("example.com",)
             folder = ""
-            filename = "shared"
+            filename = "photo"
 
             @target("{user}")
             def user(self, site, user):
@@ -288,7 +289,7 @@ class SavedTest(JobCase):
 
         # Two keys, one path: the second file would overwrite the first, so it is skipped as queued.
         self.assertEqual(self.run_engine(Same, targets=["sme:example_user"]), 1)
-        self.assertEqual(self.files("sme"), ["shared.jpg"])
+        self.assertEqual(self.files("sme"), ["photo.jpg"])
         self.assertEqual(self.fetched(f"{CDN}/2.jpg"), [])
 
 
@@ -625,7 +626,7 @@ class AsyncTest(JobCase):
                     yield Post(str(number), [File(f"{CDN}/{chat}/{number}.jpg")], date=1767312000 - number)
 
         self.assertEqual(self.run_engine(Chats, targets=["cht:examplechannel"]), 4)
-        self.assertEqual(set(threads), {"shared-worker-loop"})
+        self.assertEqual(set(threads), {"flnd-worker-loop"})
         self.assertFalse([thread for thread in threading.enumerate() if thread.name.endswith("-saves")])
 
 

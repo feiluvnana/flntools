@@ -6,7 +6,7 @@ import re
 import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
-import shared
+from flnd import _base
 
 __all__ = ["Error", "count", "duration", "filename", "fold", "redact", "size"]
 
@@ -21,8 +21,8 @@ RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
 }
 
 
-class Error(shared.Error):
-    """The base of every error `shared.text` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._text` raises."""
 
 
 def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 200) -> str:

@@ -2,7 +2,7 @@
 
 AGENTS.md › Writing sets the rules this file checks. Each check is a test class below:
 
-1. `DocstringTest` reads every module of `flnd` and `shared` with `ast` (nothing is imported)
+1. `DocstringTest` reads every module of `flnd` with `ast` (nothing is imported)
    and lists each docstring gap: a module, class or function without a docstring, a Google-style
    section it lacks (`Args:` naming each argument, `Returns:`, `Yields:`, `Raises:`), and a
    public name without a runnable `Example:` (one with `>>>` lines). Every docstring with `>>>`
@@ -52,7 +52,7 @@ from test_packaging import ROOT, load_dev
 
 # The packages whose modules must document themselves. `scripts/` and `tests/` are tools for
 # contributors, not the product, so they are left out.
-PACKAGES = ("flnd", "shared")
+PACKAGES = ("flnd",)
 DOCS = ROOT / "docs"
 GAPS_FILE = ROOT / "tests" / "data" / "docs_gaps.txt"
 # A private function this short (body lines, docstring included) needs no docstring: AGENTS.md

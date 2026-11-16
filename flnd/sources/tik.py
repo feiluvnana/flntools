@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 from flnd.source import FetchError, File, Post, Site, Source, caught_up, day, fill, target
 from flnd.sources.common.feed import Responses, watch_responses
-from shared import selector
+from flnd import _html as selector
 
 # The user agent TikTok's embed page and CDN have always been sent: a desktop Chrome.
 TIKTOK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -559,7 +559,7 @@ def mirrors(urls: Sequence[Any]) -> str | tuple[str, ...]:
         mirrors(["https://v16.example/a", "https://v19.example/a"])     # both, tried in that order
 
     TikTok answers 403 for some posts on one CDN host and not on another, so every address is kept
-    and `shared.http.download` tries the next one when one refuses.
+    and `flnd._http.download` tries the next one when one refuses.
     """
     found = tuple(dict.fromkeys(str(url) for url in urls if url))
     return found[0] if len(found) == 1 else found

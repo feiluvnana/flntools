@@ -29,7 +29,8 @@ from flnd import Engine, LoginError, Range, Report, Target, TargetReport
 from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import FetchError, File, Post, Source, target
-from shared import cli, clock, cookies, http, store, ui
+from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http, _db as store
+from flnd._ui import ui
 
 CDN = "https://cdn.example"
 
@@ -482,7 +483,7 @@ class EngineLoginTest(EngineCase):
 
         source = make_source("aaa", login=own_login, login_methods=("qr",))
         with mock.patch.object(sys.stdin, "isatty", return_value=True), \
-                mock.patch("shared.prompt.ask", return_value="1") as asked:
+                mock.patch("flnd._prompt.ask", return_value="1") as asked:
             Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
         self.assertEqual(answers, ["1"])
         asked.assert_called_once_with("Phone number", secret=False)
@@ -642,7 +643,7 @@ class ApiLoginTest(EngineCase):
         self.engine = Engine(home=self.home, sources={"aaa": self.source, "bbb": make_source("bbb")})
         jar = cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
                            {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
-        patcher = mock.patch("shared.cookies.load", lambda browser="chrome", *, profile=None: jar)
+        patcher = mock.patch("flnd._cookies.load", lambda browser="chrome", *, profile=None: jar)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -661,7 +662,7 @@ class ApiLoginTest(EngineCase):
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
 
     def test_a_failed_login_and_bad_answers(self):
-        with mock.patch("shared.cookies.load", lambda browser="chrome", *, profile=None: cookies.Jar()):
+        with mock.patch("flnd._cookies.load", lambda browser="chrome", *, profile=None: cookies.Jar()):
             with self.assertRaisesRegex(LoginError, "no sid for aaa.example in Chrome"):
                 self.engine.login("aaa", "browser", browser="chrome")
         for args, options in ((("aaa", "qr"), {}), (("zzz", "browser"), {}), (("aaa", "browser"), {}),

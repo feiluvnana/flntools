@@ -2,13 +2,13 @@ import contextvars
 import threading
 import unittest
 
-import shared
-from shared import _clock as clock
+from flnd import _base
+from flnd import _time as clock
 
 
 class ErrorTest(unittest.TestCase):
-    def test_error_inherits_shared_error(self):
-        self.assertTrue(issubclass(clock.Error, shared.Error))
+    def test_error_inherits_the_base_error(self):
+        self.assertTrue(issubclass(clock.Error, _base.Error))
 
 
 class RealClockTest(unittest.TestCase):

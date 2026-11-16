@@ -15,7 +15,7 @@ from typing import Any, Callable, Literal, TypeVar, cast, overload
 
 import questionary
 
-import shared
+from flnd import _base
 
 __all__ = ["Error", "ask", "autofill", "choose", "confirm", "interactive", "raw"]
 
@@ -39,7 +39,7 @@ QMARK = "•"
 POINTER = "❯"
 
 
-class Error(shared.Error):
+class Error(_base.Error):
     """A prompt that cannot be asked, such as missing choices or no default off-TTY."""
 
 
@@ -183,8 +183,8 @@ def _validator(validate: Validate | None) -> Callable[[str], bool | str] | None:
 
 
 def _live_paused() -> AbstractContextManager[Any]:
-    """Pause `shared._ui`'s live display if `_ui` has already been imported."""
-    ui_mod = sys.modules.get("shared._ui")
+    """Pause `flnd._ui`'s live display if `_ui` has already been imported."""
+    ui_mod = sys.modules.get("flnd._ui")
     ui_obj = getattr(ui_mod, "ui", None)
     pause = getattr(ui_obj, "pause_live", None)
     if callable(pause):

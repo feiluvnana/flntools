@@ -1,4 +1,4 @@
-"""shared.crypto: `digest` against hashlib, and AES-256-GCM's `encrypt` and `decrypt`.
+"""flnd._vault: `digest` against hashlib, and AES-256-GCM's `encrypt` and `decrypt`.
 
 Nothing is faked but a missing `cryptography`, by patching `__import__`. The ciphers' tests skip
 without `cryptography`; `digest` needs only the stdlib.
@@ -14,8 +14,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import shared
-from shared import crypto
+from flnd import _base
+from flnd import _vault as crypto
 
 try:
     import cryptography  # noqa: F401
@@ -163,11 +163,11 @@ class MissingExtraTest(unittest.TestCase):
             return real_import(name, *args, **kwargs)
 
         self.assertTrue(issubclass(crypto.MissingError, crypto.Error))
-        self.assertTrue(issubclass(crypto.MissingError, shared.MissingError))
+        self.assertTrue(issubclass(crypto.MissingError, _base.MissingError))
         with mock.patch("builtins.__import__", import_without_cryptography):
             for cipher_call in (lambda: crypto.decrypt(b"x" * 40, secrets.token_bytes(32)),
                                 lambda: crypto.encrypt("x", secrets.token_bytes(32))):
-                with self.assertRaisesRegex(crypto.MissingError, re.escape("pip install 'flntools[browser]'")):
+                with self.assertRaisesRegex(crypto.MissingError, re.escape("pip install cryptography")):
                     cipher_call()
             self.assertEqual(crypto.digest("a"), hashlib.sha256(b"a").hexdigest())
 

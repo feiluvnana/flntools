@@ -1,4 +1,4 @@
-"""`shared.selector`: `parse` over each kind of source, each query, `script`, `json`, the errors and the size limit.
+"""`flnd._html`: `parse` over each kind of source, each query, `script`, `json`, the errors and the size limit.
 
 Responses are faked by two small classes with httpx's and Playwright's shapes; nothing else is.
 """
@@ -9,16 +9,16 @@ from unittest import mock
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import shared
+from flnd import _base
 
 if TYPE_CHECKING:
     import parsel
-    from shared import selector
+    from flnd import _html as selector
 else:
     try:
         import parsel
-        from shared import selector
-    except ImportError:  # the selector extra is missing
+        from flnd import _html as selector
+    except ImportError:  # parsel is missing
         parsel = None
         selector = None
 
@@ -56,7 +56,7 @@ class FakePlaywrightResponse:
         return self._body
 
 
-@unittest.skipIf(selector is None, "the selector extra is not installed")
+@unittest.skipIf(selector is None, "parsel is not installed")
 class ParseTest(unittest.TestCase):
     def test_each_html_source(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -83,7 +83,7 @@ class ParseTest(unittest.TestCase):
                     self.assertEqual(selector.parse(source).jmespath("a.b[1]").first, 2)
 
     def test_json_content_type_with_broken_json_raises(self):
-        for error in (selector.BrokenError, selector.Error, shared.BrokenError, ValueError):
+        for error in (selector.BrokenError, selector.Error, _base.BrokenError, ValueError):
             with self.subTest(error.__qualname__), self.assertRaises(error):
                 selector.parse(FakePlaywrightResponse("<html>", "application/json"))
 
@@ -108,7 +108,7 @@ class ParseTest(unittest.TestCase):
             selector.parse(Path("nonexistent_selector_file.json"))
 
 
-@unittest.skipIf(selector is None, "the selector extra is not installed")
+@unittest.skipIf(selector is None, "parsel is not installed")
 class HtmlTest(unittest.TestCase):
     def setUp(self):
         self.page = selector.parse(HTML)
@@ -152,7 +152,7 @@ class HtmlTest(unittest.TestCase):
             self.page.xpath("//div[")
 
 
-@unittest.skipIf(selector is None, "the selector extra is not installed")
+@unittest.skipIf(selector is None, "parsel is not installed")
 class JmespathTest(unittest.TestCase):
     def setUp(self):
         self.data = selector.parse(DATA)
@@ -189,7 +189,7 @@ class JmespathTest(unittest.TestCase):
             self.data.jmespath("data.[")
 
 
-@unittest.skipIf(selector is None, "the selector extra is not installed")
+@unittest.skipIf(selector is None, "parsel is not installed")
 class JsonpathTest(unittest.TestCase):
     def test_key_at_any_depth_in_document_order(self):
         data = {"a": {"url": 1, "b": {"url": 2}}, "list": [{"url": 3}, [{"x": {"url": 4}}]]}
@@ -217,7 +217,7 @@ class JsonpathTest(unittest.TestCase):
         self.assertEqual(found.get(), [1, 2, 3])
 
 
-@unittest.skipIf(selector is None, "the selector extra is not installed")
+@unittest.skipIf(selector is None, "parsel is not installed")
 class ScriptTest(unittest.TestCase):
     def setUp(self):
         self.page = selector.parse(HTML)
@@ -248,7 +248,7 @@ class ScriptTest(unittest.TestCase):
             self.page.match(r"window\._sharedData")
 
 
-@unittest.skipIf(selector is None, "the selector extra is not installed")
+@unittest.skipIf(selector is None, "parsel is not installed")
 class JsonTest(unittest.TestCase):
     def setUp(self):
         self.page = selector.parse(HTML)
@@ -284,7 +284,7 @@ class JsonTest(unittest.TestCase):
                 source.json
 
 
-@unittest.skipIf(selector is None, "the selector extra is not installed")
+@unittest.skipIf(selector is None, "parsel is not installed")
 class SizeTest(unittest.TestCase):
     """C6: text over 64 MB is refused before it is parsed, whatever it comes in."""
 
@@ -301,7 +301,7 @@ class SizeTest(unittest.TestCase):
                        FakePlaywrightResponse(text, "application/json")]
             for source in sources:
                 with self.subTest(type(source).__name__):
-                    for error in (selector.BrokenError, selector.Error, shared.BrokenError, ValueError):
+                    for error in (selector.BrokenError, selector.Error, _base.BrokenError, ValueError):
                         with self.assertRaises(error):
                             selector.parse(source)
 

@@ -7,10 +7,12 @@ Nothing is imported or run.
 
 The rules:
 1. a source (and `flnd.sources.common`) imports from flnd only `flnd.source`, the
-   `flnd.sources.common` package and `flnd` itself (its version);
-2. `flnd.source` imports nothing from flnd: it is what sources see, not the engine;
-3. `flnd/cli.py` imports from flnd only `flnd` (the engine API) and `flnd.sources` (for help and
-   login's list): every decision is the engine's, so the CLI only parses, asks and prints;
+   `flnd.sources.common` package, `flnd` itself (its version) and the toolkit: the private
+   `flnd._x` modules that used to be the `shared` package;
+2. `flnd.source` imports nothing from flnd but the toolkit: it is what sources see, not the engine;
+3. `flnd/cli.py` imports from flnd only `flnd` (the engine API), `flnd.sources` (for help and
+   login's list) and the toolkit: every decision is the engine's, so the CLI only parses, asks and
+   prints;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it.
 
 Nothing is exempt: step 7 moved the CLI's decisions into the engine, which emptied the list of
@@ -24,8 +26,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
 
-# Rule 3: everything cli.py may import from flnd.
+# Rule 3: everything cli.py may import from flnd, besides the toolkit.
 CLI_ALLOWED = {"flnd", "flnd.sources"}
+
+
+def toolkit(name: str) -> bool:
+    """Whether a module is part of the toolkit: a private `flnd._x` module, which the sources may use.
+
+    The toolkit was the `shared` package before the fold. Until the source API of the rebuild
+    replaces it, sources and the CLI import these private modules directly; the rule is only that
+    they stay private, so the engine (`flnd.job`, `flnd.site`, ...) is still off limits.
+    """
+    return name.startswith("flnd._")
 
 
 def flnd_imports(path: Path) -> set[str]:
@@ -35,12 +47,14 @@ def flnd_imports(path: Path) -> set[str]:
         if isinstance(node, ast.Import):
             found |= {alias.name for alias in node.names if alias.name.split(".")[0] == "flnd"}
         elif isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "flnd":
-            found.add(node.module)
             # `from flnd import job` and `from flnd.common import net` import modules by name. Names
             # are compared to the folder's listing, not looked up as paths: on macOS's and Windows'
             # case-insensitive disks, `from flnd import Engine` would find flnd/engine.py.
             package = FLND.parent / node.module.replace(".", "/")
             modules = {entry.name for entry in package.iterdir()} if package.is_dir() else set()
+            # The package itself counts only when a name in the import isn't a module of it.
+            if not all(f"{alias.name}.py" in modules for alias in node.names):
+                found.add(node.module)
             found |= {f"{node.module}.{alias.name}" for alias in node.names if f"{alias.name}.py" in modules}
     return found
 
@@ -53,7 +67,8 @@ def module_name(path: Path) -> str:
 
 def source_allowed(name: str) -> bool:
     """Rule 1: what a source may import from flnd."""
-    return name in ("flnd", "flnd.source") or name == "flnd.sources.common" or name.startswith("flnd.sources.common.")
+    return name in ("flnd", "flnd.source") or name == "flnd.sources.common" or name.startswith("flnd.sources.common.") \
+        or toolkit(name)
 
 
 class LayersTest(unittest.TestCase):
@@ -69,10 +84,11 @@ class LayersTest(unittest.TestCase):
                 self.assertEqual(sorted(found for found in flnd_imports(path) if not source_allowed(found)), [])
 
     def test_flnd_source_imports_nothing_from_the_engine_side(self):
-        self.assertEqual(sorted(flnd_imports(FLND / "source.py")), [])
+        self.assertEqual(sorted(found for found in flnd_imports(FLND / "source.py") if not toolkit(found)), [])
 
-    def test_the_cli_imports_the_engine_api_shared_and_the_sources(self):
-        self.assertEqual(sorted(flnd_imports(FLND / "cli.py") - CLI_ALLOWED), [])
+    def test_the_cli_imports_the_engine_api_the_toolkit_and_the_sources(self):
+        self.assertEqual(sorted(found for found in flnd_imports(FLND / "cli.py")
+                                if found not in CLI_ALLOWED and not toolkit(found)), [])
 
     def test_nothing_imports_the_cli_but_the_entry_point(self):
         for path in sorted(FLND.rglob("*.py")):

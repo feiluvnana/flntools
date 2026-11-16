@@ -34,21 +34,21 @@ from typing import (
 
 import msgspec
 
-import shared
-from shared import _clock as clock
-from shared import _cookies as cookies
-from shared import _fs as fs
-from shared import _text as text
-from shared._sink import Sink
-from shared._ui import ui
+from flnd import _base
+from flnd import _time as clock
+from flnd import _cookies as cookies
+from flnd import _files as fs
+from flnd import _text as text
+from flnd._sink import Sink
+from flnd._ui import ui
 
 try:
     import httpx
 except ImportError:
-    raise ImportError("shared.http needs httpx: pip install 'flntools[http]'") from None
+    raise ImportError("flnd._http needs httpx: pip install httpx") from None
 
 if TYPE_CHECKING:
-    from shared._selector import Selection
+    from flnd._html import Selection
 
 __all__ = [
     "Client", "Error", "IncompleteError", "RateLimitedError", "RefusedError", "Response", "Retry",
@@ -77,15 +77,15 @@ SEGMENTS = 4
 BURST = 1.0
 
 
-class Error(shared.Error):
-    """The base of every error `shared.http` raises; also what a failed connection raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._http` raises; also what a failed connection raises."""
 
 
 class _RequestError(Error):
     """A malformed request or protocol error that retrying cannot fix."""
 
 
-class RefusedError(Error, shared.RefusedError):
+class RefusedError(Error, _base.RefusedError):
     """A 4xx other than 429: the site said no."""
 
     def __init__(self, status: int, message: str = "", *, response: Response | None = None):
@@ -109,7 +109,7 @@ class StoppedError(Error):
     """A request or download ended because its client's `stop` was set."""
 
 
-class IncompleteError(Error, shared.BrokenError):
+class IncompleteError(Error, _base.BrokenError):
     """A truncated response, 5xx error, or broken transfer."""
 
     def __init__(self, message: str, *, status: int | None = None,
@@ -174,8 +174,8 @@ class Response:
 
     @property
     def html(self) -> Selection:
-        """The body as a `shared.selector` `Selection`."""
-        from shared import _selector
+        """The body as a `flnd._html` `Selection`."""
+        from flnd import _html as _selector
 
         return self._cached("html", lambda: _selector.parse(self.text))
 

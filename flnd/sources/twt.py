@@ -28,7 +28,7 @@ from flnd.source import (
     FetchError, File, LoginError, Post, Site, Source, caught_up, day, target,
 )
 from flnd.sources.common.feed import warm_tabs, watch_responses
-from shared import http, selector, text
+from flnd import _http as http, _html as selector, _text as text
 
 if TYPE_CHECKING:
     import httpx

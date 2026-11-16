@@ -25,10 +25,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Union
 
-import shared
-from shared import _crypto as crypto
-from shared import _fs as fs
-from shared import _http as http
+from flnd import _base
+from flnd import _vault as crypto
+from flnd import _files as fs
+from flnd import _http as http
 
 __all__ = [
     "Error", "MissingError", "Result", "RunError", "Spec", "Tool", "UnsafeError", "fake",
@@ -46,15 +46,15 @@ VERSIONS_FILE = "versions.json"
 TAIL_LINES = 20
 
 
-class Error(shared.Error):
-    """The base of every error `shared.sh` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._tools` raises."""
 
 
-class MissingError(Error, shared.MissingError):
+class MissingError(Error, _base.MissingError):
     """The requested tool is not on PATH and has no spec for this platform."""
 
 
-class UnsafeError(Error, shared.UnsafeError):
+class UnsafeError(Error, _base.UnsafeError):
     """Downloaded tool failed its checksum check or contained an unsafe archive path."""
 
 

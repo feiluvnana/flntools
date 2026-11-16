@@ -24,7 +24,7 @@ from cyclopts.exceptions import CycloptsError
 from rich.console import Console
 from rich.theme import Theme
 
-import shared
+from flnd import _base
 
 __all__ = ["App", "Error", "Stopping", "UsageError", "stopping"]
 
@@ -40,7 +40,7 @@ CLI_PALETTE: dict[str, str] = {
 }
 
 
-class Error(shared.Error):
+class Error(_base.Error):
     """Base error for command-line parsing and execution."""
 
 
@@ -89,7 +89,7 @@ class App:
         try:
             return _exit_code(self._raw(tokens))
         except (UsageError, CycloptsError) as error:
-            from shared._ui import ui
+            from flnd._ui import ui
 
             ui.error("{error}", error=str(error))
             return 2

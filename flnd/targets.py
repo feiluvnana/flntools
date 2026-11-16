@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import Source, Target
-from shared import cli, store
+from flnd import _cli as cli, _db as store
 
 TARGETS_TABLE = "targets"
 SYNC = "sync"

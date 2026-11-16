@@ -1,4 +1,4 @@
-"""One clock for every module of `shared`: monotonic time, wall time, and interruptible sleeps."""
+"""One clock for every private module of flnd: monotonic time, wall time, interruptible sleeps."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Protocol, TypeVar
 
-import shared
+from flnd import _base
 
 __all__ = ["Clock", "Error", "Fake", "now", "sleep", "use", "wall"]
 
@@ -19,8 +19,8 @@ FAKE_WALL = 1767225600.0
 C = TypeVar("C", bound="Clock")
 
 
-class Error(shared.Error):
-    """The base of every error `shared.clock` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._time` raises."""
 
 
 class Clock(Protocol):
@@ -96,7 +96,7 @@ class Fake(Clock):
 
 
 _DEFAULT: Clock = _RealClock()
-_current: ContextVar[Clock] = ContextVar("shared.clock", default=_DEFAULT)
+_current: ContextVar[Clock] = ContextVar("flnd._time", default=_DEFAULT)
 
 
 def now() -> float:

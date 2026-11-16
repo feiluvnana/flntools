@@ -16,7 +16,7 @@ from flnd.source import (
     Fetch, FetchError, File, Login, LoginError, Post, Site, Source, Target, TargetError,
     target,
 )
-from shared import browser, fs
+from flnd import _browser as browser, _files as fs
 
 TELEGRAM_WEB = "https://web.telegram.org/"
 # Telegram's production data centers, as every client ships them.

@@ -1,8 +1,8 @@
 import unittest
 from dataclasses import dataclass
 
-from shared import Query
-from shared._query import Plan
+from flnd._query import Query
+from flnd._query import Plan
 
 
 @dataclass

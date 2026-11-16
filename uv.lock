@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -336,25 +336,6 @@ dependencies = [
     { name = "telethon" },
 ]
 
-[package.optional-dependencies]
-browser = [
-    { name = "cryptography" },
-    { name = "playwright" },
-]
-http = [
-    { name = "httpx", extra = ["http2"] },
-    { name = "parsel" },
-    { name = "python-jsonpath" },
-]
-selector = [
-    { name = "parsel" },
-    { name = "python-jsonpath" },
-]
-telegram = [
-    { name = "cryptg" },
-    { name = "telethon" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pyright", extra = ["nodejs"] },
@@ -367,29 +348,19 @@ dist = [
 [package.metadata]
 requires-dist = [
     { name = "cryptg", specifier = ">=0.5" },
-    { name = "cryptg", marker = "extra == 'telegram'", specifier = ">=0.5" },
     { name = "cryptography", specifier = ">=42" },
-    { name = "cryptography", marker = "extra == 'browser'", specifier = ">=42" },
     { name = "cyclopts" },
     { name = "filelock" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.27.0" },
-    { name = "httpx", extras = ["http2"], marker = "extra == 'http'", specifier = ">=0.27.0" },
     { name = "msgspec" },
     { name = "parsel", specifier = ">=1.9.0" },
-    { name = "parsel", marker = "extra == 'http'", specifier = ">=1.9.0" },
-    { name = "parsel", marker = "extra == 'selector'", specifier = ">=1.9.0" },
     { name = "playwright", specifier = "==1.65.*" },
-    { name = "playwright", marker = "extra == 'browser'", specifier = "==1.65.*" },
     { name = "python-jsonpath" },
-    { name = "python-jsonpath", marker = "extra == 'http'" },
-    { name = "python-jsonpath", marker = "extra == 'selector'" },
     { name = "qrcode", specifier = ">=7.4" },
     { name = "questionary" },
     { name = "rich" },
     { name = "telethon", specifier = ">=1.36" },
-    { name = "telethon", marker = "extra == 'telegram'", specifier = ">=1.36" },
 ]
-provides-extras = ["selector", "http", "browser", "telegram"]
 
 [package.metadata.requires-dev]
 dev = [

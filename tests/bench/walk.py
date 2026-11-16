@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 import kit
-from shared import fs
+from flnd import _files as fs
 
 FOLDERS, PER_FOLDER = 100, 1000
 FILES = FOLDERS * PER_FOLDER

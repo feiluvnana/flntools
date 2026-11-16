@@ -1,4 +1,4 @@
-"""Tests for `shared.worker.Pool`: threads, coroutines, backpressure, stop and the owner thread."""
+"""Tests for `flnd._loop.Pool`: threads, coroutines, backpressure, stop and the owner thread."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ import threading
 import unittest
 import warnings
 
-import shared
-from shared import _worker as worker
-from shared import clock
+from flnd import _base
+from flnd import _loop as worker
+from flnd import _time as clock
 
 WAIT = 5.0
 
@@ -115,7 +115,7 @@ class ResultsTest(unittest.TestCase):
         self.assertLessEqual(worker.Pool(jobs="io")._jobs, 32)
 
     def test_error_hierarchy(self) -> None:
-        self.assertTrue(issubclass(worker.Error, shared.Error))
+        self.assertTrue(issubclass(worker.Error, _base.Error))
         self.assertTrue(issubclass(worker.ClosedError, RuntimeError))
 
 

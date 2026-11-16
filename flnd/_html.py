@@ -4,7 +4,7 @@
 `Selection`. Queries chain: `css`/`xpath` on HTML, `jmespath`/`jsonpath` on JSON.
 `script` and `json` extract embedded JSON. `first` and `get()` return matches.
 
-    from shared import selector
+    from flnd import _html as selector
 
     page = selector.parse(response)
     page.css("a[href*='/video/']::attr(href)").get()
@@ -21,12 +21,12 @@ import re
 from pathlib import Path
 from typing import Any, Iterator, Union
 
-import shared
+from flnd import _base
 
 try:
     import parsel
 except ImportError:
-    raise ImportError("shared.selector needs parsel: pip install 'flntools[selector]'") from None
+    raise ImportError("flnd._html needs parsel: pip install parsel") from None
 
 __all__ = [
     "BrokenError", "Error", "MissingError", "QueryError", "Selection", "parse",
@@ -40,12 +40,12 @@ MAX_SIZE = 64 * 1024 * 1024
 Raw = Union[parsel.Selector, parsel.SelectorList[parsel.Selector]]
 
 
-class Error(shared.Error):
-    """The base of every error `shared.selector` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._html` raises."""
 
 
-# A ValueError through shared.BrokenError so callers catching ValueError still handle it.
-class BrokenError(Error, shared.BrokenError):
+# A ValueError through _base.BrokenError so callers catching ValueError still handle it.
+class BrokenError(Error, _base.BrokenError):
     """Text that should be JSON but doesn't parse: the site changed what it sends."""
 
 
@@ -53,7 +53,7 @@ class QueryError(Error, ValueError):
     """A CSS, XPath, JMESPath, JSONPath or regex query is invalid or used on the wrong kind."""
 
 
-class MissingError(Error, shared.MissingError):
+class MissingError(Error, _base.MissingError):
     """An optional parser dependency (`jsonpath`, `jmespath`, `msgspec`) is not installed."""
 
 
@@ -281,7 +281,7 @@ def _msgspec_json() -> Any:
     try:
         import msgspec.json
     except ImportError:
-        raise MissingError("shared.selector needs msgspec: pip install msgspec") from None
+        raise MissingError("flnd._html needs msgspec: pip install msgspec") from None
     return msgspec.json
 
 
@@ -292,7 +292,7 @@ def _compile_jmespath(query: str) -> Any:
         import jmespath
     except ImportError:
         raise MissingError(
-            "shared.selector needs jmespath: pip install 'flntools[selector]'"
+            "flnd._html needs jmespath: pip install jmespath"
         ) from None
     try:
         return jmespath.compile(query)
@@ -317,7 +317,7 @@ def _jsonpath() -> Any:
         import jsonpath
     except ImportError:
         raise MissingError(
-            "shared.selector needs python-jsonpath: pip install 'flntools[selector]'"
+            "flnd._html needs python-jsonpath: pip install python-jsonpath"
         ) from None
     # The default environment adds keywords such as `missing`, which can't be keys.
     return jsonpath.JSONPathEnvironment(strict=True)

@@ -18,7 +18,8 @@ from flnd.options import Options, RunShared, categories_by_source
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.source import Range, Source, Target, TargetError
 from flnd.sources import SOURCES
-from shared import cli, fs, store, text, ui
+from flnd import _cli as cli, _files as fs, _db as store, _text as text
+from flnd._ui import ui
 
 __all__ = ["AuthInfo", "Engine", "Error", "Report", "TargetInfo", "TargetReport"]
 

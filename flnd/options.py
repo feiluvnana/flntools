@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
 from flnd.source import Source, Target
-from shared import cli
+from flnd import _cli as cli
 
 # `--from all` takes every category of every source.
 ALL = "all"

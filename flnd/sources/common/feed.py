@@ -7,7 +7,7 @@ import re
 from collections import deque
 from typing import TYPE_CHECKING, Any, Iterable, Iterator
 
-from shared import browser
+from flnd import _browser as browser
 
 if TYPE_CHECKING:
     from flnd.source import Site

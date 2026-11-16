@@ -14,7 +14,6 @@ import kit
 # What each metric starts: the name, then the interpreter's arguments.
 COMMANDS = (
     ("python_pass", ["-c", "pass"]),
-    ("import_shared", ["-c", "import shared"]),
     ("import_flnd", ["-c", "import flnd"]),
     ("import_flnd_source", ["-c", "import flnd.source"]),
     ("import_flnd_cli", ["-c", "import flnd.cli"]),

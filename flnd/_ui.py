@@ -23,9 +23,9 @@ from rich.progress import (
 from rich.theme import Theme
 from rich.text import Text
 
-import shared
-from shared import _clock as clock
-from shared._text import size
+from flnd import _base
+from flnd import _time as clock
+from flnd._text import size
 
 __all__ = ["Error", "Group", "Row", "UI", "ui"]
 
@@ -68,8 +68,8 @@ _ESCAPE = re.compile(
 _URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
 
 
-class Error(shared.Error):
-    """Base error raised by `shared.ui`."""
+class Error(_base.Error):
+    """Base error raised by `flnd._ui`."""
 
 
 class _SafeFormatter(string.Formatter):

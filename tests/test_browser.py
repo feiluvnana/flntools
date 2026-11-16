@@ -1,4 +1,4 @@
-"""`shared.browser`: `open` and its profiles, the Chromium offer, `Browser`, `Page` and `Subscription`.
+"""`flnd._browser`: `open` and its profiles, the Chromium offer, `Browser`, `Page` and `Subscription`.
 
 The profile and Chromium tests fake Playwright, the home folder and the temp folder, so no real
 profile or browser is touched. The page tests run Playwright's own Chromium, headless, on pages
@@ -26,9 +26,9 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
-from shared import clock, cookies, http
-from shared import _browser as browser
-from shared._ui import ui
+from flnd import _time as clock, _cookies as cookies, _http as http
+from flnd import _browser as browser
+from flnd._ui import ui
 
 # The real lookup, before BrowserCase patches it out.
 CHROME_INSTALLED = browser._chrome_installed
@@ -153,10 +153,10 @@ class ImportTest(BrowserCase):
     def test_without_playwright(self):
         blocked = {"playwright": None, "playwright.sync_api": None}
         with mock.patch.dict(sys.modules, blocked):
-            sys.modules.pop("shared._browser", None)
-            fresh = importlib.import_module("shared._browser")
+            sys.modules.pop("flnd._browser", None)
+            fresh = importlib.import_module("flnd._browser")
             self.assertFalse(hasattr(fresh, "chrome_user_agent"))
-            with self.assertRaisesRegex(ImportError, re.escape("pip install 'flntools[browser]'")):
+            with self.assertRaisesRegex(ImportError, re.escape("pip install playwright")):
                 fresh.open()
 
 
@@ -184,7 +184,7 @@ class ProfileCopyTest(BrowserCase):
         self.launches = []
 
     def copies(self) -> list[Path]:
-        return list(self.temp.glob("shared-chrome-*"))
+        return list(self.temp.glob("flnd-chrome-*"))
 
     def open_context(self, playwright, profile, channel, launch_options, context_options):
         """Records what _launch asked for; the copy is checked while it exists."""
@@ -505,7 +505,7 @@ class OpenTest(BrowserCase):
         with mock.patch.object(Path, "home", return_value=home), mock.patch.object(tempfile, "tempdir", str(temp)), \
                 mock.patch.object(browser, "PROFILE_CHANNEL", None):
             with browser.open(headless=True, profile="Profile 1") as b:
-                copy, = temp.glob("shared-chrome-*")
+                copy, = temp.glob("flnd-chrome-*")
                 self.assertTrue((copy / "Default" / "Preferences").is_file())
                 self.assertTrue((copy / "Local State").is_file())
                 # Chromium makes its own Cache once it runs; the profile's wasn't copied into it.

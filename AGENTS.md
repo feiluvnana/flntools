@@ -5,7 +5,7 @@ These rules are for anyone, person or agent, who changes this repository. `PLAN.
 ## Status
 - `PLAN.md` on branch `next` is the plan, and `ARCHITECTURE.md` explains the design for readers: flnd becomes one fast package (a library plus a thin CLI, no `shared` toolkit), rebuilt in the ranked commits of its section 15.
 - **The user approved it on 2026-11-16**, with the recommended answer to every question in its section 16. The rebuild follows section 15's commits in order.
-- Until the rebuild lands, the code still has today's layout: `shared/`, `flnd/` and `scripts/dev.py`. The sections below give today's commands and the target rules side by side wherever they differ.
+- Until the rebuild lands, the code still has today's layout: `flnd/` (its private `_*.py` modules are the toolkit) and `scripts/dev.py`. The sections below give today's commands and the target rules side by side wherever they differ.
 
 ## Commit convention
 Every commit message has this form:

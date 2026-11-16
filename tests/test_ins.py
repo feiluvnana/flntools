@@ -28,7 +28,7 @@ from flnd.source import FetchError, LoginError, Target, TargetError, day
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.ins import (APP_ID, Instagram, best_file, files_of, full_size, is_complete, pk_of_code, pk_stamp,
                               post_files, reel_posts, tab_media)
-from shared import http, selector
+from flnd import _http as http, _html as selector
 
 SITE = "https://www.instagram.com"
 API = f"{SITE}/api/v1"
@@ -849,7 +849,7 @@ class MeTest(unittest.TestCase):
     def test_engine_treats_ins_me_as_query_target(self):
         from flnd.common import auth
         from flnd.source import File, Post
-        from shared import cookies
+        from flnd import _cookies as cookies
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

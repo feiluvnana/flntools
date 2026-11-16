@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest import mock
 
 from flnd.common import paths
-from shared import fs, ui
+from flnd import _files as fs
+from flnd._ui import ui
 
 
 def jpeg(size=(64, 48)):

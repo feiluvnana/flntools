@@ -21,9 +21,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Union
 
-import shared
-from shared import _fs as fs
-from shared._ui import ui
+from flnd import _base
+from flnd import _files as fs
+from flnd._ui import ui
 
 __all__ = ["Error", "Jar", "MissingError", "UnsafeError", "load"]
 
@@ -58,15 +58,15 @@ _HOST_HASH_VERSION = 24
 _HOST_HASH_SIZE = 32
 
 
-class Error(shared.Error):
+class Error(_base.Error):
     """A cookie file is broken, unreadable, or cannot be decrypted."""
 
 
-class MissingError(Error, shared.MissingError):
+class MissingError(Error, _base.MissingError):
     """Reading these cookies needs what only the browser has: Chromium's keys on Windows."""
 
 
-class UnsafeError(Error, shared.UnsafeError):
+class UnsafeError(Error, _base.UnsafeError):
     """A cookie file over 16 MB, refused before it is read."""
 
 
@@ -516,7 +516,7 @@ def _decrypt_aes_gcm(key: bytes, ciphertext: bytes) -> bytes:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError:
         raise ImportError(
-            "shared.cookies needs cryptography: pip install 'flntools[browser]'"
+            "flnd._cookies needs cryptography: pip install cryptography"
         ) from None
     if len(ciphertext) < 12 + 16:
         raise ValueError("ciphertext too short")
@@ -533,7 +533,7 @@ def _decrypt_aes_cbc(key: bytes, ciphertext: bytes) -> bytes:
         from cryptography.hazmat.primitives.padding import PKCS7
     except ImportError:
         raise ImportError(
-            "shared.cookies needs cryptography: pip install 'flntools[browser]'"
+            "flnd._cookies needs cryptography: pip install cryptography"
         ) from None
     decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
     unpadder = PKCS7(128).unpadder()

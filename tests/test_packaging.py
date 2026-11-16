@@ -10,7 +10,6 @@ import zipfile
 from importlib import metadata
 from pathlib import Path
 
-import shared
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -24,17 +23,15 @@ class WheelTest(unittest.TestCase):
             )
             wheel = next(Path(out_dir).glob("*.whl"))
             with zipfile.ZipFile(wheel) as archive:
-                self.assertIn("shared/py.typed", archive.namelist())
+                self.assertIn("flnd/py.typed", archive.namelist())
 
 
 class PublicNamesTest(unittest.TestCase):
-    def test_all_lists_every_lazy_module(self):
-        self.assertLessEqual(set(shared.LAZY_MODULES), set(shared.__all__))
-
     def test_http_is_back(self):
         # Phase 4 removed `http`; Phase 6's D3 brought it back as `fetch` and `Response`.
-        self.assertIn("http", shared.LAZY_MODULES)
-        self.assertTrue(callable(shared.http.fetch))
+        from flnd import _http
+
+        self.assertTrue(callable(_http.fetch))
 
 
 def run_python(code: str) -> subprocess.CompletedProcess:
@@ -42,42 +39,22 @@ def run_python(code: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
 
 
-def missing_extra_message(module: str, package: str) -> str:
-    """The ImportError text from `from shared import <module>` when `package` cannot be imported."""
+def missing_dependency_message(module: str, package: str) -> str:
+    """The ImportError text from `from flnd import <module>` when `package` cannot be imported."""
     code = (f"import sys; sys.modules[{package!r}] = None\n"
-            f"try:\n    from shared import {module}\nexcept ImportError as error:\n    print(error)")
+            f"try:\n    from flnd import {module}\nexcept ImportError as error:\n    print(error)")
     return run_python(code).stdout.strip()
 
 
-class LazyImportTest(unittest.TestCase):
-    def test_phase_1_imports_no_extra(self):
-        code = ("import sys\nfrom shared import cli, clock, fs, prompt, store, text, ui\n"
-                "print(sorted(n for n in ('httpx', 'playwright', 'cryptography', 'parsel') if n in sys.modules))")
-        self.assertEqual(run_python(code).stdout.strip(), "[]")
+class MissingDependencyTest(unittest.TestCase):
+    # The lazy-loading guards (which modules a bare import loads) return with the lazy
+    # `flnd/__init__` of the CLI rebuild: `import flnd` still loads the engine until then, and the
+    # engine imports httpx itself, so a missing httpx is reported by the engine, not by `_http`.
 
-    def test_modules_load_on_first_use(self):
-        code = ("import sys, shared\nbefore = 'shared._store' in sys.modules\n"
-                "print(before, shared.store is sys.modules['shared._store'], 'store' in dir(shared))")
-        self.assertEqual(run_python(code).stdout.strip(), "False True True")
+    def test_missing_parsel_names_the_package_to_install(self):
+        message = missing_dependency_message("_html", "parsel")
+        self.assertEqual(message, "flnd._html needs parsel: pip install parsel")
 
-    def test_unknown_name(self):
-        with self.assertRaises(AttributeError):
-            shared.nothing  # noqa: B018
-
-    def test_missing_extras(self):
-        message = missing_extra_message("selector", "parsel")
-        self.assertEqual(message, "shared.selector needs parsel: pip install 'flntools[selector]'")
-
-    def test_missing_httpx_names_the_http_extra(self):
-        self.assertEqual(missing_extra_message("http", "httpx"), "shared.http needs httpx: pip install 'flntools[http]'")
-
-    def test_http_loads_on_first_use(self):
-        code = "import sys, shared\nprint('httpx' in sys.modules, shared.http is sys.modules['shared._http'])"
-        self.assertEqual(run_python(code).stdout.strip(), "False True")
-
-    def test_sh_loads_on_first_use(self):
-        code = "import sys, shared\nprint('shared._sh' in sys.modules, shared.sh is sys.modules['shared._sh'])"
-        self.assertEqual(run_python(code).stdout.strip(), "False True")
 
 
 def load_dev() -> types.ModuleType:

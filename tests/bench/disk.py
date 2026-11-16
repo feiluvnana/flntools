@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import kit
-from shared import fs
+from flnd import _files as fs
 
 COUNT = 5000
 DATA = os.urandom(100 * 1024)
@@ -38,7 +38,7 @@ def temp_and_replace(folder: Path) -> None:
 
 
 def fs_write(folder: Path) -> None:
-    """Write every file with `shared.fs.write`, as flnd does today."""
+    """Write every file with `flnd._files.write`, as flnd does today."""
     for n in range(COUNT):
         fs.write(folder / str(n), DATA)
 

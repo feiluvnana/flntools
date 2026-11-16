@@ -20,11 +20,6 @@
       "better": "lower",
       "baseline": 10.2687
     },
-    "startup.import_shared": {
-      "unit": "ms",
-      "better": "lower",
-      "baseline": 19.6996
-    },
     "startup.import_flnd": {
       "unit": "ms",
       "better": "lower",

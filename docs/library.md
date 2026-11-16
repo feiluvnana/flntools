@@ -141,5 +141,5 @@ with flnd.open("ins") as site:
 ## Errors
 
 The library raises `flnd.TargetError` for a target no source reads, `flnd.LoginError` for a
-missing login, and a usage error (`shared.cli.UsageError`, a `ValueError`) for a bad option.
+missing login, and a usage error (`flnd._cli.UsageError`, a `ValueError`) for a bad option.
 [errors.md](errors.md) has the rest.

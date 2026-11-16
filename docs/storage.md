@@ -51,7 +51,7 @@ stale stages an interrupted run left in its folder.
 
 ## The stores
 
-Each `.db` file is an SQLite database in WAL mode, made by `shared.store`. A store holds named
+Each `.db` file is an SQLite database in WAL mode, made by `flnd._db`. A store holds named
 tables, and every table has the same two columns: `key` (text, the primary key) and `value`
 (JSON text). Read one with any SQLite tool:
 

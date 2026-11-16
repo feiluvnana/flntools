@@ -18,7 +18,8 @@ from flnd import site as site_module
 from flnd.common import paths
 from flnd.options import Options, RunShared
 from flnd.source import File, Post, Range, Source, Target, target
-from shared import cli, ui
+from flnd import _cli as cli
+from flnd._ui import ui
 
 
 class PlanTest(JobCase):

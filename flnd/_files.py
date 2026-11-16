@@ -16,8 +16,8 @@ from typing import Union
 
 import filelock
 
-import shared
-from shared import _clock as clock
+from flnd import _base
+from flnd import _time as clock
 
 __all__ = [
     "BusyError", "Error", "ExistsError", "lock", "stage", "sweep", "touch", "walk", "write",
@@ -42,8 +42,8 @@ KEEP_AGE = 7 * 86_400
 SETTLE_AGE = 3_600
 
 
-class Error(shared.Error):
-    """The base of every error `shared.fs` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._files` raises."""
 
 
 class ExistsError(Error, FileExistsError):
@@ -148,7 +148,7 @@ def sweep(folder: PathLike, *, keep: float = KEEP_AGE, settle: float = SETTLE_AG
             extras.pop(path, None)
     for path, entry in extras.items():
         if _older_than(entry, now, settle):
-            removed += _remove(_base(path), [path])
+            removed += _remove(_unsuffixed(path), [path])
     return removed
 
 
@@ -276,10 +276,10 @@ def _scan(folder: PathLike) -> Iterator[os.DirEntry[str]]:
 
 def _temporary(name: str) -> bool:
     """Whether `name` is a stage, or a stage's sidecar or lock."""
-    return name.startswith(".") and _base(name).endswith(TEMPS)
+    return name.startswith(".") and _unsuffixed(name).endswith(TEMPS)
 
 
-def _base(path: str) -> str:
+def _unsuffixed(path: str) -> str:
     """`path` without a sidecar or lock suffix."""
     for suffix in (*SIDES, LOCK):
         if path.endswith(suffix):

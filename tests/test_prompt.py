@@ -1,4 +1,4 @@
-"""Tests for `shared.prompt`: autofill, non-TTY fallback, choices, `raw`, and UI live pause."""
+"""Tests for `flnd._prompt`: autofill, non-TTY fallback, choices, `raw`, and UI live pause."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from unittest import mock
 
 import questionary
 
-import shared
-from shared import prompt
+from flnd import _base
+from flnd import _prompt as prompt
 
 
 class _FakeStream(io.StringIO):
@@ -39,7 +39,7 @@ class _FakeQuestion:
 
 class AutofillAndFallbackTest(unittest.TestCase):
     def test_error_hierarchy_and_raw(self) -> None:
-        self.assertTrue(issubclass(prompt.Error, shared.Error))
+        self.assertTrue(issubclass(prompt.Error, _base.Error))
         self.assertIs(prompt.raw, questionary)
 
     def test_non_tty_returns_defaults_or_raises(self) -> None:
@@ -204,10 +204,10 @@ class InteractiveQuestionaryTest(unittest.TestCase):
             finally:
                 events.append("exit")
 
-        fake_ui_mod = types.ModuleType("shared._ui")
+        fake_ui_mod = types.ModuleType("flnd._ui")
         fake_ui_mod.ui = types.SimpleNamespace(pause_live=fake_pause)  # type: ignore[attr-defined]
 
-        with mock.patch.dict(sys.modules, {"shared._ui": fake_ui_mod}):
+        with mock.patch.dict(sys.modules, {"flnd._ui": fake_ui_mod}):
             with mock.patch("questionary.confirm", return_value=_FakeQuestion(True)):
                 self.assertTrue(prompt.confirm("Ok?"))
         self.assertEqual(events, ["enter", "exit"])
@@ -218,17 +218,17 @@ class InteractiveQuestionaryTest(unittest.TestCase):
             stop=lambda: raw_events.append("stop"),
             start=lambda: raw_events.append("start"),
         )
-        fake_raw_mod = types.ModuleType("shared._ui")
+        fake_raw_mod = types.ModuleType("flnd._ui")
         fake_raw_mod.ui = types.SimpleNamespace(  # type: ignore[attr-defined]
             raw=types.SimpleNamespace(_live=fake_live)
         )
-        with mock.patch.dict(sys.modules, {"shared._ui": fake_raw_mod}):
+        with mock.patch.dict(sys.modules, {"flnd._ui": fake_raw_mod}):
             with mock.patch("questionary.confirm", return_value=_FakeQuestion(True)):
                 self.assertTrue(prompt.confirm("Ok?"))
         self.assertEqual(raw_events, ["stop", "start"])
 
-        without_ui = {k: v for k, v in sys.modules.items() if k != "shared._ui"}
+        without_ui = {k: v for k, v in sys.modules.items() if k != "flnd._ui"}
         with mock.patch.dict(sys.modules, without_ui, clear=True):
             with mock.patch("questionary.confirm", return_value=_FakeQuestion(True)):
                 self.assertTrue(prompt.confirm("Ok?"))
-            self.assertNotIn("shared._ui", sys.modules)
+            self.assertNotIn("flnd._ui", sys.modules)

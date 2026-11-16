@@ -1,4 +1,4 @@
-"""shared.bundler: the PyInstaller command line, a fake PyInstaller, and one real build when enabled.
+"""flnd._bundler: the PyInstaller command line, a fake PyInstaller, and one real build when enabled.
 
 The real build bundles Playwright's driver and takes a minute or more, so it runs only with
 FLNTOOLS_BUILD_TESTS=1 and PyInstaller installed.
@@ -15,8 +15,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import shared
-from shared import bundler
+from flnd import _base
+from flnd import _bundler as bundler
 
 ROOT = Path(__file__).resolve().parent.parent
 HAS_PYINSTALLER = importlib.util.find_spec("PyInstaller") is not None
@@ -45,29 +45,29 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(values(argv, "--specpath"), [self.work.name])
         self.assertEqual(values(argv, "--workpath"), [str(Path(self.work.name) / "build")])
 
-    def test_shared_lazy_modules_and_extras_are_hidden_imports(self):
+    def test_every_private_module_of_flnd_is_a_hidden_import(self):
         hidden = values(self.argv(hidden=("mypkg.plugins", "mypkg.more")), "--hidden-import")
-        for name in shared.LAZY_MODULES:
-            if name != "bundler":
-                self.assertIn(f"shared._{name}", hidden)
+        for path in (ROOT / "flnd").glob("_*.py"):
+            if not path.stem.startswith("__") and path.stem != "_bundler":
+                self.assertIn(f"flnd.{path.stem}", hidden)
         self.assertIn("mypkg.plugins", hidden)
         self.assertIn("mypkg.more", hidden)
 
     def test_the_bundler_and_pyinstaller_stay_out_of_the_bundle(self):
         argv = self.argv()
-        self.assertNotIn("shared._bundler", values(argv, "--hidden-import"))
-        self.assertEqual(values(argv, "--exclude-module"), ["shared._bundler", "PyInstaller"])
+        self.assertNotIn("flnd._bundler", values(argv, "--hidden-import"))
+        self.assertEqual(values(argv, "--exclude-module"), ["flnd._bundler", "PyInstaller"])
 
-    def test_packages_are_hidden_imports_only_when_installed(self):
-        installed = {"playwright", "cryptography", "parsel"}
-        with mock.patch.object(bundler, "_installed", lambda module: module in installed):
+    def test_zstd_is_a_hidden_import_only_when_installed(self):
+        with mock.patch.object(bundler, "_installed", lambda module: module == "compression.zstd"):
             hidden = values(self.argv(), "--hidden-import")
-        self.assertLessEqual(installed, set(hidden))
-        self.assertNotIn("telethon", hidden)
-        self.assertNotIn("py7zr", hidden)
+        self.assertIn("compression.zstd", hidden)
+        with mock.patch.object(bundler, "_installed", lambda module: False):
+            hidden = values(self.argv(), "--hidden-import")
+        self.assertNotIn("compression.zstd", hidden)
 
-    def test_shared_is_on_the_search_path(self):
-        self.assertIn(str(Path(shared.__file__).resolve().parent.parent), values(self.argv(), "--paths"))
+    def test_the_project_root_is_on_the_search_path(self):
+        self.assertIn(str(ROOT), values(self.argv(), "--paths"))
 
 
 class FakePyInstallerTest(unittest.TestCase):
@@ -138,11 +138,11 @@ class FakePyInstallerTest(unittest.TestCase):
 class MissingExtraTest(unittest.TestCase):
     def test_without_pyinstaller(self):
         self.assertTrue(issubclass(bundler.MissingError, bundler.Error))
-        self.assertTrue(issubclass(bundler.MissingError, shared.MissingError))
+        self.assertTrue(issubclass(bundler.MissingError, _base.MissingError))
         with mock.patch.dict(sys.modules, {"PyInstaller": None, "PyInstaller.__main__": None}):
             with self.assertRaises(bundler.MissingError) as caught:
                 bundler.build("tool.py", name="tool")
-        self.assertEqual(str(caught.exception), "shared.bundler needs pyinstaller: uv sync --group dist")
+        self.assertEqual(str(caught.exception), "flnd._bundler needs pyinstaller: uv sync --group dist")
 
 
 @unittest.skipUnless(HAS_PYINSTALLER and os.environ.get("FLNTOOLS_BUILD_TESTS") == "1",
@@ -162,7 +162,7 @@ class RealBuildTest(unittest.TestCase):
             script = Path(folder) / "tiny.py"
             script.write_text(
                 "from pathlib import Path\n"
-                "from shared import archive, store, worker\n"
+                "from flnd import _unpack as archive, _db as store, _loop as worker\n"
                 "with store.open('state.db') as db:\n"
                 "    db['kv']['n'] = 2\n"
                 "    factor = db['kv']['n']\n"

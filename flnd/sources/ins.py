@@ -28,7 +28,7 @@ from flnd.source import (
 from flnd.sources.common import dash
 from flnd.sources.common.feed import warm_tabs, watch_responses
 from flnd.sources.common.relay import embedded_results
-from shared import http, selector, text
+from flnd import _http as http, _html as selector, _text as text
 
 if TYPE_CHECKING:
     import httpx

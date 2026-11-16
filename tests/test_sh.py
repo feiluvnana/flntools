@@ -1,4 +1,4 @@
-"""Tests for `shared.sh`: subprocess execution and checksum-verified external tools."""
+"""Tests for `flnd._tools`: subprocess execution and checksum-verified external tools."""
 
 import hashlib
 import io
@@ -12,7 +12,7 @@ from unittest import mock
 
 import httpx
 
-from shared import sh
+from flnd import _tools as sh
 
 
 class ShCase(unittest.TestCase):
@@ -49,7 +49,7 @@ class RunTest(ShCase):
 
 class FindTest(ShCase):
     def test_find_on_path_is_cached_for_the_process(self):
-        with mock.patch("shared._sh.shutil.which", return_value=sys.executable) as which:
+        with mock.patch("flnd._tools.shutil.which", return_value=sys.executable) as which:
             tool = sh.find("python")
             self.assertIs(sh.find("python"), tool)
         self.assertEqual(which.call_count, 1)
@@ -57,7 +57,7 @@ class FindTest(ShCase):
         self.assertEqual(tool.run("-c", "print(42)").out.strip(), "42")
 
     def test_find_without_spec_raises_missing_error(self):
-        with mock.patch("shared._sh.shutil.which", return_value=None):
+        with mock.patch("flnd._tools.shutil.which", return_value=None):
             with self.assertRaises(sh.MissingError):
                 sh.find("no_such_tool_xyz")
 
@@ -80,8 +80,8 @@ class FindTest(ShCase):
             return Path(dest)
 
         with (
-            mock.patch("shared._sh.shutil.which", return_value=None),
-            mock.patch("shared._sh.http.download", side_effect=fake_download),
+            mock.patch("flnd._tools.shutil.which", return_value=None),
+            mock.patch("flnd._tools.http.download", side_effect=fake_download),
         ):
             tool = sh.find("mytool", specs={plat: spec})
             self.assertTrue(tool.path.is_file())
@@ -102,8 +102,8 @@ class FindTest(ShCase):
             return Path(dest)
 
         with (
-            mock.patch("shared._sh.shutil.which", return_value=None),
-            mock.patch("shared._sh.http.download", side_effect=fake_download),
+            mock.patch("flnd._tools.shutil.which", return_value=None),
+            mock.patch("flnd._tools.http.download", side_effect=fake_download),
             self.assertRaises(sh.UnsafeError),
         ):
             sh.find("badtool", specs={plat: spec})

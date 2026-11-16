@@ -2,7 +2,7 @@
 
 The names are the ones `scripts/dev.py api` writes to tests/data/api.txt (test_api.py keeps that
 file current), read from the same `api_names()` with their objects, so a check can look at a real
-signature. Nothing is faked: the names come from importing `shared` and `flnd`.
+signature. Nothing is faked: the names come from importing `flnd`.
 
 Today's code breaks some conventions. Every such breach is in `ALLOWED`, by module, and nowhere else:
 a new breach fails `test_no_new_breach`, and a fixed one still listed fails `test_no_stale_allowance`,
@@ -40,11 +40,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
     "flnd": (
         "flnd.Engine.download: 6 options, more than 4",
         "flnd.download: 7 options, more than 4",
-    ),
-    "shared.archive": (
-        "shared.archive.pack: option progress, a callback, not a sink",
-        "shared.archive.unpack: 5 options, more than 4",
-        "shared.archive.unpack: option progress, a callback, not a sink",
     ),
 }
 
@@ -164,7 +159,7 @@ def module_of(name: str, names: list[Any] = NAMES) -> str:
 
 
 def error_breaches(names: list[Any] = NAMES) -> set[str]:
-    """S6: every module of `shared` has `Error(shared.Error)`, and each module's errors share its `Error`.
+    """S6: each module's errors share the module's own `Error`.
 
     Args:
         names: the snapshot's names; a test passes made-up ones.
@@ -176,7 +171,6 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
     """
     found: set[str] = set()
     by_name = {entry.name: entry for entry in names}
-    shared_error = by_name["shared.Error"].obj
     errors: dict[str, list[Any]] = {}
     homes: dict[int, set[str]] = {}
     for entry in names:
@@ -189,11 +183,6 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
         return base is not None and base.kind == "error" and issubclass(error, base.obj)
 
     for module in {entry.name for entry in names if entry.kind == "module"}:
-        base = by_name.get(f"{module}.Error")
-        # C4 asks every module directly under `shared` for its own Error, even one that raises nothing yet.
-        if module.count(".") == 1 and module.startswith("shared.") and \
-                (base is None or base.kind != "error" or not issubclass(base.obj, shared_error)):
-            found.add(f"{module}: no {module}.Error under shared.Error")
         stray = sorted(entry.name for entry in errors.get(module, [])
                        if not any(under_error(entry.obj, home) for home in homes[id(entry.obj)]))
         if stray:
@@ -202,17 +191,16 @@ def error_breaches(names: list[Any] = NAMES) -> set[str]:
 
 
 def private_imports(source: str) -> list[str]:
-    """Each `shared._x` module a file imports, in any of the three spellings of an import."""
+    """Each `flnd._x` module a file imports, in any of the three spellings of an import."""
     found = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            found += [alias.name for alias in node.names if alias.name.startswith("shared._")]
+            found += [alias.name for alias in node.names if alias.name.startswith("flnd._")]
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            if node.module.startswith("shared._"):
+            if node.module.startswith("flnd._"):
                 found.append(node.module)
-            elif node.module == "shared":
-                found += [f"shared.{alias.name}" for alias in node.names
-                          if alias.name.startswith("_")]
+            elif node.module == "flnd":
+                found += [f"flnd.{alias.name}" for alias in node.names if alias.name.startswith("_")]
     return found
 
 
@@ -250,8 +238,23 @@ def history_breaches(source: str) -> list[str]:
     return found
 
 
+# The aliases the fold keeps (`from flnd import _http as http`): each old `shared` name, so that the
+# code lines using it didn't change. Each pair is (the alias, the private module it names). A row
+# that renames the uses removes its pairs here, so the list can only shrink. AGENTS.md says no
+# aliases; this is the one exception, and it is temporary.
+TRANSITIONAL_ALIASES = {
+    ("archive", "_unpack"), ("browser", "_browser"), ("bundler", "_bundler"), ("cli", "_cli"),
+    ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"), ("fs", "_files"),
+    ("http", "_http"), ("prompt", "_prompt"), ("selector", "_html"), ("sh", "_tools"),
+    ("store", "_db"), ("text", "_text"), ("worker", "_loop"),
+    ("_archive", "_unpack"), ("_clock", "_time"), ("_crypto", "_vault"), ("_fs", "_files"),
+    ("_selector", "_html"), ("_sh", "_tools"), ("_store", "_db"), ("_worker", "_loop"),
+    ("run_plan", "run"),  # a function, not a module: `_query.run` as `run_plan`
+}
+
+
 def flnd_import_aliases(source: str) -> list[str]:
-    """Import aliases (`as`) of `flnd` modules or symbols."""
+    """Import aliases (`as`) of `flnd` modules or symbols, except the transitional ones."""
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -262,7 +265,7 @@ def flnd_import_aliases(source: str) -> list[str]:
             mod = node.module or ""
             if node.level > 0 or mod == "flnd" or mod.startswith("flnd."):
                 for alias in node.names:
-                    if alias.asname:
+                    if alias.asname and (alias.asname, alias.name) not in TRANSITIONAL_ALIASES:
                         found.append(f"line {node.lineno}: from {mod} import {alias.name} as {alias.asname}")
     return found
 
@@ -307,17 +310,17 @@ class LibraryErrorTest(unittest.TestCase):
 
 
 class PrivateImportTest(unittest.TestCase):
-    def test_nothing_outside_shared_imports_a_private_shared_module(self):
-        paths = [*(dev.ROOT / "flnd").rglob("*.py"), *(dev.ROOT / "scripts").rglob("*.py")]
-        for path in sorted(paths):
+    def test_scripts_import_no_private_module_of_flnd(self):
+        # flnd's own modules may import each other's private modules; the scripts are outside flnd.
+        for path in sorted((dev.ROOT / "scripts").rglob("*.py")):
             with self.subTest(str(path.relative_to(dev.ROOT))):
                 self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
 
     def test_every_spelling_of_a_private_import_is_found(self):
-        source = ("import shared._http\nfrom shared._browser import Page\n"
-                  "from shared import _kv, log\n")
-        self.assertEqual(private_imports(source), ["shared._http", "shared._browser", "shared._kv"])
-        self.assertEqual(private_imports("from shared import browser\nimport shared\n"), [])
+        source = ("import flnd._http\nfrom flnd._browser import Page\n"
+                  "from flnd import _loop, ui\n")
+        self.assertEqual(private_imports(source), ["flnd._http", "flnd._browser", "flnd._loop"])
+        self.assertEqual(private_imports("from flnd import browser\nimport flnd\n"), [])
 
 
 def _source_files() -> list[str]:
@@ -366,18 +369,18 @@ class ReadableTest(unittest.TestCase):
 class ChecksTest(unittest.TestCase):
     """The checks themselves, on made-up names, so a check that silently passes everything fails here."""
 
-    def name(self, kind: str, obj: Any, *, owner: Any = None, bound: bool = False, name: str = "shared.x.f") -> Any:
+    def name(self, kind: str, obj: Any, *, owner: Any = None, bound: bool = False, name: str = "flnd.x.f") -> Any:
         return dev.ApiName(name, kind, obj, owner, bound)
 
     def test_prefix(self):
-        self.assertEqual(prefix_breaches(self.name("function", None, name="shared.x.get_keys")),
-                         {"shared.x.get_keys: prefix get_"})
-        self.assertEqual(prefix_breaches(self.name("function", None, name="shared.x.target")), set())
+        self.assertEqual(prefix_breaches(self.name("function", None, name="flnd.x.get_keys")),
+                         {"flnd.x.get_keys: prefix get_"})
+        self.assertEqual(prefix_breaches(self.name("function", None, name="flnd.x.target")), set())
 
     def test_positional_option(self):
         def fetch(url, timeout=30.0, *, attempts=3): ...
 
-        self.assertEqual(option_breaches(self.name("function", fetch)), {"shared.x.f: positional option timeout"})
+        self.assertEqual(option_breaches(self.name("function", fetch)), {"flnd.x.f: positional option timeout"})
 
     def test_first_parameter_may_have_a_default(self):
         def save(dest=None, *, mode=0o666): ...
@@ -399,22 +402,22 @@ class ChecksTest(unittest.TestCase):
         found = set()
         for member in (Store.get, Store.find):
             found |= option_breaches(self.name("method", member, owner=Store, bound=True,
-                                               name=f"shared.x.Store.{member.__name__}"))
-        self.assertEqual(found, {"shared.x.Store.find: positional option default"})
+                                               name=f"flnd.x.Store.{member.__name__}"))
+        self.assertEqual(found, {"flnd.x.Store.find: positional option default"})
 
     def test_renamed_options(self):
         def build(entry, *, out="dist", dest_dir=None, preset="mid"): ...
 
         self.assertEqual(option_breaches(self.name("function", build)),
-                         {"shared.x.f: option out, not dest", "shared.x.f: option dest_dir, not dest",
-                          "shared.x.f: option preset, not level"})
+                         {"flnd.x.f: option out, not dest", "flnd.x.f: option dest_dir, not dest",
+                          "flnd.x.f: option preset, not level"})
 
     def test_a_record_field_is_data_not_an_option(self):
         class Result:
             def __init__(self, code, out, *, dest_dir=None): ...
 
         self.assertEqual(option_breaches(self.name("class", Result)),
-                         {"shared.x.f: option dest_dir, not dest"})
+                         {"flnd.x.f: option dest_dir, not dest"})
 
     def test_progress_callback_is_recognised(self):
         scope = {"Progress": typing.Callable[..., Any]}
@@ -426,34 +429,26 @@ class ChecksTest(unittest.TestCase):
     def test_errors_share_their_modules_error(self):
         class Error(Exception): ...
 
-        class Shared(Error): ...       # stands for shared.Error
-
-        class Module(Shared): ...      # shared.x.Error
+        class Module(Error): ...       # flnd.x.Error
 
         class Kept(Module): ...
 
         class Stray(ValueError): ...
 
-        names = [self.name("error", Shared, name="shared.Error"), self.name("module", None, name="shared"),
-                 self.name("module", None, name="shared.x"), self.name("error", Module, name="shared.x.Error"),
-                 self.name("error", Kept, name="shared.x.KeptError"),
-                 self.name("error", Stray, name="shared.x.Inner.StrayError"),
-                 self.name("module", None, name="shared.y")]
-        self.assertEqual(error_breaches(names), {"shared.x: errors outside shared.x.Error: shared.x.Inner.StrayError",
-                                                 "shared.y: no shared.y.Error under shared.Error"})
+        names = [self.name("module", None, name="flnd.x"), self.name("error", Module, name="flnd.x.Error"),
+                 self.name("error", Kept, name="flnd.x.KeptError"),
+                 self.name("error", Stray, name="flnd.x.Inner.StrayError")]
+        self.assertEqual(error_breaches(names), {"flnd.x: errors outside flnd.x.Error: flnd.x.Inner.StrayError"})
 
     def test_a_reexported_error_belongs_to_the_module_that_defines_it(self):
         # `flnd.TargetError` is `flnd.source.TargetError`: `flnd` has no Error of its own, and needs none.
-        class Shared(Exception): ...
-
         class SourceError(Exception): ...
 
         class Kept(SourceError): ...
 
         class Stray(ValueError): ...
 
-        names = [self.name("error", Shared, name="shared.Error"), self.name("module", None, name="shared"),
-                 self.name("module", None, name="flnd"),
+        names = [self.name("module", None, name="flnd"),
                  self.name("module", None, name="flnd.source"),
                  self.name("error", SourceError, name="flnd.source.Error"),
                  self.name("error", Kept, name="flnd.source.TargetError"),

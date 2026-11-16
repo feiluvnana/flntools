@@ -51,10 +51,10 @@ class TasksTest(unittest.TestCase):
         with mock.patch.object(dev.subprocess, "run", side_effect=run) as fake:
             self.assertEqual(dev.main(["check"]), 3)
         self.assertEqual([call.args[0][4:] for call in fake.call_args_list],
-                         [["python", "-m", "compileall", "-q", "flnd", "shared"], ["pyright"]])
+                         [["python", "-m", "compileall", "-q", "flnd"], ["pyright"]])
 
     def test_api_writes_the_snapshot_from_inside_the_environment(self):
-        # The snapshot imports shared and flnd, so it can't run in this --no-project interpreter.
+        # The snapshot imports flnd, so it can't run in this --no-project interpreter.
         with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run, \
                 mock.patch.dict(dev.os.environ, {"PYTHON": ""}):
             self.assertEqual(dev.main(["api"]), 0)
@@ -62,7 +62,7 @@ class TasksTest(unittest.TestCase):
         self.assertIn("dev.write_api()", dev.WRITE_API)
 
     def test_bench_runs_the_suite_inside_the_environment_and_passes_its_arguments_through(self):
-        # The groups import shared and flnd, so the runner can't run in this --no-project interpreter.
+        # The groups import flnd, so the runner can't run in this --no-project interpreter.
         with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run, \
                 mock.patch.dict(dev.os.environ, {"PYTHON": ""}):
             self.assertEqual(dev.main(["bench", "net", "--gate"]), 0)

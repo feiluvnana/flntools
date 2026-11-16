@@ -13,8 +13,8 @@ from unittest import mock
 
 import httpx
 
-from shared import clock, http
-from shared._ui import ui
+from flnd import _time as clock, _http as http
+from flnd._ui import ui
 
 SITE = "https://www.example.com"
 FILE = f"{SITE}/file.bin"

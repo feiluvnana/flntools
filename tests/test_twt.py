@@ -19,7 +19,7 @@ from flnd.common import auth
 from flnd.options import Options
 from flnd.source import FetchError, LoginError, Target, TargetError
 from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page, tweet_posts
-from shared import cookies
+from flnd import _cookies as cookies
 
 API = "https://x.com/i/api/graphql/"
 USER_ID = "42"

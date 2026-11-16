@@ -27,8 +27,9 @@ from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import FetchError, File, Site, Target
 from flnd.sources.common.feed import warm_tabs, watch_responses
 from flnd.sources.common.relay import meta_results
-from shared import cli, clock, cookies, http, store, ui
-from shared._browser import Page
+from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http, _db as store
+from flnd._ui import ui
+from flnd._browser import Page
 
 PAGE = "https://www.example.com/example_user/"
 
@@ -85,7 +86,7 @@ class SiteCase(unittest.TestCase):
         real_client = httpx.Client
         for patcher in (mock.patch.object(net.httpx, "Client",
                                           lambda *a, **kw: real_client(*a, **{**kw, "transport": httpx.MockTransport(self.serve)})),
-                        mock.patch("shared._browser.open", lambda **options: FakeBrowser(self.raw))):
+                        mock.patch("flnd._browser.open", lambda **options: FakeBrowser(self.raw))):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.fake = self.enterContext(clock.use(clock.Fake()))
@@ -276,7 +277,7 @@ class FetchTest(SiteCase):
             opened.append(browser)
             return browser
 
-        with mock.patch("shared._browser.open", connect):
+        with mock.patch("flnd._browser.open", connect):
             auth.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
                                                       "path": "/"}]))
             _, site = self.open(Wide)
@@ -293,7 +294,7 @@ class FetchTest(SiteCase):
 
     def test_the_default_browser_is_stealthy(self):
         seen = []
-        with mock.patch("shared._browser.open", lambda **options: seen.append(options) or FakeBrowser(self.raw)):
+        with mock.patch("flnd._browser.open", lambda **options: seen.append(options) or FakeBrowser(self.raw)):
             _, site = self.open()
             site.goto(PAGE)
         self.assertEqual(seen, [{"stealth": True}])
@@ -430,7 +431,7 @@ class TabTest(SiteCase):
             browsers.append(browser)
             return browser
 
-        patcher = mock.patch("shared._browser.open", connect)
+        patcher = mock.patch("flnd._browser.open", connect)
         patcher.start()
         self.addCleanup(patcher.stop)
         _, site = self.open()
@@ -492,7 +493,7 @@ class TabTest(SiteCase):
             return browsers[-1]
 
         settings = RunShared(home=self.home, history={}, stop=self.stop)
-        with mock.patch("shared._browser.open", connect):
+        with mock.patch("flnd._browser.open", connect):
             with shared_browser(settings):
                 def run_target(source_cls, target, warm_url):
                     with source_run(settings, source_cls()) as run:

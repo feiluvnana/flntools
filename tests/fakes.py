@@ -20,7 +20,7 @@ from flnd import job
 from flnd.engine import resolve
 from flnd.options import Options
 from flnd.source import FetchError, File, Post, Range, Source, Target
-from shared import browser, http
+from flnd import _browser as browser, _http as http
 
 
 # A fixture: data for a URL, a FetchError to raise, or a function of (url, request) giving either.

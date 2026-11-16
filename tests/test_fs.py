@@ -1,4 +1,4 @@
-"""Tests for `shared._fs`: atomic writes, stages, locks, walks and stale stage sweeps."""
+"""Tests for `flnd._files`: atomic writes, stages, locks, walks and stale stage sweeps."""
 
 import os
 import tempfile
@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import shared
-from shared import _clock as clock
-from shared import _fs as fs
+from flnd import _base
+from flnd import _time as clock
+from flnd import _files as fs
 
 
 class FsCase(unittest.TestCase):
@@ -103,7 +103,7 @@ class WriteTest(FsCase):
         with self.assertRaises(fs.ExistsError) as ctx:
             fs.write(self.dest, b"new", replace=False)
         self.assertIsInstance(ctx.exception, FileExistsError)
-        self.assertIsInstance(ctx.exception, shared.Error)
+        self.assertIsInstance(ctx.exception, _base.Error)
         self.assertEqual(self.dest.read_text(), "old")
         self.assertEqual(self.names(), ["a.txt"])
 

@@ -29,13 +29,13 @@ from typing import TYPE_CHECKING
 # A source's own login (tlg) raises it too; `auth.LoginError` is the same class.
 from flnd.common import paths
 from flnd.source import LoginError
-import shared
-from shared import cookies, crypto, text, ui
+from flnd import _cookies as cookies, _db, _vault as crypto, _text as text
+from flnd._ui import ui
 
 if TYPE_CHECKING:
     from flnd.source import Source
 
-# Browsers `from_browser` reads cookies from, by `shared.cookies` name with display name.
+# Browsers `from_browser` reads cookies from, by `flnd._cookies` name with display name.
 BROWSERS = {
     "chrome": "Chrome", "firefox": "Firefox", "edge": "Edge",
     "brave": "Brave", "chromium": "Chromium",
@@ -188,7 +188,7 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
             save(home, code, cookies.Jar(saved))
             ui.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
         return changed
-    except (OSError, ValueError, shared.store.Error) as error:
+    except (OSError, ValueError, _db.Error) as error:
         ui.warn(
             "{code}: could not save refreshed cookies ({kind})",
             code=code, kind=type(error).__name__,
@@ -311,7 +311,7 @@ def _move(home: Path, code: str) -> None:
         # damaged key (ValueError), or a vault that can't be opened or written (OSError, kv.Error,
         # sqlite3.Error): the plain file is the only copy of the login, so it stays. Each of these
         # names the file or the key, never a cookie's value.
-        except (OSError, ValueError, cookies.Error, shared.store.Error) as error:
+        except (OSError, ValueError, cookies.Error, _db.Error) as error:
             ui.warn(
                 "{code}: can't move {name} into the vault: {error}; kept it",
                 code=code, name=path.name, error=error,
@@ -371,7 +371,7 @@ class Vault(MutableMapping[str, str]):
     def __init__(self, home: Path, code: str):
         self._home = home
         self._code = code
-        self._file = shared.store.open(home / paths.SECRETS)
+        self._file = _db.open(home / paths.SECRETS)
         self._db = self._file[TABLE]
         self._key: bytes | None = None
 
@@ -458,7 +458,7 @@ def _create_key(path: Path) -> bytes | None:
     except FileExistsError:
         return None
     # Safe because key is 32 bytes, written in one write, and readers wait up to KEY_WAIT.
-    # The stdlib's CSPRNG makes the key; `shared.crypto` leaves keys to it.
+    # The stdlib's CSPRNG makes the key; `flnd._vault` leaves keys to it.
     secret = token_bytes(KEY_SIZE)
     try:
         try:

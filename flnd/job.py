@@ -30,10 +30,11 @@ from flnd.source import (
     Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site, Source, Target,
     day, fill, listing,
 )
-from shared import crypto, fs, store, text, ui, worker
+from flnd import _vault as crypto, _files as fs, _db as store, _text as text, _loop as worker
+from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from shared import cli
+    from flnd import _cli as cli
 
 __all__ = [
     "STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",

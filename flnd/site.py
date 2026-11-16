@@ -20,10 +20,14 @@ import httpx
 
 from flnd.common import auth, net, paths
 from flnd.source import FetchError, Range, Source, Target
-from shared import browser, clock, http, prompt, store, text, ui, worker
+from flnd import (
+    _browser as browser, _time as clock, _http as http, _prompt as prompt,
+    _db as store, _text as text, _loop as worker,
+)
+from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from shared import cli, cookies
+    from flnd import _cli as cli, _cookies as cookies
 
     from flnd.options import RunShared
 

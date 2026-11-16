@@ -1,10 +1,10 @@
 """Build a script into a folder that runs on a machine without Python, through PyInstaller.
 
 `build` runs PyInstaller in this process with a generated command line (no .spec file to keep), in
-a temporary work folder, adds `shared`'s lazily loaded modules and installed extras as hidden
-imports, then copies the data folders beside the program.
+a temporary work folder, adds flnd's private modules and the stdlib's zstd as hidden imports,
+then copies the data folders beside the program.
 
-    from shared import bundler
+    from flnd import _bundler as bundler
     bundler.build("flnd/__main__.py", name="flnd")    # dist/flnd/flnd, or flnd.exe on Windows
 
 Needs PyInstaller on first use, from flntools' `dist` group (`uv sync --group dist`).
@@ -16,11 +16,9 @@ Needs PyInstaller on first use, from flntools' `dist` group (`uv sync --group di
 
 from __future__ import annotations
 
-import importlib.metadata
 import importlib.util
 import logging
 import os
-import re
 import shutil
 import tempfile
 from collections import deque
@@ -28,7 +26,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Union
 
-import shared
+from flnd import _base
 
 __all__ = ["BuildError", "Error", "MissingError", "build"]
 
@@ -37,11 +35,11 @@ PathLike = Union[str, "os.PathLike[str]"]
 LAST_LINES = 15
 
 
-class Error(shared.Error):
-    """The base of every error `shared.bundler` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._bundler` raises."""
 
 
-class MissingError(Error, shared.MissingError):
+class MissingError(Error, _base.MissingError):
     """PyInstaller isn't installed (`uv sync --group dist`)."""
 
 
@@ -63,7 +61,7 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (),
     try:
         import PyInstaller.__main__ as pyinstaller
     except ImportError:
-        raise MissingError("shared.bundler needs pyinstaller: uv sync --group dist") from None
+        raise MissingError("flnd._bundler needs pyinstaller: uv sync --group dist") from None
     folders = [Path(folder) for folder in data]
     for folder in folders:
         if not folder.is_dir():
@@ -81,49 +79,37 @@ def build(entry: PathLike, *, name: str, hidden: Iterable[str] = (),
 def _arguments(
     entry: PathLike, *, name: str, hidden: Iterable[str], dest: Path, work: Path
 ) -> list[str]:
-    """PyInstaller command line for `build`, with lazy `shared` modules as hidden imports."""
+    """PyInstaller command line for `build`, with flnd's private modules as hidden imports."""
     # .spec file and build cache go to a temp folder, so there is nothing to clean up.
-    lazy = [f"shared._{module}" for module in shared.LAZY_MODULES if module != "bundler"]
-    imports = [*lazy, *(pkg for pkg in _extra_packages() if _installed(pkg)), *hidden]
+    imports = [*_private_modules(), *_extra_packages(), *hidden]
     argv = [
         str(Path(entry).resolve()), "--onedir", "--noconfirm", "--log-level", "WARN",
         "--name", name, "--distpath", str(dest), "--workpath", str(work / "build"),
-        "--specpath", str(work), "--paths", str(Path(shared.__file__).resolve().parent.parent),
+        "--specpath", str(work), "--paths", str(Path(__file__).resolve().parent.parent),
     ]
     for module in imports:
         argv += ["--hidden-import", module]
-    # Bundler is reachable from shared's TYPE_CHECKING imports and would bring PyInstaller along.
-    return [*argv, "--exclude-module", "shared._bundler", "--exclude-module", "PyInstaller"]
+    # Nothing imports the bundler at run time. Leaving it out keeps PyInstaller out of the bundle.
+    return [*argv, "--exclude-module", "flnd._bundler", "--exclude-module", "PyInstaller"]
+
+
+def _private_modules() -> list[str]:
+    """The private modules of flnd as dotted names, for PyInstaller's hidden imports.
+
+    Every `_x.py` beside this file is listed except this bundler. The list comes from the folder,
+    not from a hand-kept list, so a new private module can't be left out of the bundle.
+
+    Returns:
+        Dotted module names such as `flnd._ui`, sorted.
+    """
+    folder = Path(__file__).resolve().parent
+    names = sorted(path.stem for path in folder.glob("_*.py") if not path.stem.startswith("__"))
+    return [f"flnd.{name}" for name in names if name != "_bundler"]
 
 
 def _extra_packages() -> list[str]:
-    """Top-level import names for optional dependencies declared in flntools' extras."""
-    try:
-        reqs = importlib.metadata.requires("flntools") or ()
-    except importlib.metadata.PackageNotFoundError:
-        reqs = ()
-    extra_dists = {
-        _norm_dist(req.split(";", 1)[0])
-        for req in reqs
-        if ";" in req and "extra ==" in req.split(";", 1)[1]
-    }
-    by_dist: dict[str, list[str]] = {}
-    for pkg, dists in importlib.metadata.packages_distributions().items():
-        for dist in dists:
-            by_dist.setdefault(_norm_dist(dist), []).append(pkg)
-    found: list[str] = []
-    for dist in sorted(extra_dists):
-        for pkg in sorted(by_dist.get(dist, ())):
-            if not pkg.startswith("_") and pkg not in found:
-                found.append(pkg)
-    if _installed("compression.zstd"):
-        found.append("compression.zstd")
-    return found
-
-
-def _norm_dist(spec: str) -> str:
-    name = re.split(r"[<>=!~;\[\s]", spec, maxsplit=1)[0]
-    return re.sub(r"[-_.]+", "-", name).lower()
+    """The stdlib's `compression.zstd`, if this Python has it: PyInstaller doesn't follow it."""
+    return ["compression.zstd"] if _installed("compression.zstd") else []
 
 
 def _installed(module: str) -> bool:

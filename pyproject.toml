@@ -24,21 +24,11 @@ dependencies = [
     "msgspec",
 ]
 
-# For shared alone, without flnd. flnd's dependencies already hold what these add.
-[project.optional-dependencies]
-selector = ["parsel>=1.9.0", "python-jsonpath"]
-# httpx for `fetch`, and `selector`'s packages for `Response.html`.
-http = ["httpx[http2]>=0.27.0", "parsel>=1.9.0", "python-jsonpath"]
-# Pinned to a minor version: every Playwright release downloads a new browser build.
-browser = ["playwright==1.65.*", "cryptography>=42"]
-# Telethon finds cryptg by itself and decrypts with it, many times faster than in Python.
-telegram = ["telethon>=1.36", "cryptg>=0.5"]
-
 [project.scripts]
 flnd = "flnd.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["flnd", "shared"]
+packages = ["flnd"]
 
 [dependency-groups]
 # pyright[nodejs] brings its own Node.js wheel, so `type` downloads nothing and works on Windows.
@@ -50,7 +40,7 @@ dist = ["pyinstaller>=6"]
 default-groups = ["dev"]
 
 [tool.pyright]
-include = ["shared", "flnd", "tests/typing", "tests/fakes.py"]
+include = ["flnd", "tests/typing", "tests/fakes.py"]
 typeCheckingMode = "standard"
 pythonVersion = "3.11"
 venvPath = "."

@@ -1,13 +1,13 @@
-"""Tests for `shared._ui`: Rich-backed logging, progress, groups, and scoping."""
+"""Tests for `flnd._ui`: Rich-backed logging, progress, groups, and scoping."""
 
 import io
 import unittest
 
 from rich.console import Console as RichConsole
 
-import shared
-from shared import _clock as clock
-from shared._ui import Error, Group, Row, ui
+from flnd import _base
+from flnd import _time as clock
+from flnd._ui import Error, Group, Row, ui
 
 
 class UICase(unittest.TestCase):
@@ -29,7 +29,7 @@ class LoggingTest(UICase):
 
     def test_error_hierarchy(self) -> None:
         self.assertIs(ui.Error, Error)
-        self.assertTrue(issubclass(Error, shared.Error))
+        self.assertTrue(issubclass(Error, _base.Error))
 
     def test_raw_console(self) -> None:
         self.assertIsInstance(ui.raw, RichConsole)

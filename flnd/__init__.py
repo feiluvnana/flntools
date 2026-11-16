@@ -13,7 +13,7 @@ from flnd.options import RunShared
 from flnd.site import TargetSite, source_run
 from flnd.source import LoginError, Range, Source, Target, TargetError
 from flnd.sources import SOURCES
-from shared import cli as _cli
+from flnd import _cli
 
 __all__ = [
     "AuthInfo",

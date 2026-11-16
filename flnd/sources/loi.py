@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import unquote, urlsplit
 
 from flnd.source import FetchError, File, Post, Site, Source, day, target
-from shared import clock, crypto
+from flnd import _time as clock, _vault as crypto
 
 if TYPE_CHECKING:
     import httpx

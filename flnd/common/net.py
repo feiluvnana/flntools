@@ -16,7 +16,8 @@ import httpx
 from flnd.common import paths
 from flnd.common.paths import NotMediaError
 from flnd.source import Fetch, FetchError, File
-from shared import clock, fs, http, sh, text, ui
+from flnd import _time as clock, _files as fs, _http as http, _tools as sh, _text as text
+from flnd._ui import ui
 
 # Tries for one `fetch` function of a file, or one DASH merge, before its error is raised.
 ATTEMPTS = 3
@@ -40,7 +41,7 @@ def client(*, user_agent: str | None, jar: Iterable[dict],
 
 
 def cookie_jar(jar: Iterable[dict]) -> httpx.Cookies:
-    """A `shared.cookies.Jar`, or any cookie dicts in its shape, as `httpx.Cookies`."""
+    """A `flnd._cookies.Jar`, or any cookie dicts in its shape, as `httpx.Cookies`."""
     cookies = httpx.Cookies()
     for cookie in jar:
         cookies.set(

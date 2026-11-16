@@ -21,14 +21,15 @@ from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, 
                     MutableMapping, Protocol, Sequence, Union, overload)
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from shared import text, ui
+from flnd import _text as text
+from flnd._ui import ui
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     import httpx
 
-    from shared import browser, http
+    from flnd import _browser as browser, _http as http
 
 __all__ = ["Category", "DateLike", "Error", "Fetch", "FetchError", "File", "Login", "LoginError",
            "Post", "Range", "Route", "Site", "Source", "Target", "TargetError", "day", "fill",
@@ -678,7 +679,7 @@ class Site(Protocol):
 
     @property
     def page(self) -> browser.Page:
-        """The target's tab, a `shared.browser.Page`, opened on first use; scrolling is paced."""
+        """The target's tab, a `flnd._browser.Page`, opened on first use; scrolling is paced."""
         ...
 
     @property
@@ -937,7 +938,7 @@ class Source:
     browser: ClassVar[bool] = False
     stealth: ClassVar[bool] = True
     # Files of one target downloading at once: CDNs are built for many, and the host's own
-    # connection limit in `shared.http` still holds.
+    # connection limit in `flnd._http` still holds.
     concurrency: ClassVar[int] = 8
     # `unsupported`, compiled when the class is created.
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()

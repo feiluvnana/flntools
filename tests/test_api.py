@@ -1,7 +1,7 @@
 """The API snapshot, tests/data/api.txt: it lists exactly the public names the code has today.
 
 The snapshot is what `uv run --no-project scripts/dev.py api` writes, so a rename shows in review
-as a one-line diff of that file. Nothing is faked: the names come from importing `shared` and `flnd`.
+as a one-line diff of that file. Nothing is faked: the names come from importing `flnd`.
 """
 
 import difflib

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     from flnd.source import Site
-    from shared import selector
+    from flnd import _html as selector
 
 __all__ = ["embedded_results", "meta_results"]
 

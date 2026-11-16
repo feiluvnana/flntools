@@ -1,4 +1,4 @@
-"""Tests for `shared.http`: `fetch`'s statuses, retries and secrets, `Response`, and `fake`.
+"""Tests for `flnd._http`: `fetch`'s statuses, retries and secrets, `Response`, and `fake`.
 
 The network is `http.fake`, and the retry wait a fake `clock` whose jitter is pinned at its top,
 so a wait reads 1, 2, 4 s and nothing here opens a socket or sleeps. Downloads and pacing are in
@@ -14,11 +14,11 @@ from unittest import mock
 
 import httpx
 
-import shared
-from shared import _http as http
-from shared import _selector as selector
-from shared import clock
-from shared._ui import _brief, ui
+from flnd import _base
+from flnd import _http as http
+from flnd import _html as selector
+from flnd import _time as clock
+from flnd._ui import _brief, ui
 
 SITE = "https://example.com"
 
@@ -80,7 +80,7 @@ class FetchTest(HttpTestCase):
         self.assertEqual(raised.exception.status, 410)
         assert raised.exception.response is not None
         self.assertEqual(raised.exception.response.json, {"reason": "gone"})
-        self.assertIsInstance(raised.exception, shared.RefusedError)
+        self.assertIsInstance(raised.exception, _base.RefusedError)
         self.assertIn(f"GET {SITE}/gone: HTTP 410", str(raised.exception))
 
     def test_a_429_on_every_try_raises_rate_limited(self):
@@ -90,7 +90,7 @@ class FetchTest(HttpTestCase):
         self.assertEqual(raised.exception.retry_after, 12.0)
         self.assertEqual(self.clock.slept, [12.0, 12.0])
         # Kept apart from refusals, so a caller catching those doesn't swallow a rate limit.
-        self.assertNotIsInstance(raised.exception, shared.RefusedError)
+        self.assertNotIsInstance(raised.exception, _base.RefusedError)
 
     def test_a_429s_retry_after_as_a_date_or_missing(self):
         later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(clock.wall() + 60))

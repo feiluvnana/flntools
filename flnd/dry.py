@@ -14,7 +14,8 @@ from flnd.options import Options, RunShared, unknown
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import File, Range, Source, Target
 from flnd.sources import SOURCES
-from shared import cli, text, ui
+from flnd import _cli as cli, _text as text
+from flnd._ui import ui
 
 __all__ = ["main", "plan", "tree"]
 

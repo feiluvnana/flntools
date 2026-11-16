@@ -1,4 +1,4 @@
-"""Tests for `shared.cli`: commands, groups, `.raw`, exit codes, help, and `stopping()`."""
+"""Tests for `flnd._cli`: commands, groups, `.raw`, exit codes, help, and `stopping()`."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from contextlib import redirect_stderr, redirect_stdout
 
 import cyclopts
 
-import shared
-from shared import cli
+from flnd import _base
+from flnd import _cli as cli
 
 
 def _run_captured(app: cli.App, *argv: str) -> tuple[int, str, str]:
@@ -23,7 +23,7 @@ def _run_captured(app: cli.App, *argv: str) -> tuple[int, str, str]:
 
 class ErrorAndExitCodeTest(unittest.TestCase):
     def test_error_hierarchy(self) -> None:
-        self.assertTrue(issubclass(cli.Error, shared.Error))
+        self.assertTrue(issubclass(cli.Error, _base.Error))
         self.assertTrue(issubclass(cli.UsageError, cli.Error))
         self.assertTrue(issubclass(cli.UsageError, ValueError))
         self.assertFalse(hasattr(cli, "main"))

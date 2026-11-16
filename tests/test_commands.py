@@ -21,7 +21,8 @@ from flnd import sources
 from flnd.common import auth, paths
 from flnd.options import Options
 from flnd.source import Source
-from shared import cookies, store, ui
+from flnd import _cookies as cookies, _db as store
+from flnd._ui import ui
 
 NETSCAPE = (
     "# Netscape HTTP Cookie File\n"
@@ -407,8 +408,8 @@ class LoginCase(FlndCase):
                 ui.warn(str(err))
 
         with (
-            mock.patch("shared.prompt.choose", fake_choose),
-            mock.patch("shared.prompt.ask", fake_ask),
+            mock.patch("flnd._prompt.choose", fake_choose),
+            mock.patch("flnd._prompt.ask", fake_ask),
             mock.patch.object(type(ui.raw), "is_terminal", property(lambda _: True)),
         ):
             code, _, out = self.run_app("auth", "login")
@@ -515,7 +516,7 @@ class LoginBrowserTest(LoginCase):
             other = {"name": "auth_token", "value": "o", "domain": "example.com", "path": "/"}
             return cookies.Jar([*(cookie for jar in self.store.values() for cookie in jar), other])
 
-        patcher = mock.patch("shared.cookies.load", from_browser)
+        patcher = mock.patch("flnd._cookies.load", from_browser)
         patcher.start()
         self.addCleanup(patcher.stop)
 

@@ -11,7 +11,8 @@ from rich.table import Table
 
 from flnd import Engine, LoginError, Range, TargetError, __version__
 from flnd.sources import SOURCES
-from shared import cli, prompt, text, ui
+from flnd import _cli as cli, _prompt as prompt, _text as text
+from flnd._ui import ui
 
 # Data folder relative to current working directory: stores logins, history, settings.
 HOME = Path(".flnd")

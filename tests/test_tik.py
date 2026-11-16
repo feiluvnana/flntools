@@ -19,7 +19,7 @@ from fakes import FakeSite, Seen, collect
 from flnd.options import Options
 from flnd.source import FetchError, Target, TargetError
 from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
-from shared import selector
+from flnd import _html as selector
 
 DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")
 PROFILE = "https://www.tiktok.com/@someone"

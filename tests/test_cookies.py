@@ -1,4 +1,4 @@
-"""`shared.cookies`: `load` and the `Jar`, over fixture files, browsers, and text.
+"""`flnd._cookies`: `load` and the `Jar`, over fixture files, browsers, and text.
 
 Browser profiles are fixture databases under a temporary home folder (`Path.home` is patched),
 the Keychain and keyring passwords are faked, and any real program `subprocess` would run fails
@@ -17,8 +17,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import shared
-from shared import cookies
+from flnd import _base
+from flnd import _cookies as cookies
 
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -147,7 +147,7 @@ class ChromiumMacTest(BrowserTestCase):
                 with self.assertRaises(cookies.Error) as caught:
                     cookies.load("chrome")
                 self.assertIn("chrome", str(caught.exception))
-                self.assertIsInstance(caught.exception, shared.Error)
+                self.assertIsInstance(caught.exception, _base.Error)
                 self.assertNotIsInstance(caught.exception, ValueError)
                 self.assertNotIn("value0", str(caught.exception))
                 (self.home / "Library/Application Support/Google/Chrome/Default/Network/Cookies").unlink()
@@ -279,7 +279,7 @@ class BrowserChoiceTest(BrowserTestCase):
         with mock.patch.dict(sys.modules, {**blocked, "cryptography": None}):
             with self.assertRaises(ImportError) as caught:
                 cookies.load("chrome")
-        self.assertIn("flntools[browser]", str(caught.exception))
+        self.assertIn("pip install cryptography", str(caught.exception))
 
 
 class FirefoxTest(BrowserTestCase):
@@ -390,7 +390,7 @@ class LoadTest(FileTestCase):
                 with self.assertRaises(cookies.Error) as caught:
                     cookies.load(path)
                 self.assertIn("broken.json", str(caught.exception))
-                self.assertIsInstance(caught.exception, shared.Error)
+                self.assertIsInstance(caught.exception, _base.Error)
                 self.assertNotIsInstance(caught.exception, ValueError)
 
     def test_not_utf8_names_itself(self):
@@ -409,7 +409,7 @@ class LoadTest(FileTestCase):
             with self.assertRaises(cookies.UnsafeError) as caught:
                 cookies.load(path)
         self.assertIn("huge.txt", str(caught.exception))
-        self.assertIsInstance(caught.exception, shared.UnsafeError)
+        self.assertIsInstance(caught.exception, _base.UnsafeError)
         self.assertIsInstance(caught.exception, cookies.Error)
 
     def test_exactly_16_mb_is_read(self):
@@ -570,7 +570,7 @@ class SaveTest(FileTestCase):
     def test_no_temp_file_after_failure(self):
         path = self.folder / "ins.txt"
         with mock.patch.object(cookies.os, "replace", side_effect=OSError("disk full")):
-            with self.assertRaises(shared.Error):
+            with self.assertRaises(_base.Error):
                 self.jar.save(path)
         self.assertEqual(list(self.folder.iterdir()), [])
 
@@ -622,7 +622,7 @@ class SecretsTest(FileTestCase):
 
 class ImportTest(unittest.TestCase):
     def test_import_loads_neither_cryptography_nor_playwright(self):
-        code = ("import sys; from shared import _cookies; "
+        code = ("import sys; from flnd import _cookies; "
                 "print(sorted({n.split('.')[0] for n in sys.modules} & {'cryptography', 'playwright'}))")
         result = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "[]")

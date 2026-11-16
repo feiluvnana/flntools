@@ -26,8 +26,8 @@ here also changes this page, so the page always describes the code you have chec
                 │
                 └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API)
 
-   shared/   the toolkit the rest is built on: http, browser, store, fs, worker, ui, cookies,
-             crypto, archive, selector, prompt, cli, text, clock and a few more
+   flnd/_*.py   the private toolkit the rest is built on: http, browser, db, files, loop, ui,
+             cookies, vault, unpack, html, prompt, cli, text, time and a few more
 ```
 
 | part | what it holds | who calls it |
@@ -43,10 +43,10 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/options.py` | `Options` and `RunShared` | the engine, the job |
 | `flnd/common/` | `auth` (the login vault), `net` (the HTTP client and file downloads), `paths` (the home's layout and content sniffing) | the engine, the site, the job |
 | `flnd/dry.py` | a contributor's tool: prints the files one target would save | `scripts/dev.py try` |
-| `shared/` | the general toolkit: HTTP over httpx, Playwright, SQLite stores, atomic files, a thread pool, the terminal UI | everything above |
+| `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), Playwright (`_browser`), SQLite stores (`_db`), atomic files (`_files`), a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
 
 The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,
-`shared` and the standard library, and nothing of the engine. The engine imports the sources
+the toolkit (`flnd._*`) and the standard library, and nothing of the engine. The engine imports the sources
 only through `flnd.sources.SOURCES`.
 
 ## One download, start to finish
@@ -81,7 +81,7 @@ only through `flnd.sources.SOURCES`.
    `folder` and `filename` templates) and its history key (`<code>:<key>`). A file whose key is
    in the history is skipped. On a sync, 5 saved posts in a row end a `newest_first` category.
    A lazy post's files are listed only once the post is known to be new.
-9. **Downloading** (`Downloads`). Each new file goes to a `shared.worker.Pool` of
+9. **Downloading** (`Downloads`). Each new file goes to a `flnd._loop.Pool` of
    `Source.concurrency` threads (8 by default). The pool's queue is bounded, so the listing waits
    when downloads fall behind. `common/net.download` streams the file into a stage file, tries
    mirrors in order, merges a DASH video with its audio through ffmpeg, checks the content (a
@@ -106,7 +106,7 @@ A run uses a few threads, and every rule below protects one of them:
 
 - **The main thread** runs the engine and each target's listing: the route, the categories and
   the planning. A source's plain `def` routes therefore run top to bottom, without locks.
-- **The download pool** (`shared.worker.Pool`, per target) runs the file downloads. Each pool
+- **The download pool** (`flnd._loop.Pool`, per target) runs the file downloads. Each pool
   thread writes its file's stage, renames it, sets its date and writes its history row; the job's
   `_writing` lock guards the run's own lists of written and failed files, and SQLite serializes
   the history writes.
@@ -115,7 +115,7 @@ A run uses a few threads, and every rule below protects one of them:
   are forwarded to that thread and wait for the answer.
 - **An event loop for async sources.** A source with an async SDK (Telegram's Telethon) runs its
   coroutines on its own loop through `SourceRun.run_async`.
-- **Ctrl-C** is handled by `shared.cli.stopping`: the first one sets `stop.soon` (stop listing,
+- **Ctrl-C** is handled by `flnd._cli.stopping`: the first one sets `stop.soon` (stop listing,
   let running files finish), the second sets `stop.now` (stop at once, keep the stage files).
 
 ## Where things are kept

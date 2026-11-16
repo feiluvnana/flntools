@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 import kit
-from shared import browser, http
+from flnd import _browser as browser, _http as http
 
 BATCHES = 30
 # The feed: each batch appends 10 tall rows, and nearing the bottom asks for the next batch.
@@ -62,7 +62,7 @@ def main() -> None:
         with kit.serve(folder) as base:
             try:
                 chrome, took = timed(lambda: browser.open(headless=True))
-            except Exception as error:  # Playwright's own errors, or shared.MissingError
+            except Exception as error:  # Playwright's own errors, or flnd._base.MissingError
                 report.skip(f"Chromium did not launch ({type(error).__name__}); "
                             "run `playwright install chromium`")
                 report.emit()

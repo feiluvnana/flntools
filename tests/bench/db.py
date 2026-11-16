@@ -1,6 +1,6 @@
 """Benchmark group `db`: the history store over 100k rows, and what a commit costs per row.
 
-Part one is `shared.store`, which flnd keeps its history in today: inserts, point reads,
+Part one is `flnd._db`, which flnd keeps its history in today: inserts, point reads,
 membership, a prefix scan and a filter, over 100,000 rows shaped like history entries.
 
 Part two is raw SQLite in WAL mode, the way the new `flnd.db` will run it: 50,000 rows of a
@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 import kit
-from shared import store
+from flnd import _db as store
 
 ROWS = 100_000
 # 10,000 random keys read back, seeded so every run reads the same ones.
@@ -33,7 +33,7 @@ INSERT = "INSERT INTO files VALUES (?,?,?,?,?,?,?)"
 
 
 def history(report: kit.Report, scratch: Path) -> None:
-    """Time `shared.store` over 100k history-shaped rows.
+    """Time `flnd._db` over 100k history-shaped rows.
 
     Args:
         report: where the numbers go.

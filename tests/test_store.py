@@ -1,4 +1,4 @@
-"""Tests for `shared.store`: tables of JSON values and typed rows in one SQLite file."""
+"""Tests for `flnd._db`: tables of JSON values and typed rows in one SQLite file."""
 
 import collections.abc
 import gc
@@ -13,8 +13,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-import shared
-from shared import store
+from flnd import _base
+from flnd import _db as store
 
 
 class File(store.Row):
@@ -82,7 +82,7 @@ class MappingTest(StoreCase):
             self.kv["x"] = object()
         with self.assertRaises(store.Error):
             self.db['bad"name']
-        self.assertTrue(issubclass(store.Error, shared.Error))
+        self.assertTrue(issubclass(store.Error, _base.Error))
 
     def test_a_closed_db_refuses_calls(self):
         self.db.close()
@@ -156,7 +156,7 @@ class BatchTest(StoreCase):
         self.assertNotIn("c", self.kv)
 
     def test_a_begin_that_fails_leaves_later_batches_whole(self):
-        with mock.patch("shared._store.BUSY_MS", 50), store.open(self.file.with_name("busy.db")) as db:
+        with mock.patch("flnd._db.BUSY_MS", 50), store.open(self.file.with_name("busy.db")) as db:
             db["kv"]["a"] = 1
             with closing(sqlite3.connect(db.path, isolation_level=None)) as other:
                 # Another writer holds the file past the busy timeout, so BEGIN fails.

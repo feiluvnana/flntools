@@ -1,8 +1,8 @@
-"""`shared.http`'s types, checked by pyright and never run. Each `pyright: ignore` line must stay an error."""
+"""`flnd._http`'s types, checked by pyright and never run. Each `pyright: ignore` line must stay an error."""
 
 from typing_extensions import assert_type
 
-from shared import http
+from flnd import _http as http
 
 assert_type(http.fetch("https://example.com/"), http.Response)
 assert_type(http.fetch("https://example.com/", check=False), http.Response)

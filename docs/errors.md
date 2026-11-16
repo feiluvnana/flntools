@@ -51,21 +51,21 @@ today (`flnd.engine.Error`); nothing raises it yet.
 
 | class | cause | exit code |
 | --- | --- | --- |
-| `shared.cli.UsageError` | a bad flag value, a `--from` the target doesn't have, a target not known to `flnd target`, `flnd auth login` outside a terminal | 2 |
+| `flnd._cli.UsageError` | a bad flag value, a `--from` the target doesn't have, a target not known to `flnd target`, `flnd auth login` outside a terminal | 2 |
 | cyclopts' errors | an unknown command or flag, a missing argument | 2 |
 | `KeyboardInterrupt` | Ctrl-C | 130 |
 
-### Raised by the toolkit (`shared`)
+### Raised by the toolkit (`flnd._*`)
 
-Every error of the toolkit is a `shared.Error`. Each module has its own `Error` under it, and an
+Every error of the toolkit is a `flnd._base.Error`. Each module has its own `Error` under it, and an
 error about bad input is also one of four kinds, so a caller can catch by kind:
 
 | kind | meaning | examples |
 | --- | --- | --- |
-| `shared.UnsafeError` | input refused because trusting it could do harm | an archive entry that escapes its folder, a shell argument that could inject |
-| `shared.BrokenError` | input that is damaged or isn't what it claims | a download cut short (`http.IncompleteError`), a broken archive, unreadable HTML |
-| `shared.RefusedError` | a remote end or a person said no | an HTTP 4xx (`http.RefusedError`), a wrong archive password |
-| `shared.MissingError` | something this machine lacks | ffmpeg, a browser, Chrome's cookie key |
+| `flnd._base.UnsafeError` | input refused because trusting it could do harm | an archive entry that escapes its folder, a shell argument that could inject |
+| `flnd._base.BrokenError` | input that is damaged or isn't what it claims | a download cut short (`http.IncompleteError`), a broken archive, unreadable HTML |
+| `flnd._base.RefusedError` | a remote end or a person said no | an HTTP 4xx (`http.RefusedError`), a wrong archive password |
+| `flnd._base.MissingError` | something this machine lacks | ffmpeg, a browser, Chrome's cookie key |
 
 Other toolkit errors a run may show: `http.RateLimitedError` (a 429, waited out),
 `http.StoppedError` (Ctrl-C during a request), `fs.BusyError` (another run holds a lock: wait,

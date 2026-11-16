@@ -17,7 +17,7 @@ from flnd.common import auth
 from flnd.options import Options
 from flnd.source import FetchError, Target, TargetError
 from flnd.sources.loi import API, SITE_IV, SITE_KEY, Loibus, decode_token, decrypt_field, sign_request
-from shared import cookies, crypto
+from flnd import _cookies as cookies, _vault as crypto
 
 # The site's own key and iv, as loix used them: "https://dl.example/a.zip", encrypted.
 ENCRYPTED_URL = "GbQQUMfoM0sFLYH/040yiFqXee34SusjXJybD/DgNfA="
@@ -384,7 +384,7 @@ class LoginTest(unittest.TestCase):
 
     def test_the_browser(self):
         store = {"loix.cc": [{"name": "access-token", "value": "v", "domain": ".loix.cc", "path": "/"}]}
-        with mock.patch("shared.cookies.load",
+        with mock.patch("flnd._cookies.load",
                         lambda browser="chrome", *, profile=None: cookies.Jar(c for jar in store.values() for c in jar)):
             jar = auth.from_browser(Loibus(), browser="chrome")
             self.assertEqual(auth.store(Loibus(), jar, home=self.home, origin="Chrome"),

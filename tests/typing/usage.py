@@ -10,7 +10,8 @@ from typing_extensions import assert_type
 
 from flnd.site import LoginSite, TargetSite
 from flnd.source import File, Login, Post, Site, Source
-from shared import cookies, fs, http, prompt, sh, ui, worker
+from flnd import _cookies as cookies, _files as fs, _http as http, _prompt as prompt, _tools as sh, _loop as worker
+from flnd._ui import ui
 from tests.fakes import FakeSite
 
 

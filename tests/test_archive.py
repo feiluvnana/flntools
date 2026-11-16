@@ -1,4 +1,4 @@
-"""Tests for `shared.archive`: packing, listing, and safe unpacking of archives."""
+"""Tests for `flnd._unpack`: packing, listing, and safe unpacking of archives."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from shared import archive, sh
+from flnd import _unpack as archive, _tools as sh
 
 HAS_7Z = bool(shutil.which("7zz") or shutil.which("7z"))
 HAS_UNRAR = bool(shutil.which("unrar"))

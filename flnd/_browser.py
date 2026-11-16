@@ -27,16 +27,16 @@ from typing import (
 )
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import shared
-from shared import _clock as clock
-from shared import _prompt as prompt
-from shared import _text as text
-from shared._cookies import Jar
-from shared._ui import ui
+from flnd import _base
+from flnd import _time as clock
+from flnd import _prompt as prompt
+from flnd import _text as text
+from flnd._cookies import Jar
+from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from shared import _http as http
-    from shared._selector import Selection
+    from flnd import _http as http
+    from flnd._html import Selection
     from playwright.sync_api import BrowserContext, Locator, Playwright, Request, Response
     from playwright.sync_api import Page as RawPage
 
@@ -155,8 +155,8 @@ _chromium_offer = threading.Lock()
 _HEADFUL_UA: dict[str, str] = {}
 
 
-class Error(shared.Error):
-    """The base of every error `shared.browser` raises."""
+class Error(_base.Error):
+    """The base of every error `flnd._browser` raises."""
 
 
 class _NeverRaised(Exception):
@@ -188,7 +188,7 @@ def _gone(error: BaseException) -> bool:
     return any(text in str(error) for text in GONE)
 
 
-class MissingError(Error, shared.MissingError):
+class MissingError(Error, _base.MissingError):
     """Neither Google Chrome nor a downloaded Chromium, and the download was declined or failed."""
 
 
@@ -276,7 +276,7 @@ def _copy_profile(name: str) -> Path:
         raise FileNotFoundError(f"no Chrome profile named {name!r} in {root}")
     # mkdtemp makes the folder with mode 0700, so on a shared machine no other user can read the
     # copy, which holds logins. Windows ignores the mode; the user's temp folder is private there.
-    copy = Path(tempfile.mkdtemp(prefix="shared-chrome-"))
+    copy = Path(tempfile.mkdtemp(prefix="flnd-chrome-"))
     try:
         # Whatever its name, the copy holds the profile as Default, and _launch opens Default.
         shutil.copytree(
@@ -313,7 +313,7 @@ class BrowserCookies:
         self._browser = browser
 
     def get(self) -> Jar:
-        """Every cookie in the browser as a `shared.cookies.Jar` snapshot."""
+        """Every cookie in the browser as a `flnd._cookies.Jar` snapshot."""
         return Jar(dict(cookie) for cookie in self._browser.raw.cookies())
 
     def add(self, jar: Jar | Iterable[dict[str, Any]]) -> None:
@@ -590,7 +590,7 @@ class Page:
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
               body: Any = None, check: bool = True) -> http.Response:
         """Send one request from the page, with its cookies, origin and TLS, like `http.fetch`."""
-        from shared import _http
+        from flnd import _http
 
         method = method.upper()
         sent = dict(headers or {})
@@ -610,7 +610,7 @@ class Page:
 
     def _fetch(self, request: dict[str, Any]) -> http.Response:
         """Run `request` in the page, and return its answer whatever the status."""
-        from shared import _http
+        from flnd import _http
 
         where = f"{request['method']} {text.redact(request['url'])}"
         try:
@@ -658,7 +658,7 @@ class Page:
     def document(self) -> Selection:
         """The live page as a `selector.Selection`, read fresh each time."""
         # Imported here, so a script that only drives the browser doesn't need parsel.
-        from shared._selector import parse
+        from flnd._html import parse
 
         return parse(self._steady(self.raw.content, "<html></html>", "read the page"))
 
@@ -781,7 +781,7 @@ def _start_playwright() -> Playwright:
         from playwright.sync_api import sync_playwright
     except ImportError:
         raise ImportError(
-            "shared.browser needs playwright: pip install 'flntools[browser]'"
+            "flnd._browser needs playwright: pip install playwright"
         ) from None
     return sync_playwright().start()
 

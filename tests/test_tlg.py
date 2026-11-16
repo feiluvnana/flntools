@@ -35,7 +35,7 @@ from flnd.source import LoginError, Target, TargetError
 from flnd.sources import SOURCES
 from flnd.sources import tlg
 from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
-from shared import text
+from flnd import _text as text
 
 DAY = datetime.date(2026, 1, 5)
 SESSION = "1FAKE-SESSION-aGVsbG8"
@@ -339,7 +339,7 @@ class FakeChrome:
 
 class ReadTelegramWebTest(unittest.TestCase):
     def read(self, tab):
-        with mock.patch("shared.browser.open", lambda **options: FakeChrome(tab)):
+        with mock.patch("flnd._browser.open", lambda **options: FakeChrome(tab)):
             return read_telegram_web()
 
     def test_the_storage_of_a_tab_that_reached_telegram_web(self):
@@ -390,7 +390,7 @@ class LoginCase(EngineCase):
 
     def answer(self, *answers):
         tty = mock.patch("sys.stdin.isatty", return_value=True)
-        ask = mock.patch("shared.prompt.ask", side_effect=list(answers))
+        ask = mock.patch("flnd._prompt.ask", side_effect=list(answers))
         tty.start()
         ask.start()
         self.addCleanup(ask.stop)
@@ -510,9 +510,9 @@ class LoginTest(LoginCase):
 class LoginCommandTest(FlndCase):
     def choose_telegram(self, *choices):
         """Pick Telegram and then `choices` in `flnd auth login`."""
-        from shared import ui
+        from flnd._ui import ui
 
-        p = mock.patch("shared.prompt.choose", side_effect=["tlg", *choices])
+        p = mock.patch("flnd._prompt.choose", side_effect=["tlg", *choices])
         tty = mock.patch.object(ui.raw, "_force_terminal", True)
         p.start()
         tty.start()
@@ -537,7 +537,7 @@ class LoginCommandTest(FlndCase):
         self.assertIn("tlg: no QR code was scanned; run flnd login again", out)
 
     def test_a_stored_session_is_marked_logged_in(self):
-        from shared import ui
+        from flnd._ui import ui
 
         with auth.secrets(Path(".flnd"), "tlg") as secrets:
             secrets.update(session=SESSION, **CREDENTIALS)
@@ -548,7 +548,7 @@ class LoginCommandTest(FlndCase):
             seen.append(choices)
             return next(answers)
 
-        with mock.patch("shared.prompt.choose", fake_choose), \
+        with mock.patch("flnd._prompt.choose", fake_choose), \
                 mock.patch.object(ui.raw, "_force_terminal", True), \
                 mock.patch.object(Telegram, "login", lambda self, session, method: None):
             self.run_app("auth", "login")
@@ -605,7 +605,7 @@ class DownloadTest(DownloadCase):
         self.assertEqual(len(self.telegram.downloads), 5)
         # One client per run, closed at its end, on the group's own loop.
         self.assertEqual([client.connected for client in self.telegram.clients], [False, False])
-        self.assertEqual(self.telegram.threads, {"shared-worker-loop"})
+        self.assertEqual(self.telegram.threads, {"flnd-worker-loop"})
         self.assertEqual(self.telegram.clients[0].flood_sleep_threshold, 24 * 3600)
 
     def test_a_flood_wait_is_waited_out_and_retried(self):

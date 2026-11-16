@@ -8,7 +8,7 @@ from typing import Any, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
 
 from flnd.source import FetchError, File, Post, Site, Source, Target, TargetError, pages, target
-from shared import text
+from flnd import _text as text
 
 API = "https://mimihentai.moe/api/"
 
