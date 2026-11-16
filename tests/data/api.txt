@@ -300,11 +300,15 @@ shared.crypto.decrypt(blob: bytes, key: bytes, *, context: bytes = b'') -> bytes
 shared.crypto.digest(data: HashInput, *, algorithm: str = 'sha256') -> str
 shared.crypto.encrypt(data: Data, key: bytes, *, context: bytes = b'') -> bytes
 shared.fs: module
+shared.fs.BusyError(shared.fs.Error)
 shared.fs.Error(shared.Error)
 shared.fs.ExistsError(shared.fs.Error, FileExistsError)
 shared.fs.lock(path: PathLike, *, timeout: float | None = None) -> Iterator[filelock.FileLock]
+shared.fs.stage(dest: PathLike, *, keep: bool = True, sync: bool = False, timeout: float | None = None) -> Iterator[Path]
 shared.fs.sweep(folder: PathLike, *, keep: float = 604800, settle: float = 3600) -> int
-shared.fs.write(dest: PathLike, *, data: bytes | str | None = None, replace: bool = True, sync: bool = False) -> Path | AbstractContextManager[Path]
+shared.fs.touch(path: PathLike, *, mtime: float) -> None
+shared.fs.walk(folder: PathLike, *, suffix: tuple[str, ...] = ()) -> Iterator[os.DirEntry[str]]
+shared.fs.write(dest: PathLike, data: bytes | str, *, sync: bool = False, replace: bool = True) -> Path
 shared.http: module
 shared.http.Client(*, cookies: cookies.Jar | None = None, headers: Mapping[str, str] | None = None, timeout: float = 30.0, rate: float | None = None)
 shared.http.Client.close() -> None

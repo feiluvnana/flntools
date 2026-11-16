@@ -19,6 +19,7 @@ from typing import (
 import shared
 from shared import _clock as clock
 from shared import _cookies as cookies
+from shared import _fs as fs
 from shared import _text as text
 from shared._ui import ui
 
@@ -363,23 +364,22 @@ def _download_with(
     if attempts < 1:
         raise ValueError(f"attempts must be at least 1, not {attempts}")
     target = Path(dest)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(f".{target.name}.part")
     last_error: Error | None = None
-    for mirror in mirrors:
-        try:
-            _download_mirror(
-                mirror, part, client=client, headers=headers, resume=resume,
-                attempts=attempts, timeout=timeout, progress=progress, stop=stop,
-            )
-            os.replace(part, target)
-            return target
-        except (RefusedError, RateLimitedError, StoppedError, _RequestError):
-            raise
-        except Error as error:
-            last_error = error
-    assert last_error is not None
-    raise last_error
+    # The stage keeps its fixed name across runs, so a later download appends to it.
+    with fs.stage(target, keep=resume) as part:
+        for mirror in mirrors:
+            try:
+                _download_mirror(
+                    mirror, part, client=client, headers=headers, resume=resume,
+                    attempts=attempts, timeout=timeout, progress=progress, stop=stop,
+                )
+                return target
+            except (RefusedError, RateLimitedError, StoppedError, _RequestError):
+                raise
+            except Error as error:
+                last_error = error
+        assert last_error is not None
+        raise last_error
 
 
 def _download_mirror(

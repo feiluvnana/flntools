@@ -931,7 +931,7 @@ class CtrlCTest(JobCase):
         self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
         folder = self.target_dir("big", "example_user")
         names = sorted(path.name for path in folder.iterdir())
-        self.assertEqual(names, [".big.7z.part"])
+        self.assertEqual(names, [".big.7z.stage"])
 
         # The next run resumes the part.
         self.stop.soon.clear()

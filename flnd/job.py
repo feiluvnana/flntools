@@ -428,7 +428,7 @@ class Ledger:
             dest = self.folder.joinpath(*placed.path.split("/"))
             if placed.file.content is not None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                fs.write(dest, data=placed.file.content)
+                fs.write(dest, placed.file.content)
                 continue
             item_key = f"{self.source.code}:{placed.key}"
             held = self._held(dest, item_key)

@@ -1,23 +1,35 @@
-"""Atomic file writes, file locks, and stale part cleanup."""
+"""Atomic writes, staged files, locks, stale stage sweeps and fast folder walks.
+
+    fs.write("out.json", data)
+    with fs.stage("big.mp4") as tmp:            # .big.mp4.stage, moved onto big.mp4 on success
+        sh.run("ffmpeg", "-i", src, tmp)
+"""
 
 from __future__ import annotations
 
 import os
-import secrets
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Union, overload
+from typing import Union
 
 import filelock
 
 import shared
 from shared import _clock as clock
 
-__all__ = ["Error", "ExistsError", "lock", "sweep", "write"]
+__all__ = [
+    "BusyError", "Error", "ExistsError", "lock", "stage", "sweep", "touch", "walk", "write",
+]
 
 PathLike = Union[str, "os.PathLike[str]"]
 
+STAGE = ".stage"
+LOCK = ".lock"
+# `.part` is the name stages had before; `sweep` still clears what old runs left.
+TEMPS = (STAGE, ".part")
+# A resumable download may keep its offsets beside its stage, as `<stage>.json` or `.info`.
+SIDES = (".json", ".info")
 # Windows opens files in text mode unless told otherwise, which turns "\n" into "\r\n".
 BINARY = getattr(os, "O_BINARY", 0)
 # On Windows an antivirus or indexer may hold `dest` briefly, so rename retries for ~1 s.
@@ -25,7 +37,6 @@ WINDOWS = os.name == "nt"
 REPLACE_TRIES, REPLACE_PAUSE = 20, 0.05
 KEEP_AGE = 7 * 86_400
 SETTLE_AGE = 3_600
-SIDE_SUFFIXES = (".json", ".info")
 
 
 class Error(shared.Error):
@@ -36,75 +47,41 @@ class ExistsError(Error, FileExistsError):
     """Raised when `dest` already exists and `replace` is False."""
 
 
-@overload
-def write(
-    dest: PathLike, *, data: bytes | str, replace: bool = True, sync: bool = False
-) -> Path: ...
+class BusyError(Error):
+    """Raised when another writer holds a lock past `timeout`."""
 
 
-@overload
-def write(
-    dest: PathLike, *, data: None = None, replace: bool = True, sync: bool = False
-) -> AbstractContextManager[Path]: ...
-
-
-def write(
-    dest: PathLike,
-    *,
-    data: bytes | str | None = None,
-    replace: bool = True,
-    sync: bool = False,
-) -> Path | AbstractContextManager[Path]:
-    """Atomically write `data` to `dest`, or yield a temp `Path` to write and rename on exit."""
-    if data is None:
-        return _write_context(dest, replace=replace, sync=sync)
+def write(dest: PathLike, data: bytes | str, *, sync: bool = False, replace: bool = True) -> Path:
+    """Atomically write `data` to `dest`; `sync=True` flushes it to disk first."""
+    target = Path(dest)
     raw = data.encode("utf-8") if isinstance(data, str) else data
-    with _write_context(dest, replace=replace, sync=sync) as part:
-        _write_bytes(part, raw)
-    return Path(dest)
+    with stage(target, keep=False, sync=sync) as temp:
+        _write_bytes(temp, raw)
+        if not replace:
+            _link(temp, target, sync=sync)
+    return target
 
 
 @contextmanager
-def _write_context(
-    dest: PathLike, *, replace: bool = True, sync: bool = False
+def stage(
+    dest: PathLike, *, keep: bool = True, sync: bool = False, timeout: float | None = None
 ) -> Iterator[Path]:
-    """Yield a hidden part path beside `dest` and atomically move it into place on exit."""
+    """Yield `.<name>.stage` beside `dest`, locked, and move it onto `dest` on a clean exit."""
     target = Path(dest)
-    try:
-        if target.exists() and not replace:
-            raise ExistsError(f"{target} already exists")
-    except OSError as error:
-        if isinstance(error, ExistsError):
-            raise
-        raise Error(str(error)) from error
-    # Random suffix keeps concurrent writers of the same destination apart.
-    part = target.with_name(f".{target.name}.{secrets.token_hex(4)}.part")
-    try:
-        yield part
-        _commit(part, target, sync=sync)
-    finally:
+    temp = target.with_name(f".{target.name}{STAGE}")
+    held = temp.with_name(temp.name + LOCK)
+    with lock(held, timeout=timeout):
         try:
-            part.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _write_bytes(part: Path, data: bytes) -> None:
-    """Write `data` to `part` in binary mode."""
-    try:
-        handle = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | BINARY, 0o666)
-    except OSError as error:
-        raise Error(str(error)) from error
-    try:
-        file = os.fdopen(handle, "wb")
-    except BaseException:
-        os.close(handle)
-        raise
-    try:
-        with file:
-            file.write(data)
-    except OSError as error:
-        raise Error(str(error)) from error
+            yield temp
+            _commit(temp, target, sync=sync)
+        except BaseException:
+            if not keep:
+                _unlink(os.fspath(temp))
+            raise
+        finally:
+            # Unlinked while still held: filelock retries a lock whose file is gone.
+            with suppress(OSError):
+                held.unlink(missing_ok=True)
 
 
 @contextmanager
@@ -116,81 +93,117 @@ def lock(path: PathLike, *, timeout: float | None = None) -> Iterator[filelock.F
             target = target / ".lock"
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-        wait = -1.0 if timeout is None else timeout
-        flock = filelock.FileLock(target, timeout=wait)
-        with flock:
-            yield flock
-    except (filelock.Timeout, OSError) as error:
-        raise Error(str(error)) from error
-
-
-def sweep(
-    folder: PathLike, *, keep: float = KEEP_AGE, settle: float = SETTLE_AGE
-) -> int:
-    """Remove stale `.part` files and orphan sidecars under `folder`, returning count removed."""
-    root = Path(folder)
-    try:
-        if not root.exists():
-            return 0
+        flock = filelock.FileLock(target, timeout=-1.0 if timeout is None else timeout)
+        flock.acquire()
+    except filelock.Timeout as error:
+        raise BusyError(f"{target}: held by another writer; try again later") from error
     except OSError as error:
         raise Error(str(error)) from error
-    files = _scan_files(root)
-    parts, sides = _classify_parts(files)
+    try:
+        yield flock
+    finally:
+        flock.release()
+
+
+def touch(path: PathLike, *, mtime: float) -> None:
+    """Set the access and modification times of `path` to `mtime` epoch seconds."""
+    try:
+        os.utime(path, (mtime, mtime))
+    except OSError as error:
+        raise Error(str(error)) from error
+
+
+def walk(folder: PathLike, *, suffix: tuple[str, ...] = ()) -> Iterator[os.DirEntry[str]]:
+    """Yield the files under `folder` whose lowercase name ends in `suffix`, minus stages."""
+    for entry in _scan(folder):
+        name = entry.name
+        if _temporary(name) or (suffix and not name.lower().endswith(suffix)):
+            continue
+        yield entry
+
+
+def sweep(folder: PathLike, *, keep: float = KEEP_AGE, settle: float = SETTLE_AGE) -> int:
+    """Remove stale stages, their sidecars and locks under `folder`, returning the count."""
+    root = Path(folder)
+    if not _exists(root):
+        return 0
+    stages: list[os.DirEntry[str]] = []
+    extras: dict[str, os.DirEntry[str]] = {}
+    for entry in _scan(root):
+        if entry.name.endswith(TEMPS) and entry.name.startswith("."):
+            stages.append(entry)
+        elif _temporary(entry.name):
+            extras[entry.path] = entry
     now = clock.wall()
     removed = 0
-    for entry in parts:
-        has_side = any(f"{entry.path}{ext}" in sides for ext in SIDE_SUFFIXES)
-        cutoff = keep if has_side else settle
-        if _older_than(entry, now, cutoff):
-            removed += _unlink(entry.path)
-            for ext in SIDE_SUFFIXES:
-                if f"{entry.path}{ext}" in sides:
-                    removed += _unlink(f"{entry.path}{ext}")
-    part_paths = {entry.path for entry in parts}
-    for side in sides.values():
-        stem = _part_stem(side.path)
-        if stem not in part_paths and _older_than(side, now, settle):
-            removed += _unlink(side.path)
+    for entry in stages:
+        sides = [entry.path + side for side in SIDES if entry.path + side in extras]
+        # A stage with offsets beside it can resume, so it waits `keep`, not `settle`.
+        if _older_than(entry, now, keep if sides else settle):
+            removed += _remove(entry.path, sides)
+        for path in (*sides, entry.path + LOCK):
+            extras.pop(path, None)
+    for path, entry in extras.items():
+        if _older_than(entry, now, settle):
+            removed += _remove(_base(path), [path])
     return removed
 
 
-def _scan_files(folder: PathLike) -> list[os.DirEntry[str]]:
-    """Walk `folder` recursively in one `os.scandir` pass, returning file entries."""
-    files: list[os.DirEntry[str]] = []
-    stack = [os.fspath(folder)]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(entry.path)
-                    elif entry.is_file(follow_symlinks=False):
-                        files.append(entry)
-        except OSError as error:
-            raise Error(str(error)) from error
-    return files
-
-
-def _commit(part: Path, dest: Path, *, sync: bool) -> None:
-    """Flush `part` if requested and replace `dest`."""
+def _exists(path: Path) -> bool:
+    """Whether `path` exists, as an `fs.Error` when the check itself fails."""
     try:
-        if not part.exists():
+        return path.exists()
+    except OSError as error:
+        raise Error(str(error)) from error
+
+
+def _write_bytes(temp: Path, data: bytes) -> None:
+    """Write `data` to `temp` in binary mode, truncating what a crashed writer left."""
+    try:
+        handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | BINARY, 0o666)
+        with os.fdopen(handle, "wb") as file:
+            file.write(data)
+    except OSError as error:
+        raise Error(str(error)) from error
+
+
+def _link(temp: Path, dest: Path, *, sync: bool) -> None:
+    """Land `temp` on `dest` only if `dest` is free, leaving no window for another writer."""
+    if sync:
+        _fsync_file(temp)
+    try:
+        os.link(temp, dest)
+    except FileExistsError as error:
+        raise ExistsError(f"{dest}: already exists") from error
+    except OSError:
+        # No hard links here (FAT, some network shares): check, then let `stage` replace.
+        if _exists(dest):
+            raise ExistsError(f"{dest}: already exists") from None
+        return
+    _unlink(os.fspath(temp))
+    if sync and not WINDOWS:
+        _fsync_dir(dest.parent)
+
+
+def _commit(temp: Path, dest: Path, *, sync: bool) -> None:
+    """Flush `temp` if asked and move it onto `dest`; a block that moved it away wins."""
+    try:
+        if not temp.exists():
             return
         if sync:
-            _fsync_file(part)
-        _replace(part, dest)
+            _fsync_file(temp)
+        _replace(temp, dest)
         if sync and not WINDOWS:
             _fsync_dir(dest.parent)
     except OSError as error:
         raise Error(str(error)) from error
 
 
-def _replace(part: Path, dest: Path) -> None:
-    """`os.replace(part, dest)`, retrying briefly while Windows holds `dest`."""
+def _replace(temp: Path, dest: Path) -> None:
+    """`os.replace(temp, dest)`, retrying briefly while Windows holds `dest`."""
     for attempt in range(1, REPLACE_TRIES + 1):
         try:
-            os.replace(part, dest)
+            os.replace(temp, dest)
             return
         except PermissionError:
             if not WINDOWS or attempt == REPLACE_TRIES:
@@ -202,11 +215,14 @@ def _fsync_file(path: Path) -> None:
     """Flush `path` to disk."""
     # Windows FlushFileBuffers requires write access on the descriptor.
     flags = os.O_RDWR | BINARY if WINDOWS else os.O_RDONLY
-    fd = os.open(path, flags)
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        fd = os.open(path, flags)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as error:
+        raise Error(str(error)) from error
 
 
 def _fsync_dir(folder: Path) -> None:
@@ -218,40 +234,6 @@ def _fsync_dir(folder: Path) -> None:
         os.close(fd)
 
 
-def _classify_parts(
-    files: list[os.DirEntry[str]],
-) -> tuple[list[os.DirEntry[str]], dict[str, os.DirEntry[str]]]:
-    """Split scanned files into `.part` files and `.part.json`/`.part.info` sidecars."""
-    parts: list[os.DirEntry[str]] = []
-    sides: dict[str, os.DirEntry[str]] = {}
-    for entry in files:
-        name = entry.name
-        if name.endswith(".part"):
-            parts.append(entry)
-        elif any(name.endswith(f".part{ext}") for ext in SIDE_SUFFIXES):
-            sides[entry.path] = entry
-    return parts, sides
-
-
-def _part_stem(side_path: str) -> str:
-    """Strip the sidecar extension from a `.part.json` or `.part.info` path."""
-    for ext in SIDE_SUFFIXES:
-        if side_path.endswith(ext):
-            return side_path[: -len(ext)]
-    return side_path
-
-
-def _older_than(entry: os.DirEntry[str], now: float, age: float) -> bool:
-    """Return True when `entry` was modified at least `age` seconds before `now`."""
-    try:
-        mtime = entry.stat(follow_symlinks=False).st_mtime
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise Error(str(error)) from error
-    return now - mtime >= age
-
-
 def _unlink(path: str) -> int:
     """Remove `path`, returning 1 if removed or 0 if already gone."""
     try:
@@ -261,3 +243,55 @@ def _unlink(path: str) -> int:
         return 0
     except OSError as error:
         raise Error(str(error)) from error
+
+
+def _scan(folder: PathLike) -> Iterator[os.DirEntry[str]]:
+    """Yield every file under `folder`, depth first, from one `os.scandir` per folder."""
+    stack = [os.fspath(folder)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        yield entry
+        except OSError as error:
+            raise Error(str(error)) from error
+
+
+def _temporary(name: str) -> bool:
+    """Whether `name` is a stage, or a stage's sidecar or lock."""
+    return name.startswith(".") and _base(name).endswith(TEMPS)
+
+
+def _base(path: str) -> str:
+    """`path` without a sidecar or lock suffix."""
+    for suffix in (*SIDES, LOCK):
+        if path.endswith(suffix):
+            return path[: -len(suffix)]
+    return path
+
+
+def _older_than(entry: os.DirEntry[str], now: float, age: float) -> bool:
+    """Whether `entry` was modified at least `age` seconds before `now`."""
+    try:
+        mtime = entry.stat(follow_symlinks=False).st_mtime
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise Error(str(error)) from error
+    return now - mtime >= age
+
+
+def _remove(path: str, others: list[str]) -> int:
+    """Remove the stage `path` and `others` unless a writer holds its lock; returns the count."""
+    held = path + LOCK
+    try:
+        with lock(held, timeout=0):
+            removed = sum(_unlink(other) for other in (path, *others))
+            with suppress(OSError):
+                os.unlink(held)
+    except BusyError:
+        return 0
+    return removed

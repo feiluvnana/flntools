@@ -101,7 +101,7 @@ def pack(
         if password:
             _seven_zip_pack(src_list, out, password=password)
         else:
-            with fs.write(out) as part:
+            with fs.stage(out, keep=False) as part:
                 with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                     for done, (disk_path, arc_name) in enumerate(files, 1):
                         zf.write(disk_path, arc_name)
@@ -111,7 +111,7 @@ def pack(
         _seven_zip_pack(src_list, out, password=password)
     else:
         mode = {"tar": "w", "gz": "w:gz", "bz2": "w:bz2", "xz": "w:xz"}[kind]
-        with fs.write(out) as part:
+        with fs.stage(out, keep=False) as part:
             with tarfile.open(part, mode) as tf:  # type: ignore[call-overload]
                 for done, (disk_path, arc_name) in enumerate(files, 1):
                     tf.add(disk_path, arcname=arc_name)
@@ -275,7 +275,7 @@ def _unpack_zip(
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info, pwd=pwd) as src:
-                    fs.write(target, data=src.read(), replace=(conflict == "overwrite"))
+                    fs.write(target, src.read(), replace=(conflict == "overwrite"))
                 written.append(target)
                 if progress:
                     progress(idx, len(infos))
@@ -305,7 +305,7 @@ def _unpack_tar(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 stream = tf.extractfile(m)
                 if stream is not None:
-                    fs.write(target, data=stream.read(), replace=(conflict == "overwrite"))
+                    fs.write(target, stream.read(), replace=(conflict == "overwrite"))
                     written.append(target)
                 if progress:
                     progress(idx, len(members))

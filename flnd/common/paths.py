@@ -4,7 +4,7 @@
 and secrets, and `log/` with one log per run. Every module takes its path from the table
 below, joined onto flnd's home folder, and never hardcodes paths.
 
-`net` streams downloads into temporary parts matching `PART_GLOB`, which `shared.fs.sweep`
+`net` stages downloads in temporary files matching `PART_GLOB`, which `shared.fs.sweep`
 removes; `shared.fs.write` writes small files atomically.
 
 `checked` provides media validation used by `net` and the job.
@@ -37,8 +37,8 @@ SOURCE_STATE = METADATA / "sources.db"
 SECRETS = METADATA / "secrets.db"
 KEY = METADATA / "secret.key"
 
-# Temporary files match (`shared.fs`'s part names) and `shared.fs.sweep` removes them.
-PART_GLOB = ".*.part"
+# Temporary files match (`shared.fs`'s stage names) and `shared.fs.sweep` removes them.
+PART_GLOB = ".*.stage"
 # What `sniff` names a server's web page or JSON answer: a login wall or an error page.
 PAGES = (".html", ".json")
 # The kinds of saved file; each gets its extension from its content.

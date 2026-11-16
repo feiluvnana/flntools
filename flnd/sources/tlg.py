@@ -251,7 +251,7 @@ def fetcher(site: Site, message: Any) -> Fetch:
     async def fetch(dest: Any, progress: Any) -> None:
         if message.document is not None:
             dest_path = Path(dest)
-            sidecar = Path(f"{dest_path}.part.json")
+            sidecar = Path(f"{dest_path}.json")
             done = _load_offsets(dest_path, sidecar, message.document.size)
             mode = "r+b" if done is not None else "wb"
             with open(dest_path, mode) as file:
@@ -368,7 +368,7 @@ class _Download:
             self.done[number] += len(chunk)
             if self.sidecar is not None:
                 payload = json.dumps({"size": self.size, "done": self.done}).encode("utf-8")
-                fs.write(self.sidecar, data=payload)
+                fs.write(self.sidecar, payload)
             self.progress(sum(self.done), self.size)
         if self.done[number] == before:
             raise FetchError(f"Telegram sent nothing from byte {position} of {self.size}")

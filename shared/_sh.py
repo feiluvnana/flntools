@@ -199,7 +199,7 @@ def _install_artifact(stage: Path, archive_name: str, bin_name: str, target: Pat
     elif lower.endswith((".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tar")):
         _extract_tar(stage, bin_name, target)
     else:
-        fs.write(target, data=stage.read_bytes())
+        fs.write(target, stage.read_bytes())
     if os.name != "nt":
         target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -214,7 +214,7 @@ def _extract_zip(archive_path: Path, bin_name: str, target: Path) -> None:
             if ".." in PurePosixPath(member).parts:
                 raise UnsafeError(f"unsafe zip member {info.filename!r}")
             if member == wanted or member.endswith(f"/{wanted}"):
-                fs.write(target, data=zf.read(info))
+                fs.write(target, zf.read(info))
                 return
     raise MissingError(f"{bin_name!r} not found in {archive_path.name}")
 
@@ -232,6 +232,6 @@ def _extract_tar(archive_path: Path, bin_name: str, target: Path) -> None:
                 stream = tf.extractfile(member)
                 if stream is None:
                     break
-                fs.write(target, data=stream.read())
+                fs.write(target, stream.read())
                 return
     raise MissingError(f"{bin_name!r} not found in {archive_path.name}")

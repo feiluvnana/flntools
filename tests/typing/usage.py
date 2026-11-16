@@ -69,8 +69,8 @@ assert_type(jar["sessionid"], str)
 assert_type(jar.save("out.txt"), Path)
 cookies.load("cookies.txt", domain="example.com")  # pyright: ignore[reportCallIssue]
 
-assert_type(fs.write("out.txt", data="hi"), Path)
-with fs.write("out.txt") as temp:
+assert_type(fs.write("out.txt", "hi"), Path)
+with fs.stage("out.txt") as temp:
     assert_type(temp, Path)
 
 

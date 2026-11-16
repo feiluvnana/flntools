@@ -156,7 +156,7 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
                 headers: Mapping[str, str] | None, stop: threading.Event | None,
                 row: _Row) -> Path:
     """Fetch DASH video and audio streams in parallel and merge them into `dest`."""
-    streams = [dest.with_name(f".{dest.name}.{name}.part") for name in ("video", "audio")]
+    streams = [dest.with_name(f".{dest.name}.{name}.stage") for name in ("video", "audio")]
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             started = [
@@ -176,7 +176,7 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
         ffmpeg = sh.tool("ffmpeg")
         fmt = "webm" if dest.suffix.lower() == ".webm" else "mp4"
         flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
-        with fs.write(dest, replace=True) as part:
+        with fs.stage(dest, keep=False) as part:
             ffmpeg.run(
                 "-y", "-i", str(streams[0]), "-i", str(streams[1]),
                 "-c", "copy", *flags, "-f", fmt, str(part),
@@ -225,20 +225,28 @@ def _record(response: httpx.Response) -> None:
 
 def _save_fetch(fetch: Fetch, dest: Path, label: str, size: int | None, kind: str | None,
                 stop: threading.Event | None) -> Path:
-    """Have `fetch(dest, progress)` write into a part, check it, and rename onto `dest`."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with fs.write(dest, replace=True) as part:
+    """Have `fetch(dest, progress)` write into a stage, check it, and rename onto `dest`."""
+    # The stage outlives a failed fetch, so a fetch that resumes (Telegram's) picks it up.
+    with fs.stage(dest) as part:
         with _Row(label) as row:
             row.start(size)
             fetch(part, partial(row.stoppable, stop=stop))
-            known = size is not None
-            if kind == paths.SNIFF:
-                final = _sniffed(part, dest, known)
-            else:
-                final = dest if kind is None else _as_media(part, dest, kind, known)
+            try:
+                final = _placed(part, dest, kind, size is not None)
+            except BaseException:
+                # A whole file that fails its check would fail again on resume.
+                part.unlink(missing_ok=True)
+                raise
         if final != dest:
             os.replace(part, final)
     return final
+
+
+def _placed(part: Path, dest: Path, kind: str | None, known: bool) -> Path:
+    """Where the fetched `part` goes, by `kind` and its content."""
+    if kind == paths.SNIFF:
+        return _sniffed(part, dest, known)
+    return dest if kind is None else _as_media(part, dest, kind, known)
 
 
 def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:

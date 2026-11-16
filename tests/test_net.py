@@ -246,7 +246,8 @@ class DownloadTest(NetCase):
             thread.join(5)
         self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
         self.assertEqual(went_on, [])
-        self.assertEqual(list((self.tmp / "posts").iterdir()), [])
+        # The stage stays for the next run to resume; nothing reaches m.mp4.
+        self.assertEqual([path.name for path in (self.tmp / "posts").iterdir()], [".m.mp4.stage"])
 
     def test_a_fetch_function_that_gets_a_web_page_is_called_once(self):
         """Fix 9: a fetch function retries every Exception, so `final` is what stops a login wall costing three tries."""

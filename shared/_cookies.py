@@ -160,7 +160,7 @@ class Jar:
         text = _netscape_text(self._cookies)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Mode 0600: the file is a login. The atomic write means a reader never sees half a file.
-        with fs.write(path, replace=True) as part:
+        with fs.stage(path, keep=False) as part:
             part.write_bytes(text.encode("utf-8"))
             if os.name != "nt":
                 os.chmod(part, 0o600)

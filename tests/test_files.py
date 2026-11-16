@@ -26,13 +26,12 @@ class FilesCase(unittest.TestCase):
 
 
 class PartNameTest(FilesCase):
-    def test_fs_part_names_match_what_sweep_removes(self):
-        """Every temporary file flnd writes comes from `fs.write`, so the sweep's part glob matches its parts."""
-        with fs.write(self.tmp / "a.jpg") as part, fs.write(self.tmp / "a.jpg") as other:
+    def test_fs_stage_names_match_what_sweep_removes(self):
+        """Every temporary file flnd writes comes from `fs.stage`, so the sweep's glob matches it."""
+        with fs.stage(self.tmp / "a.jpg") as part:
             self.assertEqual(part.parent, self.tmp)
             self.assertTrue(fnmatch.fnmatch(part.name, paths.PART_GLOB), part.name)
-            self.assertTrue(part.name.startswith(".a.jpg."))
-            self.assertNotEqual(part, other)
+            self.assertEqual(part.name, ".a.jpg.stage")
 
 
 class CheckedTest(FilesCase):
