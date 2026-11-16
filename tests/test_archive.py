@@ -6,6 +6,7 @@ import io
 import shutil
 import tarfile
 import tempfile
+import tracemalloc
 import unittest
 import zipfile
 from pathlib import Path
@@ -16,6 +17,7 @@ HAS_7Z = bool(shutil.which("7zz") or shutil.which("7z"))
 HAS_UNRAR = bool(shutil.which("unrar"))
 SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c\x00\x04"
 RAR = b"Rar!\x1a\x07\x00"
+BIG = 16 * 1024 * 1024
 
 
 class FakeTool:
@@ -33,6 +35,16 @@ class FakeTool:
             assert not made.exists(), f"7zz would add to {made}"
             made.write_bytes(self.made)
         return 0, self.stdout, ""
+
+
+def peak(work) -> int:
+    """The most memory Python held while `work()` ran."""
+    tracemalloc.start()
+    try:
+        work()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
 
 
 class ArchiveCase(unittest.TestCase):
@@ -210,6 +222,22 @@ class SafetyTest(ArchiveCase):
         with sh.fake({"7zz": FakeTool(made=b"new")}):
             archive.pack(self.album, out)
         self.assertEqual(out.read_bytes(), b"new")
+
+    def test_a_big_entry_is_streamed_not_held_in_memory(self) -> None:
+        zipped = self.root / "big.zip"
+        with zipfile.ZipFile(zipped, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("big.bin", bytes(BIG))
+        loose = archive.Limits(ratio=1e9)
+        self.assertLess(peak(lambda: archive.unpack(zipped, self.out, limits=loose)), BIG // 4)
+        self.assertEqual((self.out / "big.bin").stat().st_size, BIG)
+        tarred = self.tar_with({"big.bin": bytes(BIG)})
+        self.assertLess(peak(lambda: archive.unpack(tarred, self.root / "t", limits=loose)), BIG // 4)
+
+    def test_listing_reads_the_header_not_the_whole_archive(self) -> None:
+        stored = self.root / "stored.zip"
+        with zipfile.ZipFile(stored, "w") as zf:
+            zf.writestr("big.bin", bytes(BIG))
+        self.assertLess(peak(lambda: archive.ls(stored)), BIG // 4)
 
     def test_nested_archives_are_not_unpacked(self) -> None:
         inner = self.zip_with({"inner.txt": b"inner"})

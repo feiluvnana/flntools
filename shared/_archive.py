@@ -9,7 +9,7 @@ import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Literal, Sequence, Union
+from typing import IO, Any, Callable, Literal, Sequence, Union
 
 import shared
 from shared import _fs as fs
@@ -27,6 +27,8 @@ Kind = Literal["file", "dir"]
 
 DRIVE = re.compile(r"^[A-Za-z]:")
 TAR_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+# Entries are copied in pieces of this size, so a 20 GB member never sits in memory.
+CHUNK = 1024 * 1024
 # `unrar vt` names every kind that is not a plain file or folder with one of these words.
 RAR_LINKS = ("link", "junction", "reference")
 
@@ -165,7 +167,8 @@ def unpack(
 def _detect(path: Path) -> str:
     if not path.is_file():
         raise BrokenError(f"{path}: archive not found")
-    head = path.read_bytes()[:8]
+    with path.open("rb") as handle:
+        head = handle.read(8)
     if head.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
         return "zip"
     if head.startswith(b"7z\xbc\xaf\x27\x1c"):
@@ -277,7 +280,7 @@ def _unpack_zip(
                     continue
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info, pwd=pwd) as src:
-                    fs.write(target, src.read(), replace=(conflict == "overwrite"))
+                    _save(src, target, replace=(conflict == "overwrite"))
                 written.append(target)
                 if progress:
                     progress(idx, len(infos))
@@ -307,13 +310,21 @@ def _unpack_tar(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 stream = tf.extractfile(m)
                 if stream is not None:
-                    fs.write(target, stream.read(), replace=(conflict == "overwrite"))
+                    _save(stream, target, replace=(conflict == "overwrite"))
                     written.append(target)
                 if progress:
                     progress(idx, len(members))
     except tarfile.TarError as error:
         raise BrokenError(f"{path.name}: {error}") from error
     return written
+
+
+def _save(stream: IO[bytes], target: Path, *, replace: bool) -> None:
+    """Copy `stream` onto `target` atomically, piece by piece."""
+    if not replace and target.exists():
+        raise UnsafeError(f"{target} already exists")
+    with fs.stage(target, keep=False) as part, part.open("wb") as out:
+        shutil.copyfileobj(stream, out, CHUNK)
 
 
 def _7z_tool() -> sh.Tool:
