@@ -26,10 +26,12 @@ class Error(shared.Error):
 class Clock(Protocol):
     """Protocol defining monotonic time, wall time, and interruptible sleep."""
 
+    @property
     def now(self) -> float:
         """Return monotonic clock seconds."""
         ...
 
+    @property
     def wall(self) -> float:
         """Return wall-clock Unix timestamp seconds."""
         ...
@@ -42,9 +44,11 @@ class Clock(Protocol):
 class _RealClock:
     """The real system clock."""
 
+    @property
     def now(self) -> float:
         return time.monotonic()
 
+    @property
     def wall(self) -> float:
         return time.time()
 
@@ -64,11 +68,13 @@ class Fake(Clock):
         self._start = start
         self._lock = threading.Lock()
 
+    @property
     def now(self) -> float:
         """Return the fake's monotonic seconds, moved only by `sleep` and `advance`."""
         with self._lock:
             return self._time
 
+    @property
     def wall(self) -> float:
         """Return the fake's Unix seconds, starting at 2026-01-01 UTC and moving with `now`."""
         with self._lock:
@@ -95,12 +101,12 @@ _current: ContextVar[Clock] = ContextVar("shared.clock", default=_DEFAULT)
 
 def now() -> float:
     """Return monotonic seconds on the active clock."""
-    return _current.get().now()
+    return _current.get().now
 
 
 def wall() -> float:
     """Return wall-clock Unix seconds on the active clock."""
-    return _current.get().wall()
+    return _current.get().wall
 
 
 def sleep(seconds: float, *, stop: threading.Event | None = None) -> bool:

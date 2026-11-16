@@ -156,7 +156,7 @@ class SweepTest(FsCase):
         os.utime(orphan_side, (now - 4000, now - 4000))
 
         fake = clock.Fake()
-        fake.advance(now - fake.wall())
+        fake.advance(now - fake.wall)
         with clock.use(fake):
             removed = fs.sweep(self.folder, keep=7 * 86_400, settle=3_600)
         self.assertEqual(removed, 4)

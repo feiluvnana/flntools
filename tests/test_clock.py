@@ -29,30 +29,30 @@ class FakeClockTest(unittest.TestCase):
     def test_private_time_and_advancement(self):
         fake = clock.Fake(10.0)
         self.assertFalse(hasattr(fake, "time"))
-        self.assertEqual(fake.now(), 10.0)
-        self.assertEqual(fake.wall(), clock.FAKE_WALL)
+        self.assertEqual(fake.now, 10.0)
+        self.assertEqual(fake.wall, clock.FAKE_WALL)
 
         self.assertTrue(fake.sleep(2.5))
         self.assertEqual(fake.slept, [2.5])
-        self.assertEqual(fake.now(), 12.5)
-        self.assertEqual(fake.wall(), clock.FAKE_WALL + 2.5)
+        self.assertEqual(fake.now, 12.5)
+        self.assertEqual(fake.wall, clock.FAKE_WALL + 2.5)
 
         fake.advance(5.0)
-        self.assertEqual(fake.now(), 17.5)
-        self.assertEqual(fake.wall(), clock.FAKE_WALL + 7.5)
+        self.assertEqual(fake.now, 17.5)
+        self.assertEqual(fake.wall, clock.FAKE_WALL + 7.5)
         self.assertEqual(fake.slept, [2.5])
 
     def test_sleep_with_stop_and_negative_seconds(self):
         fake = clock.Fake()
         self.assertTrue(fake.sleep(-3.0))
         self.assertEqual(fake.slept, [-3.0])
-        self.assertEqual(fake.now(), 0.0)
+        self.assertEqual(fake.now, 0.0)
 
         stop = threading.Event()
         stop.set()
         self.assertFalse(fake.sleep(5.0, stop=stop))
         self.assertEqual(fake.slept, [-3.0])
-        self.assertEqual(fake.now(), 0.0)
+        self.assertEqual(fake.now, 0.0)
 
     def test_thread_safe_sleep_and_advance(self):
         fake = clock.Fake()
@@ -69,7 +69,7 @@ class FakeClockTest(unittest.TestCase):
             thread.join()
 
         self.assertEqual(len(fake.slept), 200)
-        self.assertEqual(fake.now(), 400.0)
+        self.assertEqual(fake.now, 400.0)
 
 
 class UseIsolationTest(unittest.TestCase):

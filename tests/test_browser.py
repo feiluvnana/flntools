@@ -954,7 +954,7 @@ class FakeFeed:
 
     @property
     def now(self):
-        return self.clock.now()
+        return self.clock.now
 
     def wait_for_timeout(self, ms):
         self.clock.advance(ms / 1000)

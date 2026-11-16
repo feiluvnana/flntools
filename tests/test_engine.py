@@ -100,7 +100,7 @@ class EngineCase(unittest.TestCase):
 
     @property
     def now(self):
-        return self.fake.now()
+        return self.fake.now
 
     def serve(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)

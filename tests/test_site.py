@@ -92,7 +92,7 @@ class SiteCase(unittest.TestCase):
 
     @property
     def now(self):
-        return self.fake.now()
+        return self.fake.now
 
     def serve(self, request):
         self.requests.append(request)

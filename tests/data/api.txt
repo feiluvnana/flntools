@@ -268,16 +268,16 @@ shared.cli.UsageError(shared.cli.Error, ValueError)
 shared.cli.stopping() -> Iterator[Stopping]
 shared.clock: module
 shared.clock.Clock(*args, **kwargs)
-shared.clock.Clock.now() -> float
+shared.clock.Clock.now: property -> float
 shared.clock.Clock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
-shared.clock.Clock.wall() -> float
+shared.clock.Clock.wall: property -> float
 shared.clock.Error(shared.Error)
 shared.clock.Fake(start: float = 0.0)
 shared.clock.Fake.advance(seconds: float) -> None
-shared.clock.Fake.now() -> float
+shared.clock.Fake.now: property -> float
 shared.clock.Fake.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
 shared.clock.Fake.slept: attribute -> list[float]
-shared.clock.Fake.wall() -> float
+shared.clock.Fake.wall: property -> float
 shared.clock.now() -> float
 shared.clock.sleep(seconds: float, *, stop: threading.Event | None = None) -> bool
 shared.clock.use(replacement: C) -> Iterator[C]

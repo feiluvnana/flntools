@@ -23,7 +23,7 @@ class ClientCase(unittest.TestCase):
         self.sent: list[tuple[float, str, dict[str, str]]] = []
 
     def serve(self, request: httpx.Request) -> httpx.Response:
-        self.sent.append((self.fake.now(), str(request.url), dict(request.headers)))
+        self.sent.append((self.fake.now, str(request.url), dict(request.headers)))
         return self.answers.pop(0) if self.answers else httpx.Response(200, content=b"ok")
 
     def client(self, *, stop: threading.Event | None = None, **options) -> http.Client:
