@@ -301,6 +301,8 @@ examples/          a runnable script and a 40-line plugin with its test
 ```
 A leading `_` marks a private module. Only `flnd`, `flnd.source` and `flnd.testing` are public: the API snapshot lists those three, and nothing else is promised.
 
+**Library modules stay separate** (user, 2026-11-16). The modules that do a general job (`_http`/`_net`'s client, `_browser`, `_loop`, `_files`, `_unpack`, `_tools`, `_cookies`, `_vault`, `_db`'s store, `_html`, `_text`, `_time`, `_prompt`, `_ui`, `_media`, `_shrink`) are standalone libraries inside flnd: each imports only other libraries and `flnd.errors`, so it reads on its own and could later leave flnd as a package. Where the table above says "was A + B", the general part stays a library and the flnd-specific part goes to a flnd module that uses it, rather than one merged module: flnd.db's schema and migration sit on `_db`'s store, the `Site` verbs on `_browser`, a source's pace and cookies on the HTTP client. Dead code still goes, and so do the `shared` wrappers that only existed for a toolkit (4.3).
+
 ### 4.2 Public library, internals, CLI
 - **`import flnd`** gives a script `Flnd`, `open`, `Run`, `Target`, `Saved`, `Failed`, `Skipped`, `Report`, `Login`, `Record` (a saved file's row) and the errors. `File` belongs to `flnd.source` alone, where it means a file to download: one word, one meaning. The heavy parts load lazily: `__getattr__` on the package imports `_engine` on first use.
 - **`flnd.source`** is what a plugin imports (section 7).

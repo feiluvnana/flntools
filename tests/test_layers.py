@@ -13,7 +13,11 @@ The rules:
 3. `flnd/cli.py` imports from flnd only `flnd` (the library), `flnd.engine` (until the CLI is
    rebuilt on the library), `flnd.sources` (for help and login's list) and the toolkit: every
    decision is the engine's, so the CLI only parses, asks and prints;
-4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it.
+4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it;
+5. a library module (`LIBRARIES` below: HTTP, browser, files, archives, tools, cookies, vault,
+   store, HTML, text, time, prompts, progress, media) imports from flnd only other library modules
+   and `flnd.errors`. flnd's own code uses the libraries; a library never reaches back, so it stays
+   readable alone and could leave flnd as a package of its own.
 
 Nothing is exempt: step 7 moved the CLI's decisions into the engine, which emptied the list of
 what cli.py imported beyond rule 3.
@@ -41,6 +45,25 @@ def toolkit(name: str) -> bool:
     raises its classes.
     """
     return name.startswith("flnd._") or name == "flnd.errors"
+
+
+# Rule 5: the library modules. Each does a general job (HTTP, the browser, files, archives, the
+# outside tools, cookies, the vault, the SQLite store, HTML, text, time, prompts, progress, media),
+# so it stays its own module that another program could use, and could later leave flnd as a
+# package of its own. A name may be listed before its row creates the file.
+LIBRARIES = {
+    "_http", "_net", "_browser", "_loop", "_files", "_unpack", "_tools", "_cookies", "_vault",
+    "_db", "_html", "_text", "_time", "_prompt", "_ui", "_media", "_shrink",
+}
+
+
+def library(name: str) -> bool:
+    """Whether a module is a library module (rule 5), or `flnd.errors`, which every layer raises.
+
+    `from flnd import _files` is found as `flnd._files`; the package `flnd` itself is not a library,
+    since importing from it reaches the public API and so the engine side.
+    """
+    return name == "flnd.errors" or (name.startswith("flnd.") and name[len("flnd."):] in LIBRARIES)
 
 
 def flnd_imports(path: Path) -> set[str]:
@@ -99,6 +122,15 @@ class LayersTest(unittest.TestCase):
                 continue
             with self.subTest(module=module_name(path)):
                 self.assertNotIn("flnd.cli", flnd_imports(path))
+
+    def test_a_library_module_imports_only_libraries_and_the_errors(self):
+        # Rule 5: a library module could be split out of flnd, so it never reaches flnd's own code.
+        present = sorted(name for name in LIBRARIES if (FLND / f"{name}.py").exists())
+        self.assertIn("_files", present)
+        for name in present:
+            with self.subTest(module=f"flnd.{name}"):
+                self.assertEqual(sorted(found for found in flnd_imports(FLND / f"{name}.py")
+                                        if not library(found)), [])
 
     def test_the_rules_see_imports_of_names_and_of_modules(self):
         # Guards the guard: `from flnd import Engine` is the package, `from flnd import job` a module.
