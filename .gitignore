@@ -24,3 +24,6 @@ build/
 # Cookie exports from a browser extension; never committed
 *_cookies.txt
 *cookies*.json
+
+# The last `make bench` run; the baselines live in tests/bench/gates.json
+tests/bench/last.json

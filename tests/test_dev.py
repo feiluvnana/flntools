@@ -28,7 +28,7 @@ class TasksTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / "scripts" / "dev.py"), *argv],
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 2, argv)
-            self.assertIn("tasks: setup test lint type check api flnd dist try", result.stderr)
+            self.assertIn("tasks: setup test lint type check api bench flnd dist try", result.stderr)
 
     def test_python_option_and_passthrough(self):
         with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run:
@@ -60,6 +60,19 @@ class TasksTest(unittest.TestCase):
             self.assertEqual(dev.main(["api"]), 0)
         self.assertEqual(run.call_args.args[0], ["uv", "run", "--python", "3.14", "python", "-c", dev.WRITE_API])
         self.assertIn("dev.write_api()", dev.WRITE_API)
+
+    def test_bench_runs_the_suite_inside_the_environment_and_passes_its_arguments_through(self):
+        # The groups import shared and flnd, so the runner can't run in this --no-project interpreter.
+        with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run, \
+                mock.patch.dict(dev.os.environ, {"PYTHON": ""}):
+            self.assertEqual(dev.main(["bench", "net", "--gate"]), 0)
+        self.assertEqual(run.call_args.args[0], ["uv", "run", "--python", "3.14", "python", "tests/bench/run.py",
+                                                 "net", "--gate"])
+
+    def test_check_never_runs_the_benchmarks(self):
+        with mock.patch.object(dev.subprocess, "run", side_effect=lambda command, **kwargs: finished(command)) as run:
+            dev.main(["check"])
+        self.assertFalse(any("tests/bench/run.py" in call.args[0] for call in run.call_args_list))
 
     def test_try_runs_the_dry_run_inside_the_environment_and_passes_its_arguments_through(self):
         # The listing needs flnd's code, which this --no-project interpreter lacks, so it runs through uv.

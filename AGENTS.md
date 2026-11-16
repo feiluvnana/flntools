@@ -36,6 +36,7 @@ Examples:
   - `make bench` runs the offline benchmarks; `make docs` builds the API reference.
   - `make type` runs pyright on the three public modules. It is informational, never a gate, and a wrong public hint is still worth fixing.
 - **Today, until then:** `uv run --no-project scripts/dev.py check` (or `make check`) runs lint, pyright and the tests, and `scripts/dev.py api` regenerates the snapshot.
+- **`make bench`** (today `scripts/dev.py bench`) runs the offline benchmarks of `tests/bench/`, never part of `check`. `make bench ARGS=--gate` fails on a regression over 15% against `tests/bench/gates.json`; `ARGS=--record` stores a run as the new baseline. `docs/performance.md` says how to read them.
 - **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes with Git for Windows. Each Makefile recipe is a single `uv` command you can also type yourself.
 
 ## Privacy and live data

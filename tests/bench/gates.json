@@ -1,0 +1,398 @@
+{
+  "recorded": {
+    "date": "2026-11-16",
+    "commit": "9d1cf13",
+    "platform": "macOS-26.2-arm64-arm-64bit-Mach-O",
+    "cpus": 10,
+    "python": "3.14.6",
+    "cpu": "Apple M5"
+  },
+  "metrics": {
+    "startup.help": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 161.641,
+      "target": 40,
+      "gate": "perf:rebuild the cli on argparse over the library, with a source manifest"
+    },
+    "startup.python_pass": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 10.2687
+    },
+    "startup.import_shared": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 19.6996
+    },
+    "startup.import_flnd": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 140.5293
+    },
+    "startup.import_flnd_source": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 138.3429
+    },
+    "startup.import_flnd_cli": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 142.5488
+    },
+    "net.big_rate": {
+      "unit": "GiB/s",
+      "better": "higher",
+      "baseline": 1.7593,
+      "target": 4,
+      "gate": "perf:fetch with curl_cffi on the loop"
+    },
+    "net.small_8_threads": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 926.8121,
+      "target": 300,
+      "gate": "perf:fetch with curl_cffi on the loop"
+    },
+    "net.small_1_thread": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 1196.6848
+    },
+    "disk.fs_write": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 255.0324,
+      "target": 130,
+      "gate": "perf:write downloads to a locked part and rename"
+    },
+    "disk.plain_write": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 60.2968
+    },
+    "disk.temp_replace": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 110.502
+    },
+    "disk.fs_write_no_replace": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 449.5144
+    },
+    "db.point_read": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 2.3903,
+      "target": 2.2,
+      "gate": "refactor:store history, targets and runs in one flnd.db, and migrate old homes"
+    },
+    "db.commit_per_post": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 8.0835,
+      "target": 15,
+      "gate": "refactor:store history, targets and runs in one flnd.db, and migrate old homes"
+    },
+    "db.insert": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 1.1288
+    },
+    "db.contains": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 2.0196
+    },
+    "db.prefix_scan_10k": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 4.1677
+    },
+    "db.filter_json": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 16.257
+    },
+    "db.commit_per_file": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 13.4655
+    },
+    "db.commit_per_500": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 1.2556
+    },
+    "db.commit_per_file_full": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 55.4136
+    },
+    "walk.fs_walk": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 37.7812
+    },
+    "walk.scandir": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 31.8679
+    },
+    "walk.rglob_is_file": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 263.6641
+    },
+    "walk.fs_walk_stat": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 194.9762
+    },
+    "walk.stat": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 1.3922
+    },
+    "cpu.html_meta": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 18.0012,
+      "target": 8,
+      "gate": "perf:parse html with selectolax and paths with dig"
+    },
+    "cpu.json_decode": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 1.6116
+    },
+    "cpu.msgspec_decode": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.8874
+    },
+    "cpu.msgspec_decode_typed": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.4256
+    },
+    "cpu.json_encode": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 1.8089
+    },
+    "cpu.msgspec_encode": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.3059
+    },
+    "cpu.jmespath": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 681.9579
+    },
+    "cpu.dict_access": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 18.5421
+    },
+    "cpu.html_images": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 31.5911
+    },
+    "cpu.hash_sha256": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 310.1478
+    },
+    "cpu.hash_blake2b": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 684.1095
+    },
+    "cpu.hash_crc32": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 22.8325
+    },
+    "cpu.loop_bridge": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 38.9496
+    },
+    "cpu.place": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 12.4152
+    },
+    "cpu.filename": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 4.1278
+    },
+    "cpu.day": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 0.544
+    },
+    "cpu.pool_task": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 3.5969
+    },
+    "cpu.executor_task": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 2.8423
+    },
+    "cpu.advance_plain": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 0.0672
+    },
+    "cpu.advance_live": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 0.5031
+    },
+    "e2e.sync_nothing_new": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 0.0042,
+      "target": 0.3,
+      "gate": "refactor:store history, targets and runs in one flnd.db, and migrate old homes",
+      "note": "the gate is for a home of 100k files; this run's home holds 4,000"
+    },
+    "e2e.latency_500_posts": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 7.1578,
+      "target": 5.5,
+      "gate": "perf:adapt download concurrency per host"
+    },
+    "e2e.per_file": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.5062
+    },
+    "browser.scroll_default": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 26.0343,
+      "target": 16,
+      "gate": "perf:drive feeds by responses and end on the site's cursor",
+      "note": "the human-like scroll"
+    },
+    "browser.scroll_fast": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": null,
+      "target": 3,
+      "gate": "perf:drive feeds by responses and end on the site's cursor",
+      "note": "the fast scroll, which doesn't exist yet"
+    },
+    "browser.launch": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 702.2958
+    },
+    "browser.open_tab": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 108.9562
+    },
+    "browser.evaluate": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.3532
+    },
+    "browser.document": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 1.4197
+    },
+    "browser.page_fetch": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.967
+    },
+    "browser.http_fetch": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.8384
+    },
+    "browser.scroll_idle_2": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 18.9672
+    },
+    "browser.close": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 1022.0043
+    },
+    "media.jpegs_1000": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": null,
+      "target": 120,
+      "gate": "feat:compress media and extract archives as files land",
+      "note": "compressing 1,000 JPEGs; no benchmark until compression exists"
+    },
+    "media.sync_compress_100k": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": null,
+      "target": 3,
+      "gate": "feat:compress media and extract archives as files land",
+      "note": "sync --compress over 100k done files; no benchmark until compression exists"
+    },
+    "media.image_avif_speed_6": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 0.8548
+    },
+    "media.image_avif_speed_8": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 0.1092
+    },
+    "media.image_webp": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 0.8374
+    },
+    "media.image_jpeg": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 0.0807
+    },
+    "media.video_x264_medium": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 1.325
+    },
+    "media.video_x264_veryfast": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 0.6702
+    },
+    "media.video_svt_av1": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 1.4607
+    },
+    "media.video_videotoolbox_h264": {
+      "unit": "s",
+      "better": "lower",
+      "baseline": 1.1788
+    },
+    "media.ffprobe_start": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 17.9066
+    }
+  }
+}

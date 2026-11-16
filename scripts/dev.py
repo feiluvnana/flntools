@@ -7,7 +7,7 @@
 `main` takes the task name from `sys.argv[1]`, then an optional `--python X` (the environment's
 `PYTHON` otherwise, 3.14 by default), and hands the rest to the task function of that name. Every
 task takes the same two arguments: `python`, the version passed to uv's `--python`, and `args`,
-the command-line arguments after the task name, which `setup`, `test`, `type` and `flnd` pass on. Each
+the command-line arguments after the task name, which `setup`, `test`, `type`, `bench` and `flnd` pass on. Each
 task runs uv commands in the project root; uv creates and syncs `.venv` from `uv.lock`, so this
 script only uses the stdlib and runs under `--no-project`, outside the environment it manages.
 The Makefile is a shortcut to it and holds no logic of its own.
@@ -109,6 +109,18 @@ def api(python: str, args: list[str]) -> None:
     one-line diff there, and `tests/test_api.py` fails until the file matches the code.
     """
     run(["uv", "run", "--python", python, "python", "-c", WRITE_API])
+
+
+def bench(python: str, args: list[str]) -> None:
+    """Run the offline benchmarks of `tests/bench/`, passing every remaining argument through.
+
+        dev.py bench net disk --gate
+
+    The runner imports `shared` and `flnd`, so it runs inside the environment. It is never part
+    of `check`: it takes minutes, and its timings are noisy. `tests/bench/run.py` says what the
+    groups and the flags are, and `docs/performance.md` how to read the numbers.
+    """
+    run(["uv", "run", "--python", python, "python", "tests/bench/run.py", *args])
 
 
 def dist(python: str, args: list[str]) -> None:
@@ -449,7 +461,7 @@ def run(command: list[str], *, capture_output: bool = False) -> subprocess.Compl
 
 TASKS: dict[str, Callable[[str, list[str]], None]] = {
     # `try` is a keyword, so its function is `try_` and the task keeps the plain name.
-    task.__name__.rstrip("_"): task for task in (setup, test, lint, type, check, api, flnd, dist, try_)
+    task.__name__.rstrip("_"): task for task in (setup, test, lint, type, check, api, bench, flnd, dist, try_)
 }
 
 
