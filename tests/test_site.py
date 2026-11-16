@@ -25,9 +25,7 @@ from flnd import _browser
 from flnd import _home
 from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
-from flnd.source import SiteError, File, Site, Target
-from flnd.sources.common.feed import warm_tabs
-from flnd.sources.common.relay import meta_results
+from flnd.source import File, LoginError, Site, SiteError, Target
 from flnd import _run, _time as clock, _cookies as cookies, _transfer
 from flnd._ui import ui
 from flnd._browser import Page
@@ -159,7 +157,7 @@ class SiteCase(unittest.TestCase):
         opened = source_run(RunShared(home=self.home, stop=self.stop), source())
         run = opened.__enter__()
         self.addCleanup(opened.__exit__, None, None, None)
-        site = TargetSite(run, Target(source.code, "user", "example_user"))
+        site = TargetSite(run, Target(f"{source.code}:example_user", kind="user"))
         self.addCleanup(site.close)
         return run, site
 
@@ -198,9 +196,10 @@ class ProtocolTest(unittest.TestCase):
             return {name for name in dir(kind) if not name.startswith("_")}
 
         members = {name for name in vars(Site) if not name.startswith("_")}
-        self.assertEqual(len(members), 21)
-        fake = FakeSite(Target("exm", "user", "example_user"))
-        self.assertEqual(public(fake), members)
+        self.assertEqual(len(members), 26)
+        fake = FakeSite(Target("exm:example_user", kind="user"))
+        # `listing` is the engine's: the job sets it, for `pages` to resume; no source reads it.
+        self.assertEqual(public(fake) - {"listing"}, members)
         self.assertEqual(public(TargetSite) | {"target", "time"}, members | {"close"})
 
 
@@ -255,10 +254,22 @@ class PaceTest(SiteCase):
 class BackOffTest(SiteCase):
     def test_waits_and_doubles_the_learned_speed(self):
         _, site = self.open()
-        site.back_off("asked to wait a few minutes")
-        self.assertEqual(self.now, 5.0)
-        warned = "asked to wait a few minutes"
+        # 30 s, 2 min and 8 min for the rounds in a row; a fourth round in a row is `Blocked`.
+        for waited in (30.0, 150.0, 630.0):
+            site.back_off("asked to wait a few minutes")
+            self.assertEqual(self.now, waited)
+        warned = "asked to wait a few minutes; waiting 30.0s"
         self.assertTrue(any(warned in line for line in self.lines()), self.lines())
+        with self.assertRaisesRegex(Blocked, "asked to wait a few minutes, after 3 waits"):
+            site.back_off("asked to wait a few minutes")
+
+    def test_a_quiet_spell_starts_the_rounds_again_and_a_sites_wait_is_capped(self):
+        _, site = self.open()
+        site.back_off("busy")
+        self.fake.advance(601)
+        site.back_off("busy", retry_after=7200)
+        # The site's own wait wins over the round's, capped at an hour.
+        self.assertEqual(self.now, 30.0 + 601 + 3600.0)
 
     def test_a_cdns_429_never_slows_the_source(self):
         answers = [_net.reply(429, headers={"retry-after": "5"}),
@@ -276,16 +287,22 @@ class FetchTest(SiteCase):
         self.assertIsInstance(response, _net.Response)
         self.assertEqual(response.json, {"path": "/users/example_user"})
         self.assertEqual(site.fetch(f"{API}/missing", check=False).status, 404)
-        with self.assertRaises(SiteError) as caught:
+        # A 403 from the source's own domains is a login wall: `LoginError`, the refusal its cause.
+        with self.assertRaises(LoginError) as walled:
             site.fetch(f"{API}/private")
-        self.assertEqual(caught.exception.status, 403)
+        self.assertEqual((str(walled.exception), walled.exception.hint),
+                         ("exm: the site refused the login (HTTP 403)", "run flnd login exm"))
+        caught = walled.exception.__cause__
+        assert isinstance(caught, SiteError)
+        self.assertEqual(caught.status, 403)
         # The refusal keeps its response, so a source can read the site's reason from its body.
-        response = caught.exception.response
+        response = caught.response
+        self.assertEqual(site.fetch(f"{API}/private", check=False).status, 403)
         assert response is not None
         self.assertEqual(response.status, 403)
         self.assertEqual(response.url, f"{API}/private")
 
-    def test_prepare_runs_for_the_sources_own_domains_only(self):
+    def test_sign_runs_for_the_sources_own_domains_only(self):
         jar = [{"name": "token", "value": "t0k", "domain": ".example.com", "path": "/"}]
         _home.save(self.home, "exm", cookies.Jar(jar))
         _, site = self.open()
@@ -503,10 +520,10 @@ class TabTest(SiteCase):
         super().setUp()
         self.make_raw = FakeRaw
 
-    def test_warm_tabs_preloads_in_one_window_and_moves_the_open_feed(self):
+    def test_warm_preloads_in_one_window_and_moves_the_open_feed(self):
         run, site = self.open()
         urls = [f"{API}/item/{i}" for i in range(8)]
-        warm_tabs(site, urls)
+        site.warm(urls)
         [browser] = self.browsers
         self.assertEqual(len(browser.opened), _browser.MAX_TABS)
         warmed = [call for tab in browser.opened[1:] for call in tab.wait_untils]
@@ -559,7 +576,7 @@ class TabTest(SiteCase):
                     with source_run(settings, source_cls()) as run:
                         site = TargetSite(run, target)
                         try:
-                            warm_tabs(site, [warm_url])
+                            site.warm([warm_url])
                             # A response arriving while the background tab warms.
                             tab = next(t for t in self.browsers[0].opened if warm_url in t.loaded)
                             run.loop.run(tab.emit(f"{API}/graphql", '{"warm": 1}'))
@@ -573,9 +590,9 @@ class TabTest(SiteCase):
 
             threads = [
                 threading.Thread(target=run_target,
-                                 args=(FacebookLike, Target("fbk", "user", "example_user"), f"{API}/fbk")),
+                                 args=(FacebookLike, Target("fbk:example_user", kind="user"), f"{API}/fbk")),
                 threading.Thread(target=run_target,
-                                 args=(InstagramLike, Target("ins", "user", "example_user"), f"{API}/ins")),
+                                 args=(InstagramLike, Target("ins:example_user", kind="user"), f"{API}/ins")),
             ]
             for thread in threads:
                 thread.start()
@@ -603,19 +620,6 @@ class HandoffTest(SiteCase):
         self.browsers[0].headless = True
         with self.assertRaisesRegex(UsageError, "headless"):
             site.handoff(until=lambda: False, message="Solve it")
-
-
-class MetaResultsTest(unittest.TestCase):
-    def test_the_results_a_page_embeds(self):
-        block = json.dumps({"require": [{"__bbox": {"result": {"data": {"user": {"id": "42"}}}}}]})
-        html = f'<html><script type="application/json">{block}</script></html>'
-        site = FakeSite(Target("ins", "user", "example_user"), pages={PAGE: html})
-        self.assertEqual(meta_results(site, PAGE), [{"data": {"user": {"id": "42"}}}])
-
-    def test_a_page_that_did_not_load_gives_none(self):
-        site = mock.Mock(open=mock.Mock(return_value=False))
-        self.assertEqual(meta_results(site, PAGE), [])
-        site.document.assert_not_called()
 
 
 if __name__ == "__main__":

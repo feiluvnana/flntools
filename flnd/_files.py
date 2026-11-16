@@ -43,6 +43,7 @@ import errno
 import hashlib
 import io
 import json
+import mimetypes
 import os
 import threading
 from collections.abc import Iterator
@@ -54,7 +55,8 @@ from typing import Any
 from flnd import _time
 from flnd.errors import DiskError, disk
 
-__all__ = ["BusyError", "Part", "Saved", "digest", "link", "part", "sweep", "walk", "write"]
+__all__ = ["AUDIO", "BusyError", "IMAGE", "Part", "SNIFF", "Saved", "VIDEO", "digest",
+           "kind_of", "link", "part", "sniff", "sweep", "walk", "write"]
 
 PART = ".part"
 SIDE = ".json"
@@ -858,3 +860,103 @@ def _unlink(path: str | os.PathLike[str]) -> int:
         return 0
     except OSError as error:
         raise disk(error) from error
+
+
+# ---------------------------------------------------------------------------------------------
+# What a file is: kinds by name and by content
+# ---------------------------------------------------------------------------------------------
+
+# What `sniff` names a server's web page or JSON answer: a login wall or an error page.
+PAGES = (".html", ".json")
+# The kinds of saved file; each gets its extension from its content.
+IMAGE, VIDEO, AUDIO = "image", "video", "audio"
+# The kind a download takes for a file whose content decides what it is: a post's file named
+# without an extension, because neither its name nor its URL said.
+SNIFF = "sniff"
+# How an error names each kind.
+NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
+# Common media extensions mapped to `IMAGE`, `VIDEO`, or `AUDIO` without probing disk.
+MEDIA_EXTENSIONS = {
+    ".jpg": IMAGE, ".jpeg": IMAGE, ".png": IMAGE, ".gif": IMAGE, ".webp": IMAGE,
+    ".heic": IMAGE, ".heif": IMAGE, ".avif": IMAGE, ".bmp": IMAGE, ".tif": IMAGE, ".tiff": IMAGE,
+    ".mp4": VIDEO, ".m4v": VIDEO, ".mov": VIDEO, ".webm": VIDEO, ".mkv": VIDEO, ".avi": VIDEO,
+    ".mp3": AUDIO, ".m4a": AUDIO, ".aac": AUDIO, ".ogg": AUDIO, ".opus": AUDIO,
+    ".wav": AUDIO, ".flac": AUDIO,
+}
+
+
+def kind_of(name: str) -> str | None:
+    """What a saved file is by its name: `IMAGE`, `VIDEO` or `AUDIO`, or None.
+
+    Args:
+        name: the file's name or path; only its extension is read.
+
+    Returns:
+        `IMAGE`, `VIDEO` or `AUDIO`, or None when the extension is not media.
+    """
+    suffix = Path(name).suffix.lower()
+    if suffix in MEDIA_EXTENSIONS:
+        return MEDIA_EXTENSIONS[suffix]
+    mime, _ = mimetypes.guess_type(f"x{suffix}")
+    if mime:
+        head = mime.split("/", 1)[0]
+        if head in (IMAGE, VIDEO, AUDIO):
+            return head
+    return None
+
+
+def sniff(path: Path | bytes) -> str | None:
+    """Sniff a common media, archive, or web-page extension from a file's leading bytes.
+
+    Args:
+        path: the file, or its first 64 bytes already read (a download reads them through its
+            part's descriptor).
+
+    Returns:
+        The extension, with its dot, or None when the bytes say nothing known.
+    """
+    if isinstance(path, bytes):
+        head = path
+    else:
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(64)
+        except OSError:
+            return None
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    if head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in (b"avif", b"avis"):
+            return ".avif"
+        if brand in (b"heic", b"heix", b"hevc", b"mif1"):
+            return ".heic"
+        if brand == b"M4A ":
+            return ".m4a"
+        return ".mp4"
+    if head.startswith(b"\x1aE\xdf\xa3"):
+        return ".webm"
+    if head.startswith((b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+        return ".mp3"
+    if head.startswith(b"OggS"):
+        return ".ogg"
+    if head.startswith(b"fLaC"):
+        return ".flac"
+    if head.startswith((b"PK\x03\x04", b"PK\x05\x06")):
+        return ".zip"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return ".7z"
+    if head.startswith(b"Rar!\x1a\x07"):
+        return ".rar"
+    stripped = head.lstrip()
+    if stripped.startswith((b"<", b"<!DOCTYPE", b"<!doctype")):
+        return ".html"
+    if stripped.startswith((b"{", b"[")):
+        return ".json"
+    return None

@@ -22,7 +22,7 @@ here also changes this page, so the page always describes the code you have chec
         ├── flnd/_home.py       the home: flnd.db (files, targets, runs, failures), the logins
         ├── flnd/options.py     Options: what one target downloads; RunShared: what a run shares
         ├── flnd/site.py        SourceRun and TargetSite: what a source acts through
-        │       └── flnd/common/  net (HTTP and downloads), paths (what a file is)
+        │       └── flnd/_transfer.py  one file into its part, checked by its content
         └── flnd/job.py         one target: list its posts, plan its files, download, record
                 │
                 └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API)
@@ -39,22 +39,21 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/_run.py` | `Run`: a command on its own thread, read as a stream of events | `Flnd` |
 | `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked`, `Checked` | the engine, the job, `Run` |
 | `flnd/engine.py` | `Engine`: every command as a method, and target resolution | `Flnd` |
-| `flnd/job.py` | one target's run: listing, planning, the download pool, history rows | the engine |
-| `flnd/site.py` | `SourceRun` (a source's cookies, clients and browser for a run) and `TargetSite` (the `Site` a route sees) | the engine, the job |
-| `flnd/source.py` | the source API: `Source`, `@target`, `Post`, `File`, `Site`, `Target`, errors | every source |
-| `flnd/sources/` | the seven built-in sources and their shared helpers (`sources/common/`) | the engine, through `SOURCES` |
+| `flnd/job.py` | one target's run: listing, the early stops and the listing's head, resuming cursors, planning, the download pool, history rows | the engine |
+| `flnd/site.py` | `SourceRun` (a source's cookies, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`) and `LoginSite` | the engine, the job |
+| `flnd/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
+| `flnd/sources/` | the seven built-in sources, one module each | the engine, through `SOURCES` |
 | `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
 | `flnd/_home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
-| `flnd/options.py` | `Options` and `RunShared`, and the checks of `--only` and folder templates before any work | the engine, the job |
+| `flnd/options.py` | `Options` and `RunShared`, the check of `--only` before any work, and `stop_after` from config.toml | the engine, the job |
 | `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
-| `flnd/common/` | `paths` (content sniffing) | the engine, the site, the job |
 | `flnd/_*.py` | the private toolkit: HTTP over curl_cffi on the run's loop (`_net`), the run's browser on async Playwright (`_browser`), a SQLite store (`_db`), sealed secrets (`_vault`), atomic files (`_files`), the run's asyncio loop (`_loop`), the terminal UI (`_ui`) | everything above |
 | `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes (dedupe, unpack, compress, the sidecar, `Saved`), archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
 | `flnd/_check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 
-The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,
-the toolkit (`flnd._*`) and the standard library, and nothing of the engine. The engine imports the sources
-only through `flnd.sources.SOURCES`.
+The rule between them: a source imports `flnd.source` and the standard library (and, lazily, an
+SDK its site needs), and nothing else of flnd. The engine imports the sources only through
+`flnd.sources.SOURCES`.
 
 ## One download, start to finish
 
@@ -64,7 +63,7 @@ only through `flnd.sources.SOURCES`.
    the library (`flnd.open`), which runs the engine with the target and `--only posts`.
 2. **Resolving.** `engine.resolve` splits the text at `:` (or `?` for a query), finds the source
    by its code (or a bare link by its `domains`), and calls `Source.resolve`. The first route
-   whose pattern matches gives `Target("ins", "user", "example_user")`. A short link no route
+   whose pattern matches gives `Target("ins:example_user", kind="user")`. A short link no route
    reads is followed once with a HEAD request, and the link it leads to is resolved instead.
 3. **Checking.** Before any request, `options.categories_by_source` and `options.validate` check
    `--only` against the target's route, and every folder template against its fields. A mistake
@@ -74,8 +73,8 @@ only through `flnd.sources.SOURCES`.
 5. **Grouping by source.** The engine runs the targets of one source together, one after
    another, inside one `source_run`: the source's saved cookies are read from the vault, its
    HTTP session is made (see "Network" below), and its `connect` hook runs
-   (Telegram's client). A source that `requires_login` and has none fails here, for each of its
-   targets; any other source without a login warns and goes on with public access.
+   (Telegram's client). A source whose `login` is `required` and missing fails here, for each of
+   its targets; any other source without a login warns and goes on with public access.
 6. **One target** (`job.download`). The job removes the stale parts an interrupted run left in
    the target's folder (a week old, and held by no run), and queues the files that failed last
    time, so they are tried first. Nothing locks the target: each file's part locks itself.
@@ -85,8 +84,12 @@ only through `flnd.sources.SOURCES`.
    in a row older than the range, a `newest_first` category stops.
 8. **Planning each post** (`Ledger.take`). Each file is given its path (from the source's
    `folder` and `filename` templates) and its history key (`<code>:<key>`). A file whose key is
-   in the history is skipped. On a sync, 5 saved posts in a row end a `newest_first` category.
-   A lazy post's files are listed only once the post is known to be new.
+   in the history is skipped. Once a `newest_first` category was read to its end, a later run
+   stops it after 5 saved posts in a row (`stop_after` in config.toml), or sooner, after the
+   head (the newest post the last full listing saw, kept in `flnd.db`) and the post after it.
+   The source never stops a listing itself: the job closes its generator. A lazy post's files
+   are listed only once the post is known to be new. Targets a listing yields (a link to
+   another site) are downloaded after the run's own targets.
 9. **Downloading** (`Downloads`). Each new file becomes a task on the run's loop, which waits
    for one of the target's places (32, as many as one host's cap grows to, or the source's
    largest `limits` above that). The queue holds 4 times as many, so the listing waits when downloads fall behind and memory stays flat.
@@ -204,7 +207,7 @@ One HTTP library (`flnd/_net.py`) does every request and download, on the run's 
 - **A session per source** (`_net.Session`, made by `site.source_run`): one curl_cffi
   `AsyncSession` with Chrome's TLS and HTTP/2 fingerprint, the login's cookies (kept by the
   session, and written back to the vault at the end), the source's `user_agent`, and its
-  `prepare` hook for requests to its own domains, run before every try.
+  `sign` hook for requests to its own domains, run before every try.
 - **Two pools** (`_net.Limits`). *Pages*: the listing's requests to the source's own domains
   share a token bucket per host at the source's `pace`; a 429's `Retry-After` (or X's
   `x-rate-limit-reset`) holds it, and halves its rate until 20 requests go through. *Media*:

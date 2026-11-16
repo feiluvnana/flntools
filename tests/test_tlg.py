@@ -22,18 +22,22 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
-from fakes import FakeSite, collect
+from fakes import FakeSite, Seen, collect
 from playwright.sync_api import Error as PlaywrightError
 from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswordNeededError
 from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
 from flnd import _home, _transfer
+from flnd.site import LoginSite
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import LoginError, Target, UsageError
 from flnd.sources import tlg
-from flnd.sources.tlg import QR_CODES, Telegram, fetcher, from_web_storage, half_blocks, read_telegram_web
+from flnd.sources.tlg import (
+    FLOOD_SLEEP, QR_CODES, Telegram, TelegramLogin, fetcher, from_web_storage, half_blocks,
+    read_telegram_web,
+)
 from flnd import _text as text
 from flnd._events import Progress
 
@@ -116,12 +120,16 @@ class FakeTelegram:
         self.yielded = 0
         self.downloads = []
         self.download_errors = []
+        # (messages listed before it, error): an error `iter_messages` meets after that many.
+        self.list_errors = []
         self.threads = set()
         # Each `iter_download` asked for: (offset, requests); and the chunks after which the
         # connection drops, counted over the whole run.
         self.reads = []
         self.drops = set()
         self.chunks = 0
+        # The flood waits Telethon slept through itself, in seconds.
+        self.slept = []
 
     def client(self, string, api_id, api_hash):
         client = FakeClient(self, string, api_id, api_hash)
@@ -180,19 +188,34 @@ class FakeClient:
     async def get_dialogs(self):
         return self.telegram.dialogs
 
-    async def iter_messages(self, entity, *, filter=None, offset_date=None):
+    def _raise(self, error):
+        """Raise `error` as Telethon would: a flood wait of `flood_sleep_threshold` seconds or less
+        is slept through by Telethon itself (here, counted in `slept`) and never reaches the caller."""
+        if isinstance(error, FloodWaitError) and error.seconds <= self.flood_sleep_threshold:
+            self.telegram.slept.append(error.seconds)
+            return
+        raise error
+
+    async def iter_messages(self, entity, *, filter=None, offset_date=None, offset_id=0):
         self.telegram.threads.add(threading.current_thread().name)
         kind = KIND_OF_FILTER[type(filter).__name__]
         self.telegram.asked.append((kind, offset_date))
+        listed = 0
         for item in sorted(self.telegram.messages[entity.id], key=lambda item: item.date, reverse=True):
+            # Telegram's `offset_id` lists the messages older than it, 0 from the newest.
+            if offset_id and item.id >= offset_id:
+                continue
             if item.kind == kind and (offset_date is None or item.date < offset_date):
+                if self.telegram.list_errors and self.telegram.list_errors[0][0] == listed:
+                    self._raise(self.telegram.list_errors.pop(0)[1])
+                listed += 1
                 self.telegram.yielded += 1
                 yield item
             await asyncio.sleep(0)
 
     async def iter_download(self, document, *, offset=0, limit=None, request_size, file_size=None):
         if self.telegram.download_errors:
-            raise self.telegram.download_errors.pop(0)
+            self._raise(self.telegram.download_errors.pop(0))
         if offset == 0:
             self.telegram.downloads.append(document.id)
         self.telegram.reads.append((offset, limit))
@@ -206,7 +229,7 @@ class FakeClient:
 
     async def download_media(self, item, file=None, *, progress_callback=None):
         if self.telegram.download_errors:
-            raise self.telegram.download_errors.pop(0)
+            self._raise(self.telegram.download_errors.pop(0))
         self.telegram.downloads.append(item.id)
         if progress_callback is not None:
             progress_callback(len(item.content) // 2, len(item.content))
@@ -251,7 +274,8 @@ class RoutesTest(unittest.TestCase):
             with self.subTest(text=given):
                 value = given.removeprefix("tlg:")
                 if isinstance(expected, tuple):
-                    self.assertEqual(Telegram().resolve(value), Target("tlg", *expected))
+                    kind, found = expected
+                    self.assertEqual(Telegram().resolve(value), Target(f"tlg:{found}", kind=kind))
                 else:
                     with self.assertRaisesRegex(UsageError, f"^tlg: {expected}"):
                         Telegram().resolve(value)
@@ -265,8 +289,27 @@ class RoutesTest(unittest.TestCase):
 class ResolveTest(unittest.TestCase):
     def test_declarations(self):
         self.assertEqual((Telegram.categories, Telegram.single_kinds), (("photo", "video", "file"), ()))
-        self.assertEqual((Telegram.login_methods, Telegram.requires_login), (("browser", "qr", "phone"), True))
-        self.assertEqual((Telegram.folder, Telegram.key), ("{chat}/{category}", "{chat_id}:{id}"))
+        self.assertIsInstance(Telegram.login, TelegramLogin)
+        self.assertEqual((Telegram.login.methods, Telegram.login.required), (("browser", "qr", "phone"), True))
+        self.assertEqual((Telegram.folder, Telegram.key), ("{chat}/{category}", "{chat_id}:{post}"))
+        # Downloads at once, counted against t.me: every one shares the one MTProto client.
+        self.assertEqual(dict(Telegram.limits), {"t.me": 3})
+
+    def test_it_imports_only_the_source_api_the_stdlib_and_its_sdk(self):
+        import ast
+        import sys
+
+        with open(tlg.__file__, encoding="utf-8") as file:
+            tree = ast.parse(file.read())
+        names = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                 for alias in node.names}
+        names |= {node.module for node in ast.walk(tree)
+                  if isinstance(node, ast.ImportFrom) and node.module}
+        for name in names:
+            with self.subTest(name=name):
+                top = name.split(".")[0]
+                self.assertTrue(name == "flnd.source" or top in sys.stdlib_module_names
+                                or top in ("telethon", "qrcode"), name)
 
     def test_one_route_whose_categories_are_newest_first_async_methods(self):
         (route,) = Telegram.routes
@@ -303,6 +346,38 @@ class FloodWaitTest(unittest.TestCase):
     def test_another_error_is_not_waited_out(self):
         with self.assertRaises(OSError):
             self.download([OSError("reset")])
+
+    def test_telethon_sleeps_only_short_waits_so_a_long_one_reaches_back_off(self):
+        """Bug: `flood_sleep_threshold` was 24 hours, so Telethon slept through every flood wait
+        itself and the handlers never ran. Telethon now sleeps 60 s or less; a longer wait reaches
+        `site.back_off(retry_after=<its seconds>)`, where the person sees it and a stop ends it."""
+        self.assertLessEqual(FLOOD_SLEEP, 60)
+        telegram = FakeTelegram()
+        telegram.authorized = True
+        site = FakeSite(Target("tlg:", kind="account"))
+        site.secrets.update(session=SESSION, **CREDENTIALS)
+
+        async def connected():
+            with mock.patch("flnd.sources.tlg._client", telegram.client):
+                async with Telegram().connect(site) as client:
+                    return client.flood_sleep_threshold
+
+        self.assertEqual(asyncio.run(connected()), FLOOD_SLEEP)
+        waits, content = self.download([FloodWaitError(None, capture=3600)])
+        self.assertEqual((waits, content), ([("Telegram flood wait", 3600)], b"media"))
+
+    def test_a_flood_wait_while_listing_goes_on_after_the_last_message(self):
+        telegram = FakeTelegram()
+        telegram.messages[1001] = [message(number, "photo", day=datetime.date(2026, 1, number))
+                                   for number in (11, 12, 13)]
+        telegram.list_errors = [(2, FloodWaitError(None, capture=600))]
+        seen = Seen()
+        saved = collect(Telegram, "tlg:@examplechannel", options=Options(categories=("photo",)),
+                        client=telegram.client(SESSION, 1, "hash"), seen=seen)
+        # Newest first, each message once, and the wait went to `back_off`.
+        self.assertEqual([item.post.id for item in saved], ["13", "12", "11"])
+        self.assertEqual(telegram.yielded, 3)
+        self.assertEqual(seen.back_offs, ["Telegram flood wait"])
 
 
 def web_storage(dc=2, key=bytes(range(256)), *, quoted=True):
@@ -350,9 +425,11 @@ class ReadTelegramWebTest(unittest.TestCase):
         async def launch(**options):
             return FakeChrome(tab)
 
+        # The login site's own `storage`, which reads nothing of the site it's on.
+        site = SimpleNamespace(storage=lambda url: LoginSite.storage(cast(Any, None), url))
         # Never the real browser: a real launch would copy the user's own Chrome profile.
         with mock.patch("flnd._browser.launch", launch):
-            return read_telegram_web()
+            return read_telegram_web(site)
 
     def test_the_storage_of_a_tab_that_reached_telegram_web(self):
         self.assertEqual(self.read(FakeTab("https://web.telegram.org/k/", lambda script: {"dc": "2"})), {"dc": "2"})
@@ -475,7 +552,7 @@ class LoginTest(LoginCase):
     def test_browser_from_telegram_web(self):
         store(self.home, **CREDENTIALS)
         self.telegram.authorized = True
-        with mock.patch("flnd.sources.tlg.read_telegram_web", lambda: web_storage(2)):
+        with mock.patch("flnd.sources.tlg.read_telegram_web", lambda site: web_storage(2)):
             self.log_in("browser")
         client = self.telegram.clients[0]
         self.assertEqual(decode_session(client.string)[:3], (2, "149.154.167.51", 443))
@@ -484,14 +561,14 @@ class LoginTest(LoginCase):
 
     def test_browser_when_telegram_web_refuses_the_key(self):
         store(self.home, **CREDENTIALS)
-        with mock.patch("flnd.sources.tlg.read_telegram_web", lambda: web_storage(2)), \
+        with mock.patch("flnd.sources.tlg.read_telegram_web", lambda site: web_storage(2)), \
                 self.assertRaisesRegex(LoginError, "Telegram Web's login no longer works"):
             self.log_in("browser")
         self.assertNotIn("session", stored(self.home))
 
     def test_browser_without_telegram_web(self):
         store(self.home, **CREDENTIALS)
-        with mock.patch("flnd.sources.tlg.read_telegram_web", lambda: {}), \
+        with mock.patch("flnd.sources.tlg.read_telegram_web", lambda site: {}), \
                 self.assertRaisesRegex(LoginError, "not logged in to Telegram Web"):
             self.log_in("browser")
 
@@ -512,17 +589,19 @@ class LoginTest(LoginCase):
             self.log_in("browser")
 
     def test_logged_in_is_a_stored_session(self):
-        telegram = Telegram()
-        site = FakeSite(Target("tlg", "account", ""))
-        self.assertFalse(telegram.logged_in(site))
+        login = Telegram.login
+        site = FakeSite(Target("tlg:", kind="account"))
+        site.secrets.update(CREDENTIALS)
+        # The API pair alone is no login.
+        self.assertFalse(login.check(site))
         site.secrets["session"] = SESSION
-        self.assertTrue(telegram.logged_in(site))
+        self.assertTrue(login.check(site))
 
 
 class LoginCommandTest(FlndCase):
     def test_the_way_is_named_or_asked(self):
         methods = []
-        with mock.patch.object(Telegram, "login", lambda self, session, method: methods.append(method)):
+        with mock.patch.object(TelegramLogin, "start", lambda self, site, how: methods.append(how)):
             self.assertEqual(self.run_app("login", "tlg", "qr")[0], 0)
             # Left out, the way is asked with numbered choices: tlg's own ways.
             self.stdin.stop()
@@ -534,10 +613,10 @@ class LoginCommandTest(FlndCase):
         self.assertEqual(methods, ["qr", "phone"])
 
     def test_a_failed_login_is_reported(self):
-        def refuse(self, session, method):
+        def refuse(self, site, how):
             raise LoginError("tlg: no QR code was scanned; run flnd login tlg qr again")
 
-        with mock.patch.object(Telegram, "login", refuse):
+        with mock.patch.object(TelegramLogin, "start", refuse):
             code, _, out = self.run_app("login", "tlg", "qr")
         self.assertEqual(code, 3)
         self.assertIn("error: tlg: no QR code was scanned; run flnd login tlg qr again", out)
@@ -602,24 +681,30 @@ class DownloadTest(DownloadCase):
         # One client per run, closed at its end, on the run's loop.
         self.assertEqual([client.connected for client in self.telegram.clients], [False, False])
         self.assertEqual(self.telegram.threads, {"flnd-loop"})
-        self.assertEqual(self.telegram.clients[0].flood_sleep_threshold, 24 * 3600)
+        self.assertEqual(self.telegram.clients[0].flood_sleep_threshold, FLOOD_SLEEP)
 
     def test_a_flood_wait_is_waited_out_and_retried(self):
         self.telegram.messages[1001] = [message(11, "photo")]
-        self.telegram.download_errors = [FloodWaitError(None, capture=3)]
+        self.telegram.download_errors = [FloodWaitError(None, capture=120)]
         self.assertEqual(self.download(), 1)
-        self.assertEqual(self.now, 3)
+        self.assertEqual((self.now, self.telegram.slept), (120, []))
         self.assertTrue((self.folder / "photo" / "2026-01-05_11.jpg").is_file())
+
+    def test_a_short_flood_wait_is_telethons_own(self):
+        self.telegram.messages[1001] = [message(11, "photo")]
+        self.telegram.download_errors = [FloodWaitError(None, capture=FLOOD_SLEEP)]
+        self.assertEqual(self.download(), 1)
+        self.assertEqual((self.now, self.telegram.slept), (0, [FLOOD_SLEEP]))
 
     def test_a_video_goes_on_from_where_a_flood_wait_or_a_drop_stopped_it(self):
         body = bytes(range(40))
         self.telegram.messages[1001] = [message(21, "video", content=body)]
         # A flood wait first, then the connection drops at the third and the sixth chunk.
-        self.telegram.download_errors = [FloodWaitError(None, capture=3)]
+        self.telegram.download_errors = [FloodWaitError(None, capture=300)]
         self.telegram.drops = {3, 6}
         with mock.patch.object(tlg, "REQUEST", 8):
             self.assertEqual(self.download(categories=("video",)), 1)
-        self.assertEqual(self.now, 3)
+        self.assertEqual(self.now, 300)
         self.assertEqual((self.folder / "video" / "2026-01-05_21.mp4").read_bytes(), body)
         # Each pass asks from the last whole chunk, never from 0 again.
         self.assertEqual(self.telegram.reads, [(0, 5), (16, 3), (32, 1)])
@@ -664,12 +749,12 @@ class DownloadTest(DownloadCase):
             sidecar = Path(f"{dest}.json")
             site = SimpleNamespace(client=SimpleNamespace(iter_download=iter_download))
 
-            def save(path, data, **options):
+            def save(path, data):
                 # What a crash right now would leave: the file on disk against the offsets saved.
                 on_disk.append((dest.stat().st_size, json.loads(data)["done"][0]))
 
             with open(dest, "r+b") as file, mock.patch.object(tlg, "REQUEST", 8), \
-                    mock.patch.object(tlg._files, "write", side_effect=save):
+                    mock.patch.object(tlg, "_save", side_effect=save):
                 download = tlg._Download(site, SimpleNamespace(size=16), file, lambda *_: None,
                                          sidecar=sidecar, done=[3])
                 asyncio.run(download.run())

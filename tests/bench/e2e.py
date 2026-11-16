@@ -122,7 +122,7 @@ def grow(home: Path, files: int) -> None:
         home: the home of run 1.
         files: how many file rows the home holds after.
     """
-    folder = _home.target_folder(home, Target("bnc", "user", "example_user")) / "posts"
+    folder = _home.target_folder(home, Target("bnc:example_user", kind="user")) / "posts"
     with _home.open(home) as db:
         held = db.count("bnc:example_user")[0]
         rows = [

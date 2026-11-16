@@ -11,7 +11,8 @@ A *target* is what you give `flnd download`; a *category* is one part of a targe
 ## Targets
 
 Every form below is read by the one `chat` route. No URL pattern can match a chat's title, so the
-source reads the text itself instead of through patterns.
+source reads the text itself (it overrides `resolve`, which gives `Target("tlg:<value>",
+kind="chat")`) instead of through patterns.
 
 | You type | Route | What it downloads |
 | --- | --- | --- |
@@ -49,10 +50,15 @@ of these.
 
 ## Logging in
 
+Telegram has a login of its own, not cookies: the source declares `login = TelegramLogin()`, a
+`Login` subclass whose `methods` are `browser`, `qr` and `phone`. `flnd login tlg <how>` calls
+its `start`, and its `check` says a login is kept when a session is stored.
+
 `flnd login tlg <how>` takes one of three ways:
 
-- `browser`: reads Telegram Web's login from Chrome's `Default` profile, in a headless browser,
-  and turns it into a Telethon session. This reuses that login and adds no new device. You must
+- `browser`: reads Telegram Web's login from Chrome's `Default` profile, in a headless browser
+  (the login site's `storage`, a hidden copy of the profile), and turns it into a Telethon
+  session. This reuses that login and adds no new device. You must
   be logged in at `web.telegram.org` in that Chrome profile first.
 - `qr`: shows a QR code in the terminal to scan in the Telegram app, under Settings, Devices,
   Link Desktop Device. A code lasts about 30 seconds; up to 5 are shown before giving up.
@@ -78,8 +84,9 @@ even when it stops early.
 1. **Listing.** Each category asks Telegram for the chat's messages with a server-side filter
    (`InputMessagesFilterPhotos`, `InputMessagesFilterVideo` or `InputMessagesFilterDocument`), so
    Telegram sends only messages of that type, newest first. With `--when`, the listing starts
-   just after its end day (UTC); the engine stops it once 5 posts in a row are older than its
-   start.
+   just after its end day (UTC). The source makes no other stop: the engine ends the listing
+   once 5 posts in a row are older than `--when`'s start, or, in a sync, once it has caught up
+   (5 saved posts in a row, or the newest post an earlier run saw and the one after it).
 2. **Photos** are downloaded whole with Telethon's `download_media`.
 3. **Videos and files** (Telegram documents) are downloaded in parts. A document of 8 MiB or more
    is split into 4 parts fetched at once; a smaller one is one part. Each request is 512 KiB and
@@ -89,8 +96,12 @@ even when it stops early.
    dropped connections, each time going on from where it stopped.
 
 **Flood waits** (Telegram's rate limit, which names the seconds to wait): the client sleeps
-through any wait up to 24 hours by itself, while listing or downloading. A longer wait during a
-download is waited out with flnd's back-off countdown, and the download tries again.
+through a wait of 60 seconds or less by itself. A longer one, while listing, finding a chat or
+downloading, is waited out with flnd's back-off countdown (`site.back_off` with the seconds
+Telegram named, capped at an hour), which you see and Ctrl-C ends. Then the listing goes on after
+the last message it gave, and the download from where it stopped. The files and parts that meet
+one flood wait together share one wait. Before 2026-11-16 the client slept through waits of up
+to 24 hours by itself, silently, so flnd's own handling never ran.
 
 **Pacing:** `pace` keeps its default, but it applies only to HTTP requests, which this source
 doesn't make. `limits` is `{"t.me": 3}`: its files are fetched by its own client, so they count
@@ -105,8 +116,10 @@ The class declares:
   username or id.
 - No `filename` of its own. Each file is named `<date>_<message id>`, then `_<original name>`
   when Telegram has one, or else the file's extension. The date is the message's UTC day.
-- `key = "{chat_id}:{id}"`: the history key, stored as `tlg:<chat id>:<message id>`, since a
-  message id repeats from chat to chat.
+- `fields = ("chat", "chat_id")`: the post fields the templates use.
+- `key = "{chat_id}:{post}"`: the history key, stored as `tlg:<chat id>:<message id>`, since a
+  message id repeats from chat to chat. It is the key files have always had
+  (`tests/data/tlg_names.json` pins every name and key).
 
 Files go under `.flnd/media/tlg/<target>/`, where `<target>` is what the target names (a
 username, an invite, an id or a title):
@@ -140,5 +153,6 @@ username, an invite, an id or a title):
 - Links on `web.telegram.org` and links to a single message are not read as their message: a
   `web.telegram.org` link is refused, and a message link downloads the whole chat.
 - The source declares no `unsupported` links.
-- Flood waits can be long: Telethon may sleep for hours rather than stop.
+- Flood waits can be long. A wait is shown and capped at an hour, then tried again. A fourth wait
+  within 10 minutes of the last one fails the target as blocked.
 - The `browser` login reads only Chrome's `Default` profile.

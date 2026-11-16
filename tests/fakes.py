@@ -17,10 +17,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, MutableMapping
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
-from flnd import _browser, _html, _net, job
+from flnd import _browser, _html, _net, _text, job
 from flnd.engine import resolve
 from flnd.options import Options
-from flnd.source import File, NotFound, Post, Range, SiteError, Source, Target
+from flnd.site import Listing, paged
+from flnd.source import File, NotFound, Post, Range, SiteError, Source, Target, UsageError
 
 
 # A fixture: data for a URL, a SiteError to raise, or a function of (url, request) giving either.
@@ -41,12 +42,14 @@ class Seen:
     messages: list[str] = field(default_factory=list)
     # The reason of each `back_off`.
     back_offs: list[str] = field(default_factory=list)
+    # Each URL `warm` was asked to load.
+    warmed: list[str] = field(default_factory=list)
 
 
 class FakeSite:
     """A `Site` whose answers come from `json` and `html`, keyed by URL without its query, and which records in `seen`.
 
-        site = FakeSite(Target("exm", "user", "example_user"), json={f"{API}/users/example_user": {"id": "42"}})
+        site = FakeSite(Target("exm:example_user", kind="user"), json={f"{API}/users/example_user": {"id": "42"}})
         site.fetch(f"{API}/users/example_user").json      # {"id": "42"}
 
     Args:
@@ -78,6 +81,9 @@ class FakeSite:
         self._options = options
         self._pending = list(feeds)
         self._feeds: list[FakeFeed] = []
+        # The category being listed, as the engine's site has it; a test may set one to resume.
+        self.listing: Listing | None = None
+        self.interactive = False
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -103,9 +109,22 @@ class FakeSite:
             return answer.response or _net.Response(answer.status, url, {})
         raise answer
 
+    def pages(self, url: str, *, cursor: Any, params: Mapping[str, Any] | None = None,
+              send: Any = "cursor") -> Any:
+        return paged(self.fetch, url, cursor=cursor, params=params, send=send, listing=self.listing)
+
+    def html(self, text: str | bytes) -> Any:
+        return _html.parse(text)
+
+    def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
+        raise UsageError(f"{self.target.source}: a run can't ask {message!r}")
+
     def open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         self._seen.visited.append(url)
         return True
+
+    def warm(self, urls: Any) -> None:
+        self._seen.warmed.extend(urls)
 
     @property
     def url(self) -> str:
@@ -292,8 +311,8 @@ def _first_key(source: Source, post: Post, category: Any) -> str | None:
     template = job._format(source, category, "key")
     if not template or job._fields(template) & job.LISTED_FIELDS:
         return None
-    return job.fill(template, {**post.fields, "id": post.id, "category": post.category, "num": 0},
-                    safe=False) or None
+    return _text.fill(template, {**post.fields, "post": post.id, "category": post.category, "num": 0},
+                      safe=False) or None
 
 
 def _answer(answers: Mapping[str, Answer], url: str, request: dict[str, Any]) -> Any:

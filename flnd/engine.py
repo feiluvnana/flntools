@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -14,7 +15,7 @@ from flnd.job import TargetReport
 from flnd.options import Options, RunShared, categories_by_source, validate
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
-from flnd.source import Range, Source, Target, _Unmatched
+from flnd.source import Cookies, Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
 from flnd import _home, _net, _text
 from flnd._run import Stop, stopping
@@ -26,6 +27,13 @@ __all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
 
 ACCOUNT = "account"
 ALL = "all"
+# How many links deep the targets that listings yield are followed (`Engine._found`).
+FOLLOW_DEPTH = 2
+# What `download(time=...)` takes as text, and the message for text that isn't it.
+TIME_USAGE = (
+    "--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
+    "for no limit"
+)
 MAX_SYNC_NEW = 25
 
 
@@ -155,7 +163,7 @@ class Engine:
         """
         if limit is not None and limit < 1:
             raise UsageError("--limit must be at least 1")
-        span = Range.parse(time) if isinstance(time, str) else (time or Range())
+        span = _span(time) if isinstance(time, str) else (time or Range())
         resolved = self._resolved(targets)
         cats_map = categories_by_source(categories, resolved, self.sources, every=every)
         _validate_targets(self.sources, categories, resolved)
@@ -282,13 +290,15 @@ class Engine:
         profile: str | None = None,
         path: Path | str | None = None,
     ) -> str:
-        """Log in to a source by one of its `login_methods` and return a status message."""
+        """Log in to a source by one of its login's `methods` and return a status message."""
         if code not in self.sources:
             raise UsageError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
         source = self.sources[code]()
-        if method not in source.login_methods:
+        if source.login is None:
+            raise UsageError(f"{code} needs no login")
+        if method not in source.login.methods:
             raise UsageError(
-                f"{code} logs in by {', '.join(source.login_methods)}, not {method!r}"
+                f"{code} logs in by {', '.join(source.login.methods)}, not {method!r}"
             )
         if code not in self.cookie_logins:
             return self._interactive_login(code, source, method)
@@ -334,13 +344,15 @@ class Engine:
     @property
     def cookie_logins(self) -> tuple[str, ...]:
         """Source codes that authenticate with browser or file cookies."""
-        return tuple(code for code, source in self.sources.items() if source.login is Source.login)
+        return tuple(code for code, source in self.sources.items()
+                     if isinstance(source.login, Cookies))
 
     def _interactive_login(self, code: str, source: Source, method: str) -> str:
         with stopping() as stop:
             settings = RunShared(home=self.home, stop=stop, interactive=True)
             with source_run(settings, source) as run:
-                source.login(LoginSite(run), method)
+                assert source.login is not None
+                source.login.start(LoginSite(run), method)
             if _home.logged_in(self.home, code):
                 _home.record_origin(self.home, code, method)
         return ""
@@ -511,7 +523,8 @@ class Engine:
         # A dry run reads `flnd.db` to tell "saved" from "new", but never writes it: a home
         # without one stays untouched.
         with _home.open(self.home) as db:
-            settings = RunShared(home=self.home, db=db, stop=stop, dry=True, emit=self.emit)
+            settings = RunShared(home=self.home, db=db, stop=stop, dry=True, emit=self.emit,
+                                 resolve=self._one)
             with shared_browser(settings):
                 for target in resolved:
                     opts = by_source[target.source]
@@ -529,13 +542,12 @@ class Engine:
         """Run a dry-run plan for a single target."""
         source = self.sources[target.source]()
         with source_run(settings, source) as run:
-            account = TargetSite(run, Target(source.code, ACCOUNT, ""))
-            if not source.logged_in(account) and source.requires_login:
+            if not _logged_in(run) and _required(source):
                 failed = job.logged_out(target)
                 job.tell(target, failed, self.emit)
                 return TargetReport(target, (), 0, error=failed)
             try:
-                with _connected(run, account):
+                with _connected(run, _account(run)):
                     _log_dry(run, target, options, span, is_query=self._is_query(target))
             except KeyboardInterrupt:
                 if not stop.soon.is_set() or stop.now.is_set():
@@ -592,7 +604,7 @@ class Engine:
         with _home.open(self.home) as db, ui.group(drawn=False) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
-                stop=stop, browser_pool=browser_pool, emit=self.emit,
+                stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
             )
             board = job.Board(
                 group, subject_width=len(str(target)),
@@ -621,9 +633,8 @@ class Engine:
     ) -> None:
         """Discover query children, download each, and record the query's seen set."""
         seen_keys: list[str] = []
-        account = TargetSite(run, Target(run.source.code, ACCOUNT, ""))
         try:
-            with _written_back(run), _connected(run, account):
+            with _written_back(run), _connected(run, _account(run)):
                 with closing(job.discover(
                     run, target, limit=options.limit, time_range=span, seen=()
                 )) as found:
@@ -681,7 +692,7 @@ class Engine:
         with _home.open(self.home) as db, ui.group(drawn=False) as group:
             settings = RunShared(
                 home=self.home, db=db, run=self.run,
-                stop=stop, browser_pool=browser_pool, emit=self.emit,
+                stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
             )
             board = job.Board(
                 group, subject_width=len(str(target)),
@@ -743,8 +754,7 @@ class Engine:
     ) -> tuple[int, Error | Stopped | None]:
         """Download newly discovered query children and return `(new_count, first_error)`."""
         skipped, new_count, child_failed = 0, 0, None
-        account = TargetSite(run, Target(run.source.code, ACCOUNT, ""))
-        with _written_back(run), _connected(run, account):
+        with _written_back(run), _connected(run, _account(run)):
             with closing(job.discover(run, target, time_range=Range(), seen=seen_keys)) as found:
                 for child in found:
                     if stop.soon.is_set():
@@ -776,8 +786,8 @@ class Engine:
 
     def _recorded(self, rows: Mapping[str, _home.TargetRow]) -> list[Target]:
         return [
-            Target(row.source, row.kind, row.value,
-                   query=self._is_query_kind(row.source, row.kind))
+            Target(f"{row.source}{'?' if self._is_query_kind(row.source, row.kind) else ':'}"
+                   f"{row.value}", kind=row.kind)
             for row in rows.values()
             if row.kind and row.source in self.sources
         ]
@@ -855,8 +865,7 @@ class Engine:
             if self._is_query(target) and row is not None:
                 for child_key in row.seen:
                     if ":" in child_key:
-                        code, val = child_key.split(":", 1)
-                        seen.add(_home.target_folder(self.home, Target(code, "", val)))
+                        seen.add(_home.target_folder(self.home, Target(child_key)))
         for code in self.sources:
             for folder in sorted((media / code).iterdir()) if (media / code).is_dir() else ():
                 if folder.is_dir() and folder not in seen:
@@ -875,8 +884,19 @@ class Engine:
         *,
         stop: Stop,
         browser_pool: Any = None,
+        depth: int = 0,
     ) -> list[TargetReport]:
-        """Run each target sequentially 1 by 1, grouped by site session."""
+        """Run each target in order, grouped by source; then the targets their listings found.
+
+        Args:
+            chosen: the targets, each with its options.
+            stop: the run's stop state.
+            browser_pool: the run's browser; None makes one for these targets.
+            depth: how many links deep these targets are (`_found`); 0 for the run's own.
+
+        Returns:
+            One report per target of `chosen`, in order, then one per target found (`_found`).
+        """
         groups: dict[str, list[int]] = {}
         for number, (target, _) in enumerate(chosen):
             groups.setdefault(target.source, []).append(number)
@@ -884,7 +904,7 @@ class Engine:
         with _home.open(self.home) as db, ui.group(drawn=False) as rows:
             run_settings = RunShared(
                 home=self.home, db=db, run=self.run,
-                stop=stop, browser_pool=browser_pool, emit=self.emit,
+                stop=stop, browser_pool=browser_pool, emit=self.emit, resolve=self._one,
             )
             board = job.Board(
                 rows,
@@ -908,7 +928,54 @@ class Engine:
                     except BaseException as error:
                         _fail_unreached(item, error, reports, board)
                     overall.advance(len(item[1]))
-        return [reports[number] for number in range(len(chosen))]
+        done = [reports[number] for number in range(len(chosen))]
+        return done + self._found(chosen, done, stop=stop, browser_pool=browser_pool, depth=depth)
+
+    def _found(self, chosen: Sequence[tuple[Target, Options]], reports: Sequence[TargetReport],
+               *, stop: Stop, browser_pool: Any, depth: int) -> list[TargetReport]:
+        """Download the targets the run's listings yielded (`TargetReport.found`), once each.
+
+        A post that links to another site hands the link on this way. Each found target is
+        resolved by its own source and downloaded with every category, after the run's own
+        targets; what those find in turn is followed up to `FOLLOW_DEPTH` links deep, so two
+        posts linking to each other can't loop.
+
+        Args:
+            chosen: the targets that ran, with their options.
+            reports: their reports, in order.
+            stop: the run's stop state.
+            browser_pool: the run's browser.
+            depth: how many links deep these reports are.
+
+        Returns:
+            The found targets' reports, in the order they were found.
+        """
+        if depth >= FOLLOW_DEPTH or stop.soon.is_set():
+            return []
+        ran = {target for target, _ in chosen}
+        found: dict[Target, Options] = {}
+        for (target, options), report in zip(chosen, reports):
+            for item in report.found:
+                try:
+                    child = item if item.kind else self._one(str(item))
+                except Error as error:
+                    ui.warn("{target}: can't follow {link}: {error}", target=str(target),
+                            link=str(item), error=error)
+                    continue
+                if child in ran or child in found:
+                    continue
+                found[child] = Options(since=options.since, until=options.until,
+                                       compress=options.compress)
+        if not found:
+            return []
+        ui.info("{targets} linked from the listings", targets=_text.count(len(found), "target"))
+        self._record(list(found.items()), follow=False)
+        return self._run(list(found.items()), stop=stop, browser_pool=browser_pool,
+                         depth=depth + 1)
+
+    def _one(self, text: str) -> Target:
+        """Resolve one target's text on any source, following a short link once."""
+        return resolve(text, self.sources, follow=_follow)
 
     def _label_width(self, chosen: Sequence[tuple[Target, Options]]) -> int:
         labels = [target.kind for target, _ in chosen]
@@ -947,13 +1014,54 @@ def _validate_targets(
     validate(sources, categories, resolved)
 
 
+def _account(run: SourceRun) -> TargetSite:
+    """The `Site` of a source's account, not of a target: what `connect` and `check` see."""
+    return TargetSite(run, Target(f"{run.source.code}:", kind=ACCOUNT))
+
+
+def _logged_in(run: SourceRun) -> bool:
+    """Whether the source's login is kept; a source without a login always is."""
+    login = run.source.login
+    return login is None or login.check(_account(run))
+
+
+def _required(source: Source) -> bool:
+    """Whether the source lists nothing without a login."""
+    return source.login is not None and source.login.required
+
+
+def _span(text: str) -> Range:
+    """Read `--time`'s value, `<since>,<until>`, each side a day or `*` for no limit.
+
+    Args:
+        text: the value as given, such as `2026-01-01,` or `*,2026-06-30`.
+
+    Returns:
+        The two days, either one None for no limit.
+
+    Raises:
+        UsageError: there is no comma, a side isn't a day, or since is after until.
+    """
+    since, comma, until = text.partition(",")
+    if not comma or "," in until:
+        raise UsageError(TIME_USAGE)
+    try:
+        days = [None if side.strip() in ("", "*")
+                else datetime.datetime.strptime(side.strip(), "%Y-%m-%d").date()
+                for side in (since, until)]
+    except ValueError:
+        raise UsageError(TIME_USAGE) from None
+    if days[0] and days[1] and days[0] > days[1]:
+        raise UsageError(TIME_USAGE)
+    return Range(days[0], days[1])
+
+
 def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetReport | None:
-    account = TargetSite(run, Target(source.code, ACCOUNT, ""))
-    if not source.logged_in(account) and source.requires_login:
+    if not _logged_in(run) and _required(source):
         failed = job.logged_out(target)
         job.tell(target, failed, run.settings.emit)
         return TargetReport(target, (), 0, error=failed)
-    if not source.logged_in(account):
+    if not _logged_in(run):
         ui.warn("{code}: not logged in, using public access; run flnd login {code}",
                 code=source.code)
     return None
@@ -1120,19 +1228,18 @@ def _run_site(
     """
     source, group = work
     with source_run(run_settings, source) as run:
-        account = TargetSite(run, Target(source.code, ACCOUNT, ""))
-        if not source.logged_in(account) and source.requires_login:
+        if not _logged_in(run) and _required(source):
             for planned in group:
                 failed = job.logged_out(planned.target)
                 job.tell(planned.target, failed, run_settings.emit)
                 reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
             return
-        if not source.logged_in(account):
+        if not _logged_in(run):
             ui.warn(
                 "{code}: not logged in, using public access; run flnd login {code}",
                 code=source.code,
             )
-        with _written_back(run), _connected(run, account):
+        with _written_back(run), _connected(run, _account(run)):
             login: LoginError | None = None
             for planned in group:
                 # A login the site refused stops this source: its other targets would hit the

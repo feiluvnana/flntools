@@ -521,7 +521,7 @@ class Example(Source):
     api = 1                            # the source API version this was written for
     login = cookies("session")         # logged in when this cookie is there; flnd reads it from a browser
     pace = 0.5                         # seconds between page requests: the default, which the config can override
-    folder = "{target}/{category}"     # the default; checked when the class is made
+    folder = "{category}"             # the default, under the target's folder; checked when the class is made
 
     @target("exm:{user}", "example.com/{user}")
     def profile(self, site: Site, user: str) -> dict:
@@ -547,7 +547,7 @@ class Example(Source):
             yield from (Target(f"exm:{u['name']}") for u in hit["users"])
 ```
 [ARCHITECTURE.md](ARCHITECTURE.md) §6 walks through writing a source step by step; this section lists the rules.
-- **Only `code`, `domains`, `api` and one route are required.** Everything else has a default: `pace` 0.5 s, `folder = "{target}/{category}"`, `filename = "{post}_{num}"`. A template may use `{source}`, `{target}`, `{category}`, `{post}`, `{num}`, `{date}` and any field of the post.
+- **Only `code`, `domains`, `api` and one route are required.** Everything else has a default: `pace` 0.5 s, `folder = "{category}"` (under the target's folder, `media/<code>/<target>/`), `filename = "{post}_{num}"`. A template may use `{source}`, `{target}`, `{category}`, `{post}`, `{num}`, `{date}` and any field of the post.
 - **`newest_first=True`** on a route or category says the listing comes newest first, so a sync may stop at old posts. Without it, a sync reads the whole listing, which is slower but never wrong. The source declares this, so the engine doesn't guess.
 - **`Target(text)`** takes any target, from any source. A search yields its results this way, and a post that links to another site hands the link on. This is gallery-dl's `Queue`, and it is the one way to make a target: there is no `self.target(...)`.
 - **A post's files may be a function** (`Post(id, lambda: fetch_pages(id))`) that runs only if the post is new, so a source never fetches the pages of a post flnd already has. Today's sources do this, and it stays.

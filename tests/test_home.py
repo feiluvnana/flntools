@@ -29,7 +29,7 @@ from flnd.errors import NetworkError, NotFound
 from flnd.options import Options
 from flnd.source import File, Target
 
-USER = Target("aaa", "user", "example_user")
+USER = Target("aaa:example_user", kind="user")
 
 
 def row(item, post="p1", **fields):

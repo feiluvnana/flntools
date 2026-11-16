@@ -91,7 +91,7 @@ class SettingsTest(SyncCase):
         (self.home / _home.MEDIA / "aaa" / "older").mkdir(parents=True)
         (self.home / _home.MEDIA / "aaa" / "older" / "x.jpg").write_bytes(b"x")
         chosen = dict(self.plan())
-        self.assertEqual(chosen[Target("aaa", "user", "older")], Options())
+        self.assertEqual(chosen[Target("aaa:older", kind="user")], Options())
         # A folder of a source flnd doesn't have, or a file beside the folders, isn't a target.
         (self.home / _home.MEDIA / "zzz" / "b").mkdir(parents=True)
         (self.home / _home.MEDIA / "aaa" / "a.zip").write_bytes(b"")
@@ -153,8 +153,10 @@ class SavedRunStopTest(SyncCase):
 
         class Feed(Source):
             code, name, domains, folder, key = "aaa", "AAA", ("aaa.example",), "", "{path}"
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("aaa:{user}")
             def user(self, site, user):
                 return None
 
@@ -189,9 +191,9 @@ class SyncOptInTest(SyncCase):
     def test_target_sync_ls_and_del(self):
         self.download(sync=False)
         self.assertEqual(
-            self.engine().target_sync(["aaa:a"], enabled=True), [Target("aaa", "user", "a")]
+            self.engine().target_sync(["aaa:a"], enabled=True), [Target("aaa:a", kind="user")]
         )
-        self.assertEqual([t for t, _ in self.plan()], [Target("aaa", "user", "a")])
+        self.assertEqual([t for t, _ in self.plan()], [Target("aaa:a", kind="user")])
         # Re-downloading without --sync preserves sync=True.
         self.download(sync=False)
         self.assertIs(self.saved()["aaa:a"].follow, True)
@@ -200,10 +202,10 @@ class SyncOptInTest(SyncCase):
         self.assertTrue(items[0].sync)
         self.assertEqual(items[0].files, 3)
         self.assertEqual(
-            self.engine().target_sync(["aaa:a"], enabled=False), [Target("aaa", "user", "a")]
+            self.engine().target_sync(["aaa:a"], enabled=False), [Target("aaa:a", kind="user")]
         )
         self.assertEqual(self.plan(), [])
-        self.assertEqual(self.engine().target_del(["aaa:a"]), [Target("aaa", "user", "a")])
+        self.assertEqual(self.engine().target_del(["aaa:a"]), [Target("aaa:a", kind="user")])
         self.assertNotIn("aaa:a", self.saved())
 
 

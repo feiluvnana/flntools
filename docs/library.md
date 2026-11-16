@@ -46,10 +46,10 @@ def write(text):
 
 
 class Notes(Source):
-    code, name, domains = "nts", "Notes", ("notes.example.com",)
-    folder, key = "{category}", "{id}"
+    code, name, domains, api = "nts", "Notes", ("notes.example.com",), 1
+    folder, key = "{category}", "{post}"
 
-    @target("{user}")
+    @target("nts:{user}")
     def user(self, site, user):
         return user
 

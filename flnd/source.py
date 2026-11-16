@@ -1,10 +1,45 @@
-"""Writing a source: declarations for site extractors and target routes.
+"""Source API 1: what a site's source is written against, built in or a plugin.
 
-A source is a `Source` subclass defining `code`, `domains`, and `@target` routes.
-Routes return context for `@category` methods, which yield `Post` and `File` objects.
-The engine handles pacing, authentication, rate limits, downloads, and history.
+A source answers one question: what posts does this target have? It declares what it is, and
+implements a few well-named hooks; flnd does everything else (the disk, the history, retries,
+pacing, concurrency, the early stops, resuming). `docs/writing-a-source` walks through one.
 
-See `tests/example_source.py` for a complete reference implementation.
+    from flnd.source import File, Post, Source, target
+
+    class Example(Source):
+        code = "exm"
+        domains = ("example.com",)
+        api = 1
+
+        @target("exm:{user}", "example.com/{user}", newest_first=True)
+        def photos(self, site, user):
+            for page in site.pages(f"https://api.example.com/users/{user}/photos", cursor="next"):
+                for item in page["items"]:
+                    yield Post(item["id"], [File(item["url"])], date=item["time"])
+
+What it holds:
+- `Source`, the class a source subclasses, with its declarations (`code`, `domains`, `api`,
+  `login`, `pace`, `limits`, the `folder`, `filename` and `key` templates) and its hooks
+  (`sign`, `connect`, `date`, `resolve`);
+- `target` (routes) and `Route.category` (the parts of a target), which make `Route` and
+  `Category`;
+- what a listing yields: `Post`, `File`, and `Target` for a target to download as if typed;
+- `Site`, the handle every route and category acts through, and `Feed`, a browser feed;
+- `Login`, how a source logs in, and `cookies(...)`, the login of the cookie sites;
+- `Request`, what the `sign` hook may add headers to;
+- `dig`, a JSON path reader; `Range`, `--when`'s days; and the errors a source raises.
+
+Who calls it: the sources, the engine (`flnd.engine`, `flnd.job`, `flnd.site`), and the
+library, which re-exports `Target`.
+
+The rules a change must keep:
+- This module imports nothing of flnd but the library modules and `flnd.errors`: it is what a
+  source sees, never the engine (tests/test_layers.py, rule 2).
+- A mistake in a source fails when its class is made (`Source.__init_subclass__`), with a
+  `SourceError` naming the source, the attribute and the fix. Never halfway through a run.
+- One spelling: the source API has no aliases. A name of the old API (`needs`, `prepare`,
+  `concurrency`, …) is refused with the new spelling in its message.
+- `API` is the major version. A change that breaks a written source raises it.
 """
 
 from __future__ import annotations
@@ -12,17 +47,16 @@ from __future__ import annotations
 import datetime
 import inspect
 import re
-import string
-import threading
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType, MethodType
-from typing import (TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, Iterable, Iterator, Mapping,
-                    MutableMapping, Protocol, Sequence, Union)
+from typing import (
+    TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, Iterable, Iterator, Mapping,
+    MutableMapping, Protocol, Sequence, Union,
+)
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from flnd import _text
-from flnd._ui import ui
+from flnd import _text, _time
 from flnd.errors import (
     Blocked, Changed, Error, LoginError, NetworkError, NotFound, SiteError, SourceError, UsageError,
 )
@@ -32,10 +66,15 @@ if TYPE_CHECKING:
 
     from flnd import _net
 
-__all__ = ["Blocked", "Category", "Changed", "DateLike", "Error", "Feed", "Fetch", "File", "Login",
-           "LoginError", "NetworkError", "NotFound", "Post", "Range", "Route", "Site", "SiteError",
-           "Source", "SourceError", "Target", "UsageError", "day", "fill", "pages", "target"]
+__all__ = [
+    "API", "Blocked", "Category", "Changed", "Cookies", "DateLike", "Error", "Feed", "Fetch",
+    "File",
+    "Login", "LoginError", "NetworkError", "NotFound", "Post", "Range", "Request", "Route", "Site",
+    "SiteError", "Source", "SourceError", "Target", "UsageError", "cookies", "dig", "target",
+]
 
+# The source API's major version: a source declares the one it was written for (`api = 1`).
+API = 1
 # Hosts that are the same site as their bare domain: desktop, mobile and web variants.
 SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 # What `{name}` matches without a regex: a user name, as the sites spell them, with one leading `@`
@@ -43,75 +82,117 @@ SITE_PREFIXES = ("www.", "m.", "mobile.", "web.", "mbasic.", "touch.")
 NAME = r"[\w.]+"
 # Where a generated form shows a `*`: any one segment, which help can't name.
 ANY = "…"
-# The format fields the engine sets for every file, which a post's own `**fields` may not use:
-# `category` (the category's name), `num` (the file's place in its post, from 0), `count` (the
-# post's files), `index` ("" for a one-file post, else "_<num>"), `extension` (".jpg", the one the
-# file is named with before its content is checked; "" when the content decides) and `path` (the
-# file's path under the target's folder, which is what a history key was when a source gave none).
-ENGINE_FIELDS = frozenset({"category", "num", "count", "index", "extension", "path"})
-# What a format drops beside a field that came out empty: `{date}_{id}` without a date is `<id>`.
-SEPARATORS = "_- .:,"
-# The oldest year a post can be from: the sites flnd reads all started later. A timestamp before
-# it is a mistake for another number, such as an id read as seconds.
-FIRST_YEAR = 2004
-# Seconds since 1970 pass this in 5138; a larger number is milliseconds (13 digits today, 10 for
-# seconds).
-MILLISECONDS = 1e11
-# What `Range.parse` says about any value it can't read: the usage error of `--time`.
-TIME_USAGE = (
-    "--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
-    "for no limit"
+# What a source's code looks like: what targets start with (`exm:`), and its cookie slot's name.
+CODE = re.compile(r"[a-z][a-z0-9]{1,15}")
+# The fields the engine sets for every file, which a template may use beside the source's own
+# `fields`: the source's code, the target's value, the category, the post's id, the file's place
+# in its post (`num`, from 0), the post's file count, `index` ("" for a one-file post, else
+# "_<num>"), the file's extension, its path under the target's folder (what a key is when a
+# source gives none), the post's day, and a search's text.
+TEMPLATE_FIELDS = (
+    "source", "target", "category", "post", "num", "count", "index", "extension", "path",
+    "date", "query",
 )
-# Consecutive already-saved posts that end a `newest_first` listing early.
-SAVED_STREAK = 5
+# The fields a `Post` may not set: the engine's own, so a source never overwrites one by accident.
+RESERVED = frozenset(TEMPLATE_FIELDS) | {"id", "files", "headers"}
+# Names of source API 0, refused with how API 1 spells them.
+OLD_NAMES = {
+    "needs": 'login = cookies("<name>", ...)',
+    "requires_login": 'login = cookies("<name>", required=True)',
+    "login_methods": "a Login subclass's `methods`",
+    "logged_in": "a Login subclass's `check(site)`",
+    "concurrency": 'limits = {"<host>": <files at once>}',
+    "prepare": "sign(self, request)",
+}
+# How a browser source may scroll its feeds: like a person, or as fast as the page loads.
+SCROLLS = ("human", "fast")
 
 # A file without a URL: `fetch(dest, progress)` writes to `dest`, reporting `progress(done, total)`
-# in bytes. It may return a coroutine (tlg's SDK), which the engine runs on the source's loop.
+# in bytes. It may return a coroutine (tlg's SDK), which the engine runs on the run's loop.
 Fetch = Callable[["Path", Callable[..., None]], Any]
-# What `Post(date=)` takes; `day()` reads every one of them.
+# What `Post(date=)` takes: the engine reads every one of these once (`flnd._time.day`).
 DateLike = Union[datetime.date, int, float, str, None]
 
 
-class _Unmatched(UsageError):
-    """A target no route reads; `url` is set when it is a link on the source's domains.
+# ---------------------------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------------------------
 
-    Private: the engine catches it to follow a short link once with a HEAD request and read
-    where it leads. Everyone else sees the `UsageError` it is.
+@dataclass(frozen=True, init=False)
+class Target:
+    """One thing to download, as people write it: `Target("ins:example_user")`.
+
+    A source yields `Target(text)` from a search or a post that links elsewhere, and the engine
+    downloads it as if it had been typed. The text may be `code:value`, `code?query` or a link,
+    on any source's site: a link to another site is handed to that site's source.
+
+    Resolving it (`Source.resolve`) gives the same target with its `kind` set: the name of the
+    route that reads it. The engine compares and stores resolved targets; two resolved targets are
+    equal when their source, kind and value are.
 
     Args:
-        message: the whole message, starting with the source's code.
-        url: the link to follow; None when the refusal is final.
+        text: the target, as typed: `ins:example_user`, `mht?romance` or a link.
+        kind: the route that reads it, set by resolution; "" for a target not resolved yet.
+
+    Example:
+        >>> found = Target("ins:example_user", kind="user")
+        >>> found.source, found.value, str(found)
+        ('ins', 'example_user', 'ins:example_user')
+        >>> Target("https://www.tiktok.com/@example_user").source
+        ''
     """
 
-    def __init__(self, message: str, *, url: str | None = None):
-        super().__init__(message)
-        self.url = url
-
-
-@dataclass(frozen=True)
-class Target:
-    """One thing to download: `Target("ins", "user", "example_user")`.
-
-        target = Target("tik", "video", "7301234567890123456")
-        str(target)  # "tik:7301234567890123456"
-    """
-
-    # The source's code, such as "ins".
+    # The source's code, such as "ins"; "" for a link no source has read yet.
     source: str
-    # What it points to: its route's name (`user`, `post`, `video` or `chat`).
+    # The route that reads it (`user`, `post`, `video`, `chat`); "" until it is resolved.
     kind: str
-    # Clean form, the captured placeholder: names target folder and starts history keys.
+    # What it points to: the captured value, which names the target's folder and starts its keys;
+    # for a link not resolved yet, the whole link.
     value: str
-    # Whether this target is a query (`code?query`) rather than `code:value`.
+    # Whether it is a query (`code?query`) rather than `code:value`.
     query: bool = field(default=False, compare=False, repr=False)
 
+    def __init__(self, text: str, *, kind: str = "") -> None:
+        source, query, value = _split_target(text)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "value", value)
+        object.__setattr__(self, "query", query)
+
     def __str__(self) -> str:
+        if not self.source:
+            return self.value
         # The account a login and `connect` see has no value, and reads as its source's code.
         if not self.value:
             return self.source
-        separator = "?" if (self.query or self.kind == "query") else ":"
-        return f"{self.source}{separator}{self.value}"
+        return f"{self.source}{'?' if self.query else ':'}{self.value}"
 
+
+def _split_target(text: str) -> tuple[str, bool, str]:
+    """`text` as (code, whether a query, value); a link or bare text has no code.
+
+    `ins:example_user` is ("ins", False, "example_user"), `mht?romance` is ("mht", True,
+    "romance"), and `https://x.com/example_user` is ("", False, the link): `https:` is a scheme,
+    not a code, and a link's source is found by resolving it.
+
+    Args:
+        text: the target as typed.
+
+    Returns:
+        The source's code ("" when there is none), whether it is a query, and the value.
+    """
+    text = text.strip()
+    if "://" in text.split("?", 1)[0].split("/", 1)[0] or text.lower().startswith("http"):
+        return "", False, text
+    found = re.match(r"([a-z][a-z0-9]*)([:?])", text)
+    if found is None:
+        return "", False, text
+    return found[1], found[2] == "?", text[found.end():]
+
+
+# ---------------------------------------------------------------------------------------------
+# Routes and categories
+# ---------------------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class _Url:
@@ -123,15 +204,30 @@ class _Url:
 
 
 class _Pattern:
-    """One compiled pattern: domain pattern matches `_Url`, code pattern text after `code:`."""
+    """One compiled pattern: a link pattern matches a `_Url`, a code pattern the text after `code:`.
+
+    Args:
+        text: the pattern as the route gives it, such as `example.com/{user}` or `exm:{user}`.
+
+    Raises:
+        SourceError: the pattern is malformed (see `_tokens` and `_compile`).
+    """
 
     def __init__(self, text: str):
-        """Split `text` into parts and compile each placeholder regex."""
         self.text = text
-        path, mark, query = _split(text, "?", once=True)
+        # A code pattern starts with the source's code (`exm:{user}`, `exm?{words}`), which
+        # `_check_patterns` compares with the source's; matching reads the text after it.
+        prefix = None if _is_url(text) else re.match(r"[a-z][a-z0-9]*(?=[:?])", text)
+        self.code = prefix[0] if prefix else None
+        body = text[prefix.end():] if prefix else text
+        body = body[1:] if body.startswith(":") else body
+        # The pattern without its code, as duplicates are compared.
+        self.body = body
+        path, mark, query = _split(body, "?", once=True)
         segments = [segment for segment in _split(path, "/") if segment]
         first = segments[0] if segments else ""
-        # First segment with dot and no placeholder or `*` is host; else code pattern.
+        # The first segment is a host when it has a dot and no placeholder; else it's a code
+        # pattern.
         self.host = (
             _bare_host(first.lower())
             if "." in first and not set(first) & set("{}*")
@@ -139,12 +235,12 @@ class _Pattern:
         )
         self.is_query = self.host is None and not segments and mark == "?"
         if self.host is None and mark and not self.is_query:
-            raise SourceError(f"pattern {text!r}: only a URL pattern can name a query")
+            raise SourceError(f"pattern {text!r}: only a link pattern can name a query")
         self.names: list[str] = []
         if self.is_query:
-            self.segments = []
-            self.keys = []
-            self.regexes = []
+            self.segments: list[str] = []
+            self.keys: list[list[str]] = []
+            self.regexes: list[re.Pattern[str]] = []
             self.query = [("", _compile(query, text, self.names))]
             self.literals = 0
             return
@@ -152,16 +248,17 @@ class _Pattern:
         self.keys = [_split(pair, "=", once=True) for pair in _split(query, "&")] if mark else []
         if any(not key or not value for key, _, value in self.keys):
             raise SourceError(f"pattern {text!r}: write a query as ?key={{name}}")
-        # Placeholder names in order: route pattern has one, unsupported pattern none.
+        # Placeholder names in order: a route's pattern has one, an `unsupported` pattern none.
         self.regexes = [_compile(segment, text, self.names) for segment in self.segments]
         self.query = [(key, _compile(value, text, self.names)) for key, _, value in self.keys]
-        # How specific the pattern is: literal segments, host being one. Code pattern has none.
+        # How specific the pattern is: literal segments, the host being one. A code pattern has
+        # none.
         self.literals = (self.host is not None) + sum(
             1 for s in self.segments if self.host is not None and not set(s) & set("{}*")
         )
 
     def match(self, text: str, url: _Url | None) -> str | None:
-        """Captured value when `text` or `url` matches; "" for no placeholder."""
+        """The captured value when `text` or `url` matches; "" for a pattern with no placeholder."""
         if self.is_query:
             return text[1:] if url is None and text.startswith("?") else None
         if self.host is None:
@@ -190,22 +287,38 @@ class _Pattern:
         path = "/".join(_shown(segment) for segment in self.segments)
         if self.host is None:
             return f"{code}:{path}"
-        # Help shows address browser bar does: www. on bare domain, closing slash on folder.
+        # Help shows what a browser's address bar does: www. on a bare domain, a closing slash on
+        # a folder.
         host = f"www.{self.host}" if self.host.count(".") == 1 else self.host
         query = "&".join(f"{key}={_shown(value)}" for key, _, value in self.keys)
         slash = "" if query or "." in path.rsplit("/", 1)[-1] else "/"
         return f"https://{host}/{path}{slash if path else ''}" + (f"?{query}" if query else "")
 
 
-
-
 class Category:
-    """One thing a route's target can download, made by `@<route>.category`."""
+    """One part of a route's target, made by `@<route>.category`: `posts`, `stories`, `reels`.
+
+    Its method takes `(self, site, context)`: `context` is what the route returned. It yields
+    `Post`s, and may be `def` or `async def`.
+
+    Args:
+        function: the method.
+        newest_first: the listing comes newest first, so a sync may stop at old posts.
+        folder: the folder template of its files, instead of the source's `folder`.
+        key: the history key template of its files, instead of the source's `key`.
+
+    Raises:
+        SourceError: the method doesn't take `(self, site, context)`.
+
+    Example:
+        >>> Category(lambda self, site, profile: [], newest_first=True).newest_first
+        True
+    """
 
     def __init__(self, function: Callable[..., Any], *, newest_first: bool = False,
                  folder: str | None = None, key: str | None = None):
         self.function = function
-        # The method's name: what `--from` and help write, and the attribute the engine calls.
+        # The method's name: what `--only` and help write, and the attribute the engine calls.
         self.name = function.__name__
         self.newest_first = newest_first
         self.folder, self.key = folder, key
@@ -222,35 +335,48 @@ class Category:
 class Route:
     """A method that reads one kind of target, made by `@target(...)`; its name is the kind.
 
-        Instagram.routes[0].kind       # "post"
-        Instagram.routes[0].patterns   # ("instagram.com/p/{code:[\\w-]+}", …)
-        Instagram.routes[1].categories # (Category("posts", …), Category("reels", …), …)
+    A route without categories yields the target's posts itself, or yields `Target`s (a search).
+    A route with categories returns a context instead, which each of its categories receives;
+    `@route.category` adds one.
 
-    A route without categories yields the target's posts itself. A route with categories
-    returns a context, which every category it has receives; `@route.category` adds one.
+    Args:
+        function: the method, taking `(self, site, value)`.
+        patterns: what it reads: link patterns (`example.com/{user}`) and code patterns
+            (`exm:{user}`, `exm?{words}`), each with one placeholder named like the method's
+            value parameter.
+        newest_first: its own listing (a route without categories) comes newest first.
+        shown: the form help shows instead of the first pattern's, for a route whose targets
+            `resolve` reads (tlg's chats); None shows the patterns.
+        discovers: it yields targets, not posts; a query route always does. `--only` then
+            applies to the targets it finds.
+        folder: the folder template of its files, instead of the source's `folder`.
+
+    Raises:
+        SourceError: a pattern is malformed, has other than one placeholder, or names it
+            differently from the method's value parameter; or the method takes other parameters.
+
+    Example:
+        >>> route = Route(lambda self, site, user: None, ("exm:{user}", "example.com/{user}"))
+        >>> route.forms("exm")
+        ['exm:<user>', 'https://www.example.com/<user>/']
     """
 
     def __init__(
-        self, function: Callable[..., Any], patterns: tuple[str, ...], *, shown: str | None,
-        discovers: bool = False,
-        from_: Iterable[str] | None = None, folder: str | None = None,
+        self, function: Callable[..., Any], patterns: tuple[str, ...], *,
+        newest_first: bool = False, shown: str | None = None, discovers: bool = False,
+        folder: str | None = None,
     ):
-        """Compile `patterns` for `function`, raising `SourceError` for a mistake in them."""
         self.function = function
         self.kind = function.__name__
         self.patterns = patterns
+        self.newest_first = newest_first
         self.shown = shown
-        # What `--from` may name here and the target's folder template; `targets.validate`
-        # checks both before any work. `from_` defaults to the categories.
-        self._from = None if from_ is None else frozenset(from_)
         self.folder = folder
         self._patterns = [_Pattern(pattern) for pattern in patterns]
         self.is_query = any(pattern.is_query for pattern in self._patterns)
         self.discovers = self.is_query or discovers
         self._categories: list[Category] = []
-        parameters = [
-            parameter.name for parameter in inspect.signature(function).parameters.values()
-        ]
+        parameters = list(inspect.signature(function).parameters)
         if len(parameters) != 3:
             raise SourceError(
                 f"route {self.kind}: take (self, site, value), not ({', '.join(parameters)})"
@@ -273,22 +399,27 @@ class Route:
         """The route's categories, in declaration order; empty if it yields posts itself."""
         return tuple(self._categories)
 
-    @property
-    def from_(self) -> frozenset[str]:
-        """The category names `--from` accepts for this route; empty for a single post."""
-        if self._from is not None:
-            return self._from
-        return frozenset(category.name for category in self._categories)
-
     def category(self, function: Callable[..., Any] | None = None, /, *, newest_first: bool = False,
                  folder: str | None = None, key: str | None = None) -> Any:
         """Mark a method as one of this route's categories, with or without options.
 
-            @user.category
-            def stories(self, site, account): ...
+            @profile.category
+            def stories(self, site, profile): ...
 
-            @user.category(newest_first=True)
-            def reels(self, site, account): ...
+            @profile.category(newest_first=True)
+            def posts(self, site, profile): ...
+
+        Args:
+            function: the method, when used without options.
+            newest_first: the listing comes newest first, so a sync may stop at old posts.
+            folder: the folder template of its files, instead of the source's `folder`.
+            key: the history key template of its files, instead of the source's `key`.
+
+        Returns:
+            The method itself, so the class keeps it as a plain method.
+
+        Raises:
+            SourceError: a category of the same name is declared twice.
         """
         def register(method: Callable[..., Any]) -> Callable[..., Any]:
             made = Category(method, newest_first=newest_first, folder=folder, key=key)
@@ -299,8 +430,8 @@ class Route:
 
         return register(function) if function is not None else register
 
-    def __set_name__(self, owner: type, name: str):
-        """Take attribute name as kind, which is method name unless class was built by `type()`."""
+    def __set_name__(self, owner: type, name: str) -> None:
+        """Take the attribute's name as the kind: the method's, unless `type()` built the class."""
         self.kind = name
 
     def __get__(self, instance: object, owner: type | None = None) -> Any:
@@ -310,7 +441,11 @@ class Route:
     def forms(self, code: str) -> list[str]:
         """Each pattern as people write it, for source `code`; `shown` replaces the first.
 
-            Instagram.routes[1].forms("ins")   # ["ins:<user>", "https://www.instagram.com/<user>/"]
+        Args:
+            code: the source's code.
+
+        Returns:
+            The forms, such as `["exm:<user>", "https://www.example.com/<user>/"]`.
         """
         forms = [pattern.form(code) for pattern in self._patterns]
         if self.shown is not None:
@@ -318,49 +453,74 @@ class Route:
         return forms
 
 
-def target(*patterns: str, shown: str | None = None,
-           discovers: bool = False, from_: Iterable[str] | None = None,
-           folder: str | None = None) -> Callable[[Callable[..., Any]], Route]:
-    """Mark a method as a route: the targets it reads, as patterns, named by the method's kind."""
+def target(*patterns: str, newest_first: bool = False, shown: str | None = None,
+           discovers: bool = False, folder: str | None = None) -> Callable[..., Route]:
+    """Mark a method as a route: the targets it reads, as patterns; its name is their kind.
+
+        @target("exm:{user}", "example.com/{user}", newest_first=True)
+        def photos(self, site, user): ...
+
+    Args:
+        *patterns: link patterns (`example.com/{user}`, `example.com/p/{id:\\w+}`) and code
+            patterns (`exm:{user}`, `exm?{words}`). A placeholder without a regex matches a
+            user name, a leading `@` dropped; `*` matches any one path segment.
+        newest_first: the route yields posts newest first, so a sync may stop at old posts.
+            Without it a sync reads the whole listing: slower, never wrong.
+        shown: the form help shows for a route `Source.resolve` reads instead of a pattern.
+        discovers: the route yields targets rather than posts (a query route always does).
+        folder: the folder template of its files, instead of the source's `folder`.
+
+    Returns:
+        A decorator making the `Route`.
+    """
     return lambda function: Route(
-        function, patterns, shown=shown, discovers=discovers,
-        from_=from_, folder=folder,
+        function, patterns, newest_first=newest_first, shown=shown, discovers=discovers,
+        folder=folder,
     )
 
 
+# ---------------------------------------------------------------------------------------------
+# What a listing yields
+# ---------------------------------------------------------------------------------------------
+
 @dataclass(frozen=True, init=False)
 class File:
-    """One file of a post: a URL (or mirrors, or a fetch function), and download settings.
+    """One file of a post: a URL (or mirrors, or a fetch function), and how to download it.
 
         File("https://cdn.example.com/a.jpg")
         File([mirror_a, mirror_b], name="loi-5930.7z", password=key)  # extracted beside it
-        File(video_url, audio=audio_url)                            # DASH: merged into one video
+        File(video_url, audio=audio_url)                            # joined into one video
         File.text("info.md", "# Title\\n")                          # written, not downloaded
 
-    The engine names it from the source's formats, gives it the extension its content calls for,
-    and numbers it by its place in the post. Frozen.
+    The engine names it from the source's templates, gives it the extension its content calls
+    for, and numbers it by its place in the post.
 
     Args:
         url: a URL, mirror URLs tried in order, or a `Fetch` function `fetch(dest, progress)`
-            for media without a URL (tlg's).
-        audio: the URL of a separate audio stream (DASH), merged into the video; None when the
-            video has its own sound. A file with `audio` is a video.
-        name: the file's name as the site already gives it, extension included, which the
-            formats must not change (loi's archives, tlg's documents). None names it by the
-            source's `filename` format.
+            for media without a URL (Telegram's).
+        audio: the URL of a separate audio track, downloaded at once and joined with the video
+            by ffmpeg without re-encoding; None when the video has its own sound.
+        name: the file's name as the site gives it, extension included, which the templates
+            must not change (an archive's, a document's). None names it by `filename`.
         size: its size in bytes, when the site says it; None when unknown.
-        password: an archive's password, when the site gives one; the unpack step extracts
-            the archive with it (docs/media). None for none.
+        password: an archive's password, when the site gives one: the archive is extracted with
+            it once downloaded. None for none.
 
     Raises:
         SourceError: `url` is none of those.
+
+    Example:
+        >>> File("https://cdn.example.com/a.jpg", size=2048).size
+        2048
+        >>> File(["https://a.example.com/x.7z", "https://b.example.com/x.7z"]).url[1]
+        'https://b.example.com/x.7z'
     """
 
     # A URL, mirrors tried in order, or a `Fetch` function; None for a text file.
     url: str | tuple[str, ...] | Fetch | None
-    # A DASH video's separate audio stream, or None.
+    # A video's separate audio track, or None.
     audio: str | None
-    # The name as the site gives it, or None for the formats' name.
+    # The name as the site gives it, or None for the templates' name.
     name: str | None
     # The size in bytes, or None.
     size: int | None
@@ -383,74 +543,125 @@ class File:
 
     @classmethod
     def text(cls, name: str, text: str) -> File:
-        """A text file written by the source itself (e.g. `info.md`): saved atomically.
+        """A text file the source writes itself, such as `info.md`; saved atomically.
 
-            File.text("info.md", "# Title\\n")
+        It has no history row, so it is written again each time its post is downloaded.
 
         Args:
             name: the file's name in its post's folder, extension included.
             text: its text, saved as UTF-8 with `\\n` line endings on every platform.
 
-        It has no history row, so it is written again each time its post is downloaded.
+        Returns:
+            The file.
+
+        Example:
+            >>> File.text("info.md", "# Title\\n").content
+            '# Title\\n'
         """
         made = cls.__new__(cls)
         _assign(made, url=None, audio=None, name=name, size=None, content=text, password=None)
         return made
 
+    @classmethod
+    def dash(cls, manifest: str | None) -> File | None:
+        """The best video and audio of a single-file DASH manifest, as one `File(video, audio=…)`.
+
+        Meta's and others' videos come as a DASH manifest (an MPD, XML) listing each stream at
+        each quality. The best video is the tallest (then the highest bitrate) and the best audio
+        the highest bitrate; the engine downloads both and joins them without re-encoding.
+
+        Args:
+            manifest: the MPD's XML text; None or "" for none.
+
+        Returns:
+            The file; None when there is no manifest, it isn't XML, it streams in segments
+            (`SegmentTemplate`, `SegmentList`), or it lacks a video or an audio stream with an
+            https URL. A source then falls back to the site's progressive URL.
+
+        Example:
+            >>> File.dash("not xml") is None
+            True
+        """
+        streams = _best_streams(manifest)
+        if streams is None:
+            return None
+        video, audio = streams
+        # The joined file takes the video's extension: a WebM pair stays WebM, the rest is MP4.
+        return cls(video, audio=audio)
+
 
 @dataclass(frozen=True, init=False)
 class Post:
-    """One post a category yields: its id, its files, its date and fields for the formats.
+    """One post a listing yields: its id, its files, its date, and fields for the templates.
 
         Post(item["code"], [File(url) for url in urls], date=item["taken_at"], album=title)
         Post(code, lambda: files_of(site, code))      # listed only when the post isn't saved yet
 
-    Frozen; `replace` gives a copy with fields changed.
-
     Args:
-        id: the post's id as the site shows it; it names the files and starts their keys.
+        id: the post's id as the site shows it; `{post}` in the templates, and the start of its
+            files' history keys.
         files: the post's files in order, or a function returning them, called only for a post
-            that passes `--time` and isn't saved yet, saving requests for saved posts.
-        date: when it was posted, in any form `day()` reads (a date, a datetime, Unix seconds,
-            milliseconds, a digit or ISO string); None for undated posts, which `--time` keeps.
-        headers: headers for downloading each of its files, such as a CDN Referer.
-        **fields: the site's own fields for the formats, such as `album`, `title` or `author`.
+            that passes `--when` and isn't saved yet, so a source never fetches the pages of a
+            post flnd already has.
+        date: when it was posted: a `date`, a `datetime`, Unix seconds or milliseconds, or an ISO
+            8601 string. The engine reads it once; None for an undated post, which `--when`
+            keeps.
+        headers: headers for downloading each of its files, such as a CDN's Referer.
+        **fields: the site's own fields: `caption`, `author`, `title`, `tags`, `album`, … They
+            feed the templates (when the source lists them in `fields`), the sidecars and
+            search.
 
     Raises:
-        SourceError: a field is one the engine sets (`category`, `num`, `count`, `index`,
-            `extension`, `path`), so a source can never overwrite one by accident.
+        SourceError: a field is one the engine sets (`post`, `category`, `num`, …).
+
+    Example:
+        >>> post = Post(9001, [File("https://cdn.example.com/a.jpg")], album="Trip")
+        >>> post.id, post.fields["album"], post.lazy
+        ('9001', 'Trip', False)
     """
 
     # The id, as text.
     id: str
     # The files, or a function giving them.
     files: tuple[File, ...] | Callable[[], Iterable[File]]
-    # The date as given, read by `day()`.
+    # The date as given; the engine reads it.
     date: DateLike
     # Headers for downloading its files, or None.
     headers: Mapping[str, str] | None
-    # The site's fields for the formats, read-only.
+    # The site's fields, read-only.
     fields: Mapping[str, Any]
     # The category the post was yielded by, set by the engine; "" for a route's own posts.
     category: str
 
     def __init__(self, id: str | int, files: Sequence[File] | Callable[[], Iterable[File]] = (), *,
                  date: DateLike = None, headers: Mapping[str, str] | None = None, **fields: Any):
-        reserved = sorted(ENGINE_FIELDS & fields.keys())
+        reserved = sorted(RESERVED & fields.keys())
         if reserved:
-            msg = "is a field" if len(reserved) == 1 else "are fields"
+            are = "is a field" if len(reserved) == 1 else "are fields"
             raise SourceError(
-                f"Post: {', '.join(reserved)} {msg} the engine sets; name the site field otherwise"
+                f"Post: {', '.join(reserved)} {are} the engine sets; "
+                "name the site's field otherwise"
             )
         _assign(self, id=str(id), files=files if callable(files) else tuple(files), date=date,
                 headers=_frozen(headers), fields=MappingProxyType(dict(fields)), category="")
 
-    def replace(self, **fields: Any) -> Post:
-        """A copy with fields changed: `post.replace(album=highlight.title)`."""
+    def replace(self, **changes: Any) -> Post:
+        """A copy with `id`, `files`, `date`, `headers` or fields changed.
+
+        Args:
+            **changes: the new values; a name that isn't one of the four is a field.
+
+        Returns:
+            The copy, in the same category.
+
+        Example:
+            >>> Post("1", album="a").replace(album="b").fields["album"]
+            'b'
+        """
         made = Post(
-            fields.pop("id", self.id), fields.pop("files", self.files),
-            date=fields.pop("date", self.date), headers=fields.pop("headers", self.headers),
-            **{**self.fields, **fields},
+            changes.pop("id", self.id), changes.pop("files", self.files),
+            date=changes.pop("date", self.date), headers=changes.pop("headers", self.headers),
+            **{**self.fields, **changes},
         )
         _assign(made, category=self.category)
         return made
@@ -467,73 +678,18 @@ class Post:
         return callable(self.files)
 
 
-def fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str:
-    """Format a template from fields, dropping separators around missing or empty fields.
-
-        fill("{category}/{album}", {"category": "posts"})                   # "posts"
-        fill("{date}_{id}{index}", {"id": "C1abc", "date": "", "index": ""})  # "C1abc"
-        fill("{author}/{id} {title}", {"author": "a/b", "id": 7})            # "a_b/7"
-
-    Passes path segments through `_text.filename` when `safe` is True.
-    """
-    segments = []
-    for segment in _split(template, "/"):
-        piece = _fill_segment(segment, fields)
-        if piece:
-            segments.append(_text.filename(piece) if safe else piece)
-    return "/".join(segments)
-
-
-def day(value: Any) -> datetime.date | None:
-    """The UTC day of any date a site gives, or None when it isn't one or can't be right.
-
-        day(1767312000)                 # date(2026, 1, 2): Unix seconds
-        day("1767312000000")            # the same, as milliseconds in a digit string
-        day("2026-01-02 01:58:16")      # ISO 8601
-        day(datetime(2026, 1, 2, 23, tzinfo=timezone(timedelta(hours=-5))))   # date(2026, 1, 3)
-
-    Args:
-        value: a `date`, a `datetime` (naive is read as UTC), Unix seconds or milliseconds as an
-            int, float or digit string, an ISO 8601 string, or None.
-
-    Returns:
-        The day in UTC; None for None, text that is none of those, a number too large for a date,
-        and any day before 2004 or after next year, which are mistakes for another number.
-    """
-    if isinstance(value, bool) or value is None:
-        return None
-    found: datetime.date | None = None
-    if isinstance(value, str):
-        text = value.strip()
-        if text.isdigit():
-            value = int(text)
-        else:
-            try:
-                value = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
-            except ValueError:
-                return None
-    if isinstance(value, datetime.datetime):
-        found = (value.astimezone(datetime.timezone.utc) if value.tzinfo else value).date()
-    elif isinstance(value, datetime.date):
-        found = value
-    elif isinstance(value, (int, float)):
-        seconds = value / 1000 if abs(value) >= MILLISECONDS else value
-        try:
-            found = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).date()
-        # Each platform refuses a huge timestamp its own way: OverflowError, OSError or ValueError.
-        except (OverflowError, OSError, ValueError):
-            return None
-    if found is None or not FIRST_YEAR <= found.year <= datetime.date.today().year + 1:
-        return None
-    return found
-
-
 @dataclass(frozen=True)
 class Range:
-    """`--time`'s two days, both included; None is no limit on that side.
+    """`--when`'s two days, both included; None is no limit on that side.
 
-        if post_day in site.time: ...           # an undated post (None) is always in it
-        Range(since=date(2026, 1, 1)).until     # None
+    A source that can ask its site for a range (Telegram's `offset_date`) reads `site.time`;
+    the engine filters every post by it anyway.
+
+    Example:
+        >>> from datetime import date
+        >>> span = Range(since=date(2026, 1, 1))
+        >>> date(2026, 3, 1) in span, "2025-12-31" in span, None in span
+        (True, False, True)
     """
 
     # The first day kept, or None.
@@ -541,49 +697,192 @@ class Range:
     # The last day kept, or None.
     until: datetime.date | None = None
 
-    @classmethod
-    def parse(cls, text: str) -> Range:
-        """Read `--time`'s value, `<since>,<until>`, each side a day or `*` for no limit.
+    def __contains__(self, value: object) -> bool:
+        """Whether a date is in range; an undated post (None, or text that isn't a date) is."""
+        found = _time.day(value)
+        if found is None:
+            return True
+        return not ((self.since and found < self.since) or (self.until and found > self.until))
 
-            Range.parse("2026-01-01,")               # Range(since=date(2026, 1, 1), until=None)
-            Range.parse("*,2026-06-30")              # Range(since=None, until=date(2026, 6, 30))
+
+@dataclass
+class Request:
+    """A request to the source's own domains, as `Source.sign` sees it before each try.
+
+    Args:
+        method: "GET", "POST", …
+        url: the whole URL, its query included.
+        headers: the request's headers; `sign` adds to or changes them.
+        body: the body's bytes, or None.
+        cookies: the login's cookies now, `{name: value}`, read-only.
+
+    Example:
+        >>> request = Request("GET", "https://api.example.com/me", {}, None, {"token": "t"})
+        >>> request.headers["authorization"] = "Bearer " + request.cookies["token"]
+    """
+
+    method: str
+    url: str
+    headers: MutableMapping[str, str]
+    body: bytes | None
+    cookies: Mapping[str, str]
+
+
+# ---------------------------------------------------------------------------------------------
+# Logging in
+# ---------------------------------------------------------------------------------------------
+
+class Login:
+    """How a source logs in: assigned once, as `login = cookies("session")` or `login = MyLogin()`.
+
+    The cookie sites use `cookies(...)`. A site with its own flow (Telegram's QR code and phone
+    number) subclasses `Login`, sets `methods`, and implements `start` and `check`:
+
+        class TelegramLogin(Login):
+            methods = ("qr", "phone")
+
+            def start(self, site, how):
+                code = site.ask("Code", description="Sent to your phone")
+                site.secrets["session"] = ...
+
+            def check(self, site):
+                return "session" in site.secrets
+
+    Args:
+        required: whether the source can't list anything without a login; a source that can
+            (public profiles) warns and goes on.
+    """
+
+    # The ways `flnd login <code> <how>` accepts.
+    methods: ClassVar[tuple[str, ...]] = ()
+    # The cookies, any one of which proves a login; empty for a login that keeps none.
+    names: tuple[str, ...] = ()
+
+    def __init__(self, *, required: bool = True) -> None:
+        self.required = required
+
+    def start(self, site: Site, how: str, /) -> None:
+        """Log in by `how`, asking through `site` (`site.ask`), and keep what it got.
 
         Args:
-            text: the value as given on the command line.
+            site: the source's site during `flnd login`: `ask` and `interactive`, `secrets`,
+                `state`, `cookies`, `info`, `warn`, `pause`, and `storage(url)`, a web app's
+                local storage read from a copy of Chrome's default profile.
+            how: one of `methods`.
 
         Raises:
-            UsageError: there is no comma, a side isn't a day, or since is after until;
-                the message is `TIME_USAGE`.
+            LoginError: the site refused, or the person gave up.
+
+        Example:
+            >>> class Code(Login):
+            ...     methods = ("phone",)
+            ...     def start(self, site, how):
+            ...         site.secrets["session"] = site.ask("Code")
+            >>> Code.methods
+            ('phone',)
         """
-        since, comma, until = text.partition(",")
-        if not comma or "," in until:
-            raise UsageError(TIME_USAGE)
-        try:
-            days = [_side(side) for side in (since, until)]
-        except ValueError:
-            raise UsageError(TIME_USAGE) from None
-        if days[0] and days[1] and days[0] > days[1]:
-            raise UsageError(TIME_USAGE)
-        return cls(days[0], days[1])
+        raise NotImplementedError(f"{type(self).__name__}.start")
 
-    def __contains__(self, value: object) -> bool:
-        """Whether a day is in range; None (undated post) always is, datetime counts by day."""
-        if value is None:
-            return True
-        if isinstance(value, datetime.datetime):
-            value = value.date()
-        if not isinstance(value, datetime.date):
-            return False
-        return not ((self.since and value < self.since) or (self.until and value > self.until))
+    def check(self, site: Site, /) -> bool:
+        """Whether a login is kept, from what `site.cookies` and `site.secrets` hold.
+
+        Args:
+            site: the source's site.
+
+        Returns:
+            True when logged in. It reads what is stored; it never asks the site.
+
+        Example:
+            >>> class Kept:
+            ...     secrets = {}
+            >>> Login().check(Kept())
+            True
+        """
+        return True
 
 
-def _side(text: str) -> datetime.date | None:
-    """One side of `--time`: YYYY-MM-DD day, or None for `*` or empty; `ValueError` otherwise."""
-    text = text.strip()
-    if text in ("", "*"):
-        return None
-    return datetime.datetime.strptime(text, "%Y-%m-%d").date()
+class Cookies(Login):
+    """The login of a cookie site, made by `cookies(...)`: logged in when one of `names` is there.
 
+    `flnd login <code> chrome` reads the cookies from a browser, and `flnd login <code> <file>`
+    from a cookies.txt; either is stored encrypted, and sent with every request to the source's
+    domains.
+
+    Args:
+        *names: the cookies, any one of which proves a login, such as `sessionid`.
+        required: whether nothing can be listed without it.
+
+    Example:
+        >>> login = cookies("sessionid", "sid_tt")
+        >>> login.names, login.methods, login.required
+        (('sessionid', 'sid_tt'), ('browser', 'file'), False)
+    """
+
+    methods: ClassVar[tuple[str, ...]] = ("browser", "file")
+
+    def __init__(self, *names: str, required: bool = False) -> None:
+        super().__init__(required=required)
+        if not names or not all(isinstance(name, str) and name for name in names):
+            raise SourceError('cookies() takes the cookie names that prove a login: '
+                              'cookies("sessionid")')
+        self.names = tuple(names)
+
+    def start(self, site: Site, how: str, /) -> None:
+        """Cookies are read by the engine (`flnd login <code> chrome`), never by the source.
+
+        Args:
+            site: the source's site during `flnd login`.
+            how: the way asked for.
+
+        Raises:
+            UsageError: always: the engine reads the cookies itself.
+
+        Example:
+            >>> cookies("sid").start(None, "phone")
+            Traceback (most recent call last):
+            flnd.errors.UsageError: phone: cookies are read from a browser or a cookies.txt file
+        """
+        raise UsageError(f"{how}: cookies are read from a browser or a cookies.txt file")
+
+    def check(self, site: Site, /) -> bool:
+        """Whether one of `names` is among the login's cookies.
+
+        Args:
+            site: the source's site; its `cookies` are read.
+
+        Returns:
+            True when one of the cookies is there.
+
+        Example:
+            >>> class Jar:
+            ...     cookies = {"sid": "1"}
+            >>> cookies("sid").check(Jar())
+            True
+        """
+        return any(name in site.cookies for name in self.names)
+
+
+def cookies(*names: str, required: bool = False) -> Cookies:
+    """The login of a cookie site: logged in when one of these cookies is there.
+
+    Args:
+        *names: the cookies, any one of which proves a login.
+        required: whether the source can't list anything without them; by default a source
+            without a login warns and reads what the site shows the public.
+
+    Returns:
+        The `Cookies` login, to assign as `login = cookies("sessionid")`.
+
+    Example:
+        >>> cookies("auth_token").names
+        ('auth_token',)
+    """
+    return Cookies(*names, required=required)
+
+
+# ---------------------------------------------------------------------------------------------
+# The site
+# ---------------------------------------------------------------------------------------------
 
 class Feed(Protocol):
     """What `Site.feed` returns: the JSON of matching responses, as they arrive.
@@ -621,18 +920,19 @@ class Site(Protocol):
     """The handle every route and category acts through, for one target.
 
         data = site.fetch(f"{API}/users/{user}", params={"count": 50}).json
+        for page in site.pages(f"{API}/users/{user}/posts", cursor="next"):
+            ...
         if site.open(f"https://www.example.com/{user}/"):
             title = site.document().css("h1::text").first
-        site.back_off("asked to wait a few minutes")
 
     The engine's is `flnd.site.TargetSite`; tests use `tests.fakes.FakeSite`. Every request to the
     source's own `domains` waits its turn under the source's `pace`, and a rate limit or a 5xx is
-    waited out and tried again here, a few times, so a source never sleeps or retries itself.
+    waited out and tried again here, so a source never sleeps or retries itself. A login wall
+    (a 401 or 403 from the source's own domains) raises `LoginError`.
 
-    The browser verbs (`open`, `wait`, `scroll`, `feed`, `document`, `evaluate`, `click`) drive
-    the target's tab in the run's one browser, launched the first time a target needs it. A
-    source never gets a Playwright object from them, so its code doesn't depend on Playwright's
-    API. They are for a plain `def` route or category; an `async def` one awaits `site.tab`.
+    The browser verbs (`open`, `wait`, `scroll`, `feed`, `warm`, `document`, `evaluate`,
+    `click`) drive the target's tab in the run's one browser, launched the first time a target
+    needs it. They are for a plain `def` route or category; an `async def` one awaits `site.tab`.
     """
 
     @property
@@ -647,33 +947,75 @@ class Site(Protocol):
 
     @property
     def time(self) -> Range:
-        """`--time`, for a source querying a range (tlg's `offset_date`); engine filters too."""
+        """`--when`, for a source that can ask its site for a range; the engine filters too."""
         ...
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
               check: bool = True, in_page: bool = False, **request: Any) -> _net.Response:
-        """Make one request, paced and retried, and return its `Response`.
+        """Make one request, paced and retried, and return its response.
 
             items = site.fetch(API, params={"cursor": cursor}).json
             profile = site.fetch(f"{API}/users/{user}", check=False)   # read profile.ok
 
-        `request` takes `params` (the query) and `body`: on a GET a dict is the query; on any
-        other method a dict or list is sent as JSON, and bytes or str as they are. A refusal
-        raises a `SiteError` with its `status` and `response` (`NotFound` for a 404 or 410,
-        `Blocked` for a 429 still refused after its waits), unless `check` is False, which
-        returns the refusal's response; a request that got no answer raises `NetworkError`.
+        Args:
+            url: the URL.
+            method: the HTTP method.
+            headers: headers of its own, besides the client's and the `sign` hook's.
+            check: raise for a refusal; False returns the refusal's response to read.
+            in_page: send it from the target's browser tab, as the page's own script would,
+                for an API that only answers the site's pages.
+            **request: `params` (the query, as a mapping) and `body` (bytes, text or JSON).
 
-        The request goes out with Chrome's TLS and HTTP/2 fingerprint, the login's cookies and
-        the source's `prepare` headers. `in_page=True` sends it from the target's tab instead,
-        with the page's own cookies and fingerprint, one browser round trip slower.
+        Returns:
+            The response: `.status`, `.ok`, `.headers`, `.text`, `.json`.
+
+        Raises:
+            NotFound: a 404 or 410.
+            LoginError: a 401 or 403 from the source's own domains: a login wall.
+            Blocked: a 429 still refused after its waits.
+            SiteError: another refusal, with its `status` and `response`.
+            NetworkError: no answer, after the tries.
+        """
+        ...
+
+    def pages(self, url: str, *, cursor: str | Callable[[Any], Any],
+              params: Mapping[str, Any] | None = None,
+              send: str | Callable[[Any], Mapping[str, Any]] = "cursor") -> Iterator[Any]:
+        """Each page of a paged JSON listing, the engine keeping and resuming its cursor.
+
+            for page in site.pages(f"{API}/posts", params={"count": 50}, cursor="next"):
+                yield from posts_of(page)
+
+        The first request has `params` alone. Each next one adds the cursor the last page gave.
+        The listing ends on a missing, empty or repeated cursor, or an empty page. When a run
+        is cut short, the engine keeps the cursor of the page it was reading, and the next run of
+        the same category starts there (only the first `pages` of a category resumes).
+
+        Args:
+            url: the listing's URL.
+            cursor: where a page says what comes next: a `dig` path (`"next"`,
+                `"data.user.media.page_info.end_cursor"`), or a function from the page to the
+                cursor, returning None at the end (for a site whose last page still has one).
+            params: the query every request sends.
+            send: where the cursor goes in the next request: a query parameter's name, or a
+                function from the cursor to more params (a GraphQL `variables` JSON).
+
+        Returns:
+            The pages, each the response's parsed JSON.
+
+        Raises:
+            The same as `fetch`. A saved cursor the site refuses (a 4xx) is dropped, and the
+            listing starts again from the newest.
+
+        Example:
+            >>> import inspect
+            >>> list(inspect.signature(Site.pages).parameters)
+            ['self', 'url', 'cursor', 'params', 'send']
         """
         ...
 
     def open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         """Load `url` in the target's tab, paced; False when it didn't load or answered 400 or more.
-
-            if site.open(f"https://www.example.com/{user}/"):
-                where = site.url
 
         Args:
             url: the page.
@@ -681,8 +1023,8 @@ class Site(Protocol):
             timeout: seconds before the page counts as not loaded.
 
         Returns:
-            Whether it loaded. A page that didn't is logged, not raised, and the tab stays where
-            it was. A 429 is waited out and the page loaded again, a few times.
+            Whether it loaded. A page that didn't is a warning line, not an error, and the tab
+            stays where it was. A 429 is waited out and the page loaded again, a few times.
         """
         ...
 
@@ -694,9 +1036,6 @@ class Site(Protocol):
     def wait(self, css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool]
              | None = None, idle: bool = False, timeout: float = 30.0) -> None:
         """Wait until `css` matches an element, `url` matches the tab's URL, and (`idle`) quiet.
-
-            site.wait(".grid")
-            site.wait(url="**/reels/")
 
         Args:
             css: a CSS selector; waits for a visible element to match it. None doesn't wait.
@@ -713,13 +1052,10 @@ class Site(Protocol):
     def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 2.0) -> int:
         """Scroll the tab until its feed ends or `until()` is True, in the source's `scroll` style.
 
-        Each step waits for the page to grow, not for a fixed time. A feed whose API responses
-        say when it ends is better read with `feed(match, scroll=True, cursor=…)`.
-
         Args:
             until: asked before each scroll; True stops.
-            idle: seconds the bottom may stay quiet, after a whole wait of 3 s brought nothing,
-                before the feed counts as ended.
+            idle: seconds the bottom may stay quiet, after a whole wait brought nothing, before
+                the feed counts as ended.
 
         Returns:
             How many scrolls it made.
@@ -731,48 +1067,50 @@ class Site(Protocol):
              cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> Feed:
         """Watch the tab for responses whose URL matches, and iterate their JSON.
 
-            def page_state(page):
-                info = page.get("page_info") if isinstance(page, dict) else None
-                return None if info is None else (info["has_next_page"], info["end_cursor"])
-
-            with site.feed("/graphql", scroll=True, cursor=page_state) as pages:
-                if site.open(f"https://www.example.com/{user}/"):
-                    for page in pages:
-                        ...
-
-        Open it before the page that sends the responses, or the first ones are missed.
-
-        A scrolling feed scrolls a step only when no body is waiting, and each step waits for
-        the next matching response or for the page to grow, never a fixed time. It ends as soon
-        as the site says there is no more: `cursor` read a page with no next one, or the same
-        cursor came back again and again. A feed without `cursor` ends when the page's bottom
-        stays quiet for about 5 s.
+        Open it before the page that sends the responses, or the first ones are missed. A
+        scrolling feed scrolls only when no body is waiting, and ends as soon as the site says
+        there is no more: `cursor` read a page with no next one, or the same cursor came back.
+        Without `cursor` it ends when the page's bottom stays quiet for about 5 s.
 
         Args:
             match: a substring of the URL, a compiled regex searched in it, or a predicate.
             scroll: when none is waiting, scroll the tab for more, and end when the feed ends.
                 Without it, the feed waits once for the network to go quiet, and ends.
             lines: each body holds one JSON value per line (NDJSON).
-            cursor: the source's cursor reader, called with each parsed value (each line, with
-                `lines`): `(more, cursor)` for one of the feed's pages, where `more` is whether
-                the site has another page and `cursor` names it (None if the page doesn't);
-                None for a value that says nothing about paging. None reads no cursor.
+            cursor: called with each parsed value: `(more, cursor)` for one of the feed's
+                pages, None for a value that says nothing about paging.
 
         Returns:
             The `Feed`, to iterate and close.
         """
         ...
 
+    def warm(self, urls: Iterable[str]) -> None:
+        """Start loading pages the source will open next, in background tabs.
+
+        `open` of one of them then switches to its tab at once, its responses kept. Up to six
+        load at a time; a site without a browser ignores the call.
+
+        Args:
+            urls: the pages, in the order they'll be opened.
+
+        Example:
+            >>> import inspect
+            >>> list(inspect.signature(Site.warm).parameters)
+            ['self', 'urls']
+        """
+        ...
+
     def document(self) -> Any:
-        """The tab's page now, parsed: a `Selection` with `css`, `xpath`, `script` and `text`."""
+        """The tab's page now, parsed: a selection with `css`, `xpath`, `script` and `text`."""
         ...
 
     def evaluate(self, js: str, *, arg: Any = None) -> Any:
-        """Run JavaScript in the tab and return its value.
+        """Run JavaScript in the tab and return its value (JSON values only).
 
         Args:
             js: an expression, or a function that takes `arg`.
-            arg: the function's argument; JSON values only.
+            arg: the function's argument.
 
         Returns:
             The value, as JSON carries it.
@@ -798,7 +1136,7 @@ class Site(Protocol):
 
         Args:
             until: returns True once the step is done; polled about once a second.
-            message: what the person should do, shown with a spinner.
+            message: what the person should do.
             timeout: seconds before giving up; None waits as long as it takes.
 
         Returns:
@@ -815,12 +1153,45 @@ class Site(Protocol):
         """
         ...
 
+    def html(self, text: str | bytes) -> Any:
+        """Parse HTML (or JSON) text into a selection with `css`, `xpath`, `script` and `text`.
+
+        Args:
+            text: the page's text.
+
+        Returns:
+            The selection.
+
+        Example:
+            >>> import inspect
+            >>> list(inspect.signature(Site.html).parameters)
+            ['self', 'text']
+        """
+        ...
+
     def pause(self, seconds: float, reason: str) -> None:
         """Wait `seconds`, as a page that needs time to settle does; a stop ends it.
 
         Args:
             seconds: how long.
             reason: why, for the people watching the run.
+        """
+        ...
+
+    def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
+        """Wait out a block the site showed in its content, such as a "please wait" answer.
+
+        A rate limit by status (429) is waited out by `fetch` itself. This is for a block a
+        source reads from the page: it waits `retry_after` (up to an hour), or, without one,
+        30 s, then 2 min, then 8 min for the rounds in a row, and a fourth round in a row
+        raises `Blocked`. A request that then succeeds starts the count again.
+
+        Args:
+            reason: what the site did, shown with the wait.
+            retry_after: the seconds the site asked for; None waits by the rounds above.
+
+        Raises:
+            Blocked: the site kept blocking after three waits in a row.
         """
         ...
 
@@ -831,12 +1202,35 @@ class Site(Protocol):
 
     @property
     def state(self) -> MutableMapping[str, Any]:
-        """The source's own store, kept between runs."""
+        """The source's own key-value store, kept between runs in the home's `flnd.db`."""
         ...
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
-        """The source's secrets, encrypted."""
+        """The source's secrets, encrypted in the home's vault."""
+        ...
+
+    @property
+    def interactive(self) -> bool:
+        """Whether `ask` can ask: a login in a terminal."""
+        ...
+
+    def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
+        """Ask the person a question during `flnd login`, and return what was typed.
+
+        Args:
+            message: the question.
+            secret: hide what is typed, as for a password.
+            description: more lines under the question.
+
+        Raises:
+            UsageError: there is nobody to ask (not a login, or not a terminal).
+
+        Example:
+            >>> import inspect
+            >>> list(inspect.signature(Site.ask).parameters)
+            ['self', 'message', 'secret', 'description']
+        """
         ...
 
     def info(self, message: str, **fields: Any) -> None:
@@ -844,7 +1238,7 @@ class Site(Protocol):
 
         Args:
             message: the text, with `{name}` fields filled in from `fields`.
-            **fields: the values the message's fields take.
+            **fields: the values of the message's fields.
         """
         ...
 
@@ -853,317 +1247,235 @@ class Site(Protocol):
 
         Args:
             message: the text, with `{name}` fields filled in from `fields`.
-            **fields: the values the message's fields take.
-        """
-        ...
-
-    def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
-        """Count one rate limit and wait it out before returning.
-
-        Args:
-            reason: what the site did, shown on the countdown.
-            retry_after: the seconds the site asked for; None waits 30 s up to 15 min.
+            **fields: the values of the message's fields.
         """
         ...
 
 
-class Login(Protocol):
-    """The handle a source login asks through (tlg's QR code and phone), in `flnd login` only.
+# ---------------------------------------------------------------------------------------------
+# JSON paths
+# ---------------------------------------------------------------------------------------------
 
-        code = login.ask("Code", description="Sent to your phone")
-        login.secrets["session"] = session_string
-    """
+def dig(data: Any, path: str) -> Any:
+    """Walk JSON by a path: `a.b` for keys, `[0]` for an index, `[]` for every item, `||` for or.
 
-    @property
-    def interactive(self) -> bool:
-        """Whether `ask` can ask: in a terminal."""
-        ...
-
-    def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
-        """Ask a question with `prompt.ask`'s names, and return what was typed.
-
-        Args:
-            message: the question.
-            secret: hide what is typed, as for a password.
-            description: more lines under the question.
-        """
-        ...
-
-    @property
-    def secrets(self) -> MutableMapping[str, str]:
-        """The source's secrets, encrypted, where a login keeps what it got."""
-        ...
-
-    def info(self, message: str, **fields: Any) -> None:
-        """A line naming the source, such as `login.info("Signed in as {name}", name=name)`.
-
-        Args:
-            message: the text, with `{name}` fields filled in from `fields`.
-            **fields: the values the message's fields take.
-        """
-        ...
-
-
-def pages(fetch: Callable[[str | None], Any], cursor: Callable[[Any], str | None]) -> Iterator[Any]:
-    """Each page of a paginated API: `fetch(None)`, then `fetch(c)` while `c` is new.
-
-        for page in pages(
-            lambda c: site.fetch(API, params=variables(c)).json, lambda page: page["next"]
-        ):
-            yield from posts_of(page)
+    A path with `[]` gives a list: the rest of the path is read from each item, missing ones
+    are left out, and lists it reaches are flattened, so `edges[].node.media[]` is every media
+    of every node. `a || b` gives the first alternative that isn't empty (None, "", [] or {}).
 
     Args:
-        fetch: one page, given the cursor; None asks for the first.
-        cursor: the next cursor a page gives; None or "" when it is the last.
+        data: parsed JSON: dicts, lists and values.
+        path: the path, such as `"data.user.edge_owner.edges[].node"`.
 
-    It stops on an empty cursor and on one seen before, which a site sends at its end or when it
-    loops, so a feed is never read forever. The first call in a category the job lists starts from
-    the cursor an interrupted run saved, and tells the job the cursor of each page it reads.
+    Returns:
+        What the path reaches: None when a key or index is missing (or a list, for `[]`).
+
+    Example:
+        >>> page = {"data": {"items": [{"id": 1}, {"id": 2}, {"x": 3}]}, "next": None}
+        >>> dig(page, "data.items[].id"), dig(page, "data.items[0].id")
+        ([1, 2], 1)
+        >>> dig(page, "next || data.items[1].id")
+        2
     """
-    resume: Resume | None = getattr(_listing, "resume", None)
-    if resume is not None and resume.taken:
-        resume = None
-    if resume is not None:
-        resume.taken = True
-    start = resume.start if resume is not None else None
-    page = _first_page(fetch, start, resume)
-    seen: set[str] = set()
-    while True:
-        yield page
-        following = cursor(page)
-        if not following or following in seen:
-            return
-        seen.add(following)
-        if resume is not None:
-            # The cursor of the page being fetched and read: a run cut short reads it again, and
-            # the posts it already saved are skipped.
-            resume.cursor = following
-        page = fetch(following)
+    for alternative in path.split("||"):
+        steps = _steps(alternative.strip())
+        found = _walk(data, steps)
+        # A path with `[]` always gives a list, empty when a key before it is missing.
+        if found is None and None in steps:
+            found = []
+        if found not in (None, "", [], {}):
+            return found
+    return found
 
 
-class Resume:
-    """One category's listing for `pages`: where it starts, and the cursor of the page it reads.
+def _steps(path: str) -> list[str | int | None]:
+    """A path as steps: a key, an index, or None for `[]`.
 
-        with listing(Resume("c42", label="ins:example_user: posts")):
-            ...
+    Args:
+        path: one alternative of a `dig` path, such as `"data.items[].id"`.
+
+    Returns:
+        The steps, in order.
+
+    Raises:
+        SourceError: a bracket holds anything but nothing or a whole number.
     """
+    steps: list[str | int | None] = []
+    for part in path.split("."):
+        name, _, rest = part.partition("[")
+        if name:
+            steps.append(name)
+        while rest:
+            inside, _, rest = rest.partition("]")
+            if inside == "":
+                steps.append(None)
+            elif inside.lstrip("-").isdigit():
+                steps.append(int(inside))
+            else:
+                raise SourceError(f"dig: [{inside}] isn't [] or an index, in {path!r}")
+            rest = rest.removeprefix("[")
+    return steps
 
-    def __init__(
-        self,
-        start: str | None = None,
-        *,
-        label: str = "",
-        saved: Callable[[str, datetime.date | None], bool] | None = None,
-    ):
-        """Set up a category listing's resume cursor, label, and saved-post predicate."""
-        # The cursor an interrupted run saved; None starts from the newest.
-        self.start = start
-        # Names the listing in the line that says a saved cursor was refused.
-        self.label = label
-        # The cursor of the page being read, for the job to save if the listing is cut short.
-        self.cursor: str | None = start
-        # Whether a `pages` call took this listing already; only the first one resumes.
-        self.taken = False
-        # Whether the site refused `start`, so the listing began again from the newest.
-        self.refused = False
-        self._saved = saved
-        self._streak = 0
 
-    def caught_up(self, post_id: str, *, posted: Any = None) -> bool:
-        """Whether `post_id` completes a streak of 5 already-saved posts for this listing."""
-        if self._saved is None:
-            return False
-        if self._saved(post_id, day(posted)):
-            self._streak += 1
+def _walk(data: Any, steps: list[str | int | None]) -> Any:
+    """Follow `steps` from `data`; a `[]` step maps the rest over each item, and flattens.
+
+    As in JMESPath, `a[]` flattens one level (a list of lists becomes one list), and a `[]`
+    later in the path flattens the lists the items give.
+
+    Args:
+        data: the JSON to walk.
+        steps: what `_steps` made of the path.
+
+    Returns:
+        What the steps reach; None when a key or index is missing, a list after a `[]`.
+    """
+    for position, step in enumerate(steps):
+        if step is None:
+            if not isinstance(data, list):
+                return []
+            rest = steps[position + 1:]
+            found: list[Any] = []
+            for item in data:
+                value = _walk(item, rest)
+                if value is None:
+                    continue
+                if isinstance(value, list) and (not rest or None in rest):
+                    found.extend(value)
+                else:
+                    found.append(value)
+            return found
+        if isinstance(step, int):
+            if not isinstance(data, list) or not -len(data) <= step < len(data):
+                return None
+            data = data[step]
+        elif isinstance(data, dict):
+            data = data.get(step)
         else:
-            self._streak = 0
-        return self._streak >= SAVED_STREAK
+            return None
+        if data is None:
+            return None
+    return data
 
 
-def caught_up(post_id: str, *, posted: Any = None) -> bool:
-    """Whether `post_id` hits the current listing's 5-saved-post early-stop streak."""
-    resume = getattr(_listing, "resume", None)
-    return False if resume is None else resume.caught_up(post_id, posted=posted)
-
-
-@contextmanager
-def listing(resume: Resume | None) -> Iterator[None]:
-    """Make `resume` the listing that `pages` calls on this thread report to, for the block."""
-    previous = getattr(_listing, "resume", None)
-    _listing.resume = resume
-    try:
-        yield
-    finally:
-        _listing.resume = previous
-
-
-def _first_page(fetch: Callable[[str | None], Any], start: str | None,
-                resume: Resume | None) -> Any:
-    """The first page: from `start` if any, else from the newest; a refused `start` is dropped."""
-    if not start or resume is None:
-        return fetch(None)
-    try:
-        return fetch(start)
-    except SiteError as error:
-        # A cursor gone stale (a 4xx) is the site's answer for good; anything else is a failure.
-        if error.status is None or not 400 <= error.status < 500:
-            raise
-    ui.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
-             label=resume.label)
-    resume.refused, resume.cursor = True, None
-    return fetch(None)
-
-
-# The listing the job is reading on this thread, which `pages` resumes and reports to.
-_listing = threading.local()
-
+# ---------------------------------------------------------------------------------------------
+# The source
+# ---------------------------------------------------------------------------------------------
 
 class Source:
     """One site flnd downloads from: what it declares, its routes, and its categories.
 
-        class Instagram(Source):
-            code, name, domains = "ins", "Instagram", ("instagram.com",)
-            needs = ("sessionid",)
-            pace = 1.0
-            folder = "{category}/{album}"
-            unsupported = {"instagram.com/stories": "stories not supported; give profile"}
+        class Example(Source):
+            code = "exm"
+            domains = ("example.com",)
+            api = 1
+            login = cookies("session")
 
-            @target("{user}", "instagram.com/{user}")
-            def user(self, site, user): return Account.load(site, user)
+            @target("exm:{user}", "example.com/{user}")
+            def profile(self, site, user):
+                return site.fetch(f"https://api.example.com/users/{user}").json
 
-            @user.category(newest_first=True)
-            def posts(self, site, account): yield from grid(site, account, "posts")
+            @profile.category(newest_first=True)
+            def posts(self, site, profile): ...
 
-    Every subclass is listed in `flnd.sources.SOURCES`. When the class is created, its routes
-    are collected in declaration order and checked: each pattern's host must be one of
-    `domains`, and no pattern may appear twice. A mistake raises `SourceError` at import. Its
-    `categories` are then its routes' categories, in declaration order, and its `single_kinds`
-    the kinds of its routes without any.
+    Only `code`, `domains`, `api` and one route are required. The class is checked when it is
+    made: a mistake raises `SourceError` naming the attribute and the fix, so a broken source
+    never starts a run. Its `routes`, `forms`, `categories` and `single_kinds` are then
+    derived from its `@target` methods.
+
+    Where files go: `<home>/media/<code>/<target>/` is the target's folder, `folder` the folder
+    under it, and `filename` the file's name without its extension, which the content decides.
+    A template may use `source`, `target`, `category`, `post`, `num`, `count`, `index`,
+    `extension`, `path`, `date` and `query`, and the post fields the source lists in `fields`.
+    `key` is the history key of a file: change it and every saved file is downloaded again.
     """
 
-    # The prefix in a target and the cookie file name, such as "ins".
+    # What targets start with (`exm:<user>`) and the login's slot in the vault: 2 to 16 lowercase
+    # letters and digits.
     code: ClassVar[str]
-    # Shown in help, such as "Instagram".
-    name: ClassVar[str]
-    # The site's domains, short-link hosts included: for bare URLs, the cookies a login keeps, the
-    # requests `prepare` sees and the ones the pace counts.
+    # The site's domains, short-link hosts included: whose links it reads, which requests carry
+    # its cookies and its `sign` hook, and which are paced.
     domains: ClassVar[tuple[str, ...]]
-    # `{pattern: message}`: links on the site that are refused with their own message, tried before
-    # any route, such as Instagram's story links. A pattern here has no placeholder.
-    unsupported: ClassVar[Mapping[str, str]] = {}
-    # Routes collected from `@target` methods when class is created, in declaration order.
-    routes: ClassVar[tuple[Route, ...]] = ()
-    # The forms help and refusals list: generated from the routes when the class is created.
-    forms: ClassVar[tuple[str, ...]] = ()
-    # What `--from` can take from this source; without `--from`, a target gets every one. Derived
-    # from the routes' categories when the class is created.
-    categories: ClassVar[tuple[str, ...]] = ()
-    # Target kinds that are one post, downloaded whole (ins "post", tik "video"): the routes without
-    # categories. A post has none (tagged or reposts describe a profile's tab, not a post), so
-    # `--from` with one is a usage error rather than a filter that silently drops every file.
-    single_kinds: ClassVar[tuple[str, ...]] = ()
-    # Cookie names, any one of which proves a login.
-    needs: ClassVar[tuple[str, ...]] = ()
-    requires_login: ClassVar[bool] = False
-    login_methods: ClassVar[tuple[str, ...]] = ("browser", "file")
-    # Minimum seconds between requests to this source's own domains.
+    # The source API this source was written for.
+    api: ClassVar[int]
+    # The site's name as people know it, shown in help; the class's name by default.
+    name: ClassVar[str] = ""
+    # How it logs in: `cookies("session")`, a `Login` subclass's instance, or None for no login.
+    login: ClassVar[Login | None] = None
+    # Seconds between requests to its domains; the config file may change it.
     pace: ClassVar[float] = 0.5
-    # Where a post's files go under the target's folder, what each is named (the content adds the
-    # extension) and what its history row is keyed by: formats over a post's fields and the
-    # engine's (see `fill` and `ENGINE_FIELDS`). A category may give its own.
-    folder: ClassVar[str] = "{category}"
-    filename: ClassVar[str] = "{date}_{id}{index}"
-    key: ClassVar[str] = "{id}_{num}"
-    fields: ClassVar[tuple[str, ...]] = ()
-    # For this source's HTTP requests only; the browser always keeps its own.
-    user_agent: ClassVar[str | None] = None
-    browser: ClassVar[bool] = False
-    stealth: ClassVar[bool] = True
-    # How the browser scrolls this source's feeds: "human" (wheel steps, pauses about 0.4 s, at
-    # most two tabs at once), so the site flags it less as a bot, or "fast" (no pauses).
-    scroll: ClassVar[str] = "human"
     # The most files downloading at once from a host, by host name (a subdomain counts as its
     # parent): `{"cdn.example": 4}`. Each host's cap adapts, from 8 (or less) up to this, or up
     # to 32 for a host not named. A file the source fetches itself (a `fetch` function) counts
     # against its first domain.
     limits: ClassVar[Mapping[str, int]] = MappingProxyType({})
-    # `unsupported`, compiled when the class is created.
+    # The templates of where a file goes and what it is named (see the class's docstring), and
+    # of its history key.
+    folder: ClassVar[str] = "{category}"
+    filename: ClassVar[str] = "{post}_{num}"
+    key: ClassVar[str] = "{post}_{num}"
+    # The post fields the templates may use, besides the engine's.
+    fields: ClassVar[tuple[str, ...]] = ()
+    # `{pattern: message}`: links on the site refused with their own message, tried before any
+    # route, such as Instagram's story links. A pattern here has no placeholder.
+    unsupported: ClassVar[Mapping[str, str]] = {}
+    # The User-Agent of its requests (not the browser's); None for the client's own.
+    user_agent: ClassVar[str | None] = None
+    # Whether its browser hides that it is automated.
+    stealth: ClassVar[bool] = True
+    # How the browser scrolls its feeds: "human" (wheel steps and short pauses, at most two tabs
+    # at once), which sites flag less, or "fast".
+    scroll: ClassVar[str] = "human"
+
+    # Derived when the class is made: its routes in declaration order, the forms help lists, the
+    # categories `--only` may name, and the kinds that are one post, downloaded whole.
+    routes: ClassVar[tuple[Route, ...]] = ()
+    forms: ClassVar[tuple[str, ...]] = ()
+    categories: ClassVar[tuple[str, ...]] = ()
+    single_kinds: ClassVar[tuple[str, ...]] = ()
+    # `unsupported`, compiled.
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()
 
-    def __init_subclass__(cls, **kwargs: Any):
-        """Collect and check routes and unsupported patterns, and derive forms and categories.
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Check the class's declarations, and derive its routes, forms and categories.
+
+        A class with no code and no route of its own is a base for other sources, and is left
+        alone until a subclass is made.
 
         Raises:
-            SourceError: a pattern outside `domains`, a pattern given twice, a placeholder in
-                `unsupported`, categories declared as both field and methods, or a `scroll`
-                other than "human" or "fast".
+            SourceError: a missing or malformed `code`, `domains` or `api`; no route; a pattern
+                outside `domains` or given twice; a template naming an unknown field; a route
+                with categories that yields; a wrong `login`, `pace`, `limits` or `scroll`; or a
+                name of the old source API. The message names the source and the attribute.
         """
         super().__init_subclass__(**kwargs)
+        for derived in ("routes", "forms", "categories", "single_kinds"):
+            if derived in vars(cls):
+                raise SourceError(f"{cls.__name__}.{derived}: made from the @target methods and "
+                                  "their @<route>.category methods; declare no such field")
         # A subclass keeps its base's routes; one of the same name replaces it in place.
         routes = {route.kind: route for route in cls.routes}
         routes.update(
             (value.kind, value) for value in vars(cls).values() if isinstance(value, Route)
         )
         cls.routes = tuple(routes.values())
+        if not getattr(cls, "code", None) and not cls.routes:
+            return
+        _check(cls)
+        cls.name = cls.name or cls.__name__
         cls._refusals = tuple(
             (_Pattern(pattern), message) for pattern, message in cls.unsupported.items()
         )
-        if any(pattern.names for pattern, _ in cls._refusals):
-            raise SourceError(
-                f"{cls.__name__}.unsupported: pattern captures nothing; use * for any segment"
-            )
-        domains = getattr(cls, "domains", ())
-        seen: set[str] = set()
-        for pattern in [pattern for route in cls.routes for pattern in route._patterns] + \
-                [pattern for pattern, _ in cls._refusals]:
-            if pattern.host is not None and not any(
-                pattern.host == _bare_host(domain) for domain in domains
-            ):
-                raise SourceError(
-                    f"{cls.__name__}: pattern {pattern.text!r} isn't on its domains {domains}"
-                )
-            # Compared without www. and m., which matching drops anyway.
-            if pattern.host is None:
-                key = pattern.text
-            else:
-                head, sep, tail = pattern.text.partition("://")
-                host_part, slash, rest = (tail if sep else head).partition("/")
-                key = f"{_bare_host(host_part.lower())}{slash}{rest}"
-            if key in seen:
-                raise SourceError(f"{cls.__name__}: pattern {pattern.text!r} is given twice")
-            seen.add(key)
-        # The styles `flnd._browser` knows (`SCROLLS`), named here so a source's import doesn't
-        # load the browser library.
-        if getattr(cls, "scroll", "human") not in ("human", "fast"):
-            raise SourceError(
-                f"{cls.__name__}.scroll must be 'human' or 'fast', not {cls.scroll!r}"
-            )
-        limits = getattr(cls, "limits", {})
-        if not isinstance(limits, Mapping) or not all(
-            isinstance(host, str) and type(cap) is int and cap > 0
-            for host, cap in limits.items()
-        ):
-            raise SourceError(
-                f"{cls.__name__}.limits: give caps by host, such as {{'cdn.example': 4}}, "
-                "each a whole number above 0"
-            )
-        if "categories" in vars(cls) or "single_kinds" in vars(cls):
-            raise SourceError(
-                f"{cls.__name__}: its categories are its @<route>.category methods; "
-                "declare no categories or single_kinds field"
-            )
+        _check_patterns(cls)
         names = [category.name for route in cls.routes for category in route.categories]
         cls.categories = tuple(dict.fromkeys(names))
         cls.single_kinds = tuple(
             route.kind for route in cls.routes if not route.categories and not route.discovers
         )
-        if not cls.routes:
-            return
-        code = getattr(cls, "code", "")
-        forms = [form for route in cls.routes for form in route.forms(code)]
+        forms = [form for route in cls.routes for form in route.forms(cls.code)]
         # `ins:<user>` is the form people write most, so forms after `code:` or `code?` come first.
         cls.forms = tuple(
-            sorted(forms, key=lambda form: not form.startswith((f"{code}:", f"{code}?")))
+            sorted(forms, key=lambda form: not form.startswith((f"{cls.code}:", f"{cls.code}?")))
         )
 
     def resolve(self, text: str) -> Target:
@@ -1171,14 +1483,14 @@ class Source:
 
             Instagram().resolve("https://www.instagram.com/p/C1abcDEFghi/")
 
-        Override it only for forms no pattern can say (tlg's chat titles and `t.me/c/<n>` links),
-        and pass anything else on with `super().resolve(text)`.
+        Override it only for forms no pattern can say (Telegram's chat titles and `t.me/c/<n>`
+        links), and pass anything else on with `super().resolve(text)`.
 
         Args:
-            text: the text after `code:`, or a bare URL on the source's domains, stripped.
+            text: the text after `code:`, or a bare link on the source's domains, stripped.
 
         Returns:
-            The target the first matching route reads.
+            The target the first matching route reads, its `kind` set.
 
         Raises:
             UsageError: an `unsupported` pattern matched, with its message, and no route pattern
@@ -1201,8 +1513,8 @@ class Source:
                         stripped = value.strip()
                         if not stripped:
                             raise UsageError(f"{self.code}: the query is empty")
-                        return Target(self.code, route.kind, stripped, query=True)
-                    return Target(self.code, route.kind, value)
+                        return Target(f"{self.code}?{stripped}", kind=route.kind)
+                    return Target(f"{self.code}:{value}", kind=route.kind)
         if refused is not None:
             raise UsageError(f"{self.code}: {refused[1]}")
         link = None if url is None else text if _is_url(text) else f"https://{text}"
@@ -1210,28 +1522,26 @@ class Source:
             f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}", url=link
         )
 
-    def prepare(self, request: _net.Request, cookies: Mapping[str, str], /) -> _net.Request:
-        """Add headers or signature to a request on source domains before each attempt.
+    def sign(self, request: Request, /) -> None:
+        """Add headers or a signature to a request to the source's domains, before each try.
 
-            def prepare(self, request, cookies):
-                request.headers["x-csrf-token"] = cookies.get("ct0", "")
-                return request
+            def sign(self, request):
+                request.headers["x-csrf-token"] = request.cookies.get("ct0", "")
 
-        `request` has `method`, `url` (a str, with `host`, `path` and `params`), `headers` (by
-        lower-case name) and `content`; `cookies` are the session's now, `{name: value}`.
+        Args:
+            request: the request; change its `headers`.
+
+        Example:
+            >>> request = Request("GET", "https://api.example.com/me", {}, None, {})
+            >>> Source.sign(Source(), request)
+            >>> request.headers
+            {}
         """
-        return request
-
-    def login(self, login: Login, method: str, /) -> None:
-        """Log in by `method` (tlg), asking through `login` (a `Login`).
-
-        Cookie sources keep this default, and the engine's `browser` and `file` methods log in.
-        A login that fails raises `LoginError`, which `flnd login` reports.
-        """
-        raise NotImplementedError(f"{self.code} has no login method {method!r}")
 
     def connect(self, site: Site, /) -> Any:
         """A context manager, or an async one, giving `site.client`; entered once per run.
+
+        For a site with its own client (Telegram's SDK). The default gives None.
 
         Args:
             site: the `Site` of the source's account.
@@ -1242,24 +1552,247 @@ class Source:
         return nullcontext()
 
     def date(self, site: Site, post: Post, /) -> DateLike:
-        """The day of a post its listing left undated, from its own page; None if the site can't.
+        """The date of a post its listing left undated, from its own page; None if the site can't.
 
-        The engine asks it once per undated post as its category ends, and each `sync` asks it for
-        files saved undated or with an estimated day. A source overrides it with one paced request.
+        The engine asks it once per undated post as its category ends, and each `sync` asks it
+        for files saved undated or with an estimated day. A source overrides it with one paced
+        request; the default knows nothing.
+
+        Args:
+            site: the target's site.
+            post: the undated post; its `id` is what the site knows it by.
 
         Raises:
-            SiteError: the item can't be read; a 401, 403 or 429 (`Blocked`) stops asking for
+            SiteError: the post can't be read; a 401, 403 or 429 (`Blocked`) stops asking for
                 the run. A `NetworkError` or `LoginError` is taken the same way.
         """
         return None
 
-    def logged_in(self, site: Site, /) -> bool:
-        """Whether a login is stored: by default, one of `needs` is among the saved cookies.
 
-        Args:
-            site: the account's `Site`; its `cookies` and `secrets` say what the login kept.
-        """
-        return not self.needs or any(name in site.cookies for name in self.needs)
+class _Unmatched(UsageError):
+    """A target no route reads; `url` is set when it is a link on the source's domains.
+
+    The engine catches it to follow a short link once with a HEAD request and read where it
+    leads. Everyone else sees the `UsageError` it is.
+
+    Args:
+        message: the whole message, starting with the source's code.
+        url: the link to follow; None when the refusal is final.
+    """
+
+    def __init__(self, message: str, *, url: str | None = None):
+        super().__init__(message)
+        self.url = url
+
+
+# ---------------------------------------------------------------------------------------------
+# Checking a source when its class is made
+# ---------------------------------------------------------------------------------------------
+
+def _check(cls: type[Source]) -> None:
+    """Check a source's declarations; see `Source.__init_subclass__` for what fails.
+
+    Args:
+        cls: the source class being made.
+
+    Raises:
+        SourceError: the first mistake, worded `<code>.<attribute>: <what>; <the fix>`.
+    """
+    label = cls.__name__
+    code = vars(cls).get("code", getattr(cls, "code", None))
+    if not isinstance(code, str) or not CODE.fullmatch(code):
+        raise SourceError(f"{label}.code: {'missing' if code is None else repr(code)}; set code"
+                          ' = "exm": 2 to 16 lowercase letters and digits, what targets start with')
+    label = code
+    for name, spelled in OLD_NAMES.items():
+        if hasattr(cls, name):
+            raise SourceError(f"{label}.{name}: source API {API} spells it {spelled}")
+    domains = getattr(cls, "domains", None)
+    if (not isinstance(domains, tuple) or not domains
+            or not all(isinstance(d, str) and d and "/" not in d for d in domains)):
+        raise SourceError(f'{label}.domains: set domains = ("example.com",), the hosts of its '
+                          "links, without a scheme or a path")
+    _check_api(cls, label)
+    if not cls.routes:
+        raise SourceError(f'{label}: no route; mark a method with @target("{code}:{{user}}")')
+    login = cls.login
+    if login is not None and not isinstance(login, Login):
+        raise SourceError(f'{label}.login: set login = cookies("<name>"), an instance of a '
+                          "Login subclass, or None")
+    if not isinstance(cls.pace, (int, float)) or isinstance(cls.pace, bool) or cls.pace < 0:
+        raise SourceError(f"{label}.pace: {cls.pace!r}; set the seconds between requests, "
+                          "such as 0.5")
+    if not isinstance(cls.limits, Mapping) or not all(
+            isinstance(host, str) and isinstance(n, int) and not isinstance(n, bool) and n > 0
+            for host, n in cls.limits.items()):
+        raise SourceError(f'{label}.limits: {cls.limits!r}; set {{"<host>": <files at once>}}, '
+                          "each a whole number above 0")
+    if cls.scroll not in SCROLLS:
+        raise SourceError(f"{label}.scroll: {cls.scroll!r}; set 'human' or 'fast'")
+    clash = sorted(set(cls.fields) & RESERVED)
+    if clash:
+        raise SourceError(f"{label}.fields: {', '.join(clash)} is the engine's; name the "
+                          "site's field otherwise")
+    for route in cls.routes:
+        function = route.function
+        if route.categories and (inspect.isgeneratorfunction(function)
+                                 or inspect.isasyncgenfunction(function)):
+            raise SourceError(
+                f"{label}.{route.kind}: a route with categories returns what they receive, but "
+                "it yields; return a value, or drop its categories"
+            )
+    _check_templates(cls, label)
+
+
+def _check_api(cls: type[Source], label: str) -> None:
+    """Check `api`: the source API the source was written for must be this flnd's.
+
+    Args:
+        cls: the source class being made.
+        label: how messages name it: its code.
+
+    Raises:
+        SourceError: `api` is missing, not a whole number from 1, or another major version;
+            a newer one's hint is to update flnd.
+    """
+    api = getattr(cls, "api", None)
+    if api is None:
+        raise SourceError(f"{label}.api: missing; set api = {API}, the source API it is "
+                          "written for")
+    if not isinstance(api, int) or isinstance(api, bool) or api < 1:
+        raise SourceError(f"{label}.api: {api!r}; set api = {API}")
+    if api > API:
+        raise SourceError(f"{label} needs source API {api}; this flnd has {API}",
+                          hint="update flnd")
+    if api < API:
+        raise SourceError(f"{label} was written for source API {api}; this flnd has {API}",
+                          hint="see docs/writing-a-source for the changes")
+
+
+def _check_templates(cls: type[Source], label: str) -> None:
+    """Check that every template names only the engine's fields and the source's `fields`.
+
+    Args:
+        cls: the source class being made.
+        label: how messages name it: its code.
+
+    Raises:
+        SourceError: a template leaves the target's folder, can't be parsed, or names a field
+            that is neither the engine's nor in `fields`.
+    """
+    known = (*TEMPLATE_FIELDS, *cls.fields)
+    templates = [("folder", cls.folder), ("filename", cls.filename), ("key", cls.key)]
+    for route in cls.routes:
+        templates.append((f"{route.kind}.folder", route.folder))
+        for category in route.categories:
+            templates += [(f"{category.name}.folder", category.folder),
+                          (f"{category.name}.key", category.key)]
+    for attribute, template in templates:
+        if template is None:
+            continue
+        # A folder stays under the target's: no absolute path, drive, backslash or `..`.
+        if ("\\" in template or template.startswith("/") or re.match(r"[A-Za-z]:", template)
+                or any(part in (".", "..") for part in template.split("/"))):
+            raise SourceError(f"{label}.{attribute}: {template!r} leaves the target's folder; "
+                              "write a relative path with '/' and no '..'")
+        try:
+            used = _text.fields(template)
+        except ValueError as error:
+            raise SourceError(f"{label}.{attribute}: {template!r}: {error}") from None
+        for name in sorted(used - set(known)):
+            raise SourceError(f"{label}.{attribute}: unknown field {{{name}}}; fields are "
+                              f"{', '.join(known)}",
+                              hint=f"list a post field in {label}.fields to use it")
+
+
+def _check_patterns(cls: type[Source]) -> None:
+    """Check that link patterns are on the source's domains, and that none is given twice.
+
+    Args:
+        cls: the source class being made, its routes and refusals compiled.
+
+    Raises:
+        SourceError: an `unsupported` pattern captures a value, a link pattern is on another
+            site, a code pattern doesn't start with the source's code, or a pattern is given
+            twice.
+    """
+    if any(pattern.names for pattern, _ in cls._refusals):
+        raise SourceError(f"{cls.code}.unsupported: a pattern captures nothing; use * for any "
+                          "segment")
+    seen: set[str] = set()
+    route_patterns = [pattern for route in cls.routes for pattern in route._patterns]
+    own = [pattern for value in vars(cls).values() if isinstance(value, Route)
+           for pattern in value._patterns]
+    for pattern in route_patterns + [pattern for pattern, _ in cls._refusals]:
+        if pattern.host is not None and not any(
+            pattern.host == _bare_host(domain) for domain in cls.domains
+        ):
+            raise SourceError(
+                f"{cls.code}: pattern {pattern.text!r} isn't on its domains {cls.domains}"
+            )
+        # Only the class's own routes: a subclass with another code reads its base's patterns
+        # by their text after the code, which was checked when the base was made.
+        if pattern.host is None and pattern in own and pattern.code != cls.code:
+            written = pattern.text[len(pattern.code or ""):]
+            written = written if written.startswith(("?", ":")) else f":{written}"
+            raise SourceError(f"{cls.code}: pattern {pattern.text!r} must start with the "
+                              f"source's code; write it {cls.code}{written}")
+        # Compared without the code, www. and m., which matching drops anyway.
+        if pattern.host is None:
+            key = pattern.body
+        else:
+            head, sep, tail = pattern.text.partition("://")
+            host_part, slash, rest = (tail if sep else head).partition("/")
+            key = f"{_bare_host(host_part.lower())}{slash}{rest}"
+        if key in seen:
+            raise SourceError(f"{cls.code}: pattern {pattern.text!r} is given twice")
+        seen.add(key)
+
+
+# ---------------------------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------------------------
+
+def _best_streams(manifest: Any) -> tuple[str, str] | None:
+    """A DASH manifest's best video URL and best audio URL; see `File.dash`.
+
+    Args:
+        manifest: the MPD's XML text, or anything else (which has none).
+
+    Returns:
+        The two URLs; None when the manifest has no usable pair.
+    """
+    import xml.etree.ElementTree as ElementTree
+
+    namespace = "{urn:mpeg:dash:schema:mpd:2011}"
+    if not isinstance(manifest, str) or not manifest:
+        return None
+    try:
+        root = ElementTree.fromstring(manifest)
+    except ElementTree.ParseError:
+        return None
+    if (root.find(f".//{namespace}SegmentTemplate") is not None
+            or root.find(f".//{namespace}SegmentList") is not None):
+        return None
+    found: dict[str, list[tuple[int, int, str, str]]] = {"video": [], "audio": []}
+    for adaptation in root.iter(f"{namespace}AdaptationSet"):
+        for representation in adaptation.iter(f"{namespace}Representation"):
+            mime = representation.get("mimeType") or adaptation.get("mimeType") or ""
+            url = (representation.findtext(f"{namespace}BaseURL") or "").strip()
+            kind = mime.split("/")[0]
+            if kind in found and url.startswith("https://"):
+                found[kind].append((_number(representation.get("height")),
+                                    _number(representation.get("bandwidth")), url, mime))
+    if not found["video"] or not found["audio"]:
+        return None
+    video = max(found["video"])[2]
+    audio = max(found["audio"], key=lambda entry: entry[1])[2]
+    return video, audio
+
+
+def _number(text: str | None) -> int:
+    """A manifest's number attribute, 0 when it's missing or not a number."""
+    return int(text) if text and text.isdigit() else 0
 
 
 def _parse(text: str, domains: tuple[str, ...]) -> _Url | None:
@@ -1398,7 +1931,7 @@ def _shown(segment: str) -> str:
 
 
 def _assign(instance: Any, **values: Any) -> None:
-    """Set a frozen dataclass's fields from its own `__init__`."""
+    """Set a frozen dataclass's fields from its own constructor."""
     for name, value in values.items():
         object.__setattr__(instance, name, value)
 
@@ -1406,43 +1939,3 @@ def _assign(instance: Any, **values: Any) -> None:
 def _frozen(headers: Mapping[str, str] | None) -> Mapping[str, str] | None:
     """A read-only copy of `headers`, or None for none."""
     return MappingProxyType(dict(headers)) if headers else None
-
-
-# The formatter of every format: `get_value` and `format_field` are str.format's own.
-_FORMATTER = string.Formatter()
-
-
-def _fill_segment(segment: str, fields: Mapping[str, Any]) -> str:
-    """One path segment of a format, filled in, with dropped separators (see `fill`)."""
-    # Each piece is [text, whether literal]; only literals lose separators.
-    pieces: list[list[Any]] = []
-    # Set by an empty field that starts the segment: the separators after it go too.
-    drop_next = False
-    for literal, name, spec, conversion in _FORMATTER.parse(segment):
-        if literal:
-            if drop_next:
-                literal, drop_next = literal.lstrip(SEPARATORS), False
-            pieces.append([literal, True])
-        if name is None:
-            continue
-        value = _field(name, fields)
-        text = ""
-        if value is not None and value != "":
-            text = _FORMATTER.format_field(_FORMATTER.convert_field(value, conversion), spec or "")
-        if text:
-            pieces.append([text, False])
-            drop_next = False
-        elif pieces and pieces[-1][1]:
-            pieces[-1][0] = pieces[-1][0].rstrip(SEPARATORS)
-        elif not any(piece for piece, _ in pieces):
-            drop_next = True
-    return "".join(piece for piece, _ in pieces)
-
-
-def _field(name: str, fields: Mapping[str, Any]) -> Any:
-    """A field's value, `a.b` and `a[0]` included; None when it's missing."""
-    try:
-        return _FORMATTER.get_field(name, (), fields)[0]
-    # A missing field is "" by the formats rule, whichever way it's missing.
-    except (KeyError, AttributeError, IndexError, TypeError):
-        return None

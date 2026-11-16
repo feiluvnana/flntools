@@ -1,55 +1,80 @@
-"""Twitter / X: a user's posts, media, highlights, reposts, replies and profile pictures.
+"""Twitter / X: a user's posts, media, highlights, reposts, replies and profile pictures, one
+tweet by its link, and a search's tweets.
 
-The user route reads profile metadata once from GraphQL and hands it to each category.
-Every timeline category streams posts while scrolling its tab to the end in a browser.
-A post link reads one tweet from GraphQL and yields its media.
-
-    flnd download twt:example_handle --from posts,profile
+    flnd download twt:example_handle --only posts,profile
     flnd download https://x.com/example_handle/status/1790000000000000000
+    flnd download "twt?example words"
 
-Under .flnd/media/twt/<username>/:
+Who calls it: the engine (`flnd.job`), through the routes and categories below, on the target's
+listing thread. What it calls: only its `Site` (`site.fetch` for X's GraphQL API, the browser
+verbs for the timelines) and the stdlib.
+
+How a target is read:
+1. A `user` target (`twt:<handle>`, `twt:<user id>`, a profile link) asks the API for the
+   profile once (`UserByScreenName` or `UserByRestId`), and hands the `Account` to each wanted
+   category. When the API can't find the user, the account has no API object, and the
+   timelines are still read in the browser.
+2. Each timeline category (`posts`, `media`, `highlights`, `reposts`, `replies`) opens its tab
+   of the profile and scrolls it, reading the JSON of the tab's GraphQL responses as they come
+   (`site.feed`). The tabs read after it start loading in background tabs meanwhile.
+3. Each tweet becomes one `Post` per photo or video (and per quoted tweet's media, and per card
+   image), filed by `tweet_posts`.
+4. The `profile` category yields the avatar and the banner from the API's user object.
+5. A `post` target (a tweet link) asks the API for the one tweet (`TweetResultByRestId`).
+6. A `search` target (`twt?<words>`) scrolls the search's Latest tab in the browser and yields
+   a link to each tweet with media, which the engine downloads as a `post` target.
+
+Every GraphQL call goes through `Graph`, which keeps the web client's query ids. X changes them
+now and then; a refused id (400 or 404) is refreshed once a run from x.com's main script.
+
+Rules a change must keep:
+- The engine owns the early stops (a sync caught up, `--when`): a timeline yields every tweet
+  in listing order, and ends only when the site's feed does (a page with no new tweet, or the
+  feed's own cursor saying there is no more).
+- The names and history keys of saved files never change: `filename` and `key` below, and the
+  `n` field (`0`, `1`, `q0`, `card`), make `<date>_<tweet id>_<n>` and `<tweet id>_<n>`. A
+  changed key makes every saved file download again.
+- The API's bearer token and CSRF header go only to `/i/api/` (`sign`): x.com's page and
+  script answer 401 to them.
+
+Under .flnd/media/twt/<target>/:
   posts/, highlights/, reposts/, replies/   <date>_<tweet_id>_<n>.<ext>
-  images/, videos/                          Media tab photos and videos
+  images/, videos/                          the Media tab's photos and videos
   profile/                                  avatar_<id>.jpg and banner_<id>.jpg
+A tweet link's files sit in its own target folder, `twt/<tweet id>/`. See docs/sources/twt.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Iterator, Mapping, NamedTuple
-from urllib.parse import urlsplit
-
-import msgspec
+from typing import Any, Iterator, NamedTuple
+from urllib.parse import urlencode, urlsplit
 
 from flnd.source import (
-    Changed, File, LoginError, NetworkError, Post, Site, SiteError, Source, caught_up, day,
-    target,
+    Changed, File, LoginError, NetworkError, Post, Request, Site, SiteError, Source, Target,
+    cookies, dig, target,
 )
-from flnd.sources.common.feed import warm_tabs
-from flnd import _html, _text
-
-if TYPE_CHECKING:
-    from flnd._net import Request
 
 # The user agent Twitter's API has always been sent: a desktop Chrome.
 CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
           "Chrome/128.0.0.0 Safari/537.36")
+# Where X sends a tab it won't show without a login, or for a locked account.
 WALLS = ("/i/flow/login", "/login", "/account/access")
-# The web client's public bearer token.
+# The web client's public bearer token: the same for everyone, sent by x.com's own script.
 TWITTER_BEARER = (
     "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
     "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
 )
 API = "https://x.com/i/api/graphql/"
 # The web client's query ids, from its main.js (`queryId:"…",operationName:"…"`). They change now
-# and then; a stale one is refused, and the browser takes over.
+# and then; a stale one is refreshed from x.com's script (`Graph.refresh`). The timelines'
+# operations are named here too, so a refresh keeps their ids, though only the browser sends them.
 QUERIES = {
     "UserByScreenName": "AMIBMjtxEEATh4z8V9GtRg",
-    # gallery-dl's id, unverified here; a stale id is refreshed from x.com's script like any other.
-    "SearchTimeline": "nK1dw4oV3k4w5TdtcAdSww",
     "UserByRestId": "mxaYWwt52eAb6OAzYHMVzg",
     "UserOriginalsTimeline": "ZFKu1DFS63hgrkLzR3Hsdw",
     "UserMedia": "iTSlWbsmD00dAE7Sk9xvIw",
@@ -58,6 +83,9 @@ QUERIES = {
     "UserRepliesTimeline": "fpl-c0_APDI3nZ1CeeBMbg",
     "TweetResultByRestId": "U8lc5aomF5krJzZ9vJ9wxg",
 }
+# The operation whose responses carry a search's tweets; only the browser sends it, so its id
+# never matters to flnd.
+SEARCH = "SearchTimeline"
 # The flags sent before the web app's own are known: a refresh replaces them with each query's
 # `featureSwitches` and the values x.com's page gives them.
 FEATURES = {"responsive_web_graphql_timeline_navigation_enabled": True,
@@ -68,7 +96,7 @@ MAIN_SCRIPT = re.compile(
     r"https://abs\.twimg\.com/responsive-web/client-web(?:-legacy)?/main\.[\w.-]+\.js"
 )
 # One operation in that script, as the web app's bundler writes it:
-# Operation in script: queryId:"…",operationName:"UserMedia",metadata:{featureSwitches:[...]}.
+# queryId:"…",operationName:"UserMedia",operationType:"query",metadata:{featureSwitches:[...]}.
 OPERATION = re.compile(
     r'queryId:"(?P<id>[\w-]+)",operationName:"(?P<name>\w+)",operationType:"\w+",'
     r"metadata:\{featureSwitches:\[(?P<features>[^\]]*)\]"
@@ -81,20 +109,29 @@ SWITCH = re.compile(r'"(?P<name>[a-z0-9_]+)":\{"value":(?P<value>true|false)\b')
 STALE = frozenset({400, 404})
 # Where the refreshed table is kept in the source's `state`.
 STATE_KEY = "graphql.queries"
-# Consecutive tweets older than `since` before stopping scroll early (covers pinned tweets).
-OLD_STREAK = 5
 # A tweet's `created_at`, as Twitter writes it: `Mon Nov 09 10:00:00 +0000 2026`, always UTC.
+# The engine reads ISO dates and timestamps only, so the source reads this one itself.
 CREATED_AT = "%a %b %d %H:%M:%S %z %Y"
 # The largest banner size the CDN serves, as the `/<size>` suffix of a banner's URL.
 BANNER_SIZE = "1500x500"
+# A card's image fields, best first: the full-size picture, then the smaller previews.
+CARD_IMAGES = (
+    "photo_image_full_size_original", "summary_photo_image_original", "player_image_original",
+    "thumbnail_image_original", "photo_image_full_size_large", "summary_photo_image_large",
+)
+# The sizes X's media server gives a photo in, best first: `orig` is the upload itself.
+PHOTO_SIZES = ("orig", "4096x4096", "large", "medium")
+# Where a tweet's author's screen name is: under `core` since 2025, under `legacy` before.
+AUTHOR = ("core.user_results.result.core.screen_name"
+          " || core.user_results.result.legacy.screen_name")
 
 
 class Timeline(NamedTuple):
-    """One timeline: category, GraphQL query, and tab path under profile for browser."""
+    """One timeline: its category, its GraphQL operation, and its tab under the profile."""
 
     # Category posts are filed under: "posts", "media", "highlights", "reposts" or "replies".
     category: str
-    # The GraphQL operation whose responses carry the timeline, as a key of `QUERIES`.
+    # The GraphQL operation whose responses carry the timeline; the feed watches for it.
     query: str
     # The tab's path under the profile's URL, which the browser opens; "" is the profile itself.
     tab: str
@@ -111,7 +148,7 @@ TIMELINES = {timeline.category: timeline for timeline in (
 
 @dataclass
 class Account:
-    """What the `user` route gives every category: who is read, and their timelines so far."""
+    """What the `user` route gives every category: who is read, and the API's user object."""
 
     # The screen name or the number the target was given.
     handle: str
@@ -120,25 +157,42 @@ class Account:
 
     @property
     def id(self) -> str | None:
-        """The user's id, or None when the API doesn't know them."""
-        return self.user["rest_id"] if self.user else None
+        """The user's id: the API's, or the target itself when it is a number; else None."""
+        if self.user:
+            return self.user["rest_id"]
+        return self.handle if self.handle.isdigit() else None
 
-# A card's image fields, best first: the full-size picture, then the smaller previews.
-CARD_IMAGES = (
-    "photo_image_full_size_original", "summary_photo_image_original", "player_image_original",
-    "thumbnail_image_original", "photo_image_full_size_large", "summary_photo_image_large",
-)
-# The sizes X's media server gives a photo in, best first: `orig` is the upload itself.
-PHOTO_SIZES = ("orig", "4096x4096", "large", "medium")
+    def wrote(self, tweet: dict) -> bool:
+        """Whether `tweet` is the user's own.
+
+        By the user's id when it is known; else by the tweet's author's screen name, which a
+        timeline's tweets carry, so the `replies` tab can still tell the user's replies from
+        the tweets they answered when the API couldn't find the user.
+
+        Args:
+            tweet: a tweet from a timeline, wrapped or not.
+
+        Returns:
+            True for the user's own tweet; False for another's, or one whose author can't be
+            read.
+        """
+        tweet = unwrap(tweet)
+        if self.id is not None:
+            return (tweet.get("legacy") or {}).get("user_id_str") == self.id
+        author = dig(tweet, AUTHOR)
+        return isinstance(author, str) and author.lower() == self.handle.lower()
+
 
 class Twitter(Source):
-    """Twitter / X users and single tweets from GraphQL API, with browser fallback."""
+    """Twitter / X users, single tweets and searches: the API for the profile and one tweet,
+    the browser for the timelines and the search."""
 
     code = "twt"
     name = "Twitter/X"
     domains = ("x.com", "twitter.com")
+    api = 1
     # Paths on the site that are pages of it, not profiles. x.com/i covers x.com/i/* too,
-    # except the tweet links post reads (more literal segments win).
+    # except the tweet and user-id links the routes read (more literal segments win).
     unsupported = {
         f"{host}/{path}": "that's not a profile"
         for host in ("x.com", "twitter.com")
@@ -147,44 +201,63 @@ class Twitter(Source):
             "hashtag", "i", "intent", "compose", "login",
         )
     }
-    needs = ("auth_token",)
+    # Not required by the code, but X usually sends a logged-out browser to its login page.
+    login = cookies("auth_token")
     # X's `x-rate-limit-*` headers stop flnd exactly at the limit, so the floor only spaces a burst.
     pace = 0.2
     user_agent = CHROME
-    browser = True
     # This browser never hid navigator.webdriver, so stealth stays off.
     stealth = False
     # A post is one photo or video of a tweet, so a file is <date>_<tweet id>_<n> whatever the
     # tweet's media count; part is the category folder, images/videos for Media, "" for a tweet.
     folder = "{part}"
     fields = ("part", "n")
-    filename = "{date}_{id}_{n}"
-    key = "{id}_{n}"
+    filename = "{date}_{post}_{n}"
+    key = "{post}_{n}"
 
     def __init__(self) -> None:
         # The GraphQL query table for this run; one source instance serves the whole run.
         self.graph = Graph()
 
-    def prepare(self, request: Request, cookies: Mapping[str, str], /) -> Request:
-        """Twitter's API headers on every request to x.com's API, with current CSRF token."""
-        # The page and script (Graph.refresh reads them) return 401 to the API's bearer token.
-        if not request.url.path.startswith("/i/api/"):
-            return request
+    def sign(self, request: Request, /) -> None:
+        """Twitter's API headers on every request to x.com's API, with the current CSRF token.
+
+        Args:
+            request: a request to x.com or twitter.com; only one to `/i/api/` is changed.
+        """
+        # The page and the script (`Graph.refresh` reads them) answer 401 to the bearer token.
+        if not urlsplit(request.url).path.startswith("/i/api/"):
+            return
         request.headers["authorization"] = TWITTER_BEARER
         # The API checks that this equals the `ct0` cookie it also receives (double-submit CSRF).
-        request.headers["x-csrf-token"] = cookies.get("ct0", "")
+        request.headers["x-csrf-token"] = request.cookies.get("ct0", "")
         request.headers["x-twitter-active-user"] = "yes"
         request.headers["x-twitter-client-language"] = "en"
-        if "auth_token" in cookies:
+        if "auth_token" in request.cookies:
             request.headers["x-twitter-auth-type"] = "OAuth2Session"
-        return request
+
+    # -----------------------------------------------------------------------------------------
+    # Routes
+    # -----------------------------------------------------------------------------------------
 
     # `post` comes before `user`, so x.com/status/<id> is never the user "status".
     @target(r"x.com/*/status/{tweet_id:\d+}", r"twitter.com/*/status/{tweet_id:\d+}",
             r"x.com/status/{tweet_id:\d+}", r"twitter.com/status/{tweet_id:\d+}",
             r"x.com/i/web/status/{tweet_id:\d+}", r"twitter.com/i/web/status/{tweet_id:\d+}")
     def post(self, site: Site, tweet_id: str) -> Iterator[Post]:
-        """One tweet, by its id: its media, in the target's own folder."""
+        """One tweet, by its id: its media, in the target's own folder.
+
+        Args:
+            site: the target's site.
+            tweet_id: the tweet's id, from its link.
+
+        Yields:
+            One post per photo, video and card image; nothing, with a warning, when the API
+            refuses the tweet or doesn't show it to this login.
+
+        Raises:
+            LoginError: x.com refused the login (401 or 403).
+        """
         variables = {
             "tweetId": tweet_id, "withCommunity": False,
             "includePromotedContent": False, "withVoice": False,
@@ -194,16 +267,59 @@ class Twitter(Source):
         except (SiteError, NetworkError) as error:
             site.warn("tweet {id}: {error}", id=tweet_id, error=error)
             return
-        tweet = _html.parse(data).jmespath("data.tweetResult.result").first
+        tweet = dig(data, "data.tweetResult.result")
         if not isinstance(tweet, dict) or not unwrap(tweet).get("legacy"):
             site.warn("tweet {id} isn't there, or isn't visible to this login", id=tweet_id)
             return
         yield from tweet_posts(tweet, "posts", None, part="")
 
-    @target("{user}", "x.com/{user}", "twitter.com/{user}",
+    @target("twt?{query}")
+    def search(self, site: Site, query: str) -> Iterator[Target]:
+        """A search's tweets with media, newest first, each as a tweet link to download.
+
+        The search's Latest tab is scrolled in the browser, as the timelines are. `--when`
+        is asked of X too, as the search's `since:` and `until:` operators, so a search for a
+        few days doesn't scroll through years.
+
+        A query route always yields targets: each tweet is then downloaded as a `post`
+        target, into its own folder `twt/<tweet id>/`, named and keyed as a tweet link is, so a
+        tweet saved before is skipped by its history keys.
+
+        Args:
+            site: the target's site.
+            query: the words, as typed after `twt?`; X's own operators (`from:`, `filter:`)
+                work too.
+
+        Yields:
+            `Target("https://x.com/i/web/status/<id>")` for each tweet with a file.
+
+        Raises:
+            LoginError: X sent the tab to its login page (search needs a login).
+        """
+        words = [query, *range_operators(site)]
+        url = "https://x.com/search?" + urlencode(
+            {"q": " ".join(words), "src": "typed_query", "f": "live"}
+        )
+        for tweet in self._scroll(site, url, SEARCH):
+            if any(True for _ in tweet_posts(tweet, "posts", None, part="")):
+                yield Target(f"https://x.com/i/web/status/{tweet_id_of(tweet)}")
+
+    @target("twt:{user}", "x.com/{user}", "twitter.com/{user}",
             r"x.com/i/user/{user:\d+}", r"twitter.com/i/user/{user:\d+}")
     def user(self, site: Site, user: str) -> Account:
-        """A profile by screen name, or numeric user id: read once for every category."""
+        """A profile by screen name or numeric user id, read once for every category.
+
+        Args:
+            site: the target's site.
+            user: the screen name, or the user's id.
+
+        Returns:
+            The `Account`; its `user` is None (with a warning) when the API can't find them,
+            and the timelines are read in the browser anyway.
+
+        Raises:
+            LoginError: x.com refused the login (401 or 403).
+        """
         # A number is a user id, so it is asked by `UserByRestId`; anything else is a screen name.
         if user.isdigit():
             query, variables = "UserByRestId", {"userId": user}
@@ -211,9 +327,7 @@ class Twitter(Source):
             query, variables = "UserByScreenName", {"screen_name": user}
         found = None
         try:
-            found = _html.parse(
-                self.graph.get(site, query, variables)
-            ).jmespath("data.user.result").first
+            found = dig(self.graph.get(site, query, variables), "data.user.result")
         except (SiteError, NetworkError) as error:
             site.warn("{query}: {error}", query=query, error=error)
         if isinstance(found, dict) and found.get("rest_id"):
@@ -221,8 +335,12 @@ class Twitter(Source):
         site.warn("the API can't find @{name}; reading the profile in the browser", name=user)
         return Account(user, None)
 
+    # -----------------------------------------------------------------------------------------
+    # The user's categories
+    # -----------------------------------------------------------------------------------------
+
     # Newest first: a profile's tweets, its Media tab and its replies come by date, the pinned
-    # tweet apart (the engine's 5-in-a-row rule covers it). Highlights and reposts come in the
+    # tweet apart (the engine's 5-in-a-row rules cover it). Highlights and reposts come in the
     # order they were added, which is not the tweets' dates.
     @user.category(newest_first=True)
     def posts(self, site: Site, account: Account) -> Iterator[Post]:
@@ -246,23 +364,33 @@ class Twitter(Source):
 
     @user.category(newest_first=True)
     def replies(self, site: Site, account: Account) -> Iterator[Post]:
-        """The user's own replies; the tweets they answered are left out."""
+        """The user's own replies; the tweets they answered are left out.
+
+        Without the API's user object, the user's replies are told apart by the author's
+        screen name (`Account.wrote`), so the category still lists them.
+
+        Args:
+            site: the target's site.
+            account: whose replies they are, as the `user` route found them.
+
+        Yields:
+            A post per photo and video of each of the user's own replies.
+        """
         yield from self.read_browser(site, account, TIMELINES["replies"])
 
     # The pictures are named after the picture's own id and keyed by their path, as always.
     @user.category(folder="profile", key="")
     def profile(self, site: Site, account: Account) -> Iterator[Post]:
-        """The avatar at its original size, and the banner at its largest."""
+        """The avatar at its original size, and the banner at its largest.
+
+        Nothing when the API couldn't find the user: the pictures come from its user object.
+        """
         if account.user is None:
             return
         user = account.user
-        avatar = _html.parse(user).jmespath(
-            "avatar.image_url || legacy.profile_image_url_https"
-        ).first
-        banner = _html.parse(user).jmespath(
-            "banner.image_url || legacy.profile_banner_url"
-        ).first
         # The avatar comes from either place the API has put it; the banner the same way.
+        avatar = dig(user, "avatar.image_url || legacy.profile_image_url_https")
+        banner = dig(user, "banner.image_url || legacy.profile_banner_url")
         if avatar:
             # "_normal" is the 48px version; without it the URL gives the picture as uploaded.
             original = avatar.replace("_normal.", ".")
@@ -273,35 +401,60 @@ class Twitter(Source):
             banner_name = f"banner_{banner.rstrip('/').rsplit('/', 1)[-1]}.jpg"
             yield Post(user["rest_id"], [File(f"{banner}/{BANNER_SIZE}", name=banner_name)])
 
+    # -----------------------------------------------------------------------------------------
+    # Scrolling a tab
+    # -----------------------------------------------------------------------------------------
+
     def read_browser(self, site: Site, account: Account, timeline: Timeline) -> Iterator[Post]:
-        """Scroll one timeline's tab to its end, streaming its posts."""
+        """Scroll one timeline's tab to its end, yielding its posts as they come."""
         # A number is opened by its id under `/i/user/`; a screen name under its own path.
         profile = (
             f"https://x.com/i/user/{account.handle}"
             if account.handle.isdigit()
             else f"https://x.com/{account.handle}"
         )
-        for tweet in self._scroll_timeline(site, profile, timeline):
-            yield from tweet_posts(tweet, timeline.category, account.id)
+        # The tabs after this one start loading in the background once this one is open.
+        names = list(TIMELINES)
+        later = [profile + TIMELINES[name].tab
+                 for name in names[names.index(timeline.category) + 1:]]
+        for tweet in self._scroll(site, profile + timeline.tab, timeline.query, warm=later):
+            yield from tweet_posts(tweet, timeline.category, account)
 
-    def _scroll_timeline(self, site: Site, profile: str, timeline: Timeline) -> Iterator[dict]:
-        """Scroll one timeline tab until no new tweets arrive, `OLD_STREAK`, or `caught_up`."""
-        since = site.time.since if timeline.category in ("posts", "media", "replies") else None
+    def _scroll(
+        self, site: Site, url: str, query: str, *, warm: list[str] | None = None
+    ) -> Iterator[dict]:
+        """Open a tab and scroll it to its end, yielding each new tweet of `query`'s responses.
+
+        The end is the site's own: a page that brings no new tweet, or the feed's cursor
+        reader (`timeline_state`) seeing a last page. The engine closes the generator sooner
+        for its early stops.
+
+        Args:
+            site: the target's site.
+            url: the tab to open.
+            query: the GraphQL operation whose responses carry the tab's tweets.
+            warm: tabs to start loading in the background once this one is open.
+
+        Yields:
+            Each tweet, the first time it is seen.
+
+        Raises:
+            LoginError: the tab landed on X's login page or its locked-account page.
+        """
         seen: set[str] = set()
-        old = 0
-        with site.feed(f"/{timeline.query}", scroll=True, cursor=timeline_state) as responses:
-            if not site.open(profile + timeline.tab):
+        with site.feed(f"/{query}", scroll=True, cursor=timeline_state) as responses:
+            if not site.open(url):
                 return
             path = urlsplit(site.url).path
             # A whole segment: a handle like `login_example` only starts with `/login`.
             if any(path == wall or path.startswith(f"{wall}/") for wall in WALLS):
                 raise LoginError(
                     "twt: X asked for a login or locked this account; "
-                    "check it in a browser or run flnd login twt"
+                    "check it in a browser or run flnd login twt",
+                    hint="run flnd login twt",
                 )
-            names = list(TIMELINES)
-            later = names[names.index(timeline.category) + 1:]
-            warm_tabs(site, [profile + TIMELINES[name].tab for name in later])
+            if warm:
+                site.warm(warm)
             for data in responses:
                 tweets, cursor = read_timeline_page(data)
                 # A tombstone has no id; it is never new, and never stands for a seen tweet.
@@ -314,9 +467,6 @@ class Twitter(Source):
                     break
                 seen.update(tweet_id_of(tweet) for tweet in new)
                 yield from new
-                old = older_streak(new, since, old)
-                if old >= OLD_STREAK or _hit_saved(new, timeline.category):
-                    break
 
 
 class Graph:
@@ -328,7 +478,21 @@ class Graph:
         self.refreshed = False
 
     def get(self, site: Site, query: str, variables: dict) -> Any:
-        """One GraphQL query's JSON; a stale query id refreshed once and the query sent again."""
+        """One GraphQL query's JSON; a stale query id is refreshed once and the query sent again.
+
+        Args:
+            site: the target's site.
+            query: the operation's name, a key of `QUERIES`.
+            variables: the operation's variables.
+
+        Returns:
+            The response's JSON.
+
+        Raises:
+            SiteError: the API refused it, after a refresh when the refusal looked stale.
+            LoginError: x.com refused the login (401 or 403); never refreshed.
+            NetworkError: no answer.
+        """
         try:
             return self._get(site, query, variables)
         # Only a stale id (400 or 404) is worth a refresh; any other refusal is raised as it is.
@@ -338,10 +502,17 @@ class Graph:
         return self._get(site, query, variables)
 
     def refresh(self, site: Site) -> bool:
-        """Read current query ids and flags from x.com's page and main script, once a run."""
+        """Read the current query ids and flags from x.com's page and main script, once a run.
+
+        Args:
+            site: the target's site.
+
+        Returns:
+            Whether the table was refreshed. Not refreshing is a warning, not an error: the
+            query then fails with its own error.
+        """
         # Once a run: two requests, so a second stale answer does not repeat them.
         self.refreshed = True
-        # Not fatal: without refresh the query fails with its error, and browser takes over.
         try:
             home = site.fetch(HOME).text
             found = MAIN_SCRIPT.search(home)
@@ -368,19 +539,21 @@ class Graph:
             return False
         self._table(site).update(queries)
         site.state[STATE_KEY] = dict(self._table(site))
-        n = _text.count(len(queries), "query id")
-        site.info("refreshed {n} from x.com's script", n=n)
+        n = len(queries)
+        site.info("refreshed {n} from x.com's script",
+                  n=f"{n} query id" if n == 1 else f"{n} query ids")
         return True
 
     def _get(self, site: Site, query: str, variables: dict) -> Any:
-        """One GraphQL query's JSON with the table's id and flags for it."""
+        """One GraphQL query's JSON, with the table's id and flags for it."""
         entry = self._table(site).get(query) or {}
         # The refreshed flags when the table has them, else the built-in ones.
         features = entry.get("features") or FEATURES
         endpoint = f"{API}{entry.get('id') or QUERIES[query]}/{query}"
+        # Compact JSON, as the web client sends it.
         params = {
-            "variables": msgspec.json.encode(variables).decode(),
-            "features": msgspec.json.encode(features).decode(),
+            "variables": json.dumps(variables, separators=(",", ":")),
+            "features": json.dumps(features, separators=(",", ":")),
         }
         return site.fetch(endpoint, params=params).json
 
@@ -396,24 +569,48 @@ class Graph:
         return self.queries
 
 
+# ---------------------------------------------------------------------------------------------
+# Reading X's JSON
+# ---------------------------------------------------------------------------------------------
+
+def range_operators(site: Site) -> list[str]:
+    """`--when` as X search's operators: `since:` from its first day, `until:` after its last.
+
+    X's `until:` is exclusive, so it is the day after `--when`'s last.
+
+    Args:
+        site: the target's site, whose `time` is `--when`.
+
+    Returns:
+        The operators to add to the search's words; empty without `--when`.
+    """
+    found = []
+    if site.time.since:
+        found.append(f"since:{site.time.since.isoformat()}")
+    if site.time.until:
+        found.append(f"until:{(site.time.until + timedelta(days=1)).isoformat()}")
+    return found
+
+
 def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
-    """One timeline page's tweets, and the cursor of the next page (None at the end)."""
-    # The timeline sits under user in one response shape and under timeline_v2 in the other; a
-    # search's under search_by_raw_query.
-    instructions = _html.parse(data).jmespath(
+    """One timeline page's tweets, and the cursor of the next page (None for none)."""
+    # The timeline sits under `timeline` in one response shape and `timeline_v2` in the other;
+    # a search's under `search_by_raw_query`.
+    instructions = dig(
+        data,
         "data.user.result.timeline.timeline.instructions"
         " || data.user.result.timeline_v2.timeline.instructions"
-        " || data.search_by_raw_query.search_timeline.timeline.instructions"
-    ).get()
+        " || data.search_by_raw_query.search_timeline.timeline.instructions",
+    )
     tweets, cursor = [], None
-    for entry in timeline_entries(instructions):
+    for entry in timeline_entries(instructions if isinstance(instructions, list) else []):
         content = entry.get("content") or entry.get("item") or {}
         # The page's `Bottom` cursor is the request for the next page; the `Top` one is not used.
         if content.get("cursorType") == "Bottom":
             cursor = content.get("value")
         items = [item.get("item", item) for item in content.get("items", [])] or [content]
         for item in items:
-            tweet = _html.parse(item).jmespath("itemContent.tweet_results.result").first
+            tweet = dig(item, "itemContent.tweet_results.result")
             if isinstance(tweet, dict):
                 tweets.append(tweet)
     return tweets, cursor
@@ -444,6 +641,8 @@ def timeline_entries(instructions: list[Any]) -> Iterator[dict]:
             yield from instruction.get("entries", [])
             # The Media tab's later pages come as `moduleItems`, not `entries`.
             yield from instruction.get("moduleItems", [])
+            # A pinned tweet (`TimelinePinEntry`), and a search's later cursors
+            # (`TimelineReplaceEntry`), come as one `entry`.
             if "entry" in instruction:
                 yield instruction["entry"]
 
@@ -455,14 +654,9 @@ def unwrap(tweet: dict) -> dict:
 
 
 def tweet_id_of(tweet: dict) -> str:
-    """A tweet's id, inside its visibility wrapper or not."""
+    """A tweet's id, inside its visibility wrapper or not; "" for a tombstone."""
     tweet = unwrap(tweet)
-    return str(tweet.get("rest_id") or _html.parse(tweet).jmespath("legacy.id_str").first or "")
-
-
-def tweet_date(tweet: dict) -> datetime | None:
-    """A tweet's `created_at` timestamp as a datetime, or None."""
-    return parse_date((unwrap(tweet).get("legacy") or {}).get("created_at"))
+    return str(tweet.get("rest_id") or dig(tweet, "legacy.id_str") or "")
 
 
 def parse_date(created_at: Any) -> datetime | None:
@@ -476,42 +670,27 @@ def parse_date(created_at: Any) -> datetime | None:
         return None
 
 
-def older_streak(tweets: list[dict], since: date | None, streak: int) -> int:
-    """Count consecutive tweets older than `since`, carrying `streak` forward."""
-    if since is None:
-        return streak
-    for tweet in tweets:
-        posted = day(tweet_date(tweet))
-        if posted is None:
-            continue
-        streak = streak + 1 if posted < since else 0
-    return streak
-
-
-def _hit_saved(tweets: list[dict], category: str) -> bool:
-    """Whether a `newest_first` timeline batch hits the 5-saved-post early-stop streak."""
-    if category not in ("posts", "media", "replies"):
-        return False
-    for tweet in tweets:
-        if not list(tweet_posts(tweet, category, None)):
-            continue
-        tid = tweet_id_of(tweet)
-        if tid and caught_up(tid, posted=tweet_date(tweet)):
-            return True
-    return False
-
-
 def tweet_posts(
-    tweet: dict, category: str, user_id: str | None, *, part: str | None = None,
+    tweet: dict, category: str, account: Account | None, *, part: str | None = None,
 ) -> Iterator[Post]:
     """A tweet's photos and videos as posts, one each, when the category takes the tweet.
 
-    Reposts take the retweeted tweet's files; replies take only the user's own replies; the other
-    categories leave retweets out. Quoted tweet media and card images are included.
+    Reposts take the retweeted tweet's files; replies take only the user's own replies; the
+    other categories leave retweets out. A quoted tweet's media (`n` = `q0`, `q1`, …) and a
+    card's image (`n` = `card`) come with the tweet's own.
+
+    Args:
+        tweet: the tweet, wrapped or not.
+        category: the category it is listed for, which decides what it keeps and its folder.
+        account: whose timeline it is, for `replies`; None elsewhere.
+        part: the folder for every file (`""` for a tweet link); None files them by category.
+
+    Yields:
+        One post per file, its `n` field the file's place in the tweet.
     """
     tweet = unwrap(tweet)
     legacy = tweet.get("legacy") or {}
-    retweeted = _html.parse(legacy).jmespath("retweeted_status_result.result").first
+    retweeted = dig(legacy, "retweeted_status_result.result")
     # A repost's files are the retweeted tweet's, so the reposts category reads that tweet instead.
     if category == "reposts":
         if not isinstance(retweeted, dict):
@@ -523,33 +702,32 @@ def tweet_posts(
         return
     # A reply is kept only when it is the user's own and answers another tweet.
     if category == "replies" and (
-        user_id is None
-        or legacy.get("user_id_str") != user_id
+        account is None
+        or not account.wrote(tweet)
         or not legacy.get("in_reply_to_status_id_str")
     ):
         return
-    tweet_id, created_at = tweet_id_of(tweet), legacy.get("created_at")
-    posted = parse_date(created_at)
-    quoted = _html.parse(tweet).jmespath("quoted_status_result.result").first
+    tweet_id = tweet_id_of(tweet)
+    posted = parse_date(legacy.get("created_at"))
+    quoted = dig(tweet, "quoted_status_result.result")
     quoted_media = (
-        _html.parse(unwrap(quoted).get("legacy") or {}).jmespath("extended_entities.media").get()
-        if isinstance(quoted, dict) else []
+        dig(unwrap(quoted).get("legacy") or {}, "extended_entities.media")
+        if isinstance(quoted, dict) else None
     )
-    found_media = [(index, media) for index, media in
-                   enumerate(_html.parse(legacy).jmespath("extended_entities.media").get())]
-    found_media += [(f"q{index}", media) for index, media in enumerate(quoted_media)]
+    own_media = dig(legacy, "extended_entities.media")
+    found_media: list[tuple[int | str, dict]] = list(enumerate(listed(own_media)))
+    found_media += [(f"q{index}", media) for index, media in enumerate(listed(quoted_media))]
     for index, media in found_media:
         found = best_file(media)
         if found is None:
             continue
         url, extension = found
-        if part is None:
-            folder = (
-                ("videos" if extension == "mp4" else "images")
-                if category == "media" else category
-            )
-        else:
+        if part is not None:
             folder = part
+        elif category == "media":
+            folder = "videos" if extension == "mp4" else "images"
+        else:
+            folder = category
         yield Post(
             tweet_id, [media_file(url, extension, tweet_id, index, posted)],
             date=posted, part=folder, n=index,
@@ -563,12 +741,16 @@ def tweet_posts(
         )
 
 
+def listed(value: Any) -> list[dict]:
+    """The dicts of a JSON list; [] for anything else."""
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def card_image(tweet: dict) -> str | None:
     """A tweet's card image, at its largest; None when it has no card or no image."""
-    values = _html.parse(tweet).jmespath("card.legacy.binding_values").get()
     images = {
-        entry.get("key"): _html.parse(entry).jmespath("value.image_value.url").first
-        for entry in values if isinstance(entry, dict)
+        entry.get("key"): dig(entry, "value.image_value.url")
+        for entry in listed(dig(tweet, "card.legacy.binding_values"))
     }
     return next((images[key] for key in CARD_IMAGES if images.get(key)), None)
 
@@ -577,11 +759,17 @@ def media_file(
     url: str | tuple[str, ...], extension: str, tweet_id: str, index: int | str,
     posted: datetime | None,
 ) -> File:
-    """A media file, named from its URL's extension; pinned when the URL gives none to use."""
+    """A media file, named from its URL's extension; its name pinned when the URL has none.
+
+    A URL with no extension, or one in capitals, would leave the engine to sniff the content;
+    the name `<date>_<tweet id>_<n>.<extension>` is what the templates would have given.
+    """
     suffix = PurePosixPath(urlsplit(url if isinstance(url, str) else url[0]).path).suffix
     if suffix and suffix == suffix.lower():
         return File(url)
-    stem = "_".join(str(part) for part in (day(posted), tweet_id, index) if part is not None)
+    # `created_at` is UTC, so its day is the one the engine gives `{date}`.
+    posted_day = posted.astimezone(timezone.utc).date().isoformat() if posted else None
+    stem = "_".join(str(part) for part in (posted_day, tweet_id, index) if part is not None)
     return File(url, name=f"{stem}.{extension}")
 
 
@@ -593,9 +781,9 @@ def best_file(media: dict) -> tuple[str | tuple[str, ...], str] | None:
         # smaller sizes are mirrors for when it refuses one, tried in this order.
         sizes = tuple(f"{url}?name={size}" for size in PHOTO_SIZES)
         return sizes, PurePosixPath(urlsplit(url).path).suffix.lstrip(".") or "jpg"
-    variants = _html.parse(media).jmespath("video_info.variants").get()
     # Only MP4 variants are kept: streaming playlists aren't files the engine can save as MP4.
-    mp4s = [variant for variant in variants if variant.get("content_type") == "video/mp4"]
+    mp4s = [variant for variant in listed(dig(media, "video_info.variants"))
+            if variant.get("content_type") == "video/mp4"]
     if not mp4s:
         return None
     return max(mp4s, key=lambda variant: variant.get("bitrate", 0))["url"], "mp4"

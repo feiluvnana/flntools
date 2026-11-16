@@ -3,11 +3,15 @@
 `sleep` blocks a thread; `pause` is its twin for a coroutine on an asyncio loop, which waits
 without blocking the loop. Both follow the active clock (`use`), so a test's `Fake` makes every
 wait pass at once and records it in `slept`.
+A library module: it imports nothing of flnd. Besides the clock (`now`, `wall`, `sleep`, and
+`use` to swap in a `Fake` for tests), it reads the dates sites give: `day` turns a date, a
+datetime, Unix seconds or milliseconds, or an ISO 8601 string into one UTC day.
 """
 
 from __future__ import annotations
 
 import asyncio
+import datetime
 import threading
 import time
 from collections.abc import Iterator
@@ -16,7 +20,7 @@ from contextvars import ContextVar
 from typing import Protocol, TypeVar
 
 
-__all__ = ["Clock", "Fake", "now", "pause", "sleep", "use", "wall"]
+__all__ = ["Clock", "Fake", "day", "now", "pause", "sleep", "use", "wall"]
 
 # 2026-01-01 UTC, so a test's formatted dates are repeatable.
 FAKE_WALL = 1767225600.0
@@ -25,6 +29,12 @@ FAKE_WALL = 1767225600.0
 POLL = 0.1
 
 C = TypeVar("C", bound="Clock")
+# The oldest year a post can be from: the sites flnd reads all started later. A timestamp before
+# it is a mistake for another number, such as an id read as seconds.
+FIRST_YEAR = 2004
+# Seconds since 1970 pass this in 5138; a larger number is milliseconds (13 digits today, 10 for
+# seconds).
+MILLISECONDS = 1e11
 
 
 class Clock(Protocol):
@@ -152,3 +162,48 @@ def use(replacement: C) -> Iterator[C]:
         yield replacement
     finally:
         _current.reset(token)
+
+
+def day(value: object) -> datetime.date | None:
+    """The UTC day of any date a site gives, or None when it isn't one or can't be right.
+
+    Args:
+        value: a `date`, a `datetime` (naive is read as UTC), Unix seconds or milliseconds as an
+            int, float or digit string, an ISO 8601 string, or None.
+
+    Returns:
+        The day in UTC; None for None, text that is none of those, a number too large for a date,
+        and any day before 2004 or after next year, which are mistakes for another number.
+
+    Example:
+        >>> day(1767312000), day("1767312000000"), day("2026-01-02T01:58:16Z")
+        (datetime.date(2026, 1, 2), datetime.date(2026, 1, 2), datetime.date(2026, 1, 2))
+        >>> day("soon") is None, day(12) is None
+        (True, True)
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    found: datetime.date | None = None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            value = int(text)
+        else:
+            try:
+                value = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+    if isinstance(value, datetime.datetime):
+        found = (value.astimezone(datetime.timezone.utc) if value.tzinfo else value).date()
+    elif isinstance(value, datetime.date):
+        found = value
+    elif isinstance(value, (int, float)):
+        seconds = value / 1000 if abs(value) >= MILLISECONDS else value
+        try:
+            found = datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).date()
+        # Each platform refuses a huge timestamp its own way: OverflowError, OSError or ValueError.
+        except (OverflowError, OSError, ValueError):
+            return None
+    if found is None or not FIRST_YEAR <= found.year <= datetime.date.today().year + 1:
+        return None
+    return found

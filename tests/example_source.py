@@ -1,13 +1,14 @@
 """Example (example.com): a complete small source over fixtures, and the template a new source starts from.
 
 It is run, not only read: tests/test_job.py drives it through the engine on `flnd._net.fake`,
-and through `fakes.collect` on `FIXTURES`. Copy it to `flnd/sources/<code>.py` to start a source:
-keep its shape and replace the site's knowledge (its URLs and JSON paths).
+and through `fakes.collect` on `FIXTURES`. Copy it to start a source: keep its shape and replace
+the site's knowledge (its URLs and JSON paths). docs/writing-a-source.md walks through it.
 
 What the made-up site gives, and the quirks a real one has that this one copies:
   - a JSON API on api.example.com that wants the login's `token` cookie as a Bearer header, which
-    `prepare` adds for the source's own domains only, never for the CDN;
-  - a profile's posts, newest first, in pages chained by a `next` cursor (`pages`);
+    `sign` adds for the source's own domains only, never for the CDN;
+  - a profile's posts, newest first, in pages chained by a `next` cursor (`site.pages`, which
+    the engine resumes after an interrupted run);
   - albums whose photos need one request each, made only for an album not saved yet (a lazy post);
   - one profile picture, kept under its own name and keyed by its path, as sources did before step 6.
 
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from flnd.source import File, Post, Site, Source, pages, target
+from flnd.source import File, Post, Request, Site, Source, cookies, target
 
 API = "https://api.example.com"
 CDN = "https://cdn.example"
@@ -33,19 +34,24 @@ CDN_HEADERS = {"Referer": "https://www.example.com/"}
 class Example(Source):
     """Example's profiles and single posts, from its JSON API."""
 
-    code, name = "exm", "Example"
+    code = "exm"
+    name = "Example"
     domains = ("example.com",)
-    # Any one of these cookies proves a login.
-    needs = ("token",)
+    api = 1
+    # Logged in when this cookie is there.
+    login = cookies("token")
     # A post's category, and an album's title when it has one: "posts", "albums/<title>".
     folder = "{category}/{album}"
+    fields = ("album",)
+    # The day, the post, and the file's number when the post has more than one.
+    filename = "{date}_{post}{index}"
 
     @target(r"example.com/p/{code:[\w-]+}")
     def post(self, site: Site, code: str) -> Iterator[Post]:
         """One post, by its link: a route without categories yields its posts itself."""
         yield post_of(site.fetch(f"{API}/posts/{code}").json)
 
-    @target("{user}", "example.com/{user}")
+    @target("exm:{user}", "example.com/{user}")
     def user(self, site: Site, user: str) -> dict:
         """A profile: its JSON, which every category below receives, fetched once per target."""
         return site.fetch(f"{API}/users/{user}").json
@@ -53,9 +59,7 @@ class Example(Source):
     @user.category(newest_first=True)
     def posts(self, site: Site, profile: dict) -> Iterator[Post]:
         """The profile's posts, newest first, page by page."""
-        for page in pages(lambda cursor: site.fetch(f"{API}/users/{profile['id']}/posts",
-                                                    params={"cursor": cursor or ""}).json,
-                          lambda page: page.get("next")):
+        for page in site.pages(f"{API}/users/{profile['id']}/posts", cursor="next"):
             for item in page["items"]:
                 yield post_of(item)
 
@@ -73,11 +77,10 @@ class Example(Source):
             picture = File(profile["picture"], name=f"avatar_{profile['id']}.jpg")
             yield Post(profile["id"], [picture], headers=CDN_HEADERS)
 
-    def prepare(self, request, cookies):
+    def sign(self, request: Request) -> None:
         """The login's token as a Bearer header, on the source's own domains only."""
-        if cookies.get("token"):
-            request.headers["Authorization"] = f"Bearer {cookies['token']}"
-        return request
+        if request.cookies.get("token"):
+            request.headers["Authorization"] = f"Bearer {request.cookies['token']}"
 
 
 def post_of(item: dict) -> Post:
@@ -100,7 +103,7 @@ FIXTURES = {
              "next": "page2"},
         "page2": {"items": [{"id": "B2def", "taken_at": "1767225600000", "urls": [f"{CDN}/B2def.jpg"]}],
                   "next": "page2"},
-    }[request["params"]["cursor"]],
+    }[(request.get("params") or {}).get("cursor", "")],
     f"{API}/albums/A1": {"urls": [f"{CDN}/A1/1.jpg"]},
     f"{API}/posts/C1abc": {"id": "C1abc", "taken_at": 1767312000, "urls": [f"{CDN}/C1abc_0.jpg"]},
 }

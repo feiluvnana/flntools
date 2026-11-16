@@ -15,8 +15,9 @@ What `flnd.db` holds (the storage guide in `docs/` shows every column):
   which tells whether a post listed again is whole: a table of its own would cost every commit
   another statement and another page.
 - `targets`: every target the home knows: followed or not, its options, which categories were
-  listed to their end, the cursors of cut-short listings, a search's found targets, and its
-  file count and bytes for `flnd ls`.
+  listed to their end, the cursors of cut-short listings, each listing's head (the newest post
+  a run that read it from the top saw), a search's found targets, and its file count and bytes
+  for `flnd ls`.
 - `runs` and `failures`: each run that downloaded, and each failure in it.
 - `state`: each source's own values between runs (`site.state`).
 - `logins`: how each source logged in, and when; never a secret (those are in `secrets.db`).
@@ -130,7 +131,8 @@ CREATE TABLE IF NOT EXISTS targets (
     follow INTEGER NOT NULL DEFAULT 0, options TEXT NOT NULL DEFAULT '{}', query TEXT,
     complete TEXT NOT NULL DEFAULT '{}', cursors TEXT NOT NULL DEFAULT '{}',
     seen TEXT NOT NULL DEFAULT '[]', last_sync TEXT NOT NULL DEFAULT '',
-    files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0
+    files INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
+    heads TEXT NOT NULL DEFAULT '{}'
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, command TEXT NOT NULL, started TEXT NOT NULL, ended TEXT,
@@ -173,7 +175,7 @@ PASSWORD = "password:"
 # The most files `save` writes in one statement; SQLite takes up to 32,766 values in one.
 ONE_STATEMENT = 500
 TARGET_COLUMNS = ("key", "source", "value", "kind", "follow", "options", "query", "complete",
-                  "cursors", "seen", "last_sync", "files", "bytes")
+                  "cursors", "seen", "last_sync", "files", "bytes", "heads")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -265,6 +267,9 @@ class TargetRow(msgspec.Struct):
     bytes: int = 0
     # Whether `sync` compresses its new files (`follow(compress=True)`).
     compress: bool = False
+    # Each `newest_first` listing's head: the newest post the last run that read it from the
+    # top saw, where a later sync stops (`flnd.job`); "" for a route's own listing.
+    heads: dict[str, str] = {}
 
 
 def key(target: Target) -> str:
@@ -278,7 +283,7 @@ def key(target: Target) -> str:
 
     Example:
         >>> from flnd.source import Target
-        >>> key(Target("ins", "user", "example_user"))
+        >>> key(Target("ins:example_user", kind="user"))
         'ins:example_user'
     """
     return f"{target.source}:{target.value}"
@@ -296,7 +301,7 @@ def target_folder(home: Path, target: Target) -> Path:
 
     Example:
         >>> from flnd.source import Target
-        >>> target_folder(Path("home"), Target("ins", "user", "example_user")).as_posix()
+        >>> target_folder(Path("home"), Target("ins:example_user", kind="user")).as_posix()
         'home/media/ins/example_user'
     """
     return home / MEDIA / target.source / _text.filename(target.value)
@@ -379,6 +384,10 @@ class Home:
         # 40 MB log) rather than SQLite's 1,000. A commit per post writes about 6 pages.
         sql.execute(f"PRAGMA wal_autocheckpoint = {CHECKPOINT_PAGES}")
         sql.execute("INSERT OR IGNORE INTO meta VALUES ('version', ?)", (VERSION,))
+        # A database made before listings kept their heads lacks the column; it is added, empty.
+        columns = {row[1] for row in sql.execute("PRAGMA table_info(targets)")}
+        if "heads" not in columns:
+            sql.execute("ALTER TABLE targets ADD COLUMN heads TEXT NOT NULL DEFAULT '{}'")
         if _old(self.home):
             _migrate(sql, self.home)
 
@@ -414,6 +423,25 @@ class Home:
         """
         found = self._store.one("SELECT files FROM files WHERE key = ?", (item,))
         return found[0] if found else None
+
+    def post_saved(self, target: str, post: str, category: str) -> bool:
+        """Whether a post of a target has saved files in a category: the read by post, not key.
+
+        For a lazy post whose keys can't be made before its files are listed (a key that is the
+        file's path), so a post saved before isn't listed again. One read of `files_post`.
+
+        Args:
+            target: the target's key.
+            post: the post's id.
+            category: the category it was saved from; "" for a route's own posts.
+
+        Returns:
+            True when at least one of its files is saved.
+        """
+        found = self._store.one("SELECT 1 FROM files WHERE target = ? AND post_id = ? AND"
+                                " category = ? AND state = 'saved' LIMIT 1",
+                                (target, post, category))
+        return found is not None
 
     def save(self, rows: Sequence[FileRow]) -> None:
         """Write one post's file rows in one transaction.
@@ -784,15 +812,17 @@ class Home:
             self._put(row)
 
     def progress(self, target: Target, *, cursors: Mapping[str, str | None],
-                 complete: Sequence[str]) -> None:
+                 complete: Sequence[str], heads: Mapping[str, str] | None = None) -> None:
         """Keep where a target's listings stopped, after its run.
 
         Args:
             target: the target.
             cursors: each category's cursor to resume from; None drops it (listed to the end).
             complete: the categories listed to their end today.
+            heads: each listing's newest post, for the listings this run read from the top;
+                None or empty keeps the heads the row has.
         """
-        if not cursors and not complete:
+        if not cursors and not complete and not heads:
             return
         today = datetime.date.today().isoformat()
         with self._store.transaction():
@@ -803,6 +833,7 @@ class Home:
             merged = {**row.cursors, **cursors}
             row.cursors = {name: value for name, value in merged.items() if value}
             row.complete = {**row.complete, **dict.fromkeys(complete, today)}
+            row.heads = {**row.heads, **(heads or {})}
             self._put(row)
 
     def tally(self, target: Target) -> None:
@@ -831,7 +862,7 @@ class Home:
                     f" VALUES ({', '.join('?' * len(TARGET_COLUMNS))})",
                     (row.key, row.source, row.value, row.kind, int(row.follow), _json(options),
                      row.query, _json(row.complete), _json(row.cursors), _json(row.seen),
-                     row.last_sync, row.files, row.bytes))
+                     row.last_sync, row.files, row.bytes, _json(row.heads)))
 
     # -- runs, logins and sources' state ----------------------------------------------------
 
@@ -955,12 +986,13 @@ def _target_row(found: tuple[Any, ...]) -> TargetRow:
         The row.
     """
     (item, source, value, kind, follow, options, query, complete, cursors, seen, last_sync,
-     files, size) = found
+     files, size, heads) = found
     settings = json.loads(options)
     only = settings.get("only")
     return TargetRow(item, source, value, kind, bool(follow), tuple(only) if only else None,
                      query, json.loads(complete), json.loads(cursors), json.loads(seen),
-                     last_sync, files, size, compress=settings.get("compress") is True)
+                     last_sync, files, size, compress=settings.get("compress") is True,
+                     heads=json.loads(heads))
 
 
 def _file_row(found: tuple[Any, ...]) -> FileRow:
@@ -1092,12 +1124,13 @@ def store(source: Source, jar: _cookies.Jar, *, home: Path, origin: str) -> str:
         One line saying where the login came from, and how many cookies it has.
 
     Raises:
-        LoginError: none of the source's `needs` cookies is in the jar.
+        LoginError: none of the cookies the source's login names is in the jar.
         DiskError: the key file is damaged, or the vault can't be written.
     """
-    if source.needs and not any(name in jar for name in source.needs):
+    names = _login_names(source)
+    if names and not any(name in jar for name in names):
         raise LoginError(
-            f"{source.code}: no {' or '.join(source.needs)} for {source.domains[0]} in {origin}; "
+            f"{source.code}: no {' or '.join(names)} for {source.domains[0]} in {origin}; "
             "log in there first"
         )
     save(home, source.code, jar, origin=origin)
@@ -1155,23 +1188,24 @@ def origin(home: Path, code: str) -> str:
 
 
 def expiring(home: Path, source: Source, *, within: float = 24 * 3600) -> list[tuple[str, float]]:
-    """Login cookies of `source.needs` that expire soon, so a run can warn before the wall.
+    """Login cookies (the names its `login` gives) that expire soon, to warn before the wall.
 
     Args:
         home: the home folder.
-        source: the source; only its `needs` cookies count.
+        source: the source; only the cookies its login names count.
         within: how soon, in seconds; a day by default.
 
     Returns:
         Each such cookie's name and its seconds left (negative once expired).
     """
-    if not source.needs or not logged_in(home, source.code):
+    names = _login_names(source)
+    if not names or not logged_in(home, source.code):
         return []
     now = time.time()
     found: list[tuple[str, float]] = []
     for cookie in load(home, source.code):
         expires = cookie.get("expires", -1)
-        if cookie.get("name") in source.needs and isinstance(expires, (int, float)) and expires > 0:
+        if cookie.get("name") in names and isinstance(expires, (int, float)) and expires > 0:
             remaining = expires - now
             if remaining <= within:
                 found.append((str(cookie["name"]), remaining))
@@ -1506,7 +1540,7 @@ def _copy(sql: sqlite3.Connection, home: Path, vault: bool) -> None:
                     (item, code, value, str(row.get("kind") or ""),
                      int(row.get("sync", True) is True), _json({"only": only} if only else {}),
                      query, _json(complete), _json(cursors), _json(seen),
-                     str(row.get("at") or ""), 0, 0))
+                     str(row.get("at") or ""), 0, 0, "{}"))
         failed = row.get("failed")
         for file_key, entry in (failed.items() if isinstance(failed, dict) else ()):
             if isinstance(entry, dict):
@@ -1675,6 +1709,11 @@ def _int(value: Any) -> int | None:
 
 
 def _kind(name: str) -> str | None:
-    from flnd.common.paths import kind_of
+    from flnd._files import kind_of
 
     return kind_of(name)
+
+
+def _login_names(source: Source) -> tuple[str, ...]:
+    """The cookies that prove a source's login (`cookies(...)`'s names); none for other logins."""
+    return source.login.names if source.login is not None else ()

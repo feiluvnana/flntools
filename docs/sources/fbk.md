@@ -1,15 +1,15 @@
 # Facebook (`fbk`)
 
 flnd downloads the photos and videos of a Facebook profile or page: its posts, photos, tagged
-photos, albums, reels, videos, stories, and its profile and cover pictures. It reads everything
-in a browser, by loading the profile's pages and scrolling them. Single posts, photos and videos
-are not supported: give the profile. A login is not required by the code, but Facebook shows
-little to a logged-out browser. The source is `flnd/sources/fbk.py`.
+photos, albums, reels, videos, stories, and its profile and cover pictures, and a single video,
+reel, photo or post by its link. It reads everything in a browser, by loading the pages and
+scrolling them. A login is not required by the code, but Facebook shows little to a logged-out
+browser. The source is `flnd/sources/fbk.py`.
 
 ## Targets
 
-A *target* is what you ask flnd to download (see the [glossary](../glossary.md)). Every form
-below is read by the one *route* this source has, `user`.
+A *target* is what you ask flnd to download (see the [glossary](../glossary.md)). A *route* is
+the part of the source that reads one kind of target.
 
 | You type | Route | What it downloads |
 | --- | --- | --- |
@@ -19,9 +19,35 @@ below is read by the one *route* this source has, `user`.
 | `https://www.facebook.com/profile.php?id=1234567890` | `user` | The profile with that id |
 | `https://www.facebook.com/people/Example-Name/1234567890` | `user` | The profile with that id |
 | `fbk:1234567890` | `user` | The profile with that id |
+| `https://www.facebook.com/watch/?v=1234567890` | `video` | That video |
+| `https://www.facebook.com/example.page/videos/1234567890` | `video` | That video |
+| `https://www.facebook.com/videos/1234567890`, `/reel/<id>`, `/reels/<id>` | `video` | That video or reel |
+| `https://fb.watch/aBc-12/` | `watch` | The video the short link leads to |
+| `https://www.facebook.com/photo.php?fbid=1234567890` | `photo` | That photo; `/photo/?fbid=` too |
+| `https://www.facebook.com/permalink.php?story_fbid=<post>&id=<owner>` | `post` | The post's photos and videos; `story.php` too |
 
-Every `facebook.com` form also works on `fb.com`. The `profile.php` and `people` forms come
-before the name form, so neither is read as a user name.
+Every `facebook.com` form also works on `fb.com`. The site's own pages (`photo.php`,
+`permalink.php`, `story.php`, `profile.php`, `watch`, `reel`, `videos`, `people`, `login`, …)
+are never read as a profile's name, not even typed as `fbk:photo.php`.
+
+A single link's files go in its own target folder, without a category:
+
+- **`video`** opens `https://www.facebook.com/watch/?v=<id>` and keeps only that video, not the
+  suggestions beside it.
+- **`watch`** opens the `fb.watch` link in the logged-in browser (a private video's redirect needs
+  the login), reads the video's id from the page it lands on (`/watch/?v=<id>`, `/reel/<id>` or
+  `/<page>/videos/<id>`), then reads that video as `video` does. A link that lands on the login
+  page stops with "run flnd login fbk"; one that lands anywhere else stops with "didn't lead to
+  a video". The target's folder is named after the short code, but the file's history key is the
+  video's id, so the same video by another link is not saved twice.
+- **`photo`** opens `https://www.facebook.com/photo/?fbid=<id>` and keeps only that photo. A
+  `photo.php` link without a numeric `fbid=` is refused with what it lacks.
+- **`post`** opens the permalink and keeps every photo and video the post's owner owns, leaving a
+  comment's photo out. Its target value is `<owner id>_<story_fbid>`. A permalink without both
+  `story_fbid=` and `id=` is refused with what it lacks.
+
+A page that shows none of the media asked for (private, deleted, or needing a login) stops with
+"shows no photo or video".
 
 ## Categories
 
@@ -39,7 +65,9 @@ A *category* is one part of a profile that can be downloaded on its own. Without
 | `stories` | The stories active now |
 | `profile` | The profile picture and the cover photo |
 
-No category is newest first: each tab is scrolled to its end every run.
+No category is newest first: each tab is scrolled to its end every run. The early stops (a
+sync that has caught up, `--when`) are the engine's and apply only to a newest-first listing; the
+source itself only ends a scroll where the site does.
 
 Media another account owns is left out of a tab, when the profile header gives the profile's id.
 A video found in the `posts`, `photos` or `tagged` tab is filed under `videos/`, and a photo that
@@ -110,10 +138,11 @@ given. Inside it, the source declares:
 - `folder = "{part}/{album}"`: `part` is where the file was found (its tab, or `videos`,
   `albums` or `stories`), and `album` the album's title when it has one. The `profile` category
   uses `profile`.
-- `filename = "{date}_{id}"`: a file is `<date>_<photo or video id>.<ext>`, or `<id>.<ext>`
+- `filename = "{date}_{post}"`: a file is `<date>_<photo or video id>.<ext>`, or `<id>.<ext>`
   without a date. The profile pictures are `profile_<photo id>.<ext>` and
-  `cover_<photo id>.<ext>`.
-- `key = "{id}"`: the history remembers `fbk:<photo or video id>`, so a photo found in two tabs
+  `cover_<photo id>.<ext>`. A DASH video gets no name from the source: the engine names it from
+  `filename`, and gives the joined file `.webm` when both its streams are WebM, else `.mp4`.
+- `key = "{post}"`: the history remembers `fbk:<photo or video id>`, so a photo found in two tabs
   is saved once. The `profile` category sets an empty key, so its history key is the file's path
   under the target's folder.
 
@@ -149,16 +178,21 @@ Example:
   says this is unverified until a hand check on a live page. Handled since 2026-11-13.
 - **Login wall paths** are matched on the first path segment, so a profile like `login.example`
   is not a wall. Handled since 2026-11-16.
+- **`fb.watch` short links** used to match no route; they are now followed in the browser to the
+  video they point to. Handled since 2026-11-16.
+- **`photo.php` and `permalink.php`** used to be readable as the user names "photo.php" and
+  "permalink.php"; they are now the `photo` and `post` routes, or refused. Handled since
+  2026-11-16.
 
 ## Limits
 
-- **Single posts, photos, videos and reels are refused**: links under `/<profile>/posts`,
-  `/watch`, `/reel`, `/reels`, `/videos`, `/photo`, `/photos`, `/groups`, `/events`, `/stories`
-  and `/story.php` say "single posts and videos aren't supported yet; give the profile".
-- **`fb.watch` links** have no route, so they are not read.
+- **Some links are refused**: links under `/<profile>/posts`, `/photos`, `/groups`, `/events`
+  and `/stories` say "this kind of link isn't supported yet; give the profile, or a video,
+  photo.php or permalink.php link".
 - **Stories** are only those active at run time.
 - **Private content** is readable only when the login can see it.
-- **No early stop.** Every tab is scrolled to its end on every run; files already saved are
-  skipped, but the scroll still happens.
+- **No early stop.** No tab is newest first, so the engine's early stops never end one: every
+  tab is scrolled to its end on every run. Files already saved are skipped, but the scroll still
+  happens.
 - **Without a profile header**, the `stories` and `profile` categories are skipped with a
   warning, and no media is left out as another account's.

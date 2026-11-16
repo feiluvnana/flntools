@@ -1,4 +1,4 @@
-"""The engine's `Site` and `Login`: what a source's routes, categories and login act through.
+"""The engine's `Site`: what a source's routes, categories and login act through.
 
 - `source_run` opens one source's resources for a run (`SourceRun`): its cookies, its HTTP
   session and clients (`flnd._net`), its store, and the run's loop that its async code and every
@@ -14,7 +14,7 @@ Threads: a `TargetSite` is used on its target's listing thread, or, in an `async
 on the loop, where only `site.tab` (awaited) reaches the browser.
 
 The network side of a source (docs/architecture, "Network"): one `flnd._net.Session` with the
-login's cookies, the source's user agent and its `prepare` hook (for requests to its own
+login's cookies, the source's user agent and its `sign` hook (for requests to its own
 domains), and one `flnd._net.Limits` with two pools:
 - *pages*, the listing's requests to the source's own `domains`: a token bucket at the
   source's `pace`, which a 429's wait holds and halves;
@@ -25,6 +25,8 @@ domains), and one `flnd._net.Limits` with two pools:
   (TikTok's CDN hosts), and holding them to the listing's pace would serialize them.
 Two clients share them: `web` lists (paced), and stops at the first Ctrl-C; `files` downloads
 (capped), and stops at the second.
+on the loop, where only `site.tab` (awaited) reaches the browser. A `Listing` belongs to the
+listing thread too: the job sets it before a category is listed and reads it after.
 """
 
 from __future__ import annotations
@@ -36,9 +38,9 @@ from typing import (
     TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping, TypeVar,
 )
 
-from flnd.errors import Blocked, SourceError, Stopped, UsageError
-from flnd.source import Range, Source, Target
 from flnd import _browser, _home, _loop, _net, _prompt, _text, _time, _vault
+from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
+from flnd.source import Range, Request, Source, Target, dig
 from flnd._ui import ui
 
 if TYPE_CHECKING:
@@ -48,7 +50,8 @@ if TYPE_CHECKING:
 
     from flnd.options import RunShared
 
-__all__ = ["LoginSite", "SourceRun", "TargetSite", "shared_browser", "source_run"]
+__all__ = ["Listing", "LoginSite", "SourceRun", "TargetSite", "login_names", "paged",
+           "shared_browser", "source_run"]
 
 T = TypeVar("T")
 # Transfers at once to one media host (a CDN): where its cap starts, and the most it grows to
@@ -59,6 +62,15 @@ MEDIA_MOST = 32
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
 # `flnd sync` warns the run before the one that meets the login wall.
 EXPIRY_WARNING = 24 * 3600
+# What a site's own domains answer for a login wall.
+LOGIN_WALLS = frozenset({401, 403})
+# `back_off`'s waits for a block a page showed, in seconds, for the first, second and third round
+# in a row; a fourth round raises `Blocked` (docs/errors). A site's own wait is capped at an
+# hour, as a 429's `Retry-After` is.
+BACK_OFF = (30.0, 120.0, 480.0)
+LONGEST_WAIT = 3600.0
+# Seconds without a block after which the next one counts as the first round again.
+QUIET = 600.0
 
 
 @dataclass
@@ -184,11 +196,11 @@ def _network(source: Source,
     """A source's session and limits: its pace on its own domains, caps on every other host.
 
     Args:
-        source: the source; its `pace`, `limits`, `user_agent` and `prepare` are read.
+        source: the source; its `pace`, `limits`, `user_agent` and `sign` are read.
         jar: the login's cookies.
 
     Returns:
-        The session, with the source's `prepare` hook on requests to its own domains, and the
+        The session, with the source's `sign` hook on requests to its own domains, and the
         limits both of its clients share.
     """
     rate = 1.0 / source.pace if source.pace > 0 else None
@@ -196,9 +208,16 @@ def _network(source: Source,
                          caps=source.limits, cap=MEDIA_CAP, most=MEDIA_MOST)
 
     def prepare(request: _net.Request) -> _net.Request | None:
-        # Runs on the loop before each try; the hook only adds headers, so it costs little.
-        if _matches_domain(source, request.url.host):
-            return source.prepare(request, session.names)
+        # Runs on the loop before each try; the hook only adds headers, so it costs little. The
+        # source sees a `flnd.source.Request`, never the HTTP client's own type, so the client
+        # may change without breaking a source; what it sets in `headers` is copied back.
+        if not _matches_domain(source, request.url.host):
+            return None
+        seen = Request(request.method, str(request.url), dict(request.headers),
+                       request.content, MappingProxyType(dict(session.names)))
+        source.sign(seen)
+        for name, value in seen.headers.items():
+            request.headers[name] = value
         return None
 
     headers = {"User-Agent": source.user_agent} if source.user_agent else None
@@ -209,7 +228,7 @@ def _network(source: Source,
 class TargetSite:
     """The engine's `Site` for one target; see `flnd.source.Site` for each member.
 
-        site = TargetSite(run, Target("loi", "post", "5930"))
+        site = TargetSite(run, Target("loi:5930", kind="post"))
         post = site.fetch("https://api.moegoat.com/api/lois/5930").json["data"]
         site.close()
 
@@ -231,6 +250,12 @@ class TargetSite:
         self._shared: _browser.RunBrowser | None = run.settings.browser_pool
         self._own = False
         self._tabs: _browser.Tabs | None = None
+        # The category being listed, which `pages` resumes and reports its cursor to; set by the
+        # job for each category, None between them.
+        self.listing: Listing | None = None
+        # `back_off`'s rounds in a row, and when the last one ended.
+        self._rounds = 0
+        self._last_block = 0.0
 
     # -- requests -------------------------------------------------------------------------------
 
@@ -274,7 +299,31 @@ class TargetSite:
             sending = web.fetch(url, method=method, headers=headers, body=body, check=check)
         # The client raises flnd's errors as they are (`flnd._net`): a refusal is a `SiteError`
         # with its status and response, no answer a `NetworkError`, and a stop `Stopped`.
-        return self._run.loop.run(sending)
+        try:
+            return self._run.loop.run(sending)
+        except SiteError as error:
+            # A login wall: the site's own domains refuse the login. A 401 or 403 from another
+            # host (a CDN's expired link) stays the `SiteError` it is.
+            if (error.status in LOGIN_WALLS and type(error) is SiteError
+                    and _matches_domain(self._source, _net.URL(url).host)):
+                raise LoginError(f"{self._source.code}: the site refused the login "
+                                 f"(HTTP {error.status})",
+                                 hint=f"run flnd login {self._source.code}",
+                                 target=str(self.target)) from error
+            raise
+
+    def pages(self, url: str, *, cursor: str | Callable[[Any], Any],
+              params: Mapping[str, Any] | None = None,
+              send: str | Callable[[Any], Mapping[str, Any]] = "cursor") -> Iterator[Any]:
+        """Each page of a paged JSON listing; see `flnd.source.Site.pages` and `paged`."""
+        return paged(self.fetch, url, cursor=cursor, params=params, send=send,
+                     listing=self.listing)
+
+    def html(self, text: str | bytes) -> Selection:
+        """Parse HTML or JSON text; see `flnd.source.Site.html`."""
+        from flnd._html import parse
+
+        return parse(text)
 
     # -- the browser ----------------------------------------------------------------------------
 
@@ -412,8 +461,8 @@ class TargetSite:
         """See `flnd.source.Site.tab`."""
         return (await self._browser().current()).raw
 
-    def _warm_tabs(self, urls: Iterable[str]) -> None:
-        """Start loading `urls` in background tabs; see `flnd.sources.common.feed.warm_tabs`."""
+    def warm(self, urls: Iterable[str]) -> None:
+        """Start loading `urls` in background tabs; see `flnd.source.Site.warm`."""
         self._verbs().warm(urls)
 
     def _verbs(self) -> _browser.Tabs:
@@ -478,12 +527,53 @@ class TargetSite:
         """Log a warning line naming the target."""
         ui.warn("{target}: " + message, target=str(self.target), **fields)
 
+    @property
+    def interactive(self) -> bool:
+        """A run never asks: only `flnd login` does (`LoginSite`)."""
+        return False
+
+    def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
+        """A run has nobody to ask; see `flnd.source.Site.ask`.
+
+        Args:
+            message: the question the source wanted to ask.
+            secret: whether it would be hidden.
+            description: the lines under it.
+
+        Raises:
+            UsageError: always: a question belongs in the source's `Login.start`.
+        """
+        raise UsageError(f"{self._source.code}: a run can't ask {message!r}",
+                         hint=f"run flnd login {self._source.code} in a terminal first")
+
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
-        """Count one rate limit and wait it out."""
-        seconds = retry_after if retry_after is not None else 5.0
+        """Wait out a block a page showed, by rounds; see `flnd.source.Site.back_off`.
+
+        Args:
+            reason: what the site did, shown with the wait.
+            retry_after: the seconds the site asked for, capped at `LONGEST_WAIT`; None waits
+                `BACK_OFF`'s seconds for this round.
+
+        Raises:
+            Blocked: a fourth round in a row (`QUIET` seconds without a block start again).
+        """
+        if _time.now() - self._last_block > QUIET:
+            self._rounds = 0
+        self._rounds += 1
+        if self._rounds > len(BACK_OFF):
+            self._rounds = 0
+            raise Blocked(f"{self._source.code}: {reason}, after {len(BACK_OFF)} waits",
+                          hint="try again later, or raise the source's pace in config.toml",
+                          target=str(self.target))
+        rounds = BACK_OFF[self._rounds - 1]
+        seconds = min(retry_after, LONGEST_WAIT) if retry_after is not None else rounds
         ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
                 reason=reason, time=_text.duration(round(seconds)))
-        self.pause(seconds, reason)
+        try:
+            self.pause(seconds, reason)
+        finally:
+            # The wait itself isn't quiet time: the next block counts from its end.
+            self._last_block = _time.now()
 
     def pause(self, seconds: float, reason: str) -> None:
         """See `flnd.source.Site.pause`."""
@@ -506,10 +596,33 @@ class TargetSite:
 
 
 class LoginSite:
-    """The engine's `Login` for a source's own login (tlg's), during `flnd login`."""
+    """The `Site` a source's own `Login` asks through (Telegram's), during `flnd login`.
+
+    It has what a login needs: `ask` and `interactive`, the source's `secrets` and `state`, its
+    `cookies`, `info`, `warn` and `pause`. A login never lists, so the listing verbs aren't here.
+
+    Args:
+        run: the source's resources for the login.
+    """
 
     def __init__(self, run: SourceRun):
         self._run = run
+        self.target = Target(f"{run.source.code}:", kind="account")
+
+    @property
+    def cookies(self) -> Mapping[str, str]:
+        """The login's cookies, `{name: value}`, read-only."""
+        return MappingProxyType({cookie["name"]: cookie["value"] for cookie in self._run.jar})
+
+    @property
+    def state(self) -> MutableMapping[str, Any]:
+        """This source's own values in the home's `flnd.db`."""
+        return self._run.state
+
+    @property
+    def client(self) -> Any:
+        """What the source's `connect` gave; None during a login."""
+        return self._run.client
 
     @property
     def interactive(self) -> bool:
@@ -533,6 +646,34 @@ class LoginSite:
     def info(self, message: str, **fields: Any) -> None:
         """Log an info line naming the source."""
         ui.info("{code}: " + message, code=self._run.source.code, **fields)
+
+    def warn(self, message: str, **fields: Any) -> None:
+        """Log a warning naming the source."""
+        ui.warn("{code}: " + message, code=self._run.source.code, **fields)
+
+    def storage(self, url: str) -> dict[str, str] | None:
+        """A web app's saved local storage, read in a hidden copy of Chrome's default profile.
+
+        For a login that starts from a web app's own session (Telegram Web's). The copy is
+        made, read and removed here; the profile itself is never changed.
+
+        Args:
+            url: the web app's page.
+
+        Returns:
+            Its `localStorage` as `{key: value}`; None when the page didn't load on its host.
+
+        Raises:
+            NetworkError: the page couldn't be read.
+            ToolError: Chrome isn't installed.
+            FileNotFoundError: Chrome has no default profile.
+        """
+        return _browser.local_storage(url, profile="Default")
+
+    def pause(self, seconds: float, reason: str) -> None:
+        """Wait `seconds` during the login (a QR code's refresh); a stop ends it."""
+        if seconds > 0 and not _time.sleep(seconds, stop=self._run.web.stop):
+            raise Stopped(f"{self._run.source.code}: stopped while waiting: {reason}")
 
 
 @contextmanager
@@ -564,14 +705,20 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
             loop.close()
 
 
+def login_names(source: Source) -> tuple[str, ...]:
+    """The cookies that prove a source's login (`cookies(...)`'s names); none for other logins."""
+    return source.login.names if source.login is not None else ()
+
+
 def _warn_expiring(source: Source, jar: Any) -> None:
-    """Warn of login cookies (`source.needs`) that have expired or will expire soon."""
+    """Warn of login cookies (`login_names`) that have expired or will expire soon."""
     now = _time.wall()
+    names = login_names(source)
     for cookie in jar:
         expires = cookie.get("expires", -1)
         # -1 (or 0) is a session cookie, which lasts as long as the browser it came from said.
         if (
-            cookie.get("name") not in source.needs
+            cookie.get("name") not in names
             or not isinstance(expires, (int, float))
             or expires <= 0
         ):
@@ -588,3 +735,114 @@ def _warn_expiring(source: Source, jar: Any) -> None:
                 code=source.code, name=cookie["name"], time=_text.duration(expires - now),
             )
 
+
+
+# ---------------------------------------------------------------------------------------------
+# Paged listings
+# ---------------------------------------------------------------------------------------------
+
+class Listing:
+    """One category's listing in a run: where `pages` starts, and the cursor of the page it reads.
+
+    The job makes one per category it lists and sets it as `TargetSite.listing`; the first
+    `pages` call of the category starts from `start` and tells it the cursor of each page it
+    reads, which the job saves when the listing is cut short. Later `pages` calls of the same
+    category (a source paging a second list) start from their beginning.
+
+    Args:
+        start: the cursor an interrupted run saved; None starts from the newest.
+        label: names the listing in the line that says a saved cursor was refused.
+
+    Example:
+        >>> listing = Listing("c42", label="exm:example_user: posts")
+        >>> listing.cursor, listing.taken
+        ('c42', False)
+    """
+
+    def __init__(self, start: str | None = None, *, label: str = "") -> None:
+        self.start = start
+        self.label = label
+        # The cursor of the page being read, for the job to save if the listing is cut short.
+        self.cursor: str | None = start
+        # Whether a `pages` call took this listing already; only the first one resumes.
+        self.taken = False
+        # Whether the site refused `start`, so the listing began again from the newest.
+        self.refused = False
+
+
+def paged(fetch: Callable[..., Any], url: str, *, cursor: str | Callable[[Any], Any],
+          params: Mapping[str, Any] | None, send: str | Callable[[Any], Mapping[str, Any]],
+          listing: Listing | None) -> Iterator[Any]:
+    """Each page of a paged JSON listing, read through `fetch`: `Site.pages` over any site.
+
+    How it goes:
+    1. The first request sends `params`, plus the saved cursor when `listing` resumes.
+    2. Each page is yielded, then its cursor read (`cursor`: a `dig` path or a function).
+    3. The listing ends on a missing, empty or repeated cursor, or an empty page; otherwise the
+       next request sends the cursor where `send` says, and `listing.cursor` names that page.
+
+    Args:
+        fetch: the site's `fetch`; called as `fetch(url, params=…)`, its response's `.json` read.
+        url: the listing's URL.
+        cursor: a `dig` path to the next cursor, or a function from a page to it (None ends).
+        params: the query every request sends; None for none.
+        send: the cursor's query parameter, or a function from the cursor to more params.
+        listing: the category's `Listing`; None (or one taken already) neither resumes nor
+            reports.
+
+    Yields:
+        Each page, the response's parsed JSON.
+    """
+    if listing is not None and listing.taken:
+        listing = None
+    if listing is not None:
+        listing.taken = True
+
+    def ask(at: Any) -> Any:
+        query = dict(params or {})
+        if at is not None:
+            query.update(send(at) if callable(send) else {send: at})
+        return fetch(url, params=query or None).json
+
+    page = _first_page(ask, listing)
+    seen: set[str] = set()
+    while page not in (None, {}, []):
+        yield page
+        following = cursor(page) if callable(cursor) else dig(page, cursor)
+        if following is None or following == "" or str(following) in seen:
+            return
+        seen.add(str(following))
+        if listing is not None:
+            # The cursor of the page being fetched and read: a run cut short reads it again, and
+            # the posts it already saved are skipped.
+            listing.cursor = str(following)
+        page = ask(following)
+
+
+def _first_page(ask: Callable[[Any], Any], listing: Listing | None) -> Any:
+    """The first page: from the saved cursor if any, else from the newest.
+
+    A saved cursor the site refuses with a 4xx has gone stale, which is the site's answer for
+    good: it is dropped, said once, and the listing starts from the newest. Any other failure is
+    the run's, and is raised.
+
+    Args:
+        ask: fetches one page, given its cursor (None for the newest).
+        listing: the category's `Listing`; None starts from the newest.
+
+    Returns:
+        The first page's JSON.
+    """
+    start = listing.start if listing is not None else None
+    if not start:
+        return ask(None)
+    try:
+        return ask(start)
+    except SiteError as error:
+        if error.status is None or not 400 <= error.status < 500:
+            raise
+    assert listing is not None
+    ui.info("{label}: the cursor an interrupted run saved was refused; listing from the newest",
+            label=listing.label)
+    listing.refused, listing.cursor = True, None
+    return ask(None)

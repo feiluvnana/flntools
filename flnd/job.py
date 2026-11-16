@@ -1,4 +1,34 @@
-"""The job: one target of a source, from its route to its rows in `flnd.db`."""
+"""The job: one target of a source, from its route to its rows in `flnd.db`.
+
+Who calls it: the engine (`flnd.engine`), once per target, on the target's listing thread.
+What it calls: the source's route and categories through a `TargetSite`, the downloader
+(`flnd._transfer`) on the run's loop, and the home's `flnd.db` (`flnd._home`).
+
+How one target goes (`download`):
+1. Sweep stale parts from the target's folder, and read the target's row: which categories
+   were listed to their end, the cursors of cut-short listings, and each listing's head (the
+   newest post an earlier run saw).
+2. Retry the files earlier runs failed on (`_retry_failed`).
+3. List the route, or each wanted category (`_list_one`), queueing each post's files that
+   aren't saved. The engine owns the early stops, never the source (`_Stops`):
+   - a sync of a `newest_first` listing stops after `stop_after` saved posts in a row (5, or
+     `[sources.<code>] stop_after` in the home's config.toml), and sooner, after the head and
+     one more saved post, once it meets the head an earlier run saw;
+   - a `newest_first` listing stops after 5 posts in a row older than `--when`;
+   - `--limit` cuts it.
+4. Wait for the downloads, then keep where each listing stopped: its cursor when it was cut
+   short, `complete` when it ran out or caught up, and its new head when it was read from the
+   top (`Home.progress`).
+
+Targets a listing yields (a post linking to another site) are handed back in the report's
+`found`, and the engine downloads them after the run's own targets.
+
+Rules a change must keep:
+- A source never decides when a listing stops: it yields, and the job closes its generator.
+- A cursor is kept only for a listing cut short; a listing that ran out drops it.
+- A head is kept only for a listing read from its newest post: a run that resumed from a cursor
+  read the middle of the listing, not its top.
+"""
 
 from __future__ import annotations
 
@@ -20,17 +50,15 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
-from flnd import _transfer
-from flnd.common import paths
-from flnd.options import Options, selected
-from flnd.site import SourceRun, TargetSite
+from flnd import _files, _home, _text, _transfer
+from flnd._text import fill
+from flnd._time import day
 from flnd.errors import (
     Blocked, Error, LoginError, NetworkError, SiteError, Stopped, classify,
 )
-from flnd.source import (
-    Category, File, Post, Range, Resume, Route, Site, Source, Target, day, fill, listing,
-)
-from flnd import _files, _home, _text
+from flnd.options import Options, selected, stop_after
+from flnd.site import Listing, SourceRun, TargetSite
+from flnd.source import Category, File, Post, Range, Route, Site, Source, Target
 from flnd._events import Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._ui import ui
@@ -50,8 +78,12 @@ LOGIN_WALLS = frozenset({401, 403})
 BLOCKS = LOGIN_WALLS | {429}
 LEADING_DAY = re.compile(r"\d{4}-\d\d-\d\d_")
 NOON = 12
+# Posts in a row older than `--when` that end a `newest_first` listing: more than the posts a
+# profile pins above its newest (Instagram pins up to 3).
 OLDER_IN_A_ROW = 5
-SAVED_IN_A_ROW = 5
+# Saved posts in a row, the head an earlier run saw counted, that end a sync once it met that
+# head: the head itself, and the post after it, which shows the head wasn't pinned above new ones.
+HEAD_IN_A_ROW = 2
 LISTED_FIELDS = frozenset({"count", "index", "extension", "path"})
 DASH_EXTENSION = ".mp4"
 EXPIRED = frozenset({403, 410})
@@ -94,6 +126,9 @@ class TargetReport:
     written: tuple[Path, ...]
     skipped: int
     error: Error | Stopped | None = None
+    # Targets its listings yielded, such as a post's link to another site, for the engine to
+    # download after the run's own targets; each as the source wrote it, not yet resolved.
+    found: tuple[Target, ...] = ()
 
 
 def failure(error: BaseException, target: Target, source: Source | None = None) -> Error:
@@ -385,7 +420,8 @@ def posts(
         return
     context = _context(source, route, site, target, run_async)
     if not route.categories:
-        yield from _Kept(context, "", newest_first=False, span=span, run_async=run_async)
+        yield from _Kept(context, "", newest_first=route.newest_first, span=span,
+                         run_async=run_async)
         return
     for category in categories:
         method = getattr(source, category.name)
@@ -467,10 +503,9 @@ def _file_values(
     target_val = target.value if target is not None else ""
     query_val = (options.query or "") if options is not None else ""
     return {
-        **post.fields, "id": post.id, "date": posted, "category": post.category,
+        **post.fields, "post": post.id, "date": posted, "category": post.category,
         "num": num, "count": count, "index": "" if count == 1 else f"_{num}",
-        "extension": extension, "source": code, "site": code,
-        "target": target_val, "user": target_val, "query": query_val,
+        "extension": extension, "source": code, "target": target_val, "query": query_val,
     }
 
 
@@ -527,6 +562,13 @@ class Ledger:
             return Outcome.EMPTY, []
         post = dated
         skipped = self._saved_first(post, category) if post.lazy else None
+        if skipped is None and post.lazy and self._unkeyed(category) and self._db is not None \
+                and not self._again \
+                and self._db.post_saved(_home.key(self.target), post.id, post.category):
+            # Its keys are its files' paths, known only once listed (LOIBUS's archives): the
+            # post's own rows say it was saved, so its files function, which may cost the
+            # account a download from its quota, isn't called again.
+            skipped = Outcome.SAVED
         if skipped is not None:
             self._skip(post.category, post.id)
             ui.debug("{post}: already saved", post=post.id)
@@ -560,7 +602,7 @@ class Ledger:
             self._queued.update(dict.fromkeys((dest, item_key), placed.path))
             todo.append(_Queued(placed, dest, item_key, estimated=first in self._estimated))
         if todo:
-            todo.sort(key=lambda queued: queued.placed.kind != paths.VIDEO)
+            todo.sort(key=lambda queued: queued.placed.kind != _files.VIDEO)
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
 
@@ -758,37 +800,22 @@ class Ledger:
         template = _format(self.source, category, "key")
         if not template or _fields(template) & (LISTED_FIELDS | {"date"}):
             return None
-        values = {**post.fields, "id": post.id, "category": post.category, "num": 0}
+        values = {**post.fields, "post": post.id, "category": post.category, "num": 0}
         built = fill(template, values, safe=False)
         return f"{self.source.code}:{built}" if built else None
 
-    def is_saved(
-        self, post_id: str, category: Category | None, posted: datetime.date | None = None
-    ) -> bool:
-        """Return whether `post_id` is already saved in history or on disk."""
-        name = category.name if category is not None else ""
-        if self._saved_first(Post(post_id, date=posted, category=name), category) is Outcome.SAVED:
-            return True
+    def _unkeyed(self, category: Category | None) -> bool:
+        """Whether a file's key needs its listed path: no key from the post's fields alone."""
         template = _format(self.source, category, "key")
-        if not template or _fields(template) & LISTED_FIELDS:
-            return False
-        if not (_fields(template) - {"id", "date", "category", "num"}):
-            return False
-        values = {"id": post_id, "date": day(posted), "category": name}
-        for index in (0, 1):
-            filled = fill(template, {**values, "num": index, "n": index, "idx": index}, safe=False)
-            for candidate in dict.fromkeys((filled, f"{post_id}_{index}")):
-                item_key = f"{self.source.code}:{candidate}"
-                if item_key not in self._queued and self._held(None, item_key) is not None:
-                    return True
-        return False
+        return not template or bool(_fields(template) & LISTED_FIELDS)
 
     def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
         """Check whether all files of a lazy post are already saved by their keys."""
         template = _format(self.source, category, "key")
         if not template or _fields(template) & LISTED_FIELDS:
             return None
-        values = {**post.fields, "id": post.id, "date": day(post.date), "category": post.category}
+        values = {**post.fields, "post": post.id, "date": day(post.date),
+                  "category": post.category}
         keys = [
             f"{self.source.code}:{fill(template, {**values, 'num': num}, safe=False)}"
             for num in range(2)
@@ -1210,7 +1237,7 @@ class Downloads:
             queued.key, _home.key(self.target), str(saved.path), saved.size, saved.mtime,
             post_id=placed.post.id, category=placed.post.category,
             date=posted.isoformat() if posted is not None else None,
-            estimated=queued.estimated, kind=paths.kind_of(saved.path.name), at=_home.now(),
+            estimated=queued.estimated, kind=_files.kind_of(saved.path.name), at=_home.now(),
             files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
             hash=saved.hash,
         )
@@ -1320,30 +1347,58 @@ def _run_download(
     ledger = Ledger(run, site, target, board, options=options)
     downloads = Downloads(run, target, board, compress=options.compress)
     work = _Work(ledger, downloads)
-    complete: list[str] = []
     db = run.settings.db
     row = db.target(target) if db is not None else None
-    listed = {} if options.again or row is None else row.complete
-    resumes: dict[str, Resume] = {}
+    progress = _Progress(row, again=options.again)
     _retry_failed(work, run, target, options)
-    error = _execute_listing(work, run, site, target, options, listed, resumes, complete)
+    error = _execute_listing(work, run, site, target, options, progress)
     written = downloads.finish(error)
     ledger.link_queued(downloads.written)
-    cursors = {
-        name: None if name in complete else resume.cursor
-        for name, resume in resumes.items()
-    }
     # A target a search found has no row of its own: the search's row keeps what it found.
     if db is not None and not options.query:
-        db.progress(target, cursors=cursors, complete=complete)
+        db.progress(target, cursors=progress.cursors(), complete=progress.complete,
+                    heads=progress.heads)
         # Counting reads every row of the target (35 ms for 100,000), so a run that saved
         # nothing keeps the count it has, unless it has none yet.
         if written or row is None or not row.files:
             db.tally(target)
-    report = TargetReport(target, written, board.totals(target).skipped)
+    report = TargetReport(target, written, board.totals(target).skipped,
+                          found=tuple(dict.fromkeys(work.linked)))
     return _ended(
-        run, board, report, error, complete=", ".join(complete) or "none", started=started,
+        run, board, report, error, complete=", ".join(progress.complete) or "none",
+        started=started,
     )
+
+
+class _Progress:
+    """Where a target's listings stood after earlier runs, and where this run leaves them.
+
+    Args:
+        row: the target's row in `flnd.db`; None for a target the home doesn't know yet.
+        again: list every post again: the earlier runs' cursors, heads and completeness are
+            ignored (they are still updated by this run).
+    """
+
+    def __init__(self, row: _home.TargetRow | None, *, again: bool) -> None:
+        earlier = row if row is not None and not again else None
+        # Each listing an earlier run read to its end, with the day it did.
+        self.listed: Mapping[str, str] = earlier.complete if earlier is not None else {}
+        # The cursor each cut-short listing was reading.
+        self.started: Mapping[str, str] = earlier.cursors if earlier is not None else {}
+        # The newest post each listing had when an earlier run read it from the top.
+        self.seen_heads: Mapping[str, str] = earlier.heads if earlier is not None else {}
+        # This run's listings, by name ("" for a route's own), the ones it read to their end,
+        # and their heads.
+        self.listings: dict[str, Listing] = {}
+        self.complete: list[str] = []
+        self.heads: dict[str, str] = {}
+
+    def cursors(self) -> dict[str, str | None]:
+        """Each listing's cursor to keep: the page it was reading, or None when it ran out."""
+        return {
+            name: None if name in self.complete else listing.cursor
+            for name, listing in self.listings.items()
+        }
 
 
 def _serialize_failed(queued: _Queued) -> dict[str, Any] | None:
@@ -1413,17 +1468,27 @@ def _retry_failed(work: _Work, run: SourceRun, target: Target, options: Options)
 
 def _execute_listing(
     work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
-    listed: Mapping[str, str], resumes: dict[str, Resume], complete: list[str],
+    progress: _Progress,
 ) -> BaseException | None:
-    """Run listing and wait for downloads, returning any fatal error."""
+    """List the target, then wait for its downloads; any error that ended it is returned.
+
+    Args:
+        work: the target's ledger and downloads, which queue each post's files.
+        run: the source's resources for the run.
+        site: the target's site; its `listing` is set while a listing runs.
+        target: the target.
+        options: the target's options: `--when`, `--only`, `--limit`, `--again`.
+        progress: where the earlier runs left the target's listings, and this run's.
+
+    Returns:
+        What ended the target (a `KeyboardInterrupt` past the first Ctrl-C included); None
+        when it finished.
+    """
     try:
         try:
             if options.stop_at_saved:
                 work.ledger.redate()
-            _read(
-                work, run, site, target, options,
-                listed=listed, resumes=resumes, complete=complete,
-            )
+            _read(work, run, site, target, options, progress)
         except KeyboardInterrupt:
             if not run.settings.stop.soon.is_set() or run.settings.stop.now.is_set():
                 raise
@@ -1615,7 +1680,19 @@ class _Refresh:
 
 
 class _Kept:
-    """Posts from a route or category filtered by `--time`."""
+    """The posts a route or category yields, filtered by `--when`.
+
+    It is where the engine reads a listing as it goes: it stops a `newest_first` listing after
+    `OLDER_IN_A_ROW` posts older than `--when`, notes the newest post (the listing's head), and
+    keeps the `Target`s a listing yields (`linked`) for the engine, rather than as posts.
+
+    Args:
+        yielded: the generator (sync or async), or a coroutine giving one.
+        category: the category's name; "" for a route's own posts.
+        newest_first: whether the listing comes newest first.
+        span: `--when`.
+        run_async: runs a coroutine on the run's loop.
+    """
 
     def __init__(
         self, yielded: Any, category: str, *, newest_first: bool, span: Range, run_async: RunAsync
@@ -1624,27 +1701,42 @@ class _Kept:
             yielded = run_async(yielded)
         self.category, self.newest_first, self.time = category, newest_first, span
         self.ran_out = False
+        # The targets the listing yielded, in order, each as the source wrote it.
+        self.linked: list[Target] = []
+        # The newest post listed, by its day (the first one, while none has a day): the head a
+        # later sync stops at.
+        self.newest: str | None = None
+        self._newest_day: datetime.date | None = None
         self._steps = _steps(yielded, run_async)
 
     def __iter__(self) -> Iterator[Post]:
         """Yield kept posts, stopping early after 5 older posts on `newest_first` feeds."""
         older = 0
+        # A post a source yields in parts (TikTok yields each photo of a photo post as a post of
+        # the same id) is one post to the streaks: only its first part counts.
+        last: str | None = None
         try:
             for post in self._steps:
+                if isinstance(post, Target):
+                    self.linked.append(post)
+                    continue
                 if not isinstance(post, Post):
                     raise TypeError(
-                        f"{self.category or 'a route'} yielded {type(post).__name__}, not a Post"
+                        f"{self.category or 'a route'} yielded {type(post).__name__}, "
+                        "not a Post or a Target"
                     )
                 if self.category:
                     post = post.filed(self.category)
                 posted = day(post.date)
+                self._note(post.id, posted)
                 if posted in self.time:
-                    older = 0
+                    older, last = 0, post.id
                     yield post
                     continue
                 since = self.time.since
                 if self.newest_first and since and posted and posted < since:
-                    older += 1
+                    older += post.id != last
+                    last = post.id
                     if older >= OLDER_IN_A_ROW:
                         return
             self.ran_out = True
@@ -1654,6 +1746,12 @@ class _Kept:
     def close(self) -> None:
         """Close the underlying generator."""
         self._steps.close()
+
+    def _note(self, post: str, posted: datetime.date | None) -> None:
+        """Keep `post` as the newest so far when it is the first, or newer than the newest."""
+        if self.newest is None or (
+                posted is not None and (self._newest_day is None or posted > self._newest_day)):
+            self.newest, self._newest_day = post, posted
 
 
 class Outcome(Enum):
@@ -1676,10 +1774,12 @@ class Ended(Enum):
 
 @dataclass(frozen=True)
 class _Work:
-    """Pair of `Ledger` and `Downloads` for queuing kept posts."""
+    """A target's `Ledger` and `Downloads`, for queueing kept posts, and the targets it found."""
 
     ledger: Ledger
     downloads: Downloads
+    # The targets its listings yielded (`_Kept.linked`), in order.
+    linked: list[Target] = field(default_factory=list)
 
     def queue(self, post: Post, *, hold: bool = True) -> Outcome:
         """Record `post` in `ledger` and submit its unsaved files."""
@@ -1718,7 +1818,9 @@ def _yield_arg_targets(
         for item in steps:
             if run.settings.stop.soon.is_set():
                 return
-            child = item if isinstance(item, Target) else run.source.resolve(str(item))
+            child = resolved(run, item)
+            if child is None:
+                continue
             if _home.key(child) in seen_keys:
                 break
             if child in yielded:
@@ -1736,11 +1838,37 @@ def _at_limit(run: SourceRun, yielded: set[Target], limit: int | None) -> bool:
     return run.settings.stop.soon.is_set() or (limit is not None and len(yielded) >= limit)
 
 
+@dataclass(frozen=True)
+class _Stops:
+    """When a sync of a listing has caught up: the engine's early stop at saved posts.
+
+    Args:
+        sync: whether the listing stops at saved posts at all: any run (but `--again`) of a
+            `newest_first` listing an earlier run read to its end, not resumed from a cursor.
+        streak: saved posts in a row that end it (`stop_after`).
+        head: the newest post an earlier run saw in this listing; None when none did.
+    """
+
+    sync: bool = False
+    streak: int = 5
+    head: str | None = None
+
+
 def _queue_all(
-    work: _Work, kept: _Kept, *, stop_at_saved: bool, limit: int | None = None
+    work: _Work, kept: _Kept, *, stops: _Stops = _Stops(), limit: int | None = None
 ) -> tuple[Ended, int]:
-    """Queue kept posts, then release held undated posts."""
-    ended, taken = _queue_listed(work, kept, stop_at_saved=stop_at_saved, limit=limit)
+    """Queue kept posts, then release held undated posts.
+
+    Args:
+        work: the target's ledger and downloads.
+        kept: the listing, filtered by `--when`.
+        stops: when a sync has caught up.
+        limit: posts the listing may still take; None for no limit.
+
+    Returns:
+        How the listing ended, and how many posts it took.
+    """
+    ended, taken = _queue_listed(work, kept, stops=stops, limit=limit)
     if ended is Ended.STOPPED:
         return ended, taken
     for post in work.ledger.release():
@@ -1755,157 +1883,215 @@ def _queue_all(
 
 
 def _queue_listed(
-    work: _Work, kept: _Kept, *, stop_at_saved: bool, limit: int | None = None
+    work: _Work, kept: _Kept, *, stops: _Stops, limit: int | None = None
 ) -> tuple[Ended, int]:
-    """Queue each post in `kept` until stopped, `limit`, or 5 saved posts in a row."""
+    """Queue each post in `kept` until stopped, `limit`, or a sync caught up (`_Stops`).
+
+    A sync has caught up after `stops.streak` saved posts in a row, or, once it met the head an
+    earlier run saw, after `HEAD_IN_A_ROW`: the head and the post after it. Requiring the post
+    after it keeps a head the site later pinned above new posts from ending the sync too soon.
+
+    Args:
+        work: the target's ledger and downloads.
+        kept: the listing, filtered by `--when`.
+        stops: when a sync has caught up.
+        limit: posts the listing may still take; None for no limit.
+
+    Returns:
+        How the listing ended, and how many posts it took (queued or saved).
+    """
     saved_in_a_row = 0
-    taken = 0
+    taken = queued = 0
+    met_head = False
+    # Consecutive parts of one post (the same id, as `_Kept` says) count once, for `--limit` too.
+    last: str | None = None
     stop = work.downloads.settings.stop.soon
     try:
         for post in kept:
-            if limit is not None and taken >= limit:
+            part = post.id == last
+            if limit is not None and taken >= limit and not part:
                 return Ended.CUT, taken
             outcome = Outcome.STOPPED if stop.is_set() else work.queue(post)
             if outcome is Outcome.STOPPED:
                 return Ended.STOPPED, taken
             if outcome is not Outcome.EMPTY:
+                last = post.id
+                if part:
+                    # A part saved like the rest leaves the streak as it was; a new part breaks it.
+                    if outcome is Outcome.QUEUED:
+                        queued, saved_in_a_row = queued + 1, 0
+                    continue
                 taken += 1
+                queued += outcome is Outcome.QUEUED
                 saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
-            if limit is not None and taken >= limit:
-                return Ended.CUT, taken
-            if stop_at_saved and saved_in_a_row >= SAVED_IN_A_ROW:
+            met_head = met_head or (stops.head is not None and post.id == stops.head)
+            # `--limit` is checked as the next post comes, not here: the next may be another part
+            # of this one. That reads one more item of the listing, never one more post.
+            if not stops.sync:
+                continue
+            if met_head and saved_in_a_row >= HEAD_IN_A_ROW:
+                # Row 15.16's smart sync adds its "nothing new" event and the gap fill here.
+                if not queued:
+                    ui.info("{category}: nothing new", category=kept.category or "posts")
+                return Ended.CAUGHT_UP, taken
+            if saved_in_a_row >= stops.streak:
                 ui.info("{category}: {count} saved posts in a row, caught up",
-                        category=kept.category, count=saved_in_a_row)
+                        category=kept.category or "posts", count=saved_in_a_row)
                 return Ended.CAUGHT_UP, taken
     finally:
         kept.close()
     return (Ended.RAN_OUT if kept.ran_out else Ended.CUT), taken
 
 
-def _chained(first: Any, steps: Generator[Any, None, None]) -> Generator[Any, None, None]:
-    """Yield `first` followed by `steps`, closing `steps` on exit."""
-    try:
-        if first is not None:
-            yield first
-        yield from steps
-    finally:
-        steps.close()
-
-
 def _read(
-    work: _Work, run: SourceRun, site: Site, target: Target, options: Options, *,
-    listed: Collection[str], resumes: dict[str, Resume], complete: list[str],
+    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    progress: _Progress,
 ) -> None:
-    """List the target's route and wanted categories into `work`."""
+    """List the target's route, or its wanted categories, into `work`.
+
+    A discovering route downloads each target it yields; a route without categories is one
+    listing (named ""); otherwise the route is called once, and each wanted category listed
+    with what it returned, sharing `--limit`.
+
+    Args:
+        work: the target's ledger and downloads, which queue each post's files.
+        run: the source's resources for the run.
+        site: the target's site; its `listing` is set while a listing runs.
+        target: the target.
+        options: the target's options: `--when`, `--only`, `--limit`, `--again`.
+        progress: where the earlier runs left the target's listings, and this run's.
+    """
     route = next(r for r in run.source.routes if r.kind == target.kind)
-    categories = wanted(type(run.source), route, options)
-    if route.categories and not categories:
+    if route.discovers:
+        _run_discovered(run, work.ledger.board, options,
+                        _steps(_context(run.source, route, site, target, run.run_async),
+                               run.run_async))
         return
     if not route.categories:
-        _read_routeless(work, run, route, site, target, options)
+        _list_one(work, run, site, target, options, progress, name="",
+                  newest_first=route.newest_first,
+                  items=lambda: getattr(run.source, route.kind)(site, target.value),
+                  remaining=options.limit)
         return
-    _read_categories(work, run, route, categories, site, target, options, listed, resumes, complete)
-
-
-def _read_routeless(
-    work: _Work, run: SourceRun, route: Route, site: Site, target: Target, options: Options
-) -> None:
-    """List a route without categories (either posts or discovered targets)."""
-    ui.debug("{target}: list {route}", target=str(target), route=route.kind)
-    context = _context(run.source, route, site, target, run.run_async)
-    steps = _steps(context, run.run_async)
-    try:
-        first = next(steps, None)
-    except BaseException:
-        steps.close()
-        raise
-    if isinstance(first, (Target, str)):
-        _run_discovered(run, work.ledger.board, options, _chained(first, steps))
+    categories = wanted(type(run.source), route, options)
+    if not categories:
         return
-    work.ledger.board.start(target, "", slots=run.jobs)
-    span = Range(options.since, options.until)
-    own = _Kept(_chained(first, steps), "", newest_first=False, span=span, run_async=run.run_async)
-    ended, _ = _queue_all(work, own, stop_at_saved=False, limit=options.limit)
-    if ended is not Ended.STOPPED:
-        work.ledger.board.listed(target, "")
-
-
-def _read_categories(
-    work: _Work, run: SourceRun, route: Route, categories: tuple[Category, ...],
-    site: Site, target: Target, options: Options, listed: Collection[str],
-    resumes: dict[str, Resume], complete: list[str],
-) -> None:
-    """List each wanted category of `route`, resuming from saved cursors when present."""
     context = _context(run.source, route, site, target, run.run_async)
-    db = run.settings.db
-    row = db.target(target) if db is not None and not options.again else None
-    cursors = row.cursors if row is not None else {}
     remaining = options.limit
     for category in categories:
         if remaining is not None and remaining <= 0:
             return
-        ended, taken = _read_one_category(
-            work, run, site, target, context, category, options,
-            cursors.get(category.name) if category.newest_first else None,
-            listed, resumes, complete, remaining,
+        method = getattr(run.source, category.name)
+        ended, taken = _list_one(
+            work, run, site, target, options, progress, name=category.name,
+            newest_first=category.newest_first,
+            items=lambda method=method: method(site, context), remaining=remaining,
         )
         if remaining is not None:
             remaining -= taken
         if ended is Ended.STOPPED:
             return
-        work.ledger.board.listed(target, category.name)
 
 
-def _read_one_category(
-    work: _Work, run: SourceRun, site: Site, target: Target, context: Any,
-    category: Category, options: Options, start: str | None, listed: Collection[str],
-    resumes: dict[str, Resume], complete: list[str], remaining: int | None,
+def _list_one(
+    work: _Work, run: SourceRun, site: TargetSite, target: Target, options: Options,
+    progress: _Progress, *, name: str, newest_first: bool, items: Callable[[], Any],
+    remaining: int | None,
 ) -> tuple[Ended, int]:
-    """List one category from `start` cursor, catching up from newest if resumed."""
-    ui.debug("{target}: list {category}", target=str(target), category=category.name)
-    work.ledger.board.start(target, category.name, slots=run.jobs)
-    stop_at_saved = (
-        category.newest_first
-        and category.name in listed
-        and not start
-        and not options.again
+    """List one category (or a route's own posts) into `work`, and note where it ended.
+
+    How it goes:
+    1. A `newest_first` listing an earlier run cut short resumes from its saved cursor: the
+       site's `Listing` hands it to the first `pages` call.
+    2. A sync of a `newest_first` listing an earlier run read to its end stops at saved posts
+       (`_Stops`); any other listing reads to its end, `--limit` or `--when`.
+    3. A listing that ran out or caught up is complete; one read from the top keeps its head.
+    4. A resumed listing that ran out lists again from the newest, down to the posts it saved
+       before, since new posts may have come while it was interrupted.
+
+    Args:
+        work: the target's ledger and downloads, which queue each post's files.
+        run: the source's resources for the run.
+        site: the target's site; its `listing` is set while a listing runs.
+        target: the target.
+        options: the target's options: `--when`, `--only`, `--limit`, `--again`.
+        progress: where the earlier runs left the target's listings, and this run's.
+        name: the category's name; "" for a route's own posts.
+        newest_first: whether the listing comes newest first.
+        items: calls the category (or route) method, returning what it yields.
+        remaining: posts the target may still take under `--limit`; None for no limit.
+
+    Returns:
+        How the listing ended, and how many posts it took.
+    """
+    ui.debug("{target}: list {name}", target=str(target), name=name or target.kind)
+    work.ledger.board.start(target, name, slots=run.jobs)
+    start = progress.started.get(name) if newest_first else None
+    stops = _Stops(
+        sync=newest_first and name in progress.listed and not start,
+        streak=stop_after(run.settings.home, run.source.code),
+        head=progress.seen_heads.get(name),
     )
-    saved = (
-        (lambda pid, posted=None, cat=category: work.ledger.is_saved(pid, cat, posted))
-        if stop_at_saved else None
-    )
-    resume = resumes[category.name] = Resume(start, label=f"{target}: {category.name}", saved=saved)
+    listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
     if start:
-        ui.info("{target}: {category}: going on where an interrupted run stopped",
-                target=str(target), category=category.name)
-    method = getattr(run.source, category.name)
-    span = Range(options.since, options.until)
-    kept = _Kept(method(site, context), category.name, newest_first=category.newest_first,
-                 span=span, run_async=run.run_async)
-    with listing(resume):
-        ended, taken = _queue_all(work, kept, stop_at_saved=stop_at_saved, limit=remaining)
+        ui.info("{target}: {name}: going on where an interrupted run stopped",
+                target=str(target), name=name or target.kind)
+    ended, taken, kept = _listed(work, run, site, name, newest_first, items, listing, stops,
+                                 options, remaining)
     if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP):
-        complete.append(category.name)
-    if ended is Ended.RAN_OUT and start and resume.taken and not resume.refused:
-        rem = None if remaining is None else remaining - taken
-        if rem is None or rem > 0:
-            ended, extra = _catch_up_newest(work, run, site, target, context, category, span, rem)
+        progress.complete.append(name)
+        if not start and kept.newest is not None:
+            progress.heads[name] = kept.newest
+    if ended is Ended.RAN_OUT and start and listing.taken and not listing.refused:
+        # The run that saved the cursor was cut short, so posts newer than those it saw may
+        # have come since: list from the newest down to the saved posts.
+        rest = None if remaining is None else remaining - taken
+        if rest is None or rest > 0:
+            ui.debug("{target}: list {name} from the newest", target=str(target),
+                     name=name or target.kind)
+            ended, extra, newest = _listed(work, run, site, name, True, items, Listing(),
+                                           replace(stops, sync=True), options, rest)
             taken += extra
+            if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.newest is not None:
+                progress.heads[name] = newest.newest
+    if ended is not Ended.STOPPED:
+        work.ledger.board.listed(target, name)
     return ended, taken
 
 
-def _catch_up_newest(
-    work: _Work, run: SourceRun, site: Site, target: Target, context: Any,
-    category: Category, span: Range, limit: int | None,
-) -> tuple[Ended, int]:
-    """List from the newest down to where an interrupted run started."""
-    ui.debug("{target}: list {category} from the newest",
-             target=str(target), category=category.name)
-    method = getattr(run.source, category.name)
-    newest = _Kept(method(site, context), category.name, newest_first=True,
-                   span=span, run_async=run.run_async)
-    with listing(Resume()):
-        return _queue_all(work, newest, stop_at_saved=True, limit=limit)
+def _listed(
+    work: _Work, run: SourceRun, site: TargetSite, name: str, newest_first: bool,
+    items: Callable[[], Any], listing: Listing, stops: _Stops, options: Options,
+    remaining: int | None,
+) -> tuple[Ended, int, _Kept]:
+    """Run one listing with `listing` set on the site, queueing what it yields into `work`.
+
+    Args:
+        work: the target's ledger and downloads; the targets the listing yields join its
+            `linked`.
+        run: the source's resources for the run.
+        site: the target's site, whose `listing` is set for the listing, then cleared.
+        name: the category's name; "" for a route's own posts.
+        newest_first: whether the listing comes newest first.
+        items: calls the category (or route) method, returning what it yields.
+        listing: the `Listing` the first `pages` call resumes and reports to.
+        stops: when a sync has caught up.
+        options: the target's options, for `--when`.
+        remaining: posts it may take under `--limit`; None for no limit.
+
+    Returns:
+        How it ended, how many posts it took, and the `_Kept` that read it (its head, its
+        linked targets).
+    """
+    site.listing = listing
+    try:
+        kept = _Kept(items(), name, newest_first=newest_first,
+                     span=Range(options.since, options.until), run_async=run.run_async)
+        ended, taken = _queue_all(work, kept, stops=stops, limit=remaining)
+    finally:
+        site.listing = None
+    work.linked.extend(kept.linked)
+    return ended, taken, kept
 
 
 def _run_discovered(
@@ -1918,8 +2104,8 @@ def _run_discovered(
         for item in items:
             if run.settings.stop.soon.is_set():
                 return
-            child = item if isinstance(item, Target) else run.source.resolve(str(item))
-            if child in seen:
+            child = resolved(run, item)
+            if child is None or child in seen:
                 continue
             seen.add(child)
             download(run, child, board, child_options)
@@ -1955,18 +2141,22 @@ def _extension(file: File) -> tuple[str, str | None]:
     if file.content is not None:
         return PurePosixPath(file.name or "").suffix, None
     if file.name is not None:
-        return PurePosixPath(file.name).suffix, paths.kind_of(file.name)
+        return PurePosixPath(file.name).suffix, _files.kind_of(file.name)
     url = (
         file.url if isinstance(file.url, str)
         else file.url[0] if isinstance(file.url, tuple)
         else ""
     )
     extension = PurePosixPath(urlsplit(url).path).suffix.lower() if url else ""
-    kind = paths.kind_of(f"file{extension}") if extension else None
-    if file.audio is not None and kind != paths.VIDEO:
-        return DASH_EXTENSION, paths.VIDEO
+    kind = _files.kind_of(f"file{extension}") if extension else None
+    if file.audio is not None:
+        # A video and its audio track are joined without re-encoding: a WebM pair into WebM,
+        # anything else into MP4, which takes every codec the sites send.
+        audio = PurePosixPath(urlsplit(file.audio).path).suffix.lower()
+        both = extension == ".webm" and audio == ".webm"
+        return (".webm" if both else DASH_EXTENSION), _files.VIDEO
     if kind is None:
-        return "", paths.SNIFF
+        return "", _files.SNIFF
     return extension, kind
 
 
@@ -1992,3 +2182,34 @@ def _format(source: Source, category: Category | None, name: str) -> str:
     """Return format string `name` from `category` if set, else from `source`."""
     own = getattr(category, name, None)
     return own if own is not None else getattr(source, name)
+
+
+def resolved(run: SourceRun, item: Target | str) -> Target | None:
+    """A target a source yielded, resolved: by the run's resolver, which knows every source.
+
+    A target already resolved (its `kind` set) is taken as it is. One the run can't read is a
+    warning, and None, so one bad link never ends the listing that yielded it.
+
+    Args:
+        run: the source's run; `settings.resolve` resolves any source's target text, and,
+            outside an engine's run, the source's own `resolve` reads its own.
+        item: a `Target` or its text.
+
+    Returns:
+        The resolved target, or None.
+    """
+    if isinstance(item, Target) and item.kind:
+        return item
+    text = str(item)
+    try:
+        if run.settings.resolve is not None:
+            return run.settings.resolve(text)
+        own = Target(text)
+        if own.source == run.source.code:
+            text = f"?{own.value}" if own.query else own.value
+        return run.source.resolve(text)
+    except Error as error:
+        ui.warn("{source}: can't follow {text}: {error}", source=run.source.code, text=text,
+                error=error)
+        return None
+

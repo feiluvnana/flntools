@@ -1,13 +1,22 @@
-"""Values as short text for a person to read, and safe file names and URLs."""
+"""Values as short text for a person to read, safe file names and URLs, and name templates.
+
+A library module: it imports nothing of flnd, and any program may use it.
+- `filename` turns any text into a file name every OS accepts; `redact` strips a URL's secrets.
+- `size`, `duration` and `count` say a number the way a person reads it.
+- `fill` formats a name template (`"{date}_{post}"`) from fields, dropping the separators
+  around a field that came out empty; `fields` lists the fields a template names.
+"""
 
 from __future__ import annotations
 
 import re
+import string
 import unicodedata
+from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 
-__all__ = ["count", "duration", "filename", "fold", "redact", "size"]
+__all__ = ["count", "duration", "fields", "filename", "fill", "fold", "redact", "size"]
 
 BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
 UNSAFE_CHARACTERS = re.compile(r'[\\/*?:"<>|\x00-\x1f\x7f-\x9f]')
@@ -97,3 +106,137 @@ def _rough_redact(url: str) -> str:
         return head
     authority, slash, path = rest.partition("/")
     return f"{scheme}{sep}{authority.rpartition('@')[2]}{slash}{path}"
+
+
+# ---------------------------------------------------------------------------------------------
+# Name templates
+# ---------------------------------------------------------------------------------------------
+
+# What a template drops beside a field that came out empty: `{date}_{post}` without a date is
+# `<post>`, not `_<post>`.
+SEPARATORS = "_- .:,"
+# The formatter of every template: `parse`, `get_field` and `format_field` are str.format's own.
+_FORMATTER = string.Formatter()
+
+
+def fill(template: str, values: Mapping[str, Any], *, safe: bool = True) -> str:
+    """Format a template from `values`, dropping separators around missing or empty fields.
+
+    Each `/`-separated segment is filled on its own; a segment that comes out empty is left
+    out, so `{category}/{album}` without an album is just the category.
+
+    Args:
+        template: a `str.format` template; `{a.b}` and `{a[0]}` reach into a value.
+        values: the fields' values; a missing one, None and "" all read as empty.
+        safe: pass each segment through `filename`, so a value holding `/` or `:` can't make
+            a folder or an invalid name. False keeps the text as it is (history keys).
+
+    Returns:
+        The filled template, its empty segments dropped.
+
+    Example:
+        >>> fill("{category}/{album}", {"category": "posts"})
+        'posts'
+        >>> fill("{date}_{post}{index}", {"post": "C1abc", "date": "", "index": ""})
+        'C1abc'
+        >>> fill("{author}/{post} {title}", {"author": "a/b", "post": 7})
+        'a_b/7'
+    """
+    segments = []
+    for segment in _split_segments(template):
+        piece = _fill_segment(segment, values)
+        if piece:
+            segments.append(filename(piece) if safe else piece)
+    return "/".join(segments)
+
+
+def fields(template: str) -> set[str]:
+    """The top-level field names a template uses: `{a.b}` and `{a[0]}` count as `a`.
+
+    Args:
+        template: a `str.format` template.
+
+    Returns:
+        The names, without their attribute or index parts.
+
+    Raises:
+        ValueError: the template's braces don't match.
+
+    Example:
+        >>> sorted(fields("{date}_{post}/{album.title}"))
+        ['album', 'date', 'post']
+    """
+    return {
+        name.split(".")[0].split("[")[0]
+        for _, name, _, _ in _FORMATTER.parse(template) if name
+    }
+
+
+def _split_segments(template: str) -> list[str]:
+    """`template` split at `/` outside `{…}`, so a field's format spec may hold a slash.
+
+    Args:
+        template: a path template, such as `{user}/{date:%Y/%m}/{name}`.
+
+    Returns:
+        The segments, in order; a template without a top-level `/` gives one segment.
+    """
+    parts, depth, start = [], 0, 0
+    for index, character in enumerate(template):
+        depth += {"{": 1, "}": -1}.get(character, 0)
+        if character == "/" and depth == 0:
+            parts.append(template[start:index])
+            start = index + 1
+    return [*parts, template[start:]]
+
+
+def _fill_segment(segment: str, values: Mapping[str, Any]) -> str:
+    """One segment of a template, filled in, with the separators of empty fields dropped.
+
+    Args:
+        segment: one piece of a template, as `_split_segments` returns it.
+        values: the fields the template may name, by name.
+
+    Returns:
+        The filled text; it may be empty when every field is empty.
+    """
+    # Each piece is [text, whether literal]; only literals lose separators.
+    pieces: list[list[Any]] = []
+    # Set by an empty field that starts the segment: the separators after it go too.
+    drop_next = False
+    for literal, name, spec, conversion in _FORMATTER.parse(segment):
+        if literal:
+            if drop_next:
+                literal, drop_next = literal.lstrip(SEPARATORS), False
+            pieces.append([literal, True])
+        if name is None:
+            continue
+        value = _value(name, values)
+        text = ""
+        if value is not None and value != "":
+            text = _FORMATTER.format_field(_FORMATTER.convert_field(value, conversion), spec or "")
+        if text:
+            pieces.append([text, False])
+            drop_next = False
+        elif pieces and pieces[-1][1]:
+            pieces[-1][0] = pieces[-1][0].rstrip(SEPARATORS)
+        elif not any(piece for piece, _ in pieces):
+            drop_next = True
+    return "".join(piece for piece, _ in pieces)
+
+
+def _value(name: str, values: Mapping[str, Any]) -> Any:
+    """A field's value, `a.b` and `a[0]` included; None when it's missing.
+
+    Args:
+        name: the field's name as written in the template, with any `.attr` or `[index]`.
+        values: the fields to look the name up in.
+
+    Returns:
+        The value, or None when the field, attribute or index does not exist.
+    """
+    try:
+        return _FORMATTER.get_field(name, (), values)[0]
+    # A missing field is empty, whichever way it's missing.
+    except (KeyError, AttributeError, IndexError, TypeError):
+        return None

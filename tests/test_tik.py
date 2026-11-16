@@ -21,7 +21,7 @@ from flnd.sources.tik import TIKTOK_UA, TikTok, best_video
 from flnd import _html as selector
 
 DAY = datetime.fromtimestamp(1700000000, timezone.utc).strftime("%Y-%m-%d")
-PROFILE = "https://www.tiktok.com/@someone"
+PROFILE = "https://www.tiktok.com/@example_creator"
 VIDEO = "7301234567890123456"
 
 # Every form tik reads, as people write it, and what it becomes: (kind, value), or a refusal's text.
@@ -81,7 +81,8 @@ class RoutesTest(unittest.TestCase):
             with self.subTest(text=text):
                 value = text.removeprefix("tik:")
                 if isinstance(expected, tuple):
-                    self.assertEqual(TikTok().resolve(value), Target("tik", *expected))
+                    kind, found = expected
+                    self.assertEqual(TikTok().resolve(value), Target(f"tik:{found}", kind=kind))
                 else:
                     with self.assertRaisesRegex(UsageError, f"^tik: {expected}"):
                         TikTok().resolve(value)
@@ -123,7 +124,8 @@ class TabSite(FakeSite):
     The function may read `site.seen` (the back-offs, the pages loaded) and `site.scrolls`.
     """
 
-    html: Any = ""
+    # The tab's page: `html` is the site's parser, so the page has a name of its own.
+    tab_html: Any = ""
 
     @property
     def seen(self):
@@ -134,7 +136,7 @@ class TabSite(FakeSite):
         return self._seen.scrolls
 
     def document(self):
-        return selector.parse(self.html(self) if callable(self.html) else self.html)
+        return selector.parse(self.tab_html(self) if callable(self.tab_html) else self.tab_html)
 
 
 def run(text, *, feeds=(), html: Any = "", pages=None, json=None, options=Options(), cookies=None, site=TabSite):
@@ -144,7 +146,7 @@ def run(text, *, feeds=(), html: Any = "", pages=None, json=None, options=Option
 
     def make(*args, **kwargs):
         made.append(site(*args, **kwargs))
-        made[-1].html = html
+        made[-1].tab_html = html
         return made[-1]
 
     with mock.patch("fakes.FakeSite", make):
@@ -153,7 +155,7 @@ def run(text, *, feeds=(), html: Any = "", pages=None, json=None, options=Option
     return saved, seen, made[0] if made else None
 
 
-# What the profile `someone` answers with while it scrolls, in the order the old source got them: the
+# What the profile `example_creator` answers with while it scrolls, in the order the old source got them: the
 # post feed, the two story feeds, then each tab's. Ids that name a date by themselves (createTime 0,
 # or none), a playlist with a `/` and a `:`, a carousel, and a video repeated in the reposts.
 POSTS = {"hasMore": False, "itemList": [
@@ -231,7 +233,7 @@ class NamesAndKeysTest(unittest.TestCase):
                 self.assertEqual(pairs(saved), EMBED_PAIRS[video_id])
 
     def test_a_profile_with_every_category_and_its_tabs(self):
-        saved, _, _ = run("tik:someone", feeds=FEEDS, html=TABS, options=Options(categories=("all",)))
+        saved, _, _ = run("tik:example_creator", feeds=FEEDS, html=TABS, options=Options(categories=("all",)))
         # The old source saved the tabs in another order (favorites before liked); no id is in both.
         self.assertEqual(sorted(pairs(saved)), sorted(PROFILE_PAIRS))
         self.assertEqual(len({key for _, key in pairs(saved)}), len(PROFILE_PAIRS))
@@ -245,7 +247,7 @@ class NamesAndKeysTest(unittest.TestCase):
             video(str(late << 32), f"{CDN}/c")]})]
         for zone in ("Pacific/Kiritimati", "America/Los_Angeles"):
             with self.subTest(zone=zone), far_off_timezone(zone):
-                saved, _, _ = run("tik:someone", feeds=feeds, html=profile_page(), options=Options(categories=("videos",)))
+                saved, _, _ = run("tik:example_creator", feeds=feeds, html=profile_page(), options=Options(categories=("videos",)))
                 self.assertEqual([item.path for item in saved], [
                     "videos/2026-01-01_1.mp4", "videos/2026-01-01_2.mp4", f"videos/2026-01-01_{late << 32}.mp4"])
 
@@ -260,6 +262,39 @@ class TikTokTest(unittest.TestCase):
         self.assertEqual(saved[0].post.headers, {"Referer": "https://www.tiktok.com/", "User-Agent": TIKTOK_UA,
                                                  "Cookie": "tt_chain_token=t; sessionid=s"})
 
+    def test_a_login_with_only_sid_tt_sends_no_empty_sessionid(self):
+        """Bug: an empty `sessionid=` went to the CDN when the login had only `sid_tt`. Only
+        cookies that have a value are sent, and with none there is no Cookie header."""
+        video_id = "7234567890123456789"
+        item = video(video_id, "https://v.example/clip.mp4", createTime=1700000000)
+        page = {f"{API}/embed/v2/{video_id}": embed_page(item)}
+        for cookies, sent in (({"sid_tt": "t"}, None),
+                              ({"sid_tt": "t", "tt_chain_token": "c"}, "tt_chain_token=c"),
+                              ({"sessionid": "", "tt_chain_token": "c"}, "tt_chain_token=c"),
+                              ({"sessionid": "s"}, "sessionid=s")):
+            with self.subTest(cookies=cookies):
+                saved, _, _ = run(f"tik:{video_id}", pages=page, cookies=cookies)
+                self.assertEqual(saved[0].post.headers.get("Cookie"), sent)
+        # `sid_tt` alone is a login.
+        self.assertTrue(TikTok.login.check(FakeSite(Target("tik"), cookies={"sid_tt": "t"})))
+
+    def test_it_imports_only_the_source_api_and_the_stdlib(self):
+        import ast
+        import sys
+
+        import flnd.sources.tik as tik
+
+        with open(tik.__file__, encoding="utf-8") as file:
+            tree = ast.parse(file.read())
+        names = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                 for alias in node.names}
+        names |= {node.module for node in ast.walk(tree)
+                  if isinstance(node, ast.ImportFrom) and node.module}
+        for name in names:
+            with self.subTest(name=name):
+                top = name.split(".")[0]
+                self.assertTrue(name == "flnd.source" or top in sys.stdlib_module_names, name)
+
     def test_a_refused_embed_is_a_warning(self):
         saved, seen, _ = run("tik:7234567890123456789")
         self.assertEqual(saved, [])
@@ -268,7 +303,7 @@ class TikTokTest(unittest.TestCase):
     def test_a_playlist_item_belongs_to_playlists_and_not_to_videos(self):
         for category, albums in (("videos", False), ("playlists", True)):
             with self.subTest(category=category):
-                saved, _, _ = run("tik:someone", feeds=FEEDS[:1], html=profile_page(),
+                saved, _, _ = run("tik:example_creator", feeds=FEEDS[:1], html=profile_page(),
                                   options=Options(categories=(category,)))
                 self.assertEqual([item.path.startswith("albums/") for item in saved], [albums] * len(saved))
                 self.assertEqual(len(saved), 3 if albums else 6)
@@ -279,7 +314,7 @@ class TikTokTest(unittest.TestCase):
 
     def test_an_unsolved_captcha_backs_off_and_reloads_until_it_is_gone(self):
         captcha = "<body><div id='captcha_container'>Drag the slider</div></body>"
-        saved, seen, _ = run("tik:someone", html=lambda tab: captcha if len(tab.seen.back_offs) < 2 else "<body><p>feed</p></body>")
+        saved, seen, _ = run("tik:example_creator", html=lambda tab: captcha if len(tab.seen.back_offs) < 2 else "<body><p>feed</p></body>")
         self.assertEqual(len(seen.back_offs), 2)
         self.assertEqual(seen.visited, [PROFILE] * 3)
 
@@ -294,20 +329,20 @@ class TikTokTest(unittest.TestCase):
                 if self.seen.back_offs:
                     super()._release()
 
-        saved, seen, _ = run("tik:someone", feeds=feed, site=Walled, options=Options(categories=("videos",)),
+        saved, seen, _ = run("tik:example_creator", feeds=feed, site=Walled, options=Options(categories=("videos",)),
                              html=lambda tab: "<body><div id='captcha_container'>Drag the slider</div></body>"
                              if tab.scrolls and not tab.seen.back_offs else "<body></body>")
         self.assertEqual(len(seen.back_offs), 1)
         self.assertEqual([item.path for item in saved], [f"videos/{DAY}_7300000000000000001.mp4"])
 
     def test_captcha_words_in_scripts_are_not_a_captcha(self):
-        _, seen, _ = run("tik:someone", html="<body><script>var t = 'Verify to continue';</script><p>feed</p></body>")
+        _, seen, _ = run("tik:example_creator", html="<body><script>var t = 'Verify to continue';</script><p>feed</p></body>")
         self.assertEqual(seen.back_offs, [])
 
     def test_walled_api_falls_back_to_page_links(self):
         video_id = "7234567890123456789"
         item = video(video_id, "https://v.example/clip.mp4", createTime=1700000000)
-        saved, _, _ = run("tik:someone", html=f'<body><a href="/@someone/video/{video_id}">clip</a></body>',
+        saved, _, _ = run("tik:example_creator", html=f'<body><a href="/@example_creator/video/{video_id}">clip</a></body>',
                           pages={f"{API}/embed/v2/{video_id}": embed_page(item)},
                           options=Options(categories=("videos",)))
         self.assertEqual([item.path for item in saved], [f"videos/{DAY}_{video_id}.mp4"])
@@ -315,7 +350,7 @@ class TikTokTest(unittest.TestCase):
     def test_profile_picture_and_tabs(self):
         one = {"hasMore": False, "itemList": [video("7300000000000000001", f"{CDN}/1.mp4", createTime=1700000000)]}
         feeds = [(f"{API}/api/post/item_list/?count=30", one), FEEDS[3]]
-        saved, seen, _ = run("tik:someone", feeds=feeds, html=profile_page("repost-tab", "liked-tab"),
+        saved, seen, _ = run("tik:example_creator", feeds=feeds, html=profile_page("repost-tab", "liked-tab"),
                              options=Options(categories=("all",)))
         self.assertEqual([item.post.category for item in saved], ["videos", "reposts", "reposts", "reposts", "profile"])
         self.assertEqual(saved[-1].path, "profile/avatar_abc123.jpg")
@@ -324,11 +359,11 @@ class TikTokTest(unittest.TestCase):
         self.assertIn("liked: nothing public on this account", seen.messages)
 
     def test_tabs_not_asked_for_are_not_read(self):
-        _, seen, _ = run("tik:someone", html=profile_page("repost-tab"), options=Options(categories=("videos",)))
+        _, seen, _ = run("tik:example_creator", html=profile_page("repost-tab"), options=Options(categories=("videos",)))
         self.assertFalse(any("public" in message for message in seen.messages))
 
     def test_the_profile_is_opened_once_for_every_category(self):
-        _, seen, _ = run("tik:someone", feeds=FEEDS, html=TABS, options=Options(categories=("all",)))
+        _, seen, _ = run("tik:example_creator", feeds=FEEDS, html=TABS, options=Options(categories=("all",)))
         self.assertEqual(seen.visited, [PROFILE])
 
     def test_the_best_video_address(self):
@@ -412,7 +447,7 @@ class ScrollTest(unittest.TestCase):
             video("7300000000000000002", f"{CDN}/v2", createTime=1700000001, playlist={"name": "Mix"}),
         ]}
         feeds = [(f"{API}/api/post/item_list/?p=1", p1), (f"{API}/api/post/item_list/?p=2", p2)]
-        saved, seen, _ = run("tik:someone", feeds=feeds, html=profile_page(),
+        saved, seen, _ = run("tik:example_creator", feeds=feeds, html=profile_page(),
                              options=Options(categories=("videos", "playlists")))
         self.assertEqual(sorted((item.path, item.key) for item in saved), [
             (f"albums/Mix/{DAY}_7300000000000000002.mp4", "7300000000000000002"),
@@ -420,48 +455,39 @@ class ScrollTest(unittest.TestCase):
         ])
         self.assertEqual(seen.visited, [PROFILE])
 
-    def test_early_stop_on_videos_after_five_consecutive_old_items(self):
+    def test_the_engine_stops_the_scroll_after_five_posts_older_than_when(self):
+        """The source has no early stop of its own: the engine closes the scroll, and the third
+        page, after five posts in a row older than `--when`, is never read."""
         old_ts = 1699000000
-        old_items = [video(f"730000000000000001{i}", f"{CDN}/o{i}.mp4", createTime=old_ts) for i in range(5)]
-        p1 = {"hasMore": True, "itemList": [video("7300000000000000001", f"{CDN}/new.mp4", createTime=1700000000)]}
+        old_items = [video(f"730000000000000001{i}", f"{CDN}/o{i}.mp4", createTime=old_ts)
+                     for i in range(5)]
+        p1 = {"hasMore": True, "itemList": [
+            video("7300000000000000001", f"{CDN}/new.mp4", createTime=1700000000)]}
         p2 = {"hasMore": True, "itemList": old_items}
-        p3 = {"hasMore": False, "itemList": [video("7300000000000000099", f"{CDN}/later.mp4", createTime=old_ts)]}
+        p3 = {"hasMore": False, "itemList": [
+            video("7300000000000000099", f"{CDN}/later.mp4", createTime=1700000000)]}
         feeds = [(f"{API}/api/post/item_list/?p=1", p1), (f"{API}/api/post/item_list/?p=2", p2),
                  (f"{API}/api/post/item_list/?p=3", p3)]
-        saved, _, _ = run("tik:someone", feeds=feeds, html=profile_page(),
-                          options=Options(categories=("videos",), since=datetime(2023, 11, 14, tzinfo=timezone.utc).date()))
-        self.assertEqual([item.key for item in saved], ["7300000000000000001"])
-
-    def test_early_stop_on_videos_when_caught_up(self):
-        p1 = {"hasMore": True, "itemList": [video("7300000000000000001", f"{CDN}/v1", createTime=1700000000)]}
-        p2 = {"hasMore": True, "itemList": [video("7300000000000000002", f"{CDN}/v2", createTime=1700000000)]}
-        p3 = {"hasMore": False, "itemList": [video("7300000000000000003", f"{CDN}/v3", createTime=1700000000)]}
-        feeds = [(f"{API}/api/post/item_list/?p=1", p1), (f"{API}/api/post/item_list/?p=2", p2),
-                 (f"{API}/api/post/item_list/?p=3", p3)]
-        with mock.patch("flnd.sources.tik.caught_up", side_effect=lambda pid, **_: pid == "7300000000000000002"):
-            saved, _, _ = run("tik:someone", feeds=feeds, html=profile_page(),
-                              options=Options(categories=("videos",)))
-        self.assertEqual([item.key for item in saved], ["7300000000000000001", "7300000000000000002"])
-
-    def test_a_photo_post_counts_once_toward_each_streak(self):
-        from flnd.sources.tik import _hit_saved, older_streak
-
-        photos = [{"id": "P", "date": 1699000000, "playlist": None, "kind": "image", "idx": n}
-                  for n in range(1, 7)]
-        items = [*photos, {"id": "V", "date": 1699000000, "playlist": None, "kind": "video", "idx": 0}]
-        asked = []
-        with mock.patch("flnd.sources.tik.caught_up",
-                        side_effect=lambda pid, **_: asked.append(pid) or False):
-            self.assertFalse(_hit_saved(items, "videos"))
-        self.assertEqual(asked, ["P", "V"])
         since = datetime(2023, 11, 14, tzinfo=timezone.utc).date()
-        self.assertEqual(older_streak(photos, since, 0), 1)
+        saved, seen, _ = run("tik:example_creator", feeds=feeds, html=profile_page(),
+                             options=Options(categories=("videos",), since=since))
+        self.assertEqual([item.key for item in saved], ["7300000000000000001"])
+        # Six items were read from two pages; the third page's newer video never was.
+        self.assertIn("videos: 6 found; the profile lists 2", seen.messages)
+
+    def test_the_source_keeps_no_early_stop_of_its_own(self):
+        """The engine owns the early stops (a sync caught up, `--when`): no copy is left here."""
+        import flnd.sources.tik as tik
+
+        for name in ("OLD_STREAK", "older_streak", "_hit_saved", "caught_up", "firsts"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(tik, name))
 
     def test_clicked_tabs_collect_all_batches_before_yielding(self):
         r1 = {"hasMore": True, "itemList": [video("7300000000000000010", f"{CDN}/r1.mp4", createTime=1700000000)]}
         r2 = {"hasMore": False, "itemList": [video("7300000000000000011", f"{CDN}/r2.mp4", createTime=1700000001)]}
         feeds = [(f"{API}/api/repost/item_list/?p=1", r1), (f"{API}/api/repost/item_list/?p=2", r2)]
-        saved, seen, _ = run("tik:someone", feeds=feeds, html=TABS, options=Options(categories=("reposts",)))
+        saved, seen, _ = run("tik:example_creator", feeds=feeds, html=TABS, options=Options(categories=("reposts",)))
         self.assertEqual([item.key for item in saved], ["7300000000000000010", "7300000000000000011"])
         self.assertEqual(seen.visited, [PROFILE])
 
@@ -469,7 +495,7 @@ class ScrollTest(unittest.TestCase):
         captcha = "<body><div id='captcha_container'>Drag the slider</div></body>"
         attempts = []
         with self.assertRaisesRegex(SiteError, "captcha"):
-            run("tik:someone", html=lambda tab: (attempts.append(len(tab.seen.back_offs)), captcha)[1])
+            run("tik:example_creator", html=lambda tab: (attempts.append(len(tab.seen.back_offs)), captcha)[1])
         self.assertEqual(attempts[-1], 3)
 
 

@@ -37,7 +37,7 @@ class ExecTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.tmp = Path(folder.name)
         self.out = self.tmp / "got.json"
-        self.event = Saved(Target("ins", "user", "example_user"), "posts", "9001",
+        self.event = Saved(Target("ins:example_user", kind="user"), "posts", "9001",
                            self.tmp / NASTY, None, 3)
 
     def command(self, *args: str) -> str:
@@ -90,9 +90,9 @@ class WatchTest(unittest.TestCase):
     """`_watch` runs the command for each `Saved` event, and for nothing else."""
 
     def test_each_saved_file_runs_the_command_once_in_order(self):
-        events = [Saved(Target("ins", "user", "example_user"), "posts", str(n), Path(f"{n}.jpg"),
+        events = [Saved(Target("ins:example_user", kind="user"), "posts", str(n), Path(f"{n}.jpg"),
                         None, 1) for n in (1, 2)]
-        events.insert(1, flnd.Skipped(Target("ins", "user", "example_user"), "posts", "0"))
+        events.insert(1, flnd.Skipped(Target("ins:example_user", kind="user"), "posts", "0"))
         run = mock.MagicMock()
         run.__iter__.return_value = iter(events)
         run.report = flnd.Report(saved=2)

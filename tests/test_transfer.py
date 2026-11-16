@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from flnd import _net, _transfer
-from flnd.common import paths
+
 from flnd.source import SiteError, File
 from flnd import _time as clock, _tools
 from flnd._ui import ui
@@ -351,7 +351,7 @@ class DashDownloadTest(NetCase):
         with self.client() as client, patcher, mock.patch.object(os, "replace", spy):
             self.merged(client)
         self.assertTrue(moved)
-        self.assertEqual([name for name in moved if not fnmatch.fnmatch(name, paths.PART_GLOB)], [])
+        self.assertEqual([name for name in moved if not fnmatch.fnmatch(name, "*.part")], [])
 
     def test_a_second_ctrl_c_before_the_merge_stops_it(self):
         """The merge is ffmpeg's and can't see `stop`, so a second Ctrl-C after the streams stops before it."""

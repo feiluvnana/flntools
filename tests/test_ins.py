@@ -19,15 +19,15 @@ from unittest import mock
 import fakes
 from flnd import _net
 from fakes import FakeSite, Seen, collect
-from test_dash import INSTAGRAM
+from test_source import INSTAGRAM
 
+from flnd import _html as selector
+from flnd._time import day
 from flnd.engine import Engine
 from flnd.options import Options
-from flnd.source import SiteError, LoginError, Target, UsageError, day
-from flnd.sources.common.relay import embedded_results
-from flnd.sources.ins import (APP_ID, Instagram, best_file, files_of, full_size, is_complete, pk_of_code, pk_stamp,
-                              post_files, reel_posts, tab_media)
-from flnd import _html as selector
+from flnd.source import LoginError, Request, SiteError, Target, UsageError
+from flnd.sources.ins import (APP_ID, Instagram, best_file, embedded_results, files_of, full_size, is_complete,
+                              pk_of_code, pk_stamp, post_files, reel_posts, tab_media)
 
 SITE = "https://www.instagram.com"
 API = f"{SITE}/api/v1"
@@ -137,7 +137,8 @@ class RoutesTest(unittest.TestCase):
             with self.subTest(text=text):
                 value = text.removeprefix("ins:")
                 if isinstance(expected, tuple):
-                    self.assertEqual(Instagram().resolve(value), Target("ins", *expected))
+                    kind, found = expected
+                    self.assertEqual(Instagram().resolve(value), Target(f"ins:{found}", kind=kind))
                 else:
                     with self.assertRaisesRegex(UsageError, f"^ins: {expected}"):
                         Instagram().resolve(value)
@@ -208,14 +209,14 @@ class MediaTest(unittest.TestCase):
         self.assertIsNone(pk_of_code("CuZLd-iMknWxyzxyzxyzxyzxyzxyzxyzxyzxyz"))
         self.assertIsNone(pk_of_code("bad code"))
 
-    def test_prepare_adds_instagrams_web_headers(self):
+    def test_sign_adds_instagrams_web_headers(self):
         source = Instagram()
         source.api.claim = "hmac.claim"
-        request = source.prepare(_net.Request("GET", f"{API}/media/1/info/"), {"csrftoken": "tok"})
-        self.assertEqual({name: request.headers[name] for name in
-                          ("x-ig-app-id", "x-asbd-id", "x-ig-www-claim", "x-csrftoken", "x-requested-with", "referer")},
-                         {"x-ig-app-id": APP_ID, "x-asbd-id": "129477", "x-ig-www-claim": "hmac.claim",
-                          "x-csrftoken": "tok", "x-requested-with": "XMLHttpRequest", "referer": f"{SITE}/"})
+        request = Request("GET", f"{API}/media/1/info/", {}, None, {"csrftoken": "tok"})
+        source.sign(request)
+        self.assertEqual(request.headers, {"X-IG-App-ID": APP_ID, "X-ASBD-ID": "129477", "X-IG-WWW-Claim": "hmac.claim",
+                                           "X-CSRFToken": "tok", "X-Requested-With": "XMLHttpRequest",
+                                           "Referer": f"{SITE}/"})
 
 
 def page_of(code, **media):
@@ -232,7 +233,7 @@ def story_page(*stories):
 
 # The ids of the posts the grids list incompletely, all made on STAMP's day.
 PK = {code: pk_at(STAMP, n) for n, code in enumerate(("CAR", "R1", "NOFILE", "R2", "T1"), start=1)}
-# What scrolling each tab of `someone` fetches. Whole feed posts are saved as listed; a carousel, a
+# What scrolling each tab of `example_creator` fetches. Whole feed posts are saved as listed; a carousel, a
 # reel, a post without files and the reels grid's thumbnails come from the media API by their pk;
 # GONE and RP2 have no pk, so their pages are read.
 GRIDS = {
@@ -278,10 +279,10 @@ JSON = {
     f"{API}/feed/user/42/story/": {"reel": {"id": "42", "items": REELS["42"]}, "status": "ok"},
 }
 PAGES = {
-    f"{SITE}/someone/": embedded(PROFILE, HIGHLIGHTS),
+    f"{SITE}/example_creator/": embedded(PROFILE, HIGHLIGHTS),
     f"{SITE}/p/GONE/": "<html></html>",
     f"{SITE}/p/RP2/": page_of("RP2", taken_at=STAMP, **image("https://cdn.example/rp2.jpg")),
-    f"{SITE}/stories/someone/": story_page(STORY_5001, STORY_5003),
+    f"{SITE}/stories/example_creator/": story_page(STORY_5001, STORY_5003),
     f"{SITE}/stories/highlights/9001/": embedded({"data": {"xdt_api__v1__feed__reels_media__connection": {"edges": [
         {"node": {"items": HIGHLIGHT_ITEMS}}]}}}),
     f"{SITE}/p/SINGLE/": shortcode_page({"code": "SINGLE", "taken_at": STAMP, "carousel_media": [
@@ -324,11 +325,11 @@ def watching(watch):
 
 
 def scrolled(*tabs):
-    """The responses scrolling each of `tabs` of `someone` fetches."""
-    return FakeWatch({f"{SITE}/someone/{TABS[tab]}": [GRIDS[tab]] for tab in tabs})
+    """The responses scrolling each of `tabs` of `example_creator` fetches."""
+    return FakeWatch({f"{SITE}/example_creator/{TABS[tab]}": [GRIDS[tab]] for tab in tabs})
 
 
-def read(text="ins:someone", *, options=Options(), watch=None, pages=PAGES, json=JSON, seen=None, cookies=None,
+def read(text="ins:example_creator", *, options=Options(), watch=None, pages=PAGES, json=JSON, seen=None, cookies=None,
          state=None):
     """What the job would download for `text`, with `watch` as the tabs' scrolling (every tab's by default)."""
     with watching(watch or scrolled(*TABS)):
@@ -344,7 +345,7 @@ def api_urls(seen):
 # What ins named and keyed before routes, recorded with the pre-routes `run(session)` source in
 # a UTC time zone over these fixtures (then read from each post's page, now from the media API for
 # the posts with a pk). They are sorted: the old run opened every lazy post after the last tab, and
-# the new one lists each tab's when the tab is done.
+# the new one reads each where its tab lists it.
 OLD_PROFILE = [
     ("highlights/Trip_2026/2023-11-15_5002.mp4", "highlights/Trip_2026/2023-11-15_5002.mp4"),
     ("highlights/Trip_2026/2023-11-15_5004.jpg", "highlights/Trip_2026/2023-11-15_5004.jpg"),
@@ -378,13 +379,13 @@ class StoryMusicTest(unittest.TestCase):
         metadata = {"music_metadata": {"music_info": {"music_asset_info": {
             "progressive_download_url": "https://cdn.example/m2"}}}}
         for extra, url in ((sticker, "https://cdn.example/m1"), (metadata, "https://cdn.example/m2")):
-            [post] = reel_posts(FakeSite(Target("ins", "user", "someone")), [self.story(**extra)], "stories")
+            [post] = reel_posts(FakeSite(Target("ins:example_creator", kind="user")), [self.story(**extra)], "stories")
             files = list(post.files() if callable(post.files) else post.files)
             self.assertEqual([(file.url, file.name) for file in files],
                              [("https://cdn.example/s.jpg", "2026-01-02_31.jpg"), (url, "2026-01-02_31_music.m4a")])
 
     def test_a_story_without_music_has_one_file(self):
-        [post] = reel_posts(FakeSite(Target("ins", "user", "someone")), [self.story()], "stories")
+        [post] = reel_posts(FakeSite(Target("ins:example_creator", kind="user")), [self.story()], "stories")
         files = list(post.files() if callable(post.files) else post.files)
         self.assertEqual(len(files), 1)
 
@@ -443,10 +444,10 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(by_path["profile/123_456_n.jpg"].post.headers, {"Referer": f"{SITE}/"})
 
     def test_a_grid_post_without_details_is_lazy_and_dated_by_its_pk(self):
-        site = FakeSite(Target("ins", "user", "someone"), pages=PAGES, json=JSON)
+        site = FakeSite(Target("ins:example_creator", kind="user"), pages=PAGES, json=JSON)
         instance = Instagram()
         with watching(scrolled(*TABS)):
-            listed = list(instance.reels(site, instance.user(site, "someone")))
+            listed = list(instance.reels(site, instance.user(site, "example_creator")))
         self.assertEqual([(post.id, post.lazy, day(post.date)) for post in listed],
                          [("R1", True, date(2023, 11, 15)), ("R2", True, date(2023, 11, 15)), ("GONE", True, None)])
         # Nothing is asked before the engine wants a post's paths.
@@ -456,14 +457,14 @@ class ProfileTest(unittest.TestCase):
         seen = Seen()
         read(options=Options(categories=("tagged", "reposts")), seen=seen)
         self.assertEqual(api_urls(seen), [f"{API}/media/{PK['T1']}/info/"])
-        self.assertEqual(seen.visited, [f"{SITE}/someone/tagged/", f"{SITE}/someone/reposts/", f"{SITE}/p/RP2/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/tagged/", f"{SITE}/example_creator/reposts/", f"{SITE}/p/RP2/"])
 
     def test_a_reel_the_posts_grid_lists_is_not_read_again(self):
         seen = Seen()
         read(options=Options(categories=("posts", "reels")), seen=seen)
         # R1 is on the posts grid already, so only R2 is asked for, and the gone post's page opened.
         self.assertEqual(api_urls(seen), [f"{API}/media/{PK[code]}/info/" for code in ("CAR", "R1", "NOFILE", "R2")])
-        self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/someone/reels/", f"{SITE}/p/GONE/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/example_creator/reels/", f"{SITE}/p/GONE/"])
         self.assertIn("! post GONE: its page holds no post; skipped", seen.messages)
 
     def test_a_lazy_post_outside_time_makes_no_request(self):
@@ -472,36 +473,36 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(read(options=options, seen=seen), [])
         # R1 and R2 are dated by their pk and skipped before any request; GONE has no date, so its page is read.
         self.assertEqual(seen.requests, [])
-        self.assertEqual(seen.visited, [f"{SITE}/someone/reels/", f"{SITE}/p/GONE/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/reels/", f"{SITE}/p/GONE/"])
 
     def test_the_profile_alone_loads_the_profile_page_once(self):
         seen = Seen()
         saved = read(options=Options(categories=("profile",)), seen=seen)
-        self.assertEqual(seen.visited, [f"{SITE}/someone/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
         self.assertEqual([(item.path, item.key) for item in saved], [("profile/123_456_n.jpg", "profile/123_456_n.jpg")])
 
     def test_stories_and_highlights_come_from_the_reels_api_with_one_load_of_the_profile(self):
         seen = Seen()
         read(options=Options(categories=("stories", "highlights", "profile")), seen=seen)
-        self.assertEqual(seen.visited, [f"{SITE}/someone/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
         self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests],
                          ["/feed/user/42/story/", "/feed/reels_media/"])
         self.assertEqual(seen.requests[1][2]["params"], [("reel_ids", "highlight:9001")])
 
     def test_a_profile_page_that_embeds_nothing_gives_its_user_and_highlights_by_its_own_calls(self):
         # 2026-11, live: the page's HTML holds neither the user nor the highlights; its GraphQL calls do.
-        pages = {**PAGES, f"{SITE}/someone/": "<html></html>"}
-        watch = FakeWatch({f"{SITE}/someone/": [PROFILE, HIGHLIGHTS]})
+        pages = {**PAGES, f"{SITE}/example_creator/": "<html></html>"}
+        watch = FakeWatch({f"{SITE}/example_creator/": [PROFILE, HIGHLIGHTS]})
         seen = Seen()
         read(options=Options(categories=("stories", "highlights")), pages=pages, watch=watch, seen=seen)
-        self.assertEqual(seen.visited, [f"{SITE}/someone/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
         self.assertEqual([url.removeprefix(API) for _, url, _ in seen.requests],
                          ["/feed/user/42/story/", "/feed/reels_media/"])
         self.assertEqual(seen.requests[1][2]["params"], [("reel_ids", "highlight:9001")])
 
     def test_highlights_are_asked_for_five_at_a_time(self):
         nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(7)]
-        pages = {**PAGES, f"{SITE}/someone/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}})}
+        pages = {**PAGES, f"{SITE}/example_creator/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}})}
         seen = Seen()
         read(options=Options(categories=("highlights",)), pages=pages, seen=seen)
         self.assertEqual([len(options["params"]) for _, _, options in seen.requests], [5, 2])
@@ -511,7 +512,7 @@ class ProfileTest(unittest.TestCase):
         refused = {**JSON, f"{API}/feed/user/42/story/": SiteError("HTTP 400", status=400)}
         saved = read(options=Options(categories=("stories",)), json=refused, seen=seen)
         self.assertEqual([item.path for item in saved], [f"stories/{DAY}_5001.jpg", "stories/5003.mp4"])
-        self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/someone/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
         # flnd's client was refused first, then the tab's call: one warning each.
         self.assertIn("! Instagram refused flnd's own client; sending its API calls from the page", seen.messages)
         self.assertIn("stories: reading the story pages, as Instagram's story API is refusing", seen.messages)
@@ -524,17 +525,17 @@ class ProfileTest(unittest.TestCase):
                 saved = read(options=Options(categories=("stories",)), json={**JSON, f"{API}/feed/user/42/story/": answer},
                              seen=seen)
                 self.assertEqual(len(saved), 2)
-                self.assertEqual(seen.visited, [f"{SITE}/someone/", f"{SITE}/stories/someone/"])
+                self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/stories/example_creator/"])
                 self.assertEqual(len([m for m in seen.messages if m.startswith("stories: reading the story pages")]), 1)
         seen = Seen()
         saved = read(options=Options(categories=("stories",)), seen=seen,
                      json={**JSON, f"{API}/feed/user/42/story/": {"reel": None, "status": "ok"}})
         self.assertEqual(saved, [])
-        self.assertEqual(seen.visited, [f"{SITE}/someone/"])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/"])
 
     def test_a_refused_reels_api_is_warned_of_once_and_not_asked_again(self):
         nodes = [{"node": {"id": f"highlight:{n}", "title": f"H{n}"}} for n in range(7)]
-        pages = {**PAGES, f"{SITE}/someone/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}}),
+        pages = {**PAGES, f"{SITE}/example_creator/": embedded(PROFILE, {"data": {"highlights": {"edges": nodes}}}),
                  **{f"{SITE}/stories/highlights/{n}/": "<html></html>" for n in range(7)}}
         seen = Seen()
         refused = {**JSON, f"{API}/feed/reels_media/": SiteError("HTTP 500", status=500)}
@@ -563,63 +564,84 @@ class ProfileTest(unittest.TestCase):
 
     def test_a_throttled_response_backs_off_and_the_scroll_goes_on(self):
         seen = Seen()
-        watch = FakeWatch({f"{SITE}/someone/": [THROTTLE, GRIDS["posts"]]})
+        watch = FakeWatch({f"{SITE}/example_creator/": [THROTTLE, GRIDS["posts"]]})
         saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen)
         self.assertEqual(seen.back_offs, ["Instagram asked to wait a few minutes"])
         self.assertIn(f"posts/{DAY}_P1.jpg", [item.path for item in saved])
 
 
 class ScrollTest(unittest.TestCase):
-    def test_multi_page_scroll_collects_all_pages_before_resolving_lazy_posts(self):
+    def test_a_lazy_post_is_read_where_the_tab_lists_it(self):
+        """The engine asks for a lazy post's files as it is listed, so a sync can stop the scroll early."""
         page_1 = grid({"code": "CAR", "pk": PK["CAR"], "product_type": "carousel_container", "taken_at": STAMP},
                       more="c1")
         page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="c2")
         page_3 = grid({"code": "R1", "pk": PK["R1"], "product_type": "clips", "taken_at": STAMP}, more="")
-        watch = FakeWatch({f"{SITE}/someone/": [page_2, page_3]})
+        watch = FakeWatch({f"{SITE}/example_creator/": [page_2, page_3]})
         scroll_left_when_api_called = []
 
         def car_info(url, request):
-            scroll_left_when_api_called.append(len(watch.batches[f"{SITE}/someone/"]))
+            scroll_left_when_api_called.append(len(watch.batches[f"{SITE}/example_creator/"]))
             return JSON[f"{API}/media/{PK['CAR']}/info/"]
 
         seen = Seen()
         saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen,
-                     pages={f"{SITE}/someone/": embedded(PROFILE, page_1)},
+                     pages={f"{SITE}/example_creator/": embedded(PROFILE, page_1)},
                      json={**JSON, f"{API}/media/{PK['CAR']}/info/": car_info})
-        self.assertEqual(scroll_left_when_api_called, [0])
+        # CAR is on the embedded first page: its files are asked for before any scroll.
+        self.assertEqual(scroll_left_when_api_called, [2])
         self.assertEqual(sorted(item.path for item in saved), [
             f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4", f"posts/{DAY}_P2.jpg", f"posts/{DAY}_R1.mp4",
         ])
 
     def test_a_tab_whose_embedded_page_is_its_last_is_not_scrolled(self):
         watch = FakeWatch({})
-        pages = {f"{SITE}/someone/": embedded(PROFILE, grid(feed("P1", **image("https://cdn.example/p1.jpg")), more=""))}
+        pages = {f"{SITE}/example_creator/": embedded(PROFILE, grid(feed("P1", **image("https://cdn.example/p1.jpg")), more=""))}
         saved = read(options=Options(categories=("posts",)), watch=watch, pages=pages)
         self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg"])
         self.assertEqual(watch.batches, {})
 
-    def test_early_stop_on_posts_after_five_consecutive_old_posts(self):
+    def test_the_engine_stops_the_scroll_after_five_posts_in_a_row_older_than_when(self):
         old_stamp = STAMP - 10 * 86400
         old_posts = [feed(f"OLD{i}", taken_at=old_stamp, **image(f"https://cdn.example/o{i}.jpg")) for i in range(5)]
         page_1 = grid(feed("NEW", taken_at=STAMP, **image("https://cdn.example/new.jpg")), more="c1")
         page_2 = grid(*old_posts, more="c2")
         page_3 = grid(feed("LATER", taken_at=old_stamp, **image("https://cdn.example/later.jpg")), more="")
-        watch = FakeWatch({f"{SITE}/someone/": [page_2, page_3]})
+        watch = FakeWatch({f"{SITE}/example_creator/": [page_2, page_3]})
         saved = read(options=Options(categories=("posts",), since=date(2023, 11, 14)), watch=watch,
-                     pages={f"{SITE}/someone/": embedded(PROFILE, page_1)})
+                     pages={f"{SITE}/example_creator/": embedded(PROFILE, page_1)})
         self.assertEqual([item.path for item in saved], [f"posts/{DAY}_NEW.jpg"])
-        self.assertEqual(watch.batches[f"{SITE}/someone/"], [page_3])
+        self.assertEqual(watch.batches[f"{SITE}/example_creator/"], [page_3])
 
-    def test_early_stop_on_posts_when_caught_up(self):
-        page_1 = grid(feed("P1", **image("https://cdn.example/p1.jpg")), more="c1")
-        page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="c2")
-        page_3 = grid(feed("P3", **image("https://cdn.example/p3.jpg")), more="")
-        watch = FakeWatch({f"{SITE}/someone/": [page_2, page_3]})
-        with mock.patch("flnd.sources.ins.caught_up", side_effect=lambda code, **_: code == "P2"):
-            saved = read(options=Options(categories=("posts",)), watch=watch,
-                         pages={f"{SITE}/someone/": embedded(PROFILE, page_1)})
-        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P1.jpg", f"posts/{DAY}_P2.jpg"])
-        self.assertEqual(watch.batches[f"{SITE}/someone/"], [page_3])
+    # A sync's stop at saved posts is the engine's (`flnd.job._queue_listed`), tested in
+    # tests/test_job.py; the source no longer asks whether a post is saved.
+    def test_the_tab_alone_has_no_early_stop(self):
+        """Without the engine, the tab reads to its end, old posts and all: only the site ends it."""
+        old_stamp = STAMP - 10 * 86400
+        page_1 = grid(feed("NEW", **image("https://cdn.example/new.jpg")), more="c1")
+        page_2 = grid(*[feed(f"OLD{i}", taken_at=old_stamp, **image(f"https://cdn.example/o{i}.jpg"))
+                        for i in range(6)], more="")
+        watch = FakeWatch({f"{SITE}/example_creator/": [page_2]})
+        site = FakeSite(Target("ins:example_creator", kind="user"),
+                        pages={f"{SITE}/example_creator/": embedded(page_1)},
+                        options=Options(since=date(2023, 11, 14)))
+        instance = Instagram()
+        with watching(watch):
+            listed = [post.id for post in instance.posts(site, instance.user(site, "example_creator"))]
+        self.assertEqual(listed, ["NEW"] + [f"OLD{i}" for i in range(6)])
+
+    def test_a_post_without_a_pk_opens_its_page_only_after_the_scroll(self):
+        """fixes the tab being navigated mid-scroll: a page-only post is listed once the scroll ends."""
+        page_1 = grid({"code": "GONE", "product_type": "clips", "taken_at": STAMP}, more="c1")
+        page_2 = grid(feed("P2", **image("https://cdn.example/p2.jpg")), more="")
+        watch = FakeWatch({f"{SITE}/example_creator/": [page_2]})
+        seen = Seen()
+        saved = read(options=Options(categories=("posts",)), watch=watch, seen=seen,
+                     pages={f"{SITE}/example_creator/": embedded(page_1),
+                            f"{SITE}/p/GONE/": page_of("GONE", taken_at=STAMP, **image("https://cdn.example/g.jpg"))})
+        self.assertEqual([item.path for item in saved], [f"posts/{DAY}_P2.jpg", f"posts/{DAY}_GONE.jpg"])
+        self.assertEqual(watch.batches[f"{SITE}/example_creator/"], [])
+        self.assertEqual(seen.visited, [f"{SITE}/example_creator/", f"{SITE}/p/GONE/"])
 
     def test_complete_carousel_and_clips_in_grid_skip_lazy_api(self):
         car = {
@@ -630,7 +652,7 @@ class ScrollTest(unittest.TestCase):
                 **video("https://cdn.example/r1.mp4")}
         seen = Seen()
         saved = read(options=Options(categories=("posts",)), watch=FakeWatch({}), seen=seen,
-                     pages={f"{SITE}/someone/": embedded(PROFILE, grid(car, reel))})
+                     pages={f"{SITE}/example_creator/": embedded(PROFILE, grid(car, reel))})
         self.assertEqual(seen.requests, [])
         self.assertEqual([item.path for item in saved], [
             f"posts/{DAY}_CAR_0.jpg", f"posts/{DAY}_CAR_1.mp4", f"posts/{DAY}_R1.mp4",
@@ -668,9 +690,10 @@ class ThrottleTest(unittest.TestCase):
                      seen=seen)
         self.assertEqual(len(calls), 3)
         self.assertEqual(seen.back_offs, ["Instagram asked to wait a few minutes"] * 2)
+        # In the tab's order: T1, read where it is listed, then P1.
         self.assertEqual(
             [item.path for item in saved],
-            [f"tagged/{DAY}_P1.jpg", f"tagged/{DAY}_T1_0.jpg", f"tagged/{DAY}_T1_1.jpg"],
+            [f"tagged/{DAY}_T1_0.jpg", f"tagged/{DAY}_T1_1.jpg", f"tagged/{DAY}_P1.jpg"],
         )
 
     def test_a_refusal_of_flnds_client_moves_the_calls_into_the_page(self):
@@ -690,6 +713,30 @@ class ThrottleTest(unittest.TestCase):
         self.assertEqual(seen.back_offs, [])
         self.assertIn(f"tagged/{DAY}_T1_0.jpg", [item.path for item in saved])
 
+    def test_a_403_the_engine_takes_for_a_login_wall_still_moves_the_calls_into_the_page(self):
+        """site.fetch raises a 401 or 403 as a LoginError; the API reads it with check=False instead."""
+
+        class Walling(FakeSite):
+            def fetch(self, url, *, check=True, **options):
+                response = super().fetch(url, check=False, **options)
+                if check and response.status in (401, 403):
+                    raise LoginError("ins: the site refused the login (HTTP 403)")
+                return response
+
+        seen = Seen()
+
+        def media(url, request):
+            if not seen.requests[-1][2]["in_page"]:
+                return SiteError("HTTP 403", status=403)
+            return JSON[f"{API}/media/{PK['T1']}/info/"]
+
+        site = Walling(Target("ins:example_creator", kind="user"), seen=seen,
+                       json={**JSON, f"{API}/media/{PK['T1']}/info/": media})
+        source = Instagram()
+        self.assertEqual(source.api.media(site, PK["T1"])["code"], "T1")
+        self.assertEqual([options["in_page"] for _, _, options in seen.requests], [False, True])
+        self.assertIn("! Instagram refused flnd's own client; sending its API calls from the page", seen.messages)
+
     def test_a_refused_media_call_reads_the_posts_page(self):
         seen = Seen()
         pages = {**PAGES, f"{SITE}/p/T1/": shortcode_page({"code": "T1", "taken_at": STAMP,
@@ -700,7 +747,7 @@ class ThrottleTest(unittest.TestCase):
         self.assertIn(f"{SITE}/p/T1/", seen.visited)
 
     def test_a_login_wall_is_waited_out_and_the_page_loaded_again(self):
-        site = Landing(Target("ins", "post", "SINGLE"), pages=PAGES,
+        site = Landing(Target("ins:SINGLE", kind="post"), pages=PAGES,
                        lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/login/?next=/p/SINGLE/", f"{SITE}/challenge/"]})
         posts = list(Instagram().post(site, "SINGLE"))
         self.assertEqual([post.id for post in posts], ["SINGLE"])
@@ -708,7 +755,7 @@ class ThrottleTest(unittest.TestCase):
         self.assertEqual(site._seen.back_offs, ["Instagram showed a login wall"] * 2)
 
     def test_a_suspended_account_is_a_hard_stop(self):
-        site = Landing(Target("ins", "post", "SINGLE"), pages=PAGES,
+        site = Landing(Target("ins:SINGLE", kind="post"), pages=PAGES,
                        lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/suspended/?next=/p/SINGLE/"]})
         with self.assertRaisesRegex(LoginError, "suspended or locked"):
             list(Instagram().post(site, "SINGLE"))
@@ -726,12 +773,12 @@ class ThrottleTest(unittest.TestCase):
                 assert answer is not None
                 return _net.Response(200, url, {"x-ig-set-www-claim": "hmac.new"}, answer.content)
 
-        site = Claiming(Target("ins", "user", "someone"), json=JSON)
+        site = Claiming(Target("ins:example_creator", kind="user"), json=JSON)
         source.api.media(site, PK["R1"])
         self.assertEqual(source.api.claim, "hmac.new")
 
     def test_persistent_login_wall_in_load_raises_login_error(self):
-        site = Landing(Target("ins", "post", "SINGLE"), pages=PAGES,
+        site = Landing(Target("ins:SINGLE", kind="post"), pages=PAGES,
                        lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/login/?next=/p/SINGLE/"] * 4})
         with self.assertRaisesRegex(LoginError, "login wall or challenge"):
             list(Instagram().post(site, "SINGLE"))
@@ -742,14 +789,14 @@ class ThrottleTest(unittest.TestCase):
 
         for name in ("challenge_example", "challengers"):
             with self.subTest(name=name):
-                site = Landing(Target("ins", "user", name), pages=PAGES, lands={})
+                site = Landing(Target("ins:" + name, kind="user"), pages=PAGES, lands={})
                 self.assertTrue(load(site, f"{SITE}/{name}/"))
                 self.assertEqual(site._seen.back_offs, [])
 
     def test_a_profile_page_without_its_user_is_loaded_once(self):
         from flnd.sources.ins import Profile
 
-        site = FakeSite(Target("ins", "user", "example_user"),
+        site = FakeSite(Target("ins:example_user", kind="user"),
                         pages={f"{SITE}/example_user/": "<html></html>"})
         profile = Profile("example_user")
         for _ in range(3):
@@ -776,6 +823,8 @@ class ThrottleTest(unittest.TestCase):
         self.assertEqual([item.path for item in saved], [f"posts/{DAY}_CAR.jpg", f"posts/{DAY}_R1.mp4"])
         self.assertEqual(api_urls(seen).count(f"{API}/media/{PK['CAR']}/info/"), 4)
         self.assertEqual(api_urls(seen).count(f"{API}/media/{PK['R1']}/info/"), 0)
+        # Both pages are opened after the scroll, never while the tab scrolls.
+        self.assertEqual(seen.visited, [f"{SITE}/example_user/", f"{SITE}/p/CAR/", f"{SITE}/p/R1/"])
         self.assertEqual(seen.back_offs, ["Instagram showed a login wall"] * 2)
 
     def test_post_page_reads_captured_graphql_when_embedded_is_empty(self):
@@ -813,12 +862,12 @@ class SinglePostTest(unittest.TestCase):
 class MeTest(unittest.TestCase):
     def test_resolve_ins_me(self):
         target = Instagram().resolve("me")
-        self.assertEqual(target, Target("ins", "me", "me"))
+        self.assertEqual(target, Target("ins:me", kind="me"))
         self.assertEqual(str(target), "ins:me")
         self.assertFalse(target.query)
         self.assertNotIn("me", Instagram.single_kinds)
         self.assertIn("ins:me", Instagram.forms)
-        self.assertEqual(Instagram().resolve("https://www.instagram.com/me/"), Target("ins", "user", "me"))
+        self.assertEqual(Instagram().resolve("https://www.instagram.com/me/"), Target("ins:me", kind="user"))
 
     def test_me_paginates_following_with_ds_user_id_cookie(self):
         seen = Seen()
@@ -827,9 +876,10 @@ class MeTest(unittest.TestCase):
             {"users": [{"username": "example_creator"}], "next_max_id": None},
         ]
         json_map = {f"{API}/friendships/99/following/": lambda u, req: pages.pop(0)}
-        site = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json=json_map, seen=seen)
+        site = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json=json_map, seen=seen)
         found = list(Instagram().me(site, "me"))
-        self.assertEqual(found, [Target("ins", "user", "example_user"), Target("ins", "user", "example_creator")])
+        # Each account is a target as people write it; the engine resolves and downloads it.
+        self.assertEqual(found, [Target("ins:example_user"), Target("ins:example_creator")])
 
     def test_me_falls_back_to_sessionid_prefix_and_current_user_api(self):
         json_map = {
@@ -837,14 +887,14 @@ class MeTest(unittest.TestCase):
             f"{API}/accounts/current_user/": {"user": {"pk": 88}},
             f"{API}/friendships/88/following/": {"users": [{"username": "example_handle"}]},
         }
-        site_session = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "77%3Aabc%3A2"}, json=json_map)
-        self.assertEqual(list(Instagram().me(site_session, "me")), [Target("ins", "user", "example_user")])
+        site_session = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "77%3Aabc%3A2"}, json=json_map)
+        self.assertEqual(list(Instagram().me(site_session, "me")), [Target("ins:example_user")])
 
-        site_api = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "opaque"}, json=json_map)
-        self.assertEqual(list(Instagram().me(site_api, "me")), [Target("ins", "user", "example_handle")])
+        site_api = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "opaque"}, json=json_map)
+        self.assertEqual(list(Instagram().me(site_api, "me")), [Target("ins:example_handle")])
 
     def test_me_rejects_unexpected_response(self):
-        site = FakeSite(Target("ins", "me", "me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json={f"{API}/friendships/99/following/": {}})
+        site = FakeSite(Target("ins:me", kind="me"), cookies={"sessionid": "s", "ds_user_id": "99"}, json={f"{API}/friendships/99/following/": {}})
         with self.assertRaises(SiteError):
             list(Instagram().me(site, "me"))
 

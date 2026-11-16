@@ -45,14 +45,14 @@ more of them.
 
 ## Logging in
 
-`flnd login tik <how>` takes a browser (read the cookies of an installed browser, such as
-`chrome`) or a cookie file's path (a Netscape `cookies.txt` or JSON cookie file). A login is
-proven by a `sessionid` or
-`sid_tt` cookie for `tiktok.com`.
+The source declares `login = cookies("sessionid", "sid_tt")`: `flnd login tik <how>` takes a
+browser (read the cookies of an installed browser, such as `chrome`) or a cookie file's path (a
+Netscape `cookies.txt` or JSON cookie file). Either cookie for `tiktok.com` proves a login.
 
 Nothing in the source needs a login. Without one, flnd prints a warning and reads what is public.
-With one, the saved cookies are loaded into the browser, and the `sessionid` (with
-`tt_chain_token` when the jar has one) is sent to TikTok's CDN with every file.
+With one, the saved cookies are loaded into the browser, and the CDN is sent the `tt_chain_token`
+and `sessionid` cookies with every file, each only when it has a value. A login with only
+`sid_tt` sends no `sessionid` at all; before 2026-11-16 it sent an empty `sessionid=`.
 
 When a run starts, flnd warns if a login cookie has expired or expires within 24 hours. After a
 run, cookies the site refreshed are written back into the saved login. `flnd login` shows which
@@ -86,6 +86,8 @@ scrolling the page to its end. Each category listens for its own API paths:
 6. `profile` takes the `avatarLarger` picture from the profile's data.
 
 A list ends when a response says `hasMore` is false, or when the page stops loading more.
+Those are the only stops the source makes itself; the engine makes the others (see *Early
+stops* below).
 
 **A single post** is read from `https://www.tiktok.com/embed/v2/<id>` over HTTP: its
 `__NEXT_DATA__` script holds the post's data. A failed fetch is a warning for that post only.
@@ -105,10 +107,13 @@ The class declares:
 - `folder = "{part}/{album}"`: `part` is `videos` or `images` for the `videos` category (by
   whether the post is a video or photos), `albums` for a playlist video, and otherwise the
   category's name. `album` is the playlist's name, and empty outside `albums`.
-- `filename = "{date}_{id}_{idx}"`: `idx` is empty for a video, so the `_` before it is dropped,
-  and the photo's place (from 1) for a photo post. The date is the UTC day the post was made.
-- `key = "{id}_{idx}"`: the history key, stored as `tik:<id>` for a video and `tik:<id>_<n>` for
-  the n-th photo.
+- `fields = ("part", "album", "idx")`: the post fields the templates use.
+- `filename = "{date}_{post}_{idx}"`: `post` is the post's id, and `idx` is empty for a video, so
+  the `_` before it is dropped, and the photo's place (from 1) for a photo post. The date is the
+  UTC day the post was made.
+- `key = "{post}_{idx}"`: the history key, stored as `tik:<id>` for a video and `tik:<id>_<n>` for
+  the n-th photo. These are the names and keys files have always had: changing either would
+  download every saved file again.
 - The `profile` category has its own `folder = "profile"` and an empty key, so its history key is
   the file's path. The picture is named `avatar_<picture id>.jpg`.
 
@@ -128,11 +133,14 @@ Files go under `.flnd/media/tik/<target>/`, where `<target>` is the user name or
   window, then treats it as a rate limit: it backs off, reloads and checks again. A fourth
   unsolved captcha fails the target. Captcha detection handled since 2026-11-11; the back-off
   and reload since 2026-11-12.
-- **Pinned videos** sit at the top of the post list, out of date order. `videos` stops scrolling
-  only after 5 posts in a row older than `--when`'s start, or 5 already-saved posts in a row, so
-  a few old pinned posts don't end the list. Handled since 2026-11-14.
-- **Photo posts** come as one item per photo, all with the post's id. Each post counts once toward
-  those streaks. Handled since 2026-11-16.
+- **Pinned videos** sit at the top of the post list, out of date order. `videos` and `playlists`
+  are `newest_first`, so the engine's early stops apply (below); they wait for 5 posts in a row,
+  so a few old pinned posts don't end the list.
+- **Photo posts** come as one item per photo, all with the post's id, and the source yields one
+  post per photo: a photo's key counts from 1 even in a one-photo post, which no engine field
+  gives. The engine's streaks count posts, so each photo counts once: a pinned carousel of 5 or
+  more photos, older than `--when` or already saved, is enough to end the scroll. (Before
+  2026-11-16 the source counted a carousel once, with stops of its own.)
 - **Walled post list.** When the profile page loads but its post list gives nothing, `videos`
   reads every post linked on the page from its embed page instead. Handled since 2026-11-11.
 - **Dates.** A post's time is its `createTime`. When that is missing or a placeholder, it is read
@@ -147,6 +155,17 @@ Files go under `.flnd/media/tik/<target>/`, where `<target>` is the user name or
   from `/api/user/collect/item_list`. Handled since 2026-11-11.
 - **Double `@`.** A link like `tiktok.com/@@example_creator` is refused, not read as a user
   name. Handled since 2026-11-12.
+
+## Early stops
+
+The engine owns them; the source only yields the posts in the order the list gives them.
+
+- With `--when`, a `newest_first` listing (`videos`, `playlists`) stops after 5 posts in a row
+  older than its start, which closes the scroll.
+- A sync (`flnd sync` of a followed profile) stops a `newest_first` listing once it has caught up:
+  5 saved posts in a row, or the newest post an earlier run saw and the one after it.
+- `stories`, `reposts`, `liked` and `favorites` are not `newest_first` (a repost is ordered by
+  when it was reposted), so they are always read to their end.
 
 ## Limits
 

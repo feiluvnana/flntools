@@ -24,7 +24,7 @@ from flnd import site as site_module
 import flnd
 from flnd._events import encode
 from flnd._library import _when
-from flnd.source import File, Post, Source, target
+from flnd.source import File, Post, Source, cookies as login_cookies, target
 from test_engine import CDN, EngineCase, make_source, noise
 
 JPEG = noise("JPEG")
@@ -36,35 +36,32 @@ def example_source(listing, *, code="exs", **declared):
     Args:
         listing: `{(user, category): [post ids]}`; each post has one file, `<CDN>/<id>.jpg`.
         code: the source's code; its domain is `<code>.example`.
-        **declared: the class's other fields, such as `needs` or `requires_login`.
+        **declared: the class's other fields, such as `login`.
     """
     def posts_of(user, category):
         for post_id in listing.get((user, category), []):
             yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 3, 1))
 
-    class Example(Source):
-        name, domains, folder, key = "Example", (f"{code}.example",), "{category}", "{id}"
+    def post(self, site, id):
+        yield Post(id, [File(f"{CDN}/{id}.jpg")], date=datetime.date(2026, 3, 1))
 
-        @target("p/{id}")
-        def post(self, site, id):
-            yield Post(id, [File(f"{CDN}/{id}.jpg")], date=datetime.date(2026, 3, 1))
+    def user(self, site, user):
+        return user
 
-        @target("{user}")
-        def user(self, site, user):
-            return user
+    def posts(self, site, user):
+        yield from posts_of(user, "posts")
 
-        @user.category
-        def posts(self, site, user):
-            yield from posts_of(user, "posts")
+    def reels(self, site, user):
+        yield from posts_of(user, "reels")
 
-        @user.category
-        def reels(self, site, user):
-            yield from posts_of(user, "reels")
-
-    Example.code = code
-    for name, value in declared.items():
-        setattr(Example, name, value)
-    return Example
+    profile = target(f"{code}:{{user}}")(user)
+    profile.category(posts)
+    profile.category(reels)
+    attributes = {"code": code, "name": "Example", "domains": (f"{code}.example",), "api": 1,
+                  "folder": "{category}", "key": "{post}", "filename": "{date}_{post}{index}",
+                  "post": target(f"{code}:p/{{id}}")(post), "user": profile, "posts": posts,
+                  "reels": reels, **declared}
+    return type("Example", (Source,), attributes)
 
 
 class LibraryCase(EngineCase):
@@ -131,7 +128,7 @@ class CliCommandsTest(LibraryCase):
         # flnd target ls
         self.fl.download("exs:example_user").wait()
         [tracked] = self.fl.targets(source="exs")
-        self.assertEqual(tracked.target, flnd.Target("exs", "user", "example_user"))
+        self.assertEqual(tracked.target, flnd.Target("exs:example_user", kind="user"))
         self.assertEqual((tracked.files, tracked.follow), (3, False))
         self.assertEqual(tracked.categories, {"posts": "complete", "reels": "complete"})
 
@@ -145,7 +142,7 @@ class CliCommandsTest(LibraryCase):
         # flnd target sync-off exs:example_user; flnd target del exs:example_user
         self.fl.follow("exs:example_user").wait()
         self.assertEqual(self.fl.unfollow("exs:example_user"),
-                         [flnd.Target("exs", "user", "example_user")])
+                         [flnd.Target("exs:example_user", kind="user")])
         self.assertFalse(self.fl.targets()[0].follow)
         self.listing["example_user", "posts"].insert(0, "p0")
         self.assertEqual(self.fl.sync().wait().saved, 0)
@@ -154,7 +151,7 @@ class CliCommandsTest(LibraryCase):
 
     def test_auth_login_ls_and_logout(self):
         # flnd auth login (from a cookie file); flnd auth ls; flnd auth logout exs
-        self.fl.add(example_source({}, code="exc", needs=("sid",)))
+        self.fl.add(example_source({}, code="exc", login=login_cookies("sid")))
         cookies = Path(self.home.parent / "cookies.txt")
         cookies.write_text("# Netscape HTTP Cookie File\n"
                            ".exc.example\tTRUE\t/\tTRUE\t1825861327\tsid\texample-value\n",
@@ -307,7 +304,7 @@ class EventsTest(LibraryCase):
 
     def test_a_target_without_its_login_fails_as_an_event(self):
         self.fl.add(example_source({("example_user", "posts"): ["p1"]}, code="exl",
-                                   needs=("sid",), requires_login=True))
+                                   login=login_cookies("sid", required=True)))
         report = self.fl.download("exl:example_user").wait()
         [failed] = report.failed
         self.assertIsInstance(failed.error, flnd.LoginError)
@@ -320,7 +317,7 @@ class EventsTest(LibraryCase):
         lines = [encode(event) for event in events]
         self.assertTrue(any(line.startswith(b'{"type":"Saved"') for line in lines))
         self.assertIn(b'"path":"', lines[-1])
-        login = flnd.Failed(flnd.Target("exs", "user", "example_user"),
+        login = flnd.Failed(flnd.Target("exs:example_user", kind="user"),
                             flnd.LoginError("not logged in", hint="log in"))
         self.assertIn(b'"error":{"class":"LoginError","message":"not logged in","hint":"log in"}',
                       encode(login))

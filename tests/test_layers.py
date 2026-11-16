@@ -6,9 +6,9 @@ ruled on here; what a source may take from third-party libraries is tests/test_s
 Nothing is imported or run.
 
 The rules:
-1. a source (and `flnd.sources.common`) imports from flnd only `flnd.source`, the
-   `flnd.sources.common` package, `flnd` itself (its version) and the toolkit: the private
-   `flnd._x` modules that used to be the `shared` package;
+1. a source imports from flnd only `flnd.source`: the source API is all a source sees, so the
+   engine and the private modules may change without breaking one (besides it, the stdlib and
+   the SDK a site needs, which tests/test_sources.py guards);
 2. `flnd.source` imports nothing from flnd but the toolkit: it is what sources see, not the engine;
 3. `flnd/cli.py` imports from flnd only `flnd` (the library), `flnd.sources._manifest` (the
    sources as data, for help) and the toolkit (`flnd._prompt`, `flnd._ui`, `flnd._events` for
@@ -72,7 +72,7 @@ def flnd_imports(path: Path) -> set[str]:
         if isinstance(node, ast.Import):
             found |= {alias.name for alias in node.names if alias.name.split(".")[0] == "flnd"}
         elif isinstance(node, ast.ImportFrom) and node.module and node.module.split(".")[0] == "flnd":
-            # `from flnd import job` and `from flnd.common import net` import modules by name. Names
+            # `from flnd import job` and `from flnd.sources import ins` import modules by name. Names
             # are compared to the folder's listing, not looked up as paths: on macOS's and Windows'
             # case-insensitive disks, `from flnd import Engine` would find flnd/engine.py.
             package = FLND.parent / node.module.replace(".", "/")
@@ -92,12 +92,11 @@ def module_name(path: Path) -> str:
 
 def source_allowed(name: str) -> bool:
     """Rule 1: what a source may import from flnd."""
-    return name in ("flnd", "flnd.source") or name == "flnd.sources.common" or name.startswith("flnd.sources.common.") \
-        or toolkit(name)
+    return name == "flnd.source"
 
 
 class LayersTest(unittest.TestCase):
-    def test_a_source_imports_only_flnd_source_and_the_common_package(self):
+    def test_a_source_imports_only_flnd_source(self):
         files = sorted((FLND / "sources").rglob("*.py"))
         self.assertTrue(files)
         for path in files:

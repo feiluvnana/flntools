@@ -49,7 +49,7 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
     Example:
         >>> import datetime, pathlib
         >>> from flnd.source import Target
-        >>> event = Saved(Target("ins", "user", "example_user"), "posts", "9001",
+        >>> event = Saved(Target("ins:example_user", kind="user"), "posts", "9001",
         ...               pathlib.Path("media/ins/example_user/9001.jpg"),
         ...               datetime.date(2026, 1, 2), 2048)
         >>> event.path.name, event.date.year, event.size
@@ -76,7 +76,7 @@ class Skipped(msgspec.Struct, frozen=True, tag=True):
 
     Example:
         >>> from flnd.source import Target
-        >>> Skipped(Target("ins", "user", "example_user"), "posts", "9001").path is None
+        >>> Skipped(Target("ins:example_user", kind="user"), "posts", "9001").path is None
         True
     """
 
@@ -98,7 +98,7 @@ class Failed(msgspec.Struct, frozen=True, tag=True):
     Example:
         >>> import flnd
         >>> from flnd.source import Target
-        >>> event = Failed(Target("ins", "user", "example_user"),
+        >>> event = Failed(Target("ins:example_user", kind="user"),
         ...                flnd.LoginError("not logged in", hint="run flnd login ins chrome"))
         >>> event.error.hint
         'run flnd login ins chrome'
@@ -118,7 +118,7 @@ class Progress(msgspec.Struct, frozen=True, tag=True):
 
     Example:
         >>> from flnd.source import Target
-        >>> step = Progress(Target("ins", "user", "example_user"), "posts", found=3, saved=1)
+        >>> step = Progress(Target("ins:example_user", kind="user"), "posts", found=3, saved=1)
         >>> step.found - step.saved - step.skipped - step.failed
         2
     """
@@ -146,7 +146,7 @@ class Planned(msgspec.Struct, frozen=True, tag=True):
     Example:
         >>> import pathlib
         >>> from flnd.source import Target
-        >>> Planned(Target("ins", "user", "example_user"), "9001",
+        >>> Planned(Target("ins:example_user", kind="user"), "9001",
         ...         pathlib.Path("media/ins/example_user/9001.jpg"), "new").state
         'new'
     """
@@ -252,7 +252,7 @@ class Record(msgspec.Struct, frozen=True):
         """What the file is by its name: "image", "video" or "audio"; None for anything else."""
         # Imported here: the table of extensions lives with the other path rules, and reading
         # a `Record` shouldn't import them until a script asks.
-        from flnd.common.paths import kind_of
+        from flnd._files import kind_of
 
         return kind_of(self.path.name)
 
@@ -262,7 +262,7 @@ class Tracked(msgspec.Struct, frozen=True):
 
     Example:
         >>> from flnd.source import Target
-        >>> row = Tracked(Target("ins", "user", "example_user"), follow=True, files=3)
+        >>> row = Tracked(Target("ins:example_user", kind="user"), follow=True, files=3)
         >>> row.follow, row.files
         (True, 3)
     """
@@ -327,7 +327,7 @@ def encode(value: Any) -> bytes:
 
     Example:
         >>> from flnd.source import Target
-        >>> encode(Skipped(Target("ins", "user", "example_user"), "posts", "9001"))[:16]
+        >>> encode(Skipped(Target("ins:example_user", kind="user"), "posts", "9001"))[:16]
         b'{"type":"Skipped'
     """
     return msgspec.json.encode(value, enc_hook=_plain)

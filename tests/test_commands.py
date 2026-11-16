@@ -28,7 +28,7 @@ from flnd._ui import ui
 from flnd import _home
 from flnd.engine import Engine, TargetReport
 from flnd.options import Options
-from flnd.source import Source
+from flnd.source import Login, Source, cookies as login_cookies, target as route
 from test_engine import CDN, make_source, noise
 from test_library import example_source
 
@@ -118,8 +118,8 @@ class DownloadTest(RunsCase):
                                     "--when", "2026-01..2026-06", "--limit", "5")
         self.assertEqual(code, 0, out)
         engine, targets, options = self.runs[0]
-        self.assertEqual(targets, [Target("ins", "user", "example_user"),
-                                   Target("twt", "user", "example_handle")])
+        self.assertEqual(targets, [Target("ins:example_user", kind="user"),
+                                   Target("twt:example_handle", kind="user")])
         self.assertEqual(options, Options(categories=("reels", "media", "tagged"), limit=5,
                                           since=date(2026, 1, 1), until=date(2026, 6, 30)))
         self.assertEqual(engine.home, Path(".flnd"))
@@ -155,7 +155,7 @@ class DownloadTest(RunsCase):
                                 ("example_user",
                                  'which source is "example_user"? Write it as tik:example_user'),
                                 ("https://www.facebook.com/example.page/posts/1",
-                                 "fbk: single posts and videos aren't supported yet")):
+                                 "fbk: this kind of link isn't supported yet")):
             code, _, out = self.run_app("download", "ins:a", target)
             self.assertEqual(code, 2, target)
             self.assertIn(message, out)
@@ -255,10 +255,10 @@ class FollowTest(RunsCase):
         code, _, out = self.run_app("sync")
         self.assertEqual(code, 0, out)
         self.assertEqual(dict(self.synced[0]), {
-            Target("ins", "user", "example_user"): Options(categories=("reels",)),
-            Target("twt", "user", "example_handle"): Options()})
+            Target("ins:example_user", kind="user"): Options(categories=("reels",)),
+            Target("twt:example_handle", kind="user"): Options()})
         self.run_app("sync", "twt:example_handle")
-        self.assertEqual(self.synced[1], [(Target("twt", "user", "example_handle"), Options())])
+        self.assertEqual(self.synced[1], [(Target("twt:example_handle", kind="user"), Options())])
 
     def test_sync_v_logs_debug_lines_for_the_run_only(self):
         self.run_app("follow", "ins:example_user")
@@ -304,7 +304,7 @@ class FollowTest(RunsCase):
         with mock.patch("flnd._net.follow", follow):
             self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/")[0], 0)
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
-        self.assertEqual(self.synced[0][0][0], Target("tik", "video", "7301234567890123456"))
+        self.assertEqual(self.synced[0][0][0], Target("tik:7301234567890123456", kind="video"))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -393,7 +393,7 @@ class ExitStatusTest(FlndCase):
 
         self.enterContext(mock.patch.dict(sources.SOURCES, {
             "aaa": make_source("aaa", run), "bbb": make_source("bbb", run, connect=connect),
-            "ccc": make_source("ccc", needs=("sid",), requires_login=True)}))
+            "ccc": make_source("ccc", login=login_cookies("sid", required=True))}))
 
     def test_download_exits_1_when_a_target_failed(self):
         code, out, err = self.run_app("download", "aaa:bad", "aaa:good")
@@ -561,12 +561,18 @@ class LoginQuestionsTest(FlndCase):
     def test_a_source_with_its_own_login_offers_its_own_ways(self):
         calls = []
 
-        class Own(Source):
-            code, name, domains = "own", "Own", ("own.example",)
-            login_methods = ("qr", "phone")
+        class OwnLogin(Login):
+            methods = ("qr", "phone")
 
-            def login(self, login, method):
-                calls.append((method, type(login).__name__))
+            def start(self, site, method):
+                calls.append((method, type(site).__name__))
+
+        class Own(Source):
+            code, name, domains, api = "own", "Own", ("own.example",), 1
+            login = OwnLogin()
+
+            @route("own:{user}")
+            def user(self, site, user): ...
 
         self.answer("2")
         with mock.patch.dict(sources.SOURCES, {"own": Own}), \

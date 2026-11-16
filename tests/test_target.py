@@ -18,76 +18,76 @@ class AcceptedFormsTest(unittest.TestCase):
                 self.assertEqual(read(text), expected)
 
     def test_ins(self):
-        user = Target("ins", "user", "example_user")
+        user = Target("ins:example_user", kind="user")
         self.check([
             ("ins:example_user", user), ("ins:@example_user", user), ("ins:instagram.com/example_user", user),
             ("https://www.instagram.com/example_user/", user), ("https://instagram.com/example_user/?hl=en", user),
             ("instagram.com/example_user", user), ("https://m.instagram.com/example_user/reels/", user),
-            ("ins:example.user", Target("ins", "user", "example.user")),
-            ("https://www.instagram.com/p/C1abcDEFghi/", Target("ins", "post", "C1abcDEFghi")),
-            ("ins:https://www.instagram.com/reel/C1abcDEFghi/", Target("ins", "post", "C1abcDEFghi")),
+            ("ins:example.user", Target("ins:example.user", kind="user")),
+            ("https://www.instagram.com/p/C1abcDEFghi/", Target("ins:C1abcDEFghi", kind="post")),
+            ("ins:https://www.instagram.com/reel/C1abcDEFghi/", Target("ins:C1abcDEFghi", kind="post")),
         ])
 
     def test_fbk(self):
         self.check([
-            ("fbk:example.page", Target("fbk", "user", "example.page")),
-            ("fbk:100012345678901", Target("fbk", "user", "100012345678901")),
-            ("https://www.facebook.com/example.page", Target("fbk", "user", "example.page")),
-            ("https://www.facebook.com/profile.php?id=100012345678901", Target("fbk", "user", "100012345678901")),
-            ("https://fb.com/example.page", Target("fbk", "user", "example.page")),
-            ("https://m.facebook.com/example.page/photos", Target("fbk", "user", "example.page")),
-            ("https://mobile.facebook.com/example.page", Target("fbk", "user", "example.page")),
-            ("https://web.facebook.com/example.page", Target("fbk", "user", "example.page")),
-            ("https://mbasic.facebook.com/example.page", Target("fbk", "user", "example.page")),
-            ("https://touch.facebook.com/example.page", Target("fbk", "user", "example.page")),
+            ("fbk:example.page", Target("fbk:example.page", kind="user")),
+            ("fbk:100012345678901", Target("fbk:100012345678901", kind="user")),
+            ("https://www.facebook.com/example.page", Target("fbk:example.page", kind="user")),
+            ("https://www.facebook.com/profile.php?id=100012345678901", Target("fbk:100012345678901", kind="user")),
+            ("https://fb.com/example.page", Target("fbk:example.page", kind="user")),
+            ("https://m.facebook.com/example.page/photos", Target("fbk:example.page", kind="user")),
+            ("https://mobile.facebook.com/example.page", Target("fbk:example.page", kind="user")),
+            ("https://web.facebook.com/example.page", Target("fbk:example.page", kind="user")),
+            ("https://mbasic.facebook.com/example.page", Target("fbk:example.page", kind="user")),
+            ("https://touch.facebook.com/example.page", Target("fbk:example.page", kind="user")),
         ])
 
     def test_twt(self):
-        user = Target("twt", "user", "example_handle")
+        user = Target("twt:example_handle", kind="user")
         self.check([
             ("twt:example_handle", user), ("twt:@example_handle", user), ("https://x.com/example_handle", user),
             ("https://twitter.com/example_handle/media", user), ("x.com/example_handle", user),
             # A number is a user id, never a tweet.
-            ("twt:44196397", Target("twt", "user", "44196397")),
-            ("twt:1234567890123456789", Target("twt", "user", "1234567890123456789")),
-            ("https://x.com/example_handle/status/1790000000000000000", Target("twt", "post", "1790000000000000000")),
+            ("twt:44196397", Target("twt:44196397", kind="user")),
+            ("twt:1234567890123456789", Target("twt:1234567890123456789", kind="user")),
+            ("https://x.com/example_handle/status/1790000000000000000", Target("twt:1790000000000000000", kind="post")),
             ("https://twitter.com/example_handle/status/1790000000000000000",
-             Target("twt", "post", "1790000000000000000")),
+             Target("twt:1790000000000000000", kind="post")),
         ])
 
     def test_tik(self):
-        user = Target("tik", "user", "example_creator")
-        video = Target("tik", "video", "7301234567890123456")
+        user = Target("tik:example_creator", kind="user")
+        video = Target("tik:7301234567890123456", kind="video")
         self.check([
             ("tik:example_creator", user), ("tik:@example_creator", user),
             ("https://www.tiktok.com/@example_creator", user), ("https://www.tiktok.com/@example_creator?lang=en", user),
             ("https://www.tiktok.com/@example_creator/video/7301234567890123456", video),
             ("https://www.tiktok.com/@example_creator/photo/7301234567890123456", video),
             # A number of 16 or more digits is a video id; a shorter one is a name.
-            ("tik:7301234567890123456", video), ("tik:1234567890123456", Target("tik", "video", "1234567890123456")),
-            ("tik:123456789012345", Target("tik", "user", "123456789012345")),
+            ("tik:7301234567890123456", video), ("tik:1234567890123456", Target("tik:1234567890123456", kind="video")),
+            ("tik:123456789012345", Target("tik:123456789012345", kind="user")),
         ])
 
     def test_loi(self):
-        post = Target("loi", "post", "5930")
+        post = Target("loi:5930", kind="post")
         self.check([("loi:5930", post), ("https://loix.cc/lois/5930", post), ("loix.cc/lois/5930", post),
                     ("loi:https://www.loix.cc/lois/5930?ref=1", post)])
 
     def test_tlg(self):
-        self.check([("tlg:@examplechannel", Target("tlg", "chat", "examplechannel")),
-                    ("https://t.me/examplechannel", Target("tlg", "chat", "examplechannel")),
-                    ("tlg:Lens Club", Target("tlg", "chat", "Lens Club")),
-                    ("tlg:-1001234567890", Target("tlg", "chat", "-1001234567890")),
-                    ("https://t.me/c/1234567890/55", Target("tlg", "chat", "-1001234567890")),
-                    ("https://t.me/+AbCdEf123", Target("tlg", "chat", "+AbCdEf123"))])
+        self.check([("tlg:@examplechannel", Target("tlg:examplechannel", kind="chat")),
+                    ("https://t.me/examplechannel", Target("tlg:examplechannel", kind="chat")),
+                    ("tlg:Lens Club", Target("tlg:Lens Club", kind="chat")),
+                    ("tlg:-1001234567890", Target("tlg:-1001234567890", kind="chat")),
+                    ("https://t.me/c/1234567890/55", Target("tlg:-1001234567890", kind="chat")),
+                    ("https://t.me/+AbCdEf123", Target("tlg:+AbCdEf123", kind="chat"))])
 
     def test_codes_are_case_insensitive_and_trimmed(self):
-        self.assertEqual(read(" INS:someone "), Target("ins", "user", "someone"))
+        self.assertEqual(read(" INS:someone "), Target("ins:someone", kind="user"))
 
     def test_percent_encoded_path_segments_are_decoded(self):
         self.assertEqual(
             read("https://mimihentai.moe/author/some%20author"),
-            Target("mht", "author", "some author"),
+            Target("mht:some author", kind="author"),
         )
 
 
@@ -97,34 +97,36 @@ class ShortLinkTest(unittest.TestCase):
 
         def follow(url):
             followed.append(url)
-            return "https://www.tiktok.com/@someone/video/7301234567890123456?is_from_webapp=1"
+            return "https://www.tiktok.com/@example_creator/video/7301234567890123456?is_from_webapp=1"
 
-        self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow), Target("tik", "video", "7301234567890123456"))
-        self.assertEqual(read("tik:vm.tiktok.com/ZMabc123/", follow), Target("tik", "video", "7301234567890123456"))
+        self.assertEqual(read("https://vm.tiktok.com/ZMabc123/", follow), Target("tik:7301234567890123456", kind="video"))
+        self.assertEqual(read("tik:vm.tiktok.com/ZMabc123/", follow), Target("tik:7301234567890123456", kind="video"))
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/", "https://vm.tiktok.com/ZMabc123/"])
 
     def test_other_links_are_not_followed(self):
         def follow(url):
             raise AssertionError("followed a link that isn't short")
 
-        self.assertEqual(read("https://www.tiktok.com/@someone", follow), Target("tik", "user", "someone"))
+        self.assertEqual(read("https://www.tiktok.com/@example_creator", follow), Target("tik:example_creator", kind="user"))
 
     def test_fb_watch_belongs_to_facebook(self):
-        with self.assertRaisesRegex(UsageError, "^fbk: single posts and videos aren't supported yet"):
-            read("https://fb.watch/abc/", lambda url: "https://www.facebook.com/watch/?v=123")
+        def follow(url):
+            raise AssertionError("an fb.watch link is read by fbk's own route, never followed here")
+
+        self.assertEqual(read("https://fb.watch/abc/", follow), Target("fbk:abc", kind="watch"))
 
     def test_share_links_are_followed(self):
         self.assertEqual(
             read("https://www.facebook.com/share/r/abc/",
                  lambda url: "https://www.facebook.com/example.page"),
-            Target("fbk", "user", "example.page"),
+            Target("fbk:example.page", kind="user"),
         )
 
     def test_cross_source_redirect_and_unchanged_follow(self):
         self.assertEqual(
             read("https://vm.tiktok.com/ZMabc123/",
                  lambda url: "https://www.instagram.com/p/C1abcDEFghi/"),
-            Target("ins", "post", "C1abcDEFghi"),
+            Target("ins:C1abcDEFghi", kind="post"),
         )
         with self.assertRaisesRegex(UsageError, "can't read"):
             read("https://vm.tiktok.com/ZMabc123/", lambda url: url)
@@ -152,7 +154,7 @@ class RefusedTest(unittest.TestCase):
                                                                    "profile, and its stories come with it"),
             ("https://www.instagram.com/explore/", "ins: that's not a profile"),
             ("https://www.instagram.com/accounts/login/", "ins: that's not a profile"),
-            ("https://www.facebook.com/example.page/posts/123", "fbk: single posts and videos aren't supported yet"),
+            ("https://www.facebook.com/example.page/posts/123", "fbk: this kind of link isn't supported yet"),
             ("https://x.com/explore", "twt: that's not a profile"),
             ("https://x.com/intent/tweet", "twt: that's not a profile"),
         ]
@@ -170,7 +172,7 @@ class RefusedTest(unittest.TestCase):
                                                 "https://www.instagram.com/…/reel/<code>/, https://www.instagram.com/…/reels/<code>/, "
                                                 "https://www.instagram.com/…/tv/<code>/, https://www.instagram.com/<user>/")
         # twt's forms are generated from its routes, so its first form is twt:<user>.
-        with self.assertRaisesRegex(UsageError, "^twt: can't read 'not a name'; write it like twt:<user>, "):
+        with self.assertRaisesRegex(UsageError, "^twt: can't read 'not a name'; write it like twt\\?<query>, twt:<user>, "):
             read("twt:not a name")
         for text in ("ins:", "tik:https://www.tiktok.com/"):
             with self.subTest(text=text), self.assertRaisesRegex(UsageError, "can't read"):
@@ -183,7 +185,7 @@ class RefusedTest(unittest.TestCase):
 
 class TargetTest(unittest.TestCase):
     def test_target_prints_as_code_and_value(self):
-        self.assertEqual(str(Target("tik", "video", "1")), "tik:1")
+        self.assertEqual(str(Target("tik:1", kind="video")), "tik:1")
 
 
 if __name__ == "__main__":

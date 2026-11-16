@@ -10,7 +10,7 @@ from pathlib import Path
 from fakes import FakeSite
 
 from flnd.options import Options, selected
-from flnd.source import Source, Target
+from flnd.source import Source, Target, target
 from flnd.sources import SOURCES
 from flnd.sources.fbk import Facebook
 from flnd.sources.ins import CHROME as INS_CHROME, Instagram
@@ -45,16 +45,21 @@ class RegistryTest(unittest.TestCase):
                 owners[domain] = code
 
     def test_declarations(self):
-        self.assertEqual(Instagram.needs, ("sessionid",))
-        self.assertEqual(Twitter.needs, ("auth_token",))
-        self.assertEqual(Loibus.needs, ("access-token",))
+        self.assertEqual(Instagram.login.names, ("sessionid",))
+        self.assertEqual(Twitter.login.names, ("auth_token",))
+        self.assertEqual(Loibus.login.names, ("access-token",))
+        self.assertEqual(TikTok.login.names, ("sessionid", "sid_tt"))
+        self.assertIsNone(Mimi.login)
         self.assertEqual((Twitter.user_agent, Twitter.stealth), (CHROME, False))
         self.assertEqual(TikTok.user_agent, TIKTOK_UA)
         self.assertEqual(Instagram.user_agent, INS_CHROME)
         for source in SOURCES.values():
+            if source.login is None:
+                continue
             telegram = source is Telegram
             methods = ("browser", "qr", "phone") if telegram else ("browser", "file")
-            self.assertEqual((source.limits, source.login_methods), ({"t.me": 3} if telegram else {}, methods))
+            self.assertEqual((source.api, source.limits, source.login.methods),
+                             (1, {"t.me": 3} if telegram else {}, methods))
 
     def test_listing_floors(self):
         floors = {"ins": 0.2, "twt": 0.2, "fbk": 0.2, "tik": 0.2, "loi": 0.5, "mht": 0.5}
@@ -66,12 +71,12 @@ class RegistryTest(unittest.TestCase):
         # Without --from a target gets every category; a single post's kind has none.
         table = {
             Instagram: ("posts reels tagged reposts stories highlights profile", "post"),
-            Facebook: ("posts photos tagged albums reels videos stories profile", ""),
+            Facebook: ("posts photos tagged albums reels videos stories profile", "video watch photo post"),
             TikTok: ("videos stories playlists reposts liked favorites profile", "video"),
             Twitter: ("posts media highlights reposts replies profile", "post"),
             Loibus: ("photo archive", ""),
             Telegram: ("photo video file", ""),
-            Mimi: ("chapters cover", "chapter author genre"),
+            Mimi: ("chapters cover", "chapter"),
         }
         for source, (categories, single) in table.items():
             with self.subTest(source=source.code):
@@ -115,18 +120,18 @@ def runtime_imports(tree):
 
 class SourceDefaultsTest(unittest.TestCase):
     def test_logged_in_needs_any_one_cookie(self):
-        self.assertFalse(TikTok().logged_in(FakeSite(Target("tik", "account", ""))))
-        self.assertTrue(TikTok().logged_in(FakeSite(Target("tik", "account", ""), cookies={"sid_tt": "1"})))
+        self.assertFalse(TikTok.login.check(FakeSite(Target("tik:", kind="account"))))
+        self.assertTrue(TikTok.login.check(FakeSite(Target("tik:", kind="account"), cookies={"sid_tt": "1"})))
 
-    def test_a_source_without_needs_is_always_logged_in(self):
+    def test_a_source_without_a_login_has_none_and_connects_to_nothing(self):
         class Open(Source):
-            code, name, domains = "opn", "Open", ("open.example",)
+            code, name, domains, api = "opn", "Open", ("open.example",), 1
 
-            def resolve(self, text):
-                return Target(self.code, "user", text)
+            @target("opn:{user}")
+            def user(self, site, user): ...
 
-        account = FakeSite(Target("opn", "account", ""))
-        self.assertTrue(Open().logged_in(account))
+        account = FakeSite(Target("opn:", kind="account"))
+        self.assertIsNone(Open.login)
         with Open().connect(account) as client:
             self.assertIsNone(client)
 

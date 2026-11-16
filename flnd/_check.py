@@ -216,7 +216,7 @@ def _adopted(db: Home, home: Path, unknown: list[Path]) -> list[FileRow]:
     Returns:
         One row per file, keyed so it takes no other file's key.
     """
-    from flnd.common.paths import kind_of
+    from flnd._files import kind_of
 
     failed = {_norm(path): value for path, value in db.failed_at().items()}
     folders = {(row.source, _text.filename(row.value)): item

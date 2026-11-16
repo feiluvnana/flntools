@@ -57,16 +57,15 @@ These belong to the `manga` route, and through it to `author`, `genre` and `quer
 
 - `mht:<id>` and manga links: without `--only` each gets both categories. `--only` names
   one or both.
-- `mht?<query>`: `--only` applies to each manga found; without it each gets both categories.
+- `mht?<query>`, author and genre links: `--only` applies to each manga found; without it
+  each gets both categories. (Before 2026-11-16 the author and genre routes weren't marked as
+  discovering, so `--only` with them was refused as if they were one post; fixed.)
 - A chapter link is one post, downloaded whole: `--only` with it is a usage error.
-- Author and genre links take no `--only` (the CLI calls them one post), and each manga they
-  find is downloaded with both categories.
 
 ## Logging in
 
-The source declares no login cookie, so flnd always counts it as logged in and never warns.
-`flnd login mht <how>` still takes a browser or a cookie file's path, and a saved cookie jar
-is sent with requests, but nothing in the source depends on it.
+The source has no login (`login = None`): everything it reads is public, so flnd never warns
+about a login, and `flnd login mht` is refused as "mht needs no login".
 
 ## How it fetches
 
@@ -88,8 +87,12 @@ Every request goes to `https://mimihentai.moe/api/`:
 2. `chapters` lists every chapter in the order the API gives. A chapter's pages
    are fetched only when the chapter is downloaded, so a chapter already saved costs no request.
 3. Pages are named by their place in the chapter (`001`, `002`, ...).
-4. Searches are paged: flnd asks with `cursor_res=true` and follows `next_cursor` until it is
-   empty or repeats.
+4. Searches are paged with `site.pages`: the first request sends the search's terms and
+   `cursor_res=true` alone, and each next one adds the last page's `next_cursor` as `cursor`,
+   until it is empty or repeats.
+5. The early stops are the engine's: a sync of a manga ends once it meets saved chapters, and
+   `--when` drops chapters outside its days. The source lists every chapter in the API's
+   order; a search ends only where the site's cursor does.
 
 **Pacing:** `pace` is 0.5, so requests to `mimihentai.moe` are at least half a second apart.
 It sets no `limits`: each host's files download 8 at once, adapting up to 32.
@@ -100,22 +103,23 @@ The class declares:
 
 - `folder = "chapters/{order} {title}"`: `order` is the chapter's number, zero-padded to 3 digits
   when whole (`007`) and kept as text otherwise (`7.5`); `title` is the chapter's title.
-- `filename = "{id}"`, which is not used for pages or covers, since each file is named by the
+- `filename = "{post}"`, which is not used for pages or covers, since each file is named by the
   source: pages as `001.webp` and so on, the cover as `cover.webp`. Each keeps its URL's extension
   when it has one.
-- `key = "{id}_{num}"`: the history key, stored as `mht:<chapter id>_<n>`, where `n` is the
+- `key = "{post}_{num}"`: the history key, stored as `mht:<chapter id>_<n>`, where `n` is the
   page's place from 0.
-- The `cover` category has its own `folder = "cover"` and `key = "{id}_cover"`, stored as
+- The `cover` category has its own `folder = "cover"` and `key = "{post}_cover"`, stored as
   `mht:<manga id>_cover`.
 - `fields` also names `author`, `genres` and `chapters`. The cover's post sets them, but the
-  default folders don't use them.
+  default folders don't use them. Every field is passed raw; the engine makes each folder and
+  file name safe (`Example Chapter` is saved as `Example_Chapter`).
 
 Files go under `.flnd/media/mht/<target>/`, where `<target>` is the manga's id (or the chapter's
 id, for a chapter link). A query, author or genre target saves nothing under its own name: each
 manga it finds has its own folder.
 
 ```
-.flnd/media/mht/1234567890/chapters/001 Example Chapter/001.webp
+.flnd/media/mht/1234567890/chapters/001_Example_Chapter/001.webp
 .flnd/media/mht/1234567890/cover/cover.webp
 ```
 

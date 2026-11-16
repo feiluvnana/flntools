@@ -1,14 +1,22 @@
-"""Each target's options, the settings every source of a run shares, the home's config file,
-and their checks."""
+"""Each target's options, the settings every source of a run shares, and their checks.
+
+- `Options` is what one target's run downloads and how; `RunShared` what every source of a run
+  shares (the home, its database, the stop signal, the browser, the event sink),
+  and the home's config file.
+- `categories_by_source` and `validate` check `--only` against the targets' sources before
+  anything is fetched. A source's own templates are checked when its class is made
+  (`flnd.source`), so a run never meets a broken one.
+- `stop_after` reads, per source, how many saved posts in a row end a sync, from the home's
+  config.toml.
+"""
 
 from __future__ import annotations
 
 import datetime
-import re
+import functools
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from string import Formatter
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from flnd import _home
@@ -67,6 +75,9 @@ class RunShared:
     # The steps after a file lands (`flnd._steps.Chain`); None outside a run, so nothing is
     # unpacked or compressed.
     chain: Any = field(default=None, repr=False)
+    # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
+    # None outside the engine, where a source reads only its own.
+    resolve: Callable[[str], Target] | None = field(default=None, repr=False)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -238,114 +249,31 @@ def _lists(sources: Sequence[type[Source]]) -> str:
 
 
 # ---------------------------------------------------------------------------------------------
-# Folder templates and --only, checked before a run
+# --only, checked before a run
 # ---------------------------------------------------------------------------------------------
-
-# The fields every folder template may name, and the extra ones a folder may (not a file name).
-COMMON_FIELDS = frozenset({
-    "source", "site", "query", "target", "user", "id", "category", "path",
-    "name", "date", "extension", "num", "count", "index",
-})
-FOLDER_FIELDS = COMMON_FIELDS | frozenset({
-    "title", "order", "author", "genres", "chapters", "album", "part", "chat", "n",
-})
-_FORMATTER = Formatter()
-# A Windows drive at a template's start (`C:`), which would leave the target's folder.
-_DRIVE_RE = re.compile(r"^[A-Za-z]:")
-
 
 def validate(
     sources: Mapping[str, type[Source]] | Sequence[type[Source]],
     from_selection: str | Sequence[str] | None = None,
     targets: Sequence[Target] = (),
 ) -> None:
-    """Check the sources' folder templates and the categories asked for, before any request.
+    """Check the categories asked for against the targets' routes, before any request.
+
+    A source's templates need no check here: they were checked when its class was made.
 
     Args:
         sources: the sources, by code or as a list.
         from_selection: the categories asked for (`--only`, or the library's `only`); None
-            checks the templates alone.
+            checks nothing.
         targets: the run's targets, whose routes say which categories they have.
 
     Raises:
-        UsageError: a template leaves the target's folder or names an unknown field, or a
-            category is unknown or given for a single post.
+        UsageError: a category is unknown, or given for a single post.
     """
     by_code = ({code: src for code, src in sources.items()} if isinstance(sources, Mapping)
                else {src.code: src for src in sources})
-    _validate_folders(list(by_code.values()))
     if from_selection is not None:
         _validate_from(by_code, from_selection, targets)
-
-
-def _validate_folders(sources: Sequence[type[Source]]) -> None:
-    """Check every source's, route's and category's `folder` template.
-
-    Args:
-        sources: the sources to check.
-
-    Raises:
-        UsageError: a template leaves the target's folder or names an unknown field.
-    """
-    for source in sources:
-        allowed = COMMON_FIELDS | FOLDER_FIELDS | frozenset(source.fields)
-        for route in source.routes:
-            route_fields = allowed | _route_fields(route)
-            folder = getattr(route, "folder", None)
-            _check_template(folder if folder is not None else source.folder, route_fields, source)
-            for category in route.categories:
-                if category.folder is not None:
-                    _check_template(category.folder, route_fields, source)
-
-
-def _route_fields(route: Any) -> frozenset[str]:
-    """The fields a route adds to its templates: its patterns' names and its params.
-
-    Args:
-        route: the route.
-
-    Returns:
-        The field names.
-    """
-    names: set[str] = set()
-    for pat in getattr(route, "_patterns", ()):
-        names.update(getattr(pat, "names", ()))
-    names.update(getattr(route, "params", {}).keys())
-    return frozenset(names)
-
-
-def _check_template(template: str, allowed: frozenset[str], source: type[Source]) -> None:
-    """Refuse a folder template that leaves the target's folder or names an unknown field.
-
-    Args:
-        template: the template; "" passes.
-        allowed: the fields it may name.
-        source: its source, which the message names.
-
-    Raises:
-        UsageError: what is wrong with it.
-    """
-    if not template:
-        return
-    if "\\" in template or template.startswith("/") or _DRIVE_RE.match(template):
-        raise UsageError(f"folder template {template!r} must be relative using '/' separators")
-    if any(seg in ("", ".", "..") for seg in template.split("/")):
-        raise UsageError(f"folder template {template!r} cannot contain empty, '.', or '..'")
-    try:
-        parsed = list(_FORMATTER.parse(template))
-    except ValueError as error:
-        raise UsageError(f"folder template {template!r} is invalid: {error}") from None
-    for _, field_name, format_spec, conversion in parsed:
-        if field_name is None:
-            continue
-        if not field_name or conversion is not None or format_spec:
-            raise UsageError(
-                f"folder template {template!r} has invalid placeholder {{{field_name}}}"
-            )
-        if field_name not in allowed:
-            raise UsageError(
-                f"folder template {template!r} has unknown field {{{field_name}}} for {source.code}"
-            )
 
 
 def _validate_from(
@@ -368,18 +296,17 @@ def _validate_from(
         return
     routes = _target_routes(by_code, targets)
     for target, route in routes:
-        if not _route_from(route) and not route.discovers:
+        if not route.categories and not route.discovers:
             raise UsageError(
                 f"--only applies to profiles and chats; {target} is one post, downloaded whole"
             )
     if routes:
+        # A search's targets are its source's other routes', so it takes their categories.
         known = {cat for target, route in routes for cat in (
-            {c for r in by_code[target.source].routes for c in _route_from(r)}
-            if route.discovers else _route_from(route)
+            by_code[target.source].categories if route.discovers else _names_of(route)
         )}
     else:
-        known = {cat for src in by_code.values() for route in src.routes
-                 for cat in _route_from(route)}
+        known = {cat for src in by_code.values() for cat in src.categories}
     for entry in raw:
         _check_from_entry(entry, by_code, known)
 
@@ -399,7 +326,7 @@ def _check_from_entry(
     """
     code, sep, rest = entry.partition(":")
     if sep and code in by_code:
-        src_cats = {cat for route in by_code[code].routes for cat in _route_from(route)}
+        src_cats = set(by_code[code].categories)
         names = [part.strip() for part in rest.split(",") if part.strip()]
         bad = [name for name in names if name != ALL and name not in src_cats]
     else:
@@ -434,9 +361,67 @@ def _target_routes(
     return pairs
 
 
-def _route_from(route: Any) -> frozenset[str]:
-    """Return a route's `from_` category set, falling back to declared category names."""
-    declared = getattr(route, "from_", None)
-    if declared is not None:
-        return frozenset(declared)
+def _names_of(route: Any) -> frozenset[str]:
+    """The names of a route's categories: what `--only` may name for one of its targets."""
     return frozenset(category.name for category in route.categories)
+
+
+# ---------------------------------------------------------------------------------------------
+# Settings from config.toml
+# ---------------------------------------------------------------------------------------------
+
+# The home's settings file, and how many saved posts in a row end a sync by default.
+CONFIG = "config.toml"
+STOP_AFTER = 5
+
+
+def stop_after(home: Path, code: str) -> int:
+    """How many saved posts in a row end a sync of one of a source's `newest_first` listings.
+
+    Read from `[sources.<code>] stop_after = N` in the home's config.toml, like gallery-dl's
+    `skip = "abort:N"`: a site that pins many posts above its newest needs more than 5.
+
+    Args:
+        home: the home folder.
+        code: the source's code.
+
+    Returns:
+        The number; `STOP_AFTER` when the file or the setting isn't there.
+
+    Raises:
+        UsageError: the file isn't TOML, or the setting isn't a whole number of at least 1.
+    """
+    path = home / CONFIG
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return STOP_AFTER
+    settings = _sources_settings(path, stamp).get(code, {})
+    value = settings.get("stop_after", STOP_AFTER) if isinstance(settings, dict) else STOP_AFTER
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise UsageError(f"{path}: [sources.{code}] stop_after is a whole number of at least 1, "
+                         f"not {value!r}")
+    return value
+
+
+@functools.lru_cache(maxsize=4)
+def _sources_settings(path: Path, stamp: int) -> dict[str, Any]:
+    """The `[sources]` table of a config file, read once per change of the file (`stamp`).
+
+    Args:
+        path: the config file to read.
+        stamp: a number that changes whenever the file does (its modification time); it only
+            keys the cache, so a changed file is read again.
+
+    Returns:
+        The `[sources]` table, or an empty dict when the file has none or it is not a table.
+
+    Raises:
+        UsageError: the file can't be read or is not valid TOML.
+    """
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
+    found = data.get("sources", {})
+    return found if isinstance(found, dict) else {}

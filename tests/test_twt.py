@@ -1,8 +1,10 @@
-"""Twitter / X: timelines scrolled in the browser, each category, the profile, one tweet, and stale
-query ids refreshed from x.com's script.
+"""Twitter / X: timelines scrolled in the browser, each category, the profile, one tweet, a
+search, the `sign` hook, and stale query ids refreshed from x.com's script.
 
-What is faked: the API's and x.com's answers (`FakeSite` through `collect`), and the browser's scroll
-(`browser`). No network.
+What is faked: the API's and x.com's answers (`FakeSite` through `collect`), and the browser's
+scroll (`browser`, or `FakeSite`'s `feeds`). No network. The engine's early stops (a sync caught
+up, `--when`) are the engine's own, tested in tests/test_job.py; the one here drives them through
+`fakes.collect`, which runs the engine's `job.posts`.
 """
 
 import json
@@ -10,16 +12,17 @@ import unittest
 from datetime import date
 from unittest import mock
 
-from flnd import _net
-
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd import _home
-from flnd.options import Options
-from flnd.source import SiteError, LoginError, Target, UsageError
-from flnd.sources.twt import QUERIES, TWITTER_BEARER, Twitter, read_timeline_page, tweet_posts
 from flnd import _cookies as cookies
+from flnd import _home, _net
+from flnd.engine import resolve
+from flnd.options import Options
+from flnd.source import LoginError, Request, SiteError, Target, UsageError
+from flnd.sources.twt import (
+    QUERIES, TWITTER_BEARER, Account, Timeline, Twitter, read_timeline_page, tweet_posts,
+)
 
 API = "https://x.com/i/api/graphql/"
 USER_ID = "42"
@@ -86,6 +89,7 @@ USER = {"data": {"user": {"result": {"rest_id": USER_ID,
 NOT_A_PROFILE = "(?:can't read|that's not a profile)"
 ROUTES = [
     ("twt:example_handle", ("user", "example_handle")),
+    ("twt?example words", ("search", "example words")),
     ("twt:@example_handle", ("user", "example_handle")),
     ("twt:example.handle", ("user", "example.handle")),
     ("twt:x.com", ("user", "x.com")),
@@ -142,8 +146,8 @@ ROUTES = [
     ("twt:not a name", "can't read"),
     ("twt:ex-ample", "can't read"),
     ("twt:", "can't read"),
-    ("twt:example.com/someone", "can't read"),
-    ("twt:https://example.com/someone", "can't read"),
+    ("twt:example.com/example_handle", "can't read"),
+    ("twt:https://example.com/example_handle", "can't read"),
     ("https://notx.com/example_handle", "can't read"),
     ("https://x.com/", "can't read"),
     ("https://x.com/example handle", "can't read"),
@@ -154,9 +158,12 @@ class RoutesTest(unittest.TestCase):
     def test_every_form(self):
         for text, expected in ROUTES:
             with self.subTest(text=text):
-                value = text.removeprefix("twt:")
+                # A query is read after its `?`, as the engine hands it over.
+                value = text.removeprefix("twt:") if not text.startswith("twt?") else text[3:]
                 if isinstance(expected, tuple):
-                    self.assertEqual(Twitter().resolve(value), Target("twt", *expected))
+                    kind, found = expected
+                    sep = "?" if text.startswith("twt?") else ":"
+                    self.assertEqual(Twitter().resolve(value), Target(f"twt{sep}{found}", kind=kind))
                 else:
                     with self.assertRaisesRegex(UsageError, f"^twt: {expected}"):
                         Twitter().resolve(value)
@@ -235,7 +242,7 @@ class NamesAndKeysTest(unittest.TestCase):
 
     def test_every_category_names_and_keys_its_files_as_run_did(self):
         with browser(EVERYTHING_FEEDS):
-            saved = collect(Twitter, "twt:someone", json={url("UserByScreenName"): USER})
+            saved = collect(Twitter, "twt:example_handle", json={url("UserByScreenName"): USER})
         # The order differs only in the profile, now read after the timelines: it is its own category.
         self.assertEqual(sorted(pairs(saved)), sorted(TODAY))
         self.assertEqual([item.url for item in saved[:3]], [
@@ -247,7 +254,7 @@ class NamesAndKeysTest(unittest.TestCase):
     def test_one_tweet_is_named_and_keyed_as_before(self):
         result = {"__typename": "TweetWithVisibilityResults", "tweet": tweet("1790", [photo("a"), video("b")])}
         seen = Seen()
-        saved = collect(Twitter, "twt:https://x.com/someone/status/1790", seen=seen, json={
+        saved = collect(Twitter, "twt:https://x.com/example_handle/status/1790", seen=seen, json={
             url("TweetResultByRestId"): {"data": {"tweetResult": {"result": result}}}})
         self.assertEqual(pairs(saved), [(f"{DAY}_1790_0.jpg", "1790_0"), (f"{DAY}_1790_1.mp4", "1790_1")])
         self.assertEqual(json.loads(seen.requests[0][2]["params"]["variables"])["tweetId"], "1790")
@@ -255,7 +262,7 @@ class NamesAndKeysTest(unittest.TestCase):
     def test_the_browser_names_and_keys_as_the_api_does(self):
         answers = {"UserMedia": page(item(tweet("333", [photo("b")])))}
         with browser(answers):
-            saved = collect(Twitter, "twt:someone", options=Options(categories=("media",)), json={
+            saved = collect(Twitter, "twt:example_handle", options=Options(categories=("media",)), json={
                 url("UserByScreenName"): USER})
         self.assertEqual(pairs(saved), [(f"images/{DAY}_333_0.jpg", "333_0")])
 
@@ -297,7 +304,7 @@ class TimelineTest(unittest.TestCase):
 
     def test_the_profile_is_read_once_and_asked_for_by_its_name(self):
         seen = Seen()
-        collect(Twitter, "twt:someone", options=Options(categories=("profile",)), json={url("UserByScreenName"): USER},
+        collect(Twitter, "twt:example_handle", options=Options(categories=("profile",)), json={url("UserByScreenName"): USER},
                 seen=seen)
         self.assertEqual(queries(seen), ["UserByScreenName"])
 
@@ -352,53 +359,32 @@ class TimelineTest(unittest.TestCase):
 
         with mock.patch.object(FakeSite, "feed",
                         lambda site, match, scroll=False, lines=False, cursor=None: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)):
-            saved = collect(Twitter, "twt:someone",
+            saved = collect(Twitter, "twt:example_handle",
                             options=Options(categories=("posts",), since=date(2026, 11, 8)),
                             json={url("UserByScreenName"): USER})
         self.assertEqual([s.post.id for s in saved], ["1"])
         self.assertEqual(len(consumed), 2)
 
-    def test_early_stop_on_posts_when_caught_up(self):
-        p1 = page(item(tweet("1", [photo("a")])))
-        p2 = page(item(tweet("2", [photo("b")])))
-        p3 = page(item(tweet("3", [photo("c")])))
-        consumed = []
-
-        class RecordingFeed(Feed):
-            def __enter__(self):
-                def gen():
-                    for entry in self.data:
-                        consumed.append(entry)
-                        yield entry
-                return gen()
-
-        with (
-            mock.patch.object(FakeSite, "feed",
-                       lambda site, match, scroll=False, lines=False, cursor=None: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)),
-            mock.patch("flnd.sources.twt.caught_up", side_effect=lambda tid, **_: tid == "2"),
-        ):
-            saved = collect(Twitter, "twt:someone", options=Options(categories=("posts",)),
-                            json={url("UserByScreenName"): USER})
-        self.assertEqual([s.post.id for s in saved], ["1", "2"])
-        self.assertEqual(len(consumed), 2)
+    # A sync that has caught up (5 saved in a row) is the engine's stop, tested in
+    # tests/test_job.py: twt no longer has a copy of it.
 
     def test_without_from_every_timeline_is_read_in_its_order(self):
         seen = Seen()
         with browser({}):
-            collect(Twitter, "twt:someone", seen=seen, json={url("UserByScreenName"): USER})
+            collect(Twitter, "twt:example_handle", seen=seen, json={url("UserByScreenName"): USER})
         self.assertEqual(queries(seen), ["UserByScreenName"])
         self.assertEqual(seen.visited, [
-            "https://x.com/someone", "https://x.com/someone/media", "https://x.com/someone/highlights",
-            "https://x.com/someone/reposts", "https://x.com/someone/with_replies",
+            "https://x.com/example_handle", "https://x.com/example_handle/media", "https://x.com/example_handle/highlights",
+            "https://x.com/example_handle/reposts", "https://x.com/example_handle/with_replies",
         ])
 
     def test_an_unknown_user_is_read_in_the_browser(self):
         seen = Seen()
         with browser({}):
-            saved = collect(Twitter, "twt:someone", options=Options(categories=("posts", "profile")), seen=seen)
-        self.assertEqual(seen.visited, ["https://x.com/someone"])
+            saved = collect(Twitter, "twt:example_handle", options=Options(categories=("posts", "profile")), seen=seen)
+        self.assertEqual(seen.visited, ["https://x.com/example_handle"])
         self.assertEqual(saved, [])
-        self.assertIn("! the API can't find @someone; reading the profile in the browser", seen.messages)
+        self.assertIn("! the API can't find @example_handle; reading the profile in the browser", seen.messages)
 
     def test_a_number_the_api_does_not_know_is_opened_by_its_id(self):
         seen = Seen()
@@ -406,17 +392,46 @@ class TimelineTest(unittest.TestCase):
             collect(Twitter, "twt:42", options=Options(categories=("posts",)), seen=seen)
         self.assertEqual(seen.visited, ["https://x.com/i/user/42"])
 
-    def test_the_browser_keeps_the_users_replies_only_when_the_user_is_known(self):
+    def test_the_browser_keeps_the_users_replies_when_the_user_is_known(self):
         reply = page(item(tweet("601", [photo("reply")], reply_to="600")))
         with browser({"UserRepliesTimeline": reply}):
-            known = collect(Twitter, "twt:someone", options=Options(categories=("replies",)), json={
-                url("UserByScreenName"): USER})
-            unknown = collect(Twitter, "twt:someone", options=Options(categories=("replies",)))
+            known = collect(Twitter, "twt:example_handle", options=Options(categories=("replies",)),
+                            json={url("UserByScreenName"): USER})
         self.assertEqual([item.path for item in known], [f"replies/{DAY}_601_0.jpg"])
-        self.assertEqual(unknown, [])
+
+    def test_replies_are_listed_by_the_authors_name_when_the_user_lookup_fails(self):
+        # Bug: `replies` kept nothing when the API couldn't find the user. The timeline's tweets
+        # carry their author's screen name, which tells the user's replies from the tweets answered.
+        def by(handle, found):
+            found["core"] = {"user_results": {"result": {"core": {"screen_name": handle}}}}
+            return found
+
+        own = by("Example_Handle", tweet("601", [photo("reply")], author="?", reply_to="600"))
+        answered = by("example_creator", tweet("600", [photo("parent")], author="?", reply_to="1"))
+        # An older tweet keeps its name under `legacy`, as before 2025.
+        older = tweet("602", [photo("old")], author="?", reply_to="600")
+        older["core"] = {"user_results": {"result": {"legacy": {"screen_name": "example_handle"}}}}
+        not_a_reply = by("example_handle", tweet("603", [photo("plain")], author="?"))
+        seen = Seen()
+        with browser({"UserRepliesTimeline": page(
+                item(answered), item(own), item(older), item(not_a_reply))}):
+            saved = collect(Twitter, "twt:example_handle", seen=seen,
+                            options=Options(categories=("replies",)))
+        self.assertEqual([item.path for item in saved],
+                         [f"replies/{DAY}_601_0.jpg", f"replies/{DAY}_602_0.jpg"])
+        self.assertIn("! the API can't find @example_handle; reading the profile in the browser",
+                      seen.messages)
+
+    def test_replies_of_an_unknown_user_id_are_told_by_the_id(self):
+        reply = page(item(tweet("601", [photo("reply")], reply_to="600")),
+                     item(tweet("600", [photo("parent")], author=OTHER_ID, reply_to="1")))
+        with browser({"UserRepliesTimeline": reply}):
+            saved = collect(Twitter, f"twt:{USER_ID}", options=Options(categories=("replies",)))
+        self.assertEqual([item.post.id for item in saved], ["601"])
 
     def test_only_the_timelines_with_a_known_order_stop_early(self):
-        flags = {category.name: category.newest_first for category in Twitter.routes[1].categories}
+        user = next(route for route in Twitter.routes if route.kind == "user")
+        flags = {category.name: category.newest_first for category in user.categories}
         self.assertEqual(flags, {"posts": True, "media": True, "highlights": False, "reposts": False,
                                  "replies": True, "profile": False})
 
@@ -424,20 +439,20 @@ class TimelineTest(unittest.TestCase):
 class OneTweetTest(unittest.TestCase):
     def test_a_tweet_goes_into_the_targets_own_folder(self):
         result = {"__typename": "TweetWithVisibilityResults", "tweet": tweet("1790", [photo("a")])}
-        saved = collect(Twitter, "twt:https://x.com/someone/status/1790", json={
+        saved = collect(Twitter, "twt:https://x.com/example_handle/status/1790", json={
             url("TweetResultByRestId"): {"data": {"tweetResult": {"result": result}}}})
         self.assertEqual([item.post.category for item in saved], [""])
         self.assertEqual([item.path for item in saved], [f"{DAY}_1790_0.jpg"])
 
     def test_a_missing_tweet_is_a_warning(self):
         seen = Seen()
-        collect(Twitter, "twt:https://x.com/someone/status/1790", seen=seen,
+        collect(Twitter, "twt:https://x.com/example_handle/status/1790", seen=seen,
                 json={url("TweetResultByRestId"): {"data": {"tweetResult": {}}}})
         self.assertEqual(seen.messages, ["! tweet 1790 isn't there, or isn't visible to this login"])
 
     def test_a_refused_tweet_is_a_warning(self):
         seen = Seen()
-        collect(Twitter, "twt:https://x.com/someone/status/1790", seen=seen)
+        collect(Twitter, "twt:https://x.com/example_handle/status/1790", seen=seen)
         # A 404 may be a stale id: x.com's script is asked once (here it can't be read), then the tweet is warned of.
         self.assertEqual(len(seen.messages), 2)
         self.assertTrue(seen.messages[0].startswith("! the API's query ids look stale"), seen.messages)
@@ -467,7 +482,7 @@ class RefreshTest(unittest.TestCase):
 
     def run_user(self, refreshed_user, *, home=HOME_PAGE, script=MAIN_JS, seen=None):
         with browser({}):
-            return collect(Twitter, "twt:someone", options=Options(categories=("profile",)), seen=seen,
+            return collect(Twitter, "twt:example_handle", options=Options(categories=("profile",)), seen=seen,
                            json={url("UserByScreenName"): SiteError("HTTP 400", status=400),
                                  f"{API}NEWuser42/UserByScreenName": refreshed_user},
                            html={HOME: home, SCRIPT: script})
@@ -486,19 +501,19 @@ class RefreshTest(unittest.TestCase):
 
     def test_the_refreshed_table_is_kept_for_the_next_run(self):
         source = Twitter()
-        site = FakeSite(Target("twt", "user", "someone"), html={HOME: HOME_PAGE, SCRIPT: MAIN_JS})
+        site = FakeSite(Target("twt:example_handle", kind="user"), html={HOME: HOME_PAGE, SCRIPT: MAIN_JS})
         self.assertTrue(source.graph.refresh(site))
         self.assertEqual(site.state["graphql.queries"]["UserMedia"]["id"], "NEWmedia42")
         later = Twitter()
-        next_site = FakeSite(Target("twt", "user", "someone"), json={f"{API}NEWuser42/UserByScreenName": USER})
+        next_site = FakeSite(Target("twt:example_handle", kind="user"), json={f"{API}NEWuser42/UserByScreenName": USER})
         next_site.state.update(site.state)
-        self.assertEqual(later.graph.get(next_site, "UserByScreenName", {"screen_name": "someone"}), USER)
+        self.assertEqual(later.graph.get(next_site, "UserByScreenName", {"screen_name": "example_handle"}), USER)
 
     def test_a_refresh_that_doesnt_help_falls_back_to_browser_for_user(self):
         seen = Seen()
         saved = self.run_user(SiteError("HTTP 400", status=400), seen=seen)
         self.assertEqual(saved, [])
-        self.assertIn("! the API can't find @someone; reading the profile in the browser", seen.messages)
+        self.assertIn("! the API can't find @example_handle; reading the profile in the browser", seen.messages)
 
     def test_a_script_without_the_queries_is_a_warning_and_falls_back(self):
         seen = Seen()
@@ -507,38 +522,40 @@ class RefreshTest(unittest.TestCase):
 
     def test_a_refresh_is_tried_once_a_run(self):
         seen = Seen()
-        collect(Twitter, "twt:https://x.com/someone/status/1", seen=seen,
+        collect(Twitter, "twt:https://x.com/example_handle/status/1", seen=seen,
                 json={url("TweetResultByRestId"): SiteError("HTTP 404", status=404)})
-        collect(Twitter, "twt:someone", options=Options(categories=("profile",)), seen=seen,
+        collect(Twitter, "twt:example_handle", options=Options(categories=("profile",)), seen=seen,
                 json={url("UserByScreenName"): SiteError("HTTP 404", status=404)})
         self.assertEqual([u for _, u, _ in seen.requests].count(HOME), 2)
 
     def test_a_refusal_that_isnt_stale_is_not_refreshed(self):
         seen = Seen()
         with browser({}):
-            collect(Twitter, "twt:someone", options=Options(categories=("posts",)), seen=seen,
+            collect(Twitter, "twt:example_handle", options=Options(categories=("posts",)), seen=seen,
                     json={url("UserByScreenName"): SiteError("HTTP 403", status=403)})
         self.assertNotIn(HOME, [u for _, u, _ in seen.requests])
 
 
-class PrepareTest(unittest.TestCase):
-    """Fix 6: the API's headers come from the live cookies, and there is no `cookie` header."""
+class SignTest(unittest.TestCase):
+    """The API's headers come from the live cookies, and there is no `cookie` header."""
 
-    def prepared(self, target, cookie_values):
-        return Twitter().prepare(_net.Request("GET", target), cookie_values)
+    def signed(self, target, cookie_values):
+        request = Request("GET", target, {}, None, cookie_values)
+        Twitter().sign(request)
+        return request
 
     def test_the_api_headers_come_from_the_live_cookies(self):
-        request = self.prepared("https://x.com/i/api/graphql/q/UserMedia", {"auth_token": "a", "ct0": "c"})
+        request = self.signed("https://x.com/i/api/graphql/q/UserMedia", {"auth_token": "a", "ct0": "c"})
         self.assertEqual((request.headers["authorization"], request.headers["x-csrf-token"],
                           request.headers["x-twitter-auth-type"]), (TWITTER_BEARER, "c", "OAuth2Session"))
         self.assertNotIn("cookie", request.headers)
         # A rotated token is the next request's.
-        self.assertEqual(self.prepared("https://x.com/i/api/graphql/q/UserMedia", {"ct0": "d"}).headers["x-csrf-token"], "d")
-        self.assertNotIn("x-twitter-auth-type", self.prepared("https://x.com/", {}).headers)
+        self.assertEqual(self.signed("https://x.com/i/api/graphql/q/UserMedia", {"ct0": "d"}).headers["x-csrf-token"], "d")
+        self.assertNotIn("x-twitter-auth-type", self.signed("https://x.com/", {}).headers)
 
     def test_the_page_and_its_script_get_no_api_headers(self):
         # 2026-11, live: x.com answered the bearer token on its home page with 401, so no refresh could read the ids.
-        request = self.prepared("https://x.com/", {"auth_token": "a", "ct0": "c"})
+        request = self.signed("https://x.com/", {"auth_token": "a", "ct0": "c"})
         self.assertEqual([name for name in ("authorization", "x-csrf-token", "x-twitter-auth-type")
                           if name in request.headers], [])
 
@@ -560,7 +577,7 @@ class LoginStaysAtHomeTest(EngineCase):
                     {"content_type": "video/mp4", "bitrate": 9, "url": "https://video.twimg.com/v/v.mp4"}]}}])}}})
 
     def test_media_servers_never_see_the_login_and_the_api_sees_the_refreshed_token(self):
-        self.run_engine(Twitter, targets=["twt:someone", "twt:https://x.com/someone/status/100"],
+        self.run_engine(Twitter, targets=["twt:example_handle", "twt:https://x.com/example_handle/status/100"],
                         options=Options(categories=("profile",)))
         api = [request for request in self.requests if request.url.host == "x.com"]
         media = [request for request in self.requests if request.url.host.endswith("twimg.com")]
@@ -579,12 +596,13 @@ class LoginStaysAtHomeTest(EngineCase):
         self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "100").rglob("*")))
 
     def test_read_browser_login_wall_raises_login_error(self):
-        from flnd.sources.twt import Account, Timeline
-
-        site = FakeSite(Target("twt", "user", "example_handle"),
+        site = FakeSite(Target("twt:example_handle", kind="user"),
                         pages={"https://x.com/example_handle": "<html></html>"})
-        with mock.patch.object(FakeSite, "open",
-                               side_effect=lambda url: (site._seen.visited.append("https://x.com/i/flow/login"), True)[1]):
+        def landed_on_login(url):
+            site._seen.visited.append("https://x.com/i/flow/login")
+            return True
+
+        with mock.patch.object(FakeSite, "open", side_effect=landed_on_login):
             with self.assertRaisesRegex(LoginError, "flnd login twt"):
                 list(Twitter().read_browser(
                     site, Account("example_handle", {"rest_id": "42"}), Timeline("posts", "UserTweets", ""),
@@ -592,16 +610,79 @@ class LoginStaysAtHomeTest(EngineCase):
 
 
     def test_a_handle_that_starts_like_the_login_path_is_read(self):
-        from flnd.sources.twt import Account, Timeline
-
-        site = FakeSite(Target("twt", "user", "login_example"),
+        site = FakeSite(Target("twt:login_example", kind="user"),
                         pages={"https://x.com/login_example": "<html></html>"})
         # Warming the later tabs comes right after the wall check, so reaching it means none was seen.
-        with mock.patch("flnd.sources.twt.warm_tabs", side_effect=LookupError("past the wall")):
+        with mock.patch.object(FakeSite, "warm", side_effect=LookupError("past the wall")):
             with self.assertRaisesRegex(LookupError, "past the wall"):
                 list(Twitter().read_browser(
                     site, Account("login_example", {"rest_id": "42"}), Timeline("posts", "UserTweets", ""),
                 ))
+
+
+def search_page(*entries, cursor="next"):
+    """A SearchTimeline page: its entries, then its bottom cursor."""
+    added = [{"entryId": f"e{number}", "content": entry} for number, entry in enumerate(entries)]
+    added.append({"entryId": "cursor-bottom", "content": {"cursorType": "Bottom", "value": cursor}})
+    return {"data": {"search_by_raw_query": {"search_timeline": {"timeline": {"instructions": [
+        {"type": "TimelineAddEntries", "entries": added}]}}}}}
+
+
+SEARCH_RESPONSE = "https://x.com/i/api/graphql/abc/SearchTimeline"
+
+
+class SearchTest(unittest.TestCase):
+    """`twt?<words>`: the search's Latest tab, scrolled; each tweet with media is a tweet link.
+
+    The search path (SearchTimeline) was dead code before: no route reached it. It is the
+    `search` route now.
+    """
+
+    def test_a_query_is_the_search_route(self):
+        found = resolve("twt?example words", {"twt": Twitter})
+        self.assertEqual((found.kind, found.value, found.query, str(found)),
+                         ("search", "example words", True, "twt?example words"))
+        self.assertIn("twt?<query>", Twitter.forms)
+
+    def test_each_tweet_with_media_is_a_tweet_link_to_download(self):
+        site = FakeSite(Target("twt?example words", kind="search"), feeds=[
+            (SEARCH_RESPONSE, search_page(item(tweet("1", [photo("a")])),
+                                          item(tweet("2", [{"type": "animated_gif"}])),
+                                          item(tweet("3", [video("v")])), cursor="c1")),
+            (SEARCH_RESPONSE, search_page(item(tweet("1", [photo("a")])),
+                                          item(tweet("4", [photo("b")])), cursor="c2")),
+            # X answers the last page with its cursors alone.
+            (SEARCH_RESPONSE, search_page(cursor="c3")),
+        ])
+        found = list(Twitter().search(site, "example words"))
+        self.assertEqual([str(target) for target in found], [
+            "https://x.com/i/web/status/1", "https://x.com/i/web/status/3",
+            "https://x.com/i/web/status/4"])
+        [opened] = site._seen.visited
+        self.assertEqual(opened, "https://x.com/search?q=example+words&src=typed_query&f=live")
+        # Each link resolves to a tweet target, which the engine downloads as if typed.
+        self.assertEqual(Twitter().resolve(str(found[0])), Target("twt:1", kind="post"))
+
+    def test_when_is_asked_of_x_as_search_operators(self):
+        options = Options(since=date(2026, 11, 1), until=date(2026, 11, 9))
+        site = FakeSite(Target("twt?example", kind="search"), options=options)
+        self.assertEqual(list(Twitter().search(site, "example")), [])
+        # X's `until:` is exclusive, so it is the day after the last.
+        self.assertEqual(site._seen.visited, [
+            "https://x.com/search?q=example+since%3A2026-11-01+until%3A2026-11-10"
+            "&src=typed_query&f=live"])
+
+    def test_a_search_sent_to_the_login_page_needs_a_login(self):
+        site = FakeSite(Target("twt?example", kind="search"))
+
+        def landed_on_login(url, **options):
+            site._seen.visited.append("https://x.com/i/flow/login?redirect_after_login=%2Fsearch")
+            return True
+
+        with mock.patch.object(FakeSite, "open", side_effect=landed_on_login):
+            with self.assertRaisesRegex(LoginError, "flnd login twt"):
+                list(Twitter().search(site, "example"))
+
 
 if __name__ == "__main__":
     unittest.main()

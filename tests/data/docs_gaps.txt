@@ -176,8 +176,6 @@ flnd/_ui.py:_format_count: no docstring
 flnd/_vault.py:_aes_gcm: Args: no key
 flnd/_vault.py:_aes_gcm: no Raises:
 flnd/_vault.py:_aes_gcm: no Returns:
-flnd/common/paths.py:kind_of: Args: no name
-flnd/common/paths.py:kind_of: no Returns:
 flnd/engine.py:Engine._discover_and_run: Args: no board
 flnd/engine.py:Engine._discover_and_run: Args: no options
 flnd/engine.py:Engine._discover_and_run: Args: no reports
@@ -204,10 +202,6 @@ flnd/engine.py:Engine._plan: Args: no targets
 flnd/engine.py:Engine._plan: no Returns:
 flnd/engine.py:Engine._recorded: no docstring
 flnd/engine.py:Engine._resolved: no docstring
-flnd/engine.py:Engine._run: Args: no browser_pool
-flnd/engine.py:Engine._run: Args: no chosen
-flnd/engine.py:Engine._run: Args: no stop
-flnd/engine.py:Engine._run: no Returns:
 flnd/engine.py:Engine._run_child: no docstring
 flnd/engine.py:Engine._run_query: Args: no browser_pool
 flnd/engine.py:Engine._run_query: Args: no options
@@ -337,10 +331,6 @@ flnd/job.py:Ledger._queue_post_files: no Returns:
 flnd/job.py:Ledger._saved_first: Args: no category
 flnd/job.py:Ledger._saved_first: Args: no post
 flnd/job.py:Ledger._saved_first: no Returns:
-flnd/job.py:Ledger.is_saved: Args: no category
-flnd/job.py:Ledger.is_saved: Args: no post_id
-flnd/job.py:Ledger.is_saved: Args: no posted
-flnd/job.py:Ledger.is_saved: no Returns:
 flnd/job.py:Ledger.link_queued: Args: no written
 flnd/job.py:Ledger.redate: no Returns:
 flnd/job.py:Ledger.release: no Returns:
@@ -352,26 +342,9 @@ flnd/job.py:Ledger: Args: no options
 flnd/job.py:Ledger: Args: no run
 flnd/job.py:Ledger: Args: no site
 flnd/job.py:Ledger: Args: no target
-flnd/job.py:_Kept: Args: no category
-flnd/job.py:_Kept: Args: no newest_first
-flnd/job.py:_Kept: Args: no run_async
-flnd/job.py:_Kept: Args: no span
-flnd/job.py:_Kept: Args: no yielded
 flnd/job.py:_Work.queue: Args: no hold
 flnd/job.py:_Work.queue: Args: no post
 flnd/job.py:_Work.queue: no Returns:
-flnd/job.py:_catch_up_newest: Args: no category
-flnd/job.py:_catch_up_newest: Args: no context
-flnd/job.py:_catch_up_newest: Args: no limit
-flnd/job.py:_catch_up_newest: Args: no run
-flnd/job.py:_catch_up_newest: Args: no site
-flnd/job.py:_catch_up_newest: Args: no span
-flnd/job.py:_catch_up_newest: Args: no target
-flnd/job.py:_catch_up_newest: Args: no work
-flnd/job.py:_catch_up_newest: no Returns:
-flnd/job.py:_chained: Args: no first
-flnd/job.py:_chained: Args: no steps
-flnd/job.py:_chained: no Yields:
 flnd/job.py:_distinct_folders: Args: no dest
 flnd/job.py:_distinct_folders: Args: no holder
 flnd/job.py:_distinct_folders: Args: no root
@@ -384,15 +357,6 @@ flnd/job.py:_ended: Args: no run
 flnd/job.py:_ended: Args: no started
 flnd/job.py:_ended: no Raises:
 flnd/job.py:_ended: no Returns:
-flnd/job.py:_execute_listing: Args: no complete
-flnd/job.py:_execute_listing: Args: no listed
-flnd/job.py:_execute_listing: Args: no options
-flnd/job.py:_execute_listing: Args: no resumes
-flnd/job.py:_execute_listing: Args: no run
-flnd/job.py:_execute_listing: Args: no site
-flnd/job.py:_execute_listing: Args: no target
-flnd/job.py:_execute_listing: Args: no work
-flnd/job.py:_execute_listing: no Returns:
 flnd/job.py:_extension: Args: no file
 flnd/job.py:_extension: no Returns:
 flnd/job.py:_file_values: Args: no count
@@ -409,53 +373,6 @@ flnd/job.py:_folder_format: Args: no category
 flnd/job.py:_folder_format: Args: no route
 flnd/job.py:_folder_format: Args: no source
 flnd/job.py:_folder_format: no Returns:
-flnd/job.py:_queue_all: Args: no kept
-flnd/job.py:_queue_all: Args: no limit
-flnd/job.py:_queue_all: Args: no stop_at_saved
-flnd/job.py:_queue_all: Args: no work
-flnd/job.py:_queue_all: no Returns:
-flnd/job.py:_queue_listed: Args: no kept
-flnd/job.py:_queue_listed: Args: no limit
-flnd/job.py:_queue_listed: Args: no stop_at_saved
-flnd/job.py:_queue_listed: Args: no work
-flnd/job.py:_queue_listed: no Returns:
-flnd/job.py:_read: Args: no complete
-flnd/job.py:_read: Args: no listed
-flnd/job.py:_read: Args: no options
-flnd/job.py:_read: Args: no resumes
-flnd/job.py:_read: Args: no run
-flnd/job.py:_read: Args: no site
-flnd/job.py:_read: Args: no target
-flnd/job.py:_read: Args: no work
-flnd/job.py:_read_categories: Args: no categories
-flnd/job.py:_read_categories: Args: no complete
-flnd/job.py:_read_categories: Args: no listed
-flnd/job.py:_read_categories: Args: no options
-flnd/job.py:_read_categories: Args: no resumes
-flnd/job.py:_read_categories: Args: no route
-flnd/job.py:_read_categories: Args: no run
-flnd/job.py:_read_categories: Args: no site
-flnd/job.py:_read_categories: Args: no target
-flnd/job.py:_read_categories: Args: no work
-flnd/job.py:_read_one_category: Args: no category
-flnd/job.py:_read_one_category: Args: no complete
-flnd/job.py:_read_one_category: Args: no context
-flnd/job.py:_read_one_category: Args: no listed
-flnd/job.py:_read_one_category: Args: no options
-flnd/job.py:_read_one_category: Args: no remaining
-flnd/job.py:_read_one_category: Args: no resumes
-flnd/job.py:_read_one_category: Args: no run
-flnd/job.py:_read_one_category: Args: no site
-flnd/job.py:_read_one_category: Args: no start
-flnd/job.py:_read_one_category: Args: no target
-flnd/job.py:_read_one_category: Args: no work
-flnd/job.py:_read_one_category: no Returns:
-flnd/job.py:_read_routeless: Args: no options
-flnd/job.py:_read_routeless: Args: no route
-flnd/job.py:_read_routeless: Args: no run
-flnd/job.py:_read_routeless: Args: no site
-flnd/job.py:_read_routeless: Args: no target
-flnd/job.py:_read_routeless: Args: no work
 flnd/job.py:_redated: Args: no estimated
 flnd/job.py:_redated: Args: no filename
 flnd/job.py:_redated: Args: no found
@@ -555,7 +472,6 @@ flnd/site.py:LoginSite.ask: Args: no message
 flnd/site.py:LoginSite.ask: Args: no secret
 flnd/site.py:LoginSite.ask: no Raises:
 flnd/site.py:LoginSite.ask: no Returns:
-flnd/site.py:LoginSite: Args: no run
 flnd/site.py:TargetSite.fetch: Args: no check
 flnd/site.py:TargetSite.fetch: Args: no headers
 flnd/site.py:TargetSite.fetch: Args: no in_page
@@ -569,62 +485,19 @@ flnd/site.py:shared_browser: no Yields:
 flnd/site.py:source_run: Args: no settings
 flnd/site.py:source_run: Args: no source
 flnd/site.py:source_run: no Yields:
-flnd/source.py:Category: Args: no folder
-flnd/source.py:Category: Args: no function
-flnd/source.py:Category: Args: no key
-flnd/source.py:Category: Args: no newest_first
-flnd/source.py:Category: no Example:
 flnd/source.py:Feed.close: no Example:
 flnd/source.py:Feed: no Example:
-flnd/source.py:File.text: no Example:
-flnd/source.py:File.text: no Returns:
-flnd/source.py:File: no Example:
-flnd/source.py:Login.ask: no Example:
-flnd/source.py:Login.info: no Example:
 flnd/source.py:Login: no Example:
 flnd/source.py:Post.filed: Args: no category
 flnd/source.py:Post.filed: no Example:
 flnd/source.py:Post.filed: no Returns:
-flnd/source.py:Post.replace: Args: no fields
-flnd/source.py:Post.replace: no Example:
-flnd/source.py:Post.replace: no Returns:
-flnd/source.py:Post: no Example:
-flnd/source.py:Range.parse: no Example:
-flnd/source.py:Range.parse: no Returns:
-flnd/source.py:Range: no Example:
-flnd/source.py:Resume.caught_up: Args: no post_id
-flnd/source.py:Resume.caught_up: Args: no posted
-flnd/source.py:Resume.caught_up: no Returns:
-flnd/source.py:Resume: Args: no label
-flnd/source.py:Resume: Args: no saved
-flnd/source.py:Resume: Args: no start
-flnd/source.py:Route.category: Args: no folder
-flnd/source.py:Route.category: Args: no function
-flnd/source.py:Route.category: Args: no key
-flnd/source.py:Route.category: Args: no newest_first
 flnd/source.py:Route.category: no Example:
-flnd/source.py:Route.category: no Returns:
-flnd/source.py:Route.forms: Args: no code
 flnd/source.py:Route.forms: no Example:
-flnd/source.py:Route.forms: no Returns:
-flnd/source.py:Route: Args: no discovers
-flnd/source.py:Route: Args: no folder
-flnd/source.py:Route: Args: no from_
-flnd/source.py:Route: Args: no function
-flnd/source.py:Route: Args: no patterns
-flnd/source.py:Route: Args: no shown
-flnd/source.py:Route: no Example:
 flnd/source.py:Site.back_off: no Example:
 flnd/source.py:Site.click: no Example:
 flnd/source.py:Site.document: no Example:
 flnd/source.py:Site.evaluate: no Example:
 flnd/source.py:Site.feed: no Example:
-flnd/source.py:Site.fetch: Args: no check
-flnd/source.py:Site.fetch: Args: no headers
-flnd/source.py:Site.fetch: Args: no in_page
-flnd/source.py:Site.fetch: Args: no method
-flnd/source.py:Site.fetch: Args: no request
-flnd/source.py:Site.fetch: Args: no url
 flnd/source.py:Site.fetch: no Example:
 flnd/source.py:Site.handoff: no Example:
 flnd/source.py:Site.info: no Example:
@@ -636,41 +509,17 @@ flnd/source.py:Site.warn: no Example:
 flnd/source.py:Site: no Example:
 flnd/source.py:Source.connect: no Example:
 flnd/source.py:Source.connect: no Returns:
-flnd/source.py:Source.date: Args: no post
-flnd/source.py:Source.date: Args: no site
 flnd/source.py:Source.date: no Example:
-flnd/source.py:Source.logged_in: no Example:
-flnd/source.py:Source.logged_in: no Returns:
-flnd/source.py:Source.login: Args: no login
-flnd/source.py:Source.login: Args: no method
-flnd/source.py:Source.login: no Example:
-flnd/source.py:Source.login: no Raises:
-flnd/source.py:Source.prepare: Args: no cookies
-flnd/source.py:Source.prepare: Args: no request
-flnd/source.py:Source.prepare: no Example:
-flnd/source.py:Source.prepare: no Returns:
 flnd/source.py:Source.resolve: no Example:
 flnd/source.py:Source: no Example:
-flnd/source.py:Target: no Example:
 flnd/source.py:_Pattern.form: Args: no code
 flnd/source.py:_Pattern.form: no Returns:
 flnd/source.py:_Pattern.match: Args: no text
 flnd/source.py:_Pattern.match: Args: no url
 flnd/source.py:_Pattern.match: no Returns:
-flnd/source.py:_Pattern: Args: no text
 flnd/source.py:_bare_host: Args: no host
 flnd/source.py:_bare_host: no Returns:
 flnd/source.py:_compile: no Returns:
-flnd/source.py:_field: Args: no fields
-flnd/source.py:_field: Args: no name
-flnd/source.py:_field: no Returns:
-flnd/source.py:_fill_segment: Args: no fields
-flnd/source.py:_fill_segment: Args: no segment
-flnd/source.py:_fill_segment: no Returns:
-flnd/source.py:_first_page: Args: no fetch
-flnd/source.py:_first_page: Args: no resume
-flnd/source.py:_first_page: Args: no start
-flnd/source.py:_first_page: no Returns:
 flnd/source.py:_parse: Args: no domains
 flnd/source.py:_parse: Args: no text
 flnd/source.py:_parse: no Returns:
@@ -679,28 +528,7 @@ flnd/source.py:_split: Args: no separator
 flnd/source.py:_split: Args: no text
 flnd/source.py:_split: no Returns:
 flnd/source.py:_tokens: no Returns:
-flnd/source.py:day: no Example:
-flnd/source.py:fill: Args: no fields
-flnd/source.py:fill: Args: no safe
-flnd/source.py:fill: Args: no template
-flnd/source.py:fill: no Example:
-flnd/source.py:fill: no Returns:
-flnd/source.py:listing: Args: no resume
-flnd/source.py:listing: no Yields:
-flnd/source.py:pages: no Example:
-flnd/source.py:pages: no Yields:
-flnd/source.py:target: Args: no discovers
-flnd/source.py:target: Args: no folder
-flnd/source.py:target: Args: no from_
-flnd/source.py:target: Args: no patterns
-flnd/source.py:target: Args: no shown
 flnd/source.py:target: no Example:
-flnd/source.py:target: no Returns:
-flnd/sources/common/dash.py:best: Args: no manifest
-flnd/sources/common/dash.py:best: no Returns:
-flnd/sources/common/relay.py:_results: no docstring
-flnd/sources/common/relay.py:embedded_results: Args: no page
-flnd/sources/common/relay.py:embedded_results: no Returns:
 flnd/sources/fbk.py:Facebook.albums: Args: no profile
 flnd/sources/fbk.py:Facebook.albums: Args: no site
 flnd/sources/fbk.py:Facebook.albums: no Yields:
@@ -718,19 +546,10 @@ flnd/sources/fbk.py:_collect_tab: Args: no profile
 flnd/sources/fbk.py:_collect_tab: Args: no site
 flnd/sources/fbk.py:_collect_tab: no Raises:
 flnd/sources/fbk.py:_collect_tab: no Yields:
-flnd/sources/fbk.py:_read_album: Args: no owner
-flnd/sources/fbk.py:_read_album: Args: no site
-flnd/sources/fbk.py:_read_album: Args: no title
-flnd/sources/fbk.py:_read_album: Args: no url
-flnd/sources/fbk.py:_read_album: no Yields:
 flnd/sources/fbk.py:album_links: Args: no data
 flnd/sources/fbk.py:album_links: no Returns:
 flnd/sources/fbk.py:image_extension: Args: no url
 flnd/sources/fbk.py:image_extension: no Returns:
-flnd/sources/fbk.py:media_items: Args: no data
-flnd/sources/fbk.py:media_items: Args: no owner
-flnd/sources/fbk.py:media_items: Args: no seen
-flnd/sources/fbk.py:media_items: Args: no stamp
 flnd/sources/fbk.py:media_items: no Yields:
 flnd/sources/fbk.py:media_posts: Args: no album
 flnd/sources/fbk.py:media_posts: Args: no owner
@@ -744,15 +563,11 @@ flnd/sources/fbk.py:photo_item: Args: no node
 flnd/sources/fbk.py:photo_item: Args: no stamp
 flnd/sources/fbk.py:photo_item: no Returns:
 flnd/sources/fbk.py:post_of: Args: no album
-flnd/sources/fbk.py:post_of: Args: no headers
 flnd/sources/fbk.py:post_of: Args: no item
 flnd/sources/fbk.py:post_of: Args: no part
 flnd/sources/fbk.py:post_of: no Returns:
 flnd/sources/fbk.py:read_header: Args: no result
 flnd/sources/fbk.py:read_header: no Returns:
-flnd/sources/fbk.py:read_page: Args: no site
-flnd/sources/fbk.py:read_page: Args: no url
-flnd/sources/fbk.py:read_page: no Raises:
 flnd/sources/fbk.py:read_page: no Returns:
 flnd/sources/fbk.py:read_tab: Args: no profile
 flnd/sources/fbk.py:read_tab: Args: no site
@@ -761,194 +576,21 @@ flnd/sources/fbk.py:read_tab: no Yields:
 flnd/sources/fbk.py:video_item: Args: no node
 flnd/sources/fbk.py:video_item: Args: no stamp
 flnd/sources/fbk.py:video_item: no Returns:
-flnd/sources/ins.py:Api._refuse: Args: no api
-flnd/sources/ins.py:Api._refuse: Args: no site
-flnd/sources/ins.py:Api._refuse: Args: no what
-flnd/sources/ins.py:Api._refused: Args: no api
-flnd/sources/ins.py:Api._refused: Args: no site
-flnd/sources/ins.py:Api._refused: no Returns:
-flnd/sources/ins.py:Api._self_id: Args: no site
-flnd/sources/ins.py:Api._self_id: no Raises:
-flnd/sources/ins.py:Api._self_id: no Returns:
-flnd/sources/ins.py:Api._waited: Args: no refused
-flnd/sources/ins.py:Api._waited: Args: no response
-flnd/sources/ins.py:Api._waited: Args: no site
-flnd/sources/ins.py:Api._waited: Args: no walls
-flnd/sources/ins.py:Api._waited: no Raises:
-flnd/sources/ins.py:Api._waited: no Returns:
-flnd/sources/ins.py:Api.following: Args: no site
-flnd/sources/ins.py:Api.following: no Raises:
-flnd/sources/ins.py:Api.following: no Yields:
-flnd/sources/ins.py:Api.get: no Returns:
-flnd/sources/ins.py:Api.headers: Args: no cookies
-flnd/sources/ins.py:Api.headers: no Returns:
-flnd/sources/ins.py:Api.media: no Returns:
-flnd/sources/ins.py:Api.reels: Args: no reel_ids
-flnd/sources/ins.py:Api.reels: Args: no site
-flnd/sources/ins.py:Api.reels: Args: no what
-flnd/sources/ins.py:Api.reels: no Returns:
-flnd/sources/ins.py:Api.stories: Args: no site
-flnd/sources/ins.py:Api.stories: Args: no user_id
-flnd/sources/ins.py:Api.stories: no Returns:
-flnd/sources/ins.py:Instagram.highlights: Args: no profile
-flnd/sources/ins.py:Instagram.highlights: Args: no site
-flnd/sources/ins.py:Instagram.highlights: no Yields:
-flnd/sources/ins.py:Instagram.posts: no Yields:
-flnd/sources/ins.py:Instagram.stories: Args: no profile
-flnd/sources/ins.py:Instagram.stories: Args: no site
-flnd/sources/ins.py:Instagram.stories: no Yields:
-flnd/sources/ins.py:Instagram.user: no Returns:
-flnd/sources/ins.py:Profile._posts: Args: no api
-flnd/sources/ins.py:Profile._posts: Args: no deferred
-flnd/sources/ins.py:Profile._posts: Args: no result
-flnd/sources/ins.py:Profile._posts: Args: no site
-flnd/sources/ins.py:Profile._posts: Args: no tab
-flnd/sources/ins.py:Profile._posts: no Yields:
-flnd/sources/ins.py:Profile._scroll_tab: Args: no site
-flnd/sources/ins.py:Profile._scroll_tab: Args: no tab
-flnd/sources/ins.py:Profile._scroll_tab: no Raises:
-flnd/sources/ins.py:Profile._scroll_tab: no Yields:
-flnd/sources/ins.py:Profile.describe: Args: no site
-flnd/sources/ins.py:Profile.note: Args: no result
-flnd/sources/ins.py:_hit_saved: Args: no result
-flnd/sources/ins.py:_hit_saved: Args: no tab
-flnd/sources/ins.py:_hit_saved: no Returns:
-flnd/sources/ins.py:_json: Args: no response
-flnd/sources/ins.py:_json: no Returns:
-flnd/sources/ins.py:best_file: Args: no media
-flnd/sources/ins.py:best_file: no Returns:
-flnd/sources/ins.py:connection_of: no Returns:
-flnd/sources/ins.py:file_name: no Returns:
-flnd/sources/ins.py:files_of: Args: no media
-flnd/sources/ins.py:files_of: Args: no pinned
-flnd/sources/ins.py:files_of: no Returns:
-flnd/sources/ins.py:full_size: Args: no item
-flnd/sources/ins.py:full_size: no Returns:
-flnd/sources/ins.py:is_complete: Args: no media
-flnd/sources/ins.py:is_complete: no Returns:
-flnd/sources/ins.py:lazy_files: Args: no api
-flnd/sources/ins.py:lazy_files: Args: no code
-flnd/sources/ins.py:lazy_files: Args: no pk
-flnd/sources/ins.py:lazy_files: Args: no site
-flnd/sources/ins.py:lazy_files: no Returns:
-flnd/sources/ins.py:load: no Returns:
-flnd/sources/ins.py:older_streak: Args: no result
-flnd/sources/ins.py:older_streak: Args: no since
-flnd/sources/ins.py:older_streak: Args: no streak
-flnd/sources/ins.py:older_streak: Args: no tab
-flnd/sources/ins.py:older_streak: no Returns:
-flnd/sources/ins.py:page_state: no Returns:
-flnd/sources/ins.py:pk_of_code: Args: no code
-flnd/sources/ins.py:pk_of_code: no Returns:
-flnd/sources/ins.py:pk_stamp: Args: no pk
-flnd/sources/ins.py:pk_stamp: no Returns:
-flnd/sources/ins.py:post_media: Args: no code
-flnd/sources/ins.py:post_media: Args: no result
-flnd/sources/ins.py:post_media: no Returns:
-flnd/sources/ins.py:post_page: Args: no code
-flnd/sources/ins.py:post_page: Args: no site
-flnd/sources/ins.py:post_page: no Returns:
-flnd/sources/ins.py:reel_posts: Args: no folder
-flnd/sources/ins.py:reel_posts: Args: no site
-flnd/sources/ins.py:reel_posts: Args: no stories
-flnd/sources/ins.py:reel_posts: no Yields:
-flnd/sources/ins.py:story_music: no Returns:
-flnd/sources/ins.py:story_posts: Args: no folder
-flnd/sources/ins.py:story_posts: Args: no site
-flnd/sources/ins.py:story_posts: Args: no url
-flnd/sources/ins.py:story_posts: no Yields:
-flnd/sources/ins.py:tab_media: no Returns:
-flnd/sources/loi.py:Loibus._links: Args: no post
-flnd/sources/loi.py:Loibus._links: Args: no site
-flnd/sources/loi.py:Loibus._links: no Returns:
-flnd/sources/loi.py:Loibus.archive: Args: no post
-flnd/sources/loi.py:Loibus.archive: Args: no site
 flnd/sources/loi.py:Loibus.archive: no Yields:
-flnd/sources/loi.py:Loibus.photo: Args: no post
-flnd/sources/loi.py:Loibus.photo: Args: no site
 flnd/sources/loi.py:Loibus.photo: no Yields:
-flnd/sources/loi.py:Loibus.post: Args: no id
-flnd/sources/loi.py:Loibus.post: Args: no site
-flnd/sources/loi.py:Loibus.post: no Raises:
-flnd/sources/loi.py:Loibus.post: no Returns:
-flnd/sources/loi.py:Loibus.prepare: Args: no cookies
-flnd/sources/loi.py:Loibus.prepare: Args: no request
-flnd/sources/loi.py:Loibus.prepare: no Returns:
 flnd/sources/loi.py:_decrypt_aes_cbc: Args: no blob
 flnd/sources/loi.py:_decrypt_aes_cbc: no Returns:
-flnd/sources/loi.py:_fetch_links: Args: no post_id
-flnd/sources/loi.py:_fetch_links: Args: no site
-flnd/sources/loi.py:_fetch_links: no Returns:
 flnd/sources/loi.py:_info_rows: Args: no post
 flnd/sources/loi.py:_info_rows: no Returns:
-flnd/sources/loi.py:_quota_kind: Args: no body
-flnd/sources/loi.py:_quota_kind: no Returns:
 flnd/sources/loi.py:count_download: Args: no post_id
 flnd/sources/loi.py:count_download: Args: no site
 flnd/sources/loi.py:decrypt_field: Args: no text
-flnd/sources/loi.py:decrypt_field: no Raises:
 flnd/sources/loi.py:decrypt_field: no Returns:
 flnd/sources/loi.py:group_mirrors: Args: no links
 flnd/sources/loi.py:group_mirrors: no Returns:
-flnd/sources/loi.py:info_md: Args: no links
-flnd/sources/loi.py:info_md: Args: no post
-flnd/sources/loi.py:info_md: no Returns:
-flnd/sources/loi.py:quota: Args: no post_id
-flnd/sources/loi.py:quota: Args: no site
-flnd/sources/loi.py:quota: no Returns:
-flnd/sources/loi.py:request_id: Args: no method
-flnd/sources/loi.py:request_id: Args: no noise
-flnd/sources/loi.py:request_id: Args: no now_ms
-flnd/sources/loi.py:request_id: Args: no pick
-flnd/sources/loi.py:request_id: Args: no where
-flnd/sources/loi.py:request_id: no Returns:
-flnd/sources/loi.py:sign_request: Args: no noise
-flnd/sources/loi.py:sign_request: Args: no now_ms
-flnd/sources/loi.py:sign_request: Args: no pick
-flnd/sources/loi.py:sign_request: Args: no request
-flnd/sources/loi.py:sign_request: no Returns:
-flnd/sources/mht.py:Mimi._remember: Args: no item
-flnd/sources/mht.py:Mimi.chapter: Args: no id
-flnd/sources/mht.py:Mimi.chapter: Args: no site
-flnd/sources/mht.py:Mimi.chapter: no Raises:
-flnd/sources/mht.py:Mimi.chapter: no Yields:
-flnd/sources/mht.py:Mimi.chapters: Args: no manga
-flnd/sources/mht.py:Mimi.chapters: Args: no site
-flnd/sources/mht.py:Mimi.chapters: no Yields:
-flnd/sources/mht.py:Mimi.cover: Args: no manga
-flnd/sources/mht.py:Mimi.cover: Args: no site
-flnd/sources/mht.py:Mimi.cover: no Yields:
-flnd/sources/mht.py:Mimi.manga: Args: no id
-flnd/sources/mht.py:Mimi.manga: Args: no site
-flnd/sources/mht.py:Mimi.manga: no Raises:
-flnd/sources/mht.py:Mimi.manga: no Returns:
-flnd/sources/mht.py:Mimi.query: Args: no query
-flnd/sources/mht.py:Mimi.query: Args: no site
-flnd/sources/mht.py:Mimi.query: no Yields:
-flnd/sources/mht.py:_items_of: no docstring
-flnd/sources/mht.py:_manga_fields: Args: no manga
-flnd/sources/mht.py:_manga_fields: no Returns:
-flnd/sources/mht.py:_parse_query: Args: no raw
-flnd/sources/mht.py:_parse_query: Args: no site
-flnd/sources/mht.py:_parse_query: no Raises:
-flnd/sources/mht.py:_parse_query: no Returns:
-flnd/sources/mht.py:_resolve_id: Args: no kind
-flnd/sources/mht.py:_resolve_id: Args: no lookup
-flnd/sources/mht.py:_resolve_id: Args: no raw
-flnd/sources/mht.py:_resolve_id: Args: no site
-flnd/sources/mht.py:_resolve_id: no Raises:
-flnd/sources/mht.py:_resolve_id: no Returns:
-flnd/sources/mht.py:_search_pages: Args: no params
-flnd/sources/mht.py:_search_pages: Args: no site
-flnd/sources/mht.py:_search_pages: Args: no url
-flnd/sources/mht.py:_search_pages: no Yields:
-flnd/sources/mht.py:format_order: Args: no value
-flnd/sources/mht.py:format_order: no Returns:
 flnd/sources/tik.py:Profile._click_batches: Args: no category
 flnd/sources/tik.py:Profile._click_batches: Args: no css
 flnd/sources/tik.py:Profile._click_batches: no Yields:
-flnd/sources/tik.py:Profile._drain_posts: Args: no old
-flnd/sources/tik.py:Profile._drain_posts: Args: no since
 flnd/sources/tik.py:Profile._drain_posts: Args: no wanted
 flnd/sources/tik.py:Profile._drain_posts: no Yields:
 flnd/sources/tik.py:Profile._load: no Raises:
@@ -958,31 +600,18 @@ flnd/sources/tik.py:Profile._read_posts: no Yields:
 flnd/sources/tik.py:Profile._watch: Args: no posts
 flnd/sources/tik.py:Profile._watch: Args: no stories
 flnd/sources/tik.py:Profile._watch: no Returns:
-flnd/sources/tik.py:Profile.feed: Args: no wanted
 flnd/sources/tik.py:Profile.feed: no Yields:
-flnd/sources/tik.py:Profile.open: Args: no feeds
-flnd/sources/tik.py:Profile.open: no Returns:
 flnd/sources/tik.py:Profile.stories: no Yields:
-flnd/sources/tik.py:Profile.tab: Args: no category
-flnd/sources/tik.py:Profile.tab: Args: no tab
 flnd/sources/tik.py:Profile.tab: no Yields:
-flnd/sources/tik.py:Profile.wait_out_captcha: no Raises:
 flnd/sources/tik.py:TikTok.favorites: no Yields:
 flnd/sources/tik.py:TikTok.liked: no Yields:
 flnd/sources/tik.py:TikTok.playlists: no Yields:
-flnd/sources/tik.py:TikTok.profile: Args: no profile
-flnd/sources/tik.py:TikTok.profile: Args: no site
 flnd/sources/tik.py:TikTok.profile: no Yields:
 flnd/sources/tik.py:TikTok.reposts: no Yields:
 flnd/sources/tik.py:TikTok.stories: no Yields:
 flnd/sources/tik.py:TikTok.user: no Returns:
 flnd/sources/tik.py:TikTok.video: no Yields:
-flnd/sources/tik.py:TikTok.videos: Args: no profile
-flnd/sources/tik.py:TikTok.videos: Args: no site
 flnd/sources/tik.py:TikTok.videos: no Yields:
-flnd/sources/tik.py:_hit_saved: Args: no items
-flnd/sources/tik.py:_hit_saved: Args: no wanted
-flnd/sources/tik.py:_hit_saved: no Returns:
 flnd/sources/tik.py:_is_dash: Args: no entry
 flnd/sources/tik.py:_is_dash: no Returns:
 flnd/sources/tik.py:_pixels: Args: no entry
@@ -995,80 +624,23 @@ flnd/sources/tik.py:has_captcha: no Returns:
 flnd/sources/tik.py:is_feed_of: no Returns:
 flnd/sources/tik.py:mirrors: Args: no urls
 flnd/sources/tik.py:mirrors: no Returns:
-flnd/sources/tik.py:older_streak: Args: no items
-flnd/sources/tik.py:older_streak: Args: no since
-flnd/sources/tik.py:older_streak: Args: no streak
-flnd/sources/tik.py:older_streak: no Returns:
-flnd/sources/tik.py:post_of: Args: no category
-flnd/sources/tik.py:post_of: Args: no item
-flnd/sources/tik.py:post_of: Args: no site
 flnd/sources/tik.py:post_of: no Returns:
 flnd/sources/tik.py:stamp_of: no Returns:
-flnd/sources/tlg.py:Telegram.connect: Args: no site
-flnd/sources/tlg.py:Telegram.connect: no Raises:
-flnd/sources/tlg.py:Telegram.connect: no Yields:
-flnd/sources/tlg.py:Telegram.login: Args: no login
-flnd/sources/tlg.py:Telegram.login: Args: no method
-flnd/sources/tlg.py:Telegram.login: no Raises:
-flnd/sources/tlg.py:Telegram.resolve: Args: no text
-flnd/sources/tlg.py:Telegram.resolve: no Raises:
-flnd/sources/tlg.py:Telegram.resolve: no Returns:
 flnd/sources/tlg.py:_Download._part: Args: no number
 flnd/sources/tlg.py:_Download._read: Args: no end
 flnd/sources/tlg.py:_Download._read: Args: no number
 flnd/sources/tlg.py:_Download._read: Args: no position
-flnd/sources/tlg.py:_Download._read: no Raises:
-flnd/sources/tlg.py:_Download: Args: no document
-flnd/sources/tlg.py:_Download: Args: no done
-flnd/sources/tlg.py:_Download: Args: no file
-flnd/sources/tlg.py:_Download: Args: no progress
-flnd/sources/tlg.py:_Download: Args: no sidecar
-flnd/sources/tlg.py:_Download: Args: no site
-flnd/sources/tlg.py:_client: no docstring
-flnd/sources/tlg.py:_load_offsets: Args: no dest
-flnd/sources/tlg.py:_load_offsets: Args: no sidecar
-flnd/sources/tlg.py:_load_offsets: Args: no size
-flnd/sources/tlg.py:_load_offsets: no Returns:
-flnd/sources/tlg.py:_url_value: Args: no host
-flnd/sources/tlg.py:_url_value: Args: no url
-flnd/sources/tlg.py:_url_value: no Returns:
-flnd/sources/tlg.py:by_phone: Args: no client
-flnd/sources/tlg.py:by_phone: Args: no login
-flnd/sources/tlg.py:by_qr: Args: no client
-flnd/sources/tlg.py:by_qr: Args: no login
 flnd/sources/tlg.py:by_qr: no Raises:
 flnd/sources/tlg.py:by_qr: no Returns:
-flnd/sources/tlg.py:credentials: Args: no login
-flnd/sources/tlg.py:credentials: no Raises:
 flnd/sources/tlg.py:credentials: no Returns:
 flnd/sources/tlg.py:display_name: Args: no entity
 flnd/sources/tlg.py:display_name: no Returns:
 flnd/sources/tlg.py:draw_qr: Args: no text
 flnd/sources/tlg.py:draw_qr: no Returns:
-flnd/sources/tlg.py:fetcher: Args: no message
-flnd/sources/tlg.py:fetcher: Args: no site
-flnd/sources/tlg.py:fetcher: no Returns:
-flnd/sources/tlg.py:find_chat: Args: no client
-flnd/sources/tlg.py:find_chat: Args: no value
-flnd/sources/tlg.py:find_chat: no Raises:
-flnd/sources/tlg.py:find_chat: no Returns:
 flnd/sources/tlg.py:from_web_storage: Args: no storage
-flnd/sources/tlg.py:from_web_storage: no Raises:
 flnd/sources/tlg.py:from_web_storage: no Returns:
 flnd/sources/tlg.py:half_blocks: Args: no matrix
 flnd/sources/tlg.py:half_blocks: no Returns:
-flnd/sources/tlg.py:log_in: Args: no api_hash
-flnd/sources/tlg.py:log_in: Args: no api_id
-flnd/sources/tlg.py:log_in: Args: no login
-flnd/sources/tlg.py:log_in: Args: no method
-flnd/sources/tlg.py:log_in: Args: no start
-flnd/sources/tlg.py:log_in: no Raises:
-flnd/sources/tlg.py:log_in: no Returns:
-flnd/sources/tlg.py:messages: Args: no chat
-flnd/sources/tlg.py:messages: Args: no kind
-flnd/sources/tlg.py:messages: Args: no site
-flnd/sources/tlg.py:messages: no Yields:
-flnd/sources/tlg.py:read_telegram_web: no Raises:
 flnd/sources/tlg.py:read_telegram_web: no Returns:
 flnd/sources/twt.py:Graph._get: Args: no query
 flnd/sources/twt.py:Graph._get: Args: no site
@@ -1076,23 +648,6 @@ flnd/sources/twt.py:Graph._get: Args: no variables
 flnd/sources/twt.py:Graph._get: no Returns:
 flnd/sources/twt.py:Graph._table: Args: no site
 flnd/sources/twt.py:Graph._table: no Returns:
-flnd/sources/twt.py:Graph.get: Args: no query
-flnd/sources/twt.py:Graph.get: Args: no site
-flnd/sources/twt.py:Graph.get: Args: no variables
-flnd/sources/twt.py:Graph.get: no Returns:
-flnd/sources/twt.py:Graph.refresh: Args: no site
-flnd/sources/twt.py:Graph.refresh: no Returns:
-flnd/sources/twt.py:Twitter._scroll_timeline: Args: no profile
-flnd/sources/twt.py:Twitter._scroll_timeline: Args: no site
-flnd/sources/twt.py:Twitter._scroll_timeline: Args: no timeline
-flnd/sources/twt.py:Twitter._scroll_timeline: no Raises:
-flnd/sources/twt.py:Twitter._scroll_timeline: no Yields:
-flnd/sources/twt.py:Twitter.post: Args: no site
-flnd/sources/twt.py:Twitter.post: Args: no tweet_id
-flnd/sources/twt.py:Twitter.post: no Yields:
-flnd/sources/twt.py:Twitter.prepare: Args: no cookies
-flnd/sources/twt.py:Twitter.prepare: Args: no request
-flnd/sources/twt.py:Twitter.prepare: no Returns:
 flnd/sources/twt.py:Twitter.profile: Args: no account
 flnd/sources/twt.py:Twitter.profile: Args: no site
 flnd/sources/twt.py:Twitter.profile: no Yields:
@@ -1100,12 +655,6 @@ flnd/sources/twt.py:Twitter.read_browser: Args: no account
 flnd/sources/twt.py:Twitter.read_browser: Args: no site
 flnd/sources/twt.py:Twitter.read_browser: Args: no timeline
 flnd/sources/twt.py:Twitter.read_browser: no Yields:
-flnd/sources/twt.py:Twitter.user: Args: no site
-flnd/sources/twt.py:Twitter.user: Args: no user
-flnd/sources/twt.py:Twitter.user: no Returns:
-flnd/sources/twt.py:_hit_saved: Args: no category
-flnd/sources/twt.py:_hit_saved: Args: no tweets
-flnd/sources/twt.py:_hit_saved: no Returns:
 flnd/sources/twt.py:best_file: Args: no media
 flnd/sources/twt.py:best_file: no Returns:
 flnd/sources/twt.py:card_image: Args: no tweet
@@ -1116,18 +665,9 @@ flnd/sources/twt.py:media_file: Args: no posted
 flnd/sources/twt.py:media_file: Args: no tweet_id
 flnd/sources/twt.py:media_file: Args: no url
 flnd/sources/twt.py:media_file: no Returns:
-flnd/sources/twt.py:older_streak: Args: no since
-flnd/sources/twt.py:older_streak: Args: no streak
-flnd/sources/twt.py:older_streak: Args: no tweets
-flnd/sources/twt.py:older_streak: no Returns:
 flnd/sources/twt.py:parse_date: Args: no created_at
 flnd/sources/twt.py:parse_date: no Returns:
 flnd/sources/twt.py:read_timeline_page: Args: no data
 flnd/sources/twt.py:read_timeline_page: no Returns:
 flnd/sources/twt.py:timeline_entries: Args: no instructions
 flnd/sources/twt.py:timeline_entries: no Yields:
-flnd/sources/twt.py:tweet_posts: Args: no category
-flnd/sources/twt.py:tweet_posts: Args: no part
-flnd/sources/twt.py:tweet_posts: Args: no tweet
-flnd/sources/twt.py:tweet_posts: Args: no user_id
-flnd/sources/twt.py:tweet_posts: no Yields:

@@ -30,7 +30,8 @@ from flnd.errors import (
     Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
     Stopped, ToolError, UsageError, classify, disk,
 )
-from flnd.source import File, Range, Source, Target, target
+from flnd.engine import _span
+from flnd.source import File, Source, Target, cookies as login_cookies, target
 from flnd._ui import ui
 from fakes import download, fetch
 from test_commands import FlndCase
@@ -92,13 +93,13 @@ class ClassesTest(HttpCase):
         with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
             fl.download("nosuchsource:example_user")
         with self.assertRaises(UsageError):
-            Range.parse("yesterday")
+            _span("yesterday")
         with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
             fl.logout("nosuchsource")
 
     def test_login_error(self):
         made = job.failure(self.refusal(403, "https://api.aaa.example/me"),
-                           Target("aaa", "user", "example_user"), make_source("aaa")())
+                           Target("aaa:example_user", kind="user"), make_source("aaa")())
         self.assertIsInstance(made, LoginError)
         self.assertIn("flnd login aaa", made.hint)
         self.assertEqual(made.target, "aaa:example_user")
@@ -165,6 +166,8 @@ class ClassesTest(HttpCase):
         with self.assertRaisesRegex(SourceError, "other.example"):
             class Outside(Source):
                 code, name, domains = "out", "Outside", ("aaa.example",)
+                api = 1
+                filename = "{date}_{post}{index}"
 
                 @target("other.example/{user}")
                 def user(self, site, user): ...
@@ -238,7 +241,7 @@ class PolicyTest(HttpCase):
 
     def test_a_401_or_403_on_the_sources_domains_is_a_login_error_for_that_source(self):
         source = make_source("aaa")()
-        who = Target("aaa", "user", "example_user")
+        who = Target("aaa:example_user", kind="user")
         for status in (401, 403):
             with self.subTest(status=status):
                 own = ClassesTest.refusal(self, status, "https://api.aaa.example/me")
@@ -348,7 +351,7 @@ class CliTest(FlndCase):
                     self.assertEqual(len(errors), 1)
 
     def test_a_login_the_source_needs_exits_3(self):
-        source = make_source("aaa", needs=("sid",), requires_login=True)
+        source = make_source("aaa", login=login_cookies("sid", required=True))
         with mock.patch.dict(sources.SOURCES, {"aaa": source}):
             code, out, err = self.run_app("download", "aaa:example_user", "--ui", "plain")
         self.assertEqual(code, 3)

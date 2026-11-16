@@ -442,8 +442,9 @@ class Flnd:
         cls = self._source(source)
         engine = self._engine()
         if source not in engine.cookie_logins:
-            if how not in cls.login_methods:
-                raise UsageError(f"{source} logs in by {', '.join(cls.login_methods)}, "
+            methods = cls.login.methods if cls.login is not None else ()
+            if how not in methods:
+                raise UsageError(f"{source} logs in by {', '.join(methods) or 'nothing'}, "
                                  f"not {how!r}")
             engine.login(source, how)
         elif how in BROWSERS:
@@ -496,8 +497,8 @@ class Flnd:
             >>> import flnd
             >>> from flnd.source import Source, target
             >>> class Example(Source):
-            ...     code, name, domains = "exa", "Example", ("example.com",)
-            ...     @target("{user}")
+            ...     code, name, domains, api = "exa", "Example", ("example.com",), 1
+            ...     @target("exa:{user}")
             ...     def user(self, site, user):
             ...         return []
             >>> with flnd.open("example-home") as fl:
@@ -541,7 +542,7 @@ class Flnd:
         with stopping() as stop:
             settings = RunShared(home=self.home, stop=stop)
             with source_run(settings, cls()) as run:
-                opened = TargetSite(run, Target(cls.code, "account", ""))
+                opened = TargetSite(run, Target(f"{cls.code}:", kind="account"))
                 try:
                     yield opened
                 finally:

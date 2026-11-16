@@ -198,7 +198,7 @@ File(url, name=None, audio=None, password=None)
 
 ### 6.4 Where files go
 ```python
-    folder = "{target}/{category}"     # the default
+    folder = "{category}"             # the default, under the target's folder
     filename = "{post}_{num}"          # the default; the extension comes from the file
 ```
 A template can use `{source}`, `{target}`, `{category}`, `{post}`, `{num}`, `{date}` and any field of the post. A template that names an unknown field fails when the class is made, not halfway through a download.

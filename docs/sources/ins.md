@@ -41,9 +41,11 @@ A *category* is one part of a profile that can be downloaded on its own. Without
 | `highlights` | Every highlight, each in its own folder |
 | `profile` | The profile picture, at its largest size |
 
-`posts`, `reels` and `reposts` are *newest first*: a listing stops early after 5 posts in a row
-that are already saved, or 5 in a row older than the start of `--when`. `tagged` is always read
-to its end.
+`posts`, `reels` and `reposts` are *newest first*. The early stops are the engine's, not the
+source's: a sync of one of them stops after 5 posts in a row that are already saved, and a
+download stops after 5 in a row older than the start of `--when`. Either closes the tab's scroll
+at once. The source itself only ends a tab where Instagram's own `page_info` says there is no
+next page. `tagged` is always read to its end.
 
 ## Logging in
 
@@ -54,20 +56,24 @@ the way is asked with numbered choices:
   Chromium.
 - **From a cookie file**: reads a Netscape `cookies.txt` or a JSON export.
 
-The login is accepted only when the cookies hold `sessionid`. They are stored encrypted in
+The source declares `login = cookies("sessionid")`, not required: the login is accepted only
+when the cookies hold `sessionid`. They are stored encrypted in
 `.flnd/secrets.db`. Each run loads them into its HTTP client and its browser, and at the
 end writes back any of those cookies the site refreshed.
 
 Without a login, flnd still tries: it opens the same pages, and gets what Instagram shows a
 logged-out visitor. `ins:me` needs the logged-in account's id, read from the `ds_user_id` or
-`sessionid` cookie or from `/api/v1/accounts/current_user/`; without one it stops with
-"not logged in; run flnd login ins".
+`sessionid` cookie or from `/api/v1/accounts/current_user/`; without one it stops with a login
+error, "ins: not logged in, so there is no account to read", and the hint `run flnd login ins`.
 
 When a run starts, flnd warns if `sessionid` has expired or will expire within a day. When the
 session stops working mid-run:
 
-- a page or API call sent to `/accounts/login` or `/challenge` (a *login wall*) is waited out
-  and tried again, at most twice, then the run stops with a login error;
+- a page sent to `/accounts/login` or `/challenge` (a *login wall*) is waited out and loaded
+  again, at most twice, then the run stops with a login error;
+- an API call answered with a login wall (its JSON's `require_login`, or a checkpoint message)
+  is waited out the same way, then counts as refused, and the post's or story's page is read
+  instead;
 - a page or call sent to `/accounts/suspended` stops at once: "Instagram suspended or locked
   this account; check it in a browser".
 
@@ -96,8 +102,11 @@ How each category is read:
 
 - **`posts`, `reels`, `tagged`, `reposts`**: open the tab's page (`/<user>/`, `/<user>/reels/`,
   `/<user>/tagged/`, `/<user>/reposts/`) and scroll. A grid item whose files are all at full
-  size is saved as listed. Any other item is kept aside and read after the scroll ends, from the
-  media API or else from the post's own page `/p/<code>/`. The tabs not yet read are opened in
+  size is saved as listed. Any other item is listed where the grid has it as a *lazy* post:
+  the engine asks for its files only when it isn't saved yet, and they come from the media API.
+  A post the media API can't give (it has no id, or the API refused) needs its own page
+  `/p/<code>/`, and the tab can't be navigated while it scrolls, so such a post is listed again
+  once the scroll ends and its page is read then. The tabs not yet read are opened in
   background tabs meanwhile, so they are loaded when their turn comes.
 - **`stories`**: load the profile page for the user's id, then ask the story API; if it refuses,
   read the story page `/stories/<user>/`.
@@ -121,10 +130,12 @@ post's code for a `post` target. Inside it, the source declares:
 - `folder = "{category}/{album}"`: the category's name, then the highlight's title for
   highlights (`album` is the source's own field). The `profile` category uses `profile`. A
   `post` target has no category, so its files sit directly in the target's folder.
-- `filename`: the default `{date}_{id}{index}`, so a file is `<date>_<code>.<ext>`, or
+- `filename = "{date}_{post}{index}"`, so a file is `<date>_<code>.<ext>`, or
   `<date>_<code>_<n>.<ext>` when the post has several files. A story is `<date>_<story id>`.
-  Without a date, the name is just the rest (`<code>.jpg`).
-- `key`: the default `{id}_{num}`, so the history remembers `ins:<code>_<n>`. The `stories`,
+  Without a date, the name is just the rest (`<code>.jpg`). A lazy post's files, and a file
+  whose URL has another extension, are named by the source the same way, from the post's own
+  `taken_at`.
+- `key`: the default `{post}_{num}`, so the history remembers `ins:<code>_<n>`. The `stories`,
   `highlights` and `profile` categories set an empty key, so their history key is the file's
   path under the target's folder.
 
@@ -144,8 +155,11 @@ Example:
   again.", "status": "fail"}` instead of a result (seen 2026-11, per the code comment). flnd
   waits and asks again, in the API and while scrolling.
 - **flnd's own client refused.** Instagram may refuse the HTTP client (a 400, 401 or 403, or a
-  login wall), likely by its TLS fingerprint. On the first such refusal flnd warns once and
-  sends every later API call from inside the logged-in page instead. Handled since 2026-11-12.
+  login wall), likely by its TLS fingerprint. On the first such refusal flnd warns once,
+  "Instagram refused flnd's own client; sending its API calls from the page", and sends every
+  later API call from inside the logged-in page instead. The API reads a refusal's answer
+  itself (it isn't taken for a lost login, as a 401 or 403 from instagram.com otherwise is), so
+  this move is always tried first. Handled since 2026-11-12.
 - **Rotating claim.** Instagram sends a new `x-ig-set-www-claim` header, which must be echoed
   as `X-IG-WWW-Claim` on the next call. Handled since 2026-11-12.
 - **Refused story and highlight APIs.** When the story or `reels_media` API refuses, flnd
@@ -167,8 +181,8 @@ Example:
 - **Tab result names.** Instagram has used two names for the reels and reposts tabs' result
   lists; flnd reads either. The reels tab wraps each post as `{"media": post}`, and reposts may
   come as `repost_grid_items`. Handled since 2026-11-11.
-- **Pinned posts.** Up to 3 pinned posts sit above newer ones, so the "older than `--when`"
-  stop waits for 5 in a row. Handled since 2026-11-14.
+- **Pinned posts.** Up to 3 pinned posts sit above newer ones, so the engine's "older than
+  `--when`" stop waits for 5 in a row. Handled since 2026-11-14.
 - **Story ids** carry their owner after an `_`; only the part before it is used. Handled since
   2026-11-11.
 - **Image formats.** Older posts are served as WebP, newer as JPEG; the extension comes from the
@@ -189,4 +203,8 @@ Example:
   locked account stops the run.
 - **`tagged` and `highlights`** are read in full each run; only the newest-first categories stop
   early.
+- **A page-only post on a sync.** A post the media API can't give is listed after its tab's
+  scroll. When a sync stops early (5 saved in a row), the scroll closes before that, so such a
+  post waits for a run that reads the tab further (a plain `download`, or a sync once the
+  media API answers again).
 - **`ins:me`** needs a login.

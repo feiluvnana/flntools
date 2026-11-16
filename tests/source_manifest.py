@@ -65,7 +65,7 @@ def entries() -> dict[str, dict[str, Any]]:
             "domains": tuple(source.domains),
             "forms": tuple(source.forms),
             "categories": tuple(source.categories),
-            "logins": tuple(source.login_methods),
+            "logins": tuple(source.login.methods) if source.login is not None else (),
         }
     return found
 

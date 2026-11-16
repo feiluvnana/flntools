@@ -30,7 +30,7 @@ from flnd.engine import Engine, Report, TargetReport
 from flnd.source import Range
 from flnd.options import Options
 from flnd.site import LoginSite
-from flnd.source import SiteError, File, Post, Source, target
+from flnd.source import Login, SiteError, File, Post, Source, cookies as login_cookies, target
 from flnd import _run, _time as clock, _cookies as cookies
 from flnd._events import Failed, Progress
 from flnd._ui import ui
@@ -57,14 +57,14 @@ def make_source(code, route=None, *, files: Any = (), **declared):
         files: the files `posts` yields, each in a post of its own, kept as the site names them and
             filed in the target's own folder, keyed by their path (`aaa:a.jpg`); or a function of
             `(site, context)` giving them.
-        **declared: the class's other fields and methods, such as `needs`, `connect` or `prepare`.
+        **declared: the class's other fields and methods, such as `login`, `connect` or `sign`.
     """
     def listed(site, context):
         found: Any = files(site, context) if callable(files) else files
         return [Post(file.name or str(number), [file]) for number, file in enumerate(found)]
 
     if inspect.iscoroutinefunction(route):
-        @target("{user}")
+        @target(f"{code}:{{user}}")
         async def user(self, site, user):
             return await route(site)
 
@@ -73,7 +73,7 @@ def make_source(code, route=None, *, files: Any = (), **declared):
             for post in listed(site, context):
                 yield post
     else:
-        @target("{user}")
+        @target(f"{code}:{{user}}")
         def user(self, site, user):
             return route(site) if route is not None else None
 
@@ -81,9 +81,18 @@ def make_source(code, route=None, *, files: Any = (), **declared):
         def posts(self, site, context):
             yield from listed(site, context)
 
-    attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "folder": "", "key": "{path}",
-                  "user": user, "posts": posts, **declared}
+    attributes = {"code": code, "name": code.upper(), "domains": (f"{code}.example",), "api": 1, "folder": "",
+                  "key": "{path}", "user": user, "posts": posts, **declared}
     return type(f"Source_{code}", (Source,), attributes)
+
+
+def own_login(start=None, *, methods=("qr",), check=None):
+    """A source's own `Login`: `start(self, site, how)` logs in; `check(self, site)` says whether it did."""
+    attributes = {"methods": methods}
+    if start is not None:
+        attributes["start"] = start
+    attributes["check"] = check or (lambda self, site: "session" in site.secrets)
+    return type("OwnLogin", (Login,), attributes)()
 
 
 class EngineCase(unittest.TestCase):
@@ -182,8 +191,8 @@ class GroupsTest(EngineCase):
 
         sources = {"aaa": make_source("aaa"), "bbb": make_source("bbb")}
         engine = Engine(home=self.home, sources=sources)
-        chosen = [(Target("aaa", "user", "a"), Options(again=True)),
-                  (Target("aaa", "user", "b"), Options()), (Target("bbb", "user", "c"), Options())]
+        chosen = [(Target("aaa:a", kind="user"), Options(again=True)),
+                  (Target("aaa:b", kind="user"), Options()), (Target("bbb:c", kind="user"), Options())]
         stop = _run.Stop()
         with mock.patch.object(job, "download", download), mock.patch.object(_home, "open", opening):
             reports = engine._run(chosen, stop=stop)
@@ -218,10 +227,10 @@ class GroupsTest(EngineCase):
         self.assertEqual(str(report.targets[0].error), "tlg: the saved login no longer works")
 
     def test_a_group_whose_logged_in_raises_ends_its_rows_failed(self):
-        def logged_in(self, site):
+        def check(self, site):
             raise RuntimeError("can't read the login")
 
-        report = self.report(make_source("aaa", logged_in=logged_in), targets=["aaa:a"])
+        report = self.report(make_source("aaa", login=own_login(check=check)), targets=["aaa:a"])
         self.assertFalse(any(line.startswith("✓ aaa:a") for line in self.lines()), self.lines())
         self.assertEqual([str(target) for target in report.failed], ["aaa:a"])
 
@@ -242,7 +251,7 @@ class GroupsTest(EngineCase):
 class LoginStateTest(EngineCase):
     def test_not_logged_in_is_a_hint_and_public_access_goes_on(self):
         ran = []
-        self.run_engine(make_source("aaa", ran.append, needs=("sid",)), targets=["aaa:a"])
+        self.run_engine(make_source("aaa", ran.append, login=login_cookies("sid")), targets=["aaa:a"])
         self.assertEqual(len(ran), 1)
         self.assertIn("! aaa: not logged in, using public access; run flnd login aaa", self.lines())
 
@@ -251,7 +260,7 @@ class LoginStateTest(EngineCase):
         seen = []
         source = make_source("aaa", lambda site: seen.append((dict(site.cookies),
                                                               site.fetch("https://api.aaa.example/me").json)),
-                             needs=("sid",))
+                             login=login_cookies("sid"))
         self.routes["https://api.aaa.example/me"] = _net.reply(200, json={"me": 1})
         self.run_engine(source, targets=["aaa:a"])
         self.assertEqual(seen, [({"sid": "1", "other": "2"}, {"me": 1})])
@@ -260,7 +269,7 @@ class LoginStateTest(EngineCase):
 
     def test_the_cookies_the_site_rotated_are_saved_in_the_vault_after_the_group(self):
         self.log_in("aaa", sid="1", ct0="old")
-        source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"), needs=("sid",))
+        source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"), login=login_cookies("sid"))
         self.routes["https://api.aaa.example/me"] = _net.reply(200, json={}, headers=[
             ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
             ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
@@ -278,12 +287,12 @@ class LoginStateTest(EngineCase):
 
         self.routes["https://api.aaa.example/me"] = _net.reply(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
-        self.run_engine(make_source("aaa", route, needs=("sid",)), targets=["aaa:a"])
+        self.run_engine(make_source("aaa", route, login=login_cookies("sid")), targets=["aaa:a"])
         self.assertEqual(_home.load(self.home, "aaa")["ct0"], "new-ct0")
 
     def test_requires_login_fails_the_targets(self):
         ran = []
-        self.run_engine(make_source("aaa", ran.append, needs=("sid",), requires_login=True), targets=["aaa:a", "aaa:b"])
+        self.run_engine(make_source("aaa", ran.append, login=login_cookies("sid", required=True)), targets=["aaa:a", "aaa:b"])
         self.assertEqual(ran, [])
         for name in ("aaa:a", "aaa:b"):
             # The message, and the hint: what to do, never a traceback.
@@ -292,22 +301,28 @@ class LoginStateTest(EngineCase):
                          {"run flnd login aaa"})
 
     def test_download_never_asks(self):
-        # The `Site` a download gives has no `ask`, so a source can't stop to ask a question.
+        # The `Site` a download gives refuses `ask`, so a source can't stop to ask a question.
         asking = []
-        self.run_engine(make_source("aaa", lambda site: asking.append(hasattr(site, "ask"))), targets=["aaa:a"])
-        self.assertEqual(asking, [False])
+
+        def route(site):
+            try:
+                site.ask("Code")
+            except UsageError as error:
+                asking.append(str(error))
+
+        self.run_engine(make_source("aaa", route), targets=["aaa:a"])
+        self.assertEqual(asking, ["aaa: a run can't ask 'Code'"])
 
 
 class HttpTest(EngineCase):
     def test_one_client_per_group_with_headers_user_agent_and_signing(self):
-        def prepare(self, request, cookies):
+        def sign(self, request):
             request.headers["x-signed"] = "yes"
-            return request
 
         def run(site):
             site.fetch("https://api.aaa.example/a", headers={"x-extra": "1"})
 
-        source = make_source("aaa", run, user_agent="Agent/1", prepare=prepare)
+        source = make_source("aaa", run, user_agent="Agent/1", sign=sign)
         self.routes["https://api.aaa.example/a"] = _net.reply(200, json={})
         with mock.patch.object(_net, "Session", wraps=_net.Session) as made:
             self.run_engine(source, targets=["aaa:a", "aaa:b"])
@@ -463,11 +478,11 @@ class EngineLoginTest(EngineCase):
     def test_a_source_with_its_own_login_gets_an_asking_session(self):
         seen = []
 
-        def own_login(self, login, method):
-            seen.append((method, type(login)))
-            login.secrets["session"] = "s"
+        def start(self, site, method):
+            seen.append((method, type(site)))
+            site.secrets["session"] = "s"
 
-        source = make_source("aaa", login=own_login, login_methods=("qr",))
+        source = make_source("aaa", login=own_login(start))
         self.assertEqual(Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr"), "")
         self.assertEqual(seen, [("qr", LoginSite)])
         from flnd import _home
@@ -477,11 +492,11 @@ class EngineLoginTest(EngineCase):
     def test_interactive_only_during_login_in_a_terminal(self):
         seen = []
 
-        def own_login(self, login, method):
-            seen.append(login.interactive)
+        def start(self, site, method):
+            seen.append(site.interactive)
+            site.secrets["session"] = "s"
 
-        source = make_source("aaa", lambda site: seen.append(hasattr(site, "interactive")), login=own_login,
-                             login_methods=("qr",))
+        source = make_source("aaa", lambda site: seen.append(site.interactive), login=own_login(start))
         engine = Engine(home=self.home, sources={"aaa": source})
         with mock.patch.object(sys.stdin, "isatty", return_value=False):
             engine.login("aaa", "qr")
@@ -493,10 +508,10 @@ class EngineLoginTest(EngineCase):
     def test_ask_shows_its_description_in_the_question(self):
         answers = []
 
-        def own_login(self, login, method):
-            answers.append(login.ask("Phone number", description="With the country code, such as +44"))
+        def start(self, site, method):
+            answers.append(site.ask("Phone number", description="With the country code, such as +44"))
 
-        source = make_source("aaa", login=own_login, login_methods=("qr",))
+        source = make_source("aaa", login=own_login(start))
         with mock.patch.object(sys.stdin, "isatty", return_value=True), \
                 mock.patch("flnd._prompt.ask", return_value="1") as asked:
             Engine(home=self.home, sources={"aaa": source}).login("aaa", "qr")
@@ -528,7 +543,7 @@ class ApiTest(EngineCase):
         self.assertFalse(hasattr(Engine(home=self.home), "failed"))
 
     def test_report_files_failed_and_ok(self):
-        good, bad = Target("aaa", "user", "good"), Target("aaa", "user", "bad")
+        good, bad = Target("aaa:good", kind="user"), Target("aaa:bad", kind="user")
         report = Report((TargetReport(good, (Path("a.jpg"), Path("b.jpg")), 1),
                          TargetReport(bad, (Path("c.jpg"),), 0, error="blocked")))
         self.assertEqual((report.files, report.failed, report.ok), (3, (bad,), False))
@@ -547,12 +562,12 @@ class ApiTest(EngineCase):
         engine = self.engine(make_source("aaa", files=files))
         report = engine.download(["aaa:one", "aaa:bad"], categories="all")
         one, bad = report.targets
-        self.assertEqual((one.target, bad.target), (Target("aaa", "user", "one"), Target("aaa", "user", "bad")))
+        self.assertEqual((one.target, bad.target), (Target("aaa:one", kind="user"), Target("aaa:bad", kind="user")))
         self.assertEqual(sorted(path.name for path in one.written), ["a.jpg", "b.jpg"])
         self.assertTrue(all(path.is_file() for path in one.written))
         self.assertEqual((one.skipped, one.error, str(bad.error)), (0, None, "blocked"))
-        self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa", "user", "bad"),), False))
-        again = engine.download([Target("aaa", "user", "one")], categories="all")
+        self.assertEqual((report.files, report.failed, report.ok), (2, (Target("aaa:bad", kind="user"),), False))
+        again = engine.download([Target("aaa:one", kind="user")], categories="all")
         self.assertEqual((again.files, again.targets[0].skipped, again.ok), (0, 2, True))
 
     def test_a_category_that_lists_to_its_end_is_recorded_complete(self):
@@ -586,13 +601,13 @@ class ApiTest(EngineCase):
                                           until=datetime.date(2026, 6, 30)))
 
     def test_bad_values_are_value_errors_before_anything_starts(self):
-        from flnd.source import TIME_USAGE
+        from flnd.engine import TIME_USAGE, _span
 
         for text in ("2026-01-01", "2026-13-01,", "2026-06-30,2026-01-01", "yesterday,", "2026-01-01,2026-02-01,"):
             with self.subTest(time=text), self.assertRaisesRegex(UsageError, "^--time takes <since>,<until>"):
-                Range.parse(text)
-        self.assertEqual(Range.parse("*,2026-06-30"), Range(None, datetime.date(2026, 6, 30)))
-        self.assertEqual(Range.parse("2026-01-01,"), Range(datetime.date(2026, 1, 1), None))
+                _span(text)
+        self.assertEqual(_span("*,2026-06-30"), Range(None, datetime.date(2026, 6, 30)))
+        self.assertEqual(_span("2026-01-01,"), Range(datetime.date(2026, 1, 1), None))
         engine = self.engine(make_source("aaa"))
         cases: tuple[tuple[dict[str, Any], str], ...] = (
             ({"time": "2026-01-01"}, TIME_USAGE),
@@ -645,7 +660,7 @@ class ApiTest(EngineCase):
         listed.discard("c.jpg")
         report = engine.sync()
         [target] = report.targets
-        self.assertEqual(target.target, Target("aaa", "user", "a"))
+        self.assertEqual(target.target, Target("aaa:a", kind="user"))
         self.assertEqual(report.ok, True)
 
 
@@ -654,7 +669,7 @@ class ApiLoginTest(EngineCase):
 
     def setUp(self):
         super().setUp()
-        self.source = make_source("aaa", needs=("sid",))
+        self.source = make_source("aaa", login=login_cookies("sid"))
         self.engine = Engine(home=self.home, sources={"aaa": self.source, "bbb": make_source("bbb")})
         jar = cookies.Jar([{"name": "sid", "value": "s", "domain": ".aaa.example", "path": "/"},
                            {"name": "other", "value": "o", "domain": ".example.com", "path": "/"}])
@@ -663,7 +678,8 @@ class ApiLoginTest(EngineCase):
         self.addCleanup(patcher.stop)
 
     def test_a_browser_login_lives_only_in_the_vault(self):
-        self.assertEqual(self.engine.cookie_logins, ("aaa", "bbb"))
+        # A source without a login (bbb) has nothing to log in to.
+        self.assertEqual(self.engine.cookie_logins, ("aaa",))
         self.assertEqual(self.engine.login("aaa", "browser", browser="chrome"), "aaa: logged in from Chrome (1 cookie)")
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["flnd.db", "secret.key", "secrets.db"])
         self.assertEqual(self.engine.logins, {"aaa": "logged in"})
@@ -701,7 +717,7 @@ class ApiLoginTest(EngineCase):
         self.engine.login("aaa", "browser", browser="chrome")
         seen = []
         self.engine = Engine(home=self.home, sources={"aaa": make_source("aaa", lambda site: seen.append(dict(site.cookies)),
-                                                                         needs=("sid",))})
+                                                                         login=login_cookies("sid"))})
         self.assertTrue(self.engine.download(["aaa:a"], categories="all").ok)
         self.assertEqual(seen, [{"sid": "s"}])
         self.assertFalse(any("not logged in" in line for line in self.lines()))
@@ -713,8 +729,9 @@ class QueryAndLimitDryTest(EngineCase):
     def _query_source(self, *, closed: list[bool]):
         class Searchable(Source):
             code, name, domains = "srch", "Searchable", ("srch.example",)
+            api = 1
 
-            @target("{id:\\d+}")
+            @target("srch:{id:\\d+}")
             def post(self, site, id):
                 return id
 
@@ -726,21 +743,21 @@ class QueryAndLimitDryTest(EngineCase):
             def extra(self, site, id):
                 yield Post(id, [File(f"{CDN}/{id}_extra.jpg", name=f"{id}_extra.jpg")])
 
-            @target("list/{name}")
+            @target("srch:list/{name}", discovers=True)
             def listing(self, site, name):
-                yield Target("srch", "post", "1")
+                yield Target("srch:1", kind="post")
                 yield "srch:2"
 
-            @target("?{query}", from_=["photo"])
+            @target("srch?{query}")
             def query(self, site, query: str):
                 try:
                     if "action" in query:
-                        yield Target("srch", "post", "1")
-                        yield Target("srch", "post", "2")
-                        yield Target("srch", "post", "3")
+                        yield Target("srch:1", kind="post")
+                        yield Target("srch:2", kind="post")
+                        yield Target("srch:3", kind="post")
                     if "comedy" in query:
-                        yield Target("srch", "post", "2")
-                        yield Target("srch", "post", "4")
+                        yield Target("srch:2", kind="post")
+                        yield Target("srch:4", kind="post")
                 finally:
                     closed.append(True)
 
@@ -810,8 +827,9 @@ class QueryAndLimitDryTest(EngineCase):
     def test_limit_on_normal_target_and_target_yielding_route(self):
         class Multi(Source):
             code, name, domains = "mlt", "Multi", ("mlt.example",)
+            api = 1
 
-            @target("{user}")
+            @target("mlt:{user}")
             def user(self, site, user):
                 return user
 
@@ -830,7 +848,7 @@ class QueryAndLimitDryTest(EngineCase):
         closed = []
         src = self._query_source(closed=closed)
         engine2 = Engine(home=self.home, sources={"srch": src})
-        report2 = engine2.download(["srch:list/all"], limit=1)
+        report2 = engine2.download(["srch:list/all"], categories="all", limit=1)
         self.assertTrue(report2.ok)
         self.assertTrue((self.target_dir("srch", "1") / "photo" / "1.jpg").is_file())
         self.assertFalse((self.target_dir("srch", "2") / "photo" / "2.jpg").exists())
@@ -842,8 +860,9 @@ class SyncedQueryTest(EngineCase):
     def _paged_source(self, pages, *, closed, seen_pages, fail_on=None):
         class Paged(Source):
             code, name, domains = "pgd", "Paged", ("pgd.example",)
+            api = 1
 
-            @target("{id:\\d+}")
+            @target("pgd:{id:\\d+}")
             def post(self, site, id):
                 return id
 
@@ -851,7 +870,7 @@ class SyncedQueryTest(EngineCase):
             def photo(self, site, id):
                 yield Post(id, [File(f"{CDN}/{id}.jpg", name=f"{id}.jpg")])
 
-            @target("?{query}", from_=["photo"])
+            @target("pgd?{query}")
             def query(self, site, query: str):
                 try:
                     for page_num, ids in enumerate(pages):
@@ -859,7 +878,7 @@ class SyncedQueryTest(EngineCase):
                         if fail_on is not None and query == fail_on:
                             raise RuntimeError("search failed")
                         for item_id in ids:
-                            yield Target("pgd", "post", str(item_id))
+                            yield Target(f"pgd:{item_id}", kind="post")
                 finally:
                     closed.append(True)
 

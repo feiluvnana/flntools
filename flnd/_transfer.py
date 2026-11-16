@@ -2,7 +2,7 @@
 
 Who calls it: a target's downloads (`flnd.job.Downloads`), one coroutine per file on the run's
 loop. What it calls: the source's `flnd._net.Client` for URLs, `flnd._files.part` for the part,
-`flnd._tools` for ffmpeg, and `flnd.common.paths` to check that a file is the media it should be.
+`flnd._tools` for ffmpeg, and `flnd._files` to tell that a file is the media it should be.
 
 The flow of one file (`save`):
 1. open and lock `<dest>.part` once, before any request, so a file another run is saving raises
@@ -35,7 +35,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
-from flnd.common import paths
 from flnd.errors import Error, SiteError
 from flnd.source import Fetch, File
 from flnd import _files, _net, _text, _time, _tools
@@ -66,7 +65,7 @@ async def save(client: _net.Client, file: File, dest: Path, *, label: str,
         dest: where it lands; the extension may change to what its content calls for.
         label: the progress bar's label.
         headers: extra request headers.
-        kind: what the file must be (`paths.IMAGE`, …, `paths.SNIFF`); None checks nothing.
+        kind: what the file must be (`_files.IMAGE`, …, `_files.SNIFF`); None checks nothing.
         received: filled with the file response's headers.
         stop: set to stop the transfer; None uses the client's.
         day: the post's day, which becomes the file's modified time (noon UTC); None uses the
@@ -433,7 +432,7 @@ def _place(held: _files.Part, kind: str, known: bool) -> None:
 
     Args:
         held: the finished part; its first bytes are read through its descriptor.
-        kind: `paths.SNIFF`, or what the file must be (`paths.IMAGE`, …).
+        kind: `_files.SNIFF`, or what the file must be (`_files.IMAGE`, …).
         known: whether the server or the source gave the size.
 
     Raises:
@@ -441,7 +440,7 @@ def _place(held: _files.Part, kind: str, known: bool) -> None:
     """
     try:
         head = held.head()
-        if kind == paths.SNIFF:
+        if kind == _files.SNIFF:
             held.dest = _sniffed(head, held.dest, known)
         else:
             held.dest = _as_media(head, held.dest, kind, known)
@@ -452,7 +451,7 @@ def _place(held: _files.Part, kind: str, known: bool) -> None:
 
 def _as_media(head: bytes, dest: Path, kind: str, known: bool) -> Path:
     """Where a photo or video starting with `head` goes; raises on a web page."""
-    extension = paths.checked(head, kind, decode=not known)
+    extension = checked(head, kind, decode=not known)
     if extension is None or same_extension(extension, dest.suffix):
         return dest
     return dest.with_suffix(extension)
@@ -472,15 +471,15 @@ def _sniffed(head: bytes, dest: Path, known: bool) -> Path:
     Raises:
         SiteError: the content is a web page.
     """
-    extension = paths.sniff(head)
-    if extension in paths.PAGES:
-        raise paths.not_media("a file")
+    extension = _files.sniff(head)
+    if extension in _files.PAGES:
+        raise not_media("a file")
     # `kind_of` reads a name's extension, and ".mp4" alone is a name without one.
-    kind = paths.kind_of(f"file{extension}") if extension else None
+    kind = _files.kind_of(f"file{extension}") if extension else None
     if extension is None or kind is None:
         # An archive, a document, or nothing `sniff` knows: kept as it came.
         return dest
-    paths.checked(head, kind, decode=not known)
+    checked(head, kind, decode=not known)
     return dest.with_name(dest.name + extension)
 
 
@@ -602,3 +601,42 @@ class _Stream:
         if self._stop is not None and self._stop.is_set():
             raise KeyboardInterrupt
         self._row.advance(n)
+
+
+# What a web page where media was expected says to do: such a page is most often a login wall.
+NOT_MEDIA_HINT = "it is usually a login wall: run flnd login <source>, then try again"
+
+
+def not_media(noun: str) -> SiteError:
+    """The error for a web page or JSON where media was expected: a login wall or error page.
+
+    It isn't retried: the same request gets the same page until something changes.
+
+    Args:
+        noun: what was expected, as the message says it ("a photo", "a file").
+
+    Returns:
+        A `SiteError` saying so, with a hint to log in again.
+    """
+    return SiteError(f"got a web page instead of {noun}", hint=NOT_MEDIA_HINT)
+
+
+def checked(path: Path | bytes, kind: str, *, decode: bool = True) -> str | None:
+    """The extension a media file calls for, once validated not a web page.
+
+    Args:
+        path: the file, or its first 64 bytes.
+        kind: what it must be (`IMAGE`, `VIDEO`, `AUDIO`), named in the error.
+        decode: unused, kept for the callers' signature.
+
+    Returns:
+        The extension its content calls for, or None when unknown.
+
+    Raises:
+        SiteError: the content is a web page or JSON.
+    """
+    del decode
+    extension = _files.sniff(path)
+    if extension in _files.PAGES:
+        raise not_media(_files.NOUNS.get(kind, kind))
+    return extension

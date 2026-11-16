@@ -34,7 +34,7 @@ from flnd.engine import Engine
 from flnd import _home
 from flnd.options import Options
 from flnd.source import (
-    File, LoginError, NotFound, Post, SiteError, Source, SourceError, Target, pages, target,
+    File, LoginError, NotFound, Post, SiteError, Source, SourceError, Target, target,
 )
 from flnd import _run, _time
 from flnd._ui import ui
@@ -106,8 +106,10 @@ class CategoriesTest(JobCase):
 
         class Tagged(Source):
             code, name, domains = "tgd", "Tagged", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("tgd:{user}")
             def user(self, site, user):
                 return user
 
@@ -171,8 +173,10 @@ class SavedTest(JobCase):
 
         class Lazy(Source):
             code, name, domains = "lzy", "Lazy", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("lzy:{user}")
             def user(self, site, user):
                 return user
 
@@ -192,9 +196,11 @@ class SavedTest(JobCase):
         listed = []
 
         class Carousel(Source):
-            code, name, domains, key = "crs", "Carousel", ("example.com",), "{id}_{num}"
+            code, name, domains, key = "crs", "Carousel", ("example.com",), "{post}_{num}"
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("crs:{user}")
             def user(self, site, user):
                 return user
 
@@ -219,8 +225,10 @@ class SavedTest(JobCase):
     def test_failed_file_is_retried_directly_under_sync(self):
         class Feed(Source):
             code, name, domains = "fed", "Feed", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("fed:{user}")
             def user(self, site, user):
                 return user
 
@@ -243,8 +251,10 @@ class SavedTest(JobCase):
     def test_a_file_queued_twice_is_downloaded_once(self):
         class Twice(Source):
             code, name, domains = "twc", "Twice", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("twc:{user}")
             def user(self, site, user):
                 return user
 
@@ -259,8 +269,10 @@ class SavedTest(JobCase):
     def test_a_file_in_two_categories_is_downloaded_once(self):
         class Both(Source):
             code, name, domains = "bth", "Both", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("bth:{user}")
             def user(self, site, user):
                 return user
 
@@ -288,10 +300,11 @@ class SavedTest(JobCase):
     def test_two_files_with_one_path_are_downloaded_once(self):
         class Same(Source):
             code, name, domains = "sme", "Same", ("example.com",)
+            api = 1
             folder = ""
             filename = "photo"
 
-            @target("{user}")
+            @target("sme:{user}")
             def user(self, site, user):
                 return user
 
@@ -313,9 +326,11 @@ class FilesTest(JobCase):
     def test_text_files_are_written_whole_and_unkeyed(self):
         class Notes(Source):
             code, name, domains = "nts", "Notes", ("example.com",)
-            folder = "{id}"
+            api = 1
+            filename = "{date}_{post}{index}"
+            folder = "{post}"
 
-            @target("{user}")
+            @target("nts:{user}")
             def user(self, site, user):
                 yield Post("5930", [File.text("info.md", "# Title\n"), File([f"{CDN}/a.7z", f"{CDN}/b.7z"],
                                                                             name="loi-5930.7z")])
@@ -332,8 +347,10 @@ class FilesTest(JobCase):
 
         class Blob(Source):
             code, name, domains = "blb", "Blob", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("blb:{user}")
             def user(self, site, user):
                 yield Post("9", [File(f"{CDN}/blob")], date=1767312000)
 
@@ -387,7 +404,7 @@ class TimeTest(unittest.TestCase):
     """`--time` and the `newest_first` early stop, on a `FakeSite`: nothing is downloaded."""
 
     def listed(self, source, options):
-        target = Target(source.code, "user", "example_user")
+        target = Target(f"{source.code}:example_user", kind="user")
         site = FakeSite(target, options=options)
         return [post.id for post in job.posts(source(), site, target, options, run_async=lambda coro: None)]
 
@@ -396,8 +413,10 @@ class TimeTest(unittest.TestCase):
 
         class Feed(Source):
             code, name, domains = "fed", "Feed", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("fed:{user}")
             def user(self, site, user):
                 return user
 
@@ -425,8 +444,10 @@ class TimeTest(unittest.TestCase):
     def test_until_and_undated_posts(self):
         class Dated(Source):
             code, name, domains = "dtd", "Dated", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("dtd:{user}")
             def user(self, site, user):
                 yield Post("late", date="2026-07-01")
                 yield Post("undated")
@@ -436,7 +457,11 @@ class TimeTest(unittest.TestCase):
 
 
 class SyncStopTest(JobCase):
-    """`sync` stops a `newest_first` category after 5 saved posts in a row, only once its listing has reached its end."""
+    """`sync` stops a `newest_first` category after 5 saved posts in a row, only once its listing has reached its end.
+
+    The engine's sooner stop, at the head an earlier run saw, is `HeadTest`'s; these tests forget the head first
+    (`forget_head`), so the run of 5 is what stops them.
+    """
 
     def setUp(self):
         super().setUp()
@@ -448,9 +473,11 @@ class SyncStopTest(JobCase):
 
         class Feed(Source):
             code, name, domains = "fed", "Feed", ("example.com",)
-            key = "{id}"
+            api = 1
+            filename = "{date}_{post}{index}"
+            key = "{post}"
 
-            @target("{user}")
+            @target("fed:{user}")
             def user(self, site, user):
                 return user
 
@@ -475,12 +502,16 @@ class SyncStopTest(JobCase):
     def forget_record(self):
         self.sql("UPDATE targets SET complete = '{}' WHERE key = ?", "fed:example_user")
 
+    def forget_head(self):
+        self.sql("UPDATE targets SET heads = '{}' WHERE key = ?", "fed:example_user")
+
     def test_sync_stops_after_5_saved_posts_in_a_row_with_a_record_and_closes_the_listing(self):
         self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
         self.assertEqual(self.record(), {"posts": datetime.date.today().isoformat()})
         self.ids = ["n1", "n2", *self.ids]
         self.listed.clear()
         self.finished.clear()
+        self.forget_head()
         report = self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, ["n1", "n2", "p0", "p1", "p2", "p3", "p4"])
         self.assertEqual(self.finished, [True])
@@ -493,12 +524,14 @@ class SyncStopTest(JobCase):
         self.assertTrue(self.engine.download(["fed:example_user"], categories="all").ok)
         self.assertEqual(self.record(), {"posts": datetime.date.today().isoformat()})
         self.listed.clear()
+        self.forget_head()
         report = self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
         self.assertEqual(report.files, 0)
         self.assertIn("posts", self.record())
         self.assertEqual(fakes.targets(self.home)["fed:example_user"].cursors, {})
         self.listed.clear()
+        self.forget_head()
         report2 = self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
         self.assertEqual(report2.files, 0)
@@ -509,9 +542,11 @@ class SyncStopTest(JobCase):
 
         class Two(Source):
             code, name, domains = "two", "Two", ("example.com",)
-            key = "{id}"
+            api = 1
+            filename = "{date}_{post}{index}"
+            key = "{post}"
 
-            @target("{user}")
+            @target("two:{user}")
             def user(self, site, user):
                 return user
 
@@ -545,6 +580,7 @@ class SyncStopTest(JobCase):
         self.ids = ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4", "p5", "p6", "p7"]
         self.post_files = {"none1": [], "none2": [], "text1": [text]}
         self.listed.clear()
+        self.forget_head()
         self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, ["p0", "none1", "p1", "text1", "p2", "none2", "p3", "p4"])
         self.assertEqual(self.finished[-1], True)
@@ -557,6 +593,7 @@ class SyncStopTest(JobCase):
         for name in ("p2", "p3"):
             self.sql("DELETE FROM files WHERE key = ?", f"fed:{name}")
         self.listed.clear()
+        self.forget_head()
         report = self.engine.sync(["fed:example_user"])
         self.assertEqual(len(report.targets[0].written), 2)
         # p0, p1 saved, p2 and p3 fetched again, then p4..p7: 4 saved in a row never stop it.
@@ -571,6 +608,7 @@ class SyncStopTest(JobCase):
         # The listing reached its end, so it is recorded now, and the next sync stops.
         self.assertIsNotNone(self.record())
         self.listed.clear()
+        self.forget_head()
         self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, self.ids[:5])
 
@@ -588,6 +626,7 @@ class SyncStopTest(JobCase):
     def test_download_stops_at_saved_posts_by_default_and_again_lists_all(self):
         self.engine.download(["fed:example_user"], categories="all")
         self.listed.clear()
+        self.forget_head()
         report = self.engine.download(["fed:example_user"], categories="all")
         self.assertEqual(self.listed, self.ids[:5])
         self.assertEqual((report.files, report.targets[0].skipped), (0, 5))
@@ -596,13 +635,27 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, self.ids)
         self.assertEqual((report_again.files, report_again.targets[0].skipped), (0, 8))
 
+    def test_stop_after_in_the_config_changes_the_run_of_5(self):
+        self.engine.download(["fed:example_user"], categories="all")
+        self.home.joinpath("config.toml").write_text("[sources.fed]\nstop_after = 3\n")
+        self.listed.clear()
+        self.forget_head()
+        self.engine.sync(["fed:example_user"])
+        self.assertEqual(self.listed, self.ids[:3])
+        self.home.joinpath("config.toml").write_text("[sources.fed]\nstop_after = 0\n")
+        report = self.engine.sync(["fed:example_user"])
+        self.assertIsInstance(report.targets[0].error, UsageError)
+        self.assertIn("[sources.fed] stop_after is a whole number of at least 1", str(report.targets[0].error))
+
     def test_a_feed_that_is_not_newest_first_is_never_stopped(self):
         listed = []
 
         class Plain(Source):
             code, name, domains = "pln", "Plain", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("pln:{user}")
             def user(self, site, user):
                 return user
 
@@ -625,9 +678,11 @@ class AsyncTest(JobCase):
 
         class Chats(Source):
             code, name, domains = "cht", "Chats", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
             limits = {"cdn.example": 1}
 
-            @target("{chat}")
+            @target("cht:{chat}")
             async def chat(self, site, chat):
                 threads.append(threading.current_thread().name)
                 return chat
@@ -647,8 +702,10 @@ class FailureTest(JobCase):
     def test_a_category_that_raises_fails_the_target(self):
         class Broken(Source):
             code, name, domains = "brk", "Broken", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("brk:{user}")
             def user(self, site, user):
                 return user
 
@@ -662,7 +719,7 @@ class FailureTest(JobCase):
         self.assertEqual(self.failures(), ["brk:example_user: unexpected RuntimeError: the feed broke"])
         self.assertEqual(self.events[-1].error.hint, "this is a bug; run with -v and report it")
         report = self.report(Broken, targets=["brk:example_user"])
-        self.assertEqual(report.failed, (Target("brk", "user", "example_user"),))
+        self.assertEqual(report.failed, (Target("brk:example_user", kind="user"),))
         self.assertIsInstance(report.targets[0].error, SourceError)
         self.assertIsInstance(report.targets[0].error.__cause__, RuntimeError)
 
@@ -670,9 +727,11 @@ class FailureTest(JobCase):
     def test_a_site_error_fails_only_its_target_and_a_login_error_stops_the_source(self):
         class Errors(Source):
             code, name, domains = "err", "Errors", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
             folder = ""
 
-            @target("{user}")
+            @target("err:{user}")
             def user(self, site, user):
                 if user == "gone":
                     raise NotFound("HTTP 404 for https://example.com/gone", status=404)
@@ -872,12 +931,14 @@ class CtrlCTest(JobCase):
 
         class Slow(Source):
             code, name, domains = "slw", "Slow", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
             folder = ""
             # One download at a time: post 1's runs, posts 2 to 4 wait in the queue (4 times as
             # many as run, with the target's places held to 1 below).
             limits = {"cdn.example": 1}
 
-            @target("{user}")
+            @target("slw:{user}")
             def user(self, site, user):
                 return user
 
@@ -928,9 +989,11 @@ class CtrlCTest(JobCase):
 
         class Big(Source):
             code, name, domains = "big", "Big", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
             folder = ""
 
-            @target("{user}")
+            @target("big:{user}")
             def user(self, site, user):
                 return user
 
@@ -981,9 +1044,11 @@ class CtrlCTest(JobCase):
 
         class Big(Source):
             code, name, domains = "big", "Big", ("example.com",)
+            api = 1
+            filename = "{date}_{post}{index}"
             folder = ""
 
-            @target("{user}")
+            @target("big:{user}")
             def user(self, site, user):
                 return user
 
@@ -1010,15 +1075,105 @@ class CtrlCTest(JobCase):
         self.assertEqual(len(self.fetched(f"{CDN}/big.7z")), 1)
 
 
-class BrowserUpFrontTest(JobCase):
-    """Each source declares `browser = True` only when it needs a browser."""
+class HeadTest(JobCase):
+    """Smart sync, the head: a sync stops at the newest post an earlier run saw, and the post after it."""
 
-    def test_the_seven_sources(self):
-        from flnd.sources import SOURCES
+    def setUp(self):
+        super().setUp()
+        # Each post's day: a later one is newer; a pinned post sits on top with an older day.
+        self.posts = [("p3", 3), ("p2", 2), ("p1", 1), ("p0", 1)]
+        self.listed = []
+        test = self
 
-        needs = {code: source.browser for code, source in SOURCES.items()}
-        self.assertEqual(needs, {"tik": True, "fbk": True, "ins": True, "twt": True, "loi": False, "tlg": False,
-                                 "mht": False})
+        class Feed(Source):
+            code, name, domains, api, key = "hed", "Heads", ("example.com",), 1, "{post}"
+
+            @target("hed:{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category(newest_first=True)
+            def posts(self, site, user):
+                for post_id, day in list(test.posts):
+                    test.listed.append(post_id)
+                    yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")], date=datetime.date(2026, 1, day))
+
+        self.engine = Engine(home=self.home, sources={"hed": Feed})
+
+    def heads(self):
+        return fakes.targets(self.home)["hed:example_user"].heads
+
+    def test_a_full_listing_keeps_its_newest_post_and_a_sync_stops_after_it(self):
+        self.assertTrue(self.engine.download(["hed:example_user"], categories="all").ok)
+        self.assertEqual(self.heads(), {"posts": "p3"})
+        self.listed.clear()
+        report = self.engine.sync(["hed:example_user"])
+        # The head and the post after it: nothing new, two posts read, not five.
+        self.assertEqual(self.listed, ["p3", "p2"])
+        self.assertEqual(report.files, 0)
+        self.assertIn("* posts: nothing new", self.lines())
+
+    def test_new_posts_above_the_head_are_saved_and_become_the_head(self):
+        self.engine.download(["hed:example_user"], categories="all")
+        self.posts = [("n1", 5), ("n0", 4), *self.posts]
+        self.listed.clear()
+        report = self.engine.sync(["hed:example_user"])
+        self.assertEqual(self.listed, ["n1", "n0", "p3", "p2"])
+        self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
+        self.assertEqual(self.heads(), {"posts": "n1"})
+
+    def test_a_head_pinned_above_new_posts_does_not_end_the_sync(self):
+        self.engine.download(["hed:example_user"], categories="all")
+        # The site pinned the old head above two new posts.
+        self.posts = [("p3", 3), ("n1", 5), ("n0", 4), ("p2", 2), ("p1", 1), ("p0", 1)]
+        self.listed.clear()
+        report = self.engine.sync(["hed:example_user"])
+        self.assertEqual(sorted(path.stem for path in report.targets[0].written), ["n0_0", "n1_0"])
+        # The newest post by its day is the head now, not the pinned one listed first.
+        self.assertEqual(self.heads(), {"posts": "n1"})
+
+    def test_parts_of_one_post_count_once(self):
+        # A source yielding a photo post as one post per photo, all of one id (TikTok's).
+        self.posts = [("c1", 5), ("c1", 5), ("c1", 5), ("p3", 3)]
+        report = self.engine.download(["hed:example_user"], categories="all", limit=1)
+        self.assertEqual(self.listed, ["c1", "c1", "c1", "p3"])
+        self.assertEqual(len(report.targets[0].written), 1)
+
+    def test_a_listing_cut_short_keeps_the_head_it_had(self):
+        self.engine.download(["hed:example_user"], categories="all")
+        self.posts = [("n1", 5), *self.posts]
+        self.engine.download(["hed:example_user"], categories="all", limit=1)
+        self.assertEqual(self.heads(), {"posts": "p3"})
+
+
+class UnkeyedLazyPostTest(JobCase):
+    """A lazy post keyed by its files' paths (LOIBUS's archives) isn't listed again once saved."""
+
+    def test_its_files_function_runs_once(self):
+        calls = []
+
+        class Paths(Source):
+            code, name, domains, api, key = "pth", "Paths", ("example.com",), 1, ""
+
+            @target("pth:{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def archive(self, site, user):
+                def files():
+                    calls.append(user)
+                    return [File(f"{CDN}/a.7z", name="a.7z")]
+
+                yield Post("5930", files)
+
+        engine = Engine(home=self.home, sources={"pth": Paths})
+        engine.download(["pth:example_user"], categories="all")
+        engine.download(["pth:example_user"], categories="all")
+        self.assertEqual(calls, ["example_user"])
+        # `--again` asks again.
+        engine.download(["pth:example_user"], categories="all", again=True)
+        self.assertEqual(len(calls), 2)
 
 
 class ResumeTest(JobCase):
@@ -1038,27 +1193,33 @@ class ResumeTest(JobCase):
         test = self
 
         class Paged(Source):
-            code, name, domains, key = "pgd", "Paged", ("example.com",), "{id}"
+            code, name, domains, key = "pgd", "Paged", ("example.com",), "{post}"
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("pgd:{user}")
             def user(self, site, user):
                 return user
 
             @user.category(newest_first=True)
             def posts(self, site, user):
-                def fetch(cursor):
-                    test.cursors_fetched.append(cursor)
-                    if cursor is not None and test.refuse:
-                        raise SiteError("stale cursor", status=400)
-                    if test.fail_on is not None and cursor == test.fail_on:
-                        raise SiteError("connection reset")
-                    return test.feed[cursor]
-
-                for ids, _ in pages(fetch, lambda page: page[1]):
-                    for post_id in ids:
+                # `site.pages` sends the cursor as `cursor=`, and the engine resumes it.
+                for page in site.pages(f"{API}/feed", cursor="next"):
+                    for post_id in page["ids"]:
                         yield Post(post_id, [File(f"{CDN}/{post_id}.jpg")],
                                    date=datetime.date(2026, 1, 1))
 
+        def feed(request):
+            cursor = dict(request.url.params).get("cursor")
+            test.cursors_fetched.append(cursor)
+            if cursor is not None and test.refuse:
+                return _net.reply(400, json={"error": "stale cursor"})
+            if test.fail_on is not None and cursor == test.fail_on:
+                return _net.reply(500, json={"error": "connection reset"})
+            ids, following = test.feed[cursor]
+            return _net.reply(200, json={"ids": ids, "next": following})
+
+        self.routes[f"{API}/feed"] = feed
         self.engine = Engine(home=self.home, sources={"pgd": Paged})
 
     def row(self):
@@ -1134,14 +1295,15 @@ class MemoryTest(JobCase):
 
         class Feed(Source):
             code, name, domains = "mem", "Memory", ("example.com",)
-            folder, filename, key = "", "{date}_{id}", "{id}_{num}"
+            api = 1
+            folder, filename, key = "", "{date}_{post}", "{post}_{num}"
 
             if fn is not None:
                 def date(self, site, post):
                     assert fn is not None
                     return fn(post)
 
-            @target("{user}")
+            @target("mem:{user}")
             def user(self, site, user):
                 return user
 
@@ -1230,9 +1392,11 @@ class LinkTest(JobCase):
 
     def feed(self, posts, reels):
         class Tabs(Source):
-            code, name, domains, key = "lnk", "Links", ("example.com",), "{id}_{num}"
+            code, name, domains, key = "lnk", "Links", ("example.com",), "{post}_{num}"
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("lnk:{user}")
             def user(self, site, user):
                 return user
 
@@ -1290,7 +1454,7 @@ class BoardTest(unittest.TestCase):
         self.dest = io.StringIO()
         self.enterContext(ui.scope(dest=self.dest, width=200, color=False))
         self.enterContext(_time.use(_time.Fake()))
-        self.target = Target("aaa", "user", "example_user")
+        self.target = Target("aaa:example_user", kind="user")
 
     def lines(self):
         return self.dest.getvalue().splitlines()
@@ -1307,7 +1471,7 @@ class BoardTest(unittest.TestCase):
         self.assertEqual((board.totals(self.target).saved, board.totals(self.target).failed), (1, 1))
 
     def test_totals_and_ending_a_target(self):
-        other = Target("aaa", "user", "example_creator")
+        other = Target("aaa:example_creator", kind="user")
         with ui.group() as rows:
             board = job.Board(rows)
             board.count(self.target, "posts", found=1, skipped=1)

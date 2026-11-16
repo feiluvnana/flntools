@@ -6,8 +6,9 @@ changes a word's meaning, the entry says so.
 ## Target
 Something to download. It is written `<source>:<what>`, as in `ins:example_user`, or given as a
 link, as in `https://www.instagram.com/example_user/`. A search is written `<source>?<words>`, as
-in `mht?example`. In code, a target is `flnd.source.Target(source, kind, value)`: the source's
-code, the name of the route that read it, and the captured value (`example_user`).
+in `mht?example`. In code, a target is `flnd.source.Target(text)`; resolving it sets its
+`kind`, the name of the route that reads it, so a resolved target has its source's code, its
+kind and its captured value (`example_user`).
 
 ## Source
 The code for one site, as one `flnd.source.Source` subclass in `flnd/sources/<code>.py`. Its

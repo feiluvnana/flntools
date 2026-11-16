@@ -138,9 +138,11 @@ class LinkRowTest(ChainCase):
         clip = Post("V1", [File(f"{CDN}/a.jpg", name="V1.jpg")])
 
         class Tabs(Source):
-            code, name, domains, key = "lnk", "Links", ("example.com",), "{id}_{num}"
+            code, name, domains, key = "lnk", "Links", ("example.com",), "{post}_{num}"
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("lnk:{user}")
             def user(self, site, user):
                 return user
 
@@ -172,9 +174,11 @@ class LinkRowTest(ChainCase):
 class SidecarTest(ChainCase):
     def source_with_fields(self):
         class Captioned(Source):
-            code, name, domains, key = "cap", "Captions", ("example.com",), "{id}_{num}"
+            code, name, domains, key = "cap", "Captions", ("example.com",), "{post}_{num}"
+            api = 1
+            filename = "{date}_{post}{index}"
 
-            @target("{user}")
+            @target("cap:{user}")
             def user(self, site, user):
                 return user
 
