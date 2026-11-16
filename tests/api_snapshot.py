@@ -159,7 +159,7 @@ def _add(name: str, value: Any, names: dict[str, ApiName], owner: Any = None) ->
     elif inspect.isfunction(value):
         names[name] = ApiName(name, "function", value, owner, detail=_signature(value))
     else:
-        names[name] = ApiName(name, "value", value, owner, detail=f": {builtins.type(value).__name__}")
+        names[name] = ApiName(name, "value", value, owner, detail=f": {_kind(value)}")
 
 
 def _add_stand_in(name: str, value: Any, backing: types.ModuleType, names: dict[str, ApiName]) -> None:
@@ -387,6 +387,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sys.stdout.write(api_text())
     return 0
+
+
+def _kind(value: object) -> str:
+    """The name of a value's type, the same on every supported Python.
+
+    A `X | Y` alias is a `typing.Union` on 3.14 but a private `_UnionGenericAlias` on 3.11, and the
+    snapshot must not change with the interpreter, so both read as `Union`.
+    """
+    name = builtins.type(value).__name__
+    return "Union" if name in ("Union", "_UnionGenericAlias", "UnionType") else name
 
 
 if __name__ == "__main__":
