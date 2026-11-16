@@ -25,7 +25,7 @@ class Error(shared.Error):
     """The base of every error `shared.text` raises."""
 
 
-def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 255) -> str:
+def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 200) -> str:
     """Turn text into a file name safe on Windows, macOS, and Linux."""
     cleaned = "".join(ch for ch in name if unicodedata.category(ch) != "Cf")
     cleaned = UNSAFE_CHARACTERS.sub("_", cleaned)
@@ -44,15 +44,18 @@ def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 255) -> 
 
 
 def redact(url: str) -> str:
-    """Strip userinfo, query, and fragment from a URL."""
-    parts = urlsplit(url)
-    if not parts.netloc:
-        return urlunsplit((parts.scheme, "", parts.path, "", ""))
-    host = parts.hostname or ""
-    if ":" in host:
-        host = f"[{host}]"
-    netloc = f"{host}:{parts.port}" if parts.port is not None else host
-    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    """Strip userinfo, query, and fragment from a URL; never raises, even on a broken one."""
+    try:
+        parts = urlsplit(url)
+        if not parts.netloc:
+            return urlunsplit((parts.scheme, "", parts.path, "", ""))
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port is not None else host
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except ValueError:
+        return _rough_redact(url)
 
 
 def size(n: float) -> str:
@@ -89,3 +92,13 @@ def fold(text: str) -> str:
     norm = unicodedata.normalize("NFKD", text.replace("đ", "d").replace("Đ", "D"))
     stripped = "".join(ch for ch in norm if not unicodedata.combining(ch))
     return " ".join(stripped.casefold().split())
+
+
+def _rough_redact(url: str) -> str:
+    """`url` up to its query or fragment, without userinfo, for a URL `urlsplit` rejects."""
+    head = re.split(r"[?#]", url, maxsplit=1)[0]
+    scheme, sep, rest = head.partition("://")
+    if not sep:
+        return head
+    authority, slash, path = rest.partition("/")
+    return f"{scheme}{sep}{authority.rpartition('@')[2]}{slash}{path}"

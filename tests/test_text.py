@@ -37,6 +37,14 @@ class ScrubUrlTest(unittest.TestCase):
         )
 
 
+class RedactBrokenUrlTest(unittest.TestCase):
+    def test_a_url_urlsplit_rejects_is_cut_at_its_query_without_userinfo(self):
+        self.assertEqual(text.redact("http://user:pw@example.com:99999/a?sig=1"),
+                         "http://example.com:99999/a")
+        self.assertEqual(text.redact("http://[::1/a?sig=1#f"), "http://[::1/a")
+        self.assertEqual(text.redact("http://user@[::1/a"), "http://[::1/a")
+
+
 class SizeTest(unittest.TestCase):
     def test_units_and_rounding(self):
         self.assertEqual(text.size(0), "0.0 B")
@@ -109,7 +117,7 @@ class FilenameTest(unittest.TestCase):
         name = text.filename("é" * 10, max_bytes=5)
         self.assertEqual(name, "éé")
         self.assertLessEqual(len(name.encode()), 5)
-        self.assertEqual(text.filename("a" * 300), "a" * 255)
+        self.assertEqual(text.filename("a" * 300), "a" * 200)
 
     def test_reserved_windows_names(self):
         for reserved in ("CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "LPT9",

@@ -31,6 +31,17 @@ class StageTest(FsCase):
         self.assertEqual(self.dest.read_text(), "new")
         self.assertEqual(self.names(), ["a.txt"])
 
+    def test_a_long_name_gets_a_short_stage_with_a_digest(self):
+        dest = self.folder / ("Tiếng Việt 日本語 " * 10 + ".mp4")
+        self.assertLessEqual(len(dest.name.encode()), 255)
+        with fs.stage(dest) as temp:
+            self.assertLessEqual(len((temp.name + ".lock").encode()), 255)
+            self.assertRegex(temp.name, r"^\..+\.[0-9a-f]{8}\.stage$")
+            temp.write_text("x")
+        with fs.stage(dest) as again:
+            self.assertEqual(again, temp)
+        self.assertEqual(dest.read_text(), "x")
+
     def test_an_error_keeps_the_stage_for_the_next_run_to_resume(self):
         self.dest.write_text("old")
         with self.assertRaises(ValueError):

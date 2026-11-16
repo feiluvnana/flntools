@@ -415,7 +415,7 @@ shared.text: module
 shared.text.Error(shared.Error)
 shared.text.count(n: float, unit: str, *, plural: str | None = None) -> str
 shared.text.duration(seconds: float) -> str
-shared.text.filename(name: str, *, fallback: str = 'untitled', max_bytes: int = 255) -> str
+shared.text.filename(name: str, *, fallback: str = 'untitled', max_bytes: int = 200) -> str
 shared.text.fold(text: str) -> str
 shared.text.redact(url: str) -> str
 shared.text.size(n: float) -> str

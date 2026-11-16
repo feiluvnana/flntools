@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -30,6 +31,8 @@ LOCK = ".lock"
 TEMPS = (STAGE, ".part")
 # A resumable download may keep its offsets beside its stage, as `<stage>.json` or `.info`.
 SIDES = (".json", ".info")
+# Most filesystems cap a name at 255 bytes; a long name's stage keeps a head and a digest.
+NAME_MAX, HEAD_BYTES = 255, 180
 # Windows opens files in text mode unless told otherwise, which turns "\n" into "\r\n".
 BINARY = getattr(os, "O_BINARY", 0)
 # On Windows an antivirus or indexer may hold `dest` briefly, so rename retries for ~1 s.
@@ -68,7 +71,7 @@ def stage(
 ) -> Iterator[Path]:
     """Yield `.<name>.stage` beside `dest`, locked, and move it onto `dest` on a clean exit."""
     target = Path(dest)
-    temp = target.with_name(f".{target.name}{STAGE}")
+    temp = _stage_path(target)
     held = temp.with_name(temp.name + LOCK)
     with lock(held, timeout=timeout):
         try:
@@ -147,6 +150,17 @@ def sweep(folder: PathLike, *, keep: float = KEEP_AGE, settle: float = SETTLE_AG
         if _older_than(entry, now, settle):
             removed += _remove(_base(path), [path])
     return removed
+
+
+def _stage_path(target: Path) -> Path:
+    """`.<name>.stage` beside `target`, shortened when it or its lock would be too long a name."""
+    name = target.name
+    # The lock and a sidecar (`.json`, `.info`) each add 5 bytes to the stage's name.
+    if len(f".{name}{STAGE}{LOCK}".encode()) <= NAME_MAX:
+        return target.with_name(f".{name}{STAGE}")
+    head = name.encode()[:HEAD_BYTES].decode("utf-8", "ignore")
+    digest = hashlib.sha256(name.encode()).hexdigest()[:8]
+    return target.with_name(f".{head}.{digest}{STAGE}")
 
 
 def _exists(path: Path) -> bool:
