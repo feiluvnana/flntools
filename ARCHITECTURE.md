@@ -241,6 +241,7 @@ A source never touches the disk, the history, retries, concurrency or progress. 
 
 The engine owns:
 - the early stops, and spotting a login wall or a block (a `Site` call raises `LoginError` or `Blocked`);
+- smart sync: a sync stops after one page when its first post is the newest one already seen; an interrupted run resumes from its cursor, so it leaves no gap; and each run first retries the target's failures from earlier runs, up to 3 runs, before its new posts;
 - `--when`, `--only`, `--limit` and `--dry`;
 - dedupe, file names, dates, history, and resuming;
 - pacing, retries, the browser's lifetime and concurrency.

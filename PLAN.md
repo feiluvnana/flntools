@@ -569,7 +569,12 @@ class Example(Source):
   - `html(text)`, `dig`, `state` (per-source key-value), `warn`, and `pause(seconds, reason)`. That is `pause`, not `wait`, because `wait` already means waiting for the page (`site.wait(css=…)`) or for a run (`run.wait()`).
 - **What a source never does:** touch the disk, the history, retries or concurrency.
 - **The engine owns the early stops** (5 saved in a row on sync, 5 older than `--when` in a row, on a `newest_first` listing; `stop_after` per source in the config, like gallery-dl's `skip = "abort:N"`) and wall detection, through `Site`'s calls raising `LoginError` or `Blocked` (section 8). The four copies in ins, tik, twt and fbk go.
-- **Cursors are resumed only where that is right.** A full download that stopped part-way (the target isn't `complete`) resumes from its last cursor. A sync starts from the newest page, since that is where new posts are.
+- **Smart sync** (user, 2026-11-16: "auto retry failed request on next time run, short-circuit when no new posts, or continue from cursor of last time"). The engine keeps, per target and category, in `flnd.db`:
+  - **the head:** the newest post seen. A sync whose first post is the head stops after that one page, with no "5 saved in a row" needed. On a `newest_first` listing that is one request for a target with nothing new;
+  - **the cursor of an unfinished run.** A full download that stopped part-way (the target isn't `complete`) resumes from its last cursor. A sync starts from the newest page, since that is where new posts are; if the last sync stopped before it reached the posts already saved, the new sync, after meeting saved posts at the top, jumps to the stopped run's cursor and goes on from there, so an interrupted sync never leaves a gap;
+  - **retryable failures.** Every `download` or `sync` of a target first retries that target's retryable failures from earlier runs (from `(target, post, file)`, listing the post again for fresh URLs), before its new posts. A failure is retried on at most 3 runs, then left for `flnd retry`, which always tries; `NotFound` (gone) is never retried automatically. `flnd retry` remains for retrying everything at once.
+
+  Each of the three is visible in the events (`Skipped` with the reason "nothing new", a `Progress` note "resuming from the last run", `Saved` for a file a retry brought back) and in the run's report.
 - **A post** can carry `caption`, `author`, `tags`, `comments` and `extra`, which feed the sidecars and search (section 12). `date` takes a `datetime`, Unix seconds or an ISO 8601 string; the engine parses it once, so no source carries its own date parser.
 - **Sync or async.** A category may be `def` or `async def`. Sync code runs on the listing thread, and async code runs on the loop. Both get the same `Site`.
 - **Mistakes are caught when the class is made.** A bad pattern, an unknown folder field, a missing `code`, a duplicate route, or a category on a route that yields posts each raise `SourceError` naming the class, the attribute and the fix, e.g. `exm.folder: unknown field {usr}; fields are source, target, category, post, num, date, user`.
@@ -793,7 +798,7 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | 17 | search over saved posts (SQLite FTS5 on captions, authors, tags) | 2 | 2 | `flnd find "beach 2026"` | later |
 | 18 | export and import of follows | 1 | 1 | `flnd ls --json > f`; `flnd download $(…)` | later |
 | 19 | comments capture where the site gives them | 1 | 2 | `Post.comments`; `--comments` | later |
-| 20 | a resumable queue across runs (pending files kept in `flnd.db`) | 2 | 2 | automatic | later |
+| 20 | smart sync: retry the last runs' failures automatically, stop at once when nothing is new, resume an interrupted run from its cursor (7.1; user, 2026-11-16) | 3 | 2 | automatic | MVP |
 | 21 | proxy rotation and per-source quotas (loi's daily VIP quota, generalised) | 1 | 2 | `[source.x] quota = "15/day"` | later |
 | 22 | a library browser: a local web page or a Textual TUI over `flnd.db` and the media | 2 | 3 | `flnd browse` | later |
 | 23 | the full-screen UI as the default on a terminal (user, 2026-11-16) | 3 | 2 | `--ui full` | MVP |
@@ -993,7 +998,7 @@ Each commit is one logical change with `make check` green, and it documents what
 | 15.13 | `perf:drive feeds by responses and end on the site's cursor` (5.4) | synthetic feed ≤ 16 s human-like, ≤ 3 s fast (from 26) |
 | 15.14 | `refactor:move the seven sources to source api 1` (7.1) | each source's fixture tests green; a live run per source, by hand; the Instagram in-page fallback checked live |
 | 15.15 | `perf:parse html with selectolax and paths with dig` (5.3) | Meta page ≤ 8 ms (from 18) |
-| 15.16 | `feat:add status, retry and the failure report` (8.2) | `retry` works from `(target, post, file)`; a test that samples are scrubbed |
+| 15.16 | `feat:add status, retry, the failure report and smart sync` (8.2, 7.1) | `retry` works from `(target, post, file)`; a test that samples are scrubbed; a sync with nothing new makes one request on a `newest_first` listing; a sync interrupted part-way leaves no gap on the next; a failed file comes back on the next run, and not after its third |
 | 15.17 | `feat:load sources from the plugin folder, packages and scripts, with the test kit` (7.2) | the example plugin's tests pass; a broken plugin disables only itself; nothing loads from a home |
 | 15.18 | `feat:compress media and extract archives as files land` (11) | 1,000 JPEGs ≤ 2 min; `sync --compress` over 100k done files ≤ 3 s; savings and SSIM on the real samples recorded in `docs/performance.md` |
 | 15.19 | `feat:add check, dedupe, sidecars, exec and json events` | per-feature tests; `--exec` never starts a shell |
