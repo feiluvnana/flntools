@@ -159,7 +159,7 @@ class Table(MutableMapping[str, V], Generic[V]):
         found = self._select("SELECT value FROM {} WHERE key = ?", (key,))
         if not found:
             raise KeyError(key)
-        return self._decode.decode(found[0][0])
+        return self._load(found[0][0])
 
     def __setitem__(self, key: str, value: V) -> None:
         if not isinstance(key, str):
@@ -199,7 +199,14 @@ class Table(MutableMapping[str, V], Generic[V]):
         return Rows(_Pushed(self))
 
     def _pairs(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[str, V]]:
-        return [(key, self._decode.decode(raw)) for key, raw in self._select(sql, args)]
+        return [(key, self._load(raw)) for key, raw in self._select(sql, args)]
+
+    def _load(self, raw: str) -> V:
+        try:
+            return self._decode.decode(raw)
+        # A row written before its type gained a required field no longer fits it.
+        except msgspec.DecodeError as error:
+            raise Error(f"{self.db.path}: {self.name}: {error}") from error
 
     def _select(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
         try:
@@ -321,12 +328,16 @@ def open(path: PathLike) -> Db:
 def _connect(path: Path) -> sqlite3.Connection:
     try:
         sql = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    except sqlite3.Error as error:
+        raise Error(f"{path}: cannot open store: {error}") from error
+    try:
         sql.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
         sql.execute("PRAGMA journal_mode = WAL")
         # WAL keeps the file whole; a power cut may lose the last commits, never corrupt them.
         sql.execute("PRAGMA synchronous = NORMAL")
         return sql
     except sqlite3.Error as error:
+        sql.close()
         raise Error(f"{path}: cannot open store: {error}") from error
 
 

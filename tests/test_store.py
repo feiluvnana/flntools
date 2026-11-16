@@ -1,12 +1,14 @@
 """Tests for `shared.store`: tables of JSON values and typed rows in one SQLite file."""
 
 import collections.abc
+import gc
 import json
 import sqlite3
 import tempfile
 import threading
 import time
 import unittest
+import warnings
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -95,6 +97,14 @@ class RowTest(StoreCase):
         self.assertEqual(files["ins/a.jpg"], File("kept", 1000, 17))
         self.assertEqual(self.db["files"]["ins/a.jpg"], {"state": "kept", "size": 1000, "mtime": 17})
         self.assertIs(self.db[File], files)
+
+
+    def test_a_row_that_no_longer_fits_its_type_is_a_store_error(self):
+        self.db["files"]["a.jpg"] = {"state": "kept"}
+        with self.assertRaises(store.Error):
+            self.db[File]["a.jpg"]
+        with self.assertRaises(store.Error):
+            self.db[File].rows.get()
 
 
 class RowsTest(StoreCase):
@@ -200,9 +210,20 @@ class ConvertTest(unittest.TestCase):
             with store.open(path) as db:
                 self.assertEqual(db["downloads"]["a"], {"path": "x"})
                 self.assertEqual(db["other"]["b"], 2)
-            with sqlite3.connect(path) as raw:
+            with closing(sqlite3.connect(path)) as raw:
                 raw.execute("SELECT 1")
             self.assertEqual(sorted(p.name for p in Path(folder).iterdir() if not p.name.startswith("old.db")), [])
+
+    def test_a_file_that_is_no_database_raises_and_closes_its_connection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bad.db"
+            path.write_bytes(b"SQLite format 3\x00" + b"\xff" * 200)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ResourceWarning)
+                with store.open(path) as db, self.assertRaises(store.Error):
+                    db["kv"]["a"] = 1
+                gc.collect()
+            self.assertEqual([w for w in caught if w.category is ResourceWarning], [])
 
     def test_a_damaged_json_store_raises(self):
         with tempfile.TemporaryDirectory() as folder:
