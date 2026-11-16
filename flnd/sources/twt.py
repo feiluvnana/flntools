@@ -302,8 +302,13 @@ class Twitter(Source):
             later = names[names.index(timeline.category) + 1:]
             warm_tabs(site, [profile + TIMELINES[name].tab for name in later])
             for data in responses:
-                tweets, _ = read_timeline_page(data)
-                new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen]
+                tweets, cursor = read_timeline_page(data)
+                # A tombstone has no id; it is never new, and never stands for a seen tweet.
+                new = [tweet for tweet in tweets if tweet_id_of(tweet) not in seen | {""}]
+                # Only a timeline page carries a cursor: an error or throttle body is skipped,
+                # and a page of seen tweets is the end.
+                if not new and cursor is None:
+                    continue
                 if not new:
                     break
                 seen.update(tweet_id_of(tweet) for tweet in new)
@@ -438,8 +443,18 @@ def tweet_id_of(tweet: dict) -> str:
 
 def tweet_date(tweet: dict) -> datetime | None:
     """A tweet's `created_at` timestamp as a datetime, or None."""
-    created_at = (unwrap(tweet).get("legacy") or {}).get("created_at")
-    return datetime.strptime(created_at, CREATED_AT) if created_at else None
+    return parse_date((unwrap(tweet).get("legacy") or {}).get("created_at"))
+
+
+def parse_date(created_at: Any) -> datetime | None:
+    """A `created_at` as a datetime, or None when there is none or it has another shape."""
+    if not created_at:
+        return None
+    try:
+        return datetime.strptime(created_at, CREATED_AT)
+    # Another shape leaves the tweet undated rather than failing its whole timeline.
+    except (TypeError, ValueError):
+        return None
 
 
 def older_streak(tweets: list[dict], since: date | None, streak: int) -> int:
@@ -495,7 +510,7 @@ def tweet_posts(
     ):
         return
     tweet_id, created_at = tweet_id_of(tweet), legacy.get("created_at")
-    posted = datetime.strptime(created_at, CREATED_AT) if created_at else None
+    posted = parse_date(created_at)
     quoted = selector.parse(tweet).jmespath("quoted_status_result.result").first
     quoted_media = (
         selector.parse(unwrap(quoted).get("legacy") or {}).jmespath("extended_entities.media").get()

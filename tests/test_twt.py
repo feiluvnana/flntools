@@ -319,6 +319,19 @@ class TimelineTest(unittest.TestCase):
         self.assertEqual(len(saved), 2)
         self.assertEqual(seen.visited, ["https://x.com/i/user/42"])
 
+    def test_an_error_page_or_a_bad_date_does_not_end_the_scroll(self):
+        seen = Seen()
+        p1 = page(item(tweet("1", [photo("a")])), cursor="c1")
+        throttled = {"errors": [{"message": "Rate limit exceeded", "code": 88}]}
+        undated = tweet("2", [photo("b")])
+        undated["legacy"]["created_at"] = "yesterday"
+        p2 = page(item(undated), cursor="c2")
+        p3 = page(item(tweet("3", [photo("c")])), cursor="c3")
+        with browser({"UserOriginalsTimeline": [p1, throttled, p2, p3]}):
+            saved = collect(Twitter, "twt:42", options=Options(categories=("posts",)), seen=seen,
+                            json={url("UserByRestId"): USER})
+        self.assertEqual(sorted(s.post.id for s in saved), ["1", "2", "3"])
+
     def test_early_stop_on_posts_after_five_consecutive_old_tweets(self):
         old_date = "Mon Nov 02 10:00:00 +0000 2026"
         old_tweets = [item({**tweet(str(10 + i), [photo(f"o{i}")]),
