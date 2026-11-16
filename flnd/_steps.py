@@ -7,9 +7,9 @@ Every saved file goes through the same chain (the architecture guide, docs/media
 Each step is on or off by its flag or setting; the order never changes, so no combination can,
 say, compress a file before dedupe has linked it. `--exec` is the CLI's: it runs a command for
 each `Saved` event it reads, so it always comes after the whole chain. Where each step runs:
-- download, date, place and record run on the download's own thread, in `flnd.job`: the part
-  is hashed as it is written (`flnd._files`), renamed into place and dated, and its row written
-  to `flnd.db` with the post's other files;
+- download, date, place and record run in the file's download task on the run's loop, in
+  `flnd.job`: the part is hashed as it is written (`flnd._files`), renamed into place and
+  dated, and its row written to `flnd.db` with the post's other files;
 - dedupe runs there too, as each file lands and before its row is written: the lookup on the
   loop (`holder`), the link on a worker thread (`dedupe`). A file whose bytes a saved file
   already has becomes a hard link to it (`[defaults] dedupe = "link"`, the default);
@@ -18,7 +18,7 @@ each `Saved` event it reads, so it always comes after the whole chain. Where eac
   threads, and they re-run place and record for the file they change. A slow encode never
   holds up a download;
 - the sidecar (`[defaults] sidecars = true`) and the `Saved` event come last, wherever the file
-  ended: on the lane that ran its slow steps, or at once on the download's thread for a file
+  ended: on the lane that ran its slow steps, or at once in the download's task for a file
   that needs none (`_finish`). So `Saved.path` is always the file's final name.
 
 How a landed file goes through the chain:

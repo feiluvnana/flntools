@@ -1,7 +1,7 @@
 # Glossary
 
-The words every page of these docs uses, with what each means in flnd today. Where the rebuild
-changes a word's meaning, the entry says so.
+The words every page of these docs uses, with what each means in flnd, and the name the code
+gives it.
 
 ## Target
 Something to download. It is written `<source>:<what>`, as in `ins:example_user`, or given as a
@@ -11,8 +11,9 @@ in `mht?example`. In code, a target is `flnd.source.Target(text)`; resolving it 
 kind and its captured value (`example_user`).
 
 ## Source
-The code for one site, as one `flnd.source.Source` subclass in `flnd/sources/<code>.py`. Its
-**code** is the three-letter prefix of its targets (`ins`, `tik`, `twt`, `fbk`, `tlg`, `loi`,
+The code for one site, as one `flnd.source.Source` subclass: a built-in one in
+`flnd/sources/<code>.py`, or a plugin. Its **code** is the prefix of its targets, 2 to 16
+lowercase letters and digits; the built-ins use three (`ins`, `tik`, `twt`, `fbk`, `tlg`, `loi`,
 `mht`). `flnd.sources.SOURCES` lists every source, built in or a plugin. See
 [writing-a-source.md](writing-a-source.md).
 
@@ -26,16 +27,19 @@ A source that isn't built in: an installed package's `flnd.sources` entry point,
 A method of a source that reads one kind of target, made with the `@target(...)` decorator. Its
 patterns say which texts and links it accepts, and its method name is the target's **kind**
 (`user`, `post`, `video`, `chat`). A route either yields posts itself (a single post's link) or
-returns a context for its categories (a profile).
+returns a context for its categories (a profile). Routes are tried in the order the source
+declares them, and the first whose pattern matches reads the target.
 
 ## Category
 One part of a target, such as a profile's `posts`, `reels` or `stories`. It is a method made
 with `@<route>.category`, and it receives what its route returned. The CLI picks
-categories with `--only`; leaving it out takes every one.
+categories with `--only` (the library with `only=`); leaving it out takes every one. A single
+post has no categories, and takes no `--only`.
 
 ## Query
-A route whose pattern starts with `?`, such as `mht?{words}`. It yields other targets instead of
-posts, and each one found is downloaded as if it had been typed.
+A route whose pattern is `<code>?{words}`, such as `mht?{words}`, typed as `mht?example`. It
+yields other targets instead of posts, and each one found is downloaded as if it had been typed.
+A route that isn't a query but yields targets too says `discovers=True`.
 
 ## Post
 One item a site lists: an id, a date, and one or more files (`flnd.source.Post`). A post's id
@@ -51,14 +55,14 @@ ffmpeg. `File.text(name, text)` is a small text file the source writes itself.
 ## History
 What flnd remembers about each saved file, so a second run skips it: the `files` table of
 `<home>/flnd.db`, one row per file, keyed `<code>:<key>` (see
-[storage.md](storage.md)). A file's **key** comes from the source's `key` template, `{id}_{num}`
-by default.
+[storage.md](storage.md)). A file's **key** comes from the source's `key` template,
+`{post}_{num}` by default; changing it makes every saved file look new.
 
 ## Sync
 Downloading only what is new, for followed targets. `flnd follow` follows a target, and
 `flnd sync` updates them: it downloads what is new for every followed target. On a sync, a
-category marked
-`newest_first` stops after 5 saved posts in a row, or sooner at its head
+category marked `newest_first` stops after 5 saved posts in a row (a source's `stop_after` in
+`config.toml` changes it), or sooner at its head
 ([architecture.md](architecture.md#smart-sync)).
 
 ## Cursor
@@ -82,8 +86,8 @@ A file or target that failed and isn't saved since: one row of `flnd.db`'s `fail
 ## Event
 A report of something a run did: a file saved (`flnd.Saved`), skipped (`flnd.Skipped`) or
 failed (`flnd.Failed`), the counts so far (`flnd.Progress`), or, for a dry run, a file planned
-(`flnd.Planned`). A script reads a run's events by iterating it ([library.md](library.md)).
-Today's CLI still draws its own progress lines; the rebuilt CLI draws them from the events.
+(`flnd.Planned`). A script reads a run's events by iterating it ([library.md](library.md)),
+and the CLI draws its progress from the same events.
 
 ## Run
 One `download`, `follow` or `sync` of the library (`flnd.Run`). It starts when it is first
@@ -91,7 +95,7 @@ iterated or waited on, yields its events as they happen, and ends with a `flnd.R
 
 ## Record
 A saved file's row: its path, size, post and date (`flnd.Record`). `fl.files()` lists them,
-from the history today.
+read from the history in `flnd.db`.
 
 ## Home
 The folder flnd keeps everything in: downloads, history, logins and settings. The library's
@@ -108,6 +112,7 @@ default). File downloads aren't paced; they are capped per host, from 8 at once 
 host keeps up, or up to the source's `limits` for that host.
 
 ## Part
-A file being written: `<name>.part` beside its destination, locked by the run writing it and
-renamed onto its real name once whole. A failed download keeps its part, and the next run
-resumes it; a run removes the parts nothing has touched for a week. See `docs/storage`.
+A file being written: `<name>.part` beside its destination. The part is its own lock: the run
+writing it holds it, so no other run writes the same file, and it is renamed onto its real name
+once whole. A failed download keeps its part, and the next run resumes it; a run removes the
+parts no run holds and nothing has touched for a week. See [storage.md](storage.md).

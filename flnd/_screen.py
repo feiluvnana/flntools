@@ -72,12 +72,15 @@ ORDER = {"listing": 0, "finishing": 1, "failed": 2, "stopped": 3, "caught up": 4
 # Each target state's mark and colour.
 MARKS = {"finishing": ("↓", "accent"), "done": ("✓", "ok"), "caught up": ("✓", "ok"),
          "cut": ("✓", "ok"), "failed": ("✗", "error"), "stopped": ("■", "warn")}
+# The spinner of a row that is listing: one braille frame per drawn frame.
 SPIN = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 # How a log line's first mark (from `flnd._ui`'s glyphs) colours it.
 LOG_STYLES = {"!": "warn", "✗": "error", "x": "error", "✓": "ok", "+": "ok", "·": "debug"}
 # The speed shown is smoothed over samples, so a burst doesn't make it jump: this much of the
 # new sample, the rest of the old.
 SMOOTH = 0.5
+# Terminal escape sequences (CSI, OSC, and the two-byte ones), stripped from any text a site
+# gave, so a caption or a file name can't move the cursor or restyle the screen.
 _ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
 
 

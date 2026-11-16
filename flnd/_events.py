@@ -1,5 +1,5 @@
-"""What a run reports, and the rows the library reads: events, `Report`, `Login`, `Record`,
-`Tracked`, `Checked`, `Status` and `Failure`.
+"""What a run reports, and the rows the library reads: events, `Stats`, `Report`, `Login`,
+`Record`, `Tracked`, `Checked`, `Status`, `Failure` and `Installed`.
 
 Every type here is a frozen msgspec struct, so it is cheap to make, safe to share between the
 run's threads, and encodes to JSON (`encode`) for a script or a cron job. The module imports
@@ -9,7 +9,9 @@ cheap to reach.
 Who makes them:
 1. the job and the engine make `Saved`, `Skipped`, `Failed`, `Progress` and `Planned` as a run
    goes, and hand them to the run's sink (`flnd._run.Run._emit`);
-2. `Run` counts them into a `Report`, and yields them to whoever iterates the run;
+2. `Run` counts them into a `Report`, and yields them to whoever iterates the run; between
+   two, it yields a `Stats` its meter sampled (`flnd._stats`), made of `Host`, `Transfer`,
+   `Transfers`, `Listing`, `Pause` and `System` rows, which never pass through the event queue;
 3. `Flnd` makes `Login`, `Record`, `Tracked`, `Status` and `Failure` from the home's
    `flnd.db`, for its reads, `Checked` from `fl.check()`, and `Installed` from the sources it
    knows (`fl.sources`).

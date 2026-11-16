@@ -29,8 +29,27 @@ What it holds:
 - `Request`, what the `sign` hook may add headers to;
 - `dig`, a JSON path reader; `Range`, `--when`'s days; and the errors a source raises.
 
-Who calls it: the sources, the engine (`flnd.engine`, `flnd.job`, `flnd.site`), and the
-library, which re-exports `Target`.
+Who calls it: the sources, the engine (`flnd.engine`, `flnd.job`, `flnd.site`), the test kit
+(`flnd.testing`), and the library, which re-exports `Target`. What it calls: the `flnd._html`
+library (the HTML reader and `dig`), `flnd._text` (template fields), `flnd._time` (reading a
+date) and `flnd.errors`.
+
+How a source is used, from its class to its files:
+1. Python makes the class. `Source.__init_subclass__` checks every declaration and derives
+   `routes`, `forms`, `categories` and `single_kinds` from the `@target` methods, so a mistake
+   raises `SourceError` at import, naming the attribute and the fix.
+2. A person types a target. The engine finds the source by its code or by a link's domain, and
+   `Source.resolve` matches the text against the routes' patterns: the result is a `Target`
+   whose `kind` names the route that reads it.
+3. Once per run, the engine enters the context manager `Source.connect` gives (for a site with
+   its own client) and offers what it yields as `site.client`.
+4. The engine calls the route as `route(site, value)`. A route without categories yields
+   `Post`s (or `Target`s, for a search); a route with categories returns a context that each
+   category, called as `category(site, context)`, turns into `Post`s.
+5. For each post, the engine skips what `--when` and the history exclude, calls a lazy post's
+   files function, names each `File` from the templates, and downloads it. `Source.sign` sees
+   every request to the source's domains before each try; `Source.date` dates a post the
+   listing left undated.
 
 The rules a change must keep:
 - This module imports nothing of flnd but the library modules and `flnd.errors`: it is what a
@@ -258,7 +277,21 @@ class _Pattern:
         )
 
     def match(self, text: str, url: _Url | None) -> str | None:
-        """The captured value when `text` or `url` matches; "" for a pattern with no placeholder."""
+        """The captured value when `text` or `url` matches; "" for a pattern with no placeholder.
+
+        A query pattern matches only text starting with `?`; a code pattern only text that is
+        not a link; a link pattern only a link on its host whose first path parts match its
+        segments, later parts allowed, so `example.com/{user}` also reads
+        `example.com/example_user/tagged`.
+
+        Args:
+            text: the target's text after `code:` (or `?query` for a query), or a bare link.
+            url: `text` parsed as a link on the source's domains; None when it isn't one.
+
+        Returns:
+            The first placeholder's capture; "" when the pattern has none (an `unsupported`
+            one); None when it doesn't match.
+        """
         if self.is_query:
             return text[1:] if url is None and text.startswith("?") else None
         if self.host is None:
@@ -281,7 +314,14 @@ class _Pattern:
         )
 
     def form(self, code: str) -> str:
-        """The pattern as people write it, each placeholder in angle brackets."""
+        """The pattern as people write it, each placeholder in angle brackets.
+
+        Args:
+            code: the source's code, which a code or query pattern's form starts with.
+
+        Returns:
+            `exm:<user>`, `exm?<words>` or `https://www.example.com/<user>/`.
+        """
         if self.is_query:
             return f"{code}?<{self.names[0]}>"
         path = "/".join(_shown(segment) for segment in self.segments)
@@ -420,6 +460,20 @@ class Route:
 
         Raises:
             SourceError: a category of the same name is declared twice.
+
+        Example:
+            >>> class Example(Source):
+            ...     code, domains, api = "exm", ("example.com",), 1
+            ...     @target("exm:{user}")
+            ...     def profile(self, site, user):
+            ...         return {"user": user}
+            ...     @profile.category(newest_first=True)
+            ...     def posts(self, site, profile):
+            ...         yield Post("p1")
+            >>> Example.profile.categories
+            (Category('posts', newest_first=True),)
+            >>> Example.categories
+            ('posts',)
         """
         def register(method: Callable[..., Any]) -> Callable[..., Any]:
             made = Category(method, newest_first=newest_first, folder=folder, key=key)
@@ -446,6 +500,14 @@ class Route:
 
         Returns:
             The forms, such as `["exm:<user>", "https://www.example.com/<user>/"]`.
+
+        Example:
+            >>> route = Route(lambda self, site, id: None, ("example.com/p/{id:[A-Za-z0-9]+}",))
+            >>> route.forms("exm")
+            ['https://www.example.com/p/<id>/']
+            >>> Route(lambda self, site, chat: None, ("exm:{chat:.+}",), shown="exm:<title>"
+            ...       ).forms("exm")
+            ['exm:<title>']
         """
         forms = [pattern.form(code) for pattern in self._patterns]
         if self.shown is not None:
@@ -472,6 +534,17 @@ def target(*patterns: str, newest_first: bool = False, shown: str | None = None,
 
     Returns:
         A decorator making the `Route`.
+
+    Example:
+        >>> class Example(Source):
+        ...     code, domains, api = "exm", ("example.com",), 1
+        ...     @target("exm:{user}", "example.com/{user}", newest_first=True)
+        ...     def photos(self, site, user):
+        ...         yield Post("p1", [File(f"https://cdn.example.com/{user}/p1.jpg")])
+        >>> Example.photos.kind, Example.photos.newest_first
+        ('photos', True)
+        >>> Example.forms
+        ('exm:<user>', 'https://www.example.com/<user>/')
     """
     return lambda function: Route(
         function, patterns, newest_first=newest_first, shown=shown, discovers=discovers,
@@ -667,7 +740,23 @@ class Post:
         return made
 
     def filed(self, category: str) -> Post:
-        """A copy filed under `category`, which only the engine sets, as it lists the category."""
+        """A copy filed under `category`, which only the engine sets, as it lists the category.
+
+        A source never calls it: a post's category is whichever category method yielded it.
+        The engine files each post as it reads the listing, so `{category}` in the templates
+        and the history know where it came from.
+
+        Args:
+            category: the category's name, such as `posts`; "" for a route's own posts.
+
+        Returns:
+            The copy; the post itself is left as it was.
+
+        Example:
+            >>> post = Post("p1")
+            >>> post.filed("stories").category, post.category
+            ('stories', '')
+        """
         made = self.replace()
         _assign(made, category=category)
         return made
@@ -748,9 +837,24 @@ class Login:
             def check(self, site):
                 return "session" in site.secrets
 
+    `start` runs only during `flnd login`; `check` runs before every download, and reads only
+    what the login stored, so it never costs a request.
+
     Args:
         required: whether the source can't list anything without a login; a source that can
             (public profiles) warns and goes on.
+
+    Example:
+        >>> from flnd.testing import FakeSite
+        >>> class CodeLogin(Login):
+        ...     methods = ("code",)
+        ...     def start(self, site, how):
+        ...         site.secrets["session"] = site.ask("Code", secret=True)
+        ...     def check(self, site):
+        ...         return "session" in site.secrets
+        >>> login = CodeLogin(required=True)
+        >>> login.methods, login.required, login.check(FakeSite())
+        (('code',), True, False)
     """
 
     # The ways `flnd login <code> <how>` accepts.
@@ -1419,6 +1523,30 @@ class Source:
     A template may use `source`, `target`, `category`, `post`, `num`, `count`, `index`,
     `extension`, `path`, `date` and `query`, and the post fields the source lists in `fields`.
     `key` is the history key of a file: change it and every saved file is downloaded again.
+
+    A source is tested offline with `flnd.testing`: `check` checks the class, and `collect`
+    runs a target on fixtures and shows where each file would be saved.
+
+    Example:
+        >>> from flnd.testing import collect
+        >>> class Example(Source):
+        ...     code = "exm"
+        ...     domains = ("example.com",)
+        ...     api = 1
+        ...     @target("exm:{user}", "example.com/{user}", newest_first=True)
+        ...     def photos(self, site, user):
+        ...         data = site.fetch(f"https://api.example.com/users/{user}/photos").json
+        ...         for item in data["items"]:
+        ...             yield Post(item["id"], [File(item["url"])], date=item["time"])
+        >>> Example.forms
+        ('exm:<user>', 'https://www.example.com/<user>/')
+        >>> saved = collect(Example, "https://www.example.com/example_user", json={
+        ...     "https://api.example.com/users/example_user/photos": {"items": [
+        ...         {"id": "p1", "url": "https://cdn.example.com/p1.jpg", "time": "2026-01-02"},
+        ...     ]},
+        ... })
+        >>> [file.path for file in saved]
+        ['p1_0.jpg']
     """
 
     # What targets start with (`exm:<user>`) and the login's slot in the vault: 2 to 16 lowercase
@@ -1520,6 +1648,11 @@ class Source:
         Args:
             text: the text after `code:`, or a bare link on the source's domains, stripped.
 
+        Routes are tried in the order the class declares them, and a link pattern matches a
+        link's first path parts, later parts allowed. So a narrower route (`example.com/p/{id}`)
+        is declared before a catch-all one (`example.com/{user}`), or the catch-all reads its
+        links first.
+
         Returns:
             The target the first matching route reads, its `kind` set.
 
@@ -1527,6 +1660,20 @@ class Source:
             UsageError: an `unsupported` pattern matched, with its message, and no route pattern
                 that matches too has more literal segments than it; or nothing matched, listing
                 `forms`, with `url` set when the text is a link on the source's domains.
+
+        Example:
+            >>> class Example(Source):
+            ...     code, domains, api = "exm", ("example.com",), 1
+            ...     @target("example.com/p/{id:[A-Za-z0-9]+}")
+            ...     def post(self, site, id):
+            ...         yield Post(id)
+            ...     @target("exm:{user}", "example.com/{user}")
+            ...     def photos(self, site, user):
+            ...         yield Post("p1")
+            >>> Example().resolve("https://www.example.com/p/Abc123")
+            Target(source='exm', kind='post', value='Abc123')
+            >>> Example().resolve("@example_user")
+            Target(source='exm', kind='photos', value='example_user')
         """
         url = _parse(text, self.domains)
         # The most specific pattern wins (user, 2026-11-12): a refusal for a whole path (`x.com/i`)
@@ -1574,11 +1721,36 @@ class Source:
 
         For a site with its own client (Telegram's SDK). The default gives None.
 
+        The engine enters it before the run's first target of this source and leaves it when
+        the source's last target is done, also after an error or a stop. An async context
+        manager is entered on the run's event loop.
+
         Args:
-            site: the `Site` of the source's account.
+            site: the `Site` of the source's account: its `secrets`, `state` and `cookies`.
+
+        Returns:
+            The context manager; what it yields becomes `site.client`.
 
         Raises:
             LoginError: the source needs a login it doesn't have.
+
+        Example:
+            >>> from contextlib import contextmanager
+            >>> class Example(Source):
+            ...     code, domains, api = "exm", ("example.com",), 1
+            ...     @contextmanager
+            ...     def connect(self, site):
+            ...         client = {"session": "opened"}   # an SDK client, in a real source
+            ...         try:
+            ...             yield client
+            ...         finally:
+            ...             client["session"] = "closed"
+            ...     @target("exm:{user}")
+            ...     def photos(self, site, user):
+            ...         yield Post("p1")
+            >>> with Example().connect(None) as client:
+            ...     client["session"]
+            'opened'
         """
         return nullcontext()
 
@@ -1593,9 +1765,25 @@ class Source:
             site: the target's site.
             post: the undated post; its `id` is what the site knows it by.
 
+        Returns:
+            The date, in any form `Post(date=)` takes; None when the site doesn't say.
+
         Raises:
             SiteError: the post can't be read; a 401, 403 or 429 (`Blocked`) stops asking for
                 the run. A `NetworkError` or `LoginError` is taken the same way.
+
+        Example:
+            >>> from flnd.testing import FakeSite
+            >>> class Example(Source):
+            ...     code, domains, api = "exm", ("example.com",), 1
+            ...     @target("exm:{user}")
+            ...     def photos(self, site, user):
+            ...         yield Post("p1")    # the listing has no dates
+            ...     def date(self, site, post):
+            ...         return site.fetch(f"https://api.example.com/posts/{post.id}").json["time"]
+            >>> site = FakeSite(json={"https://api.example.com/posts/p1": {"time": 1767312000}})
+            >>> Example().date(site, Post("p1"))
+            1767312000
         """
         return None
 
@@ -1827,7 +2015,16 @@ def _number(text: str | None) -> int:
 
 
 def _parse(text: str, domains: tuple[str, ...]) -> _Url | None:
-    """`text` as a `_Url` when it's a URL on one of `domains`, with or without a scheme."""
+    """`text` as a `_Url` when it's a URL on one of `domains`, with or without a scheme.
+
+    Args:
+        text: a target's text, such as `example.com/example_user` or a whole link.
+        domains: the source's domains; a subdomain of one counts as on it.
+
+    Returns:
+        The link's bare host, its path parts (percent-decoded) and its query (each key's first
+        value); None when `text` isn't a link, or is a link to another site.
+    """
     # Without a scheme, a slash tells a link (instagram.com/example_user) from a name.
     if "/" not in text and not _is_url(text):
         return None
@@ -1841,7 +2038,14 @@ def _parse(text: str, domains: tuple[str, ...]) -> _Url | None:
 
 
 def _bare_host(host: str) -> str:
-    """A host without prefixes that are the same site: `www.m.instagram.com` is `instagram.com`."""
+    """A host without prefixes that are the same site: `www.m.example.com` is `example.com`.
+
+    Args:
+        host: a host name, lowercased.
+
+    Returns:
+        The host with every `SITE_PREFIXES` prefix taken off its front, however many there are.
+    """
     while True:
         before = host
         for prefix in SITE_PREFIXES:
@@ -1857,8 +2061,16 @@ def _is_url(text: str) -> bool:
 def _split(text: str, separator: str, *, once: bool = False) -> list[str]:
     """`text` split at `separator` outside `{…}`, allowing `/`, `?` or `{16,}` in regexes.
 
-    With `once`, it splits at the first one only and returns `[before, separator, after]`, or
-    `[text, "", ""]` when there's none, as `str.partition` does.
+    A backslash escapes the character after it, so `\\{` is a literal brace.
+
+    Args:
+        text: a pattern, or one part of it.
+        separator: one character: `/` between segments, `?` before a query, `&` and `=` in it.
+        once: split at the first separator only.
+
+    Returns:
+        The parts. With `once`, `[before, separator, after]`, or `[text, "", ""]` when there's
+        none, as `str.partition` does.
     """
     parts, depth, start, escaped = [], 0, 0, False
     for index, character in enumerate(text):
@@ -1883,6 +2095,10 @@ def _tokens(segment: str, pattern: str) -> list[tuple[str, str, str]]:
     Args:
         segment: one path segment or query value of the pattern.
         pattern: the whole pattern, for the error message.
+
+    Returns:
+        The pieces in order. A backslash pair is one literal `text` piece; a placeholder's regex
+        is "" when it has none (`{user}`), else what follows its `:` (`{id:\\w+}`).
 
     Raises:
         SourceError: an unclosed `{`, a stray `}`, or a placeholder whose name isn't an identifier.
@@ -1932,6 +2148,10 @@ def _compile(segment: str, pattern: str, names: list[str]) -> re.Pattern[str]:
         segment: one path segment or query value of the pattern.
         pattern: the whole pattern, for the error message.
         names: the names of the pattern's placeholders so far; the first one is captured as `value`.
+
+    Returns:
+        The compiled regex, for `fullmatch` against one URL part (or the text after `code:`). A
+        placeholder without its own regex matches `NAME`, with one optional leading `@`.
 
     Raises:
         SourceError: the segment, or a placeholder's regex, is malformed.

@@ -1,9 +1,35 @@
-"""Cookie jars: read them from a file, browser, or text, narrow, combine, send or save them.
+"""Cookie jars, a library: read cookies from a file, a browser or text, narrow, merge and save them.
 
-A `Jar` is an immutable collection of cookies in Playwright's dictionary shape.
-`load` reads Netscape or JSON cookie files, installed browsers, or raw cookie text;
-`Jar.save` writes Netscape files and `Jar.filter` narrows them by domain.
-Values are never printed, logged, or included in error messages.
+What it offers any caller:
+- `Jar`, an immutable collection of cookies in Playwright's dictionary shape (`name`, `value`,
+  `domain`, `path`, `expires`, `secure`, `httpOnly`, `sameSite`). It filters by domain and name,
+  merges with another jar, reads a value by name, builds a `Cookie:` header and saves itself as
+  a Netscape `cookies.txt`.
+- `load`, which reads a Netscape or JSON cookie file, raw cookie text, or the cookie database of
+  an installed browser (`BROWSERS`: Chrome, Chromium, Edge, Brave and Firefox), decrypting
+  Chromium's encrypted values with the operating system's key store.
+- `refuse_profile`, the guard that stops a test suite from reading a real browser profile.
+
+Who calls it: in flnd, the login code (`flnd/site.py`, `flnd/_home.py`) loads a jar at
+`flnd login` and saves it in the vault; the HTTP client (`flnd/_net.py`) and the browser
+(`flnd/_browser.py`) send it. It calls only the stdlib, `cryptography` (lazily, for a Chromium
+value), and the `_files` (atomic writes) and `_ui` (a debug line) libraries. Its errors are
+`flnd.errors.LoginError` and `UsageError`, so a caller can show them as they are.
+
+How `load` reads a browser:
+1. find the profile folder for the platform (`_chromium_root`, `_firefox_profile`);
+2. copy the cookie database into memory with SQLite's backup API, read-only, so a running
+   browser's lock or write-ahead log never blocks or corrupts the read;
+3. read every row; for Chromium, fetch the AES key from the Keychain (macOS), the keyring
+   (Linux) or DPAPI (Windows), but only if some value is encrypted;
+4. decrypt each value, strip Chromium's host hash, and skip a value that can't be decrypted,
+   failing only when none can.
+
+Rules a change must keep:
+- A cookie's value is a login. It is never printed, logged, put in an error message or a
+  `repr`; messages name the file, the line number, the browser or the cookie's name only.
+- A `Jar` never changes after it is made: every method returns a new jar or a copy.
+- A saved file is written atomically with mode 0600, so a crash never leaves half a login.
 """
 
 from __future__ import annotations
@@ -134,7 +160,20 @@ class Jar:
     def filter(
         self, *, domains: str | Iterable[str] | None = None, names: Iterable[str] | None = None
     ) -> Jar:
-        """A jar of only the cookies for `domains` and subdomains, and of only those `names`."""
+        """A jar of only the cookies for `domains` and subdomains, and of only those `names`.
+
+        A cookie belongs to a domain when its own domain, without a leading dot and case, is
+        that domain or ends with `.` plus it: `.www.example.com` belongs to `example.com`, but
+        `notexample.com` doesn't. The order of the jar is kept.
+
+        Args:
+            domains: one domain or several; `None` keeps every domain.
+            names: the cookie names to keep (a single string is one name); `None` keeps every
+                name.
+
+        Returns:
+            A new jar; this one is unchanged.
+        """
         if domains is None:
             wanted_domains: tuple[str, ...] | None = None
         elif isinstance(domains, str):
@@ -179,6 +218,9 @@ class Jar:
         Args:
             dest: the file to write; its folders are created when missing, and an existing file
                 is replaced.
+
+        Returns:
+            `dest`, as a `Path`.
 
         Raises:
             LoginError: a cookie holds a tab (outside its value) or a line break, which a
@@ -226,7 +268,30 @@ class Jar:
 
 
 def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
-    """Load cookies from a `cookies.txt` file, a browser name, or raw cookie text."""
+    """Load cookies from a `cookies.txt` file, a browser name, or raw cookie text.
+
+    `source` is read as, in order: a browser name from `BROWSERS` (any case); raw text, when it
+    holds a line break or a tab, or starts with `[` or `{` (JSON); else a file path. A file may
+    be a Netscape `cookies.txt` (curl, browser extensions) or a JSON list in Playwright's or an
+    extension's shape, and is refused past `MAX_SIZE` before it is parsed. Reading a Chromium
+    browser may show the operating system's prompt for the Keychain or keyring.
+
+    Args:
+        source: a browser name, cookie text, or the path of a cookie file.
+        profile: the browser profile's folder name (Chromium's `Default`, `Profile 1`, or a
+            Firefox profile folder); `None` means Chromium's `Default`, or the profile Firefox
+            opens first. Only for a browser name.
+
+    Returns:
+        A new jar with every cookie read, in the source's order.
+
+    Raises:
+        UsageError: `profile` is given but `source` isn't a known browser.
+        LoginError: the file is too big, not UTF-8 or not a cookie file; the browser's database
+            can't be read, or none of its encrypted values can be decrypted.
+        FileNotFoundError: the file, the browser's profile or its cookie database is missing.
+        OSError: the file can't be read.
+    """
     if isinstance(source, str):
         lower = source.lower()
         if lower in BROWSERS:
@@ -253,7 +318,21 @@ def load(source: PathLike | str, *, profile: str | None = None) -> Jar:
 
 
 def _load_text(text: str, label: str) -> Jar:
-    """Parse raw Netscape or JSON cookie text into a `Jar`."""
+    """Parse raw Netscape or JSON cookie text into a `Jar`.
+
+    Text that starts with `[` or `{` (after spaces) is JSON; anything else is Netscape.
+
+    Args:
+        text: the whole cookie file's text.
+        label: what the text came from (a path, or `<text>`), the start of an error message.
+
+    Returns:
+        The jar of the parsed cookies.
+
+    Raises:
+        LoginError: the text isn't a valid cookie file; the message names the line or the
+            cookie's index, never a value.
+    """
     try:
         parsed = _parse_json(text) if text.lstrip()[:1] in ("[", "{") else _parse_netscape(text)
     except ValueError as err:
@@ -268,7 +347,20 @@ def _identity(cookie: Cookie) -> tuple[str, str, str]:
 
 
 def _load_firefox(profile: str | None) -> list[Cookie]:
-    """Read cookies from a Firefox `cookies.sqlite` database."""
+    """Read cookies from a Firefox `cookies.sqlite` database.
+
+    Firefox stores values in plain text, so no key is needed.
+
+    Args:
+        profile: the profile folder's name, or `None` for the one Firefox opens first.
+
+    Returns:
+        The cookies, in the database's row order.
+
+    Raises:
+        LoginError: the database can't be opened or read.
+        FileNotFoundError: there is no Firefox profile, or it has no cookie database.
+    """
     folder = _firefox_profile(profile)
     refuse_profile(folder)
     with _open_copy(folder / "cookies.sqlite") as connection:
@@ -289,6 +381,21 @@ def _load_firefox(profile: str | None) -> list[Cookie]:
 
 
 def _firefox_profile(profile: str | None) -> Path:
+    """The folder of a Firefox profile: the one named, or the one Firefox opens first.
+
+    A named profile is looked for at the top of Firefox's folder (Linux and Windows keep them
+    there) and then under `Profiles/` (macOS).
+
+    Args:
+        profile: the profile folder's name, or `None` for the default one.
+
+    Returns:
+        The profile's folder; for a named profile it may not exist.
+
+    Raises:
+        FileNotFoundError: there is no `profiles.ini`, or it lists no profile.
+        RuntimeError: the test suite forbids reading the real profile (`refuse_profile`).
+    """
     root = _firefox_root()
     refuse_profile(root)
     if profile is not None:
@@ -304,7 +411,18 @@ def _firefox_profile(profile: str | None) -> Path:
 def _firefox_paths(root: Path) -> list[str]:
     """Every profile's `Path` in `root/profiles.ini`, the one Firefox opens first, without repeats.
 
-    Raises `FileNotFoundError` when there is no `profiles.ini`.
+    The order is: the profiles an `[Install…]` section names as default (what Firefox really
+    opens since version 67), then a `[Profile…]` marked `Default=1` (older Firefox), then every
+    other profile in file order.
+
+    Args:
+        root: Firefox's folder, which holds `profiles.ini`.
+
+    Returns:
+        Each profile's `Path` value, relative to `root` or absolute.
+
+    Raises:
+        FileNotFoundError: there is no `profiles.ini` in `root`.
     """
     ini = configparser.ConfigParser(interpolation=None)
     if not ini.read(root / "profiles.ini", encoding="utf-8"):
@@ -323,7 +441,12 @@ def _firefox_paths(root: Path) -> list[str]:
 
 
 def _firefox_root() -> Path:
-    # Each OS keeps Firefox's profiles.ini in its usual per-user application folder.
+    """The folder that holds Firefox's `profiles.ini`, in the platform's per-user app folder.
+
+    Returns:
+        `~/Library/Application Support/Firefox` on macOS, `%APPDATA%/Mozilla/Firefox` on
+        Windows, `~/.mozilla/firefox` elsewhere. It may not exist.
+    """
     if _PLATFORM == "darwin":
         return Path.home() / "Library" / "Application Support" / "Firefox"
     if _PLATFORM == "win32":
@@ -334,7 +457,22 @@ def _firefox_root() -> Path:
 
 @contextmanager
 def _open_copy(database: Path) -> Iterator[sqlite3.Connection]:
-    """A connection to an in-memory backup of `database`, closed afterwards."""
+    """A connection to an in-memory backup of `database`, closed afterwards.
+
+    A running browser holds its cookie database open, and may be writing to it. Opening the
+    file read-only (`mode=ro`) and copying it with SQLite's backup API reads a consistent
+    snapshot, write-ahead log included, without taking the browser's lock or changing the file.
+
+    Args:
+        database: the browser's SQLite cookie file.
+
+    Yields:
+        A connection to the in-memory copy; it is closed when the `with` block ends.
+
+    Raises:
+        FileNotFoundError: `database` isn't a file.
+        LoginError: SQLite can't open or copy it (locked, damaged, not a database).
+    """
     if not database.is_file():
         raise FileNotFoundError(f"no cookie database at {database}")
     uri = f"{database.resolve().as_uri()}?mode=ro"
@@ -370,7 +508,28 @@ def _cookie(name: str, value: str, domain: str, path: str, expires: int,
 
 
 def _load_chromium(browser: str, profile: str) -> list[Cookie]:
-    """Every cookie of a Chromium-family profile, each encrypted value decrypted."""
+    """Every cookie of a Chromium-family profile, each encrypted value decrypted.
+
+    The steps:
+    1. find the cookie database (`Network/Cookies`, or `Cookies` in an old profile);
+    2. copy it into memory and read its rows and its schema version;
+    3. read the key, only when some value is encrypted, since reading it may prompt;
+    4. decrypt each value; one that fails is skipped, so a single cookie in a scheme this
+       reader can't undo doesn't lose every other site's login.
+
+    Args:
+        browser: a Chromium-family name from `_CHROMIUM`.
+        profile: the profile's folder name, such as `Default` or `Profile 1`.
+
+    Returns:
+        The cookies that could be read, in the database's row order.
+
+    Raises:
+        LoginError: the database can't be read, the key can't be read, or not one encrypted
+            value could be decrypted (a wrong key, most likely).
+        FileNotFoundError: the profile has no cookie database.
+        RuntimeError: the test suite forbids reading the real profile (`refuse_profile`).
+    """
     folder = _chromium_root(browser) / profile
     refuse_profile(folder)
     # Chromium 96 moved the database into Network/; an older profile still has it at the top.
@@ -426,6 +585,14 @@ def _load_chromium(browser: str, profile: str) -> list[Cookie]:
 
 
 def _chromium_root(browser: str) -> Path:
+    """The `User Data` folder of a Chromium-family browser, which holds its profiles.
+
+    Args:
+        browser: a Chromium-family name from `_CHROMIUM`.
+
+    Returns:
+        The folder in the platform's per-user application folder; it may not exist.
+    """
     _, mac_folder, linux_folder, _, win_folder = _CHROMIUM[browser]
     if _PLATFORM == "darwin":
         return Path.home() / "Library" / "Application Support" / mac_folder
@@ -436,7 +603,19 @@ def _chromium_root(browser: str) -> Path:
 
 
 def _chromium_keys(browser: str) -> dict[bytes, bytes]:
-    """The AES keys by the 3-byte prefix a value starts with: `v10`, and `v11`."""
+    """The AES keys by the 3-byte prefix a value starts with: `v10`, and `v11`.
+
+    Each platform keeps Chromium's secret differently: a Keychain item on macOS, a keyring
+    entry (or the fixed password "peanuts") on Linux, and a DPAPI-protected key in `Local State`
+    on Windows. macOS may show a Keychain prompt here.
+
+    Args:
+        browser: a Chromium-family name from `_CHROMIUM`.
+
+    Returns:
+        `{prefix: key}`: 16-byte AES-128 keys on macOS and Linux, a 32-byte AES-256 key on
+        Windows.
+    """
     keychain_name, _, _, application, _ = _CHROMIUM[browser]
     if _PLATFORM == "darwin":
         # macOS: PBKDF2 over the Keychain's password, 1003 rounds, as Chromium's os_crypt_mac does.
@@ -451,11 +630,27 @@ def _chromium_keys(browser: str) -> dict[bytes, bytes]:
 
 
 class _DataBlob(ctypes.Structure):
+    """Windows' `DATA_BLOB`: a byte count and a pointer, what `CryptUnprotectData` takes."""
+
     _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
 
 
 def _read_windows_key(browser: str) -> bytes:
-    """Read and DPAPI-decrypt Chromium's AES-256-GCM master key from `Local State`."""
+    """Read and DPAPI-decrypt Chromium's AES-256-GCM master key from `Local State`.
+
+    `Local State` is JSON; `os_crypt.encrypted_key` is base64 of `DPAPI` plus the key that
+    Windows protected for the signed-in account.
+
+    Args:
+        browser: a Chromium-family name from `_CHROMIUM`.
+
+    Returns:
+        The 32-byte key.
+
+    Raises:
+        LoginError: `Local State` is missing, unreadable, or holds a key in another format, or
+            DPAPI refuses to decrypt it.
+    """
     state_path = _chromium_root(browser) / "Local State"
     if not state_path.is_file():
         raise LoginError(f"no Local State file for {browser} at {state_path}")
@@ -470,7 +665,21 @@ def _read_windows_key(browser: str) -> bytes:
 
 
 def _dpapi_unprotect(data: bytes) -> bytes:
-    """Decrypt `data` using Windows DPAPI (`CryptUnprotectData`)."""
+    """Decrypt `data` using Windows DPAPI (`CryptUnprotectData`).
+
+    DPAPI decrypts only what the same Windows account protected, so this works for the
+    signed-in user's own browser. The output buffer is Windows-allocated and freed with
+    `LocalFree` even if copying it fails.
+
+    Args:
+        data: the protected bytes, without Chromium's `DPAPI` prefix.
+
+    Returns:
+        The plain bytes.
+
+    Raises:
+        LoginError: not on Windows, or Windows refuses to decrypt `data`.
+    """
     windll = getattr(ctypes, "windll", None)
     if windll is None:
         raise LoginError("Windows DPAPI is only available on Windows")
@@ -489,6 +698,19 @@ def _dpapi_unprotect(data: bytes) -> bytes:
 
 
 def _read_keychain_password(service: str) -> str:
+    """The password of a macOS Keychain item, read with the `security` tool.
+
+    macOS may ask the person to allow the read; a refusal is an error, not an empty password.
+
+    Args:
+        service: the item's service name, such as `Chrome Safe Storage`.
+
+    Returns:
+        The password, without its trailing newline.
+
+    Raises:
+        LoginError: `security` failed: no such item, or the person denied access.
+    """
     result = subprocess.run(
         ["security", "find-generic-password", "-w", "-s", service],
         capture_output=True,
@@ -502,7 +724,17 @@ def _read_keychain_password(service: str) -> str:
 
 
 def _read_keyring_password(application: str) -> str | None:
-    # No `secret-tool` or no entry means no keyring: Chromium uses "peanuts".
+    """Chromium's password from the Linux Secret Service keyring, read with `secret-tool`.
+
+    No `secret-tool`, or no entry, means the browser runs without a keyring, and Chromium then
+    encrypts with the fixed password "peanuts"; the caller falls back to it.
+
+    Args:
+        application: the keyring's `application` attribute, such as `chrome`.
+
+    Returns:
+        The password, or `None` when there is none.
+    """
     try:
         result = subprocess.run(
             ["secret-tool", "lookup", "application", application],
@@ -525,7 +757,26 @@ def _derive_key(password: str, iterations: int) -> bytes:
 def _decrypt_chromium(
     encrypted: bytes, keys: dict[bytes, bytes], host: str, has_host_hash: bool, what: str
 ) -> str:
-    """One Chromium value, decrypted; errors name `what`, never the value."""
+    """One Chromium value, decrypted; errors name `what`, never the value.
+
+    A value is a 3-byte version prefix (`v10`, `v11`) and the ciphertext: AES-256-GCM on
+    Windows, AES-128-CBC elsewhere. From database version 24 the plain text starts with
+    SHA-256 of the cookie's host, which is checked and removed.
+
+    Args:
+        encrypted: the `encrypted_value` column.
+        keys: the keys by prefix, from `_chromium_keys`.
+        host: the cookie's `host_key`, for the host hash.
+        has_host_hash: whether the database's version adds the host hash.
+        what: how errors name the cookie, such as `chrome cookie sid for .example.com`.
+
+    Returns:
+        The value as text.
+
+    Raises:
+        LoginError: an unknown prefix, a wrong key, a damaged value, or a host hash that
+            differs.
+    """
     key = keys.get(encrypted[:3])
     if key is None:
         raise LoginError(f"can't decrypt {what}: unknown format {encrypted[:3]!r}")
@@ -546,7 +797,19 @@ def _decrypt_chromium(
 
 
 def _decrypt_aes_gcm(key: bytes, ciphertext: bytes) -> bytes:
-    """AES-256-GCM with 12-byte nonce followed by ciphertext and 16-byte tag."""
+    """AES-256-GCM with 12-byte nonce followed by ciphertext and 16-byte tag.
+
+    Args:
+        key: the 32-byte key.
+        ciphertext: the nonce, the ciphertext and the tag, in that order.
+
+    Returns:
+        The plain bytes.
+
+    Raises:
+        ValueError: the input is too short or the tag doesn't match (wrong key or damage).
+        ImportError: the `cryptography` package isn't installed.
+    """
     try:
         from cryptography.exceptions import InvalidTag
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -563,7 +826,19 @@ def _decrypt_aes_gcm(key: bytes, ciphertext: bytes) -> bytes:
 
 
 def _decrypt_aes_cbc(key: bytes, ciphertext: bytes) -> bytes:
-    """AES-CBC with Chromium's fixed IV of 16 spaces, then PKCS#7 unpadding."""
+    """AES-CBC with Chromium's fixed IV of 16 spaces, then PKCS#7 unpadding.
+
+    Args:
+        key: the 16-byte key from `_derive_key`.
+        ciphertext: the value without its version prefix.
+
+    Returns:
+        The plain bytes.
+
+    Raises:
+        ValueError: the padding is wrong, which almost always means a wrong key.
+        ImportError: the `cryptography` package isn't installed.
+    """
     try:
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         from cryptography.hazmat.primitives.padding import PKCS7
@@ -578,7 +853,22 @@ def _decrypt_aes_cbc(key: bytes, ciphertext: bytes) -> bytes:
 
 
 def _parse_netscape(text: str) -> list[Cookie]:
-    """The cookies of a Netscape file; a ValueError names the line, never its value."""
+    """The cookies of a Netscape file; a ValueError names the line, never its value.
+
+    Each line is seven tab-separated fields: domain, include-subdomains flag, path, secure,
+    expiry (Unix seconds, 0 for a session cookie), name, value. Blank lines and `#` comments
+    are skipped, except the `#HttpOnly_` prefix, which marks an HttpOnly cookie. Netscape files
+    have no `sameSite`, so every cookie reads as "Lax".
+
+    Args:
+        text: the file's text.
+
+    Returns:
+        The cookies, in file order.
+
+    Raises:
+        ValueError: a line hasn't seven fields, or its expiry isn't a whole number.
+    """
     jar = []
     for number, line in enumerate(text.splitlines(), start=1):
         # curl and browser exports mark HttpOnly cookies by prefixing the domain like a comment.
@@ -610,6 +900,19 @@ def _parse_json(text: str) -> list[Cookie]:
 
 
 def _json_cookie(entry: Any, index: int) -> Cookie:
+    """One cookie of a JSON export, in Playwright's or a browser extension's shape.
+
+    Args:
+        entry: one item of the JSON list.
+        index: its place in the list, which an error names instead of the value.
+
+    Returns:
+        The cookie in this module's shape; a session cookie, or one without an expiry, gets -1.
+
+    Raises:
+        ValueError: the entry isn't an object with a name, a value and a domain, or its expiry
+            isn't a number.
+    """
     if not isinstance(entry, dict) or not all(key in entry for key in ("name", "value", "domain")):
         raise ValueError(f"cookie {index} needs a name, a value and a domain")
     # Playwright names it "expires"; browser extensions name it "expirationDate".
@@ -627,7 +930,18 @@ def _json_cookie(entry: Any, index: int) -> Cookie:
 
 
 def _netscape_text(jar: Iterable[Cookie]) -> str:
-    """The jar as a Netscape file; a LoginError names the cookie if one cannot be written."""
+    """The jar as a Netscape file; a LoginError names the cookie if one cannot be written.
+
+    Args:
+        jar: the cookies to write, in order.
+
+    Returns:
+        The file's text: a header line, then one line per cookie, ending in a newline.
+
+    Raises:
+        LoginError: a field holds a tab (the value may) or any field a line break, which would
+            make the file read back as different cookies.
+    """
     lines = ["# Netscape HTTP Cookie File"]
     for cookie in jar:
         domain = str(cookie.get("domain", ""))

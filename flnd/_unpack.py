@@ -1,9 +1,18 @@
-"""The unpack step: an archive a site served is extracted beside itself, safely.
+"""Safe archive extraction: an untrusted zip, 7z, RAR or tar unpacked beside itself, or not at all.
 
-A downloaded `.zip`, `.7z`, `.rar` or `.tar*` (or any file its source gave a password) is
-extracted into a folder of its own name beside it: `loi-5930.7z` fills `loi-5930/`. The step
-chain (`flnd._steps`) calls `extract` once the archive's history row is written; `--compress`
-also removes the archive after a verified extract (docs/media).
+A library module: it imports only the stdlib, the tool runner (`flnd._tools`, for 7-Zip) and
+flnd's error classes. It offers:
+- `is_archive(path)`: whether a file's name marks it as an archive (`extract` then reads its
+  first bytes, since a name can lie);
+- `folder(path)`: the folder an archive extracts into, its name without the archive suffix;
+- `extract(path, password=…, limits=…)`: unpack it there, refusing any entry that would escape
+  the folder or any archive past `Limits`, and return the folder.
+
+An archive is extracted into a folder of its own name beside it: `loi-5930.7z` fills
+`loi-5930/`. Who calls it in flnd: the unpack step. The step chain (`flnd._steps`) calls
+`extract` on a downloaded `.zip`, `.7z`, `.rar` or `.tar*` (or any file its source gave a
+password) once the archive's history row is written; `--compress` also removes the archive
+after a verified extract (docs/media).
 
 How `extract` goes:
 1. Read the first bytes to tell the format; a name can lie (loi serves 7z under `.zip`).

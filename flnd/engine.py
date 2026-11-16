@@ -1,4 +1,47 @@
-"""The engine: flnd's commands as methods for CLI or scripts."""
+"""The engine: every flnd command as a method of `Engine`, and target resolution.
+
+What it holds: `Engine`, whose methods are the commands (`download`, `sync`, `retry`,
+`target_ls`, `target_sync`, `target_del`, `auth_ls`, `login`, `logout`); `resolve` and `owner`,
+which turn a target's text into a `Target` of the right source; and the reports a command
+returns (`Report`, one `flnd.job.TargetReport` per target), with `TargetInfo` and `AuthInfo` for
+the reads behind `fl.targets()` (`flnd ls`) and `fl.logins`.
+
+Who calls it: `flnd._library.Flnd` alone (the CLI reaches it through the library). A command
+that downloads makes its `Engine` inside a `flnd.Run`, on the run's worker thread, with the
+run's event sink and stop state; a read or a quick change (`targets`, `logins`, `unfollow`,
+`login`, `logout`) makes one on the caller's thread. Nothing in a source calls it.
+
+What it calls: `flnd.options` to check a command's options before any request, `flnd._home` for
+`flnd.db` and the logins, `flnd.site` for each source's run (`source_run`) and the run's one
+browser and loop (`shared_browser`), `flnd._steps` for the step chain after each file, and
+`flnd.job` for each target.
+
+How one command that downloads goes (`download`):
+1. Check the options (`--limit`, `--when`, `--only`) and resolve every target, so a usage
+   error comes before anything is fetched or written.
+2. Open the command's `runs` row in `flnd.db` (`_recording`), which each failure names.
+3. Record each target's row (`Home.record`), followed when the command follows.
+4. Group the targets by source, in the order given, and run each group inside one
+   `source_run` (`_run_site`): its login is checked, its `connect` hook runs once, and each
+   target goes through `job.download` in turn.
+5. Download the targets the listings yielded (`_found`), up to `FOLLOW_DEPTH` links deep.
+6. Close the `runs` row with the count of saved files, and return a `Report`.
+
+A search (a target whose route `discovers`, such as `mht?words`) lists the targets it finds and
+runs each one (`_run_query`); its sync takes only the found targets it hadn't seen
+(`_sync_query`), at most `MAX_SYNC_NEW` a run.
+
+Rules a change must keep:
+- Every check that can fail on what the user typed runs before the first request, and fails
+  with a `UsageError` (exit code 2).
+- A target's failure ends that target alone. A refused login ends its source's later targets
+  (`_run_site`); a full disk (`DiskError`) ends the whole run; Ctrl-C ends it with
+  `KeyboardInterrupt` once the reports are in.
+- The commands run on one thread: the run's worker thread for a library run, or the caller's.
+  Each `flnd.db` access opens the home for that call (`_home.open`), so no connection is shared
+  across threads; the job's download tasks use the run's own connection, held in `RunShared`.
+- A dry run (`dry=True`) reads `flnd.db` and the disk, and writes nothing.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +68,9 @@ from flnd._ui import ui
 
 __all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
 
+# The kind of the pseudo-target a source's account `Site` is made for (`_account`).
 ACCOUNT = "account"
+# What `logout` takes for every source.
 ALL = "all"
 # How many links deep the targets that listings yield are followed (`Engine._found`).
 FOLLOW_DEPTH = 2
@@ -34,6 +79,8 @@ TIME_USAGE = (
     "--time takes <since>,<until>, such as 2026-01-01,2026-06-30; use * or leave a side empty "
     "for no limit"
 )
+# Targets a search's sync downloads at most per run, among those it hadn't seen: a search that
+# suddenly finds hundreds (a popular tag) is taken a slice per sync, never all at once.
 MAX_SYNC_NEW = 25
 
 
@@ -120,7 +167,18 @@ class Engine:
         self.run: int | None = None
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
-        """Resolve every target string through its owning source."""
+        """Resolve every target string through its owning source (see `resolve`).
+
+        Args:
+            texts: the targets as typed: `<code>:<value>`, `<code>?<query>` or a link.
+
+        Returns:
+            One `Target` per text, in order.
+
+        Raises:
+            UsageError: a text names no known source, or its source can't read it.
+            NetworkError: a short link couldn't be followed.
+        """
         return [resolve(text_item, self.sources, follow=_follow) for text_item in texts]
 
     def download(
@@ -141,8 +199,8 @@ class Engine:
 
         Args:
             targets: the targets, as text or resolved.
-            categories: `--from`: the categories to take; None for none named.
-            time: `--time`, as text or a `Range`; None for no limit.
+            categories: `--only`: the categories to take; None for none named.
+            time: `--when`, as text or a `Range`; None for no limit.
             limit: at most this many posts per target, or targets per search; None for all.
             dry: plan what would be saved (`Planned` events), and write nothing.
             sync: follow the targets, so `sync` takes them later.
@@ -283,7 +341,22 @@ class Engine:
             return [self._target_info(target, rows, db) for target in all_targets]
 
     def target_sync(self, targets: Sequence[Target | str], *, enabled: bool) -> list[Target]:
-        """Enable or disable `sync` for each known target."""
+        """Turn `sync` on or off for each known target (`fl.unfollow` turns it off).
+
+        A known target is one with a row in `flnd.db`, or a folder under `media/` that no row
+        names (a target downloaded before targets were recorded), which gets a row here. Every
+        target is checked before any row changes, so one unknown target changes nothing.
+
+        Args:
+            targets: the targets, as text or resolved.
+            enabled: True to sync them from now on, False to stop.
+
+        Returns:
+            The resolved targets, in order.
+
+        Raises:
+            UsageError: a target isn't known; download it first.
+        """
         resolved = self._resolved(targets)
         rows = self._rows()
         recorded = self._recorded(rows)
@@ -297,7 +370,21 @@ class Engine:
         return resolved
 
     def target_del(self, targets: Sequence[Target | str]) -> list[Target]:
-        """Forget each saved target, keeping its files and their rows."""
+        """Forget each saved target, keeping its files and their rows.
+
+        The target's row goes (its follow state, cursors, heads and gaps); its files and their
+        history rows stay, so a later download of it skips what is saved. Every target is
+        checked before any row is removed.
+
+        Args:
+            targets: the targets, as text or resolved.
+
+        Returns:
+            The resolved targets, in order.
+
+        Raises:
+            UsageError: a target has no row in `flnd.db`.
+        """
         resolved = self._resolved(targets)
         rows = self._rows()
         for target in resolved:
@@ -309,7 +396,14 @@ class Engine:
         return resolved
 
     def auth_ls(self) -> list[AuthInfo]:
-        """Return login state, origin, and expiring cookies for each source."""
+        """Each source's login state, where its login came from, and its cookies expiring soon.
+
+        It reads the vault only; nothing asks a site whether the login still works.
+
+        Returns:
+            One `AuthInfo` per source, in the order of `sources`: "logged in", "api key only"
+            (a key with no cookies) or "not logged in".
+        """
         items: list[AuthInfo] = []
         for code, source_cls in self.sources.items():
             logged = _home.logged_in(self.home, code)
@@ -333,7 +427,28 @@ class Engine:
         profile: str | None = None,
         path: Path | str | None = None,
     ) -> str:
-        """Log in to a source by one of its login's `methods` and return a status message."""
+        """Log in to a source by one of its login's `methods` and return a status message.
+
+        A cookie login (`flnd.source.cookies`) reads a browser's cookie store or a cookie file,
+        checks that it holds the login's cookies, and seals it in the vault. Any other login
+        runs the source's own `start` hook, interactively (a phone code, a browser window).
+
+        Args:
+            code: the source's code.
+            method: one of its login's `methods`, such as "browser" or "file".
+            browser: for "browser": which browser's cookies to read (a key of `browsers`).
+            profile: for "browser": the browser profile's name; None for the default one.
+            path: for "file": the cookie file, in Netscape `cookies.txt` form.
+
+        Returns:
+            What was saved, for the CLI to print; "" for an interactive login, which prints
+            its own lines.
+
+        Raises:
+            UsageError: an unknown source, one with no login, a method it doesn't take, or a
+                method's missing `browser` or `path`.
+            LoginError: the cookies found don't prove a login.
+        """
         if code not in self.sources:
             raise UsageError(f"unknown source '{code}'. Sources: {', '.join(self.sources)}")
         source = self.sources[code]()
@@ -358,7 +473,19 @@ class Engine:
         return _home.store(source, jar, home=self.home, origin=_home.BROWSERS.get(browser, browser))
 
     def logout(self, codes: Iterable[str]) -> list[str]:
-        """Remove logins for the given source codes (or `all`) and return removed codes."""
+        """Remove the saved logins of the given sources (`flnd logout`).
+
+        Every code is checked before any login is removed.
+
+        Args:
+            codes: source codes, or `all` for every source; a repeat counts once.
+
+        Returns:
+            The codes whose login was removed; a source that had none is left out.
+
+        Raises:
+            UsageError: a code names no known source.
+        """
         asked = list(dict.fromkeys(codes))
         unknown = [code for code in asked if code != ALL and code not in self.sources]
         if unknown:
@@ -391,6 +518,20 @@ class Engine:
                      if isinstance(source.login, Cookies))
 
     def _interactive_login(self, code: str, source: Source, method: str) -> str:
+        """Run a source's own login hook (`Login.start`), with a terminal it may prompt on.
+
+        The hook gets a `LoginSite` of a run of its own, with `interactive` on, so it may ask
+        for a code or open a browser window. Its Ctrl-C ends the login, not a download. Only a
+        login the hook saved has its origin recorded.
+
+        Args:
+            code: the source's code.
+            source: the source, made from it.
+            method: the login method the hook is given.
+
+        Returns:
+            "": the hook prints its own lines.
+        """
         with stopping() as stop:
             settings = RunShared(home=self.home, stop=stop, interactive=True)
             with source_run(settings, source) as run:
@@ -446,12 +587,42 @@ class Engine:
         stop: Stop,
         rows: Mapping[str, _home.TargetRow] | None = None,
     ) -> Report:
+        """End a download: raise for Ctrl-C, log the totals, and say when a target isn't synced.
+
+        Args:
+            resolved: the command's targets.
+            reports: one report per target.
+            sync: whether the command followed them, so no reminder is needed.
+            stop: the run's stop state.
+            rows: the target rows read before the run; None reads them again.
+
+        Returns:
+            The command's `Report`.
+
+        Raises:
+            KeyboardInterrupt: Ctrl-C ended the run.
+        """
         report = self._finish_report(Report(tuple(reports)), stop)
         if not sync:
             self._warn_unsynced(resolved, rows=rows)
         return report
 
     def _finish_report(self, report: Report, stop: Stop) -> Report:
+        """Raise `KeyboardInterrupt` when the run was stopped, else log its totals and return it.
+
+        A stopped run raises only here, once every target has its report, so the `runs` row
+        still ends with the files saved before the stop.
+
+        Args:
+            report: the command's report.
+            stop: the run's stop state.
+
+        Returns:
+            `report`, unchanged.
+
+        Raises:
+            KeyboardInterrupt: Ctrl-C (or the run's stop) ended the run.
+        """
         if stop.soon.is_set():
             raise KeyboardInterrupt
         _log_totals(report)
@@ -464,7 +635,17 @@ class Engine:
         pool_settings: RunShared,
         stop: Stop,
     ) -> None:
-        """Sync non-query targets and store their `TargetReport` entries in `results`."""
+        """Sync the plain targets of `chosen` (not searches), each stopping at saved posts.
+
+        Args:
+            chosen: every target of the sync, with its options; searches are left out here.
+            results: filled with each plain target's report, by its index in `chosen`.
+            pool_settings: the sync's shared settings, whose browser every source reuses.
+            stop: the run's stop state.
+
+        Raises:
+            KeyboardInterrupt: Ctrl-C stopped the run; the searches aren't synced then.
+        """
         indices = [i for i, (target, _) in enumerate(chosen) if not self._is_query(target)]
         if not indices:
             return
@@ -487,7 +668,17 @@ class Engine:
         pool_settings: RunShared,
         stop: Stop,
     ) -> None:
-        """Sync query targets and store their `TargetReport` entries in `results`."""
+        """Sync the searches of `chosen`, one after another, after the plain targets.
+
+        Args:
+            chosen: every target of the sync, with its options; plain targets are left out.
+            results: filled with each search's report, by its index in `chosen`.
+            pool_settings: the sync's shared settings, whose browser every source reuses.
+            stop: the run's stop state.
+
+        Raises:
+            KeyboardInterrupt: Ctrl-C stopped the run after a search's report was kept.
+        """
         indices = [i for i, (target, _) in enumerate(chosen) if self._is_query(target)]
         if not indices:
             return
@@ -551,6 +742,7 @@ class Engine:
         )
 
     def _is_query(self, target: Target) -> bool:
+        """Whether `target`'s route discovers other targets (a search) rather than posts."""
         source = self.sources[target.source]
         route = next((r for r in source.routes if r.kind == target.kind), None)
         return route is not None and route.discovers
@@ -562,6 +754,17 @@ class Engine:
         span: Range,
         stop: Stop,
     ) -> Report:
+        """Plan every target without saving anything (`--dry`), one `Planned` event per file.
+
+        Args:
+            resolved: the targets, in order.
+            by_source: each source's options, by code.
+            span: `--when`, which a search filters what it finds by.
+            stop: the run's stop state.
+
+        Returns:
+            One report per target, with no files written; a failed plan carries its error.
+        """
         reports: list[TargetReport] = []
         # A dry run reads `flnd.db` to tell "saved" from "new", but never writes it: a home
         # without one stays untouched.
@@ -582,7 +785,24 @@ class Engine:
         span: Range,
         stop: Stop,
     ) -> TargetReport:
-        """Run a dry-run plan for a single target."""
+        """Plan one target of a dry run inside its own `source_run`.
+
+        A failure ends this target's plan alone, as a failed report and a `Failed` event; the
+        first Ctrl-C ends it as stopped, and the second goes on up.
+
+        Args:
+            settings: the dry run's shared settings (`dry` on, the database read-only).
+            target: the target to plan.
+            options: its options.
+            span: `--when`, for a search.
+            stop: the run's stop state.
+
+        Returns:
+            Its report: no files, and the error that ended the plan, if any.
+
+        Raises:
+            KeyboardInterrupt: the second Ctrl-C, or a stop that isn't the run's.
+        """
         source = self.sources[target.source]()
         with source_run(settings, source) as run:
             if not _logged_in(run) and _required(source):
@@ -611,7 +831,22 @@ class Engine:
         sync: bool,
         stop: Stop,
     ) -> list[TargetReport]:
-        """Download a mix of discovering and normal targets in caller order."""
+        """Download targets of which some are searches, in the order given, on one browser.
+
+        A plain target runs alone through `_run` (its own source run); a search runs through
+        `_run_query`, which downloads each target it finds.
+
+        Args:
+            resolved: the targets, in order.
+            by_source: each source's options, by code.
+            span: `--when`, which a search filters what it finds by.
+            sync: whether to follow the targets (a search is followed, not what it finds).
+            stop: the run's stop state.
+
+        Returns:
+            The reports: one per plain target, and for a search one per target it found (and
+            one for the search itself when it failed or was stopped).
+        """
         reports: list[TargetReport] = []
         pool_settings = RunShared(home=self.home, stop=stop, emit=self.emit)
         with shared_browser(pool_settings):
@@ -640,7 +875,22 @@ class Engine:
         stop: Stop,
         browser_pool: Any = None,
     ) -> list[TargetReport]:
-        """Discover targets from a discovering route and download each one."""
+        """Download a search: list the targets it finds, then download each one.
+
+        The search's row is recorded first (followed when `sync`), so a later sync finds it.
+        Its found targets share the search's board rows (`Board.parent`).
+
+        Args:
+            target: the search.
+            options: its options; `limit` bounds how many targets it takes.
+            span: `--when`, which the search filters what it finds by.
+            sync: whether to follow the search.
+            stop: the run's stop state.
+            browser_pool: the run's browser; None makes one.
+
+        Returns:
+            One report per target found; only the search's own when it needs a login it lacks.
+        """
         source = self.sources[target.source]()
         self._record([(target, options)], follow=sync)
         reports: list[TargetReport] = []
@@ -674,7 +924,26 @@ class Engine:
         span: Range,
         stop: Stop,
     ) -> None:
-        """Discover query children, download each, and record the query's seen set."""
+        """List a search's targets and download each as it comes, then keep what it saw.
+
+        Each found target that downloads without error is added to the search's `seen` keys
+        in `flnd.db`, so a later sync of the search skips it. A failure of the listing itself
+        is one more report, for the search; the first Ctrl-C stops it after the target going
+        on, and the second goes on up.
+
+        Args:
+            run: the search's source run, connected for the listing.
+            target: the search.
+            options: its options; the found targets get them with no limit, and the search's
+                text as their `query` (for the `{query}` folder field).
+            board: the progress rows the found targets share.
+            reports: filled with a report per target downloaded, and one for a failure.
+            span: `--when`, which the search filters what it finds by.
+            stop: the run's stop state.
+
+        Raises:
+            KeyboardInterrupt: the second Ctrl-C, or a stop that isn't the run's.
+        """
         seen_keys: list[str] = []
         try:
             with _written_back(run), _connected(run, _account(run)):
@@ -711,6 +980,22 @@ class Engine:
         child_opts: Options,
         stop: Stop,
     ) -> TargetReport:
+        """Download one target a search found.
+
+        A target of the search's own source reuses the search's run (its session and client);
+        one of another source (a link the search found) gets a run of its own through `_run`.
+
+        Args:
+            run: the search's source run.
+            parent: the search.
+            child: the target it found.
+            board: the search's progress rows.
+            child_opts: the found target's options.
+            stop: the run's stop state.
+
+        Returns:
+            The found target's report.
+        """
         if child.source == parent.source:
             return job.download(run, child, board, child_opts)
         [rep] = self._run(
@@ -726,7 +1011,21 @@ class Engine:
         stop: Stop,
         browser_pool: Any = None,
     ) -> TargetReport:
-        """Run a dry-run plan for a single target."""
+        """Sync one search: download the targets it finds that it hadn't seen before.
+
+        A found target is new when it is neither in the search's `seen` keys nor a target the
+        home knows already (followed or downloaded on its own).
+
+        Args:
+            target: the search.
+            options: its saved options.
+            stop: the run's stop state.
+            browser_pool: the sync's browser; None makes one.
+
+        Returns:
+            The search's report: the files its new targets saved, the targets skipped, and the
+            first error, if any.
+        """
         source = self.sources[target.source]()
         rows = self._rows()
         row = rows.get(_home.key(target))
@@ -760,7 +1059,24 @@ class Engine:
         known_keys: set[str],
         stop: Stop,
     ) -> TargetReport:
-        """Run discovery and download for a synced query target."""
+        """Run a search's sync inside its source run, and keep the keys it saw, however it ends.
+
+        Args:
+            run: the search's source run.
+            target: the search.
+            options: its saved options.
+            board: the progress rows its found targets share.
+            seen_keys: the keys of the targets earlier syncs saw.
+            known_keys: the keys of every target the home has a row for.
+            stop: the run's stop state.
+
+        Returns:
+            The search's report; a failed listing or a stop is its `error`, and else the first
+            found target's error.
+
+        Raises:
+            KeyboardInterrupt: the second Ctrl-C, or a stop that isn't the run's.
+        """
         written: list[Path] = []
         skipped, child_failed, seen_to_mark, failed = 0, None, [], False
         try:
@@ -795,7 +1111,27 @@ class Engine:
         written: list[Path],
         seen_to_mark: list[str],
     ) -> tuple[int, Error | Stopped | None]:
-        """Download newly discovered query children and return `(new_count, first_error)`."""
+        """List a search's targets and download the new ones, at most `MAX_SYNC_NEW` of them.
+
+        A target seen before (or known to the home) is skipped and marked seen. A new one is
+        downloaded, and marked seen only when it downloaded without error, so a failed one is
+        tried again on the next sync.
+
+        Args:
+            run: the search's source run.
+            target: the search.
+            options: its saved options.
+            board: the progress rows its found targets share.
+            seen_keys: the keys of the targets earlier syncs saw; the listing stops at them.
+            known_keys: the keys of every target the home has a row for.
+            stop: the run's stop state.
+            written: filled with the paths the new targets saved.
+            seen_to_mark: filled with the keys to add to the search's `seen`.
+
+        Returns:
+            The targets and files skipped, and the first found target's error (None when
+            none failed).
+        """
         skipped, new_count, child_failed = 0, 0, None
         with _written_back(run), _connected(run, _account(run)):
             with closing(job.discover(run, target, time_range=Range(), seen=seen_keys)) as found:
@@ -823,11 +1159,24 @@ class Engine:
     def _warn_unsynced(
         self, resolved: Sequence[Target], *, rows: Mapping[str, _home.TargetRow] | None = None,
     ) -> None:
+        """Remind the user how to keep a target up to date, when one of them isn't followed."""
         saved = self._rows() if rows is None else rows
         if any((row := saved.get(_home.key(t))) is None or not row.follow for t in resolved):
             ui.info("not followed; flnd follow keeps it up to date")
 
     def _recorded(self, rows: Mapping[str, _home.TargetRow]) -> list[Target]:
+        """The targets of `flnd.db`'s rows, rebuilt from each row's source, kind and value.
+
+        A row of a source that is gone (an uninstalled plugin), or with no kind (a row an old
+        home migrated without one), is left out. No source's `resolve` runs, so this costs no
+        import of a source and no request.
+
+        Args:
+            rows: target rows, by key.
+
+        Returns:
+            The targets, in the rows' order; a search is written `<code>?<query>`.
+        """
         return [
             Target(f"{row.source}{'?' if self._is_query_kind(row.source, row.kind) else ':'}"
                    f"{row.value}", kind=row.kind)
@@ -870,10 +1219,22 @@ class Engine:
                 db.end(run, saved=sum(report.files for report in ended))
 
     def _is_query_kind(self, code: str, kind: str) -> bool:
+        """Whether the route of `kind` in source `code` takes a query (`<code>?<query>`)."""
         route = next((r for r in self.sources[code].routes if r.kind == kind), None)
         return route is not None and route.is_query
 
     def _resolved(self, targets: Sequence[Target | str]) -> list[Target]:
+        """Each target resolved: a `Target` as it is, text through `resolve` (logged at -vv).
+
+        Args:
+            targets: the targets, as text or resolved.
+
+        Returns:
+            The resolved targets, in order.
+
+        Raises:
+            UsageError: a text can't be resolved.
+        """
         resolved: list[Target] = []
         for given in targets:
             target = given if isinstance(given, Target) else self.resolve([given])[0]
@@ -884,7 +1245,17 @@ class Engine:
         return resolved
 
     def _plan(self, targets: Sequence[Target]) -> list[tuple[Target, Options]]:
-        """Resolve which targets to sync and attach their stored options."""
+        """Which targets a sync takes, each with the options its row keeps.
+
+        With no targets named, a sync takes every followed row, then every folder under
+        `media/` no row names (a target downloaded before following existed, which syncs).
+
+        Args:
+            targets: the targets named; empty for every synced target.
+
+        Returns:
+            Each target with its saved categories, search text and `compress` choice.
+        """
         rows = self._rows()
         if not targets:
             followed = {item: row for item, row in rows.items() if row.follow}
@@ -901,7 +1272,19 @@ class Engine:
     def _unrecorded(
         self, known: Sequence[Target], rows: Mapping[str, _home.TargetRow] | None = None,
     ) -> Iterator[Target]:
-        """Yield targets found on disk under `media/` that are not in `known`."""
+        """The targets whose folders are under `media/` but which no row of `known` names.
+
+        A folder a search's found target saved into belongs to the search (its `seen` keys),
+        so it isn't yielded on its own. A folder no source can read as a target is logged at
+        -vv and passed over. It lists one folder per source, never a target's files.
+
+        Args:
+            known: the targets the home's rows name.
+            rows: those rows, by key, for the searches' `seen` keys; None for none.
+
+        Yields:
+            Each unrecorded target, resolved by its source, in folder-name order per source.
+        """
         seen = {_home.target_folder(self.home, t) for t in known if not self._is_query(t)}
         media = self.home / _home.MEDIA
         saved_rows = rows or {}
@@ -1023,6 +1406,14 @@ class Engine:
         return resolve(text, self.sources, follow=_follow)
 
     def _label_width(self, chosen: Sequence[tuple[Target, Options]]) -> int:
+        """The width the board pads category labels to, so its rows line up.
+
+        Args:
+            chosen: the run's targets; their kinds and every category of their sources count.
+
+        Returns:
+            The longest label's length; 0 for no targets.
+        """
         labels = [target.kind for target, _ in chosen]
         for code in {target.source for target, _ in chosen}:
             labels += [
@@ -1056,6 +1447,7 @@ def _validate_targets(
     categories: str | Sequence[str] | None,
     resolved: Sequence[Target],
 ) -> None:
+    """Check `--only` and every folder template against the targets (`options.validate`)."""
     validate(sources, categories, resolved)
 
 
@@ -1076,7 +1468,10 @@ def _required(source: Source) -> bool:
 
 
 def _span(text: str) -> Range:
-    """Read `--time`'s value, `<since>,<until>`, each side a day or `*` for no limit.
+    """Read a time range given as text, `<since>,<until>`, each side a day or `*` for no limit.
+
+    The library reads `when` itself (`flnd._library._when`) and hands a `Range`; this reads the
+    text form `download(time=...)` also takes.
 
     Args:
         text: the value as given, such as `2026-01-01,` or `*,2026-06-30`.
@@ -1102,6 +1497,17 @@ def _span(text: str) -> Range:
 
 
 def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetReport | None:
+    """Check a search's login before it lists: fail it when required, else warn when missing.
+
+    Args:
+        source: the search's source.
+        run: its source run, whose account `Site` the login checks.
+        target: the search.
+
+    Returns:
+        A failed report (after its `Failed` event) when the source needs a login it lacks;
+        None when the search may go on.
+    """
     if not _logged_in(run) and _required(source):
         failed = job.logged_out(target)
         job.tell(target, failed, run.settings.emit)
@@ -1145,6 +1551,11 @@ def _log_dry(
 
 
 def _log_totals(report: Report) -> None:
+    """Log a command's totals and its exit status at -v, for a log read after the run.
+
+    Args:
+        report: the command's report.
+    """
     ui.debug(
         "totals: {files} written, {skipped} skipped, {failed} of {targets} failed; exit {status}",
         files=report.files,
@@ -1161,7 +1572,26 @@ def resolve(
     *,
     follow: Callable[[str], str] | None = None,
 ) -> Target:
-    """Read one target string and return it resolved by its source."""
+    """Read one target's text and return it resolved by its source.
+
+    1. Find the source (`_split_target`): by the code before `:` or `?`, or by a link's host.
+    2. Let it resolve the rest (`Source.resolve`): the first route whose pattern matches.
+    3. A link no route reads (`_Unmatched`, such as a short link) is followed once, when
+       `follow` is given, and the link it leads to is resolved instead, by whichever source
+       owns that one.
+
+    Args:
+        target_text: the target as typed; spaces around it are ignored.
+        sources: the sources to resolve with, by code.
+        follow: where a link leads (one HEAD request); None to never follow one.
+
+    Returns:
+        The resolved target, with its `kind` set.
+
+    Raises:
+        UsageError: the text is empty, names no known source, or no route reads it.
+        NetworkError: a short link couldn't be followed.
+    """
     cleaned = target_text.strip()
     if not cleaned:
         raise UsageError("a target can't be empty")
@@ -1179,7 +1609,24 @@ def resolve(
 
 
 def _split_target(cleaned: str, sources: Mapping[str, type[Source]]) -> tuple[Source, str]:
-    """Resolve `cleaned` into `(source_instance, target_text)`."""
+    """Split a target's text into its source and what that source resolves.
+
+    The forms, in the order they are tried:
+    - a link (`https://…`): the source whose domains it is on, and the whole link;
+    - `<code>?<query>`, a `?` before any `:` and `/`: the source, and `?<query>`;
+    - `<code>:<value>`: the source, and the value;
+    - anything else (`example.com/example_user`): the source whose domains it is on.
+
+    Args:
+        cleaned: the target's text, stripped.
+        sources: the sources, by code.
+
+    Returns:
+        The source, made from its class, and the text it resolves.
+
+    Raises:
+        UsageError: an unknown code, an empty value, or a text no source's domains own.
+    """
     if _is_url(cleaned):
         return _owner_source(cleaned, sources), cleaned
     qmark, colon = cleaned.find("?"), cleaned.find(":")
@@ -1201,6 +1648,18 @@ def _split_target(cleaned: str, sources: Mapping[str, type[Source]]) -> tuple[So
 
 
 def _owner_source(cleaned: str, sources: Mapping[str, type[Source]]) -> Source:
+    """The source whose domains own a link or a bare `host/path`, made.
+
+    Args:
+        cleaned: the target's text, stripped.
+        sources: the sources, by code.
+
+    Returns:
+        The owning source.
+
+    Raises:
+        UsageError: no source's domains own it; the message lists each `<code>:` form.
+    """
     found = owner(cleaned, sources)
     if found is None:
         choices = ", ".join(f"{code}:{cleaned}" for code in sources)
@@ -1235,6 +1694,15 @@ def owner(target_text: str, sources: Mapping[str, type[Source]]) -> type[Source]
 
 
 def _on(target_text: str, domains: Sequence[str]) -> bool:
+    """Whether a link (or a `host/path` with no scheme) is on one of `domains`, or under one.
+
+    Args:
+        target_text: the link; a text with no `/` and no scheme is never on a domain.
+        domains: the domains, such as `example.com`; a subdomain matches too.
+
+    Returns:
+        True when the host is one of them or under one.
+    """
     if not domains or ("/" not in target_text and not _is_url(target_text)):
         return False
     url = target_text if _is_url(target_text) else f"https://{target_text}"
@@ -1247,6 +1715,18 @@ def _is_url(target_text: str) -> bool:
 
 
 def _follow(url: str) -> str:
+    """Where a short link leads, from one HEAD request (`_net.follow`).
+
+    Args:
+        url: the short link.
+
+    Returns:
+        The URL its redirects end at.
+
+    Raises:
+        NetworkError: no answer came; the message names the link redacted, since a link's
+            query may carry a signature.
+    """
     try:
         return _net.follow(url)
     except NetworkError as error:
@@ -1332,6 +1812,7 @@ def _fail_unreached(
 
 @contextmanager
 def _written_back(run: SourceRun) -> Iterator[None]:
+    """Write the cookies a site refreshed back to the vault when the block ends, however."""
     try:
         yield
     finally:
@@ -1340,6 +1821,20 @@ def _written_back(run: SourceRun) -> Iterator[None]:
 
 @contextmanager
 def _connected(run: SourceRun, account: Any) -> Iterator[None]:
+    """Run the source's `connect` hook around a block, keeping what it gives as `run.client`.
+
+    `connect` returns a context manager, plain or async (Telegram's Telethon client is async).
+    A plain one is entered on this thread. An async one is entered and left on the run's loop
+    (`run.run_async`), since its client lives there; an error in the block is handed to its
+    `__aexit__`, which may swallow it, as `async with` would.
+
+    Args:
+        run: the source's run.
+        account: the account `Site` the hook gets (`_account`).
+
+    Yields:
+        Nothing; the client is on `run.client` for the block.
+    """
     manager = run.source.connect(account)
     if not hasattr(manager, "__aenter__"):
         with manager as client:

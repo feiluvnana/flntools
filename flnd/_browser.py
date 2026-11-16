@@ -264,7 +264,14 @@ class _NeverRaised(Exception):
 
 @functools.cache
 def _raw_error() -> type[Exception]:
-    """Playwright's `Error`, imported once; a class nothing raises without Playwright."""
+    """Playwright's `Error`, imported once; a class nothing raises without Playwright.
+
+    Code that catches Playwright's errors names this instead of importing Playwright, so the
+    module still imports (and its `except` clauses still work) without the `browser` extra.
+
+    Returns:
+        `playwright.async_api.Error`, or `_NeverRaised` when Playwright isn't installed.
+    """
     try:
         from playwright.async_api import Error
     except ImportError:  # no `browser` extra: no Playwright call can have raised
@@ -274,7 +281,11 @@ def _raw_error() -> type[Exception]:
 
 @functools.cache
 def _raw_timeout() -> type[Exception]:
-    """Playwright's `TimeoutError`, imported once, as `_raw_error`."""
+    """Playwright's `TimeoutError`, imported once, as `_raw_error`.
+
+    Returns:
+        `playwright.async_api.TimeoutError`, or `_NeverRaised` when Playwright isn't installed.
+    """
     try:
         from playwright.async_api import TimeoutError
     except ImportError:  # no `browser` extra: no Playwright call can have raised
@@ -355,7 +366,18 @@ async def launch(*, profile: str | None = None, headless: bool = False,
 
 
 async def _start_playwright() -> Playwright:
-    """Start Playwright's driver on the running loop."""
+    """Start Playwright's driver on the running loop.
+
+    Playwright is imported here, on first use, so importing this module stays cheap. The driver
+    is a Node process Playwright spawns; it lives until `playwright.stop()`, which the
+    `Browser`'s close steps run last.
+
+    Returns:
+        The started driver, bound to the running loop.
+
+    Raises:
+        ImportError: Playwright isn't installed (flnd's `browser` extra), with the install line.
+    """
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -457,6 +479,19 @@ def _channel(playwright: Playwright) -> str:
     `ToolError(NEEDS_CHROME)` on no or without a terminal. A failed download raises its
     `ToolError`, and the same one again, without asking, for the rest of the process. It runs on
     a worker thread, since the question waits for a person.
+
+    `_chromium_offer` serialises the question: two runs in one process that both find no
+    browser ask once, and the second one reads what the first one decided.
+
+    Args:
+        playwright: the started driver, which says where its downloaded Chromium would be.
+
+    Returns:
+        `"chrome"` or `"chromium"`, Playwright's channel name.
+
+    Raises:
+        ToolError: no browser, and the download was declined, impossible without a terminal,
+            or failed.
     """
     global _chromium_declined, _chromium_failed
     if _chrome_installed():
@@ -487,7 +522,15 @@ def _channel(playwright: Playwright) -> str:
 
 
 def _chrome_executable() -> Path | None:
-    """The installed Google Chrome executable path, or None if not found."""
+    """The installed Google Chrome executable path, or None if not found.
+
+    It looks only where Playwright's `chrome` channel looks: one fixed path on macOS and Linux,
+    and on Windows the same relative path under each of `WINDOWS_ROOTS` in order (the user's
+    local app data, Program Files, Program Files (x86)): Chrome installs per user or per machine.
+
+    Returns:
+        The executable's path, or None when Chrome isn't installed in a place Playwright finds.
+    """
     platform = sys.platform if sys.platform in CHROME_PATHS else "linux"
     if platform != "win32":
         candidate = Path(CHROME_PATHS[platform])
@@ -542,6 +585,22 @@ async def _open_context(playwright: Playwright, profile: Path | None, channel: s
 
     With no `profile` the browser is an incognito context of its own; with one, Chrome's persistent
     profile in that folder. The returned steps run in order when the `Browser` closes.
+
+    Headless, the browser sends the headed user agent (`_headful_ua`). A persistent context
+    can't set a user agent per context, so a short-lived headless launch reads it first, and
+    it goes in as a `--user-agent` launch argument.
+
+    Args:
+        playwright: the started driver.
+        profile: a profile folder to open as Chrome's persistent profile, or None for incognito.
+            A real (not copied) profile is refused under the test suite (`refuse_profile`).
+        channel: "chrome" or "chromium", from `_channel`.
+        launch_options: Playwright's launch options: `headless`, `args`, and the like.
+        context_options: Playwright's context options: the viewport, and the like.
+
+    Returns:
+        `(context, close_steps)`: the context tabs open in, and the steps that close it, the
+        browser and the driver, in that order.
     """
     headless = launch_options["headless"]
     if profile is not None:
@@ -2015,7 +2074,18 @@ def _first_line(error: BaseException) -> str:
 
 
 def _matcher(match: Match) -> Callable[[str], bool]:
-    """`match` as a predicate over a URL."""
+    """`match` as a predicate over a URL.
+
+    Args:
+        match: a substring the URL must contain, a compiled regex it must match somewhere
+            (`search`, not `match`), or a function that takes the URL and says yes or no.
+
+    Returns:
+        A function from a URL to whether it matches.
+
+    Raises:
+        TypeError: `match` is none of the three.
+    """
     if isinstance(match, str):
         return lambda url: match in url
     if isinstance(match, re.Pattern):

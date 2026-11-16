@@ -132,7 +132,9 @@ Files go under `.flnd/media/tik/<target>/`, where `<target>` is the user name or
   flnd finds it by its container or its words, gives you 60 seconds to solve it in the browser
   window, then treats it as a rate limit: it backs off, reloads and checks again. A fourth
   unsolved captcha fails the target. Captcha detection handled since 2026-11-11; the back-off
-  and reload since 2026-11-12.
+  and reload since 2026-11-12. A captcha can also come over the grid while it scrolls: when the
+  post list then gave nothing, flnd watches again, waits the captcha out and reads the grid
+  again (handled since 2026-11-11).
 - **Pinned videos** sit at the top of the post list, out of date order. `videos` and `playlists`
   are `newest_first`, so the engine's early stops apply (below); they wait for 5 posts in a row,
   so a few old pinned posts don't end the list.

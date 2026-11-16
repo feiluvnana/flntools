@@ -1,11 +1,31 @@
-"""One clock for every private module of flnd: monotonic time, wall time, interruptible sleeps.
+"""A swappable clock: monotonic time, wall time, interruptible sleeps, and site dates.
 
-`sleep` blocks a thread; `pause` is its twin for a coroutine on an asyncio loop, which waits
-without blocking the loop. Both follow the active clock (`use`), so a test's `Fake` makes every
-wait pass at once and records it in `slept`.
-A library module: it imports nothing of flnd. Besides the clock (`now`, `wall`, `sleep`, and
-`use` to swap in a `Fake` for tests), it reads the dates sites give: `day` turns a date, a
-datetime, Unix seconds or milliseconds, or an ISO 8601 string into one UTC day.
+A library module. It imports only the stdlib, so any program can use it; inside flnd every
+module that waits or reads the time goes through it (the HTTP client's backoff, the browser's
+scrolls, the progress bars, the run's timestamps, the sources' pacing), and the tests swap in
+`Fake` so no test ever really sleeps.
+
+What it offers:
+- `now()` and `wall()`: monotonic seconds (for measuring) and Unix seconds (for dates);
+- `sleep(seconds, stop=…)`: blocks a thread, and wakes early when the `threading.Event` is set;
+- `pause(seconds, stop=…)`: the same for a coroutine on an asyncio loop, without blocking it;
+- `use(clock)`: makes another clock the active one for the current context, for example `Fake`;
+- `day(value)`: turns any date a site gives (a date, a datetime, Unix seconds or milliseconds,
+  an ISO 8601 string) into one UTC day, or None when it can't be a real post date.
+
+How a call finds its clock:
+1. `use` sets a `ContextVar`. A thread or task started inside the `with` inherits it, since
+   asyncio copies the context into each task (and `asyncio.to_thread` into its thread); a plain
+   `threading.Thread` does not, so a test
+   that starts threads installs the fake before them.
+2. `now`, `wall`, `sleep` and `pause` read the variable on every call, so swapping the clock
+   needs no change at the call sites.
+3. Outside any `use`, the variable holds the one real clock, `_RealClock`.
+
+Rules a change must keep:
+- `Fake` is shared by threads (a download pool sleeps on it), so every read and write of its
+  time holds its lock.
+- `pause` must never block the loop: on the real clock it only awaits `asyncio.sleep`.
 """
 
 from __future__ import annotations
@@ -74,7 +94,23 @@ class _RealClock:
 
 
 class Fake(Clock):
-    """Deterministic in-memory `Clock` implementation for tests."""
+    """A clock for tests: every sleep passes at once, and is recorded.
+
+    Time moves only when code sleeps on it or a test calls `advance`, so a test that checks a
+    backoff or a timeout runs instantly and gives the same result every time. Its wall time starts
+    at 2026-01-01 UTC, so formatted dates are repeatable. It is thread-safe.
+
+    Args:
+        start: the monotonic seconds it starts at; its wall time still starts at 2026-01-01.
+
+    Example:
+        >>> clock = Fake()
+        >>> with use(clock):
+        ...     sleep(2.5)
+        True
+        >>> clock.slept, clock.now
+        ([2.5], 2.5)
+    """
 
     def __init__(self, start: float = 0.0) -> None:
         self.slept: list[float] = []
@@ -95,7 +131,16 @@ class Fake(Clock):
             return FAKE_WALL + self._time - self._start
 
     def sleep(self, seconds: float, *, stop: threading.Event | None = None) -> bool:
-        """Record `seconds` and advance time at once; return False immediately if `stop` is set."""
+        """Record a sleep and move time forward by it, at once.
+
+        Args:
+            seconds: how long the caller asked to sleep; a negative value moves time by 0, but
+                is still recorded as asked.
+            stop: when it is already set, nothing is recorded and the sleep ends at once.
+
+        Returns:
+            False when `stop` was set, so the caller sees an interrupted sleep; True otherwise.
+        """
         if stop is not None and stop.is_set():
             return False
         with self._lock:
@@ -156,7 +201,17 @@ async def pause(seconds: float, *, stop: threading.Event | None = None) -> bool:
 
 @contextmanager
 def use(replacement: C) -> Iterator[C]:
-    """Install `replacement` as the active clock for the current context."""
+    """Make `replacement` the active clock inside the `with`, then restore the one before.
+
+    Uses nest: the innermost wins, and each exit restores what was active when it entered.
+
+    Args:
+        replacement: the clock every `now`, `wall`, `sleep` and `pause` uses meanwhile, usually
+            a `Fake`.
+
+    Yields:
+        `replacement` itself, so `with use(Fake()) as clock:` keeps a handle on it.
+    """
     token = _current.set(replacement)
     try:
         yield replacement

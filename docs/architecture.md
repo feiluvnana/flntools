@@ -1,64 +1,122 @@
 # How flnd fits together
 
-This page is a map of flnd's code as it is today: its parts, what each one does, and the path
+This page is a map of flnd's code as it is today: its layers, what each part does, and the path
 one download takes from the command line to the disk. Read it before changing the engine, or
 when a module's docstring mentions a part you haven't met yet. The words it uses are defined in
 the [glossary](glossary.md).
 
 flnd is being rebuilt as one package, in small steps. Each step that changes a part described
-here also changes this page, so the page always describes the code you have checked out.
+here also changes this page, so the page always describes the code you have checked out. Every
+module also starts with a docstring that says what it holds, who calls it, what it calls, its
+main flow and the rules a change must keep: this page is the map, and those are the detail.
 
-## The parts
+## The layers
+
+flnd's modules sit in four layers. Each layer imports only from the layers below it, and
+`tests/test_layers.py` checks the rules by reading every file's imports.
 
 ```
                  you
                   │
-   flnd/cli.py ───┤  the command line (argparse): flags in, progress lines out
-   flnd/__init__  │  the library: flnd.open, Flnd, Run, events (names load lazily)
-   flnd/_library  │  Flnd's methods; flnd/_run.py: Run; flnd/_events.py: events, Report
-                  ▼
-   flnd/engine.py    Engine: resolves targets, checks options, runs each target in turn
+   ┌──────────────┴───────────────────────────────────────────────────────────────┐
+   │ 1. the command line      flnd/cli.py                                         │
+   │    argparse: flags in, one library call, events out as lines or a screen     │
+   └──────────────┬───────────────────────────────────────────────────────────────┘
+                  │ imports only `flnd` (plus the manifest for --help, and _prompt, _ui)
+   ┌──────────────┴───────────────────────────────────────────────────────────────┐
+   │ 2. the public API        flnd (Flnd, Run, events, errors), flnd.source,      │
+   │                          flnd.testing                                        │
+   └──────────────┬───────────────────────────────────────────────────────────────┘
+                  │
+   ┌──────────────┴───────────────────────────────────────────────────────────────┐
+   │ 3. the engine side       engine, job, site, options, _home, _transfer,       │
+   │                          _steps, _run, _events, _stats, _check, _plugins,    │
+   │                          _screen, sources/                                   │
+   └──────────────┬───────────────────────────────────────────────────────────────┘
+                  │
+   ┌──────────────┴───────────────────────────────────────────────────────────────┐
+   │ 4. the library modules   _net, _browser, _loop, _files, _unpack, _shrink,    │
+   │                          _media, _tools, _cookies, _vault, _db, _html,       │
+   │                          _text, _time, _prompt, _ui   (and flnd/errors.py)   │
+   └──────────────────────────────────────────────────────────────────────────────┘
+```
+
+The rules between them:
+- **The CLI imports only the library** (`flnd`), the sources' manifest for `--help`, and the
+  prompt and UI modules. Every decision is the library's, so a script can do anything the
+  command line does.
+- **A source imports only `flnd.source`** and the standard library (and, lazily, an SDK its
+  site needs). The engine and the private modules can change without breaking one.
+- **A library module** does one general job (HTTP, the browser, files, archives, outside tools,
+  cookies, the vault, a SQLite store, HTML, text, time, prompts, progress, media) and imports
+  from flnd only other library modules and `flnd/errors.py`. It knows nothing of sources,
+  targets or `flnd.db`'s schema: flnd's own code passes those in. So each one reads on its own,
+  and could leave flnd as a package of its own later.
+- **`flnd/errors.py`** is a leaf: it imports only the standard library, so every layer raises
+  its classes and there is one hierarchy.
+- **Nothing heavy loads at import.** `import flnd` imports only `flnd/__init__.py`; each public
+  name loads its own module on first use, and curl_cffi, Playwright and Rich load only when a
+  command needs them, so `flnd --help` stays under 40 ms (`tests/test_packaging.py`).
+
+## The parts
+
+```
+   flnd/cli.py        the command line: flags in, progress lines (or the full screen) out
+   flnd/__init__.py   the library's names, each loaded on first use
+   flnd/_library.py   flnd.open and Flnd: each command as a method
+   flnd/_run.py       Run: one command on its own thread, read as a stream of events
         │
+        ▼
+   flnd/engine.py     Engine: resolves targets, checks options, runs each source's targets
+        │
+        ├── flnd/options.py     Options (what one target downloads), RunShared (what a run shares)
         ├── flnd/_home.py       the home: flnd.db (files, targets, runs, failures), the logins
-        ├── flnd/options.py     Options: what one target downloads; RunShared: what a run shares
         ├── flnd/site.py        SourceRun and TargetSite: what a source acts through
-        │       └── flnd/_transfer.py  one file into its part, checked by its content
+        │       └── flnd/_transfer.py   one file into its part, checked by its content
+        ├── flnd/_steps.py      the step chain after each file: dedupe, unpack, compress, sidecar
         └── flnd/job.py         one target: list its posts, plan its files, download, record
                 │
-                └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API)
+                └── flnd/sources/<code>.py   one class per site (flnd/source.py is their API),
                     and the plugins: <code>.py files in the plugin folder, or installed packages
-
-   flnd/_*.py   the private toolkit the rest is built on: http, browser, db, files, loop, ui,
-             cookies, vault, unpack, html, prompt, cli, text, time and a few more
 ```
 
 | part | what it holds | who calls it |
 | --- | --- | --- |
-| `flnd/cli.py` | the commands: `download`, `follow`, `sync`, `ls`, `login`, `logout` and the rest | the `flnd` script |
+| `flnd/cli.py` | the commands: `download`, `follow`, `sync`, `retry`, `ls`, `status`, `check`, `login`, `logout` and the rest; the views of a run (`--ui full`, `inline`, `plain`, `--json`); `--exec`; the exit codes | the `flnd` script, `python -m flnd` |
 | `flnd/__init__.py` | the public names, each imported from its module on first use | scripts |
-| `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine | scripts |
-| `flnd/_run.py` | `Run`: a command on its own thread, read as a stream of events | `Flnd` |
-| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked`, `Checked`, `Installed` | the engine, the job, `Run` |
-| `flnd/engine.py` | `Engine`: every command as a method, and target resolution | `Flnd` |
-| `flnd/job.py` | one target's run: listing, the early stops and the listing's head, resuming cursors, planning, the download pool, history rows | the engine |
-| `flnd/site.py` | `SourceRun` (a source's cookies, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`) and `LoginSite` | the engine, the job |
+| `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine; the reads (`targets`, `files`, `logins`, `status`), as rows | scripts and the CLI |
+| `flnd/_run.py` | `Run`: a command on its own worker thread, read as a stream of events; `Stop` and `stopping`, the Ctrl-C state | `Flnd`, the engine |
+| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`, `Stats`), the public `Report`, and the rows the reads return (`Login`, `Record`, `Tracked`, `Status`, `Failure`, `Checked`, `Installed`) | the engine, the job, `Run`, `Flnd` |
+| `flnd/engine.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
+| `flnd/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), history rows | the engine |
+| `flnd/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
+| `flnd/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, and `stop_after` from config.toml | the engine, the job, the library |
 | `flnd/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
 | `flnd/sources/` | the seven built-in sources, one module each, and `SOURCES`, the registry of every source, plugins included, each imported on first use | the engine and the library |
+| `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
 | `flnd/_plugins.py` | finding plugins (installed packages' `flnd.sources` entry points, then the user's plugin folder), importing one when its code is first used, and disabling one that breaks, with its file and line ([writing-a-source.md](writing-a-source.md#10-shipping-it-as-a-plugin)) | `SOURCES` |
 | `flnd/testing.py` | the public test kit: `FakeSite`, `collect`, `check`, `fake_clock` | a source's tests, flnd's own (`tests/fakes.py`) |
-| `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
 | `flnd/_home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
-| `flnd/options.py` | `Options` and `RunShared`, the check of `--only` before any work, and `stop_after` from config.toml | the engine, the job |
 | `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
-| `flnd/_*.py` | the private toolkit: HTTP over curl_cffi on the run's loop (`_net`), the run's browser on async Playwright (`_browser`), a SQLite store (`_db`), sealed secrets (`_vault`), atomic files (`_files`), the run's asyncio loop (`_loop`), the terminal UI (`_ui`) | everything above |
-| `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes (dedupe, unpack, compress, the sidecar, `Saved`), archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
+| `flnd/_steps.py` | the step chain and its lanes: dedupe, unpack, compress, the sidecar, `Saved` ([media.md](media.md)) | the job and the engine |
 | `flnd/_stats.py` | live stats: what a run's parts track (limits, browser, boards, the chain, transfers, the home), sampled into a `flnd.Stats` once a second while the run is read, with psutil for RAM and CPU | `Run` |
 | `flnd/_screen.py` | the full-screen view (`--ui full`): Rich on the alternate screen, drawn from the events and `Stats`, with `q` and `p` read by a key thread | the CLI |
 | `flnd/_check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
+| `flnd/errors.py` | the one error hierarchy, `Stopped`, and `classify` and `disk`, which turn any exception into one of them | every module |
 
-The rule between them: a source imports `flnd.source` and the standard library (and, lazily, an
-SDK its site needs), and nothing else of flnd. The engine imports the sources only through
-`flnd.sources.SOURCES`.
+The library modules, each a toolkit of its own:
+
+| module | what it offers |
+| --- | --- |
+| `_net` | HTTP over curl_cffi on an asyncio loop: sessions, two clients, pacing and adaptive caps per host, retries, resumable downloads into a part, `follow`, and a fake for tests |
+| `_browser` | the run's one browser on async Playwright: tabs, warm tabs, response feeds, human-like scrolling |
+| `_loop` | one asyncio loop on a thread of its own, which other threads hand work to (`run`, `submit`) |
+| `_files` | atomic files: parts that lock themselves, hashing as bytes are written, renames, sweeps, kinds by name and by content |
+| `_unpack`, `_shrink`, `_media`, `_tools` | archive extraction, compression of photos and videos, probes and ffmpeg runs, and finding ffmpeg and 7zz |
+| `_cookies`, `_vault` | reading browsers' cookie stores and cookie files; sealed secrets on disk |
+| `_db` | a SQLite store: one connection behind a lock, transactions, waiting for another process's writer |
+| `_html`, `_text`, `_time` | HTML parsing, names and sizes and redaction, a clock tests can fake |
+| `_prompt`, `_ui` | questions on the terminal; log lines, progress rows and the live view |
 
 ## Plugins
 
@@ -82,80 +140,85 @@ and code there may not be yours.
 
 `flnd follow ins:example_user --only posts`:
 
-1. **The CLI** (`flnd/cli.py`) parses the flags with argparse and calls `fl.follow(...)` of
-   the library (`flnd.open`), which runs the engine with the target and `--only posts`.
-2. **Resolving.** `engine.resolve` splits the text at `:` (or `?` for a query), finds the source
-   by its code (or a bare link by its `domains`), and calls `Source.resolve`. The first route
-   whose pattern matches gives `Target("ins:example_user", kind="user")`. A short link no route
-   reads is followed once with a HEAD request, and the link it leads to is resolved instead.
+1. **The CLI** (`flnd/cli.py`) parses the flags with argparse, opens the home
+   (`flnd.open`), and calls `fl.follow("ins:example_user", only=["posts"])`.
+2. **Resolving.** The library resolves the target at once (`engine.resolve`): it splits the
+   text at `:` (or `?` for a search), finds the source by its code (or a bare link by its
+   `domains`), and calls `Source.resolve`. The first route whose pattern matches gives
+   `Target("ins:example_user", kind="user")`. A short link no route reads is followed once
+   with a HEAD request, and the link it leads to is resolved instead.
 3. **Checking.** Before any request, `options.categories_by_source` and `options.validate` check
-   `--only` against the target's route, and every folder template against its fields. A mistake
-   is a usage error (exit code 2).
-4. **Recording the target.** `Home.record` writes the target's row in `flnd.db`, followed when
-   `follow` asked, keeping its cursors and found targets from earlier runs.
-5. **Grouping by source.** The engine runs the targets of one source together, one after
+   `--only` against the target's route, and every folder template against its fields. `--when`
+   and `--limit` are read too. A mistake is a `UsageError` (exit code 2).
+4. **A run that hasn't started.** `follow` returns a `flnd.Run`. Nothing happens until the CLI
+   reads it: the first read starts the run's worker thread, which makes an `Engine` with the
+   run's event sink and stop state, and calls `Engine.download(..., sync=True, keep=True)`.
+   From here to step 12 everything runs on that worker thread (the *listing thread*), except
+   the downloads, which are tasks on the run's loop (see "Threads and queues").
+5. **Recording.** The engine opens the command's row in `runs` (each failure names it), then
+   `Home.record` writes the target's row in `flnd.db`, followed, with `--only posts` kept for
+   later syncs, keeping its cursors, heads and gaps from earlier runs.
+6. **Grouping by source.** The engine runs the targets of one source together, one after
    another, inside one `source_run`: the source's saved cookies are read from the vault, its
-   HTTP session is made (see "Network" below), and its `connect` hook runs
-   (Telegram's client). A source whose `login` is `required` and missing fails here, for each of
-   its targets; any other source without a login warns and goes on with public access.
-6. **One target** (`job.download`). The job removes the stale parts an interrupted run left in
+   HTTP session is made (see "Network"), and its `connect` hook runs (Telegram's client). A
+   source whose `login` is `required` and missing fails here, for each of its targets; any
+   other source without a login warns and goes on with public access. The run's loop and its
+   one browser (`site.shared_browser`) are shared by every source.
+7. **One target** (`job.download`). The job removes the stale parts an interrupted run left in
    the target's folder (a week old, and held by no run). Nothing locks the target: each file's
    part locks itself.
-7. **Listing.** The route runs and returns the profile. The files earlier runs failed on go
+8. **Listing.** The route runs and returns the profile. The files earlier runs failed on go
    first: each failed post is listed again from the cursor of its page, and its failed files
-   queued (see "Smart sync" below). Then each wanted category yields its posts, page by page. A
+   queued (see "Smart sync"). Then each wanted category yields its posts, page by page. A
    category whose full download was interrupted resumes from its saved cursor, then catches up
    from the newest post. `--when` drops posts outside the range; after 5 posts in a row older
    than the range, a `newest_first` category stops.
-8. **Planning each post** (`Ledger.take`). Each file is given its path (from the source's
+9. **Planning each post** (`Ledger.take`). Each file is given its path (from the source's
    `folder` and `filename` templates) and its history key (`<code>:<key>`). A file whose key is
-   in the history is skipped. Once a `newest_first` category was read to its end, a later run
-   stops it after 5 saved posts in a row (`stop_after` in config.toml), or sooner, after the
-   head (the newest post the last full listing saw, kept in `flnd.db`) and the post after it.
-   The source never stops a listing itself: the job closes its generator. A lazy post's files
-   are listed only once the post is known to be new. Targets a listing yields (a link to
-   another site) are downloaded after the run's own targets.
-9. **Downloading** (`Downloads`). Each new file becomes a task on the run's loop, which waits
-   for one of the target's places (32, as many as one host's cap grows to, or the source's
-   largest `limits` above that). The queue holds 4 times as many, so the listing waits when downloads fall behind and memory stays flat.
-   `_transfer.save` opens and locks the file's part
-   (`<name>.part`, see `docs/storage`), skipping a file another run is saving, then streams the
-   file into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
-   with its audio through ffmpeg, checks the content (a web page instead of a photo is a
-   failure, not a file) and gives it the extension its content calls for, hashing the bytes
-   (SHA-256) as they are written. The part gets its post's date (at noon UTC) as its modified
-   time and is renamed onto the real name.
-10. **Finishing a file.** Once every file of its post is in place, the post's rows are written
-    to `flnd.db` in one statement: path, size and modified time (from the part, so nothing stats
-    the file again), hash, post id, category and date. Before that, as each file lands, dedupe
-    replaces a file whose bytes are already saved by a hard link to them (the link on a worker
-    thread, off the loop). The same file in two categories is saved
-    once and linked from the second (a relative symlink, or a hard link where symlinks aren't
-    allowed), with a `link` row. The file is then handed to the run's step chain
-    (`flnd._steps`), which extracts an archive and, with `--compress`, compresses a photo or
-    video on threads of its own ([media.md](media.md)), then writes its sidecar when sidecars
-    are on, and only then sends `Saved`, with the file's final path.
+   in the history, or whose file is on disk, is skipped (a `Skipped` event). A file saved in
+   another category's folder is linked instead. A post with no day waits until its category
+   ends, then takes the day of its nearest dated neighbour (marked estimated). Once a
+   `newest_first` category was read to its end, a later run stops it after 5 saved posts in a
+   row (`stop_after` in config.toml), or sooner, after the head (the newest post the last full
+   listing saw, kept in `flnd.db`) and the post after it. The source never stops a listing
+   itself: the job closes its generator. A lazy post's files are listed only once the post is
+   known to be new.
+10. **Downloading** (`Downloads`). Each new file is submitted to the run's loop as a task. The
+    target's queue holds 4 times its places, so the listing waits when downloads fall behind
+    and memory stays flat; a task waits for one of the target's places (32, as many as one
+    host's cap grows to, or the source's largest `limits` above that), then for a place under
+    its host's cap. `_transfer.save` opens and locks the file's part (`<name>.part`, see
+    [storage.md](storage.md)), skipping a file another run is saving, then streams the file into
+    it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video with
+    its audio through ffmpeg, checks the content (a web page instead of a photo is a failure,
+    not a file) and gives it the extension its content calls for, hashing the bytes (SHA-256)
+    as they are written. The part gets its post's date (at noon UTC) as its modified time and
+    is renamed onto the real name. A file the site or the network fails fails alone: a
+    `Failed` event, and a row in `failures` for the next run to retry.
+11. **Finishing a file.** As each file lands, dedupe replaces a file whose bytes are already
+    saved by a hard link to them. Once every file of its post settled, the post's rows are
+    written to `flnd.db` in one transaction: path, size and modified time (from the part, so
+    nothing stats the file again), hash, post id, category and date. Each file then goes down
+    the step chain (below), whose last step sends `Saved` with the file's final path.
+12. **Ending the target.** The job waits for its downloads, makes the links it held back, and
+    saves the categories it listed to their end, the cursors of those a download cut short,
+    the gaps a sync left and the heads in `flnd.db` (each failed file was written there as it
+    failed). It counts the target's files for `flnd ls`, then ends the target's rows. A failed
+    listing fails the target alone (a `Failed` event); a refused login fails the source's
+    remaining targets; a full disk stops the run.
+13. **Links to other sites.** Targets a listing yielded (a post linking to another site) are
+    downloaded after the run's own targets, each by its own source, up to two links deep.
+14. **The end.** The engine writes refreshed cookies back to the vault and closes the `runs`
+    row with the count of saved files. The run's thread ends; the CLI prints a summary from the
+    run's `Report` and exits with 0, 1 if a file or a target failed, 3 if a login is needed, 4
+    if flnd itself stopped (a full disk, a missing tool, a broken source), 130 on Ctrl-C
+    ([cli.md](cli.md)).
 
-    The whole chain, in its one fixed order:
-
-    ```
-    download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → Saved → --exec
-    ```
-
-    date, place and record run with the download, and again for a file a slow step changes.
-    `--exec` is the CLI's: it runs a command for each `Saved` event it reads, never through a
-    shell ([cli.md](cli.md#running-a-command-per-file)).
-11. **Ending the target.** The job saves the categories it listed to their end, the cursors of
-    those a download cut short, the gaps a sync left and the heads in `flnd.db` (each failed
-    file was written there as it failed), counts the target's files for `flnd ls`, then prints
-    one summary line.
-12. **The end.** The engine writes refreshed cookies back to the vault, prints "Complete" with the
-    count of files, and the CLI exits with 0, or 1 if a target failed.
-
-`flnd sync` runs steps 5 to 12 for every target whose row has `sync` on, always stopping at
-saved posts. A query target (`mht?words`) first lists the targets it finds, then runs each one;
-on a sync, only the targets it hadn't seen before. `flnd retry` runs them for every target with
-failed files, listing only the failed posts' pages.
+`flnd sync` runs steps 6 to 14 for every target whose row has `sync` on, always stopping at
+saved posts. A search (`mht?words`) first lists the targets it finds, then downloads each one;
+on a sync, only those it hadn't seen before, at most 25 a run. `flnd retry` runs every target
+with failed files, listing only the failed posts' pages. `--dry` plans the same listing and
+sends a `Planned` event per file instead of downloading, and writes nothing.
 
 ## Smart sync
 
@@ -182,45 +245,59 @@ the three is in the events and in the run's report.
    top, jumps to the gap's cursor and goes on from there until it meets saved posts again: a
    `Progress` event with the note `"resuming from the last run"` (`report.resumed`). Gaps stack,
    newest first, when syncs are cut short twice. A feed that isn't paged by cursor leaves a gap
-   without one, and the next sync reads past saved posts down to the head instead. The head
+   without one, and the next sync reads down past saved posts to the head instead. The head
    moves only when a sync leaves no gap, so every gap lies above it.
 
-## Threads
+## Threads and queues
 
-A run uses a few threads, and every rule below protects one of them:
+A run uses a few threads, joined by bounded queues, and every rule below protects one of them:
 
-- **The main thread** runs the engine and each target's listing: the route, the categories and
-  the planning. A source's plain `def` routes therefore run top to bottom, without locks.
-- **The downloads** are tasks on the run's loop (below), one per file, handed over from the
-  listing thread (`Loop.submit`). Each streams its file into its part, dates it, renames it and
-  writes its history row; the job's `_writing` lock guards the run's own lists of written and
-  failed files, and SQLite serializes the history writes. What would block the loop runs off it:
-  a part's bytes go to one writer thread a MiB at a time, a part's open and rename to worker
-  threads, a source's blocking `fetch` function and ffmpeg's DASH merge to worker threads too.
+- **The run's worker thread** (`flnd._run.Run`) runs the engine and each target's listing: the
+  route, the categories and the planning. Targets run one after another on it, so a source's
+  plain `def` routes run top to bottom, without locks. Outside a library run (a test calling
+  the engine), the caller's thread plays this part.
+- **The reader** is whoever iterates the run: the CLI's main thread, or a script. It takes
+  events off the run's queue (256 events): when the queue is full, the worker waits, so a slow
+  reader slows the listing rather than piling events up in memory. `run.wait()` stops queueing
+  (events are still counted into the report) and waits for the worker.
 - **The run's loop** (`flnd._loop.Loop`, made by `site.shared_browser`) is one asyncio event loop
-  on a thread of its own. Async Playwright runs on it: one browser per run
-  (`flnd._browser.RunBrowser`), launched the first time a target needs a tab and shared by every
-  source, so one Chrome window serves them all. Each target gets its own tab, and up to six in
-  all with the warm tabs that pre-load the pages it will open next (`flnd._browser.Tabs`). A
-  source never holds a Playwright object: each browser verb of `Site` (`open`, `wait`, `scroll`,
-  `feed`, `document`, `evaluate`, `click`) is one call handed to the loop (`Loop.run`, about
-  40 µs), which waits for the answer. A response feed reads the matching bodies on the loop as
-  they arrive, in order, and the listing thread parses them.
-- **Every HTTP transfer** runs on the same loop: the listing's requests (`Site.fetch` hands
-  each one over and waits) and every file's download (see "Network").
-- **Async sources** run on the same loop through `SourceRun.run_async`: a source with an async
-  SDK (Telegram's Telethon), and any `async def` route or category, which reaches the browser by
-  awaiting `site.tab` instead of calling the verbs.
+  on a thread of its own. Everything that waits on the network or the browser runs there:
+  - **every HTTP transfer**: the listing's requests (`Site.fetch` hands each one over and
+    waits) and every file's download;
+  - **the downloads**: one task per file, handed over from the listing thread
+    (`Loop.submit`). Each target's queue holds 4 times its places; `Downloads.submit` waits
+    on the listing thread while it is full. A task streams its file into its part, dates it
+    and renames it; its post's rows commit when the post's last file settles. The job's
+    `_writing` lock guards the target's lists of written and landed files, the board's lock
+    its counts, and `Home`'s one connection is shared behind a lock of its own;
+  - **async Playwright**: one browser per run (`flnd._browser.RunBrowser`), launched the first
+    time a target needs a tab and shared by every source, so one Chrome window serves them all.
+    Each target gets its own tab, and up to six in all with the warm tabs that pre-load the
+    pages it will open next (`flnd._browser.Tabs`). A source never holds a Playwright object:
+    each browser verb of `Site` (`open`, `wait`, `scroll`, `feed`, `document`, `evaluate`,
+    `click`) is one call handed to the loop (`Loop.run`, about 40 µs), which waits for the
+    answer. A response feed reads the matching bodies on the loop as they arrive, in order,
+    and the listing thread parses them;
+  - **async sources**, through `SourceRun.run_async`: a source with an async SDK (Telegram's
+    Telethon), and any `async def` route or category, which reaches the browser by awaiting
+    `site.tab` instead of calling the verbs.
+
+  What would block the loop runs off it: a part's bytes go to one writer thread a MiB at a time,
+  a part's open and rename and dedupe's hard link to worker threads, a source's blocking
+  `fetch` function and ffmpeg's DASH merge to worker threads too.
+- **A lazy post's expired link.** A source's code runs on the listing thread only, so a
+  download task whose link expired queues a refresh for that thread (`job._Refresh`), which
+  answers it between two files, and waits for the fresh link.
 - **The step chain's lanes** (`flnd._steps`): one thread for archives, two for photos and one
-  for videos, fed by bounded queues once a file's history row is written. They update that row
-  when they change the file, and send the file's `Saved` event when they are done with it (a
-  file with no slow step sends it on its download thread). Two hard links of one file are never
-  compressed at once: a lock per hash makes the second wait, then find it already done. The
-  engine closes the chain, waiting for them, before it closes history.
-- **Ctrl-C** is handled by `flnd._run.stopping`: the first one sets `stop.soon` (stop listing,
-  let running files finish), the second sets `stop.now` (stop at once, keep the parts).
-  `run.suspend()` sets `stop.suspended`, which each source's limits wait on before a new
-  request; a stop clears it.
+  for videos, each fed by a bounded queue once a file's history row is written. They update
+  that row when they change the file, and send the file's `Saved` event when they are done with
+  it (a file with no slow step sends it at once, from its download task). Two hard links of one
+  file are never compressed at once: a lock per hash makes the second wait, then find it
+  already done. The engine closes the chain, waiting for its lanes, before it closes history.
+- **Ctrl-C** is handled by `flnd._run.stopping`, on the reader's thread when it is the main
+  thread: the first one sets `stop.soon` (stop listing, drop queued files, let running files
+  finish), the second sets `stop.now` (stop at once, keep the parts). `run.suspend()` sets
+  `stop.suspended`, which each source's limits wait on before a new request; a stop clears it.
 - **Live stats** are made on the reader's thread: between two events (or every 0.1 s) the run
   asks its `flnd._stats.Meter` for a sample, at most once a second. The meter copies what the
   loop owns (each source's hosts and waits, the tabs, the files in flight) with one call handed
@@ -232,6 +309,51 @@ A run uses a few threads, and every rule below protects one of them:
 - **The full screen** (`flnd._screen`) draws on Rich's refresh thread at 10 frames a second
   from what the events stored; a key thread reads `q` and `p` in cbreak mode and puts the
   terminal's mode back when the screen closes, however the run ended.
+
+## The step chain
+
+Every saved file goes through the same steps, in one fixed order:
+
+```
+download (hashing) → dedupe → unpack → compress → date → place → record → sidecar → Saved → --exec
+```
+
+- **download, date, place, record** run in the file's download task (`flnd.job`): the bytes are
+  hashed as they are written, the part is dated and renamed into place, and the post's rows are
+  written together.
+- **dedupe** runs as the file lands, before its row: one indexed lookup of its hash, and a file
+  whose bytes are already saved becomes a hard link to them (`[defaults] dedupe = "link"`).
+- **unpack** and **compress** (`--compress`) are slow, so the job hands the recorded file to
+  the run's `Chain`, whose lanes run them on threads of their own; they re-run date, place and
+  record for a file they change, and compress keeps dedupe's links ([media.md](media.md)).
+- **sidecar** (`[defaults] sidecars = true`) writes the post's caption, author, tags and link
+  beside the file, and **Saved** is sent last, with the file's final path and size.
+- **`--exec`** is the CLI's: it runs a command for each `Saved` event it reads, never through a
+  shell ([cli.md](cli.md#running-a-command-per-file)).
+
+Each step is on or off by its flag or setting; the order never changes, so no combination can
+compress a file before dedupe linked it. A step's failure is the file's, never the run's: it is
+logged, and the file is still finished. `flnd sync --compress` feeds the same lanes from
+`flnd.db` with the files saved before (`Chain.backlog`).
+
+## Events
+
+A run's only output is its events (`flnd/_events.py`), each a frozen msgspec struct a script
+may keep after the run and `encode` to JSON:
+
+| event | sent when | made by |
+| --- | --- | --- |
+| `Saved` | a file went through every step: its target, category, post, final path, day, size, and `retried` | the step chain's last step |
+| `Skipped` | a file or post was already saved, another run is saving it, or (with `reason="nothing new"`) a sync found nothing new | the job's `Ledger` and `Downloads` |
+| `Failed` | a file failed (with its post and path), or a whole target did; `error` is the `flnd.Error`, with its `hint` | the job and the engine |
+| `Progress` | a category's counts changed (found, saved, skipped, failed, bytes), its listing ended, or a note ("resuming from the last run") | the job's `Board` |
+| `Planned` | a dry run planned a file: `"new"` or `"saved"` | the engine's dry run |
+| `Stats` | about once a second while the run is read: hosts, transfers, listings, waits, the machine | the run's meter, on the reader's thread |
+
+`Run` counts the events into a public `flnd.Report` (saved, skipped, bytes, failed, retried,
+resumed, unchanged), which `run.report` shows so far and `run.wait()` returns. The engine keeps
+its own `engine.Report` of one `TargetReport` per target, for the `runs` row and the totals; a
+script never sees it. There are no callbacks and no hooks: a script iterates the run.
 
 ## The browser
 
@@ -315,19 +437,49 @@ for a live check on the test account.
 
 ## Where things are kept
 
-Everything lives in the home folder, `.flnd` in the current folder:
-`media/<code>/<target>/<category>/…` for the files, `flnd.db` for the history, the targets,
-the runs and each source's state, and `secrets.db` with `secret.key` for the login vault. [storage.md](storage.md) lists every file and
-what its rows hold.
+Everything lives in the home folder, `.flnd` in the current folder unless `--home` or
+`$FLND_HOME` names another:
+
+- `media/<code>/<target>/<category>/…`: the files, each written as `<name>.part` first, which
+  locks itself, so two runs may share a home and never write one file twice;
+- `flnd.db`: what the home remembers (`flnd/_home.py`): `files` (one row per saved file, keyed
+  `<code>:<key>`, with its hash), `targets` (followed or not, its options, cursors, heads and
+  gaps), `runs`, `failures` (the one record of what failed, which status, the automatic retry
+  and `flnd retry` all read), each source's `state`, and how each source logged in;
+- `secrets.db` with `secret.key`: the login vault (`flnd._vault`), whose values never reach a
+  message, a log line or `flnd.db`;
+- `logs/`: each run's scrubbed samples of answers a source couldn't read, kept a month.
+
+Two rules hold every write together: a post's rows commit in one transaction once all its
+files are in place, and a row is written only after its file, so a crash in between leaves a
+whole file without a row, which the next run finds on disk and skips. `flnd check` compares
+the rows with the disk and repairs toward the disk. [storage.md](storage.md) lists every file
+and what its rows hold.
 
 ## Errors
 
 Every error is a `flnd.Error` from one hierarchy (`flnd/errors.py`): `UsageError`,
 `LoginError`, `SiteError` (with `Blocked`, `NotFound` and `Changed`), `NetworkError`,
-`DiskError`, `ToolError` and `SourceError`. The HTTP client classifies what it meets, and a
-source raises the same classes from `flnd.source`. The job turns a failure of one file into a
-failed file, and a failure of a listing into a failed target, so one bad target never stops the
-others; a refused login stops its source, and a full disk stops the run.
+`DiskError`, `ToolError` and `SourceError`. `str(e)` is the one-line message and `e.hint` says
+what to do. Ctrl-C is `flnd.Stopped`, a `KeyboardInterrupt`, so `except flnd.Error` never
+swallows it.
+
+How a failure travels:
+1. **Where it starts.** The HTTP client classifies what it meets (a status, a timeout); a
+   source raises the same classes from `flnd.source`; anything else a listing lets escape is
+   turned into one by `errors.classify` (a bug in a source is a `SourceError`, and its hint
+   names a plugin's author).
+2. **A file's failure** stays the file's: a `Failed` event with its post and path, a row in
+   `failures`, and a retry on the next runs. A 404 or 410 records it gone, never asked again.
+3. **A target's failure** (its listing failed) ends that target alone: a `Failed` event, and a
+   `failures` row for the whole target. A 401 or 403 from the source's own domains is a
+   `LoginError`, which ends the source's later targets too.
+4. **A run's failure**: a usage mistake (before anything is fetched) or a full disk stops the
+   run, and `Run` raises it to the reader. Nothing else is raised: a script reads
+   `report.failed`.
+5. **The CLI** turns what ended the run into an exit code and prints the message and hint,
+   never a traceback for a `flnd.Error`.
+
 [errors.md](errors.md) lists every error class and what to do about it.
 
 ## Where to go next
@@ -336,5 +488,7 @@ others; a refused login stops its source, and a full disk stops the run.
 - [library.md](library.md): flnd from a Python script.
 - [writing-a-source.md](writing-a-source.md): adding a site, testing it, and shipping it as a
   plugin.
+- [storage.md](storage.md): every file of a home, and the rows of `flnd.db`.
+- [media.md](media.md): the steps after a file lands, and `--compress`.
 - [performance.md](performance.md): what is fast, what isn't, and how it is measured.
 - [sources/](README.md#sites): what each site's source does.

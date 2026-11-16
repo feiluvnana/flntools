@@ -14,12 +14,21 @@ side by side in it.
   flnd.db          what the home remembers: files, posts, targets, runs, failures, …
   secrets.db       the vault: logins and tokens, each sealed (AES-256-GCM)
   secret.key       the vault's key (mode 0600)
-  config.toml      settings (optional): `[defaults]` again, dedupe, sidecars, ui
+  config.toml      settings (optional): `[defaults]` again, dedupe, sidecars, ui;
+                   `[sources.<code>]` stop_after
   media/
     <code>/<target>/<category>/…   the downloaded files
-  cache/           things safe to delete
-  logs/            each run's log, once runs write one
+  cache/           reserved for things safe to delete; nothing writes there yet
+  logs/
+    crash-<time>.txt     the traceback of a crash, for a bug report
+    <run>/samples/<n>.txt  the answer a site change was found in, scrubbed (see below)
 ```
+
+`logs/` is swept at the start of each run that downloads: an entry older than 30 days goes.
+A sample is kept only for a parse failure (`flnd.Changed`) inside a recorded run: values under
+keys that look like secrets (`token`, `session`, `cookie`, …) are replaced by "…", an answer
+from a login URL or one that sets a cookie is never kept, and the file is named by a count,
+never by anything the site sent.
 
 A home made by flnd before `flnd.db` also has `metadata/` (see [Migrating an old
 home](#migrating-an-old-home)).
@@ -48,8 +57,9 @@ is its post's date, at noon UTC, so a file browser sorts by when it was posted.
 
 Every file flnd writes, a download or a small file of its own, is first written as a **part**:
 `<name>.part` beside it (`posts/2026-01-02_C1abc_0.jpg.part`), renamed onto its real name once
-whole. So a file with its real name is always whole. A name too long for the file system with
-`.part.json` added (255 bytes) gets a shorter part, its first 180 bytes and an 8-character
+whole. So a file with its real name is always whole. A name too long for the file system once
+`.part.json` and the `.part` of that small file's own write are added (255 bytes) gets a
+shorter part, its first 180 bytes and an 8-character
 digest: `<head>.<digest>.part`.
 
 A download's part:
@@ -61,8 +71,8 @@ A download's part:
 3. gets its post's day, at noon UTC, as its modified time, set on the open file just before it
    closes (the rename keeps it); with no post date, the server's `Last-Modified` day;
 4. is renamed under the name its content calls for (`a.jpg` holding a WebP lands as `a.webp`);
-5. and only then gets its row in `flnd.db`, with the other files of its post. A crash between the rename and the row leaves a whole
-   file without a row.
+5. and only then gets its row in `flnd.db`, with the other files of its post. A crash between
+   the rename and the row leaves a whole file without a row.
 
 Nothing is flushed to the disk per file (no `fsync`): a power cut may lose the last files, which
 the next sync downloads again, but never leaves a half file under a real name.
@@ -105,10 +115,10 @@ sqlite3 .flnd/flnd.db "SELECT key, path, size, date FROM files LIMIT 3"
 How it is written:
 
 - **One transaction per post.** A post's files are downloaded side by side; their rows are
-  committed together, in one statement, once the post's last file is in place. A row is never written before its
-  file, so a crash leaves at worst a whole file without a row, which the next run finds on disk
-  and skips. The `flnd.Saved` events of a post follow its commit, each once the steps after
-  its file (compress, the sidecar) are done.
+  committed together, in one statement, once the post's last file is in place. A row is never
+  written before its file, so a crash leaves at worst a whole file without a row, which the
+  next run finds on disk and skips. The `flnd.Saved` events of a post follow its commit, each
+  once the steps after its file (compress, the sidecar) are done.
 - **WAL with `synchronous = NORMAL`.** A power cut can lose the last commits, never corrupt the
   file. On macOS, `fullfsync` makes SQLite's own syncs reach the disk. Those syncs happen at
   checkpoints, when the log (`flnd.db-wal`) is copied into the database: every 10,000 pages
@@ -200,12 +210,13 @@ With `sidecars = true` under `[defaults]` in `config.toml` (off by default), eac
 }
 ```
 
-`caption`, `author` and `tags` are read from the post's fields under the names sources give
-them (`caption`, `text`, `description` or `title`; `author`, `user`, `username`, `owner` or
-`channel`; `tags` or `hashtags`), and are `null` when the source gives none; `fields` holds every
-field as the source gave it. `file` is the file's own URL without its query, which may carry a
-signature. The sidecar is written after compress, so it is named after the final file, and a
-later `sync --compress` that renames the file renames its sidecar too. Its path is in the row's
+`url`, `caption`, `author` and `tags` are read from the post's fields under the names sources
+give them (`url`, `link` or `permalink`; `caption`, `text`, `description` or `title`; `author`,
+`user`, `username`, `owner` or `channel`; `tags` or `hashtags`), and are `null` when the source
+gives none, as `date` is for a post with no day; `fields` holds every field as the source gave
+it. `file` is the file's own URL without its query and user info, which may carry a signature.
+The sidecar is written after compress, so it is named after the final file, and a later
+`sync --compress` that renames the file renames its sidecar too. Its path is in the row's
 `sidecar`.
 
 ### `posts`
@@ -254,20 +265,34 @@ column. The next download or sync of the target retries every failed file that h
 ### `state`, `logins`, `probes`, `meta`
 
 - `state`: each source's own values between runs (`site.state`), as JSON, keyed `(source,
-  key)`. The engine keeps one entry there too: `redate.asked`, the posts whose date a source's
-  `date` hook couldn't find, so they aren't asked again for 30 days.
+  key)`. flnd keeps one entry of its own there too (`flnd/job.py`): `redate.asked`, the posts
+  whose date a source's `date` hook couldn't find, so they aren't asked again for 30 days.
 - `logins`: how each source logged in (`origin`: "Chrome", "cookies.txt", "qr") and `at`. No
-  secret is ever here.
+  secret is ever here. `flnd logout` removes the source's row.
 - `probes`: what ffmpeg found in a file; safe to empty.
 - `meta`: the schema's `version`, and `migrated`, when an old home was migrated.
 
 ## The vault: `secrets.db` and `secret.key`
 
 `secrets.db` has one table, `secrets`: a row per secret of a source, keyed `(slot, name)`, where
-the slot is the source's code. A cookie source keeps its jar as `cookies`; Telegram keeps its
-session and API credentials. Each value is sealed with AES-256-GCM under the 32-byte key in
+the slot is the source's code. A cookie source keeps its jar as `cookies`, a JSON list of
+cookies in Playwright's shape (each domain with a leading dot); Telegram keeps its `session`
+and its API credentials. Each value is sealed with AES-256-GCM under the 32-byte key in
 `secret.key`, with `<slot>\0<name>` as associated data, so a value copied to another row doesn't
-open. The key file is made on first use with mode 0600.
+open. A sealed value is a version byte (1), a 12-byte random nonce, then the ciphertext and its
+16-byte tag. The key file is made on first use with mode 0600, and opening the vault makes
+neither file: `secrets.db` comes with the first secret, the key with the first value sealed or
+opened.
+
+A cookie login (`flnd login <code> chrome`, or a cookie file) keeps only the cookies of the
+source's domains and their subdomains, and is refused unless one of the cookies the source's
+login names is there. When a run ends, the cookies the site refreshed are written back into the
+jar, for the names already in it. A plain cookie file a much older flnd left,
+`cookies/<code>.txt` (or `.json`), is moved into the vault the first time the source is used,
+and deleted once it is sealed.
+
+The code: `flnd/_cookies.py` reads cookies from a file or a browser, `flnd/_vault.py` seals
+them, and `flnd/_home.py` holds the logins that use both.
 
 `flnd logout <code>` removes a source's rows. Deleting `secret.key` makes every saved login
 unreadable; log in again after.
@@ -287,8 +312,9 @@ The first time flnd opens such a home, it migrates it:
    `flnd.db`: files keep their paths, and each gets the target whose folder its path is in;
    targets keep whether they were followed (a row from before following existed counts as
    followed), their categories, cursors and found targets; failed files become `failures`.
-3. It copies `metadata/secret.key` to `secret.key` and the sealed logins into the new
-   `secrets.db`, as they are: the same key opens them, and nothing is decrypted on the way.
+3. It copies `metadata/secret.key` to `secret.key` (unless the home has one) and the sealed
+   logins into the new `secrets.db`, as they are: the same key opens them, and nothing is
+   decrypted on the way.
 4. It records the migration in `meta` and commits. Every later open skips it.
 
 **The old files are never changed or deleted**, so the previous flnd still runs on the home if

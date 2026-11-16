@@ -297,15 +297,23 @@ with flnd.open(home) as fl:
 | `fl.sources` | a `flnd.Installed` per source: the built-ins, the plugins (a disabled one too, with `disabled` saying why) and `add`'s. Each has `code`, `name`, `origin` (`"built-in"`, `"package"`, `"file"` or `"script"`), `where`, `version`, `api`, `login` (its state), `domains`, `forms`, `categories` and `logins` (its ways to log in). Reading it imports every plugin |
 | `fl.site(source)` | a context manager giving the source's `Site`, with its saved login, pacing and retries, for a script's own requests |
 
-<!-- docs-test: skip -->
 ```python
-with flnd.open() as fl:
-    fl.login("ins", "chrome")
+import pathlib
+
+cookies = pathlib.Path(home, "example_cookies.txt")     # a cookies.txt export, made up here
+cookies.write_text("# Netscape HTTP Cookie File\n"
+                   ".instagram.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\texample-value\n")
+
+with flnd.open(home) as fl:
+    assert fl.login("ins", str(cookies)).state == "logged in"
     with fl.site("ins") as site:
-        page = site.fetch("https://www.instagram.com/example_user/").text
+        assert sorted(site.cookies) == ["sessionid"]
+        # site.fetch("https://www.instagram.com/example_user/") would now ask the real site,
+        # with this login, Instagram's pacing and its retries.
 ```
 
-This block isn't run by the docs test: it reads a real browser's cookies and asks a real site.
+The docs test runs this block offline: logging in from a cookie file reads the file and asks
+no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
 
 ## The CLI's commands, through the library
 

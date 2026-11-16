@@ -3,6 +3,8 @@
 Who calls it: a target's downloads (`flnd.job.Downloads`), one coroutine per file on the run's
 loop. What it calls: the source's `flnd._net.Client` for URLs, `flnd._files.part` for the part,
 `flnd._tools` for ffmpeg, and `flnd._files` to tell that a file is the media it should be.
+It is flnd's side, not a library: it knows a source's `File` and `Fetch` (`flnd.source`), and
+reports each transfer to the live stats (`flnd._stats`) and its progress row (`flnd._ui`).
 
 The flow of one file (`save`):
 1. open and lock `<dest>.part` once, before any request, so a file another run is saving raises

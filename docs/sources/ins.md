@@ -87,7 +87,8 @@ The source mixes three ways of reading:
 2. **Captured responses.** While a profile tab scrolls, flnd keeps the JSON of every response
    whose URL contains `graphql`, and reads the posts from them. It scrolls until the tab's
    `page_info` says there is no next page (`page_state`, the feed's cursor reader), which stops
-   the scroll at once, with no wait for silence.
+   the scroll at once, with no wait for silence. A feed that stops bringing anything (the
+   bottom stays quiet) ends the scroll too.
 3. **The REST API** at `https://www.instagram.com/api/v1/`, the one the web client uses:
    - `media/<pk>/info/` for one post (`pk` is the post's numeric id, decoded from its code);
    - `feed/user/<id>/story/` for a user's active stories;
@@ -189,6 +190,8 @@ Example:
   image URL (`jpg`, `webp`, `png`, `heic`). Handled since 2026-11-11.
 - **Story music** comes in two shapes (a music sticker's asset, or the story's music metadata).
   Handled since 2026-11-13.
+- **Throttled sessions** are sent to the login wall or a challenge page, which lifts after a
+  wait, so a wall is waited out before it counts as a lost login (2026-11).
 - **Login wall paths** are matched as whole path segments, so a profile named like
   `challengers` is not a wall. Handled since 2026-11-16.
 

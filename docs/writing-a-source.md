@@ -117,9 +117,12 @@ assert message.startswith("brk.folder: unknown field {usr}; fields are source, t
 ```
 
 It also refuses a missing `code`, `domains` or `api`, a pattern outside `domains` or given twice,
-a code pattern without the source's code, a route with categories that yields, a template that
-leaves the target's folder, a wrong `login`, `pace`, `limits` or `scroll`, and the names of the
-old API (`needs`, `prepare`, `concurrency`, …) with their new spelling.
+a pattern with other than one placeholder or one named unlike the method's value parameter, a
+code pattern without the source's code, a route or category method that doesn't take
+`(self, site, value)`, a route with categories that yields, a template that leaves the target's
+folder, a `fields` name the engine sets itself, a declared `routes`, `forms` or `categories`
+(flnd derives them), a wrong `login`, `pace`, `limits` or `scroll`, and the names of the old API
+(`needs`, `prepare`, `concurrency`, …) with their new spelling.
 
 ## 3. The forms it reads
 
@@ -132,6 +135,35 @@ assert Example.categories == ("posts",)
 found = Example().resolve("https://www.example.com/example_user/")
 assert (found.source, found.kind, found.value) == ("exm", "user", "example_user")
 ```
+
+A link pattern matches a link's first path parts, and later parts are allowed, so
+`example.com/{user}` also reads `example.com/example_user/tagged`. `www.`, `m.` and the other
+prefixes of the same site are dropped first. Routes are tried in the order the class declares
+them, and the first match wins, so a narrower route comes before a catch-all one. A placeholder
+without a regex matches a user name (letters, digits, `_` and `.`, one leading `@` dropped);
+`{id:[A-Za-z0-9]+}` gives its own:
+
+```python
+class Ordered(Source):
+    code, domains, api = "ord", ("example.com",), 1
+
+    @target("example.com/p/{id:[A-Za-z0-9]+}")
+    def post(self, site: Site, id: str):
+        yield Post(id, [File(f"https://cdn.example.com/{id}.jpg")])
+
+    @target("ord:{user}", "example.com/{user}")
+    def user(self, site: Site, user: str):
+        yield from ()
+
+
+assert Ordered().resolve("https://m.example.com/p/Abc123").kind == "post"
+assert Ordered().resolve("example.com/example_user/tagged").value == "example_user"
+assert Ordered().resolve("@example_user").kind == "user"
+```
+
+Text that no route reads raises `UsageError`, whose message lists the forms. A link a route
+shouldn't read, such as a page the source can't download, goes in `unsupported = {pattern:
+message}`, and is refused with that message unless a more specific route pattern matches too.
 
 ## 4. Testing it without the network
 
@@ -245,6 +277,7 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 
 | member | what it does |
 | --- | --- |
+| `site.target` | the target being downloaded: `.source`, `.kind`, `.value` |
 | `site.fetch(url, params=…, method=…, headers=…, check=…)` | one request, paced and retried, with Chrome's fingerprint; `.json`, `.text` on the answer; a refusal raises a `SiteError` with its `status` (`NotFound` for a 404 or 410, `Blocked` for a 429), a 401 or 403 from the source's own domains a `LoginError`, unless `check=False`; no answer raises `NetworkError` |
 | `site.pages(url, cursor=…, params=…, send=…)` | a paged JSON listing, resumed by flnd (section 1) |
 | `site.open(url)`, `site.url` | load a page in the target's browser tab (False when it didn't load), and where the tab is now |
@@ -262,6 +295,7 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 | `site.client` | what the source's `connect` hook gave, such as Telegram's client |
 | `site.time` | `--when`, for a site that can query a date range itself |
 | `site.info(…)`, `site.warn(…)` | a line naming the target |
+| `site.ask(…)`, `site.interactive` | a question in the terminal, during `flnd login` only (section 8) |
 
 A source never sleeps, retries, writes files, touches the history, or decides when a listing
 stops.
@@ -364,9 +398,9 @@ A source can override a few methods of `Source`:
 | hook | when it runs | used by |
 | --- | --- | --- |
 | `sign(request)` | before each request to the source's domains, each try (section 1) | ins, twt, loi |
-| `connect(site)` | once per run: a context manager whose value is `site.client` | tlg |
+| `connect(site)` | once per run: a context manager (or an async one) whose value is `site.client` | tlg |
 | `date(site, post)` | for an undated post, once its category ends: one paced request for its day | fbk |
-| `resolve(text)` | for target forms no pattern can say | tlg |
+| `resolve(text)` | for target forms no pattern can say; anything else goes on to `super().resolve(text)` | fbk, tlg |
 
 A site with its own login flow subclasses `Login`:
 

@@ -1,25 +1,40 @@
-"""The run's asyncio `Loop`: one event loop on a thread of its own, for any caller.
+"""An asyncio event loop on a thread of its own, which plain threads hand coroutines to.
 
-A run makes one (`flnd.site.shared_browser`), and everything async of that run happens on it:
-the browser (`flnd._browser`), every HTTP transfer (`flnd._net`), a target's downloads, and an
-async source's coroutines (Telegram's Telethon). Other threads hand it work with `Loop.run`,
-which waits for the answer, or `Loop.submit`, which doesn't; that hop costs about 40 µs, small
-against one browser round trip (0.4 ms).
+A library module: it imports only the stdlib, and any threaded program that needs async code
+(a browser driver, an async HTTP client) can use it. It offers:
+- `Loop`: one event loop on a daemon thread, started on first use. Any other thread hands it a
+  coroutine with `Loop.run`, which waits for the answer, or `Loop.submit`, which returns a
+  `concurrent.futures.Future` at once. The hop costs about 40 µs (measured on a laptop), small
+  against one browser round trip (0.4 ms).
+- `held(awaitable, limit=…, slow=…)`: wraps a coroutine to time each stretch it runs without
+  awaiting, so a caller can warn about code that holds the loop up (a blocking call in an
+  `async def`): every other task on the loop waits while it does.
+
+Inside flnd a run makes one `Loop` (`flnd.site.shared_browser`), and everything async of that run
+happens on it: the browser (`flnd._browser`), every HTTP transfer (`flnd._net`), a target's
+downloads, and an async source's coroutines (Telegram's Telethon).
 
     with Loop() as loop:
         title = loop.run(page.evaluate("document.title"))
         running = loop.submit(download(url))       # a concurrent.futures.Future
+
+How a call flows:
+1. The first `run` or `submit` starts the thread, which runs the loop forever (`_started`).
+2. `submit` copies the caller's context and schedules a task on the loop thread-safely; the
+   task's outcome is passed to the caller's future when it ends (`_settled`).
+3. `run` submits the coroutine wrapped by `_carried`, so its error comes back as a value and is
+   raised on the caller's thread, then waits on the future.
+4. `close` cancels every task still on the loop, shuts down its async generators and executor,
+   stops the loop and joins the thread, waiting at most `LOOP_GRACE` for each step.
 
 Rules a change must keep:
 - `Loop.run` is never called on the loop's own thread: it would wait for itself forever, so it
   raises instead. Code already on the loop awaits.
 - A coroutine handed over runs in a copy of its caller's context (`contextvars`), so the clock a
   test installed (`flnd._time.use`) and any other context variable reach it.
-- Closing cancels whatever still runs on the loop, then stops its thread.
-
-`held(awaitable, limit=…, slow=…)` wraps a coroutine to time each stretch it runs without
-awaiting, so a caller can warn about code that holds the loop up (a blocking call in an `async
-def`): every other task of the run waits while it does.
+- Closing cancels whatever still runs on the loop, then stops its thread. `_lock` guards the
+  start and the close, which two threads may reach at once; it is never held while waiting on
+  the loop, so the loop's own callbacks can't deadlock on it.
 """
 
 from __future__ import annotations
@@ -251,6 +266,7 @@ class _Held:
                 sent, thrown = None, error
 
     def _check(self, start: float) -> None:
+        # Real monotonic time on purpose: a fake clock doesn't move during a blocking call.
         took = time.monotonic() - start
         if took >= self._limit:
             self._slow(took)
@@ -305,6 +321,12 @@ def _serve_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def _cancel_pending() -> None:
+    """Cancel every other task on the running loop and wait for them, then shut the loop down.
+
+    Runs on the loop, as `Loop.close`'s last coroutine. Each task's error or cancel is collected
+    and dropped (`return_exceptions`), since nobody is left to read it. Then the loop's async
+    generators are closed and its default executor's threads joined, so nothing outlives it.
+    """
     current = asyncio.current_task()
     pending = [task for task in asyncio.all_tasks() if task is not current]
     for task in pending:

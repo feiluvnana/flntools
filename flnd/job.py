@@ -1,8 +1,16 @@
 """The job: one target of a source, from its route to its rows in `flnd.db`.
 
+What it holds: `download`, the one entry for a target; `Board`, the progress rows and the source
+of `Progress` events; `Ledger`, which plans each post's files (skip, link, hold for a day,
+queue); `Downloads`, which runs the queued files on the run's loop and commits each post's
+rows; the listing loop (`_read`, `_list_one`, `_sync_one`, `_retry_failed`) with its early
+stops; and `plan`, `place`, `posts` and `discover`, the pieces a dry run and `flnd.testing`
+reuse.
+
 Who calls it: the engine (`flnd.engine`), once per target, on the target's listing thread.
 What it calls: the source's route and categories through a `TargetSite`, the downloader
-(`flnd._transfer`) on the run's loop, and the home's `flnd.db` (`flnd._home`).
+(`flnd._transfer`) on the run's loop, the step chain (`flnd._steps`) once a file's row is
+written, and the home's `flnd.db` (`flnd._home`).
 
 How one target goes (`download`):
 1. Sweep stale parts from the target's folder, and read the target's row: which categories
@@ -38,6 +46,15 @@ Rules a change must keep:
 - A retry never uses a stored URL: `flnd.db` keeps only a redacted one, and a CDN's signed URL
   expires within hours. It lists the post again, through the source, from `(target, post,
   file)` and the cursor of the post's page.
+- Two threads touch a target. The listing thread runs the source, the `Ledger` and
+  `Downloads.submit`; each file's task runs on the run's loop. They share only what a lock
+  guards: the board's counts (`Board._lock`), the downloads' lists of written and landed files
+  (`Downloads._writing`) and its queue count (`Downloads._changed`). A source's code runs on
+  the listing thread only, so a task that needs a lazy post's files again asks that thread
+  (`_Refresh`), which answers between two files.
+- A post's rows commit in one transaction, once its last file settled, and only after each of
+  its files is in place: a row never names a file that isn't there. `Saved` comes after the
+  commit and the chain's steps, so a script that reads the history on `Saved` finds the row.
 """
 
 from __future__ import annotations
@@ -89,7 +106,10 @@ __all__ = [
 LOGIN_WALLS = frozenset({401, 403})
 # The statuses that stop asking a site for dates for the rest of the run.
 BLOCKS = LOGIN_WALLS | {429}
+# The day a `{date}_` filename template puts in front of a name, which `redate` replaces.
 LEADING_DAY = re.compile(r"\d{4}-\d\d-\d\d_")
+# The hour (UTC) a file's modified time is set to on its post's day: noon reads as the same day
+# in every time zone from UTC-11 to UTC+11.
 NOON = 12
 # Posts in a row older than `--when` that end a `newest_first` listing: more than the posts a
 # profile pins above its newest (Instagram pins up to 3).
@@ -97,19 +117,28 @@ OLDER_IN_A_ROW = 5
 # Saved posts in a row, the head an earlier run saw counted, that end a sync once it met that
 # head: the head itself, and the post after it, which shows the head wasn't pinned above new ones.
 HEAD_IN_A_ROW = 2
+# Template fields known only once a post's files are listed: a key that names one can't be
+# built from the post alone, so a lazy post's files must be listed to tell if it is saved.
 LISTED_FIELDS = frozenset({"count", "index", "extension", "path"})
+# The extension a video joined with its audio track gets, unless both are WebM.
 DASH_EXTENSION = ".mp4"
+# The statuses a CDN answers for a signed link that expired; a lazy post is asked again once.
 EXPIRED = frozenset({403, 410})
 STOPPED = "stopped by Ctrl-C"
 FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
+# Seconds a waiting thread sleeps between checks of the stop state and the refresh queue: short
+# enough that Ctrl-C feels at once, long enough to cost nothing.
 WAKE = 0.1
 # Seconds an async listing may run without awaiting before it is warned about (`_steps`).
 HELD = 10.0
 # A target's queue holds this many times its `jobs` files, queued or downloading, before its
 # listing waits: enough that a burst of small files never starves the transfers.
 QUEUE = 4
+# Seconds a post the `date` hook had no day for isn't asked again (30 days), and the key of the
+# source's saved state that keeps those posts.
 ASKED_TTL = 30 * 24 * 3600
 ASKED_KEY = "redate.asked"
+# The `--only` value that takes every category.
 ALL = "all"
 # Posts a retry reads past the cursor of a failed post's page before it gives the post up for
 # this run: the post was on that page, and a page holds at most a few dozen, so a hundred
@@ -231,7 +260,12 @@ def _on_domains(error: SiteError, domains: Sequence[str]) -> bool:
 
 @dataclass
 class Counts:
-    """Counters for one category's files and saved bytes."""
+    """One category's counts of files, as its board line and its `Progress` events show them.
+
+    A file moves from `queued` to `downloading`, then to `saved`, `skipped` or `failed`.
+    `linked` counts files linked from another category's folder, `later` the links held back
+    until the file they point to lands, and `bytes` the bytes saved.
+    """
 
     found: int = 0
     queued: int = 0
@@ -339,7 +373,18 @@ class Board:
                 line.streak = streak
 
     def count(self, target: Target, category: str, **steps: int) -> None:
-        """Add `steps` to the category's counts and refresh its row."""
+        """Add `steps` to the category's counts, refresh its row, and maybe send `Progress`.
+
+        Called from the listing thread (found, skipped) and from download tasks on the loop
+        (downloading, saved, failed), so the counts change under the board's lock. A found
+        target of a search counts on the search's line, and its skips are also kept per found
+        target, for its own report.
+
+        Args:
+            target: the target the files belong to.
+            category: its category; "" for a target without categories.
+            steps: how much each count of `Counts` moves, such as `saved=1, downloading=-1`.
+        """
         owner = self.parent or target
         with self._lock:
             line = self._lines.get((owner, category)) or self._open(owner, category)
@@ -420,7 +465,14 @@ class Board:
         return None if line is None else line.row
 
     def totals(self, target: Target) -> Counts:
-        """Return summed counts across every category for `target`."""
+        """The counts of every category of `target`, summed.
+
+        Args:
+            target: the target; for a search's found target, only its skips are kept apart.
+
+        Returns:
+            A new `Counts`; changing it changes nothing on the board.
+        """
         total = Counts()
         with self._lock:
             if self.parent is not None and target != self.parent:
@@ -493,7 +545,14 @@ class Board:
             return [line for line in self._lines.values() if line.target == target]
 
     def _show(self, line: _Line) -> None:
-        """Update the row label/count and finish it when listed and idle."""
+        """Redraw a line's row, and finish it once its listing ended and no file is pending.
+
+        The label and the state are read under the lock; the row is drawn outside it, since a
+        row may take the UI's own lock.
+
+        Args:
+            line: the line to redraw.
+        """
         with self._lock:
             label = self._label(line)
             done = line.listed and not line.counts.pending
@@ -512,7 +571,14 @@ class Board:
                     line.row.finish()
 
     def _label(self, line: _Line) -> str:
-        """Format one status line's compact summary label."""
+        """One line's label: target, category, then the counts that aren't zero, and its note.
+
+        Args:
+            line: the line.
+
+        Returns:
+            Such as `ins:example_user posts | 12 saved | 3 skipped | 4.1 MB`.
+        """
         c = line.counts
         subj = str(line.target).ljust(self.widths[0]) if self.widths[0] else str(line.target)
         cat = line.label.ljust(self.widths[1]) if self.widths[1] else line.label
@@ -531,7 +597,17 @@ class Board:
 
 
 def wanted(source: type[Source], route: Route, options: Options) -> tuple[Category, ...]:
-    """Return the categories of `route` selected by `--from` in declaration order."""
+    """The categories of `route` that `--only` selects, in the order the source declares them.
+
+    Args:
+        source: the source's class (unused; kept for the callers).
+        route: the target's route.
+        options: the target's options; `categories` None or naming `all` takes every one.
+
+    Returns:
+        The categories; a name `--only` gives that the route lacks is left out (`validate`
+        refused it before the run).
+    """
     names = options.categories
     if names is None or ALL in names:
         return route.categories
@@ -542,7 +618,21 @@ def wanted(source: type[Source], route: Route, options: Options) -> tuple[Catego
 def posts(
     source: Source, site: Site, target: Target, options: Options, *, run_async: RunAsync
 ) -> Generator[Post, None, None]:
-    """Yield every post from `target`'s route and wanted categories kept by `--time`."""
+    """Every post of `target`'s route, or of each wanted category, that `--when` keeps.
+
+    It is the plain listing, with none of the job's stops at saved posts: `flnd.testing` and a
+    plan use it. The route is called once, and each category gets what it returned.
+
+    Args:
+        source: the target's source.
+        site: the `Site` the route and categories are given.
+        target: the target.
+        options: its options: `--when` and `--only`.
+        run_async: runs a coroutine on the run's loop, for an async route or category.
+
+    Yields:
+        Each post, filed under its category, in the order the source yields them.
+    """
     span = Range(options.since, options.until)
     route = next(r for r in source.routes if r.kind == target.kind)
     categories = wanted(type(source), route, options)
@@ -564,7 +654,22 @@ def posts(
 def _context(
     source: Source, route: Route, site: Site, target: Target, run_async: RunAsync
 ) -> Any:
-    """Call `target`'s route method and await it when async."""
+    """Call `target`'s route method, awaiting it on the run's loop when it is async.
+
+    A route without categories returns its listing, which is left as it is (an async
+    generator is iterated by `_steps`); a route with categories returns its context, the value
+    every category gets.
+
+    Args:
+        source: the target's source.
+        route: its route.
+        site: the `Site` the route is given.
+        target: the target, whose `value` the route reads.
+        run_async: runs a coroutine on the run's loop.
+
+    Returns:
+        What the route returned, awaited when it is a coroutine.
+    """
     context = getattr(source, route.kind)(site, target.value)
     if route.categories and inspect.iscoroutine(context):
         context = run_async(context)
@@ -574,7 +679,19 @@ def _context(
 def plan(
     run: SourceRun, target: Target, options: Options, *, row: Any = None
 ) -> Generator[Placed, None, None]:
-    """Yield every `Placed` file a download of `target` would save without writing."""
+    """Every file a download of `target` would save, placed, with nothing written (`--dry`).
+
+    A lazy post's files are listed, which may cost a request each. `--limit` counts posts.
+
+    Args:
+        run: the source's run.
+        target: the target.
+        options: its options: `--when`, `--only`, `--limit`.
+        row: unused; kept for the callers.
+
+    Yields:
+        Each file's `Placed`: its path under the target's folder and its history key.
+    """
     site = TargetSite(run, target, time=Range(options.since, options.until))
     route = next(r for r in run.source.routes if r.kind == target.kind)
     categories = {c.name: c for c in route.categories}
@@ -599,7 +716,25 @@ def place(
     source: Source, post: Post, files: Sequence[File], *, category: Category | None = None,
     route: Route | None = None, target: Target | None = None, options: Options | None = None,
 ) -> list[Placed]:
-    """Resolve destination path and history key for each file of `post`."""
+    """Give each file of `post` its path under the target's folder and its history key.
+
+    The path is the folder template (category, else route, else source) filled with the
+    file's fields, then its name (`_resolve_name`). Two files of one post with one name get
+    the later one's number added, so neither is skipped as already queued. The key template's
+    default is the path itself.
+
+    Args:
+        source: the post's source, whose templates apply when its category has none.
+        post: the post.
+        files: its files, in order; a file's number is its index.
+        category: the post's category; None for a route's own posts.
+        route: the target's route, whose `folder` comes before the source's.
+        target: the target, for the `{source}` and `{target}` fields; None for the source's.
+        options: the target's options, for the `{query}` field of a search's found target.
+
+    Returns:
+        One `Placed` per file, in order.
+    """
     folder = _folder_format(source, route, category)
     filename, key = (_format(source, category, name) for name in ("filename", "key"))
     posted = day(post.date)
@@ -628,7 +763,24 @@ def _file_values(
     source: Source, post: Post, file: File, num: int, count: int, posted: datetime.date | None,
     extension: str, target: Target | None, options: Options | None,
 ) -> dict[str, Any]:
-    """Build template formatting fields for one file of a post."""
+    """The fields a folder, filename or key template of one file may name.
+
+    The post's own `fields` come first, so flnd's names (`post`, `date`, `num`…) win.
+
+    Args:
+        source: the post's source; its code is `{source}` when no target is given.
+        post: the post.
+        file: the file (unused; kept for the callers).
+        num: the file's number in the post, from 0.
+        count: how many files the post has; `{index}` is "" for a post of one file.
+        posted: the post's day; None when the site gave none.
+        extension: the file's extension, with its dot; "" before it is known.
+        target: the target, for `{source}` and `{target}`; None for "".
+        options: the target's options, for `{query}`; None for "".
+
+    Returns:
+        The fields, by name.
+    """
     code = target.source if target is not None else source.code
     target_val = target.value if target is not None else ""
     query_val = (options.query or "") if options is not None else ""
@@ -642,7 +794,22 @@ def _file_values(
 def _resolve_name(
     post: Post, file: File, filename: str, values: Mapping[str, Any], extension: str
 ) -> str:
-    """Compute a safe filename for one file of `post`."""
+    """The file's name: from the filename template, or the name the source gave it.
+
+    A file with no name of its own is named by the template, plus its extension. A file the
+    source named after the template (with or without the date) keeps the template's form and
+    its own suffix. Any other name the source gave is kept, made safe for every file system.
+
+    Args:
+        post: the post; its id names the file when the template comes out empty.
+        file: the file.
+        filename: the filename template.
+        values: the file's fields (`_file_values`).
+        extension: the file's extension, with its dot.
+
+    Returns:
+        The file's name, with no folder.
+    """
     formatted = fill(filename, values) or _text.filename(post.id)
     if file.name is None:
         return formatted + extension
@@ -657,7 +824,23 @@ def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
 
 
 class Ledger:
-    """Tracks queued files, skips, links, and undated posts for one target."""
+    """One target's plan of what to download: which files are new, skipped, linked or held.
+
+    The listing thread hands it each post (`take`); it places the post's files, skips those
+    the history or the disk already has, links a file saved in another category's folder, and
+    returns the rest for `Downloads`. It also dates posts the site gave no day: a post is held
+    until its category ends, then given the day its key's row has, the source's `date` hook's
+    answer, or its nearest dated neighbour's in listing order (marked estimated).
+
+    Only the listing thread calls it, so its own state needs no lock.
+
+    Args:
+        run: the source's run: its source and settings (the home, the database, the sink).
+        site: the target's site, for warnings and the source's saved state.
+        target: the target.
+        board: the progress rows its counts go to.
+        options: the target's options, for `--again` and the templates' fields; None for none.
+    """
 
     def __init__(
         self, run: SourceRun, site: TargetSite, target: Target, board: Board, *,
@@ -687,7 +870,20 @@ class Ledger:
         self.retrying = False
 
     def take(self, post: Post, *, hold: bool = True) -> tuple[Outcome, list[_Queued]]:
-        """Queue unsaved files of `post`, skipping already-saved or held posts."""
+        """Plan one post: the files to download, after skipping what is saved.
+
+        1. Date it (`_dated`): an undated post may be held until its category ends.
+        2. A lazy post (files listed only on demand) is checked by its keys first, so a saved
+           one costs no request for its files.
+        3. Place its files and queue those not saved (`_queue_post_files`).
+
+        Args:
+            post: the post, as the listing yielded it.
+            hold: whether an undated post may be held for a day; False when it is released.
+
+        Returns:
+            What became of the post, and its files to download (empty unless `QUEUED`).
+        """
         category = self._categories.get(post.category)
         first = self._first_key(post, category)
         dated = self._dated(post, category, hold=hold)
@@ -712,7 +908,22 @@ class Ledger:
     def _queue_post_files(
         self, post: Post, listed: Sequence[File], category: Category | None, first: str | None
     ) -> tuple[Outcome, list[_Queued]]:
-        """Place and queue each file of `post`, writing inline text files immediately."""
+        """Place each file of `post` and queue those not held, writing inline text files now.
+
+        A file with `content` (a caption, a text post) is written at once, never queued. A
+        held file is skipped, or linked from another category's folder. Videos go to the end
+        of the post's queue, so its small files land first.
+
+        Args:
+            post: the post, dated.
+            listed: its files.
+            category: its category; None for a route's own posts.
+            first: its first file's key, for whether its day is estimated; None for none.
+
+        Returns:
+            `QUEUED` with the files to download; else `SAVED` when every file was held (and
+            not by this run's queue), or `EMPTY`.
+        """
         found = 0
         todo: list[_Queued] = []
         for placed in place(
@@ -767,7 +978,14 @@ class Ledger:
             self._link(dest, candidate if candidate.is_file() else Path(held), category, item_key)
 
     def link_queued(self, written: Mapping[str, Path]) -> None:
-        """Create deferred links for files queued earlier in this run."""
+        """Make the links held back because their file was still queued in this run.
+
+        Called once the downloads finished. The file's row gives its final path, since the
+        compress step may have changed its suffix; a file that never landed gets no link.
+
+        Args:
+            written: each landed file's path, by history key.
+        """
         for dest, item_key, category in self._later:
             holder = written.get(item_key)
             # The compress step may have moved the file to a new suffix; its row says where.
@@ -807,7 +1025,15 @@ class Ledger:
         ui.debug("link {name} -> {held}", name=self._name(dest), held=self._name(holder))
 
     def release(self) -> list[Post]:
-        """Release held undated posts with any discovered or nearest-neighbor date."""
+        """Hand back the posts held for a day, as their category ends, each dated if it can be.
+
+        A post's day comes from the listing (its key seen dated later), the source's `date`
+        hook, or else its nearest dated neighbour in listing order, marked estimated so a later
+        run may date it for real (`redate`).
+
+        Returns:
+            The held posts, in the order they were held; one with no day at all stays undated.
+        """
         waiting, self._waiting = self._waiting, {}
         nearest = self._nearest_dates() if waiting else {}
         released: list[Post] = []
@@ -821,7 +1047,16 @@ class Ledger:
         return released
 
     def redate(self) -> int:
-        """Date undated or estimated saved files of this target using the site's `date` hook."""
+        """Date the target's saved files that have no day, or an estimated one (a sync's start).
+
+        Only for a source with a `date` hook. Each such row's post is asked once; the answer
+        renames the file when its filename template starts with `{date}_`, sets its modified
+        time, and updates its row. A post the hook had no day for isn't asked again for 30
+        days (`ASKED_TTL`).
+
+        Returns:
+            How many files were dated.
+        """
         if not self._asking:
             return 0
         if self._db is None:
@@ -848,7 +1083,12 @@ class Ledger:
         return dated
 
     def _load_asked(self) -> dict[str, float]:
-        """Load non-expired 30-day `asked` cache entries from `site.state`."""
+        """The posts the `date` hook had no day for, asked in the last 30 days.
+
+        Returns:
+            Each post id with the time it was asked, from the source's saved state; entries
+            older than `ASKED_TTL` are dropped.
+        """
         now = time.time()
         raw = self.site.state.get(ASKED_KEY)
         if not isinstance(raw, dict):
@@ -864,7 +1104,17 @@ class Ledger:
             self.site.state[ASKED_KEY] = self._asked
 
     def _ask(self, post: Post) -> datetime.date | None:
-        """Query the site's `date` hook for `post`, caching misses for 30 days."""
+        """Ask the source's `date` hook for `post`'s day; a miss isn't asked again for 30 days.
+
+        A refused login, a block, a 401, 403 or 429 stops asking for the rest of the run, with
+        one warning; any other site or network error leaves this post undated.
+
+        Args:
+            post: the post.
+
+        Returns:
+            Its day; None when the hook has none, failed, or asking has stopped.
+        """
         if not self._asking:
             return None
         try:
@@ -882,7 +1132,14 @@ class Ledger:
         return found
 
     def _nearest_dates(self) -> dict[str, datetime.date]:
-        """Compute nearest dated neighbor in listing order for each undated key."""
+        """For each held undated post, the day of its nearest dated post in listing order.
+
+        Two passes over the order: the first notes each undated post's nearest dated one
+        before it, the second the nearest after it; the closer wins, the earlier on a tie.
+
+        Returns:
+            The day, by the undated post's key; a post with no dated neighbour is left out.
+        """
         n = len(self._order)
         left: list[tuple[int, datetime.date] | None] = [None] * n
         last: tuple[int, datetime.date] | None = None
@@ -906,7 +1163,21 @@ class Ledger:
         return nearest
 
     def _dated(self, post: Post, category: Category | None, *, hold: bool) -> Post | None:
-        """Resolve `post`'s date from listing memory or hold it until category end."""
+        """Give `post` a day if one is known, or hold it until its category ends.
+
+        A post whose first key can't be built from its fields alone (`_first_key`) can't be
+        matched later, so it goes on as it is. A day comes from the post, an earlier post of
+        the same key in this run, or the key's row in `flnd.db`.
+
+        Args:
+            post: the post.
+            category: its category, whose key template applies.
+            hold: whether it may be held; False when it is released, so it goes on undated.
+
+        Returns:
+            The post, dated when a day was found; None when it is held (or a repeat of a held
+            post, which is skipped).
+        """
         item_key = self._first_key(post, category)
         if item_key is None:
             return post
@@ -933,7 +1204,16 @@ class Ledger:
         return None
 
     def _first_key(self, post: Post, category: Category | None) -> str | None:
-        """Return the history key of `post`'s first file from its fields, or None."""
+        """The history key of `post`'s first file, from the post's fields alone.
+
+        Args:
+            post: the post.
+            category: its category, whose key template applies.
+
+        Returns:
+            `<code>:<key>`; None when the key template needs what only listing the files gives
+            (`LISTED_FIELDS`) or the day, or fills to nothing.
+        """
         template = _format(self.source, category, "key")
         if not template or _fields(template) & (LISTED_FIELDS | {"date"}):
             return None
@@ -947,7 +1227,18 @@ class Ledger:
         return not template or bool(_fields(template) & LISTED_FIELDS)
 
     def _saved_first(self, post: Post, category: Category | None) -> Outcome | None:
-        """Check whether all files of a lazy post are already saved by their keys."""
+        """Whether a lazy post's files are all saved, judged by their keys, before listing them.
+
+        The first file's row holds the post's count of files; each later key is checked too.
+
+        Args:
+            post: the lazy post.
+            category: its category, whose key template applies.
+
+        Returns:
+            `SAVED` when every file is held; `EMPTY` when one is queued in this run already;
+            None when it can't be told without listing the files.
+        """
         template = _format(self.source, category, "key")
         if not template or _fields(template) & LISTED_FIELDS:
             return None
@@ -982,11 +1273,20 @@ class Ledger:
         self.settings.emit(Skipped(self.target, category, post, path))
 
     def _held(self, dest: Path | None, item_key: str) -> str | None:
-        """Return the name holding a file if queued, on disk, saved or gone, else None.
+        """The name of what holds a file already: queued, on disk, saved, or gone.
 
         A file the site answered 404 or 410 for is recorded gone, and held by its planned name,
         so it isn't asked for again unless the run was told to (`again`). An archive removed
-        once extracted is held by the folder it was extracted to.
+        once extracted is held by the folder it was extracted to. The disk is checked before
+        the database, since a file there with bytes is saved whatever the rows say.
+
+        Args:
+            dest: where the file would go; None to check by key only.
+            item_key: its history key.
+
+        Returns:
+            The holder's name (relative to the target's folder when inside it); None when the
+            file is new.
         """
         for known in (dest, item_key):
             if known is not None and known in self._queued:
@@ -1004,7 +1304,14 @@ class Ledger:
         return self._name(Path(folder)) if folder and Path(folder).is_dir() else None
 
     def _name(self, path: Path) -> str:
-        """Return `path` relative to `self.folder` when inside it, else as a full string."""
+        """A path as the debug lines and links name it.
+
+        Args:
+            path: a path.
+
+        Returns:
+            It relative to the target's folder, with `/`, when inside it; else in full.
+        """
         return (
             path.relative_to(self.folder).as_posix()
             if path.is_relative_to(self.folder)
@@ -1013,7 +1320,18 @@ class Ledger:
 
 
 def _distinct_folders(root: Path, dest: Path, holder: Path) -> bool:
-    """Return whether `dest` and `holder` live in different top-level category folders."""
+    """Whether two files sit in different category folders of one target.
+
+    Only then is one linked from the other: two names in one folder are the same file twice.
+
+    Args:
+        root: the target's folder.
+        dest: where the link would go.
+        holder: the file saved already.
+
+    Returns:
+        True when both are under `root`, at least one folder deep, in different first folders.
+    """
     if not (dest.is_relative_to(root) and holder.is_relative_to(root)):
         return False
     here = dest.relative_to(root).parts
@@ -1022,7 +1340,18 @@ def _distinct_folders(root: Path, dest: Path, holder: Path) -> bool:
 
 
 def _try_link(dest: Path, holder: Path) -> bool:
-    """Create a relative symlink or hard link from `dest` to `holder`, returning success."""
+    """Link `dest` to `holder`: a relative symlink, else a hard link where symlinks fail.
+
+    Windows refuses a symlink without developer mode, and some file systems (FAT, some network
+    shares) refuse both.
+
+    Args:
+        dest: the link's path; its folder exists.
+        holder: the file it points to.
+
+    Returns:
+        Whether a link was made.
+    """
     try:
         dest.symlink_to(os.path.relpath(holder, dest.parent))
         return True
@@ -1086,9 +1415,17 @@ class Downloads:
             return dict(self._written)
 
     def submit(self, queued: _Queued) -> bool:
-        """Start one file's download on the loop once the queue has room; False on stop.
+        """Start one file's download on the loop once the queue has room.
 
-        Called on the listing thread; it waits while the queue is full, answering refreshes.
+        Called on the listing thread; it waits while the queue is full, answering the
+        refreshes download tasks ask for meanwhile. The post's count of open files goes up
+        first, so its rows commit only once its last file settles.
+
+        Args:
+            queued: the file, placed, with its destination and key.
+
+        Returns:
+            True once it is queued; False when the run was told to stop, and nothing was.
         """
         if not self._room():
             return False
@@ -1107,7 +1444,14 @@ class Downloads:
         return True
 
     def wait(self) -> None:
-        """Wait until all submitted downloads finish while answering link refreshes."""
+        """Wait on the listing thread until every submitted download ends, answering refreshes.
+
+        After the first Ctrl-C, the target's rows say how many files are finishing.
+
+        Raises:
+            KeyboardInterrupt: the second Ctrl-C (`stop.now`); the running files stop through
+                the client's own stop.
+        """
         shown: str | None = None
         while True:
             self._answer()
@@ -1166,7 +1510,13 @@ class Downloads:
             refresh.done.set()
 
     def _room(self) -> bool:
-        """Wait for room in the queue while answering refreshes; False on stop."""
+        """Wait for room in the target's queue (`QUEUE` times `jobs`), answering refreshes.
+
+        A place taken here is given back by `_ended` when the file's task ends.
+
+        Returns:
+            True with a place taken; False once the run was told to stop.
+        """
         limit = QUEUE * max(self.run.jobs, 1)
         while True:
             self._answer()
@@ -1193,7 +1543,11 @@ class Downloads:
 
         A `KeyboardInterrupt` (the second Ctrl-C, `Stopped`) escaping a task would end the
         loop's thread, so whatever the download raises is logged here, and the listing thread
-        sees the stop through the run's events.
+        sees the stop through the run's events. However it ends, the file settles (its post's
+        rows may commit) and its queue place is given back.
+
+        Args:
+            queued: the file.
 
         Returns:
             Whether the file landed.
@@ -1290,7 +1644,24 @@ class Downloads:
                 meta=_metadata(self.source, self.target, placed) if metadata else None))
 
     async def _download(self, queued: _Queued) -> bool:
-        """Download one file, refreshing an expired lazy link once if needed."""
+        """Download one file into place, on the loop, and hold its row for its post's commit.
+
+        1. Fetch it (`_fetch`); a lazy post's expired link is asked for again once.
+        2. A file another run is saving is skipped; a site or network failure fails this file
+           alone, recorded in `flnd.db` for a later retry.
+        3. Dedupe: a file whose bytes are saved already becomes a hard link to them.
+        4. Hold its row until its post's last file settles (`_downloaded`).
+
+        Args:
+            queued: the file.
+
+        Returns:
+            Whether it landed; False for a skip, a failure, or a stop after the first Ctrl-C.
+
+        Raises:
+            KeyboardInterrupt: the second Ctrl-C.
+            DiskError: the file can't be written; it is recorded failed first.
+        """
         placed = queued.placed
         received: dict[str, str] = {}
         try:
@@ -1382,7 +1753,25 @@ class Downloads:
     async def _fetch(
         self, queued: _Queued, file: File, received: dict[str, str]
     ) -> _files.Saved | None:
-        """Download `file` or signal link expiry for a lazy post."""
+        """Save `file` into its part and onto its name (`flnd._transfer.save`).
+
+        A file the source fetches itself (a callable `url`) takes a place under the source's
+        own gate, since the client has no host to cap it by. A 403 or 410 for a lazy post's
+        file, not refreshed yet, is an expired link: it is kept on `queued.refreshed`, and the
+        caller asks for a fresh one.
+
+        Args:
+            queued: the file's queue entry.
+            file: the file to fetch: the listed one, or its refreshed copy.
+            received: filled with the response's headers.
+
+        Returns:
+            Where it landed; None when it has no URL or its link expired.
+
+        Raises:
+            SiteError: the site refused it (an expired link a second time included).
+            NetworkError: the transfer failed after its retries.
+        """
         placed = queued.placed
         if file.url is None:
             return None
@@ -1407,7 +1796,21 @@ class Downloads:
             return None
 
     async def _expired(self, queued: _Queued) -> File | None:
-        """Re-fetch a lazy post's files on the lister thread for an expired link."""
+        """Ask the listing thread for a lazy post's files again, for a fresh copy of one link.
+
+        A source's listing runs only on its thread, so the task queues a `_Refresh` there and
+        waits for it (`_dispatch_refresh`).
+
+        Args:
+            queued: the file whose link expired; `refreshed` holds the refusal.
+
+        Returns:
+            The fresh file, at the same number in the post.
+
+        Raises:
+            SiteError: the refusal again, when no fresh link came (the listing failed, or the
+                post has fewer files now, or the file became inline content).
+        """
         refusal = queued.refreshed
         assert refusal is not None
         refresh = _Refresh(queued.placed.post, self.settings.stop)
@@ -1426,7 +1829,17 @@ class Downloads:
         return fresh
 
     async def _dispatch_refresh(self, refresh: _Refresh) -> None:
-        """Queue a refresh onto the lister thread and wait, on the loop, for it to be done."""
+        """Queue a refresh onto the listing thread and wait, on the loop, for it to be done.
+
+        Once the listing ended (`_cancel_refreshes`), the refresh is done at once, with no
+        files, so the task fails fast instead of waiting for an answer that won't come.
+
+        Args:
+            refresh: the request; `done` is set once it is answered.
+
+        Raises:
+            KeyboardInterrupt: the second Ctrl-C came while waiting.
+        """
         with self._changed:
             if self._answering:
                 self._refreshes.append(refresh)
@@ -1482,7 +1895,21 @@ def sampled(settings: Any, error: BaseException) -> None:
 
 
 def download(run: SourceRun, target: Target, board: Board, options: Options) -> TargetReport:
-    """Download one target of a source, counting progress on `board`."""
+    """Download one target of a source, counting progress on `board` (see the module's steps).
+
+    Called by the engine on the listing thread, inside the source's run. A failure of the
+    listing fails the target alone: it is in the report, never raised.
+
+    Args:
+        run: the source's run: its session, clients, loop and settings.
+        target: the target, resolved.
+        board: the progress rows its counts go to.
+        options: its options: `--when`, `--only`, `--limit`, `--again`, sync and retry.
+
+    Returns:
+        Its report: the files written, the skips, the targets its listings yielded, and the
+        error that ended it (`Stopped` when the run was stopped before it began).
+    """
     if run.settings.stop.soon.is_set():
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
     # No lock on the target: each file's part locks itself, so two runs may share a target and
@@ -1494,7 +1921,24 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
 def _run_download(
     run: SourceRun, target: Target, board: Board, options: Options
 ) -> TargetReport:
-    """Execute the locked download lifecycle for `target`."""
+    """Run one target from its listing to its rows: the steps of the module docstring.
+
+    1. Make its ledger and downloads, and read its row (what earlier runs left).
+    2. List it and wait for its downloads (`_execute_listing`), then make the held links.
+    3. Keep its listings' cursors, heads, gaps and completeness (`Home.progress`); a found
+       target of a search keeps nothing, since the search's row keeps what it found.
+    4. A target that ran to its end clears its whole-target failure and recounts its files.
+    5. Report it, and end its rows (`_ended`).
+
+    Args:
+        run: the source's run.
+        target: the target.
+        board: the progress rows.
+        options: its options.
+
+    Returns:
+        Its report.
+    """
     started = time.monotonic()
     site = TargetSite(run, target, time=Range(options.since, options.until))
     ledger = Ledger(run, site, target, board, options=options)
@@ -1621,7 +2065,25 @@ def _ended(
     run: SourceRun, board: Board, report: TargetReport, error: BaseException | None, *,
     complete: str, started: float,
 ) -> TargetReport:
-    """Finalize `board` lines and return `TargetReport` with any error."""
+    """End a target's rows and report it: failed, stopped, or done.
+
+    A failure is classified (`failure`), recorded in `flnd.db` as a failure of the whole
+    target (with a scrubbed sample of a `Changed` answer), and sent as `Failed`.
+
+    Args:
+        run: the source's run.
+        board: the progress rows.
+        report: the target's report so far.
+        error: what ended the listing; None when it finished.
+        complete: the listings it read to their end, for the debug line.
+        started: when it started, from `time.monotonic`.
+
+    Returns:
+        The report, with its `error` set when it failed or was stopped.
+
+    Raises:
+        KeyboardInterrupt: the second Ctrl-C (any `error` that isn't an `Exception`).
+    """
     target = report.target
     if error is not None:
         if not isinstance(error, Exception):
@@ -1652,6 +2114,11 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
     """A debug line for a finished target: files saved, size, skips, failures and time.
 
     The CLI prints its own line from the target's `Progress` events; this one adds the time.
+
+    Args:
+        totals: the target's counts.
+        target: the target.
+        seconds: how long it took.
     """
     parts = [_text.count(totals.saved, "file") + " saved"] if totals.saved else []
     if totals.bytes:
@@ -1668,7 +2135,16 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
 
 
 def causes(error: BaseException) -> str:
-    """Format an exception and its causal chain for debug logging."""
+    """An error and its causes on one line, for the debug log: `A: … <- B: …`.
+
+    It follows `__cause__`, else `__context__` unless suppressed, and stops at a loop.
+
+    Args:
+        error: the error.
+
+    Returns:
+        Each error's type and message, the outermost first.
+    """
     links: list[str] = []
     seen: set[int] = set()
     current: BaseException | None = error
@@ -1684,7 +2160,20 @@ def causes(error: BaseException) -> str:
 def _redated(
     path: Path, found: datetime.date, filename: str, *, estimated: bool
 ) -> Path | None:
-    """Rename `path` to include `found`, or return None if another file conflicts."""
+    """Rename a saved file for its new day, when its filename template starts with the day.
+
+    An estimated day at the front of its name is dropped first. When the new name is taken
+    by the same bytes, the old file goes; by other bytes, nothing changes.
+
+    Args:
+        path: the saved file.
+        found: its post's day.
+        filename: the filename template.
+        estimated: whether its name carries an estimated day.
+
+    Returns:
+        Where the file is now; None when it is gone, or the new name holds another file.
+    """
     name = path.name
     leading = LEADING_DAY.match(name)
     if estimated and leading:
@@ -1739,7 +2228,15 @@ def _metadata(source: Source, target: Target, placed: Placed) -> dict[str, Any]:
 
 
 def _set_mtime(path: Path, dated: datetime.date) -> None:
-    """Set `path`'s modified time to noon UTC of `dated`."""
+    """Set a file's modified time to noon UTC of its post's day.
+
+    Noon, so the day reads the same in every time zone from UTC-11 to UTC+11. A failure (a
+    read-only file system) is a debug line: the file is saved, only its time is off.
+
+    Args:
+        path: the file.
+        dated: its post's day.
+    """
     noon = datetime.datetime.combine(dated, datetime.time(NOON), tzinfo=datetime.timezone.utc)
     stamp = noon.timestamp()
     try:
@@ -1761,7 +2258,11 @@ class _Landed:
 
 @dataclass
 class _Queued:
-    """One queued download item."""
+    """One file handed from the listing thread to `Downloads`.
+
+    `refreshed` is set on the loop by the file's own task, once, when its link expired; no
+    other thread reads it.
+    """
 
     placed: Placed
     dest: Path
@@ -1906,7 +2407,15 @@ class _Work:
     linked: list[Target] = field(default_factory=list)
 
     def queue(self, post: Post, *, hold: bool = True) -> Outcome:
-        """Record `post` in `ledger` and submit its unsaved files."""
+        """Plan one post (`Ledger.take`), then submit each of its new files for download.
+
+        Args:
+            post: the post.
+            hold: whether an undated post may be held for a day.
+
+        Returns:
+            What became of the post; `STOPPED` when the run stopped while its files queued.
+        """
         outcome, todo = self.ledger.take(post, hold=hold)
         for queued in todo:
             if not self.downloads.submit(queued):
@@ -1918,7 +2427,21 @@ def discover(
     run: SourceRun, target: Target, *, limit: int | None = None,
     time_range: Range = Range(), seen: Collection[str] = (),
 ) -> Generator[Target, None, None]:
-    """Yield deduplicated child targets from a query or target-yielding route."""
+    """The targets a search (or any route that yields targets) finds, each once, resolved.
+
+    Called by the engine for a search, and for its dry run. It stops at the first target in
+    `seen` (a sync's earlier finds, newest first), at `limit`, or at Ctrl-C.
+
+    Args:
+        run: the source's run.
+        target: the search.
+        limit: at most this many targets; None for all.
+        time_range: `--when`, which the route's `Site` filters by.
+        seen: keys of targets found before; the listing stops at the first.
+
+    Yields:
+        Each new target, resolved by the source that owns it.
+    """
     route = next(r for r in run.source.routes if r.kind == target.kind)
     site = TargetSite(run, target, time=time_range)
     seen_keys = set(seen)
@@ -1936,7 +2459,22 @@ def _yield_arg_targets(
     run: SourceRun, method: Any, site: TargetSite, arg: Any, seen_keys: set[str],
     yielded: set[Target], limit: int | None,
 ) -> Generator[Target, None, None]:
-    """Yield targets for one query argument until stopped or at `limit`."""
+    """Run a route that yields targets, resolving and deduplicating what it yields.
+
+    A text the run can't resolve is warned about and passed over (`resolved`).
+
+    Args:
+        run: the source's run.
+        method: the route's method.
+        site: the search's `Site`.
+        arg: the value the route is called with.
+        seen_keys: keys that end the listing.
+        yielded: the targets yielded so far; each new one is added.
+        limit: at most this many targets in `yielded`; None for all.
+
+    Yields:
+        Each new target.
+    """
     steps = _steps(method(site, arg), run.run_async)
     try:
         for item in steps:
@@ -2491,7 +3029,19 @@ def _listed(
 def _run_discovered(
     run: SourceRun, board: Board, options: Options, items: Generator[Any, None, None]
 ) -> None:
-    """Download targets yielded by a non-query target-yielding route."""
+    """Download each target a discovering route yields, in turn, within its parent's run.
+
+    Such a route (an author's page listing their works) has no posts of its own; each target
+    it yields is downloaded at once with the parent's options, sharing its board. `--limit`
+    counts targets. The engine runs most of these as searches (`Engine._run_query`); this is
+    the path for one reached by `download` directly, as a found target can be.
+
+    Args:
+        run: the source's run.
+        board: the parent's progress rows.
+        options: the parent's options.
+        items: what the route yields; closed when done.
+    """
     seen: set[Target] = set()
     child_options = replace(options, limit=None)
     try:
@@ -2510,7 +3060,19 @@ def _run_discovered(
 
 
 def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:
-    """Iterate a sync or async iterable, closing it on exit."""
+    """Iterate what a route or category yields, plain or async, closing it however it ends.
+
+    An async generator is stepped on the run's loop, one `__anext__` at a time, from the
+    listing thread; each step is timed, and one that holds the loop past `HELD` seconds
+    without awaiting is warned about, since it stalls every download. None yields nothing.
+
+    Args:
+        yielded: a generator, an iterable, an async generator, or None.
+        run_async: runs a coroutine on the run's loop.
+
+    Yields:
+        Each item, as the source yielded it.
+    """
     if not hasattr(yielded, "__anext__"):
         iterator = iter(yielded if yielded is not None else ())
         try:
@@ -2538,7 +3100,18 @@ def _steps(yielded: Any, run_async: RunAsync) -> Generator[Any, None, None]:
 
 
 def _extension(file: File) -> tuple[str, str | None]:
-    """Infer file extension and media kind before downloading."""
+    """A file's extension and kind (`_files.VIDEO`, …), guessed before it is downloaded.
+
+    From its name, else its URL's path. A video with a separate audio track (DASH) is joined
+    into `.webm` when both are WebM, else `.mp4`. A file whose kind can't be told yet is
+    sniffed from its first bytes when it lands (`_files.SNIFF`).
+
+    Args:
+        file: the file.
+
+    Returns:
+        The extension with its dot ("" when unknown), and the kind (None for inline content).
+    """
     if file.content is not None:
         return PurePosixPath(file.name or "").suffix, None
     if file.name is not None:
@@ -2569,7 +3142,17 @@ def _fields(template: str) -> set[str]:
 
 
 def _folder_format(source: Source, route: Route | None, category: Category | None) -> str:
-    """Return the folder template for a file: category > route > source."""
+    """The folder template a file is placed by: its category's, else its route's, else its
+    source's.
+
+    Args:
+        source: the file's source.
+        route: the target's route; None to skip it.
+        category: the post's category; None to skip it.
+
+    Returns:
+        The template, such as `{category}`.
+    """
     if category is not None and category.folder is not None:
         return category.folder
     if route is not None:

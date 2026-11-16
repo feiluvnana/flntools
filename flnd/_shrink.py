@@ -1,8 +1,20 @@
-"""The compress step (`--compress`): a smaller file that still looks the same, or none at all.
+"""Media compression: a smaller file that still looks the same, or none at all.
 
-The step chain (`flnd._steps`) calls `shrink` on each saved photo, video or song, on its own
-threads, after the file's history row is written. The originals these sites serve are already
-compressed, so every result is checked before it replaces the original (docs/media).
+A library module: it imports only the stdlib, Pillow and pyoxipng (lazily), and the file, media
+and tool libraries (`flnd._files`, `flnd._media`, `flnd._tools`), with flnd's error classes. It
+offers:
+- `shrink(path, record=…)`: compress one photo, video or song in place, and say what happened
+  as an `Outcome`; the caller's `record` callback is told before the original goes, so the
+  caller's own bookkeeping (flnd's history row) moves with the file;
+- `kind(path)` and `tools(kind)`: what a file is to this module, and the tools string a result
+  records, so a tool upgrade can retry what was kept or failed;
+- `Savings`: running savings per kind, so a caller can stop trying a kind that never pays;
+- `ssim(a, b)`: the structural similarity of two images' luma planes.
+
+Who calls it in flnd: the compress step (`--compress`). The step chain (`flnd._steps`) calls
+`shrink` on each saved photo, video or song, on its own threads, after the file's history row is
+written. The originals these sites serve are already compressed, so every result is checked
+before it replaces the original (docs/media).
 
 How `shrink` goes:
 1. *Plan* the candidates from the file's kind (by suffix) and its probe (`flnd._media`):

@@ -15,6 +15,18 @@ What it offers, for any caller:
         sql.execute("INSERT INTO notes VALUES (?, ?)", ("a", "hello"))
     db.one("SELECT text FROM notes WHERE key = ?", ("a",))      # ("hello",)
 
+A library: it knows no table but the ones a caller passes in. In flnd, `flnd/_home.py` keeps
+the home's `flnd.db` in a `Db` (with flnd's schema and migrations as `schema` and `setup`) and
+reads an older home's files with `read_only`; `flnd/_vault.py` keeps `secrets.db` in another.
+
+How a `Db` is used, from first call to close:
+1. `Db(path, …)` only remembers the path: nothing is opened or made;
+2. a read (`one`, `all`) before the file exists returns no row, so a command that only looks
+   never leaves an empty database behind;
+3. the first write (`write`, `transaction`) calls `connection`, which opens the file in WAL mode
+   (`connect`), runs `schema` and then `setup`, and keeps the connection;
+4. every later call reuses that one connection under the `Db`'s lock; `close` ends it.
+
 Rules a change must keep:
 - Every statement runs under the `Db`'s lock, so threads share its one connection safely.
 - A transaction takes the write lock at its start (`IMMEDIATE`), so two processes never read a
@@ -128,6 +140,7 @@ class Db:
                  setup: Callable[[sqlite3.Connection], None] | None = None) -> None:
         self.path = path
         self._schema, self._setup = schema, setup
+        # Re-entrant: a `transaction` holds it while the caller's block calls `write` or `one`.
         self._lock = threading.RLock()
         self._sql: sqlite3.Connection | None = None
         self._closed = False

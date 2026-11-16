@@ -22,6 +22,28 @@ How a post is read:
 4. `sign` adds the site's referer and origin to every request on its domains, and on the API host
    also the Bearer token and the request signature, freshly for each try.
 
+There is no feed to end: a target is one post, so every category yields once and is done. The
+pace is the source API's default (0.5 seconds between requests to the site's domains).
+
+How login works: `login = cookies("access-token")`, not required. `flnd login loi` reads the
+site's cookies from a browser or a cookie file; `sign` sends the cookie's value to the API as a
+Bearer token (`decode_token`). Without it, `photo` works in full and `archive` warns and writes
+`info.md` without links. An expired or refused token isn't told apart: the site gives no links,
+and the warning names the VIP level the post needs. The account's VIP level, read from
+`user/info`, sets today's limit (`VIP_DAILY_LIMITS`).
+
+Site quirks, each with the day it was first seen (docs/sources/loi has them for people):
+- 2026-11-11: every API request must carry the web client's signature headers, built from
+  constants in the site's JavaScript (`sign_request`, `request_id`).
+- 2026-11-11: download links, the Baidu link and its password come AES-128-CBC encrypted under
+  a key and IV from the site's JavaScript (`decrypt_field`).
+- 2026-11-11: the image servers and archive mirrors answer 403 without the site's `referer` and
+  `origin`, so each post passes them to its files (`SITE_HEADERS`).
+- 2026-11-11: the `access-token` cookie may be %-encoded and may already start with `Bearer `.
+- 2026-11-15: a rate limit and a used-up quota are told in JSON, in English or Chinese, not only
+  by the HTTP status (`refusal`, `RATE_WORDS`, `QUOTA_WORDS`).
+- Date not recorded: the site blocks a browser, so the source never opens one.
+
 Rules a change must keep:
 - Every history key is the file's path (`key = ""`), as it always has been: changing the folder,
   the file names or the key makes every saved file download again.
@@ -130,7 +152,7 @@ class Loibus(Source):
             site: the target's site.
             post: what the route returned.
 
-        Returns:
+        Yields:
             Two posts of the same id: the info.md, then the images (when it has any).
         """
         info_file = File.text("info.md", info_md(post, None))
@@ -157,8 +179,8 @@ class Loibus(Source):
             site: the target's site.
             post: what the route returned.
 
-        Returns:
-            One lazy post.
+        Yields:
+            One lazy post, whose files `_archive_files` makes.
         """
         yield Post(
             post["id"], lambda: _archive_files(site, post), date=post.get("date"),
@@ -370,7 +392,18 @@ def image_name(number: int, url: str) -> str:
 
 
 def group_mirrors(links: dict[str, Any]) -> list[tuple[str, list[str]]]:
-    """Each archive's name, from its URL, and the mirror URLs that serve it, in link order."""
+    """Each archive's name, from its URL, and the mirror URLs that serve it, in link order.
+
+    The site lists one link per server; links that end in the same file name are the same
+    archive on other servers, so they become one file with mirrors, tried in order.
+
+    Args:
+        links: what `_links` gave; only its `servers` are read.
+
+    Returns:
+        `(name, [url, ...])` per archive, in the order its first link came. A URL with no file
+        name gives "archive.zip".
+    """
     groups: dict[str, list[str]] = {}
     for _, url in links["servers"]:
         name = unquote(PurePosixPath(urlsplit(url).path).name) or "archive.zip"
@@ -423,7 +456,15 @@ def quota(site: Site, post_id: int) -> tuple[int, int | None]:
 
 
 def count_download(site: Site, post_id: int) -> None:
-    """Count a post against today's quota, once."""
+    """Count a post against today's quota, once.
+
+    The record is rewritten without `exhausted`: a post counted means the site still gave
+    links, so the quota wasn't used up yet.
+
+    Args:
+        site: the target's site; its `state` holds today's count.
+        post_id: the post whose links were just taken.
+    """
     taken = today_posts(site)
     if post_id not in taken:
         site.state["quota"] = {
@@ -443,7 +484,17 @@ def today_posts(site: Site) -> list[int]:
 # ---------------------------------------------------------------------------------------------
 
 def _info_rows(post: dict[str, Any]) -> list[tuple[str, str]]:
-    """The Markdown table rows for a post's fields."""
+    """The Markdown table rows for a post's fields.
+
+    Text from the site is escaped (`markdown`); a missing count reads 0, a missing size "N/A".
+
+    Args:
+        post: the post's JSON.
+
+    Returns:
+        `(property, value)` per row, in table order; the unzip password and the tags only
+        when the post has them.
+    """
     author = post.get("category") or {}
     author_name = markdown(author.get("name", ""))
     author_id = author.get("id", "")
@@ -598,6 +649,15 @@ def request_id(
 def decrypt_field(text: str | None) -> str:
     """Decrypt one of the site's AES fields (a link, a password); an empty one stays empty.
 
+    A field is base64 text of AES-128-CBC ciphertext; bytes that aren't UTF-8 become U+FFFD
+    rather than fail.
+
+    Args:
+        text: the field as the API gives it; None or blank is an empty field.
+
+    Returns:
+        The plain text, or "" for an empty field.
+
     Raises:
         Changed: the field isn't base64, or doesn't decrypt: the site likely changed its key.
     """
@@ -611,7 +671,19 @@ def decrypt_field(text: str | None) -> str:
 
 
 def _decrypt_aes_cbc(blob: bytes) -> bytes:
-    """`blob` decrypted with the site's AES-128-CBC key and IV, its PKCS7 padding removed."""
+    """`blob` decrypted with the site's AES-128-CBC key and IV, its PKCS7 padding removed.
+
+    `cryptography` is imported here, so a run that decrypts nothing never loads it.
+
+    Args:
+        blob: the ciphertext, a whole number of 16-byte blocks.
+
+    Returns:
+        The plain bytes.
+
+    Raises:
+        ValueError: the blob isn't whole blocks, or its padding is wrong (a changed key).
+    """
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives.padding import PKCS7
 

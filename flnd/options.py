@@ -1,13 +1,31 @@
 """Each target's options, the settings every source of a run shares, and their checks.
 
-- `Options` is what one target's run downloads and how; `RunShared` what every source of a run
-  shares (the home, its database, the stop signal, the browser, the event sink),
-  and the home's config file.
-- `categories_by_source` and `validate` check `--only` against the targets' sources before
-  anything is fetched. A source's own templates are checked when its class is made
-  (`flnd.source`), so a run never meets a broken one.
-- `stop_after` reads, per source, how many saved posts in a row end a sync, from the home's
-  config.toml.
+This is flnd's own module (not a library): it knows sources, targets and the home. It holds:
+- `Options`, what one target's run downloads and how, and `Retry`, what it does with the
+  files earlier runs failed on;
+- `RunShared`, what every source of a run shares: the home, its database, the stop signal, the
+  browser, the event sink;
+- `Config` and `config`, the `[defaults]` of the home's `config.toml`, and `stop_after`, its
+  `[sources.<code>]` settings (docs/storage);
+- `categories_by_source`, `validate` and `unknown`, which check `--only` against the targets'
+  sources before anything is fetched, and `selected`, which applies it to one source.
+
+Who calls it: the engine (`flnd.engine`) builds the `Options` and `RunShared` of a run and
+checks `--only`; the job reads them; the library (`flnd._library`) and the steps after a download
+(`flnd._steps`) read `config`. What it
+calls: `flnd._home` (the database type), `flnd.source` (`Source`, `Target`) and `flnd.errors`.
+
+How `--only` is checked, before any request:
+1. Each entry is split at commas; an entry `<code>:<names>` whose code is a source of the run
+   applies to that source only, any other entry to every source.
+2. A name no source of the run has is refused, with every source's categories in the message.
+3. Each source then gets the names that apply to it, and one that gets none of its own
+   categories is refused, so a typo never downloads nothing quietly.
+4. A single post (a route without categories) takes no `--only` at all.
+
+A source's own templates are checked when its class is made (`flnd.source`), so a run never
+meets a broken one. Every check here raises `UsageError`, which the CLI shows without a
+traceback.
 """
 
 from __future__ import annotations
@@ -47,7 +65,7 @@ class Options:
 
     # None (a single post) or "all" means every category of each source.
     categories: tuple[str, ...] | None = None
-    # `--time`'s two days, both included; None is no limit on that side.
+    # `--when`'s two days, both included; None is no limit on that side.
     since: datetime.date | None = None
     until: datetime.date | None = None
     # A synced target with nothing lost stops a `newest_first` listing after 5 saved posts.
@@ -217,7 +235,33 @@ def categories_by_source(
 
 
 def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None:
-    """Why `--only names` fits none of these sources; None when it fits."""
+    """Why `--only names` fits none of these sources; None when it fits.
+
+    `all` always fits. A name fits when any one of the sources has a category of that name.
+
+    Args:
+        names: the category names asked for, already split at commas.
+        sources: the sources they must belong to.
+
+    Returns:
+        The message for a `UsageError`, naming each unknown name and every source's categories;
+        None when every name is known.
+
+    Example:
+        >>> from flnd.source import Post, Source, target
+        >>> class Example(Source):
+        ...     code, domains, api = "exm", ("example.com",), 1
+        ...     @target("exm:{user}")
+        ...     def profile(self, site, user):
+        ...         return user
+        ...     @profile.category
+        ...     def posts(self, site, profile):
+        ...         yield Post("p1")
+        >>> unknown(["posts", "all"], [Example]) is None
+        True
+        >>> unknown(["reels"], [Example])
+        "no source here has 'reels': use all, or exm: posts"
+    """
     known = {category for source in sources for category in source.categories}
     missing = [name for name in names if name != ALL and name not in known]
     if not missing:
@@ -228,7 +272,23 @@ def unknown(names: Sequence[str], sources: Sequence[type[Source]]) -> str | None
 def _split(
     items: Sequence[str], used: set[str], sources: Mapping[str, type[Source]],
 ) -> tuple[list[str], dict[str, list[str]]]:
-    """Split `--only` tokens into plain names and `<source>:<cats>` buckets."""
+    """Split `--only` tokens into plain names and `<source>:<cats>` buckets.
+
+    An entry whose part before `:` isn't a source's code is plain, colon and all, so a category
+    name is never mistaken for a code.
+
+    Args:
+        items: the `--only` entries as given, each one name or several joined by commas.
+        used: the codes of the sources the run's targets belong to.
+        sources: every known source, by code.
+
+    Returns:
+        The plain names, in order, and the scoped names by source code.
+
+    Raises:
+        UsageError: an entry is scoped to a source with no target in the run, or names no
+            category after its `:`.
+    """
     plain: list[str] = []
     scoped: dict[str, list[str]] = {}
     for item in items:
@@ -249,7 +309,20 @@ def _split(
 def _names(
     source: type[Source], plain: Sequence[str], scoped: Mapping[str, Sequence[str]],
 ) -> tuple[str, ...]:
-    """The validated categories one source takes."""
+    """The validated categories one source takes.
+
+    Args:
+        source: the source.
+        plain: the names that apply to every source.
+        scoped: the names given as `<code>:<names>`, by code; only `source`'s are read.
+
+    Returns:
+        The names, plain first, each once; it may hold `all`, or names of other sources' categories,
+        which `selected` drops.
+
+    Raises:
+        UsageError: a scoped name isn't one of the source's, or none of the names is.
+    """
     own = tuple(dict.fromkeys(scoped.get(source.code, ())))
     if own and (problem := unknown(own, [source])):
         raise UsageError(problem)
@@ -394,8 +467,7 @@ def _names_of(route: Any) -> frozenset[str]:
 # Settings from config.toml
 # ---------------------------------------------------------------------------------------------
 
-# The home's settings file, and how many saved posts in a row end a sync by default.
-CONFIG = "config.toml"
+# How many saved posts in a row end a sync by default (`stop_after`).
 STOP_AFTER = 5
 
 

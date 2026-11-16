@@ -1,5 +1,7 @@
 """The engine's `Site`: what a source's routes, categories and login act through.
 
+This is flnd's side of the source API: it implements `flnd.source.Site` on the libraries. It
+holds:
 - `source_run` opens one source's resources for a run (`SourceRun`): its cookies, its HTTP
   session and clients (`flnd._net`), its store, and the run's loop that its async code and every
   transfer run on.
@@ -9,9 +11,34 @@
   where `flnd._browser` drives the tab.
 - `shared_browser` gives a run its loop and its one browser (`flnd._browser.RunBrowser`), shared
   by every source and target, and closes both when the run ends.
+- `LoginSite` is the `Site` a source's `Login.start` gets during `flnd login`: it can ask in the
+  terminal, and has no target.
+- `paged` walks a paged JSON listing for `TargetSite.pages`, and `Listing` carries a category's
+  saved cursor in and its last cursor out.
+
+Who calls it: the engine (`flnd.engine` opens `shared_browser` and one `source_run` per source,
+and hands `flnd login` a `LoginSite`), the job (`flnd.job` makes a `TargetSite` per target and
+sets its `listing`), the library (`flnd._library` opens a `TargetSite` on a source's account),
+and the test kit (`flnd.testing` reuses `paged`). What it
+calls: the libraries `flnd._net` (HTTP), `flnd._browser` (tabs), `flnd._loop` (the run's event
+loop), `flnd._vault` and `flnd._home` (secrets, state, cookies), `flnd._prompt` and `flnd._ui`.
+
+A run, step by step:
+1. `shared_browser` makes the run's one event loop and its `RunBrowser`, which launches nothing
+   until a target asks for a tab.
+2. `source_run` loads the source's login cookies from the home, warns of any about to expire,
+   and builds its `_net.Session` and two clients over one `_net.Limits` (below).
+3. Each target gets a `TargetSite`. Its `fetch` and browser verbs run on the target's listing
+   thread, and each hands one coroutine to the run's loop and waits for it.
+4. A refusal from the source's own domains with 401 or 403 becomes a `LoginError`; every other
+   error from `flnd._net` passes through as it is.
+5. When the source's last target is done, the `SourceRun` closes its session, its stores and any
+   loop of its own; when the run ends, `shared_browser` closes the browser, then the loop.
 
 Threads: a `TargetSite` is used on its target's listing thread, or, in an `async def` category,
-on the loop, where only `site.tab` (awaited) reaches the browser.
+on the loop, where only `site.tab` (awaited) reaches the browser. A `Listing` belongs to the
+listing thread too: the job sets it before a category is listed and reads it after. A blocking
+call (`fetch`, `open`, …) made from code on the loop is refused, since it would wait for itself.
 
 The network side of a source (docs/architecture, "Network"): one `flnd._net.Session` with the
 login's cookies, the source's user agent and its `sign` hook (for requests to its own
@@ -25,8 +52,6 @@ domains), and one `flnd._net.Limits` with two pools:
   (TikTok's CDN hosts), and holding them to the listing's pace would serialize them.
 Two clients share them: `web` lists (paced), and stops at the first Ctrl-C; `files` downloads
 (capped), and stops at the second.
-on the loop, where only `site.tab` (awaited) reaches the browser. A `Listing` belongs to the
-listing thread too: the job sets it before a category is listed and reads it after.
 """
 
 from __future__ import annotations
@@ -175,7 +200,20 @@ def _matches_domain(source: Source, host: str | None) -> bool:
 
 @contextmanager
 def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
-    """Open one source's resources for a run, and close them however the block ends."""
+    """Open one source's resources for a run, and close them however the block ends.
+
+    The login's cookies are read from the home once, here, and a cookie of the login that has
+    expired or expires within `EXPIRY_WARNING` is a warning line. Nothing is sent yet: the
+    session connects on its first request.
+
+    Args:
+        settings: what the run shares across sources: the home, its database, the stop flag
+            (whose first Ctrl-C stops the listing client, and the second the files client).
+        source: the source, as the one instance the run uses.
+
+    Yields:
+        The `SourceRun`, tracked by the run's live stats while the block runs.
+    """
     jar = _home.load(settings.home, source.code)
     _warn_expiring(source, jar)
     session, limits = _network(source, jar)
@@ -232,14 +270,14 @@ def _network(source: Source,
 class TargetSite:
     """The engine's `Site` for one target; see `flnd.source.Site` for each member.
 
-        site = TargetSite(run, Target("loi:5930", kind="post"))
-        post = site.fetch("https://api.moegoat.com/api/lois/5930").json["data"]
+        site = TargetSite(run, Target("exm:example_user", kind="user"))
+        profile = site.fetch("https://api.example.com/users/example_user").json
         site.close()
 
     Args:
         run: the source's resources for the run.
         target: the target it acts for.
-        time: the target's `--time`.
+        time: the target's `--when`, as days.
 
     Used on the target's listing thread. Each browser verb makes one call to the run's loop; the
     tabs are the target's share of the run's browser (`flnd._browser.Tabs`), opened on first use.
@@ -275,9 +313,29 @@ class TargetSite:
               check: bool = True, in_page: bool = False, **request: Any) -> _net.Response:
         """Make one request, paced and retried, on the run's loop; see `flnd.source.Site.fetch`.
 
+        The request goes through the run's `web` client, so it waits its turn under the
+        source's pace and stops at the first Ctrl-C. Cookies the browser has set are added to
+        the session first, so a request sends what a logged-in page would. With `in_page`, the
+        tab's own `fetch` sends it instead, the client still pacing and retrying it.
+
+        Args:
+            url: the URL; `params` from `request` are added to its query.
+            method: the HTTP method.
+            headers: headers of the source's own, besides the session's and the `sign` hook's.
+            check: raise for a refusal; False returns the refusal's response.
+            in_page: send it from the target's tab, as the page's own script would.
+            **request: `params` (a mapping, the query) and `body` (bytes, text or JSON).
+
+        Returns:
+            The response.
+
         Raises:
             SourceError: an option other than `params` and `body`, or a call from code on the
                 loop, which would wait for the loop it runs on.
+            LoginError: a 401 or 403 from the source's own domains.
+            SiteError: another refusal (`NotFound`, `Blocked` and the rest), when `check`.
+            NetworkError: no answer after the tries.
+            Stopped: the run was stopped while it waited.
         """
         options = dict(request)
         url = _net.with_query(url, options.pop("params", None))
@@ -649,7 +707,19 @@ class LoginSite:
         return self._run.settings.interactive and _prompt.interactive()
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
-        """Ask a question in the terminal (`flnd._prompt.ask`), and return what was typed."""
+        """Ask a question in the terminal (`flnd._prompt.ask`), and return what was typed.
+
+        Args:
+            message: the question, shown before the cursor.
+            secret: hide what is typed (a password, a code).
+            description: lines shown above the question, as an info line; "" for none.
+
+        Returns:
+            What the person typed, without the line's end.
+
+        Raises:
+            UsageError: there is no terminal to ask in, or the run said not to ask.
+        """
         if not self.interactive:
             raise UsageError(f"{self._run.source.code}: logging in needs a terminal to ask in",
                              hint=f"run flnd login {self._run.source.code} in a terminal")
@@ -702,11 +772,15 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
         with shared_browser(settings):
             ...                     # settings.browser_pool is the run's `RunBrowser`
 
+    Entered again inside a run, it changes nothing. The browser launches only when a target first
+    asks for a tab, so a run that never needs one never starts it. On the way out the browser is
+    closed before the loop it runs on, even when closing it fails.
+
     Args:
         settings: the run's; `browser_pool` holds the `flnd._browser.RunBrowser` while it runs.
 
-    Entered again inside a run, it changes nothing. The browser launches only when a target first
-    asks for a tab, so a run that never needs one never starts it.
+    Yields:
+        Nothing: the browser is reached through `settings.browser_pool`.
     """
     if settings.browser_pool is not None:
         yield
@@ -734,7 +808,16 @@ def login_names(source: Source) -> tuple[str, ...]:
 
 
 def _warn_expiring(source: Source, jar: Any) -> None:
-    """Warn of login cookies (`login_names`) that have expired or will expire soon."""
+    """Warn of login cookies (`login_names`) that have expired or will expire soon.
+
+    Only the cookies that prove the login are read, and a session cookie (expiry 0 or -1) never
+    warns. The warning names the cookie, never its value.
+
+    Args:
+        source: the source whose login it is; its code names it in the warning.
+        jar: the login's cookies, in Playwright's shape (`name`, `value`, `expires` in Unix
+            seconds).
+    """
     now = _time.wall()
     names = login_names(source)
     for cookie in jar:

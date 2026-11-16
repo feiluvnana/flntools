@@ -1,11 +1,34 @@
-"""Values as short text for a person to read, safe file names and URLs, and name templates.
+"""Text helpers: safe file names, URLs and bodies without secrets, readable numbers, templates.
 
-A library module: it imports nothing of flnd, and any program may use it.
-- `filename` turns any text into a file name every OS accepts; `redact` strips a URL's secrets,
-  and `scrub` the values under secret-looking names in a body (JSON, HTML or a form).
-- `size`, `duration` and `count` say a number the way a person reads it.
-- `fill` formats a name template (`"{date}_{post}"`) from fields, dropping the separators
-  around a field that came out empty; `fields` lists the fields a template names.
+A library module. It imports only the stdlib, holds no state, and every function is pure, so any
+program and any thread may call it. Inside flnd, the file layer names files with `filename` and
+`fill`, every log line and error message passes URLs through `redact`, a bug report's sample body
+goes through `scrub`, the progress display and the summaries use `size`, `duration` and `count`,
+and the sources match names with `fold`.
+
+What it offers:
+- `filename(text)`: a file name every OS accepts (Windows' reserved names and characters,
+  control and format characters, a byte cap that never splits a UTF-8 character);
+- `redact(url)`: the URL without user info, query and fragment, where tokens and signatures
+  live; it never raises, so it is safe inside an error handler;
+- `scrub(body)`: the values under secret-looking names replaced by "…", in JSON or any text;
+- `size`, `duration` and `count`: a number the way a person reads it (`1.5 KB`, `3m 5s`,
+  `3 files`);
+- `fold(text)`: text for matching, without case, accents or extra spaces;
+- `fill(template, values)` and `fields(template)`: a name template such as `"{date}_{post}"`,
+  filled per `/` segment, with the separators beside an empty field dropped.
+
+How `fill` works:
+1. The template is split at each `/` outside braces, so a format spec may hold a slash.
+2. Each segment is formatted with `str.format`'s own parser; an empty or missing field takes
+   the separators (`SEPARATORS`) next to it along.
+3. A segment that comes out empty is dropped, and each other one passes through `filename`.
+
+Rules a change must keep:
+- Nothing here may print or return a secret it was given: `redact` and `scrub` err on the side
+  of removing too much.
+- `filename` names files already saved on disk, so its output for a given input must not change,
+  or a re-run would save the same file a second time under a new name.
 """
 
 from __future__ import annotations
@@ -34,7 +57,27 @@ RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
 
 
 def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 200) -> str:
-    """Turn text into a file name safe on Windows, macOS, and Linux."""
+    """Turn any text into a file name that Windows, macOS and Linux all accept.
+
+    In order: format characters (zero-width joiners, direction marks) go; each character Windows
+    refuses (`\\ / * ? : " < > |` and control characters) becomes `_`; runs of spaces and
+    underscores become one `_`; dots, underscores and spaces are trimmed from both ends; the name
+    is cut to `max_bytes` of UTF-8 without splitting a character. A Windows device name (`CON`,
+    `com1.txt`) gets a `_` after its base, since Windows refuses it with any extension.
+
+    Args:
+        name: the text, such as a caption or a title; any length, any characters.
+        fallback: what to return when nothing is left, such as for a caption of only dots.
+        max_bytes: the longest name, in UTF-8 bytes; 200 leaves room under the common 255-byte
+            limit for an extension and a ` (2)` suffix.
+
+    Returns:
+        The safe name, or `fallback`.
+
+    Example:
+        >>> filename('a/b: "c"?'), filename("CON.txt"), filename("..."), filename("  x  ")
+        ('a_b_c', 'CON_.txt', 'untitled', 'x')
+    """
     cleaned = "".join(ch for ch in name if unicodedata.category(ch) != "Cf")
     cleaned = UNSAFE_CHARACTERS.sub("_", cleaned)
     cleaned = SEPARATOR_RUNS.sub("_", cleaned).strip("._ ")
@@ -52,7 +95,22 @@ def filename(name: str, *, fallback: str = "untitled", max_bytes: int = 200) -> 
 
 
 def redact(url: str) -> str:
-    """Strip userinfo, query, and fragment from a URL; never raises, even on a broken one."""
+    """A URL without its user info, query and fragment, safe to log or show.
+
+    Tokens, signatures and session ids live in those parts, so only the scheme, host, port and
+    path are kept. A URL that `urlsplit` refuses (a bad port, a broken IPv6 host) is cut by hand
+    instead, so this never raises, even inside an error handler.
+
+    Args:
+        url: any URL or text; a relative path keeps only its path.
+
+    Returns:
+        The URL with only its scheme, host, port and path.
+
+    Example:
+        >>> redact("https://user:pw@example.com:8080/a/b?token=x#frag")
+        'https://example.com:8080/a/b'
+    """
     try:
         parts = urlsplit(url)
         if not parts.netloc:
@@ -67,7 +125,21 @@ def redact(url: str) -> str:
 
 
 def size(n: float) -> str:
-    """Format bytes in the largest unit under 1024 with one decimal place."""
+    """A byte count the way a person reads it, with one decimal, in units of 1024.
+
+    The unit is the largest one whose value, rounded, stays under 1024, so 1023.96 bytes reads
+    `1.0 KB`, not `1024.0 B`. Past terabytes the number just grows.
+
+    Args:
+        n: the bytes; a negative number keeps its sign.
+
+    Returns:
+        Text such as `512.0 B`, `1.5 KB` or `3.0 GB`.
+
+    Example:
+        >>> size(512), size(1536), size(3 * 1024 ** 3)
+        ('512.0 B', '1.5 KB', '3.0 GB')
+    """
     amount = float(n)
     for unit in BYTE_UNITS[:-1]:
         if abs(round(amount, 1)) < 1024:
@@ -77,7 +149,21 @@ def size(n: float) -> str:
 
 
 def duration(seconds: float) -> str:
-    """Format seconds as `250ms` under a second, `12.4s` under a minute, or two units."""
+    """A time span the way a person reads it: milliseconds, seconds, or the two largest units.
+
+    Under a second it reads `250ms`; under a minute `12.4s`; past that, whole seconds in at most
+    two non-zero units of `h`, `m` and `s` (`1h 2m`, `3m 5s`), precise enough for a summary.
+
+    Args:
+        seconds: the span; it should not be negative.
+
+    Returns:
+        The text.
+
+    Example:
+        >>> duration(0.25), duration(12.44), duration(185), duration(3720)
+        ('250ms', '12.4s', '3m 5s', '1h 2m')
+    """
     if round(seconds * 1000) < 1000:
         return f"{round(seconds * 1000)}ms"
     if round(seconds, 1) < 60:
@@ -103,7 +189,14 @@ def fold(text: str) -> str:
 
 
 def _rough_redact(url: str) -> str:
-    """`url` up to its query or fragment, without userinfo, for a URL `urlsplit` rejects."""
+    """`url` up to its query or fragment, without user info, for a URL `urlsplit` rejects.
+
+    Args:
+        url: the URL `redact` couldn't parse.
+
+    Returns:
+        The text before the first `?` or `#`, with anything up to an `@` in the host removed.
+    """
     head = re.split(r"[?#]", url, maxsplit=1)[0]
     scheme, sep, rest = head.partition("://")
     if not sep:

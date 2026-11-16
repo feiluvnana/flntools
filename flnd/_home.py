@@ -1,14 +1,17 @@
 """The home: its layout, `flnd.db` (what the home remembers) and the logins in its vault.
 
-The home folder holds `flnd.db`, `secrets.db` and `secret.key`, `media/`, `cache/` and `logs/`.
-This module is flnd's own storage, built on two library modules: `flnd._db` (a SQLite store) and
-`flnd._vault` (sealed secrets).
+The home folder holds `flnd.db`, `secrets.db` and `secret.key`, `media/` (the downloads) and
+`logs/` (crash files and each run's samples), and an optional `config.toml`; `cache/` is
+reserved. This module is flnd's own storage, not a library: it knows flnd's tables, targets and
+sources. It is built on three library modules: `flnd._db` (a SQLite store), `flnd._vault`
+(sealed secrets) and `flnd._cookies` (cookie jars). `docs/storage` is the guide to it.
 
 What `flnd.db` holds (the storage guide in `docs/` shows every column):
 - `files`: one row per saved file, keyed `<code>:<key>` (the source's `key` template), with its
   target, post, path, size, day, its bytes' SHA-256 (`hash`), and `state`: `saved`, `gone` (the
-  site answered 404 or 410), `failed`, or `link` (a second name for a saved file, in another
-  category's folder, keyed `<file's key>@<category>`). The steps after a file lands fill in
+  site answered 404 or 410), or `link` (a second name for a saved file, in another category's
+  folder, keyed `<file's key>@<category>`). A file that failed has no row here (its record is
+  in `failures`), unless the site said it is gone. The steps after a file lands fill in
   `shrink`, `tools`, `before`, `unpacked`, `folder` and `sidecar` (`flnd._steps`).
 - `posts`: a view of `files`, one row per post of a target with its category, day and how
   many files it has. The first file of a post of several holds the count (`files.files`),
@@ -33,8 +36,11 @@ The logins: a cookie source logs in by `from_browser` or `from_file`; `store` ch
 proves a login and `save` seals it in the source's slot of the vault (`secrets`); a run calls
 `load` for the jar, and `write_back` saves the cookies the site refreshed.
 
-Who calls it: the engine, the job and the library for files, targets and logins; `SourceRun`
-for a source's state and secrets.
+Who calls it: the engine (`flnd/engine.py`), the job (`flnd/job.py`), the steps after landing
+(`flnd/_steps.py`), `check` (`flnd/_check.py`) and the library (`flnd/_library.py`) for files,
+targets, runs and failures; the engine also for logins (`flnd login`, `flnd logout`, and
+`fl.logins`, each source's login state); `SourceRun` (`flnd/site.py`) for a source's cookies,
+state and secrets.
 
 How a home opens (`open`):
 1. A home with a `flnd.db` connects to it, and makes any table it lacks.
@@ -109,7 +115,8 @@ CHECKPOINT_PAGES = 10_000
 VERSION = "1"
 
 # A file's `state`: where it stands with the site; a `link` row is another name of a saved file.
-SAVED, GONE, FAILED, LINK = "saved", "gone", "failed", "link"
+# A file that failed has no `files` row at all: its record is in `failures`.
+SAVED, GONE, LINK = "saved", "gone", "link"
 # The runs a failed file is retried on by itself, at the start of its target's next downloads and
 # syncs; past them it waits for `flnd retry`, which always tries (docs/errors).
 RETRIES = 3

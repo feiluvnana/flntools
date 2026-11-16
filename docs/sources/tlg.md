@@ -138,7 +138,8 @@ username, an invite, an id or a title):
 - **Old invite links.** `t.me/joinchat/<hash>` is read as the newer `t.me/+<hash>`. Handled since
   2026-11-11.
 - **Telegram Web's login.** Telegram Web keeps its login in the browser's local storage, as JSON:
-  the account's data center in `user_auth` (or `dc`), and a 256-byte auth key per data center.
+  the account's data center in `user_auth` (or `dc`), and a 256-byte auth key per data center,
+  in both its A and K clients.
   flnd builds a Telethon session from them. Handled since 2026-11-11.
 - **Request alignment.** Telegram's largest file request is 512 KiB, and a request may not cross a
   1 MiB boundary, so every part starts on a multiple of 512 KiB. Handled since 2026-11-13.

@@ -44,7 +44,9 @@ These terms narrow it:
 | `chapters:<n>` | only manga with exactly `n` chapters |
 
 For example: `mht?genre:example -genre:1234567890 author:"example creator" chapters:1`. Any
-other term, or a `-` before any term but `genre`, is refused. An empty query is refused.
+other term, or a `-` before any term but `genre`, is refused. An empty query is refused, and so
+is a term with no value or a `chapters:` that isn't a number. An unclosed quote is read as the
+words typed, split at spaces.
 
 ## Categories
 
@@ -133,6 +135,8 @@ manga it finds has its own folder.
   both with spaces and as written. Handled since 2026-11-14.
 - **Chapter numbers** may be whole or not, numbers or text; only whole ones are zero-padded.
   Handled since 2026-11-14.
+- **Cursor paging.** Searches page by number unless asked for `cursor_res=true`; flnd always
+  asks, and follows `next_cursor`. Date not recorded.
 - **Dates.** A chapter is dated by its `created_at`, and the cover by the manga's
   `last_updated`. Date not recorded.
 

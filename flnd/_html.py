@@ -22,6 +22,18 @@ What it offers:
    `visible` is the text a reader sees: the page without its scripts and styles.
 4. `dig(data, path)` walks parsed JSON by a short path; see its docstring for the four forms.
 
+Who calls it: in flnd, `flnd.source` re-exports `dig`; `flnd.site` parses the page a source's
+browser loads, `flnd._net.Response.html` a response body, and `flnd.testing` the pages of its
+fakes. What it calls: selectolax, msgspec and `flnd.errors`, nothing else.
+
+The main flow of a read:
+1. `parse` checks the size, decodes bytes as UTF-8 (a BOM dropped, bad bytes replaced) and
+   builds the tree;
+2. `css` or `first` runs lexbor's CSS engine over it, and wraps each node as an `Element`;
+3. `script` or `blocks` takes a script's text and decodes it with msgspec, raising `Changed`
+   when that text isn't JSON;
+4. `dig` walks the decoded value one path step at a time.
+
 There is no XPath and no `::text` or `::attr()` pseudo-element: an element's `text` and `attr`
 say the same thing in plain Python.
 

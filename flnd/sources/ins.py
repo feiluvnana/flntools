@@ -36,6 +36,47 @@ the first refusal moves every later call of the run into the logged-in tab
 `site.back_off`; a login wall twice, then the call counts as refused; `/accounts/suspended/` is
 a hard stop.
 
+Routes and categories:
+- `post` (`instagram.com/p/<code>`, `/reel/`, `/reels/`, `/tv/`, also under a profile path):
+  one post, whole, with no category. Its patterns come before `user`'s, so `/p/` is no user.
+- `me` (`ins:me`): discovers every followed account as a `user` target; needs a login.
+- `user` (`ins:<name>`, `instagram.com/<name>`, a tab link too) with the categories `posts`,
+  `reels`, `tagged`, `reposts` (the four tabs, in that order), `stories`, `highlights` and
+  `profile`. `posts`, `reels` and `reposts` are newest first, so the engine may stop them
+  early; `tagged` and the story categories are read whole.
+
+How a listing ends: a tab ends when its connection's `page_info` says there is no next page,
+read from the embedded first page or from a scrolled response (`page_state`); the feed's own
+end (a quiet bottom) ends it too. `ins:me` ends on a page without `next_max_id`, or the same one
+again. Stories and highlights are one answer (or one page) each.
+
+Login: `cookies("sessionid")`, not required. `flnd login ins` reads a browser's cookies or a
+cookie file; the run loads them into the HTTP client and the browser. Logged out, the same pages
+are read and Instagram shows what it shows the public, which is little. `ins:me` needs the
+account's id (`Api._self_id`: the `ds_user_id` cookie, the `sessionid` prefix, or the API).
+
+Site quirks, each with the date it was seen (the ins page in docs/sources/ has them all):
+- Throttling is a JSON answer, `"Please wait a few minutes..."`, not a status (2026-11).
+- flnd's own client may be refused (by its TLS fingerprint, it seems) while the tab's fetch
+  is answered, so calls move into the tab (2026-11-12).
+- `x-ig-set-www-claim` rotates and must be echoed as `X-IG-WWW-Claim` (2026-11-12).
+- The story and `reels_media` APIs may refuse for long stretches, so a refusal is kept for a
+  day and the story pages are read (2026-11-13). `reels_media` takes at most 5 reels a call
+  (2026-11-12).
+- The profile page stopped embedding the user and its highlights; its own GraphQL calls bring
+  them (2026-11).
+- A grid item may carry only a thumbnail; an image under 90% of `original_width` is read again
+  (2026-11-12).
+- Ids hold their creation time, so a lazy grid post is dated by its `pk` (2026-11-12). A
+  private post's code is longer than 11 letters and spells no `pk` (2026-11-12).
+- The reels and reposts tabs have used two connection names each; the reels tab wraps each post
+  as `{"media": post}`, reposts may come as `repost_grid_items` (2026-11-11).
+- Up to 3 pinned posts sit above newer ones in the grid (2026-11-14).
+- A story's `id` carries its owner after an `_` (2026-11-11); its music comes in two shapes
+  (2026-11-13).
+- A throttled session is sent to `/accounts/login` or `/challenge`, a wall that lifts after a
+  wait; `/accounts/suspended` is a suspended or locked account (2026-11).
+
 Rules a change must keep:
 - The engine owns the early stops (a sync caught up, `--when`): a tab yields its posts in
   listing order and ends only where the tab's own `page_info` says so.
@@ -131,6 +172,7 @@ GRAPHQL = "graphql"
 STORY_MUSIC = ("story_music_stickers[0].music_asset_info.progressive_download_url || "
                "music_metadata.music_info.music_asset_info.progressive_download_url")
 # A desktop Chrome's User-Agent for flnd's own client, which Instagram expects of its web API.
+# The version only needs to be one Instagram still serves; it isn't matched to the browser's.
 CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 LOGIN_HINT = "run flnd login ins"
@@ -146,6 +188,8 @@ class Instagram(Source):
     # Logged in when `sessionid` is there. Not required: a public profile shows something.
     login = cookies("sessionid")
     user_agent = CHROME
+    # At least 0.2 s between requests, page loads included: Instagram publishes no limit, and
+    # its throttle answers are waited out (`Api.get`), so this only keeps bursts apart.
     pace = 0.2
     # A post's category, then a highlight's title: "posts", "highlights/<title>".
     folder = "{category}/{album}"

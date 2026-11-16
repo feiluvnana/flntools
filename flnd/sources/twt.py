@@ -27,6 +27,34 @@ How a target is read:
 Every GraphQL call goes through `Graph`, which keeps the web client's query ids. X changes them
 now and then; a refused id (400 or 404) is refreshed once a run from x.com's main script.
 
+How a timeline ends: X answers its last page with its cursors alone, which `timeline_state`
+reads as "no next page", and the feed stops at once. A page that brings no tweet not seen
+before ends the scroll too. A body without a `Bottom` cursor (an error or throttle answer) is
+neither: it is skipped and the scroll goes on.
+
+How login works: `login = cookies("auth_token")`, not required, though X usually sends a
+logged-out browser to its login page. `flnd login twt` reads X's cookies from a browser or a
+cookie file; the engine loads them into the HTTP client and the browser. API calls also need
+`ct0`, which X sets itself and checks as a CSRF token (`sign`). A tab that lands on one of
+`WALLS` (the login flow, or the locked-account page) stops the target with a `LoginError`; it
+isn't waited out. A 401 or 403 from the API is a `LoginError` too.
+
+Site quirks, each with the day it was first seen (docs/sources/twt has them for people):
+- 2026-11-11: a timeline sits under `timeline` in one response shape and `timeline_v2` in the
+  other; the Media tab's later pages come as `moduleItems`, not `entries`.
+- 2026-11-11: a tweet with limited visibility comes inside a wrapper (`unwrap`).
+- 2026-11-11: an avatar URL ending in `_normal` is the 48 px copy; the banner's largest size is
+  `BANNER_SIZE`. A video's streaming playlists are left out: only its MP4 variants are files.
+- 2026-11-12: query ids go stale, answered 404 (an id the API no longer knows) or 400 (variables
+  or features it no longer takes); `Graph.refresh` reads the current ones from x.com's script.
+- 2026-11-12: x.com's page and script answer 401 to the API's bearer token, so it goes only to
+  `/i/api/`.
+- 2026-11-16: a removed tweet (a tombstone) has no id; an error or throttle body carries no
+  cursor. Neither ends a scroll.
+- 2026-11-16: a `created_at` in another shape than `CREATED_AT` leaves its tweet undated.
+- Since 2025 (day not recorded): a tweet's author's screen name moved from `legacy` to `core`;
+  both are read (`AUTHOR`).
+
 Rules a change must keep:
 - The engine owns the early stops (a sync caught up, `--when`): a timeline yields every tweet
   in listing order, and ends only when the site's feed does (a page with no new tweet, or the
@@ -384,6 +412,14 @@ class Twitter(Source):
         """The avatar at its original size, and the banner at its largest.
 
         Nothing when the API couldn't find the user: the pictures come from its user object.
+
+        Args:
+            site: the target's site; nothing is fetched here, the engine downloads the files.
+            account: the account the `user` route found.
+
+        Yields:
+            A post for the avatar, then one for the banner, each when the user has it; both
+            have the user's id as their post id.
         """
         if account.user is None:
             return
@@ -406,7 +442,22 @@ class Twitter(Source):
     # -----------------------------------------------------------------------------------------
 
     def read_browser(self, site: Site, account: Account, timeline: Timeline) -> Iterator[Post]:
-        """Scroll one timeline's tab to its end, yielding its posts as they come."""
+        """Scroll one timeline's tab to its end, yielding its posts as they come.
+
+        The tabs listed after this one in `TIMELINES` start loading in background tabs once
+        this one is open, so the next category finds its page ready.
+
+        Args:
+            site: the target's site.
+            account: whose timeline it is; a numeric handle opens `/i/user/<id>`.
+            timeline: the tab to read, and the operation its responses carry.
+
+        Yields:
+            A post per photo and video of each tweet the category keeps (`tweet_posts`).
+
+        Raises:
+            LoginError: the tab landed on X's login page or its locked-account page.
+        """
         # A number is opened by its id under `/i/user/`; a screen name under its own path.
         profile = (
             f"https://x.com/i/user/{account.handle}"
@@ -545,7 +596,19 @@ class Graph:
         return True
 
     def _get(self, site: Site, query: str, variables: dict) -> Any:
-        """One GraphQL query's JSON, with the table's id and flags for it."""
+        """One GraphQL query's JSON, with the table's id and flags for it.
+
+        The id and flags come from the refreshed table when it has the operation, else from
+        `QUERIES` and `FEATURES`. Both JSON values are sent compact, as the web client does.
+
+        Args:
+            site: the target's site; `sign` adds the API's headers.
+            query: the operation's name, a key of `QUERIES`.
+            variables: the operation's variables.
+
+        Returns:
+            The response's JSON.
+        """
         entry = self._table(site).get(query) or {}
         # The refreshed flags when the table has them, else the built-in ones.
         features = entry.get("features") or FEATURES
@@ -558,7 +621,18 @@ class Graph:
         return site.fetch(endpoint, params=params).json
 
     def _table(self, site: Site) -> dict[str, dict[str, Any]]:
-        """The query table: what `state` kept from an earlier refresh, read on first use."""
+        """The query table: what `state` kept from an earlier refresh, read on first use.
+
+        An entry for an operation flnd no longer sends, or one that isn't an object, is left
+        out, so a damaged state can't break a query.
+
+        Args:
+            site: the target's site, whose `state` holds the table under `STATE_KEY`.
+
+        Returns:
+            `{operation: {"id": ..., "features": {...}}}`, the same object on every call of
+            the run; empty before any refresh.
+        """
         if self.queries is None:
             kept = site.state.get(STATE_KEY)
             self.queries = (
@@ -593,7 +667,18 @@ def range_operators(site: Site) -> list[str]:
 
 
 def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
-    """One timeline page's tweets, and the cursor of the next page (None for none)."""
+    """One timeline page's tweets, and the cursor of the next page (None for none).
+
+    It reads a profile timeline in either response shape, and a search's. An entry is one
+    tweet, or a module (a conversation, a grid row) whose items each hold one.
+
+    Args:
+        data: a response's JSON; anything that isn't a timeline page gives no tweets.
+
+    Returns:
+        `(tweets, cursor)`: the tweets in page order, wrapped as X sent them, and the
+        `Bottom` cursor's value, or None when the page has none.
+    """
     # The timeline sits under `timeline` in one response shape and `timeline_v2` in the other;
     # a search's under `search_by_raw_query`.
     instructions = dig(
@@ -635,7 +720,14 @@ def timeline_state(data: Any) -> tuple[bool, str | None] | None:
 
 
 def timeline_entries(instructions: list[Any]) -> Iterator[dict]:
-    """Every entry of a page: added ones, the pinned one, and items added to a grid."""
+    """Every entry of a page: added ones, the pinned one, and items added to a grid.
+
+    Args:
+        instructions: the page's `instructions` list; an item that isn't an object is skipped.
+
+    Yields:
+        Each entry, in the order the instructions give them.
+    """
     for instruction in instructions:
         if isinstance(instruction, dict):
             yield from instruction.get("entries", [])
@@ -660,7 +752,15 @@ def tweet_id_of(tweet: dict) -> str:
 
 
 def parse_date(created_at: Any) -> datetime | None:
-    """A `created_at` as a datetime, or None when there is none or it has another shape."""
+    """A `created_at` as a datetime, or None when there is none or it has another shape.
+
+    Args:
+        created_at: the tweet's `legacy.created_at`, such as
+            `Mon Nov 09 10:00:00 +0000 2026`; None, "" or another type is no date.
+
+    Returns:
+        An aware datetime in UTC, or None.
+    """
     if not created_at:
         return None
     try:
@@ -747,7 +847,17 @@ def listed(value: Any) -> list[dict]:
 
 
 def card_image(tweet: dict) -> str | None:
-    """A tweet's card image, at its largest; None when it has no card or no image."""
+    """A tweet's card image, at its largest; None when it has no card or no image.
+
+    A card is the preview X draws for a link in a tweet. Its images sit in
+    `card.legacy.binding_values`, by size; the first of `CARD_IMAGES` it has wins.
+
+    Args:
+        tweet: the tweet, out of its wrapper.
+
+    Returns:
+        The image's URL, or None.
+    """
     images = {
         entry.get("key"): dig(entry, "value.image_value.url")
         for entry in listed(dig(tweet, "card.legacy.binding_values"))
@@ -763,6 +873,17 @@ def media_file(
 
     A URL with no extension, or one in capitals, would leave the engine to sniff the content;
     the name `<date>_<tweet id>_<n>.<extension>` is what the templates would have given.
+
+    Args:
+        url: the file's URL, or its mirrors, best first; the first names the extension.
+        extension: the extension to give a URL without one, without a dot.
+        tweet_id: the tweet's id, part of the pinned name.
+        index: the file's place in the tweet (`0`, `q0`, `card`), part of the pinned name.
+        posted: when the tweet was posted; None leaves the date out of the pinned name.
+
+    Returns:
+        The file, named by the engine's templates when its URL has a lowercase extension, else
+        with its name pinned.
     """
     suffix = PurePosixPath(urlsplit(url if isinstance(url, str) else url[0]).path).suffix
     if suffix and suffix == suffix.lower():
@@ -774,7 +895,17 @@ def media_file(
 
 
 def best_file(media: dict) -> tuple[str | tuple[str, ...], str] | None:
-    """A photo with mirror URLs, or a video's highest-bitrate MP4, as (url, extension)."""
+    """A photo with mirror URLs, or a video's highest-bitrate MP4, as (url, extension).
+
+    A GIF is a video to X: it comes as an MP4 variant, so it is saved as one.
+
+    Args:
+        media: one entry of a tweet's `extended_entities.media`.
+
+    Returns:
+        `(urls, extension)` for a photo, its sizes in `PHOTO_SIZES` order as mirrors;
+        `(url, "mp4")` for a video; None for a media with no file flnd can save.
+    """
     if media.get("type") == "photo" and media.get("media_url_https"):
         url = media["media_url_https"]
         # `name=orig` asks the media server for the full-size picture, not its thumbnail size; the

@@ -1,17 +1,38 @@
-"""Terminal output: log lines and progress rows, on a Rich console.
+"""Terminal output: log lines and progress rows, on a Rich console, safe for site text.
 
 A library module: it imports only the stdlib, Rich and other library modules (`_time`,
 `_text`), so any program can log through it. The questions a program asks are `_prompt`'s.
 
-What it holds:
-1. `ui`, the log: one line per message at a level (`debug`, `info`, `ok`, `warn`, `error`),
-   with control codes stripped from every field, so a name from a site can't move the cursor.
-2. Progress rows (`ui.group`, `ui.progress`). A group made with `drawn=False` only counts and
-   shows nothing, for a caller that draws progress its own way (flnd's CLI draws a run from
-   its events).
+What it offers, through the one shared `ui` object:
+1. The log: `ui.info("saved {name}", name=…)` and its siblings `debug`, `ok`, `warn` and
+   `error` print one line each, with a mark (`✓`, `!`, …) and the level's color. Each field is
+   formatted by `_SafeFormatter`, which strips escape and control codes, so a file name from a
+   site can't move the cursor or rewrite the screen. A field the message doesn't name is a
+   `TypeError`, so a typo can't silently drop a value.
+2. Progress rows: `ui.group(title)` holds rows made with `Group.add`; `ui.progress(label)` is a
+   group of one row. On a terminal they are live Rich bars that vanish when the group ends and
+   leave one finished line per row; elsewhere each row is logged once at the end. A group made
+   with `drawn=False` only counts and shows nothing, for a caller that draws progress its own
+   way (flnd's CLI draws a run from its events).
+3. `ui.level` (what is shown, `quiet` hides even progress) and `ui.scope(…)`, which swaps the
+   console's destination, color, width or level inside a block, as tests and `--color` do.
 
-Rule a change must keep: `_log` holds the lock while it prints, so lines of two threads never
-interleave.
+Who calls it: every flnd module that tells a person something (the HTTP client's retries, the
+browser, cookies, the home, the downloader), and the CLI, which sets the level.
+
+How a log line is made (`UI._log`):
+1. Check every keyword field is named in the message (`_field_names`, cached per message).
+2. Format the fields safely, or just sanitise a message without fields.
+3. Drop the line if its level is below `ui.level`.
+4. Build the line: the mark, the text up to the first `: ` bright, the detail after it dim.
+5. Print it under the lock.
+
+Rules a change must keep:
+- `_log` holds the lock while it prints, so lines of two threads never interleave; the lock is an
+  `RLock`, so code that logs while it already holds the lock can't deadlock.
+- A `Group`'s own lock guards its Rich task table: download threads update rows at once.
+- Nothing else may print to the console a group draws on while its bars are live except
+  through `ui`, or Rich can't keep the bars below the lines.
 """
 
 from __future__ import annotations
@@ -82,6 +103,12 @@ _URL = re.compile(r"https?://[^\s:]+(?::\d+)?[^\s]*")
 
 
 class _SafeFormatter(string.Formatter):
+    """`str.format` that strips terminal escape and control codes from each field it formats.
+
+    Both the value (when it is text) and the formatted field are cleaned, so neither a hostile
+    name nor a format spec that pads it can smuggle a code through.
+    """
+
     def format_field(self, value: Any, format_spec: str) -> str:
         if isinstance(value, str):
             value = _sanitize(value)
@@ -97,7 +124,17 @@ def _sanitize(value: str) -> str:
 
 @lru_cache(maxsize=256)
 def _field_names(message: str) -> frozenset[str]:
-    """Extract root field names from `message`, including nested format specs."""
+    """The top-level field names a log message uses, nested format specs included.
+
+    `{a.b}` and `{a[0]}` count as `a`, and `{n:{width}}` names both `n` and `width`. Cached,
+    since a program logs the same few messages many times.
+
+    Args:
+        message: a `str.format` template.
+
+    Returns:
+        The names.
+    """
     names: set[str] = set()
     for _, field_name, format_spec, _ in string.Formatter().parse(message):
         if field_name:
@@ -110,7 +147,20 @@ def _field_names(message: str) -> frozenset[str]:
 def _color_settings(
     color: str | bool | None, base: RichConsole | None,
 ) -> tuple[Any, bool | None, bool | None]:
-    """Map a color setting to `(color_system, no_color, force_terminal)`."""
+    """What Rich's `Console` needs for one of `ui.scope`'s color settings.
+
+    Args:
+        color: None keeps `base`'s settings (or auto-detects without one); False or "none"
+            turns color off; True, "16m" or "truecolor", "256", and "8" or "standard" force
+            that many colors, even when the output isn't a terminal.
+        base: the console being replaced, whose settings None keeps; None for a fresh one.
+
+    Returns:
+        `(color_system, no_color, force_terminal)`, as `Console` takes them.
+
+    Raises:
+        ValueError: `color` is none of those.
+    """
     if color is None and base is not None:
         return base.color_system, base.no_color, base._force_terminal
     table: dict[Any, tuple[Any, bool | None, bool | None]] = {
@@ -130,7 +180,19 @@ def _color_settings(
 
 
 def _detect_unicode(stream: Any) -> bool:
-    """Return whether `stream` can render Unicode marks."""
+    """Whether a stream can show the Unicode marks (`✓`, `━`, the braille spinner).
+
+    Each check rules out a case seen to print boxes or question marks: an encoding that isn't
+    UTF-8; a CJK locale, whose fonts draw the marks double width and break the bars; and an old
+    Windows console (no Windows Terminal, no ConEmu with ANSI on). Otherwise the ASCII
+    fallbacks in `GLYPHS` are used.
+
+    Args:
+        stream: the console's file; one without an `encoding` counts as not UTF-8.
+
+    Returns:
+        True when the Unicode marks are safe to print.
+    """
     encoding = getattr(stream, "encoding", None) or ""
     if encoding.lower().replace("-", "").replace("_", "") != "utf8":
         return False
@@ -144,7 +206,17 @@ def _detect_unicode(stream: Any) -> bool:
 
 
 class Row:
-    """A single progress row inside a `Group` or `ui.progress`."""
+    """One progress row of a `Group`: a label, a count, and a total or a spinner.
+
+    A row is made by `Group.add` or `ui.progress`, never directly. Its count may be moved from
+    any thread; it ends as finished (`finish`), failed (`fail`), or with its group's outcome.
+
+    Args:
+        label: what the row is about; a `folder/name` label shows the folders dim.
+        total: the units expected; None shows a spinner instead of a bar.
+        group: the group that draws it.
+        unit: "bytes" to show counts as sizes (`1.5 MB/3.0 MB`); None for plain numbers.
+    """
 
     def __init__(
         self, label: str, total: float | None, group: Group, unit: str | None = None,
@@ -203,7 +275,14 @@ class Row:
         self._group._stop_task(self._task)
 
     def part(self) -> Callable[[int, int | None], None]:
-        """Return a `(done, total)` callback that updates this row."""
+        """A `(done, total)` callback that moves this row, for code that reports progress so.
+
+        A downloader calls it with the bytes so far and the full size; a total that changes
+        (a server that sends its length late) replaces the row's.
+
+        Returns:
+            The callback.
+        """
         def _callback(done: int, total: int | None) -> None:
             if total is not None and total != self._total:
                 self.total = total
@@ -212,6 +291,16 @@ class Row:
         return _callback
 
     def _render(self, owner: UI) -> Text:
+        """The row as one line: its mark, its bar or spinner, its label, its count, its reason.
+
+        Called by Rich's refresh thread while the bars are live, and once more at the end.
+
+        Args:
+            owner: the `UI` whose glyphs and spinner it uses.
+
+        Returns:
+            The styled line.
+        """
         level = "info" if self._outcome is None else self._outcome
         role = "accent" if level == "info" else level
         text = Text()
@@ -234,7 +323,12 @@ class Row:
 
 
 class _RowColumn(ProgressColumn):
-    """Single Rich progress column rendering a `Row` with the Charm Huh theme."""
+    """The one Rich progress column: it draws each task as its `Row`, in the Charm Huh look.
+
+    Args:
+        owner: the `UI` whose glyphs the rows use.
+        lookup: the row of a Rich task id, or None for a task that has no row.
+    """
 
     def __init__(self, owner: UI, lookup: Callable[[TaskID], Row | None]) -> None:
         super().__init__()
@@ -267,6 +361,18 @@ def _label_text(label: str) -> Text:
 def _format_count(
     count: float, total: float | None, level: str, unit: str | None = None,
 ) -> str:
+    """A row's count as text: `3/10`, just the total once finished, or the count alone.
+
+    Args:
+        count: the units done.
+        total: the units expected; None for a spinner row, which shows the count once above 0.
+        level: the row's outcome; "ok" shows only the total.
+        unit: "bytes" to show sizes; None for numbers.
+
+    Returns:
+        The text; "" for a spinner row at 0.
+    """
+
     def one(value: float) -> str:
         if unit == "bytes":
             return size(value)
@@ -320,6 +426,15 @@ class Group:
             self._progress.start()
 
     def _stop(self, outcome: Level = "ok") -> None:
+        """End the group: give each open row `outcome`, and leave one line per row.
+
+        Live bars are stopped (Rich removes them) and each row is printed once, finished or
+        failed. Without live bars, a drawn group logs a line per row instead; an undrawn one
+        prints nothing.
+
+        Args:
+            outcome: "ok" for a block that ended cleanly, "error" for one that raised.
+        """
         for row in self._rows:
             if row._outcome is None:
                 row._outcome = outcome
@@ -356,7 +471,16 @@ class Group:
     def add(
         self, label: str, *, total: float | None = None, unit: str | None = None,
     ) -> Row:
-        """Add a new `Row` to this group; `unit="bytes"` shows its counts as sizes."""
+        """Add a row to this group; any thread may call it.
+
+        Args:
+            label: what the row is about, such as a file's name.
+            total: the units expected; None shows a spinner.
+            unit: "bytes" to show its counts as sizes; None for plain numbers.
+
+        Returns:
+            The new row.
+        """
         row = Row(label, total, self, unit)
         with self._lock:
             self._rows.append(row)
@@ -365,7 +489,11 @@ class Group:
 
 
 class UI:
-    """Terminal logging and progress helper."""
+    """The log and the progress rows of one console; the module's `ui` is the shared one.
+
+    It writes to stderr by default, so a program's stdout stays free for its real output.
+    Tests and the CLI swap its console inside `scope`.
+    """
 
     Group = Group
     Row = Row
@@ -383,6 +511,21 @@ class UI:
         width: int | None = None,
         base: RichConsole | None = None,
     ) -> RichConsole:
+        """A Rich console with flnd's theme, built from `scope`'s settings.
+
+        Each setting left as None is taken from `base`; with no base either, Rich detects it.
+        Soft wrap is on, so a long line is never cut, and highlighting off, so Rich doesn't
+        color numbers and paths in a site's text.
+
+        Args:
+            color: the color setting, as `_color_settings` reads it.
+            dest: where to write; None keeps `base`'s file, or stderr without one.
+            width: the width in columns; None keeps `base`'s, or detects it.
+            base: the console being replaced.
+
+        Returns:
+            The console.
+        """
         color_system, no_color, force_terminal = _color_settings(color, base)
         file = dest if dest is not None else (base.file if base is not None else None)
         return RichConsole(
@@ -431,6 +574,17 @@ class UI:
         return self._level != "quiet" and self._console.is_terminal
 
     def _log(self, _kind: Level, message: str, *args: Any, **fields: Any) -> None:
+        """Format and print one log line (the module docstring gives its steps).
+
+        Args:
+            _kind: the level; named with an underscore so a field called `kind` stays free.
+            message: the text, a `str.format` template when fields are given.
+            *args: positional fields for the template.
+            **fields: named fields; each must appear in `message`.
+
+        Raises:
+            TypeError: a named field doesn't appear in `message`.
+        """
         unused = set(fields) - _field_names(message) if fields else set()
         if unused:
             raise TypeError(
@@ -488,7 +642,21 @@ class UI:
         width: int | None = None,
         level: Level | None = None,
     ) -> Iterator[UI]:
-        """Temporarily override console output target, color, width, or log level."""
+        """Inside the block, write to another destination, or with other colors, width or level.
+
+        The console and level before it come back when the block ends, even on an error. Scopes
+        nest.
+
+        Args:
+            color: the color setting (see `_color_settings`); None keeps the current one.
+            dest: a text stream to write to, such as `io.StringIO()` in a test; None keeps the
+                current one.
+            width: the width in columns; None keeps the current one.
+            level: the least level shown; None keeps the current one.
+
+        Yields:
+            This `UI`.
+        """
         old_console, old_level = self._console, self._level
         try:
             self._console = self._make_console(

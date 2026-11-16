@@ -1,14 +1,25 @@
-"""Parts: how flnd writes a file so that it is always whole, and never written twice at once.
+"""Safe file writes: whole files through locked parts, plus walking, linking and file kinds.
 
-Every file flnd writes, a download or a small file of its own, goes through a **part**: the file
-`<dest>.part` beside its destination. The writer opens the part, locks it, writes into it and
-renames it onto `dest`. A file at its real name is therefore always whole, and the part is its own
-lock: there is no lock file and no home-wide lock.
+A library module: it imports only the stdlib, the clock library (`flnd._time`) and flnd's error
+classes, and any program that writes files several processes may race on can use it. It offers:
+- `part(dest, resume=…, digest=…)`: a context manager yielding a locked `Part` to write into,
+  renamed onto `dest` only when the block ends cleanly;
+- `write(dest, data)`: a small file written whole through a part;
+- `walk(folder)`: every file under a folder but parts and their sidecars;
+- `digest(path)`: a file's SHA-256; `link(source, dest)`: an atomic hard link;
+- `sweep(folder)`: removes the stale parts no process holds;
+- `kind_of(name)` and `sniff(bytes)`: whether a file is an image, a video or audio, by its name
+  or by its first bytes.
 
-Who calls it: the downloader (`flnd._net`, `flnd._transfer`) with `resume=True`, and flnd's
-own small writes (`write`, cookies, archives, the store converter, tool installs) with the
-default `resume=False`. The job sweeps a target's folder of stale parts (`sweep`). It calls only
-the stdlib.
+Every file written goes through a **part**: the file `<dest>.part` beside its destination. The
+writer opens the part, locks it, writes into it and renames it onto `dest`. A file at its real
+name is therefore always whole, and the part is its own lock: there is no lock file and no
+folder-wide lock.
+
+Who calls it in flnd: the downloader (`flnd._net`, `flnd._transfer`) with `resume=True`, and
+flnd's own small writes (`write`: cookies, archives, the store converter, the tool version
+cache) with the default `resume=False`. The job sweeps a target's folder of stale parts
+(`sweep`) and walks it (`walk`) to find what is saved.
 
 How one write goes (`part`):
 1. Open `<dest>.part`. A part that doesn't exist yet is created exclusively (`O_EXCL`), so no
@@ -760,7 +771,20 @@ def _write_side(path: Path, meta: dict[str, Any]) -> None:
 
 
 def _scan(folder: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
-    """Every file under `folder`, depth first, from one `os.scandir` per folder."""
+    """Every file under `folder`, depth first, from one `os.scandir` per folder.
+
+    Symlinks are neither followed nor yielded, so a link can't lead a walk or a sweep out of the
+    folder, or round in a loop.
+
+    Args:
+        folder: the folder to walk.
+
+    Yields:
+        Each regular file's `DirEntry`.
+
+    Raises:
+        DiskError: a folder can't be read, including `folder` itself when it is missing.
+    """
     stack = [os.fspath(folder)]
     while stack:
         try:
@@ -852,7 +876,17 @@ def _remove_unheld(path: str, sides: list[str]) -> int:
 
 
 def _unlink(path: str | os.PathLike[str]) -> int:
-    """Remove `path`: 1 when removed, 0 when already gone."""
+    """Remove a file, counting it; a file already gone is no error, since that is the goal.
+
+    Args:
+        path: the file.
+
+    Returns:
+        1 when it was removed; 0 when it was already gone.
+
+    Raises:
+        DiskError: it exists, but the disk refused to remove it.
+    """
     try:
         os.unlink(path)
         return 1

@@ -20,6 +20,32 @@ The main flow of a download:
    whole (`download_media`); a document (video or file) comes in parts at once (`_Download`),
    each part's offsets saved beside the partial file so a later run goes on from there.
 
+Routes and categories: one `chat` route, with no pattern: `resolve` reads `tlg:@<username>`,
+`tlg:<username>`, `t.me/<username>`, `t.me/s/<username>`, `t.me/+<hash>`,
+`t.me/joinchat/<hash>`, `t.me/c/<n>[/<message>]`, `tlg:<id>` and `tlg:<title>`. Its categories
+are `photo`, `video` and `file`, each `newest_first`.
+
+How a listing ends: Telethon's `iter_messages` runs out at the chat's oldest message. With
+`--when`, it starts after the range's last day (`offset_date`); the engine ends it at the start.
+
+Login (`TelegramLogin`), never cookies:
+- `browser` builds a session from Telegram Web's local storage in Chrome's default profile,
+  read in a hidden copy of it, and adds no device;
+- `qr` shows up to `QR_CODES` codes in the terminal; `phone` asks for the number and the code.
+  Both add a device named flnd, and ask a two-step password when the account has one;
+- the first login asks for the `api_id` and `api_hash` from my.telegram.org. The session and the
+  pair are kept in the source's encrypted secrets; a stored session is what counts as a login.
+
+Site quirks, with the date seen:
+- `t.me/c/<n>` holds a channel's id without the `-100` the client API puts before it
+  (2026-11-11).
+- `t.me/s/<name>` is the web preview of a channel; `t.me/joinchat/<hash>` the old invite form
+  (2026-11-11).
+- Telegram Web keeps its login as JSON in local storage, in both its A and K clients: the data
+  center in `user_auth.dcID` (or `dc`) and a 256-byte key per center as hex (2026-11-11).
+- A file request is at most 512 KiB and may not cross a 1 MiB boundary (2026-11-13).
+- Telethon's own flood sleep went up to 24 hours before 2026-11-16, so it hid every wait.
+
 Flood waits (Telegram's rate limit, an error naming the seconds to wait): Telethon sleeps a
 short one itself (`FLOOD_SLEEP`); a longer one reaches this module, which waits it out through
 `site.back_off(retry_after=...)` (shown to the person, capped by the engine, ended by a stop)
@@ -354,7 +380,14 @@ async def find_chat(site: Site, value: str) -> Any:
 
 
 def display_name(entity: Any) -> str:
-    """A chat's title, or a person's name, or else a username or id: the `{chat}` folder."""
+    """A chat's title, or a person's name, or else a username or id: the `{chat}` folder.
+
+    Args:
+        entity: a Telethon chat, channel or user; for a login, the account itself.
+
+    Returns:
+        The first of: the title, the first and last name joined, the username, the id.
+    """
     first = getattr(entity, "first_name", None)
     last = getattr(entity, "last_name", None)
     person = " ".join(filter(None, (first, last)))
@@ -580,7 +613,14 @@ class _Download:
             self.sidecar.unlink(missing_ok=True)
 
     async def _part(self, number: int) -> None:
-        """Fetch one part, waiting out flood waits and going on after up to `RESUMES` drops."""
+        """Fetch one part, waiting out flood waits and going on after up to `RESUMES` drops.
+
+        Args:
+            number: the part's index in `self.parts`.
+
+        Raises:
+            ConnectionError: the connection dropped more than `RESUMES` times.
+        """
         from telethon.errors import FloodWaitError
 
         start, end = self.parts[number]
@@ -601,6 +641,11 @@ class _Download:
 
         A request must start on a multiple of `REQUEST`, so it asks from the last whole request
         before `position` and drops the bytes the part holds already.
+
+        Args:
+            number: the part's index in `self.parts`, whose count of bytes done grows.
+            position: the byte of the document to write from.
+            end: the byte the part ends before.
 
         Raises:
             NetworkError: Telegram sent nothing at all (retryable by the engine).
@@ -651,6 +696,9 @@ def credentials(site: Site) -> tuple[int, str]:
     Args:
         site: the site that holds the stored secrets and asks the user when they are missing.
 
+    Returns:
+        `(api_id, api_hash)`.
+
     Raises:
         LoginError: none are stored and there is no terminal to ask in, or the `api_id` typed
             isn't a number.
@@ -672,7 +720,8 @@ async def log_in(site: Site, how: str, start: str, api_id: int, api_hash: str) -
 
     Args:
         site: the site, used to ask the user and to show messages.
-        how: the login method, `"qr"` or `"phone"`.
+        how: the login method: `"qr"` or `"phone"` log a new device in; `"browser"` only
+            checks the session `start` holds.
         start: the session string to start from, or "" for a new device.
         api_id: the app's numeric id from my.telegram.org.
         api_hash: the app's secret hash from my.telegram.org.
@@ -712,6 +761,13 @@ async def by_qr(site: Site, client: Any) -> None:
     Args:
         site: the site, used to show each QR code and to ask for a two-step password.
         client: a connected Telethon client.
+
+    Returns:
+        Nothing: the client is logged in once it returns (after the two-step password, when
+        the account has one).
+
+    Raises:
+        LoginError: none of the codes was scanned in time.
     """
     from telethon.errors import SessionPasswordNeededError
 
@@ -761,6 +817,9 @@ def read_telegram_web(site: Any) -> dict[str, str]:
     Args:
         site: the login site; its `storage(url)` reads the profile.
 
+    Returns:
+        The page's local storage, by key, as text.
+
     Raises:
         LoginError: Chrome, its profile or the page couldn't be read, or the page didn't load
             on Telegram Web (no network, or a redirect).
@@ -782,6 +841,12 @@ def from_web_storage(storage: Mapping[str, str]) -> str:
     Telegram Web keeps, as JSON values (seen 2026-11-11, in both the A and K clients): the
     account's data center in `user_auth.dcID` (or `dc`), and a 256-byte auth key per data
     center, as hex, under `dc<n>_auth_key`.
+
+    Args:
+        storage: Telegram Web's local storage, by key, as `read_telegram_web` gives it.
+
+    Returns:
+        The session string to store: the data center's address and the auth key.
 
     Raises:
         LoginError: the storage holds no usable login.
@@ -811,7 +876,14 @@ def from_web_storage(storage: Mapping[str, str]) -> str:
 
 
 def draw_qr(text: str) -> str:
-    """`text` as a QR code in Unicode half blocks, two rows of modules per line."""
+    """`text` as a QR code in Unicode half blocks, two rows of modules per line.
+
+    Args:
+        text: what the code holds: the `tg://login?token=...` URL of a QR login.
+
+    Returns:
+        The code's lines, joined by newlines, with a quiet border of 2 modules.
+    """
     import qrcode
 
     code = qrcode.QRCode(border=2)
@@ -824,6 +896,12 @@ def half_blocks(matrix: Sequence[Sequence[bool]]) -> str:
 
     A terminal's text is light on dark, so the light modules are drawn and the dark ones left
     as the background; an odd last row is paired with a light one.
+
+    Args:
+        matrix: the code's modules, row by row, True for dark.
+
+    Returns:
+        One line of text per two rows of modules.
     """
     light = [[not dark for dark in row] for row in matrix]
     if len(light) % 2:

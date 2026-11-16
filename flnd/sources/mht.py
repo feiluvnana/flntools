@@ -23,6 +23,31 @@ How a target is read:
    each manga found as a `mht:<id>` target, which the engine downloads with the run's `--only`.
    A name in a link or a query term is first turned into the site's id (`_resolve_id`).
 
+Routes and categories:
+- `manga` (`mht:<id>`, `mimihentai.moe/manga/<id>`) with the categories `chapters` and `cover`;
+- `chapter` (`mimihentai.moe/manga/<manga>/chapter/<id>`), one post with no category;
+- `author` (`/author/<name or id>`, `/authors/...`), `genre` (`/genre/...`, `/genres/...`) and
+  `query` (`mht?<words and terms>`), which discover manga targets and save nothing themselves.
+
+How listing ends: the chapter list is one answer, so `chapters` ends with it. A search ends
+when `site.pages` gets an empty or repeated `next_cursor`. Nothing here scrolls or waits.
+
+Login: none (`login = None`). Everything the source reads is public, so `flnd login mht` is
+refused and no run warns about a missing login.
+
+Site quirks, each with the date it was seen:
+- The chapter list answers every chapter at once, whatever `limit` says (2026-11-14).
+- A chapter's `order` comes as a whole number, a float or text, and part chapters exist
+  (`7.5`); only whole numbers are zero-padded in the folder (2026-11-14).
+- Links spell a name's spaces as hyphens, so a hyphenated name is looked up with spaces first,
+  then as written (2026-11-14).
+- A search item carries a manga's title and cover, so a manga a search found isn't fetched
+  again in the same run (2026-11-14).
+- Searches page by number unless `cursor_res=true` is sent; with it they answer a
+  `next_cursor` (date not recorded).
+- The site can't filter a search by chapter count: `chapters:<n>` is checked here, on each
+  result (date not recorded).
+
 Rules a change must keep:
 - The names and history keys of saved files never change: a page's key is
   `<chapter id>_<n>` and the cover's `<manga id>_cover`. A changed key makes every saved file
@@ -58,6 +83,8 @@ class Mimi(Source):
     name = "mimihentai"
     domains = ("mimihentai.moe",)
     api = 1
+    # Half a second between requests to the site: the site publishes no limit, and a manga's
+    # chapters cost one request each, so this keeps a long manga gentle on its API.
     pace = 0.5
     # `chapters/<order> <title>`: the chapter's number and title (the engine makes them safe).
     folder = "chapters/{order} {title}"

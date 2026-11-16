@@ -4,10 +4,10 @@
         for event in fl.download("ins:example_user", only=["reels"]):
             ...
 
-Who calls it: scripts, through `flnd.open`; the CLI calls the engine directly until it is
-rebuilt on this module. What it calls: `flnd.engine.Engine` for every command, `flnd._home`
-(the home's `flnd.db`) for the reads, and the home's `config.toml` for settings past the five
-options a call takes.
+Who calls it: scripts and the CLI (`flnd/cli.py`), both through `flnd.open`, so the command
+line can do nothing a script can't. What it calls: `flnd.engine.Engine` for every command,
+`flnd._home` (the home's `flnd.db`) for the reads, and the home's `config.toml` for settings
+past the five options a call takes.
 
 How a call flows:
 1. The method checks its arguments at once: targets are resolved, `only`, `when` and `limit`
@@ -58,6 +58,8 @@ KINDS = ("image", "video", "audio")
 WHEN_USAGE = ("when takes a year (2026), a month (2026-06), a day (2026-06-15), a range of "
               "those (2026-01..2026-03, 2026-01.., ..2026-03), or a span back from today "
               "(30d, 8w, 1y)")
+# One side of a `when` range: a year, a month or a day (`2026`, `2026-06`, `2026-06-15`), and a
+# span back from today (`30d`, `8w`, `1y`).
 PERIOD = re.compile(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?")
 SPAN = re.compile(r"(\d+)([dwy])")
 # The days of each span unit: a year is 365 days, which is close enough for "the last year".

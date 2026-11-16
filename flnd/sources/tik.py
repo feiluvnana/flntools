@@ -20,6 +20,38 @@ How a profile is read (`docs/sources/tik` has the whole story):
 
 One video or photo post, by id or link, is read from the public embed page without a browser.
 
+Routes and categories:
+- `video`: `tik:<id of 16 digits or more>`, `tiktok.com/[@<user>/]video/<id>` and
+  `.../photo/<id>`. It is declared before `user`, so a long number is never a user name.
+- `user`: `tik:<user>`, `tik:@<user>`, `tiktok.com/@<user>`, with the categories `videos`,
+  `stories`, `playlists`, `reposts`, `liked`, `favorites` and `profile`, in that order.
+- A short link (`vm.tiktok.com/...`) matches no route: the engine follows its redirect once.
+
+How a list ends: TikTok's own `hasMore: false` in a list response (`page_state`), or the bottom
+of the page staying quiet (the feed's idle end). Nothing else ends a list here; the engine's
+early stops close the generator from outside.
+
+Login: `cookies("sessionid", "sid_tt")`, read from a browser or a cookie file. It is never
+required: a public profile is read logged out, with a warning. The CDN is sent `tt_chain_token`
+and `sessionid` (`cdn_headers`), each only when it has a value.
+
+Site quirks, with the date seen:
+- A slider or puzzle captcha shows a few seconds after the page looks loaded (2026-11-11), and
+  sometimes over the grid mid-scroll; a person gets `CAPTCHA_TIMEOUT` to solve it, else it is
+  backed off as a rate limit and the page reloaded (2026-11-12).
+- A walled post list gives no item at all; the posts linked on the page are then read from their
+  embed pages instead (2026-11-11).
+- `createTime` may be missing or a placeholder; the id's upper 32 bits hold the Unix time
+  (2026-11-11).
+- The CDN answers 403 without the Referer, the user agent and the session cookies (2026-11-11),
+  and refuses some posts on one CDN host but not another, so every address is a mirror
+  (2026-11-13).
+- `bitrateInfo` may hold DASH entries, video only, which are skipped (2026-11, unconfirmed live).
+- The Liked tab is served from `/api/favorite/item_list` and Favorites from
+  `/api/user/collect/item_list`: the names are swapped (2026-11-11).
+- Pinned videos sit at the top of the post list, out of date order: the engine's early stops
+  wait for a streak, so they don't end the list (date not recorded).
+
 Folder layout under `.flnd/media/tik/<username>/`:
   videos/, images/, stories/, reposts/, ...   <date>_<post>[_<n>].<ext>
   albums/<playlist name>/                     <date>_<post>[_<n>].<ext>
@@ -57,7 +89,8 @@ if TYPE_CHECKING:
 TIKTOK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
              "Chrome/128.0.0.0 Safari/537.36")
 
-# Captcha verification detection
+# How a captcha is found: how many back-offs it gets before the target fails, its containers
+# (TikTok has used each of these ids and classes, seen 2026-11-11), and the words it shows.
 CAPTCHA_ATTEMPTS = 3
 CAPTCHA_CSS = ('#captcha-verify-container-main-page, #captcha_container, [id*="captcha-verify"], '
                '[class*="captcha_verify"], [class*="captcha-verify"]')
@@ -66,8 +99,10 @@ CAPTCHA_TEXT = re.compile(
 )
 # The links to a profile's posts, read from the page when its API is walled.
 POST_LINKS = 'a[href*="/video/"], a[href*="/photo/"]'
-# Seconds to let profile settle before looking for captcha or tab click.
+# Seconds to let the profile settle before looking for a captcha: it shows a few seconds after
+# the load event. The value is a margin over that; where it was measured isn't recorded.
 SETTLE = 5.0
+# Seconds a tab (Reposts, Liked, Favorites) gets to appear and take a click before it is skipped.
 CLICK_TIMEOUT = 10.0
 # Seconds a person gets to solve a captcha before the source backs off instead.
 CAPTCHA_TIMEOUT = 60.0
@@ -109,6 +144,9 @@ def is_feed_of(category: str) -> Callable[[str], bool]:
 
     Args:
         category: a feed's category: "videos", "stories", "reposts", "favorites" or "liked".
+
+    Returns:
+        A function of a response's URL: whether one of the category's API paths is in it.
     """
     apis = [feed.api for feed in FEEDS if feed.category == category]
     return lambda url: any(api in url for api in apis)
@@ -119,6 +157,9 @@ def has_captcha(site: Site) -> bool:
 
     Args:
         site: the target's site, whose open page is checked.
+
+    Returns:
+        True when a captcha container is on the page or its words are visible.
     """
     page = site.document()
     return page.first(CAPTCHA_CSS) is not None or bool(CAPTCHA_TEXT.search(page.visible))
@@ -199,8 +240,14 @@ class Profile:
     def feed(self, wanted: str) -> Iterator[Dict[str, Any]]:
         """Stream items of `wanted` as the post feed scrolls, or drain queued ones.
 
+        The first call scrolls the post list, handing each item to the queue of the category
+        that owns it; a later call (the other of the two categories) only drains its queue.
+
         Args:
             wanted: "videos" (items in no playlist) or "playlists".
+
+        Yields:
+            Each item of `wanted`, as `items_of` gives it, in the list's order.
         """
         queue = self._queues[wanted]
         if not self._started:
@@ -209,7 +256,14 @@ class Profile:
             yield queue.popleft()
 
     def stories(self) -> Iterator[Dict[str, Any]]:
-        """The profile's stories from the page's watched responses."""
+        """The profile's stories from the page's watched responses.
+
+        The stories come with the page load, so the profile is opened with its watchers when it
+        wasn't yet. The watcher is read once and closed: a second call yields nothing.
+
+        Yields:
+            Each story item, as `items_of` gives it.
+        """
         if self._stories is None and not self.open(feeds=True):
             return
         stories, self._stories = self._stories, None
@@ -227,6 +281,10 @@ class Profile:
         Args:
             category: the category the tab fills, for its feed and its messages.
             tab: the tab's `data-e2e` name, such as "repost-tab".
+
+        Yields:
+            Each item of the tab's list, as `items_of` gives it; nothing when the account shows
+            no such tab.
         """
         if not self.open(feeds=False):
             return
@@ -262,7 +320,18 @@ class Profile:
             self.site.pause(SETTLE, "letting the profile settle")
 
     def _click_batches(self, category: str, css: str) -> Iterator[Any]:
-        """Click a profile tab and yield its responses live while scrolling to the end."""
+        """Click a profile tab and yield its responses live while scrolling to the end.
+
+        The watcher is set up before the click, so the tab's first page isn't missed. A tab
+        that can't be clicked in `CLICK_TIMEOUT` is skipped with a warning.
+
+        Args:
+            category: the category the tab fills: its feed's API paths and its messages.
+            css: the selector of the tab to click.
+
+        Yields:
+            Each list response's JSON, until one says `hasMore: false` or the feed ends.
+        """
         with self.site.feed(is_feed_of(category), scroll=True, cursor=page_state) as responses:
             try:
                 self.site.click(css, timeout=CLICK_TIMEOUT)
@@ -277,7 +346,15 @@ class Profile:
                     return
 
     def _watch(self, *, posts: bool = False, stories: bool = False) -> bool:
-        """Start feed watchers and load the profile page."""
+        """Start feed watchers and load the profile page (again).
+
+        Args:
+            posts: whether to watch the post list (`/api/post/item_list`), scrolling.
+            stories: whether to watch the story lists, which come with the load.
+
+        Returns:
+            Whether the profile is open; `_load` raises rather than return False.
+        """
         if posts:
             self._posts = self.site.feed(is_feed_of("videos"), scroll=True, cursor=page_state)
         if stories:
@@ -286,7 +363,15 @@ class Profile:
         return self._loaded
 
     def _load(self) -> bool:
-        """Load the profile, wait out any captcha, and read its own data."""
+        """Load the profile, wait out any captcha, and read its own data.
+
+        Returns:
+            True once the page is open and any captcha gone.
+
+        Raises:
+            SiteError: the profile page didn't load.
+            Blocked: a captcha stayed (`wait_out_captcha`).
+        """
         if not self.site.open(self.url):
             raise SiteError("the profile didn't load")
         # The captcha shows a few seconds after the load event, over a page that looks ready.
@@ -301,6 +386,17 @@ class Profile:
 
         The engine may close this generator early (`--when`, or a sync that caught up); the
         `finally` then stops the watcher, and `playlists` gets only what was queued so far.
+
+        A captcha may come over the grid while it scrolls (2026-11-11): when the feed then gave
+        nothing at all, the watcher is set up again, the captcha waited out (which reloads the
+        page) and the grid read again.
+
+        Args:
+            wanted: the category reading: "videos" or "playlists"; the other one's items wait
+                in its queue.
+
+        Yields:
+            Each item of `wanted`, as the list scrolls.
         """
         self._started = True
         if not self.open(feeds=True):
@@ -318,7 +414,18 @@ class Profile:
             self._end()
 
     def _drain_posts(self, wanted: str) -> Generator[Dict[str, Any], None, bool]:
-        """Yield `wanted` items batch by batch; return True once a response says it is the end."""
+        """Yield `wanted` items batch by batch; return True once a response says it is the end.
+
+        Args:
+            wanted: "videos" or "playlists"; every item is queued for its owner first.
+
+        Yields:
+            Each item of `wanted`, after each response.
+
+        Returns:
+            True when a response said `hasMore: false`; False when the feed ran out by itself
+            (a quiet bottom, or a closed feed).
+        """
         assert self._posts is not None
         queue = self._queues[wanted]
         for data in self._posts:
@@ -378,6 +485,10 @@ class TikTok(Source):
         Args:
             site: the target's site; the embed page needs no browser.
             id: the post's numeric id, from the target or the URL.
+
+        Yields:
+            A post per video, or one per photo of a photo post; nothing when the embed page
+            failed (a warning says why).
         """
         yield from embed_posts(site, id)
 
@@ -390,6 +501,9 @@ class TikTok(Source):
         Args:
             site: the target's site, whose tab the profile is opened in.
             user: the user name, without `@`.
+
+        Returns:
+            The `Profile` every category of the target shares.
         """
         return Profile(site, user)
 
@@ -398,9 +512,15 @@ class TikTok(Source):
     def videos(self, site: Site, profile: Profile) -> Iterator[Post]:
         """The videos and photo posts that are in no playlist.
 
+        When the post list gave nothing at all on a page that did open (a walled API,
+        2026-11-11), each post the page links to is read from its embed page instead.
+
         Args:
             site: the target's site, which the posts are built for.
             profile: the `Profile` the route built, shared with the other categories.
+
+        Yields:
+            A post per file, as `post_of` builds it.
         """
         for item in profile.feed("videos"):
             yield post_of(site, item, "videos")
@@ -418,6 +538,9 @@ class TikTok(Source):
         Args:
             site: the target's site, which the stories' posts are built for.
             profile: the `Profile` the route built, shared with the other categories.
+
+        Yields:
+            A post per file, as `post_of` builds it.
         """
         for item in profile.stories():
             yield post_of(site, item, "stories")
@@ -429,6 +552,9 @@ class TikTok(Source):
         Args:
             site: the target's site, which the posts are built for.
             profile: the `Profile` the route built, shared with the other categories.
+
+        Yields:
+            A post per file, as `post_of` builds it.
         """
         for item in profile.feed("playlists"):
             yield post_of(site, item, "videos")
@@ -440,6 +566,9 @@ class TikTok(Source):
         Args:
             site: the target's site, which the posts are built for.
             profile: the `Profile` the route built, shared with the other categories.
+
+        Yields:
+            A post per file, as `post_of` builds it.
         """
         for item in profile.tab("reposts", "repost-tab"):
             yield post_of(site, item, "reposts")
@@ -451,6 +580,9 @@ class TikTok(Source):
         Args:
             site: the target's site, which the posts are built for.
             profile: the `Profile` the route built, shared with the other categories.
+
+        Yields:
+            A post per file, as `post_of` builds it.
         """
         for item in profile.tab("liked", "liked-tab"):
             yield post_of(site, item, "liked")
@@ -462,6 +594,9 @@ class TikTok(Source):
         Args:
             site: the target's site, which the posts are built for.
             profile: the `Profile` the route built, shared with the other categories.
+
+        Yields:
+            A post per file, as `post_of` builds it.
         """
         for item in profile.tab("favorites", "favorites-tab"):
             yield post_of(site, item, "favorites")
@@ -473,6 +608,10 @@ class TikTok(Source):
         Args:
             site: the target's site, whose cookies go to the CDN.
             profile: the `Profile` the route built, shared with the other categories.
+
+        Yields:
+            One post with the largest picture (`avatarLarger`), or nothing when the page's
+            data has none.
         """
         if not profile.open(feeds=False):
             return
@@ -504,6 +643,10 @@ def embed_posts(site: Site, video_id: str) -> Iterator[Post]:
     Args:
         site: the target's site; the embed page needs no browser.
         video_id: the post's id.
+
+    Yields:
+        A post per video, or one per photo of a photo post; nothing, with a warning, when the
+        page failed or held no `itemStruct`.
     """
     try:
         page = site.html(site.fetch(f"{SITE}/embed/v2/{video_id}").text)
@@ -532,6 +675,9 @@ def post_of(site: Site, item: Dict[str, Any], category: str) -> Post:
         item: one of `items_of`'s items.
         category: the category it is listed for; a `videos` item goes under videos, images or
             albums by its kind and playlist.
+
+    Returns:
+        A post of one file, with the CDN headers and the `part`, `album` and `idx` fields.
     """
     part, album = category, ""
     if category == "videos" and item["playlist"]:
@@ -555,6 +701,9 @@ def cdn_headers(cookies: Mapping[str, str]) -> Dict[str, str]:
 
     Args:
         cookies: the target's cookies, by name.
+
+    Returns:
+        The headers to send with every file of the target.
     """
     headers = {"Referer": f"{SITE}/", "User-Agent": TIKTOK_UA}
     sent = [f"{name}={cookies[name]}" for name in CDN_COOKIES if cookies.get(name)]
@@ -631,6 +780,9 @@ def stamp_of(raw: Dict[str, Any], item_id: str) -> int | None:
     Args:
         raw: one item of a TikTok response, as its JSON object.
         item_id: the item's id, which `stamp_of` reads a time from when `createTime` is missing.
+
+    Returns:
+        Unix seconds, or None when neither the field nor the id holds a plausible time.
     """
     # A number or a string of digits; a placeholder (0, a small number) isn't a date, and the
     # post is then dated from its id instead.
@@ -666,15 +818,31 @@ def mirrors(urls: Sequence[Any]) -> str | tuple[str, ...]:
 
         mirrors(["https://v16.example/a", "https://v19.example/a"])     # both, tried in that order
 
-    TikTok answers 403 for some posts on one CDN host and not on another, so every address is kept
-    and the engine tries the next one when one refuses.
+    TikTok answers 403 for some posts on one CDN host and not on another (seen 2026-11-13), so
+    every address is kept and the engine tries the next one when one refuses.
+
+    Args:
+        urls: the CDN addresses a response lists, best first; empty ones and repeats are dropped.
+
+    Returns:
+        The one URL when there is one, else every URL in order, as the mirrors `File` takes.
     """
     found = tuple(dict.fromkeys(str(url) for url in urls if url))
     return found[0] if len(found) == 1 else found
 
 
 def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
-    """The URL of the video's best file with CDN mirrors: largest MP4 or playAddr."""
+    """The URL of the video's best file with CDN mirrors: largest MP4 or playAddr.
+
+    The whole MP4s of `bitrateInfo` are ranked by pixels, then bitrate; DASH entries are left
+    out, since one saved as an MP4 has no sound. Without any, the `playAddr` is taken.
+
+    Args:
+        video: an item's `video` object; {} when the item has none.
+
+    Returns:
+        A URL or a mirror tuple, or None when the video names no file.
+    """
     # Each candidate is (pixels, bitrate, url): largest picture wins, bitrate breaks tie.
     candidates = [
         (_pixels(entry), entry.get("Bitrate") or 0, m)
@@ -692,7 +860,14 @@ def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
 
 
 def _pixels(entry: Dict[str, Any]) -> int:
-    """A `bitrateInfo` entry's width × height, or 0 when TikTok leaves either out."""
+    """A `bitrateInfo` entry's width × height, or 0 when TikTok leaves either out.
+
+    Args:
+        entry: one `bitrateInfo` entry; its size is under `PlayAddr`.
+
+    Returns:
+        The pixel count; 0 ranks the entry last.
+    """
     size = entry.get("PlayAddr") or {}
     # Sizes come as numbers, but string or null ranks file last.
     try:
@@ -708,6 +883,12 @@ def _is_dash(entry: Dict[str, Any]) -> bool:
     "dash" in its `GearName` or `PlayAddr.UrlKey`, or a `.mpd` manifest URL. Neither gallery-dl nor
     yt-dlp skips DASH entries today, so there was no known rule to copy, and all four marks are
     checked to be safe: a DASH file saved as an MP4 would have no sound.
+
+    Args:
+        entry: one `bitrateInfo` entry.
+
+    Returns:
+        True when any of the four marks says DASH.
     """
     play = entry.get("PlayAddr") or {}
     marks = (

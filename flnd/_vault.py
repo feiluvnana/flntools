@@ -1,6 +1,6 @@
 """Secrets sealed with AES-256-GCM, and a vault of them in one SQLite file under a key file.
 
-What it offers, for any caller:
+A library: it knows nothing of flnd's sources or homes. What it offers, for any caller:
 - `encrypt` and `decrypt`: authenticated encryption of a value under a 32-byte key, bound to a
   context (associated data), so a sealed value moved elsewhere doesn't open.
 - `Vault(path, key_path, slot)`: one slot's secrets as a mapping of text to text, each value
@@ -10,6 +10,18 @@ What it offers, for any caller:
 
     with Vault(Path("secrets.db"), Path("secret.key"), "tlg") as saved:
         saved["session"] = "1BVts…"
+
+Who calls it: in flnd, `flnd/_home.py` opens one `Vault` per source (`_home.secrets`), with the
+home's `secrets.db` and `secret.key`, and a source reaches it as `Site.secrets`
+(`flnd/site.py`) to keep a login token or session. Its errors are `flnd.errors` classes.
+
+How a value is kept:
+1. `Vault[name] = value` reads (or makes) the key file, then seals the value with `encrypt`,
+   binding it to `<slot>\\0<name>` as associated data;
+2. the blob (version byte, nonce, ciphertext and tag) is written to the `secrets` table, one
+   row per `(slot, name)`, in its own transaction (`flnd._db.Db.write`);
+3. `Vault[name]` reads the row and opens it with `decrypt`; a wrong key, a moved row or a
+   changed byte all fail the same way, as `LoginError` with the vault's `hint`.
 
 Rules a change must keep:
 - A secret's value never reaches a message: every way decryption fails says the same thing.
@@ -152,7 +164,18 @@ def _as_bytes(data: Data) -> bytes:
 
 
 def _aes_gcm(key: bytes) -> AESGCM:
-    """`cryptography`'s AESGCM for a 32-byte key, imported here so `digest` never needs it."""
+    """`cryptography`'s AESGCM for a 32-byte key, imported here so `digest` never needs it.
+
+    Args:
+        key: the AES-256 key; its length is checked, its bytes never shown.
+
+    Returns:
+        A cipher object that seals and opens with `key`.
+
+    Raises:
+        ValueError: the key isn't 32 bytes.
+        ToolError: `cryptography` isn't installed.
+    """
     # The message gives the key's length only, never its bytes.
     if len(key) != KEY_SIZE:
         raise ValueError(

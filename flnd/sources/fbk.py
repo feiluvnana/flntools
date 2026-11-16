@@ -34,6 +34,35 @@ Folder layout under `.flnd/media/fbk/<target>/`:
   profile/                                    profile_<id>.jpg, cover_<id>.jpg
   (a single video, photo or post)             <date>_<id>.jpg (or .mp4), in the target's folder
 
+How login works: `login = cookies("c_user", "xs")`. `flnd login fbk` reads Facebook's cookies
+from a browser or a cookie file, and either cookie proves a login. The engine loads them into
+the browser each run, so every page here is read as that account. A login is optional: a
+logged-out browser gets what Facebook shows the public, which is little. A page that lands on
+`/login` or `/login.php` (a login wall) is waited out `WALL_ATTEMPTS` times, then stops the
+target with a `LoginError` that says to log in again.
+
+Site quirks, each with the day it was first seen (docs/sources/fbk has them for people):
+- 2026-11-11: a tab's path differs by profile (`photos_by` or `photos`, `reels_tab` or
+  `reels`, `videos_by` or `videos`); the one the header lists is used (`TABS`, `tab_path`).
+- 2026-11-11: a video's progressive files moved under `videoDeliveryResponseFragment`; older
+  pages keep them on the node, so both places are read (`PROGRESSIVE`, `MANIFEST`).
+- 2026-11-11: a grid tile (`TimelineAppCollectionItem`) holds a small copy of a photo that an
+  inner node has in full, so the tile is skipped (`TILE`). A video's thumbnails are images
+  inside its node, and are never taken for photos.
+- 2026-11-11: other accounts' media (a comment's photo, a shared post) shows in a profile's
+  tabs; media whose owner id isn't the profile's is left out.
+- 2026-11-11: the CDN converts an image to the format its `stp=dst-<format>` parameter names,
+  which is therefore the file's extension (`image_extension`).
+- 2026-11-12: a throttled session gets a page saying "temporarily blocked", or a GraphQL answer
+  that is Comet's error page (`CometErrorRoot.react`); both are waited out (`BLOCKED`,
+  `COMET_ERROR`).
+- 2026-11-12: a comment list carries its own `page_info`, deeper than the tab's; only one at
+  most `PAGE_INFO_DEPTH` objects under `data` is the tab's next page.
+- 2026-11, live: on some loads the profile's Tiles feed answers first with "no next page",
+  which says nothing about the tab (`tab_cursor`).
+- 2026-11-13: a photo's own day is taken to be the first `created_time` on its page; not yet
+  checked by hand on a live page (`CREATED_TIME`).
+
 Rules a change must keep:
 - The history key of a photo or video is its id alone (`key = "{post}"`), so a photo found in two
   tabs is saved once. Changing it downloads every saved file again.
@@ -362,7 +391,24 @@ class Facebook(Source):
         f"facebook.com/{{user:{USER_NAME}}}", f"fb.com/{{user:{USER_NAME}}}",
     )
     def user(self, site: Site, user: str) -> Profile:
-        """A profile by user name or id: `fbk:example.page`, loaded once for every category."""
+        """A profile by user name or id: `fbk:example.page`, loaded once for every category.
+
+        The page is loaded here, with the GraphQL feed watched from before it loads, so the
+        responses of its first load are kept for `posts`. A page that didn't load gives a
+        `Profile` with no results and no header: each category then loads its own tab, and
+        `stories` and `profile` are skipped with a warning.
+
+        Args:
+            site: the target's site; the profile is opened in its tab.
+            user: the user name (`example.page`) or the numeric id the link or target gave.
+
+        Returns:
+            The loaded profile, which every category of the target receives.
+
+        Raises:
+            LoginError: Facebook kept showing its login page.
+            Blocked: Facebook kept saying the session is temporarily blocked.
+        """
         url = f"{SITE}/{user}"
         # Subscribed before the page loads, so the responses of its first load are kept too.
         with site.feed(FEED, lines=True) as arrived:
@@ -393,7 +439,20 @@ class Facebook(Source):
 
     @user.category
     def albums(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The albums tab, then each album it lists, into `albums/<title>/`."""
+        """The albums tab, then each album it lists, into `albums/<title>/`.
+
+        The albums tab is scrolled to its end first, collecting each album tile's link and
+        title; media on the tab itself is yielded as it comes. Then the albums start loading in
+        background tabs, and each is scrolled in turn (`read_album`). A profile whose header
+        lists no albums tab is skipped with a note.
+
+        Args:
+            site: the target's site.
+            profile: the loaded profile; its header gives the tab's path and the owner's id.
+
+        Yields:
+            A post per photo and video, filed under `albums/<album title>/`.
+        """
         tab = BY_CATEGORY["albums"]
         path = tab_path(tab, profile.paths)
         if path is None:
@@ -424,7 +483,20 @@ class Facebook(Source):
 
     @user.category
     def stories(self, site: Site, profile: Profile) -> Iterator[Post]:
-        """The stories of each story bucket the header lists: only those active now."""
+        """The stories of each story bucket the header lists: only those active now.
+
+        Each bucket is its own page (`/stories/<bucket>/`), loaded once with no scroll: a
+        bucket's cards are all in the page's embedded results. A card's date dates every media
+        it attaches. A bucket page that didn't load is passed over.
+
+        Args:
+            site: the target's site.
+            profile: the loaded profile; without a header there are no buckets, and the
+                category is skipped with a warning.
+
+        Yields:
+            A post per photo and video of each story, filed under `stories/`.
+        """
         if profile.header is None:
             site.warn("the profile header wasn't found; its stories are skipped")
             return
@@ -453,6 +525,14 @@ class Facebook(Source):
         """The profile picture and the cover photo, named `profile_<id>` and `cover_<id>`.
 
         Their key is empty, so each is remembered by its path: a new picture is a new file.
+
+        Args:
+            site: the target's site.
+            profile: the loaded profile; without a header the category is skipped with a
+                warning.
+
+        Yields:
+            A post per picture the header has, the profile picture first.
         """
         if profile.header is None:
             site.warn("the profile header wasn't found; its pictures are skipped")
@@ -479,6 +559,10 @@ def read_page(site: Site, url: str) -> list[Any] | None:
     Args:
         site: the target's site.
         url: the page.
+
+    Returns:
+        The page's embedded results; [] when it loaded but embeds none (an empty tab); None
+        when the tab isn't on the page after loading it, so it didn't load.
 
     Raises:
         LoginError: the login wall stayed.
@@ -640,7 +724,18 @@ def read_album(site: Site, url: str, *, title: str, owner: str | None) -> Iterat
 def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
     """The posts of one tab, streamed while it scrolls to its end.
 
-    The tabs after it start loading in background tabs meanwhile (`site.warm`).
+    The tabs after it start loading in background tabs meanwhile (`site.warm`). A tab the
+    profile header doesn't list is skipped with a note. One `seen` set spans the whole tab, so
+    a media that two results of the scroll both hold is yielded once.
+
+    Args:
+        site: the target's site.
+        profile: the loaded profile: its URL, its header's tab paths and owner id, and, for
+            the posts tab, the page's first results.
+        tab: the tab to read.
+
+    Yields:
+        A post per photo and video, filed by `media_posts`.
     """
     path = tab_path(tab, profile.paths)
     if path is None:
@@ -658,7 +753,25 @@ def _collect_tab(site: Site, profile: Profile, path: str) -> Iterator[tuple[Any,
 
     The posts tab's first batch is the profile page the route loaded, not filtered by owner:
     the header that names the owner came from the same results. A Comet error answer in the
-    scroll is a block, waited out up to `BLOCK_ATTEMPTS` times in a row.
+    scroll is a block, waited out up to `BLOCK_ATTEMPTS` times in a row; any good answer
+    resets the count.
+
+    The feed is subscribed before the tab loads, so no response of its first load is lost. It
+    ends where `tab_cursor` says the tab has no next page, or when the bottom stays quiet.
+
+    Args:
+        site: the target's site.
+        profile: the loaded profile. Its results are the posts tab's first batch, unless the
+            route's page didn't load, when the posts tab is loaded again here.
+        path: the tab's path under the profile's URL; "" for the posts tab.
+
+    Yields:
+        `(result, owner)`: a GraphQL result, and the owner id whose media it may hold (None
+        keeps every media).
+
+    Raises:
+        Blocked: the Comet error answer came `BLOCK_ATTEMPTS` + 1 times in a row.
+        LoginError: the tab's page kept showing the login wall (from `read_page`).
     """
     blocks = 0
     with site.feed(FEED, scroll=True, lines=True, cursor=tab_cursor()) as responses:
@@ -696,6 +809,17 @@ def page_info(line: Any) -> tuple[bool, str | None] | None:
 
     The `page_info` is looked for in `data` at most `PAGE_INFO_DEPTH` objects deep, never inside
     a list, which is where the tab's connection keeps it and a comment list's never is.
+
+    The search is breadth first, so the shallowest `page_info` wins. A `page_info` counts only
+    when it holds `end_cursor` or `has_next_page`; a next page needs both a true
+    `has_next_page` and a cursor.
+
+    Args:
+        line: one parsed line of a GraphQL answer, or anything else (which says nothing).
+
+    Returns:
+        `(True, cursor)` when there is a next page, `(False, cursor or None)` when there isn't,
+        or None when the line holds no `page_info` within reach.
     """
     level = [line.get("data")] if isinstance(line, dict) else []
     for _ in range(PAGE_INFO_DEPTH + 1):
@@ -751,6 +875,18 @@ def media_posts(
 
     A photo that names its album goes under `albums/<album>/`, and a video found in a tab other
     than reels or videos under `videos/`, whichever tab found it.
+
+    Args:
+        result: one GraphQL result; anything but an object holds nothing.
+        tab: the category of the tab being read, the folder its own media goes in.
+        album: the title of the album being read, which files every media under it; None
+            outside an album, when only a photo's own album name does.
+        owner: the profile's id: media another account owns is left out. None keeps all.
+        seen: the ids already yielded, shared across one tab's results so a media is filed
+            once; None starts a new set for this result alone.
+
+    Yields:
+        A post of one file per photo and video kept.
     """
     if not isinstance(result, dict):
         return
@@ -770,6 +906,15 @@ def post_of(item: Item, part: str, *, album: str | None = None) -> Post:
     A DASH video has no name: the engine gives a joined video its extension. Any other file is
     named `<id>.<ext>` for its extension; the engine puts the post's day in front of that stem,
     as `filename` says.
+
+    Args:
+        item: the photo or video found.
+        part: the folder under the target (`photos`, `videos`, `albums`, ...); "" for a single
+            link's files, which sit in the target's own folder.
+        album: the album's title, the folder under `albums/`; None outside an album.
+
+    Returns:
+        The post, with the CDN's Referer header that its file needs.
     """
     if item.audio is not None:
         file = File(item.url, audio=item.audio)
@@ -781,7 +926,16 @@ def post_of(item: Item, part: str, *, album: str | None = None) -> Post:
 
 
 def album_links(data: Any) -> dict[str, str]:
-    """The albums a result lists, as {url: title}: each album's tile on the albums tab."""
+    """The albums a result lists, as {url: title}: each album's tile on the albums tab.
+
+    A tile is a `TimelineAppCollectionItem` whose node is an `Album` and which has a link.
+
+    Args:
+        data: one GraphQL result of the albums tab.
+
+    Returns:
+        Each album's page URL and its title ("album" for an untitled one), in listing order.
+    """
     return {
         tile["url"]: dig(tile, "title.text") or "album"
         for tile in dig(data, f"..[__typename={TILE}]")
@@ -798,7 +952,18 @@ def tab_path(tab: Tab, paths: set[str]) -> str | None:
 
 
 def read_header(result: Any) -> Header | None:
-    """The profile header's id, pictures, story buckets and tab paths, or None without one."""
+    """The profile header's id, pictures, story buckets and tab paths, or None without one.
+
+    The tab paths are the `tab_key` of each navigation section of the header, and of each
+    collection inside a section: the photos tab, for one, is a collection of its section.
+
+    Args:
+        result: one GraphQL result of the profile page.
+
+    Returns:
+        The header, or None when the result holds none at `HEADER`. A picture without its
+        photo id is named by "picture" or "cover" instead.
+    """
     user = dig(result, HEADER)
     if not isinstance(user, dict):
         return None
@@ -858,6 +1023,10 @@ def media_items(
         stamp: the date of the nearest dated node above `data`.
         seen: the ids found so far, shared across results so a media is found once.
         owner: the profile's id: media whose owner is another id is left out. None keeps all.
+
+    Yields:
+        Each photo and video, depth first in the result's order. A video's node isn't searched
+        further, and neither is the profile header (`NOT_MEDIA`).
     """
     seen = set() if seen is None else seen
     if isinstance(data, list):
@@ -882,7 +1051,19 @@ def media_items(
 
 
 def video_item(node: dict, stamp: Any) -> Item | None:
-    """A video node's best file: its DASH streams, else its progressive files and URLs."""
+    """A video node's best file: its DASH streams, else its progressive files and URLs.
+
+    A node is a video when its `__typename` names a video or a reel, or when it has
+    progressive files. Its id is `id`, else `video_id`.
+
+    Args:
+        node: one object of a result.
+        stamp: the date to give the video (its own, or its nearest dated parent's).
+
+    Returns:
+        The video's item: its DASH video stream with `audio` set, or its progressive URLs as
+        mirrors, HD first. None for a node that isn't a video, or has no id or no file.
+    """
     typename = node.get("__typename", "")
     if not ("Video" in typename or "Reel" in typename or "progressive_urls" in node):
         return None
@@ -907,7 +1088,19 @@ def video_item(node: dict, stamp: Any) -> Item | None:
 
 
 def photo_item(node: dict, stamp: Any) -> Item | None:
-    """A photo node's largest image, with its album's name when it has one."""
+    """A photo node's largest image, with its album's name when it has one.
+
+    A node is a photo when its `__typename` names a photo, or when it has one of the image
+    fields `PHOTO_URL` reads. Its id is `id`, `photo_id` or `legacy_photo_id`.
+
+    Args:
+        node: one object of a result.
+        stamp: the date to give the photo (its own, or its nearest dated parent's).
+
+    Returns:
+        The photo's item, or None for a grid tile, a node that isn't a photo, or one with no
+        id or no image URL.
+    """
     # A tab's grid tile holds a small copy of a photo that its inner node has in full.
     if node.get("__typename") == TILE:
         return None
@@ -946,7 +1139,14 @@ def posted_on(node: dict) -> Any:
 
 
 def image_extension(url: str) -> str:
-    """An image's extension, from its `stp=dst-<format>` parameter or its path; jpg otherwise."""
+    """An image's extension, from its `stp=dst-<format>` parameter or its path; jpg otherwise.
+
+    Args:
+        url: the image's CDN URL.
+
+    Returns:
+        "jpg", "png", "webp" or "gif", without a dot.
+    """
     parts = urlsplit(url)
     # The CDN converts the file to the format `stp=dst-<format>` names, so that is its extension.
     converted = re.search(r"dst-(jpg|png|webp|gif)", parse_qs(parts.query).get("stp", [""])[0])

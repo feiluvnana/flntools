@@ -6,10 +6,10 @@
    worker thread. The thread runs the engine command the `Run` was made with, in a copy of the
    caller's context (so a test's fake clock reaches it), with `_emit` as the engine's event sink
    and the run's own stop state.
-2. **Events.** The engine (its listing thread and its download threads) calls `_emit` for each
-   event. `_emit` counts the event into the report, then puts it on a bounded queue. When the
-   queue is full, `_emit` waits: the listing waits while the script handles an event, so events
-   never pile up in memory.
+2. **Events.** The engine (its listing thread, and the download tasks on the run's loop) calls
+   `_emit` for each event. `_emit` counts the event into the report, then puts it on a bounded
+   queue. When the queue is full, `_emit` waits: the listing waits while the script handles an
+   event, so events never pile up in memory.
 3. **Reading.** Iterating takes events off the queue as they come. Between two (and at least
    every `WAKE` seconds), it asks the run's `flnd._stats.Meter` for a sample, which comes
    about once a second as a `Stats` event and is kept as `run.stats`. `wait()` stops queueing
@@ -343,8 +343,8 @@ class Run:
     def _emit(self, event: Any) -> None:
         """Count an event, then hand it to the reader, waiting while the queue is full.
 
-        Called by the engine on its listing and download threads. It returns at once when
-        nobody will read the event (`wait()` is draining the run).
+        Called by the engine on its listing thread and from download tasks on the run's loop.
+        It returns at once when nobody will read the event (`wait()` is draining the run).
 
         Args:
             event: a `Saved`, `Skipped`, `Failed`, `Progress` or `Planned` event.

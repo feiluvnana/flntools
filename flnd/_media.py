@@ -1,7 +1,16 @@
-"""What a saved photo, video or song is (a probe), and ffmpeg runs that report their progress.
+"""Media probes and ffmpeg encodes: what a photo, video or song holds, and progress as it encodes.
 
-`flnd._shrink` asks `probe` what a file holds before it plans an encode, and again after, to
-check the result kept its dimensions, frames and duration. It runs ffmpeg through `encode`.
+A library module: it imports only the stdlib, Pillow (lazily), the tool runner (`flnd._tools`)
+and flnd's error classes. It offers:
+- `probe(path)`: a `Probe` with the file's dimensions, frame count, duration and codecs,
+  cached per path, size and modified time;
+- `encoders()`: the encoders this ffmpeg build has, asked once per process;
+- `encode(args, duration=…, progress=…, stop=…)`: one ffmpeg run that reports the fraction
+  done to a callback and can be stopped from another thread.
+
+Who calls it in flnd: the compress step (`flnd._shrink`) asks `probe` what a file holds before
+it plans an encode, and again after, to check the result kept its dimensions, frames and
+duration; it runs ffmpeg through `encode`.
 
 How a probe goes:
 1. The cache answers when it has the file at the same path, size and modified time, so a

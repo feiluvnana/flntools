@@ -93,8 +93,10 @@ failed files or targets, 2 for usage, 3 for a login, 4 when flnd itself stopped,
 
 ## No tracebacks for a person's mistake
 
-A `UsageError`, `LoginError`, `DiskError` or `ToolError` prints one line saying what went wrong
-and one line saying what to do:
+A `flnd.Error` that ends a command, most often a `UsageError`, `LoginError`, `DiskError` or
+`ToolError`, prints one line saying what went wrong and one line saying what to do, and never a
+traceback. Its class gives the exit code: 2 for a `UsageError`, 3 for a `LoginError`, 1 for a
+`SiteError` or `NetworkError`, and 4 for a `DiskError`, `ToolError` or `SourceError`:
 
 ```
 x ins:example_user: not logged in
@@ -188,5 +190,5 @@ A file a retry brought back is a `Saved` event with `retried=True`; the end of t
 | `<code>: the site refused the login (HTTP 403)` | the saved login expired or was revoked | `flnd login <code>` |
 | `which source is "<text>"?` | a bare name, not a link, without a source | write it as `<code>:<text>` |
 | `got a web page instead of a photo` | the site answered a file request with a page | usually a login wall: log in again |
-| `held by another writer` | another flnd run is using the same home | wait for it to end |
+| `<home>/flnd.db: database is locked` | another flnd run held the home's database for more than 30 s | wait for it to end, or use another `--home` |
 | `unexpected <Type>: …` | a bug in a source or in flnd | run with `-v` and report it |

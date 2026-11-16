@@ -1,7 +1,19 @@
-"""The two outside programs flnd runs: ffmpeg (with ffprobe) and 7-Zip's `7zz`.
+"""Outside programs, found on PATH and run safely: ffmpeg, ffprobe and 7-Zip, or any other.
 
-Everything else flnd needs is a Python wheel: images are compressed by Pillow and pyoxipng
-in-process (`flnd._shrink`). Only video, probes, DASH joins and archives leave Python.
+A library module: it imports only the stdlib, the file library (`flnd._files`, for an atomic
+cache write) and flnd's error classes. It offers:
+- `find(name)`, and the shortcuts `ffmpeg()`, `ffprobe()` and `sevenzip()`: a program on PATH as
+  a `Tool`, or a `MissingError` whose hint says what to install;
+- `Tool.run(*args)`: runs it with an argument list (never a shell), waits, and returns a
+  `Result`; a non-zero exit raises `RunError` quoting its last lines of output;
+- `Tool.stream(*args)`: yields its stdout lines as they come, for a progress feed;
+- `Tool.version`: its version number, cached on disk by binary path and modified time;
+- `fake(handlers)`: answers every run inside a block by program name, so tests never start
+  a process.
+
+Inside flnd these are the only programs it runs: everything else is a Python wheel (images are
+compressed by Pillow and pyoxipng in-process, `flnd._shrink`), so only video, probes, DASH joins
+and archives leave Python.
 
 Who calls it:
 - `flnd._media` runs `ffmpeg()` and `ffprobe()` for probes and video encodes;
@@ -20,10 +32,13 @@ How a call goes:
 Rules a change must keep:
 - every call takes an argument list, and every caller puts `--` before a path that came from a
   site where the tool reads switches (7zz), so a file named `-sdel` is never read as one;
-- `fake` answers every run inside its block by tool name, so tests never start a process.
+- `fake` answers every run inside its block by tool name, so tests never start a process. Its
+  stack is a module list, not a context variable, so the threads a test starts see it too;
+- `find` caches by name for the process; `_versions_lock` serialises the read-modify-write of
+  the version cache, which several download threads may reach at once.
 
-Downloading a pinned ffmpeg or 7zz when neither is on PATH is planned  but
-not built: a pin needs a real checksum per platform, so today a missing tool is a `MissingError`.
+Downloading a pinned ffmpeg or 7zz when neither is on PATH is planned but not built: a pin needs
+a real checksum per platform, so today a missing tool is a `MissingError`.
 """
 
 from __future__ import annotations
@@ -297,6 +312,15 @@ def _argv(*args: str | os.PathLike[str]) -> tuple[str, ...]:
 def _faked(argv: tuple[str, ...]) -> Result | None:
     """The result the innermost `fake` gives `argv`, or None outside a `fake` block.
 
+    The program is named by its file name, without a Windows `.exe`, so a fake for `ffmpeg`
+    answers `C:\\tools\\ffmpeg.exe` too.
+
+    Args:
+        argv: the full command, the program first.
+
+    Returns:
+        The handler's `Result`, with `argv` as its `args`; None when no fake is active.
+
     Raises:
         MissingError: a fake is active and doesn't name this program.
     """
@@ -315,6 +339,13 @@ def _faked(argv: tuple[str, ...]) -> Result | None:
 
 def _checked(result: Result, *, check: bool) -> Result:
     """`result`, or a `RunError` when `check` is set and it exited non-zero.
+
+    Args:
+        result: a finished run, real or faked.
+        check: whether a non-zero exit is an error; False passes any result through.
+
+    Returns:
+        `result` itself.
 
     Raises:
         RunError: `check` and a non-zero exit, quoting the last lines of output.
@@ -335,7 +366,25 @@ def _last_lines(output: str) -> str:
 
 
 def _stream(argv: tuple[str, ...], *, timeout: float | None) -> Iterator[str]:
-    """Run `argv`, yielding stdout lines while a thread keeps stderr's tail (see `Tool.stream`)."""
+    """Run `argv`, yielding stdout lines while a thread keeps stderr's tail (see `Tool.stream`).
+
+    Three threads take part: the caller's reads stdout line by line; a daemon thread drains
+    stderr into a bounded deque, so a chatty program never blocks on a full pipe; and, with a
+    timeout, a timer kills the program, which ends the caller's blocking read. Whatever way the
+    loop ends (done, error, or the caller leaving early), `_end` kills and reaps the program.
+
+    Args:
+        argv: the full command, the program first.
+        timeout: seconds before the program is killed; None waits for ever.
+
+    Yields:
+        Each stdout line, without its line ending.
+
+    Raises:
+        MissingError: the program is not there.
+        ToolError: the OS refused to start it.
+        RunError: it timed out, or exited non-zero, raised after its last line.
+    """
     try:
         process = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
