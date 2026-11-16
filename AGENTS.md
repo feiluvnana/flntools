@@ -1,76 +1,119 @@
-# Agent Guidelines
+# Agent guidelines
 
-## Commit Convention
+These rules are for anyone, person or agent, who changes this repository. `PLAN.md` is the design of the rebuild; this file says how to work on it.
 
-All commits must strictly follow this message format:
+## Status
+- `PLAN.md` on branch `next` is the plan: flnd becomes one fast package (a library plus a thin CLI, no `shared` toolkit), rebuilt in the ranked commits of its section 15.
+- **Nothing is built from it until the user approves it.** Until then, change code only to fix a bug, and say so in the commit.
+- Until the rebuild lands, the code still has today's layout: `shared/`, `flnd/` and `scripts/dev.py`. The sections below give today's commands and the target rules side by side wherever they differ.
 
+## Commit convention
+Every commit message has this form:
 ```
 <action>:<summary>
 ```
+- `<action>` is a lowercase type: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `chore` or `style`.
+- The colon follows it with no space.
+- `<summary>` is imperative, lowercase, with no trailing period.
+- **No co-author.** Never add a `Co-authored-by:` trailer or any other attribution.
 
-### Format Rules
-- `<action>`: Lowercase verb or type representing the action taken (e.g., `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `style`, `perf`).
-- `:`: Colon immediately follows `<action>` without spaces before it.
-- `<summary>`: Concise description of the changes made, written in imperative lowercase without a trailing period.
-- **NO CO-AUTHOR**: Do not include `Co-authored-by:` trailers or any other co-author attributions.
-
-### Examples
-- `feat:implement continuous scroll to end for all crawlers`
-- `fix:support user reposts extraction in instagram extractor`
-- `fix:add user originals timeline posts crawling for twitter`
-- `test:add unit tests for source parsing and scrolling logic`
-- `chore:initialize git repository and github remote`
-- `docs:update readme with posts and reposts folder layout`
+Examples:
+- `fix:flush a telegram part before saving its offsets`
+- `perf:stream archive entries to disk`
+- `docs:document the download pipeline`
 
 ## Git
 - Commit as `feiluvnana`, SSH-signed, through the repo-local git config. Never change the global git config.
-- One logical change per commit, with `check` green at every commit. A `shared` module's redesign is one commit: the module, its tests, flnd's call sites and the API snapshot.
-- Commit or push only when asked.
+- One logical change per commit, with `make check` green at every commit.
+- Commit or push only when asked. Pull first (`git pull --rebase`), and commit only your own paths (`git add <paths>`): other sessions may share the working tree.
+- **A performance commit** quotes its benchmark before and after in the message (`make bench`, `PLAN.md` §14.4). Never claim a speed-up you didn't measure.
 
 ## Checks
-- `uv run --no-project scripts/dev.py check` (or `make check`): lint, pyright (0 errors, 0 warnings) and unittest. It must be green before every commit.
-- `uv run --no-project scripts/dev.py setup` syncs `.venv` from `uv.lock`. Change dependencies in `pyproject.toml`, then run `uv lock`.
-- After any change to a public name in `shared` or `flnd`'s API, run `uv run --no-project scripts/dev.py api` to regenerate `tests/data/api.txt`. Read its diff: it is the review of the rename.
+- **Target** (after `PLAN.md` §15.2):
+  - `make check` runs lint (ruff) and the tests, and must be green before every commit;
+  - `make setup` syncs `.venv` from `uv.lock`. To change a dependency, edit `pyproject.toml`, then run `uv lock`.
+  - `make api` regenerates `tests/data/api.txt`, the public surface (`flnd`, `flnd.source`, `flnd.testing`). Read its diff after any public change: it is the review of that change.
+  - `make bench` runs the offline benchmarks; `make docs` builds the API reference.
+- **Today, until then:** `uv run --no-project scripts/dev.py check` (or `make check`) runs lint, pyright and the tests, and `scripts/dev.py api` regenerates the snapshot.
+- **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes with Git for Windows. Each Makefile recipe is a single `uv` command you can also type yourself.
 
 ## Privacy and live data
-- Never read, print or commit the `*_cookies.txt` files in the repo root, or anything under `.flnd/`. Never put a cookie value, key or password in a log line, an exception message or a test.
+- Never read, print or commit the `*_cookies.txt` files in the repo root, or anything under `.flnd/`.
+- Never put a cookie value, key, token or password in a log line, an error message, a comment, a doc or a test.
 - Use only example handles in code, tests and docs: `example_user`, `example_creator`, `example_handle`, `example.page`, `examplechannel`, and the domain `example.com`. Never use a real username.
-- Live checks against real sites are done by hand on the authorized test accounts, never in unit tests. Unit tests fake the network (`httpx.MockTransport`), the browser and the clock.
+- Live checks against real sites are done by hand, on the authorized test accounts, and never in unit tests. Unit tests fake the network, the browser and the clock (`flnd.testing`; today, `httpx.MockTransport` and `clock.Fake`).
 
-## Layout
-- `shared/` is the toolkit. Every implementation file starts with `_`, and `shared/__init__.py` is the only public surface exposing 16 namespaces: `ui`, `prompt`, `cli`, `text`, `clock`, `fs`, `store`, `worker`, `http`, `cookies`, `browser`, `selector`, `crypto`, `archive`, `sh`, and `bundler`.
-- `flnd/` keeps its entry points and engine modules at the top level: `cli`, `dry`, `engine`, `job`, `options`, `site`, `source` (what sources import), and `targets`.
-- `flnd/common/` holds the engine side's helpers (`auth`, `paths`, `net`).
-- `flnd/sources/` holds one module per site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`), each declaring `@target` routes with per-target `from_` categories and `folder` templates validated up-front. `flnd/sources/common/` holds what sources share (`dash`, `feed`, `relay`).
-- A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib.
+## Layout (target, `PLAN.md` §4)
+- **`flnd/` is one package.** Only three modules are public:
+  - `flnd`: the library, with `Flnd`, events and errors;
+  - `flnd.source`: the API a source or plugin is written against;
+  - `flnd.testing`: the test kit for sources.
+- **Everything else is private**, with a leading underscore: `flnd/_net.py`, `_browser.py`, `_db.py`, `_files.py`, `_download.py` and the rest.
+- **`flnd/cli.py`** is the thin CLI (argparse). It imports only `flnd`, so a script can do anything the CLI can.
+- **`flnd/sources/`** has one module per built-in site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`) and `_manifest.py`, the list `flnd --help` and target resolution read without importing a source. A source imports only `flnd.source` and the stdlib.
+- **`docs/`** holds the guides for people (§14.6). `examples/` holds a runnable script and an example plugin with its test.
+- **Plugins** live outside the repo: in `<home>/sources/`, or as installed packages with a `flnd.sources` entry point.
 
 ## API and naming
-- Follow these API rules (PROPOSAL.md has the design being built):
-  - short names, one word where one word says it;
-  - a read is a property; a read with options is a property returning a `shared.Query`, narrowed by option methods and run with `.get()`;
-  - an action is a verb; no `get_`, `to_`, `try_` or `load_from_` names;
-  - options are keyword-only, at most 4; past that, two verbs, a record or a decorator;
-  - progress goes to a sink (`total`, `advance(n)`), never a bare callback;
-  - one word means one thing: `dest`, `timeout`, `progress`, `label`, `level`, `jobs`.
-- One spelling: no aliases or deprecated names. `shared`'s callers (flnd, flnc) change in the same commit.
-- Every module's errors share a `<module>.Error` base, under `shared.UnsafeError`, `BrokenError`, `RefusedError`, or `MissingError` where they fit.
-- `tests/test_names.py` enforces these rules, and the writing rules a machine can check. Its allowlist may only shrink.
+- **Short names**, one word where one word says it.
+- **An action is a verb** (`download`, `sync`, `forget`, `check`, `retry`), with no `get_`, `to_`, `try_` or `load_from_` names. A read is a property, or a method with keyword filters (`fl.files(target=…, kind=…)`).
+- **Options are keyword-only, at most 5.** Past that, use a record or the config file.
+- **Progress is the event stream** (`Saved`, `Skipped`, `Failed`, `Progress`), never a bare callback. Hooks subscribe with `fl.on(...)`.
+- **One spelling:** no aliases and no deprecated names.
+- **Errors are `flnd.Error` subclasses** from the one hierarchy in `PLAN.md` §8. Each has `why` (one line) and `retry` (what to do). A user error never shows a traceback.
+- **The source API is the most important API.** A source declares what it is (code, domains, login, routes, categories) and implements a few well-named hooks. A mistake in a source fails when the class is made, with a message naming the attribute and the fix. The source API is versioned (`api = 1`).
+- `tests/test_names.py` checks the naming rules on the public surface. Its allowlist may only shrink.
 
-## Writing
-- Code a reader can follow top to bottom; more code than prose in every file. `shared` and `flnd` both stay lean.
-- A docstring is one sentence. An example only on a public entry point. `Args:`, `Returns:`, `Raises:` only where the name and type don't say it (`flnd/cli.py` keeps `Args:`: `shared.cli` reads help from them). About 10 lines at most; a module docstring at most 15.
-- A comment says why: a site quirk, a magic value, a lock, a platform branch, a non-obvious choice. Never what the next line does; never a plan id, a `.md` file, an issue number, a phase or "as before" (history goes in the commit message, a regression guard in a test name).
-- Each fact once: a Protocol and its implementation aren't both documented.
-- Lines of at most 100 characters; functions of about 30 code lines and 3 levels of nesting at most. No one-caller helper unless its name explains something.
-- No chained ternaries; no `bool | None` for three states (an `Enum`); no callback from a producer into its consumer; no writing to a frozen object. Five or more options become a record.
-- A module is named for what it holds, never renamed on import; one word, one meaning across modules. A module reads: docstring, imports, constants, main entry point, helpers in call order.
-- Plain over clever: declare what code would otherwise guess (a downloader that opens a browser says `browser = True`).
+## Writing: code that people can read (`PLAN.md` §14.6)
+The user, 2026-11-16: "the codebase should have extensive comment and docs for human to read."
+
+**Docstrings, everywhere:**
+- **A module** starts with a docstring that says what it holds, who calls it, what it calls, its main flow in numbered steps, and any rule a change must keep (threads, locks, ordering, invariants). There is no length cap.
+- **A class, function or method** has a Google-style docstring: a summary line, then a paragraph on behaviour and edge cases, then `Args:`, `Returns:` and `Raises:`. Public names also get an `Example:`.
+- Private functions get one too, unless the body is a few obvious lines.
+
+**Comments explain why, and also how,** wherever the code isn't obvious at a glance:
+- site quirks, with the date seen;
+- magic numbers and where they come from;
+- locks, which thread a call runs on, and the order writes must keep;
+- platform branches;
+- the steps of a long algorithm, as numbered comments;
+- how a failure is handled, and why it is safe.
+
+Section comments split a long module into parts. A comment never restates the line under it, and never cites a plan step or a commit, since those change; it may point to a `docs/` page.
+
+**Guides in `docs/`:**
+- `architecture`, `library`, `cli`, `writing-a-source`, `errors`, `storage` and `performance`;
+- one page per site, `docs/sources/<code>.md`;
+- a glossary.
+
+A change of behaviour updates its docstrings and its `docs/` page in the same commit. `tests/test_docs.py` checks the docstrings, runs the `python` blocks in the docs, and matches CLI flags and source pages against the code.
+
+**Style:**
+- Plain English and short sentences. Define a term where it first appears.
+- Lines of at most 100 characters.
+- Prefer functions short enough to read in one screen, with shallow nesting. A long function is fine when numbered comments walk through it.
+- Plain over clever:
+  - no chained ternaries;
+  - a three-way state is an `Enum`, not `bool | None`;
+  - no writing to a frozen object;
+  - declare what code would otherwise guess.
+- Type hints are for readers and editors, not a checking gate. Annotate the public API fully, and internals where it helps. Don't write overloads or Protocols only to please a checker.
+
+## Performance
+- Measure before changing anything for speed, with `make bench` or a script in your scratchpad, and keep the numbers in the commit message.
+- Use the hot-path rules of `PLAN.md` §5:
+  - one asyncio loop for network and browser;
+  - no extra `stat` calls or lock files per file;
+  - batched database writes;
+  - lazy imports, so `flnd --help` stays under 40 ms.
+- A regression guard in `make check` counts things (requests, `stat` calls, statements, imported modules) instead of timing them.
 
 ## Plans
-- `PROPOSAL.md` on branch `next` holds the design being proposed; nothing is built from it until the user approves it.
+- `PLAN.md` holds the design and the order of the rebuild, and is updated as decisions are made. It is deleted when the rebuild is done; what still matters moves into `docs/`.
 
 ## Models
 - **Mechanical changes use a low-cost model** (user, 2026-11-12): Claude Haiku in Claude Code, or the low-cost tier of whichever tool is in use.
   - Mechanical means renames, moves, import updates, applying a given pattern to many call sites, regenerating snapshots, merge conflicts with an obvious answer, and doc edits that follow a decision.
-  - An orchestrator sets the model when it delegates such a task, for example `model: "haiku"` on a Claude Code subagent.
-- Design, new behaviour, debugging, security-sensitive code and reviews keep the stronger default model.
+  - The orchestrator sets the model when it delegates such a task, for example `model: "haiku"` on a Claude Code subagent.
+- Design, new behaviour, debugging, security-sensitive code, reviews and the docs of `PLAN.md` §14.6 keep the stronger default model.
