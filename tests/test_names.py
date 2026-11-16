@@ -4,9 +4,9 @@ The names are the ones `make api` writes to tests/data/api.txt (test_api.py keep
 file current), read from the same `api_names()` with their objects, so a check can look at a real
 signature. Nothing is faked: the names come from importing `flnd`.
 
-Today's code breaks some conventions. Every such breach is in `ALLOWED`, by module, and nowhere else:
-a new breach fails `test_no_new_breach`, and a fixed one still listed fails `test_no_stale_allowance`,
-so the list can only shrink.
+A breach the code may keep would be listed in `ALLOWED`, by module, and nowhere else; the list
+is empty. A new breach fails `test_no_new_breach`, and a fixed one still listed fails
+`test_no_stale_allowance`, so the list can only shrink.
 
 `DeadNameTest` checks that flnd holds no dead code: every name defined at the top of a private
 module (`flnd/_*.py`, `engine`, `job`, `site`, `options`, `cli`, `sources/*`), and every method
@@ -38,13 +38,12 @@ PREFIXES = ("get_", "do_", "to_", "try_", "load_from_", "make_", "create_")
 # Rule 6: at most this many options after the first parameter (AGENTS.md: "Options are
 # keyword-only, at most 5").
 MAX_OPTIONS = 5
-# §2.2: option names the vocabulary has another word for.
+# Option names the vocabulary has another word for (AGENTS.md: "One word, one meaning").
 RENAMED = {"out": "dest", "dest_dir": "dest", "preset": "level"}
 POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
 
-# Every breach today's code has, by the module it is in. Each module's
-# step-4 commit renames its names and removes its own entries here, with the api.txt diff that shows
-# the renames. Nothing else is exempt: a new name that breaks a convention fails.
+# Every breach the code is allowed, by the module it is in: none. Nothing is exempt, so a new name
+# that breaks a convention fails.
 ALLOWED: dict[str, tuple[str, ...]] = {}
 
 
@@ -63,7 +62,10 @@ def prefix_breaches(name: Any) -> set[str]:
 
 
 def option_breaches(name: Any) -> set[str]:
-    """S3 and §2.2 over one function, method or class: in its signature and in each of its overloads."""
+    """The option rules (at most 5, the vocabulary's words) over one function, method or class.
+
+    Each is checked in its signature and in each of its overloads.
+    """
     if name.kind not in ("function", "method", "class"):
         return set()
     found: set[str] = set()
@@ -211,7 +213,7 @@ def private_imports(source: str) -> list[str]:
     return found
 
 
-PLAN_REF = re.compile(
+HISTORY_REF = re.compile(
     r"plan/"
     r"|(?i:\bphase[- ]?\d+\b)"
     r"|(?i:\bstep\s+\d+\b(?!:))"
@@ -239,7 +241,7 @@ def history_breaches(source: str) -> list[str]:
         elif not (token.type == tokenize.STRING and token.start[0] in doc_lines):
             continue
         for offset, line in enumerate(token.string.splitlines()):
-            match = PLAN_REF.search(line)
+            match = HISTORY_REF.search(line)
             if match:
                 found.append(f"line {token.start[0] + offset}: {match.group(0)}")
     return found
@@ -248,8 +250,8 @@ def history_breaches(source: str) -> list[str]:
 def flnd_import_aliases(source: str) -> list[str]:
     """Import aliases (`as`) of `flnd` modules or symbols. Every one is a breach.
 
-    AGENTS.md says import a module by its own name. The transitional aliases of the 15.3 move
-    (`from flnd import _text as text`) are gone, so any `as` on a `flnd` import fails here.
+    AGENTS.md says import a module by its own name. The transitional aliases of an earlier
+    move (`from flnd import _text as text`) are gone, so any `as` on a `flnd` import fails here.
     """
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):

@@ -2,8 +2,7 @@
 
 flnd downloads photos, videos and files from the sites you follow, and keeps them up to date. It
 is a Python package with a command line on top. These pages describe flnd as the code on this
-branch is today; each page that the rebuild will change says what is coming, without describing
-it as working.
+branch is; a part that isn't built yet is named as such, never described as working.
 
 ## Where to start
 

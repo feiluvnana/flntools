@@ -35,11 +35,10 @@ CLI_ALLOWED = {"flnd", "flnd.sources._manifest"}
 
 
 def toolkit(name: str) -> bool:
-    """Whether a module is part of the toolkit: a private `flnd._x` module, which the sources may use.
+    """Whether a module is part of the toolkit: a private `flnd._x` module.
 
-    The toolkit was the `shared` package before the fold. Until the source API of the rebuild
-    replaces it, sources and the CLI import these private modules directly; the rule is only that
-    they stay private, so the engine (`flnd.job`, `flnd.site`, ...) is still off limits.
+    The toolkit was once a package of its own, `shared`. `flnd.source` and the CLI may import
+    these private modules (rules 2 and 3), but never the engine (`flnd.job`, `flnd.site`, ...).
     `flnd.errors`, the error hierarchy, counts too: it imports nothing of flnd, and every layer
     raises its classes.
     """

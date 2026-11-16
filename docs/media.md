@@ -96,9 +96,8 @@ once ffmpeg is installed.
 **AV1 doesn't play everywhere.** Apple devices decode it in hardware only from 2023 (A17 Pro,
 M3), and older iPhones and Macs may not play it in Photos or QuickTime. For those, videos can go
 to HEVC (x265, CRF 28, with AAC sound and the `hvc1` tag QuickTime needs) instead. The step
-takes the choice per file (`video="hevc"` on `flnd._steps.Landed`), but nothing sets it yet:
-the setting, `[compress] video = "hevc"`, arrives with the config file. Until then videos go to
-AV1. An ffmpeg without SVT-AV1 uses x265.
+takes the choice per file (`video="hevc"` on `flnd._steps.Landed`), but no setting or flag
+sets it yet, so videos go to AV1. An ffmpeg without SVT-AV1 uses x265.
 
 ### The checks
 

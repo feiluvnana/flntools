@@ -5,10 +5,12 @@ one download takes from the command line to the disk. Read it before changing th
 when a module's docstring mentions a part you haven't met yet. The words it uses are defined in
 the [glossary](glossary.md).
 
-flnd is being rebuilt as one package, in small steps. Each step that changes a part described
-here also changes this page, so the page always describes the code you have checked out. Every
-module also starts with a docstring that says what it holds, who calls it, what it calls, its
-main flow and the rules a change must keep: this page is the map, and those are the detail.
+A change that moves a part described here changes this page in the same commit, so the page
+always describes the code you have checked out. Every module also starts with a docstring that
+says what it holds, who calls it, what it calls, its main flow and the rules a change must keep:
+this page is the map, and those are the detail. The last two sections say why flnd is built
+this way: [how it compares with similar tools](#compared-with-similar-tools), and
+[the decisions](#decisions) behind what it does.
 
 ## The layers
 
@@ -481,6 +483,99 @@ How a failure travels:
    never a traceback for a `flnd.Error`.
 
 [errors.md](errors.md) lists every error class and what to do about it.
+
+## Compared with similar tools
+
+flnd was designed after reading four tools that solve the same problem, at their latest commits
+in November 2026: gallery-dl and yt-dlp (many sites each), instaloader (Instagram) and twscrape
+(Twitter/X).
+
+| question | gallery-dl | yt-dlp | instaloader, twscrape | flnd |
+| --- | --- | --- | --- | --- |
+| How is a site written? | an `Extractor` class per kind of URL, each with a `pattern` regex | an `InfoExtractor` per site, with `_VALID_URL` and `_TESTS` | one package for one site | **one `Source` class per site**; each kind of target is a decorated method, a *route* |
+| What does a site produce? | message tuples: `Directory`, `Url`, and `Queue` (hand a URL to another extractor) | info dicts with standard fields | Python objects (`Post`, `Profile`, `Tweet`) | **typed objects**: `Post`, `File`, and `Target` to hand a link to another source |
+| The parts of a profile | a "user" extractor dispatching to sub-extractors, picked with `include` | — | — | **categories** under a route, picked with `--only` |
+| Stopping at old posts | `skip = "abort:N"` | `--break-on-existing` | `--fast-update` | **the engine** stops a sync after 5 saved posts in a row (`stop_after` per source), and after the newest post it had |
+| What was downloaded | a SQLite archive of keys | a text file of ids | a timestamps file | **`flnd.db`**: files, targets, runs and failures, with real columns |
+| After a file lands | post-processor modules on events | a post-processor chain (ffmpeg merge, metadata, exec) | — | **a fixed step chain**: dedupe, unpack, compress, date, place, record, sidecar, then `--exec` |
+| Loading only what is used | imports extractor modules until a pattern matches | a generated `lazy_extractors.py` | — | **a generated manifest** (`flnd/sources/_manifest.py`), like yt-dlp's |
+| Plugins | extra module folders in the config | a `yt_dlp_plugins` package in the user's folder, or from pip | — | **the user's plugin folder, or a `flnd.sources` entry point**, never the current folder |
+| HTTP | `requests`, with browser-like headers | pluggable handlers; curl_cffi for `--impersonate` | httpx; twscrape async with a pool of accounts | **curl_cffi on one asyncio loop**, with Chrome's TLS and HTTP/2 fingerprint |
+| Rate limits | `sleep-request`, `sleep-429`, retries | retries | instaloader tracks Instagram's windows per query | **a token bucket per source**, `Retry-After` kept, and the rate halved after a 429 |
+| Concurrency | one file at a time | the fragments of one video | twscrape: async, rotating accounts | **listing and downloading overlap**, with adaptive concurrency per host |
+| Errors | `StopExtraction` and friends | `ExtractorError(expected=True)` prints no traceback | — | **one hierarchy**; a mistake you can fix prints no traceback |
+| Sites that need a browser | cookies only | no browser | no browser | **Playwright**, only for the sites and pages that need it |
+| Tests | live result files per extractor | live `_TESTS` | — | **offline fixtures** (`flnd.testing`); live runs by hand |
+
+What flnd took from them:
+- yt-dlp's **generated manifest**, so `flnd --help` imports no source, and its **plugin
+  locations**: the user's own folder and installed packages.
+- gallery-dl's **`Queue`**, as `Target`: a search, or a post that links to another site, hands
+  the target on, and the source that reads it downloads it.
+- gallery-dl's **job types**, as readers of one event stream: the full screen, `--ui plain`,
+  `--json`, `--dry` and a script's loop all read the same events.
+- gallery-dl's **skip-and-abort**, owned by the engine, so no source repeats it.
+- yt-dlp's **expected errors**: an error the user can fix prints one line and a hint.
+
+Where flnd differs on purpose:
+- **One class per site, not one per kind of URL.** gallery-dl's Instagram is 17 extractor
+  classes; flnd's is one class with routes and categories, so a site's shared state (its API
+  client, its caches) lives in one place.
+- **History is a database with columns**, not a list of keys, because `sync`, `ls`, `check`,
+  `status` and the automatic retry all ask questions of it.
+- **Concurrency is built in.** flnd follows whole profiles, where overlapping the listing with
+  the downloads is most of the speed.
+- **A browser when a site demands it.** Some of flnd's sites only show their data to a
+  logged-in page, so a source can scroll a real tab and read the site's own API responses.
+
+Why flnd doesn't reuse their site code:
+- **gallery-dl is GPL-2.0**, so importing its extractors would bind flnd's license. They are
+  also synchronous and built on `requests`, while flnd's engine is one async loop.
+- **yt-dlp is about one video per URL**, while flnd follows whole accounts with categories,
+  stories and logins. flnd doesn't hand unknown links to it.
+- The cost is real: four of flnd's sites (Instagram, X, TikTok, Facebook) are kept up by large
+  communities in those tools, and by one person here. Offline fixtures per source
+  (`tests/test_<code>.py`) and the scrubbed samples of answers a source couldn't read
+  ([errors.md](errors.md#samples-of-changed-answers)) are how a site change is found and fixed.
+
+What flnd leaves out, and why:
+- **Making things from the files** (slideshows, cards, albums): flnd downloads, keeps and
+  compresses; the rest is another tool's job.
+- **Process isolation for plugins.** A plugin needs a logged-in `Site`, so a separate process
+  wouldn't protect the logins. The safeguard is where plugins load from: never a home folder.
+- **A plugin API for steps.** The chain after a file lands has one fixed order, so no
+  combination can, say, compress a file before dedupe has linked it.
+
+## Decisions
+
+The choices that explain how flnd behaves, made with its user in November 2026:
+
+1. **Flat verbs**: `flnd ls`, `flnd login`, `flnd follow`, not groups such as
+   `flnd auth login`. Every verb is unique; `login` with no source lists the logins.
+2. **`--only`, and every category without it.** There is no `--all`; a target takes every
+   category, other people's content (tagged posts, reposts, likes) included.
+3. **Following is a verb.** `flnd follow` opts a target in; a one-off `download` never grows
+   every later sync.
+4. **Scrolling is human-like by default** (a source's `scroll = "human"`), with `"fast"` for a
+   source that can take it.
+5. **Concurrency per media host starts at 8 and adapts up to 32** while throughput still rises
+   ([performance.md](performance.md#concurrency-per-host)). Segmented downloads of big files
+   are built but off, until a real-CDN check shows they pay.
+6. **Old homes are migrated on first open**, reading the old files and never changing them
+   ([storage.md](storage.md#migrating-an-old-home)).
+7. **Dedupe hard-links** a file whose bytes are already saved; a file system without hard links
+   keeps both copies ([storage.md](storage.md#dedupe)).
+8. **Sidecars are off** by default; `sidecars = true` turns them on.
+9. **The home is `$FLND_HOME`, else `./.flnd`**, which suits cron as well as a folder per
+   project.
+10. **Plugins load from the user's folder or installed packages, never from a home**, since a
+    home is often the current folder, and code there may not be the user's own.
+11. **The vault's key is a file** beside it (`secret.key`), so an unattended sync can open it.
+12. **`--compress` encodes videos to AV1**, and photos in-process with Pillow and pyoxipng,
+    which are part of the core install ([media.md](media.md)).
+13. **One `Source` class per site**, with routes and categories (above).
+14. **A fixed chain of steps** after each file (above).
+15. **Ruff is the only lint, and pyright is informational** (`make type`), never a gate.
 
 ## Where to go next
 

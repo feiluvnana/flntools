@@ -290,8 +290,9 @@ all, and `examples/plugin/` is a working plugin with its test.
 ## Documentation
 [docs/](docs/README.md) is the guide: the CLI, the library, writing a source, errors, storage,
 compression, performance, a glossary and a page per site.
-[docs/architecture.md](docs/architecture.md) explains how flnd is built. The code is
-commented for people to read: every module starts with what it does and how it fits.
+[docs/architecture.md](docs/architecture.md) explains how flnd is built, how it compares with
+similar tools, and the decisions behind it. The code is commented for people to read: every
+module starts with what it does and how it fits.
 
 ## Development
 | make | what it runs |

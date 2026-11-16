@@ -1,11 +1,6 @@
 # Agent guidelines
 
-These rules are for anyone, person or agent, who changes this repository. `PLAN.md` is the design of the rebuild; this file says how to work on it.
-
-## Status
-- `PLAN.md` on branch `next` is the plan, and `ARCHITECTURE.md` explains the design for readers: flnd becomes one fast package (a library plus a thin CLI, no `shared` toolkit), rebuilt in the ranked commits of its section 15.
-- **The user approved it on 2026-11-16**, with the recommended answer to every question in its section 16. The rebuild follows section 15's commits in order.
-- Until the rebuild lands, the code still has today's layout: `flnd/`, whose private `_*.py` modules are the toolkit. The sections below give today's state and the target rules side by side wherever they differ.
+These rules are for anyone, person or agent, who changes this repository: how to commit, check, lay out, name, write and measure. `docs/architecture.md` is the map of the code, and says why it is built the way it is.
 
 ## Commit convention
 Every commit message has this form:
@@ -26,7 +21,7 @@ Examples:
 - Commit as `feiluvnana`, SSH-signed, through the repo-local git config. Never change the global git config.
 - One logical change per commit, with `make check` green at every commit.
 - Commit or push only when asked. Pull first (`git pull --rebase`), and commit only your own paths (`git add <paths>`): other sessions may share the working tree.
-- **A performance commit** quotes its benchmark before and after in the message (`make bench`, `PLAN.md` §14.4). Never claim a speed-up you didn't measure.
+- **A performance commit** quotes its benchmark before and after in the message (`make bench`, `docs/performance.md`). Never claim a speed-up you didn't measure.
 
 ## Checks
 - The `Makefile` holds every task; each recipe is one `uv` command.
@@ -36,7 +31,7 @@ Examples:
   - `make docs` builds the API reference into `build/docs/`. `make dist` builds a one-file binary.
   - `make type` runs pyright on the public modules. It is informational, never a gate, and a wrong public hint is still worth fixing.
   - `make check PY=3.11` runs on the oldest Python `requires-python` allows; run it before a release.
-  - Ruff's rules are `F`, `E9`, `B`, `UP` and `I`, set in `pyproject.toml`. `I` and `UP` are off until every module is rewritten for readers.
+  - Ruff's rules are `F`, `E9`, `B`, `UP` and `I`, set in `pyproject.toml`.
 - **`make bench`** runs the offline benchmarks of `tests/bench/`, never part of `check`. `make bench ARGS=--gate` fails on a regression over 15% against `tests/bench/gates.json`; `ARGS=--record` stores a run as the new baseline. `docs/performance.md` says how to read them.
 - **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes with Git for Windows. Each Makefile recipe is a single `uv` command you can also type yourself.
 
@@ -45,18 +40,18 @@ Examples:
 - Never pass a file name, caption or any other text from a site to a shell. Run commands with an argument list.
 - Never put a cookie value, key, token or password in a log line, an error message, a comment, a doc or a test.
 - Use only example handles in code, tests and docs: `example_user`, `example_creator`, `example_handle`, `example.page`, `examplechannel`, and the domain `example.com`. Never use a real username.
-- Live checks against real sites are done by hand, on the authorized test accounts, and never in unit tests. Unit tests fake the network, the browser and the clock (`flnd.testing`; today, `httpx.MockTransport` and `clock.Fake`).
+- Live checks against real sites are done by hand, on the authorized test accounts, and never in unit tests. Unit tests fake the network, the browser and the clock (`flnd.testing` and its `fake_clock` for sources, `flnd._net.fake` for HTTP, `flnd._tools.fake` for outside programs).
 
-## Layout (target, `PLAN.md` §4)
+## Layout
 - **`flnd/` is one package.** Only three modules are public:
   - `flnd`: the library, with `Flnd`, events and errors;
   - `flnd.source`: the API a source or plugin is written against;
   - `flnd.testing`: the test kit for sources.
-- **Everything else is private**, with a leading underscore: `flnd/_net.py`, `_browser.py`, `_db.py`, `_files.py`, `_download.py` and the rest.
+- **Everything else is internal**, never imported by a script or a source: the `_*.py` modules (`flnd/_net.py`, `_browser.py`, `_db.py`, `_files.py`, `_transfer.py` and the rest) and the engine's modules (`engine.py`, `job.py`, `site.py`, `options.py`). `flnd/errors.py` holds the one error hierarchy, which `flnd` and `flnd.source` re-export.
 - **Library modules stay separate** (user, 2026-11-16). A private module that does a general job (HTTP, the browser, files, archives, outside tools, cookies, the vault, the SQLite store, HTML, text, time, prompts, progress, media) is a standalone library: it imports from flnd only other library modules and `flnd.errors`, never the engine, job, site, sources or the public API. flnd-specific code (a source's pace, flnd.db's schema, error advice) lives in flnd's modules and is passed in. So each library reads on its own and could leave flnd as a package later. `tests/test_layers.py` lists them and checks it.
 - **`flnd/cli.py`** is the thin CLI (argparse). It imports only `flnd`, so a script can do anything the CLI can.
 - **`flnd/sources/`** has one module per built-in site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`) and `_manifest.py`, the list `flnd --help` and target resolution read without importing a source. A source imports only `flnd.source` and the stdlib.
-- **`ARCHITECTURE.md`** at the root is the map of the design; keep it true when a change moves a part. **`docs/`** holds the guides for people (§14.6). `examples/` holds a runnable script and an example plugin with its test.
+- **`docs/architecture.md`** is the map of the design; keep it true when a change moves a part. **`docs/`** holds the guides for people (see Writing). `examples/` holds a runnable script and an example plugin with its test.
 - **Plugins** live outside the repo: in the user's plugin folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`), or as installed packages with a `flnd.sources` entry point. flnd never loads code from a home folder, since a home may be a folder someone else made.
 
 ## API and naming
@@ -67,11 +62,11 @@ Examples:
 - **Progress is the event stream** (`Saved`, `Skipped`, `Failed`, `Progress`). A script iterates a run. There are no callbacks and no hooks: one way to do one thing.
 - **A resource is a context manager** (`with flnd.open(home) as fl:`), so nothing leaks a thread, a browser or a connection.
 - **One spelling:** no aliases and no deprecated names.
-- **Errors are `flnd.Error` subclasses** from the one hierarchy in `PLAN.md` §8. The message is `str(e)`, and `e.hint` says what to do. A user error never shows a traceback. `flnd.Stopped` (Ctrl-C) derives from `KeyboardInterrupt`, never from `flnd.Error`.
+- **Errors are `flnd.Error` subclasses** from the one hierarchy in `flnd/errors.py` (`docs/errors.md`). The message is `str(e)`, and `e.hint` says what to do. A user error never shows a traceback. `flnd.Stopped` (Ctrl-C) derives from `KeyboardInterrupt`, never from `flnd.Error`.
 - **The source API is the most important API.** A source declares what it is (code, domains, login, routes, categories) and implements a few well-named hooks. A mistake in a source fails when the class is made, with a message naming the attribute and the fix. The source API is versioned (`api = 1`).
 - `tests/test_names.py` checks the naming rules on the public surface. Its allowlist may only shrink.
 
-## Writing: code that people can read (`PLAN.md` §14.6)
+## Writing: code that people can read
 The user, 2026-11-16: "the codebase should have extensive comment and docs for human to read."
 
 **Docstrings, everywhere:**
@@ -91,7 +86,7 @@ The user, 2026-11-16: "the codebase should have extensive comment and docs for h
 Section comments split a long module into parts. A comment never restates the line under it, and never cites a plan step or a commit, since those change; it may point to a `docs/` page.
 
 **Guides in `docs/`:**
-- `architecture`, `library`, `cli`, `writing-a-source`, `errors`, `storage` and `performance`;
+- `architecture`, `library`, `cli`, `writing-a-source`, `errors`, `storage`, `media` and `performance`;
 - one page per site, `docs/sources/<code>.md`;
 - a glossary.
 
@@ -110,18 +105,15 @@ A change of behaviour updates its docstrings and its `docs/` page in the same co
 
 ## Performance
 - Measure before changing anything for speed, with `make bench` or a script in your scratchpad, and keep the numbers in the commit message.
-- Use the hot-path rules of `PLAN.md` §5:
+- Keep the hot-path rules (`docs/architecture.md`, `docs/performance.md`):
   - one asyncio loop for network and browser;
   - no extra `stat` calls or lock files per file (a `.part` is its own lock);
   - one database transaction per post, not per file and not on a writer thread;
   - lazy imports, so `flnd --help` stays under 40 ms.
 - A regression guard in `make check` counts things (requests, `stat` calls, statements, imported modules) instead of timing them.
 
-## Plans
-- `PLAN.md` holds the design and the order of the rebuild, and is updated as decisions are made. It is deleted when the rebuild is done; what still matters moves into `docs/`.
-
 ## Models
 - **Mechanical changes use a low-cost model** (user, 2026-11-12): Claude Haiku in Claude Code, or the low-cost tier of whichever tool is in use.
   - Mechanical means renames, moves, import updates, applying a given pattern to many call sites, regenerating snapshots, merge conflicts with an obvious answer, and doc edits that follow a decision.
   - The orchestrator sets the model when it delegates such a task, for example `model: "haiku"` on a Claude Code subagent.
-- Design, new behaviour, debugging, security-sensitive code, reviews and the docs of `PLAN.md` §14.6 keep the stronger default model.
+- Design, new behaviour, debugging, security-sensitive code, reviews and the docs for human readers (`docs/` and docstrings) keep the stronger default model.

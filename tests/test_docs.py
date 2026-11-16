@@ -61,7 +61,7 @@ SECTION = re.compile(r"^\s*(Args|Arguments|Returns|Yields|Raises|Examples?):\s*$
 # in `docs/` is a gap; one in the README must give its reason, and is still compiled.
 SKIP = re.compile(r"^<!-- docs-test: skip(?:: (?P<reason>.+?))? -->$")
 README = ROOT / "README.md"
-# The terms the glossary must define (PLAN.md's list of the words every page uses).
+# The terms the glossary must define: the words every page uses.
 TERMS = ("target", "source", "route", "category", "post", "file", "event", "home")
 
 

@@ -28,8 +28,8 @@ A group that fails (a crash, a wrong file count) is reported and makes the run e
 that is skipped (no Chromium, no ffmpeg) is reported and doesn't.
 
 `gates.json` holds, per metric: its unit, which way is better, the baseline measured on the
-machine named in its `recorded` block, and, where a commit of the rebuild is gated on it, the
-target and that commit's title. Baselines are only comparable on the machine that recorded
+machine named in its `recorded` block, and, where a change was gated on it, the target and
+that change's title. Baselines are only comparable on the machine that recorded
 them: on another machine, run `--record` first, then compare later runs to that.
 """
 
