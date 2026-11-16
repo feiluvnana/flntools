@@ -81,19 +81,7 @@ class FakeSite:
         return Range(self._options.since, self._options.until)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              in_page: bool = False, **request: Any) -> http.Response:
-        response = self._fetch(url, method=method, headers=headers, soft=False, in_page=in_page,
-                               request=request)
-        assert response is not None
-        return response
-
-    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-                  in_page: bool = False, **request: Any) -> http.Response | None:
-        return self._fetch(url, method=method, headers=headers, soft=True, in_page=in_page,
-                           request=request)
-
-    def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None, soft: bool,
-               in_page: bool, request: dict[str, Any]) -> http.Response | None:
+              check: bool = True, in_page: bool = False, **request: Any) -> http.Response:
         self._seen.requests.append((method, url, {"headers": dict(headers or {}), "in_page": in_page, **request}))
         base = url.split("?")[0]
         if base in self._json:
@@ -104,8 +92,8 @@ class FakeSite:
             answer = _answer(self._html, url, request)
             if not isinstance(answer, FetchError):
                 return http.Response(200, url, {"content-type": "text/html"}, str(answer).encode())
-        if soft and answer.status in (401, 403, 404):
-            return None
+        if not check and answer.status is not None:
+            return answer.response or http.Response(answer.status, url, {})
         raise answer
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:

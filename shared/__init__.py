@@ -50,6 +50,7 @@ class MissingError(Error, RuntimeError):
 
 from shared import _clock as clock
 from shared._query import Query
+from shared._sink import Sink
 from shared import _text as text
 
 if TYPE_CHECKING:
@@ -76,7 +77,7 @@ LAZY_MODULES = (
 )
 
 __all__ = [
-    "Error", "UnsafeError", "BrokenError", "RefusedError", "MissingError", "Query",
+    "Error", "UnsafeError", "BrokenError", "RefusedError", "MissingError", "Query", "Sink",
     "clock", "text",
     "ui", "prompt", "cli", "fs", "sh", "store", "worker",
     "http", "cookies", "browser", "selector",

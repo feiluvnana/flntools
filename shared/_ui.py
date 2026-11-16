@@ -273,7 +273,7 @@ def _format_count(
 def _brief(error: BaseException, *, limit: int = 100) -> str:
     """One line naming `error`, with each URL cut to its host."""
     first = (str(error).strip().splitlines() or [""])[0]
-    first = _URL.sub(lambda match: urlsplit(match.group()).netloc or match.group(), first)
+    first = _URL.sub(lambda match: urlsplit(match.group()).hostname or match.group(), first)
     message = f"{type(error).__name__}: {first}" if first else type(error).__name__
     return message if len(message) <= limit else message[: limit - 1] + "…"
 

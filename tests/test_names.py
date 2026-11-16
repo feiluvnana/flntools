@@ -41,20 +41,10 @@ ALLOWED: dict[str, tuple[str, ...]] = {
         "flnd.Engine.download: 6 options, more than 4",
         "flnd.download: 7 options, more than 4",
     ),
-    "flnd.source": ("flnd.source.Site.try_fetch: prefix try_",),
     "shared.archive": (
         "shared.archive.pack: option progress, a callback, not a sink",
         "shared.archive.unpack: 5 options, more than 4",
         "shared.archive.unpack: option progress, a callback, not a sink",
-    ),
-    "shared.browser": ("shared.browser.Page.fetch: 7 options, more than 4",),
-    "shared.http": (
-        "shared.http.Client.download: 7 options, more than 4",
-        "shared.http.Client.download: option progress, a callback, not a sink",
-        "shared.http.Client.fetch: 8 options, more than 4",
-        "shared.http.download: 7 options, more than 4",
-        "shared.http.download: option progress, a callback, not a sink",
-        "shared.http.fetch: 8 options, more than 4",
     ),
 }
 

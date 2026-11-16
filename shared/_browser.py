@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 import functools
-import json as jsonlib  # `json` is also `Page.fetch`'s keyword, as in `http.fetch`
+import json as jsonlib
 import os
 import random
 import re
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence, Union, overload,
+    TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence, Union,
 )
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -79,14 +79,13 @@ VIEWPORT = "[innerWidth, innerHeight]"
 # `evaluate` carries only JSON and a binary body would not survive as text. An AbortController ends
 # the request, body included, after `ms`; every failure is returned as `error`, never thrown, so
 # Python tells a timeout ("timeout") from a refused or blocked request (fetch's own TypeError).
-IN_PAGE_FETCH = """async ({url, method, headers, body, form, ms}) => {
+IN_PAGE_FETCH = """async ({url, method, headers, body, ms}) => {
   const resolved = new URL(url, location.href).href;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
     const init = {method, headers, credentials: "include", signal: controller.signal};
-    if (form !== null) init.body = new URLSearchParams(form);
-    else if (body !== null) init.body = Uint8Array.from(atob(body), c => c.charCodeAt(0));
+    if (body !== null) init.body = Uint8Array.from(atob(body), c => c.charCodeAt(0));
     const response = await fetch(resolved, init);
     const bytes = new Uint8Array(await response.arrayBuffer());
     let text = "";
@@ -103,6 +102,8 @@ IN_PAGE_FETCH = """async ({url, method, headers, body, form, ms}) => {
     clearTimeout(timer);
   }
 }"""
+# Seconds `Page.fetch` waits for an answer, body included.
+FETCH_TIMEOUT = 30.0
 # Where Chrome keeps its profiles, relative to the home folder, on each platform.
 PROFILE_ROOTS = {
     "darwin": "Library/Application Support/Google/Chrome",
@@ -586,74 +587,47 @@ class Page:
         self.raw.on("request", listener)
         return watch
 
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
-              soft: Literal[False] = ..., timeout: float = ...) -> http.Response: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
-              soft: Literal[True], timeout: float = ...) -> http.Response | None: ...
-    @overload
-    def fetch(self, url: str, *, method: str = ..., headers: Mapping[str, str] | None = ...,
-              params: Mapping[str, Any] | None = ..., data: Any = ..., json: Any = ...,
-              soft: bool, timeout: float = ...) -> http.Response | None: ...
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None,
-              soft: bool = False, timeout: float = 30.0) -> http.Response | None:
-        """Execute an HTTP request inside the browser context."""
-        return self._fetch(url, method=method, headers=headers, params=params, data=data,
-                           json=json, soft=soft, timeout=timeout)
-
-    def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None,
-               params: Mapping[str, Any] | None, data: Any, json: Any, soft: bool,
-               timeout: float) -> http.Response | None:
-        """Issue an HTTP request through the browser context's APIRequestContext."""
+              body: Any = None, check: bool = True) -> http.Response:
+        """Send one request from the page, with its cookies, origin and TLS, like `http.fetch`."""
         from shared import _http
 
-        if data is not None and json is not None:
-            raise ValueError("pass data or json, not both")
-        if params:
-            parts = urlsplit(url)
-            pairs = parse_qsl(parts.query, keep_blank_values=True)
-            pairs.extend((str(k), str(v)) for k, v in params.items() if v is not None)
-            url = urlunsplit(parts._replace(query=urlencode(pairs)))
-        # Prepared here as bytes or form fields, then handed to the page's fetch() in one piece.
+        method = method.upper()
         sent = dict(headers or {})
-        body = form = None
-        if json is not None:
-            body = jsonlib.dumps(json).encode("utf-8")
+        if isinstance(body, Mapping) and method in _http.QUERY_METHODS:
+            url = _with_query(url, body)
+            body = None
+        elif isinstance(body, (Mapping, list)):
+            body = jsonlib.dumps(body).encode("utf-8")
             if not any(name.lower() == "content-type" for name in sent):
                 sent["Content-Type"] = "application/json"
-        elif isinstance(data, Mapping):
-            form = {str(key): str(value) for key, value in data.items()}
-        elif isinstance(data, str):
-            body = data.encode("utf-8")
-        elif data is not None:
-            body = bytes(data)
-        method = method.upper()
-        encoded_body = None if body is None else base64.b64encode(body).decode("ascii")
-        request = {
-            "url": url, "method": method, "headers": sent, "form": form, "ms": timeout * 1000,
-            "body": encoded_body,
-        }
-        # Runs inside the page, carrying the page's cookies, origin and TLS fingerprint.
+        elif isinstance(body, str):
+            body = body.encode("utf-8")
+        encoded = None if body is None else base64.b64encode(bytes(body)).decode("ascii")
+        response = self._fetch({"url": url, "method": method, "headers": sent, "body": encoded,
+                                "ms": FETCH_TIMEOUT * 1000})
+        return _http._checked(response, method) if check else response
+
+    def _fetch(self, request: dict[str, Any]) -> http.Response:
+        """Run `request` in the page, and return its answer whatever the status."""
+        from shared import _http
+
+        where = f"{request['method']} {text.redact(request['url'])}"
         try:
             result = self.raw.evaluate(IN_PAGE_FETCH, request)
         # A tab that navigated, closed or crashed meanwhile: the page is gone, not refused.
         except _raw_error() as error:
-            raise Error(_without_values(f"{method} {_http._where(url)}: the page couldn't send it: "
-                                        f"{_first_line(error)}", sent)) from None
-        where = f"{method} {_http._where(result['resolved'])}"
+            raise Error(_without_values(f"{where}: the page couldn't send it: "
+                                        f"{_first_line(error)}", request["headers"])) from None
+        where = f"{request['method']} {text.redact(result['resolved'])}"
         if "error" in result:
             if result["error"] == "timeout":
-                raise _http.Error(f"{where}: no answer within {timeout:g} s")
-            raise _http.Error(_without_values(f"{where}: {result['error']}", sent))
-        response = _http.Response(
+                raise _http.Error(f"{where}: no answer within {FETCH_TIMEOUT:g} s")
+            raise _http.Error(_without_values(f"{where}: {result['error']}", request["headers"]))
+        return _http.Response(
             status=result["status"], url=result["url"], headers=dict(result["headers"]),
             content=base64.b64decode(result["body"]),
         )
-        return _http._checked(response, method, soft=soft)
 
     def scroll(self, *, until: Callable[[], bool] | None = None,
                within: str | None = None, idle: float = 10.0) -> int:
@@ -1046,6 +1020,13 @@ def _headful_user_agent_of(playwright: Playwright, channel: str | None) -> str:
     if key is not None:
         _HEADFUL_UA[key] = agent
     return agent
+
+
+def _with_query(url: str, params: Mapping[str, Any]) -> str:
+    parts = urlsplit(url)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    pairs.extend((str(key), str(value)) for key, value in params.items() if value is not None)
+    return urlunsplit(parts._replace(query=urlencode(pairs)))
 
 
 def _without_values(text: str, headers: Mapping[str, str]) -> str:

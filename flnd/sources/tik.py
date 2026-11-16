@@ -439,11 +439,9 @@ def embed_posts(site: Site, video_id: str) -> Iterator[Post]:
         site: the target's site; the embed page needs no browser.
         video_id: the post's id.
     """
-    # No redirects: redirect lands on page with no item, reported as miss.
-    # Seconds for one embed page, set by flnd rather than by the site.
     try:
         embed_url = f"https://www.tiktok.com/embed/v2/{video_id}"
-        page = site.fetch(embed_url, timeout=20.0, follow_redirects=False).html
+        page = site.fetch(embed_url).html
     # A failed fetch is a warning for this one post, so the rest of the run goes on.
     except FetchError as error:
         site.warn("{err} on embed endpoint for {id}", err=error, id=video_id)

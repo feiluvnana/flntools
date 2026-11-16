@@ -137,7 +137,7 @@ flnd.source.Site(*args, **kwargs)
 flnd.source.Site.back_off(reason: str, *, retry_after: float | None = None) -> None
 flnd.source.Site.client: property -> Any
 flnd.source.Site.cookies: property -> Mapping[str, str]
-flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, in_page: bool = False, **request: Any) -> http.Response
+flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> http.Response
 flnd.source.Site.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
 flnd.source.Site.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 flnd.source.Site.info(message: str, **fields: Any) -> None
@@ -146,7 +146,6 @@ flnd.source.Site.secrets: property -> MutableMapping[str, str]
 flnd.source.Site.state: property -> MutableMapping[str, Any]
 flnd.source.Site.target: property -> Target
 flnd.source.Site.time: property -> Range
-flnd.source.Site.try_fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, in_page: bool = False, **request: Any) -> http.Response | None
 flnd.source.Site.warn(message: str, **fields: Any) -> None
 flnd.source.Source()
 flnd.source.Source.browser: attribute -> ClassVar[bool]
@@ -195,6 +194,9 @@ shared.Query.get() -> list[T]
 shared.Query.limit(n: int) -> Query[T]
 shared.Query.sort(by: str | Callable[[T], Any], *, desc: bool = False) -> Query[T]
 shared.RefusedError(shared.Error)
+shared.Sink(*args, **kwargs)
+shared.Sink.advance(n: float) -> Any
+shared.Sink.total: property, settable -> float | None
 shared.UnsafeError(shared.Error, ValueError)
 shared.archive: module
 shared.archive.BrokenError(shared.archive.Error, shared.BrokenError)
@@ -230,7 +232,7 @@ shared.browser.Page(raw: RawPage, browser: Browser)
 shared.browser.Page.browser: attribute
 shared.browser.Page.close() -> None
 shared.browser.Page.document: property -> Selection
-shared.browser.Page.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, timeout: float = 30.0) -> http.Response | None
+shared.browser.Page.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, body: Any = None, check: bool = True) -> http.Response
 shared.browser.Page.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> Visit | None
 shared.browser.Page.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 shared.browser.Page.raw: attribute
@@ -310,15 +312,18 @@ shared.fs.touch(path: PathLike, *, mtime: float) -> None
 shared.fs.walk(folder: PathLike, *, suffix: tuple[str, ...] = ()) -> Iterator[os.DirEntry[str]]
 shared.fs.write(dest: PathLike, data: bytes | str, *, sync: bool = False, replace: bool = True) -> Path
 shared.http: module
-shared.http.Client(*, cookies: cookies.Jar | None = None, headers: Mapping[str, str] | None = None, timeout: float = 30.0, rate: float | None = None)
+shared.http.Client(*, cookies: cookies.Jar | None = None, headers: Mapping[str, str] | None = None, timeout: float = 30.0, rate: float | None = None, retry: Retry = Retry(times=3, statuses=(429, 500, 502, 503, 504), methods=('GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE')), stop: threading.Event | None = None)
 shared.http.Client.close() -> None
 shared.http.Client.cookies: property, settable -> cookies.Jar
-shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, resume: bool = True, attempts: int = 3, timeout: float = 30.0, progress: Callable[[int, int | None], Any] | None = None, stop: threading.Event | None = None) -> Path
-shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
+shared.http.Client.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, resume: bool = True, progress: Sink | None = None) -> Path
+shared.http.Client.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, body: Any = None, check: bool = True) -> Response
 shared.http.Client.raw: property -> httpx.Client
 shared.http.Error(shared.Error)
 shared.http.IncompleteError(shared.http.Error, shared.BrokenError)
+shared.http.IncompleteError.response: attribute
+shared.http.IncompleteError.status: attribute
 shared.http.RateLimitedError(shared.http.Error)
+shared.http.RateLimitedError.response: attribute
 shared.http.RateLimitedError.retry_after: attribute
 shared.http.RateLimitedError.status: attribute
 shared.http.RefusedError(shared.http.Error, shared.RefusedError)
@@ -334,9 +339,14 @@ shared.http.Response.raw: property -> httpx.Response
 shared.http.Response.status: field -> int
 shared.http.Response.text: property -> str
 shared.http.Response.url: field -> str
+shared.http.Retry(times: int = 3, *, statuses: tuple[int, ...] = (429, 500, 502, 503, 504), methods: tuple[str, ...] = ('GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE'))
+shared.http.Retry.methods: field -> tuple[str, ...]
+shared.http.Retry.statuses: field -> tuple[int, ...]
+shared.http.Retry.times: field -> int
 shared.http.StoppedError(shared.http.Error)
-shared.http.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, resume: bool = True, attempts: int = 3, timeout: float = 30.0, progress: Callable[[int, int | None], Any] | None = None, stop: threading.Event | None = None) -> Path
-shared.http.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None, data: Any = None, json: Any = None, soft: bool = False, attempts: int = 3, timeout: float = 30.0) -> Response | None
+shared.http.download(url: str | Sequence[str], dest: PathLike, *, headers: Mapping[str, str] | None = None, resume: bool = True, progress: Sink | None = None) -> Path
+shared.http.fake(routes: Mapping[str, Any]) -> Iterator[None]
+shared.http.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, body: Any = None, check: bool = True) -> Response
 shared.prompt: module
 shared.prompt.Error(shared.Error)
 shared.prompt.ask(message: str, *, secret: bool = False, default: str | None = None, validate: Validate | None = None) -> str
@@ -491,6 +501,3 @@ shared.worker.Result.error: field -> BaseException | None
 shared.worker.Result.item: field -> Any
 shared.worker.Result.ok: property -> bool
 shared.worker.Result.value: field -> R | None
-shared.worker.Sink(*args, **kwargs)
-shared.worker.Sink.advance(n: float) -> Any
-shared.worker.Sink.total: property, settable -> float | None

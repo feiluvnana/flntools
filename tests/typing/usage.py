@@ -99,7 +99,7 @@ def sites(engine: TargetSite, fake: FakeSite, login: LoginSite) -> None:
     checked: Site = engine
     checked = fake
     assert_type(checked.fetch("https://a.example/"), http.Response)
-    assert_type(checked.try_fetch("https://a.example/"), Optional[http.Response])
+    assert_type(checked.fetch("https://a.example/", check=False), http.Response)
     assert_type(checked.goto("https://a.example/"), bool)
     asking: Login = login
     assert_type(asking.ask("Code", secret=True), str)

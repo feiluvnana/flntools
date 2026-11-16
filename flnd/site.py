@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import dataclasses
+import functools
 import random
 import sys
 import threading
@@ -14,7 +15,6 @@ from types import MappingProxyType, SimpleNamespace
 from typing import (
     TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping, TypeVar,
 )
-from urllib.parse import urlencode
 
 import httpx
 
@@ -31,7 +31,7 @@ __all__ = ["LoginSite", "SourceRun", "TargetSite", "shared_browser", "source_run
 
 T = TypeVar("T")
 # Tries in all for a site request, sent by the client or by the tab: a 5xx or a request that
-# couldn't be sent may go through next time, after 1, 2 and 4 s.
+# couldn't be sent may go through next time, after about 1, 2 and 4 s.
 ATTEMPTS = 4
 # The least seconds between two bottom scrolls at 1x.
 SCROLL_FLOOR = 0.05
@@ -105,18 +105,12 @@ class SourceRun:
                 self._tasks.close()
 
 
-def _make_client(
-    raw: httpx.Client,
-    *,
-    interval: float = 0.0,
-    stop: threading.Event | None = None,
-) -> http.Client:
-    """Wrap `raw` in an `http.Client` with `interval` and `stop`."""
-    client = http.Client()
+def _make_client(raw: httpx.Client, *, rate: float | None,
+                 stop: threading.Event | None) -> http.Client:
+    """An `http.Client` over the source's `raw` client, in its pace, trying `ATTEMPTS` times."""
+    client = http.Client(rate=rate, retry=http.Retry(ATTEMPTS), stop=stop)
     client._raw.close()
     client._raw = raw
-    client._interval = interval
-    client._stop = stop
     return client
 
 
@@ -133,7 +127,7 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     """Open one source's resources for a run, and close them however the block ends."""
     jar = auth.load(settings.home, source.code)
     _warn_expiring(source, jar)
-    interval = float(source.pace)
+    rate = 1.0 / source.pace if source.pace > 0 else None
 
     def sign(request: httpx.Request) -> None:
         if _matches_domain(source, request.url.host):
@@ -146,8 +140,8 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     stop: cli.Stopping | None = getattr(settings, "stop", None)
     run = SourceRun(
         source, settings, jar,
-        _make_client(raw, interval=interval, stop=stop.soon if stop else None),
-        _make_client(raw, interval=0.0, stop=stop.now if stop else None),
+        _make_client(raw, rate=rate, stop=stop.soon if stop else None),
+        _make_client(raw, rate=None, stop=stop.now if stop else None),
         _state=state,
     )
     try:
@@ -200,36 +194,23 @@ class TargetSite:
         return MappingProxyType(merged)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              in_page: bool = False, **request: Any) -> http.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> http.Response:
         """Make one request, paced and retried."""
-        response = self._fetch(url, method=method, headers=headers, soft=False, in_page=in_page,
-                               request=request)
-        assert response is not None
-        return response
-
-    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-                  in_page: bool = False, **request: Any) -> http.Response | None:
-        """Like `fetch`, returning None for a 401, 403 or 404."""
-        return self._fetch(url, method=method, headers=headers, soft=True, in_page=in_page,
-                           request=request)
-
-    def _fetch(self, url: str, *, method: str, headers: Mapping[str, str] | None, soft: bool,
-               in_page: bool, request: dict[str, Any]) -> http.Response | None:
-        """Send one request via `Page.fetch` or `http.Client.fetch`, paced and retried."""
-        if in_page:
-            return self._fetch_in_page(url, method, headers, soft, request)
-        if self._browser is not None:
-            # Cookies set in the browser reach the client too, as a logged-in page would send them.
-            self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
         options = dict(request)
-        options.pop("follow_redirects", None)
-        unknown = options.keys() - {"params", "data", "json", "timeout"}
-        if unknown:
-            raise TypeError(f"fetch takes params, data, json, timeout and follow_redirects, "
-                            f"not {', '.join(sorted(unknown))}")
+        url = _with_query(url, options.pop("params", None))
+        body = options.pop("body", None)
+        if options:
+            raise TypeError(f"fetch takes params and body, not {', '.join(sorted(options))}")
+        if in_page:
+            page = self.page
+            send = functools.partial(page.fetch, url, method=method, headers=headers, body=body)
+        else:
+            if self._browser is not None:
+                # Cookies set in the browser reach the client too, as a logged-in page sends them.
+                self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
+            send = functools.partial(self._run.web._send, method.upper(), url, headers, body)
         with _fetch_errors():
-            return self._run.web.fetch(url, method=method, headers=headers, soft=soft,
-                                       attempts=ATTEMPTS, **options)
+            return self._run.web._call(url, send, method=method.upper(), check=check)
 
     def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         """Load `url` in the target's tab, paced."""
@@ -252,7 +233,6 @@ class TargetSite:
                     url,
                     lambda: self._visit_tab(page, url=url, pre_visit=None,
                                             idle=idle, timeout=timeout),
-                    attempts=3,
                 )
         if visit is None:
             return False
@@ -498,27 +478,6 @@ class TargetSite:
             self._active_watches.clear()
             with self._warm_lock:
                 self._warm_buffers.clear()
-
-    def _fetch_in_page(self, url: str, method: str, headers: Mapping[str, str] | None, soft: bool,
-                       request: dict[str, Any]) -> http.Response | None:
-        """`fetch(in_page=True)`: one request the tab sends, in the source's pace."""
-        options = dict(request)
-        params = options.pop("params", None)
-        data, body = options.pop("data", None), options.pop("json", None)
-        timeout = options.pop("timeout", 30.0)
-        if options:
-            bad = ", ".join(options)
-            raise TypeError(f"fetch(in_page=True) takes params, data, json and timeout, not {bad}")
-        if params:
-            url = f"{url}{'&' if '?' in url else '?'}{urlencode(params)}"
-        page = self.page
-
-        def send() -> http.Response | None:
-            return page.fetch(url, method=method, headers=headers, data=data, json=body, soft=soft,
-                              timeout=timeout)
-
-        with _fetch_errors():
-            return self._run.web._call(url, send, attempts=ATTEMPTS)
 
     def _connect(self) -> Any:
         """The target's browser, with the source's settings and the login's cookies."""
@@ -800,6 +759,11 @@ def _fetch_errors() -> Iterator[None]:
         raise FetchError(str(error), status=error.status, response=error.response) from None
     except (http.Error, browser.Error) as error:
         raise FetchError(str(error), status=getattr(error, "status", None)) from None
+
+
+def _with_query(url: str, params: Mapping[str, Any] | None) -> str:
+    """`url` with `params` added to its query string."""
+    return str(httpx.URL(url).copy_merge_params(params)) if params else url
 
 
 def _warn_expiring(source: Source, jar: Any) -> None:

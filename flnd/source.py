@@ -623,8 +623,8 @@ class Site(Protocol):
         site.back_off("asked to wait a few minutes")
 
     The engine's is `flnd.site.TargetSite`; tests use `tests.fakes.FakeSite`. Every request to the
-    source's own `domains` waits its turn under the source's `pace`, and every rate limit is
-    waited out here, so a source never sleeps or retries itself.
+    source's own `domains` waits its turn under the source's `pace`, and a rate limit or a 5xx is
+    waited out and tried again here, a few times, so a source never sleeps or retries itself.
     """
 
     @property
@@ -643,20 +643,14 @@ class Site(Protocol):
         ...
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              in_page: bool = False, **request: Any) -> http.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> http.Response:
         """Make one request, paced and retried, and return its `http.Response`.
 
             items = site.fetch(API, params={"cursor": cursor}).json
+            profile = site.fetch(f"{API}/users/{user}", check=False)   # read profile.ok
 
-        Raises `FetchError` on refusal or error.
-        """
-        ...
-
-    def try_fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-                  in_page: bool = False, **request: Any) -> http.Response | None:
-        """Like `fetch`, returning None for a 401, 403 or 404 instead of raising `FetchError`.
-
-            profile = site.try_fetch(f"{API}/users/{user}")
+        `request` takes `params` (the query) and `body` (as `http.fetch`'s). A refusal or error
+        raises `FetchError`, unless `check` is False, which returns a refusal's response.
         """
         ...
 
@@ -887,7 +881,7 @@ class Source:
         class Instagram(Source):
             code, name, domains = "ins", "Instagram", ("instagram.com",)
             needs = ("sessionid",)
-            pace = http.Pace(1.0, budgets={"/graphql": (275, 600)})
+            pace = 1.0
             folder = "{category}/{album}"
             unsupported = {"instagram.com/stories": "stories not supported; give profile"}
 

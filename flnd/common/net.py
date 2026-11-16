@@ -126,9 +126,7 @@ def _save_url(client: http.Client, url: str, dest: Path, label: str,
     """Download one URL, check it as `kind`, and save it under the name its content calls for."""
     seen: dict[str, str] = {}
     with _Row(label) as row, _recording(seen):
-        saved = client.download(
-            url, dest, headers=headers, progress=row.follow(stop), stop=stop,
-        )
+        saved = client.download(url, dest, headers=headers, progress=row.follow(stop))
     if received is not None:
         received.update(seen)
     if kind is None:
@@ -160,10 +158,8 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             started = [
-                pool.submit(
-                    client.download, url, stream, headers=headers,
-                    progress=row.follow(stop), stop=stop,
-                )
+                pool.submit(client.download, url, stream, headers=headers,
+                            progress=row.follow(stop))
                 for url, stream in zip((video, audio), streams)
             ]
             for running in started:
@@ -320,22 +316,50 @@ class _Row:
             raise KeyboardInterrupt
         self.update(done, total)
 
-    def follow(self, stop: threading.Event | None = None) -> Callable[[int, int | None], None]:
-        """A `progress(done, total)` for one more stream on this bar, stoppable on Ctrl-C."""
-        started = False
+    def follow(self, stop: threading.Event | None = None) -> _Stream:
+        """A sink for one more stream on this bar, stoppable on Ctrl-C."""
+        return _Stream(self, stop)
 
-        def progress(done: int, total: int | None) -> None:
-            nonlocal started
-            if stop is not None and stop.is_set():
-                raise KeyboardInterrupt
-            if not started:
-                self.start(total)
-                started = True
-            self.update(done, total)
+    def grow(self, old: float | None, new: float | None) -> None:
+        """Open the bar on a stream's first total, or swap the stream's `old` total for `new`."""
+        with self._lock:
+            if self.bar is None:
+                self.bar = self.stack.enter_context(
+                    ui.progress(self.label, total=new, unit="bytes"),
+                )
+            elif new is None or self.bar.total is None:
+                self.bar.total = None
+            else:
+                self.bar.total = self.bar.total - (old or 0) + new
 
-        return progress
+    def advance(self, n: float) -> None:
+        with self._lock:
+            if self.bar is not None:
+                self.bar.advance(n)
 
     def caption(self, text: str) -> None:
         with self._lock:
             if self.bar is not None:
                 self.bar.label = f"{self.label} ({text})"
+
+
+class _Stream:
+    """One stream's progress sink on a shared `_Row`."""
+
+    def __init__(self, row: _Row, stop: threading.Event | None):
+        self._row, self._stop = row, stop
+        self._total: float | None = None
+
+    @property
+    def total(self) -> float | None:
+        return self._total
+
+    @total.setter
+    def total(self, value: float | None) -> None:
+        self._row.grow(self._total, value)
+        self._total = value
+
+    def advance(self, n: float) -> None:
+        if self._stop is not None and self._stop.is_set():
+            raise KeyboardInterrupt
+        self._row.advance(n)

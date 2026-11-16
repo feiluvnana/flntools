@@ -23,12 +23,13 @@ import threading
 from collections import deque
 from collections.abc import Awaitable, Iterator
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Literal, Protocol, TypeVar
+from typing import Any, Callable, Generic, Literal, TypeVar
 
 import shared
 from shared import _clock as clock
+from shared._sink import Sink
 
-__all__ = ["ClosedError", "Error", "Pool", "Result", "Sink"]
+__all__ = ["ClosedError", "Error", "Pool", "Result"]
 
 R = TypeVar("R")
 
@@ -46,18 +47,6 @@ class Error(shared.Error):
 
 class ClosedError(Error, RuntimeError):
     """Raised when using a `Pool` that is closed or stopped."""
-
-
-class Sink(Protocol):
-    """A progress sink, such as `shared.ui.Row`."""
-
-    @property
-    def total(self) -> float | None: ...
-
-    @total.setter
-    def total(self, value: float | None) -> None: ...
-
-    def advance(self, n: float) -> Any: ...
 
 
 @dataclass

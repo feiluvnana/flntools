@@ -298,8 +298,6 @@ class TikTokTest(unittest.TestCase):
         self.assertEqual([item.path for item in saved], [f"videos/{DAY}_{video_id}.mp4"])
         self.assertEqual(saved[0].post.headers, {"Referer": "https://www.tiktok.com/", "User-Agent": TIKTOK_UA,
                                                  "Cookie": "tt_chain_token=t; sessionid=s"})
-        self.assertEqual(seen.requests[0][2]["timeout"], 20.0)
-        self.assertEqual(seen.requests[0][2]["follow_redirects"], False)
 
     def test_a_refused_embed_is_a_warning(self):
         saved, seen, _ = run("tik:7234567890123456789")

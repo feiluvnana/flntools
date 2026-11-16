@@ -1195,22 +1195,22 @@ class FetchTest(PageCase):
         self.assertEqual(response.url, f"{self.server.url}/app/data/json")
         self.assertEqual(response.json["path"], "/app/data/json")
 
-    def test_post_with_json(self):
-        echo = self.page.fetch("/echo", method="post", json={"id": 1, "name": "example_user"}).json
+    def test_post_with_a_json_body(self):
+        echo = self.page.fetch("/echo", method="post", body={"id": 1, "name": "example_user"}).json
         self.assertEqual(echo["method"], "POST")
         self.assertEqual(json.loads(echo["body"]), {"id": 1, "name": "example_user"})
         self.assertEqual(echo["headers"]["content-type"], "application/json")
 
-    def test_post_with_a_form_and_with_bytes(self):
-        form = self.page.fetch("/echo", method="POST", data={"q": "a b", "n": 2}).json
-        self.assertEqual(form["body"], "q=a+b&n=2")
-        self.assertTrue(form["headers"]["content-type"].startswith("application/x-www-form-urlencoded"))
-        raw = self.page.fetch("/echo", method="POST", data=b"\x00\xff\n").json
+    def test_post_with_bytes_or_a_form_as_text(self):
+        raw = self.page.fetch("/echo", method="POST", body=b"\x00\xff\n").json
         self.assertEqual(raw["body"], "\x00\xff\n")
+        form = self.page.fetch("/echo", method="POST", body="q=a+b&n=2",
+                               headers={"Content-Type": "application/x-www-form-urlencoded"}).json
+        self.assertEqual(form["body"], "q=a+b&n=2")
 
-    def test_data_and_json_together_are_refused(self):
-        with self.assertRaises(ValueError):
-            self.page.fetch("/echo", method="POST", data="a", json={"a": 1})
+    def test_a_get_takes_a_dict_body_as_its_query(self):
+        response = self.page.fetch("/json?page=2", body={"n": 3})
+        self.assertEqual(response.json["query"], "page=2&n=3")
 
     def test_headers_are_passed_through_with_the_pages_origin(self):
         echo = self.page.fetch("/echo", headers={"X-Csrf": "token-1", "Accept": "application/json"}).json
@@ -1222,18 +1222,19 @@ class FetchTest(PageCase):
         self.page.raw.evaluate("document.cookie = 'sid=example-session; path=/'")
         self.assertEqual(self.page.fetch("/echo").json["headers"]["cookie"], "sid=example-session")
 
-    def test_a_404_is_refused_and_soft_fetch_returns_none(self):
+    def test_a_404_is_refused_and_unchecked_fetch_returns_it(self):
         with self.assertRaises(http.RefusedError) as caught:
             self.page.fetch("/status/404?token=abc", headers={"Authorization": SECRET})
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(str(caught.exception), f"GET {self.server.url}/status/404: HTTP 404")
-        self.assertIsNone(self.page.fetch("/status/404", soft=True))
+        self.assertEqual(self.page.fetch("/status/404", check=False).status, 404)
 
     def test_a_429_is_rate_limited_with_retry_after(self):
         with self.assertRaises(http.RateLimitedError) as caught:
-            self.page.fetch("/status/429", soft=True)
+            self.page.fetch("/status/429")
         self.assertEqual(caught.exception.retry_after, 7.0)
         self.assertNotIsInstance(caught.exception, http.RefusedError)
+        self.assertEqual(self.page.fetch("/status/429", check=False).status, 429)
 
     def test_a_500_is_an_incomplete_error(self):
         with self.assertRaises(http.IncompleteError) as caught:
@@ -1242,8 +1243,8 @@ class FetchTest(PageCase):
 
     def test_the_timeout_aborts_the_request_in_the_page(self):
         started = time.monotonic()
-        with self.assertRaises(http.Error) as caught:
-            self.page.fetch("/slow?token=abc", headers={"Authorization": SECRET}, timeout=0.5)
+        with self.assertRaises(http.Error) as caught, mock.patch.object(browser, "FETCH_TIMEOUT", 0.5):
+            self.page.fetch("/slow?token=abc", headers={"Authorization": SECRET})
         self.assertLess(time.monotonic() - started, 5)
         self.assertEqual(str(caught.exception), f"GET {self.server.url}/slow: no answer within 0.5 s")
         # The page is still usable afterwards.

@@ -142,12 +142,12 @@ class ExpiringLoginTest(SiteCase):
 
 
 class ProtocolTest(unittest.TestCase):
-    def test_fake_site_has_exactly_the_14_members(self):
+    def test_fake_site_has_exactly_the_13_members(self):
         def public(kind):
             return {name for name in dir(kind) if not name.startswith("_")}
 
         members = {name for name in vars(Site) if not name.startswith("_")}
-        self.assertEqual(len(members), 14)
+        self.assertEqual(len(members), 13)
         fake = FakeSite(Target("exm", "user", "example_user"))
         self.assertEqual(public(fake), members)
         self.assertEqual(public(TargetSite) | {"target", "time"}, members | {"close"})
@@ -182,15 +182,15 @@ class GotoTest(SiteCase):
 
 
 class PaceTest(SiteCase):
-    def test_fetch_and_goto_take_turns_on_one_pace_and_a_cdn_goes_at_once(self):
+    def test_each_host_keeps_its_own_pace_and_a_first_request_goes_at_once(self):
         _, site = self.open()
         site.fetch(f"{API}/users/example_user")
+        site.fetch(f"{API}/users/example_user")
+        # Example's pace is 0.5 s between two requests to one host.
+        self.assertEqual(self.now, 0.5)
         site.goto(PAGE)
-        # Example's floor is 0.5 s, plus up to 40% jitter, across its API and its pages alike.
-        self.assertTrue(0.5 <= self.now <= 0.7 + 1e-9, self.now)
-        before = self.now
         site.fetch(f"{CDN}/a.jpg")
-        self.assertEqual(self.now, before)
+        self.assertEqual(self.now, 0.5)
 
     def test_the_learned_speed_scales_the_floor_and_the_scrolls(self):
         _, site = self.open()
@@ -224,7 +224,7 @@ class FetchTest(SiteCase):
         response = site.fetch(f"{API}/users/example_user", params={"count": 5})
         self.assertIsInstance(response, http.Response)
         self.assertEqual(response.json, {"path": "/users/example_user"})
-        self.assertIsNone(site.try_fetch(f"{API}/missing"))
+        self.assertEqual(site.fetch(f"{API}/missing", check=False).status, 404)
         with self.assertRaises(FetchError) as caught:
             site.fetch(f"{API}/private")
         self.assertEqual(caught.exception.status, 403)
@@ -260,7 +260,7 @@ class FetchTest(SiteCase):
         response = caught.exception.response
         assert response is not None
         self.assertEqual(response.json, {"status": "fail"})
-        with self.assertRaisesRegex(TypeError, "takes params, data, json and timeout"):
+        with self.assertRaisesRegex(TypeError, "takes params and body"):
             site.fetch(f"{API}/feed", in_page=True, follow_redirects=False)
 
     def test_the_browser_opens_with_the_engines_settings_and_cookies_and_closes_with_the_target(self):

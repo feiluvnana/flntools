@@ -376,7 +376,7 @@ class Graph:
             "variables": msgspec.json.encode(variables).decode(),
             "features": msgspec.json.encode(features).decode(),
         }
-        return site.fetch(endpoint, follow_redirects=False, params=params).json
+        return site.fetch(endpoint, params=params).json
 
     def _table(self, site: Site) -> dict[str, dict[str, Any]]:
         """The query table: what `state` kept from an earlier refresh, read on first use."""

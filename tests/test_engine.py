@@ -304,7 +304,7 @@ class HttpTest(EngineCase):
         results = []
 
         def run(site):
-            results.append(site.try_fetch("https://api.aaa.example/gone"))
+            results.append(site.fetch("https://api.aaa.example/gone", check=False).status)
             for url in ("https://api.aaa.example/gone", "https://api.aaa.example/html"):
                 try:
                     site.fetch(url).json
@@ -317,7 +317,7 @@ class HttpTest(EngineCase):
         self.routes["https://api.aaa.example/gone"] = httpx.Response(404)
         self.routes["https://api.aaa.example/html"] = httpx.Response(200, html="<h1>Hi</h1>")
         self.run_engine(make_source("aaa", run), targets=["aaa:a"])
-        self.assertEqual(results, [None, (404, "GET https://api.aaa.example/gone: HTTP 4"),
+        self.assertEqual(results, [404, (404, "GET https://api.aaa.example/gone: HTTP 4"),
                                    (None, "expected JSON from https://api.aaa.examp"), "Hi"])
 
     def test_a_rate_limit_never_stops_the_source(self):

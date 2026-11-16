@@ -38,6 +38,8 @@ class NetCase(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.tmp = Path(folder.name)
         self.fake = self.enterContext(clock.use(clock.Fake()))
+        # The backoff's jitter at its top, so a wait reads 1, 2, 4 s.
+        self.enterContext(mock.patch("shared._http.random.uniform", lambda low, high: high))
         self.stop = threading.Event()
         self.requests = []
         self.signatures = []
@@ -110,7 +112,7 @@ class BackoffTest(NetCase):
     def test_429_is_waited_out_and_sent_again(self):
         with self.client(httpx.Response(429), httpx.Response(429), httpx.Response(200)) as client:
             self.assertEqual(client.fetch("https://a.example/").status, 200)
-        self.assertEqual(self.sleeps, [5.0, 5.0])
+        self.assertEqual(self.sleeps, [1.0, 2.0])
         warnings = [line for line in self.lines() if line.startswith("!")]
         self.assertEqual(len(warnings), 2)
         self.assertTrue(all(line.startswith("! a.example: rate limited; waiting") for line in warnings))
@@ -262,7 +264,7 @@ class DownloadTest(NetCase):
     def test_a_429_on_a_download_pauses_and_retries(self):
         with self.client(httpx.Response(429), httpx.Response(200, content=b"ok")) as client:
             self.assertTrue(self.download(client, "https://cdn.example/a.jpg"))
-        self.assertEqual(sum(self.sleeps), 5.0)
+        self.assertEqual(sum(self.sleeps), 1.0)
 
     def test_a_429_during_a_mirror_is_waited_out_on_that_mirror(self):
         with self.client(httpx.Response(429), httpx.Response(429), httpx.Response(200, content=b"ok")) as client:
