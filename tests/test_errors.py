@@ -1,4 +1,4 @@
-"""The error tree of plan/phase-6/redesign.md C4: `shared.Error`, its three kinds, and each module's `Error`.
+"""The error tree of AGENTS.md: `shared.Error`, its three kinds, and each module's `Error`.
 
 It pins each error's place in the tree, and also the builtin base it had before the tree, such as
 ValueError, so every `except` written before still catches what it caught. Nothing is faked.

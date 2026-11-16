@@ -45,13 +45,14 @@ All commits must strictly follow this message format:
 - A source imports only `flnd.source`, `flnd.sources.common`, `shared` and the stdlib.
 
 ## API and naming
-- Follow these naming rules:
-  - a verb for an action, a noun for a read;
-  - a property for a read with no arguments;
-  - no `get_`, `to_`, `load_from_` style prefixes;
-  - options after the first parameter are keyword-only;
-  - one word means one thing: `dest`, `timeout`, `progress(done, total)`, `label`, `level`.
-- One spelling: no aliases or deprecated names. `shared` has one user, flnd, which is changed in the same commit.
+- Follow PLAN.md §1.1 while the revamp is built:
+  - short names, one word where one word says it;
+  - a read is a property; a read with options is a property returning a `shared.Query`, narrowed by option methods and run with `.get()`;
+  - an action is a verb; no `get_`, `to_`, `try_` or `load_from_` names;
+  - options are keyword-only, at most 4; past that, two verbs, a record or a decorator;
+  - progress goes to a sink (`total`, `advance(n)`), never a bare callback;
+  - one word means one thing: `dest`, `timeout`, `progress`, `label`, `level`, `jobs`.
+- One spelling: no aliases or deprecated names. `shared`'s callers (flnd, flnc) change in the same commit.
 - Every module's errors share a `<module>.Error` base, under `shared.UnsafeError`, `BrokenError`, `RefusedError`, or `MissingError` where they fit.
 - `tests/test_names.py` enforces these rules, and the writing rules a machine can check. Its allowlist may only shrink.
 
@@ -64,6 +65,9 @@ All commits must strictly follow this message format:
 - No chained ternaries; no `bool | None` for three states (an `Enum`); no callback from a producer into its consumer; no writing to a frozen object. Five or more options become a record.
 - A module is named for what it holds, never renamed on import; one word, one meaning across modules. A module reads: docstring, imports, constants, main entry point, helpers in call order.
 - Plain over clever: declare what code would otherwise guess (a downloader that opens a browser says `browser = True`).
+
+## Plans
+- `PLAN.md` holds the revamp's design and step order; it is deleted when the revamp is done.
 
 ## Models
 - **Mechanical changes use a low-cost model** (user, 2026-11-12): Claude Haiku in Claude Code, or the low-cost tier of whichever tool is in use.

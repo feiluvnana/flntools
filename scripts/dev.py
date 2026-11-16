@@ -15,7 +15,7 @@ The Makefile is a shortcut to it and holds no logic of its own.
 `api` is the one task that needs the project's own code: it writes the API snapshot, which imports
 `shared` and `flnd`, so it runs `api_text` inside the environment through `uv run python`. The same
 `api_names` feed `tests/test_api.py` (the snapshot is current) and `tests/test_names.py` (it follows
-the naming conventions of plan/phase-6/redesign.md §2).
+the naming conventions of PLAN.md §1.1).
 
 An unknown or missing task prints the task list to stderr and exits 2. A failing command stops
 the task and exits with that command's own code, so make and CI see the failure.

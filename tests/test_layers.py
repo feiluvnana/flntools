@@ -1,4 +1,4 @@
-"""The dependency rules of plan/phase-6/redesign.md, B4: which of flnd's modules may import which.
+"""The dependency rules of AGENTS.md › Layout: which of flnd's modules may import which.
 
 Read from each file's source with `ast`, every import counted: at the top, inside a function and
 under `if TYPE_CHECKING:` alike, since each is a dependency. Only imports of flnd's own modules are
