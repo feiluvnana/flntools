@@ -51,6 +51,16 @@ HEAVY = {"flnd.engine", "flnd.job", "flnd.site", "playwright", "rich", "curl_cff
          "msgspec"}
 
 
+class BundleTest(unittest.TestCase):
+    def test_the_bundle_collects_the_modules_flnd_imports_by_name(self):
+        # Sources, plugins and libraries load lazily by name (`importlib.import_module`), which
+        # PyInstaller's import scan can't follow: without this flag, `flnd sources` in the
+        # bundle fails with "No module named 'flnd.sources.tik'".
+        recipe = next(line for line in (ROOT / "Makefile").read_text().splitlines()
+                      if line.startswith("dist:"))
+        self.assertIn("--collect-submodules flnd", recipe)
+
+
 class LazyImportTest(unittest.TestCase):
     def test_import_flnd_loads_only_its_own_init(self):
         loaded = loaded_after("import flnd")

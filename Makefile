@@ -39,6 +39,6 @@ type:     ; $(RUN) pyright flnd/__init__.py flnd/source.py flnd/testing.py
 # `make try ARGS="ins:example_user --only reels"`. Log in there first for a site that needs it
 # (`uv run flnd --home .try login ins chrome`); `make clean` removes it.
 try:      ; $(RUN) flnd --home .try download --dry $(ARGS)
-dist:     ; $(RUN) --group dist pyinstaller --onefile --noconfirm --name flnd --specpath build --workpath build/pyinstaller flnd/__main__.py
+dist:     ; $(RUN) --group dist pyinstaller --onefile --noconfirm --name flnd --collect-submodules flnd --specpath build --workpath build/pyinstaller flnd/__main__.py
 clean:    ; $(RUN) python -c "import shutil; [shutil.rmtree(p, True) for p in ('build', 'dist', '.try')]"
 .PHONY: setup test lint check api manifest bench media-real cdn-real docs type try dist clean
