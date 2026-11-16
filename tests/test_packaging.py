@@ -22,14 +22,6 @@ class WheelTest(unittest.TestCase):
                 self.assertIn("flnd/py.typed", archive.namelist())
 
 
-class PublicNamesTest(unittest.TestCase):
-    def test_http_is_back(self):
-        # Phase 4 removed `http`; Phase 6's D3 brought it back as `fetch` and `Response`.
-        from flnd import _http
-
-        self.assertTrue(callable(_http.fetch))
-
-
 def run_python(code: str) -> subprocess.CompletedProcess:
     """Run code in a fresh interpreter from the repository root, so imports start clean."""
     return subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
@@ -56,7 +48,7 @@ def loaded_after(code: str) -> set[str]:
 
 # What only a command may load: the engine, the network, the browser and the screen. `import
 # flnd` must load none of them, or every script and `flnd --help` pays.
-HEAVY = {"flnd.engine", "flnd.job", "flnd.site", "httpx", "playwright", "rich", "curl_cffi",
+HEAVY = {"flnd.engine", "flnd.job", "flnd.site", "playwright", "rich", "curl_cffi",
          "msgspec"}
 
 
@@ -86,10 +78,13 @@ class LazyImportTest(unittest.TestCase):
 
 class MissingDependencyTest(unittest.TestCase):
 
-    def test_missing_httpx_names_the_package_to_install(self):
-        # `import flnd` loads nothing, so `_http` is the first to meet a missing httpx.
-        self.assertEqual(missing_dependency_message("_http", "httpx"),
-                         "flnd._http needs httpx: pip install httpx")
+    def test_missing_curl_cffi_names_the_package_to_install(self):
+        # `flnd._net` imports curl_cffi on its first request, so that is where it is missed.
+        code = ("import sys, asyncio; sys.modules['curl_cffi'] = None\n"
+                "from flnd import _net\n"
+                "try:\n    _net.Session()._session()\nexcept ImportError as error:\n    print(error)")
+        self.assertEqual(run_python(code).stdout.strip(),
+                         "flnd._net needs curl_cffi: pip install curl_cffi")
 
     def test_a_name_loads_its_module_on_first_use(self):
         code = ("import sys, flnd\nbefore = 'flnd._library' in sys.modules\n"

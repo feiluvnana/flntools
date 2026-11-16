@@ -227,8 +227,8 @@ def _selector(source: Any) -> tuple[parsel.Selector, str | None]:
 
 
 def _response_selector(response: Any) -> tuple[parsel.Selector, str | None]:
-    """The selector for an httpx or Playwright response: JSON when its content type says so."""
-    # Playwright's `text` is a method and httpx's is an attribute; both have `headers`.
+    """The selector for a `flnd._net` or Playwright response: JSON when its content type says so."""
+    # Playwright's `text` is a method and `flnd._net`'s a property; both have `headers`.
     text = response.text if isinstance(response.text, str) else response.text()
     if "json" in response.headers.get("content-type", "").lower():
         return parsel.Selector(root=_loads(text), type="json"), None

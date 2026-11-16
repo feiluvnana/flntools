@@ -28,8 +28,7 @@ from telethon.errors import FloodWaitError, PhoneCodeInvalidError, SessionPasswo
 from test_commands import FlndCase, Stdin
 from test_engine import EngineCase, make_source
 
-from flnd.common import net
-from flnd import _home
+from flnd import _home, _transfer
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import LoginError, Target, UsageError
@@ -631,7 +630,7 @@ class DownloadTest(DownloadCase):
         with mock.patch.object(tlg, "REQUEST", 8):
             self.assertEqual(self.download(categories=("video",)), 0)
         # Each of the engine's tries of the file gives the part its own resumes.
-        self.assertEqual(len(self.telegram.reads), net.ATTEMPTS * (tlg.RESUMES + 1))
+        self.assertEqual(len(self.telegram.reads), _transfer.ATTEMPTS * (tlg.RESUMES + 1))
 
     def test_a_big_document_comes_in_parts_at_once(self):
         body = bytes(range(64)) * 2

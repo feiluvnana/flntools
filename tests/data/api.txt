@@ -234,7 +234,7 @@ flnd.source.Site.cookies: property -> Mapping[str, str]
 flnd.source.Site.document() -> Any
 flnd.source.Site.evaluate(js: str, *, arg: Any = None) -> Any
 flnd.source.Site.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = False, lines: bool = False, cursor: Callable[[Any], tuple[bool, str | None] | None] | None = None) -> Feed
-flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> _http.Response
+flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> _net.Response
 flnd.source.Site.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 flnd.source.Site.info(message: str, **fields: Any) -> None
 flnd.source.Site.open(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
@@ -257,7 +257,6 @@ flnd.source.SiteError.target: attribute
 flnd.source.Source()
 flnd.source.Source.browser: attribute -> ClassVar[bool]
 flnd.source.Source.categories: attribute -> ClassVar[tuple[str, ...]]
-flnd.source.Source.concurrency: attribute -> ClassVar[int]
 flnd.source.Source.connect(site: Site, /) -> Any
 flnd.source.Source.date(site: Site, post: Post, /) -> DateLike
 flnd.source.Source.fields: attribute -> ClassVar[tuple[str, ...]]
@@ -265,12 +264,13 @@ flnd.source.Source.filename: attribute -> ClassVar[str]
 flnd.source.Source.folder: attribute -> ClassVar[str]
 flnd.source.Source.forms: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.key: attribute -> ClassVar[str]
+flnd.source.Source.limits: attribute -> ClassVar[Mapping[str, int]]
 flnd.source.Source.logged_in(site: Site, /) -> bool
 flnd.source.Source.login(login: Login, method: str, /) -> None
 flnd.source.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.needs: attribute -> ClassVar[tuple[str, ...]]
 flnd.source.Source.pace: attribute -> ClassVar[float]
-flnd.source.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
+flnd.source.Source.prepare(request: _net.Request, cookies: Mapping[str, str], /) -> _net.Request
 flnd.source.Source.requires_login: attribute -> ClassVar[bool]
 flnd.source.Source.resolve(text: str) -> Target
 flnd.source.Source.routes: attribute -> ClassVar[tuple[Route, ...]]

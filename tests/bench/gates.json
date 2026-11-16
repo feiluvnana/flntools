@@ -42,17 +42,24 @@
       "target": 4,
       "gate": "perf:fetch with curl_cffi on the loop"
     },
-    "net.small_8_threads": {
+    "net.small_8_at_once": {
       "unit": "ms",
       "better": "lower",
       "baseline": 926.8121,
       "target": 300,
       "gate": "perf:fetch with curl_cffi on the loop"
     },
-    "net.small_1_thread": {
+    "net.small_1_at_once": {
       "unit": "ms",
       "better": "lower",
       "baseline": 1196.6848
+    },
+    "net.stall_20mbs": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 53.6,
+      "target": 100,
+      "gate": "perf:fetch with curl_cffi on the loop"
     },
     "disk.part_write": {
       "unit": "us",
@@ -232,11 +239,6 @@
       "unit": "us",
       "better": "lower",
       "baseline": 0.544
-    },
-    "cpu.pool_task": {
-      "unit": "us",
-      "better": "lower",
-      "baseline": 3.5969
     },
     "cpu.executor_task": {
       "unit": "us",

@@ -1,6 +1,6 @@
 """flnd/site.py's `TargetSite`, with the browser part it drives (`flnd._browser`'s `Tabs` and `Feed`).
 
-`TargetSite` runs on a real `source_run` over `httpx.MockTransport`, and on a real loop, with a fake
+`TargetSite` runs on a real `source_run` over `flnd._net.fake`, and on a real loop, with a fake
 browser (`FakeBrowser`, patched in for `flnd._browser.launch`) whose tabs answer `goto` from a script;
 the clock is `clock.Fake`, so no wait is slept. Also checks `FakeSite` has exactly the members of
 `Site`. No network, no browser.
@@ -16,20 +16,19 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
-import httpx
+from flnd import _net
 
 from example_source import API, CDN, Example
 from fakes import FakeSite
 
 from flnd import _browser
-from flnd.common import net
 from flnd import _home
 from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import SiteError, File, Site, Target
 from flnd.sources.common.feed import warm_tabs
 from flnd.sources.common.relay import meta_results
-from flnd import _run, _time as clock, _cookies as cookies, _http as http
+from flnd import _run, _time as clock, _cookies as cookies, _transfer
 from flnd._ui import ui
 from flnd._browser import Page
 from flnd.errors import Blocked, SourceError, UsageError
@@ -133,10 +132,9 @@ class SiteCase(unittest.TestCase):
             self.browsers.append(FakeBrowser(lambda: self.make_raw(), options))
             return self.browsers[-1]
 
-        real_client = httpx.Client
-        for patcher in (mock.patch.object(net.httpx, "Client",
-                                          lambda *a, **kw: real_client(*a, **{**kw, "transport": httpx.MockTransport(self.serve)})),
-                        mock.patch("flnd._browser.launch", launch)):
+        # A lambda, so a test that replaces `self.serve` is answered by its own.
+        self.enterContext(_net.fake(lambda request: self.serve(request)))
+        for patcher in (mock.patch("flnd._browser.launch", launch),):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.fake = self.enterContext(clock.use(clock.Fake()))
@@ -148,10 +146,10 @@ class SiteCase(unittest.TestCase):
     def serve(self, request):
         self.requests.append(request)
         if request.url.path.endswith("/missing"):
-            return httpx.Response(404)
+            return _net.reply(404)
         if request.url.path.endswith("/private"):
-            return httpx.Response(403)
-        return httpx.Response(200, json={"path": request.url.path})
+            return _net.reply(403)
+        return _net.reply(200, json={"path": request.url.path})
 
     def open(self, source=Example, *, state=None):
         """A `TargetSite` for `exm:example_user` on a run closed at the end of the test."""
@@ -263,11 +261,11 @@ class BackOffTest(SiteCase):
         self.assertTrue(any(warned in line for line in self.lines()), self.lines())
 
     def test_a_cdns_429_never_slows_the_source(self):
-        answers = [httpx.Response(429, headers={"retry-after": "5"}),
-                   httpx.Response(200, content=b"x")]
+        answers = [_net.reply(429, headers={"retry-after": "5"}),
+                   _net.reply(200, content=b"x")]
         self.serve = lambda request: answers.pop(0)
         run, _ = self.open()
-        net.download(run.files, File(f"{CDN}/a.7z"), self.home / "a.7z", label="a.7z")
+        run.loop.run(_transfer.save(run.files, File(f"{CDN}/a.7z"), self.home / "a.7z", label="a.7z"))
         self.assertTrue(any("rate limited; waiting 5.0s" in line for line in self.lines()), self.lines())
 
 
@@ -275,7 +273,7 @@ class FetchTest(SiteCase):
     def test_a_response_and_soft_statuses(self):
         _, site = self.open()
         response = site.fetch(f"{API}/users/example_user", params={"count": 5})
-        self.assertIsInstance(response, http.Response)
+        self.assertIsInstance(response, _net.Response)
         self.assertEqual(response.json, {"path": "/users/example_user"})
         self.assertEqual(site.fetch(f"{API}/missing", check=False).status, 404)
         with self.assertRaises(SiteError) as caught:
@@ -297,7 +295,7 @@ class FetchTest(SiteCase):
 
     def test_in_page_waits_out_a_429_and_tries_a_5xx_again(self):
         run, site = self.open()
-        answer = http.Response(200, f"{API}/feed", {"content-type": "application/json"}, b'{"items": []}')
+        answer = _net.Response(200, f"{API}/feed", {"content-type": "application/json"}, b'{"items": []}')
         errors = [Blocked("HTTP 429", wait=5.0, status=429),
                   SiteError("HTTP 503", status=503, retryable=True)]
         with mock.patch.object(Page, "fetch", new=mock.AsyncMock(side_effect=[*errors, answer])) as fetch:
@@ -306,7 +304,7 @@ class FetchTest(SiteCase):
 
     def test_in_page_refusals_are_fetch_errors(self):
         _, site = self.open()
-        refusal = http.Response(400, f"{API}/feed", {"content-type": "application/json"}, b'{"status": "fail"}')
+        refusal = _net.Response(400, f"{API}/feed", {"content-type": "application/json"}, b'{"status": "fail"}')
         refused = mock.AsyncMock(side_effect=SiteError("HTTP 400", status=400, response=refusal))
         with mock.patch.object(Page, "fetch", new=refused), \
                 self.assertRaises(SiteError) as caught:

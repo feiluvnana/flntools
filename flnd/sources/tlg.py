@@ -64,7 +64,7 @@ class Telegram(Source):
     key = "{chat_id}:{id}"
     # Every download shares one MTProto client and its flood waits: more at once only meets the
     # flood limit sooner (Telethon's FAQ).
-    concurrency = 3
+    limits = {"t.me": 3}
 
     # `resolve` reads target text: no pattern can match a chat title or `t.me/c/<n>` link;
     # the route has no pattern of its own, only the form help shows.

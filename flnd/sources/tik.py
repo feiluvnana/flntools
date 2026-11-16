@@ -584,7 +584,7 @@ def mirrors(urls: Sequence[Any]) -> str | tuple[str, ...]:
         mirrors(["https://v16.example/a", "https://v19.example/a"])     # both, tried in that order
 
     TikTok answers 403 for some posts on one CDN host and not on another, so every address is kept
-    and `flnd._http.download` tries the next one when one refuses.
+    and the downloader tries the next one when one refuses.
     """
     found = tuple(dict.fromkeys(str(url) for url in urls if url))
     return found[0] if len(found) == 1 else found

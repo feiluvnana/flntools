@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
+from flnd import _net
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
 from contextlib import contextmanager
@@ -219,10 +219,9 @@ class WriteBackTest(AuthCase):
         _home.save(self.home, "twt", cookies.Jar(self.jar))
 
     def current(self, **values):
-        client = httpx.Cookies()
-        for name, value in values.items():
-            client.set(name, value, domain=".x.example", path="/")
-        return client.jar
+        session = _net.Session(cookies=[{"name": name, "value": value, "domain": ".x.example", "path": "/"}
+                                        for name, value in values.items()])
+        return session.jar
 
     def test_a_rotated_ct0_is_saved_and_the_rest_kept(self):
         self.assertEqual(_home.write_back(self.home, "twt", self.current(ct0="new-ct0", auth_token="login-token")),
@@ -232,9 +231,8 @@ class WriteBackTest(AuthCase):
         self.assertEqual([cookie["expires"] for cookie in saved if cookie["name"] == "ct0"], [1900000000])
 
     def test_a_rotated_cookie_for_a_subdomain_still_updates_the_one_it_replaces(self):
-        client = httpx.Cookies()
-        client.set("ct0", "new-ct0", domain="api.x.example", path="/")
-        self.assertEqual(_home.write_back(self.home, "twt", client.jar), ["ct0"])
+        session = _net.Session(cookies=[{"name": "ct0", "value": "new-ct0", "domain": "api.x.example", "path": "/"}])
+        self.assertEqual(_home.write_back(self.home, "twt", session.jar), ["ct0"])
         self.assertEqual(_home.load(self.home, "twt")["ct0"], "new-ct0")
 
     def test_a_new_tracking_cookie_is_never_added(self):

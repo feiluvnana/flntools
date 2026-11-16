@@ -63,8 +63,8 @@ declared twice) raises `SourceError` when its class is made.
 
 | failure | class | retried | then |
 | --- | --- | --- | --- |
-| a timeout, a reset, a 5xx | `NetworkError`, or `SiteError` with the status | 4 tries in all, waiting about 1, 2 and 4 s (jittered) | the file fails alone; the run goes on |
-| a 429 or a block page | `Blocked` | waits what the site asks (`Retry-After`, or its rate-limit reset, up to 1 h), within the same 4 tries | the file or target fails |
+| a timeout, a reset, a 5xx | `NetworkError`, or `SiteError` with the status | 4 more tries, waiting about 1, 2, 4 and 8 s (jittered); a POST never, since the server may have acted | the file fails alone; the run goes on |
+| a 429 or a block page | `Blocked` | waits what the site asks (`Retry-After`, or its rate-limit reset, up to 1 h), or 1 then 2 s when it doesn't say; on the source's own domains its pace is held and halved for 20 requests; the third 429 in a row raises | the file or target fails |
 | a 404 or 410, a private item | `NotFound` | never | the file or target fails |
 | a 401 or 403 from the source's own domains, a login wall | `LoginError` | never | the source stops: its other targets fail with the same error, and the other sources go on |
 | a 401 or 403 from another host (a CDN's expired link) | `SiteError` | a 403 or 410 on a post whose files the source lists lazily lists them again once, for a fresh link | the file fails alone |

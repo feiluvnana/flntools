@@ -29,10 +29,10 @@ from flnd.source import (
 from flnd.sources.common import dash
 from flnd.sources.common.feed import warm_tabs
 from flnd.sources.common.relay import embedded_results
-from flnd import _html, _http, _text
+from flnd import _html, _net, _text
 
 if TYPE_CHECKING:
-    import httpx
+    from flnd._net import Request
 
 SITE = "https://www.instagram.com"
 # The web client's REST API, which gallery-dl and Instaloader read too.
@@ -125,7 +125,7 @@ class Instagram(Source):
         # How this run reaches the API; one source instance serves the whole run.
         self.api = Api()
 
-    def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
+    def prepare(self, request: Request, cookies: Mapping[str, str], /) -> Request:
         """Instagram web API headers for requests sent to instagram.com."""
         request.headers.update(self.api.headers(cookies))
         return request
@@ -450,7 +450,7 @@ class Api:
         )
 
     def _waited(
-        self, site: Site, response: _http.Response | None, *, refused: bool, walls: int,
+        self, site: Site, response: _net.Response | None, *, refused: bool, walls: int,
     ) -> int | None:
         """Next wall count if waited or moved to tab, else None."""
         # The suspended page is the hard stop: nothing is retried past it.
@@ -463,7 +463,8 @@ class Api:
         has_checkpoint = any(key in msg for key in CHECKPOINTS)
         walled = is_wall(where) or has_login or has_checkpoint
         if (refused or walled) and not self.in_page and not throttled(data):
-            # Instagram may refuse httpx TLS fingerprint; tab fetch has Chrome's.
+            # Instagram may refuse flnd's client (a live check on the test account decides);
+            # the tab's fetch is the page's own.
             self.in_page = True
             site.warn("Instagram refused flnd's own client; sending its API calls from the page")
             return walls
@@ -679,7 +680,7 @@ def throttled(result: Any) -> bool:
     return isinstance(result, dict) and THROTTLED in str(result.get("message", ""))
 
 
-def _json(response: _http.Response | None) -> Any:
+def _json(response: _net.Response | None) -> Any:
     """A response's JSON, or None when there is no response or it isn't JSON."""
     if response is None:
         return None

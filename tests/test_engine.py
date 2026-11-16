@@ -1,4 +1,4 @@
-"""The engine end to end on httpx.MockTransport, with test sources. No network, no browser.
+"""The engine end to end on `flnd._net.fake`, with test sources. No network, no browser.
 
 Its runs, groups, HTTP, clients and logins through `Engine._run` (what `download` and `sync` call
 once per run), then the API itself (redesign B1): `download`, `sync`, `login`, `logout` and
@@ -21,10 +21,9 @@ from typing import Any
 from unittest import mock
 
 import fakes
-import httpx
+from flnd import _net
 
 from flnd import job
-from flnd.common import net
 from flnd import _home
 from flnd import Blocked, LoginError, Target, UsageError
 from flnd.engine import Engine, Report, TargetReport
@@ -98,9 +97,8 @@ class EngineCase(unittest.TestCase):
         self.home = Path(folder.name) / ".flnd"
         self.requests = []
         self.routes = {}
-        patcher = mock.patch.object(httpx.Client, "_init_transport", lambda *a, **kw: httpx.MockTransport(self.serve))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # A lambda, so a test that replaces `self.serve` is answered by its own.
+        self.enterContext(_net.fake(lambda request: self.serve(request)))
         # Every wait (pacing, back-offs, retries) passes at once on the fake clock.
         self.fake = self.enterContext(clock.use(clock.Fake()))
         # The events of the runs `report` makes: what the CLI shows, now that the engine logs no rows.
@@ -110,13 +108,13 @@ class EngineCase(unittest.TestCase):
     def now(self):
         return self.fake.now
 
-    def serve(self, request: httpx.Request) -> httpx.Response:
+    def serve(self, request: _net.Request) -> _net.Reply:
         self.requests.append(request)
         answer = self.routes.get(str(request.url).split("?")[0])
         if callable(answer):
             return answer(request)  # type: ignore[return-value]
         if answer is None:
-            return httpx.Response(200, content=request.url.path.encode())
+            return _net.reply(200, content=request.url.path.encode())
         return answer
 
     def run_engine(self, *sources, targets, options=Options(), **settings):
@@ -254,7 +252,7 @@ class LoginStateTest(EngineCase):
         source = make_source("aaa", lambda site: seen.append((dict(site.cookies),
                                                               site.fetch("https://api.aaa.example/me").json)),
                              needs=("sid",))
-        self.routes["https://api.aaa.example/me"] = httpx.Response(200, json={"me": 1})
+        self.routes["https://api.aaa.example/me"] = _net.reply(200, json={"me": 1})
         self.run_engine(source, targets=["aaa:a"])
         self.assertEqual(seen, [({"sid": "1", "other": "2"}, {"me": 1})])
         self.assertEqual(self.requests[0].headers["cookie"], "sid=1; other=2")
@@ -263,7 +261,7 @@ class LoginStateTest(EngineCase):
     def test_the_cookies_the_site_rotated_are_saved_in_the_vault_after_the_group(self):
         self.log_in("aaa", sid="1", ct0="old")
         source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"), needs=("sid",))
-        self.routes["https://api.aaa.example/me"] = httpx.Response(200, json={}, headers=[
+        self.routes["https://api.aaa.example/me"] = _net.reply(200, json={}, headers=[
             ("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/"),
             ("set-cookie", "_tracker=t1; Domain=.aaa.example; Path=/")])
         self.run_engine(source, targets=["aaa:a", "aaa:b"])
@@ -278,7 +276,7 @@ class LoginStateTest(EngineCase):
             site.fetch("https://api.aaa.example/me")
             raise Blocked("blocked")
 
-        self.routes["https://api.aaa.example/me"] = httpx.Response(
+        self.routes["https://api.aaa.example/me"] = _net.reply(
             200, json={}, headers=[("set-cookie", "ct0=new-ct0; Domain=.aaa.example; Path=/")])
         self.run_engine(make_source("aaa", route, needs=("sid",)), targets=["aaa:a"])
         self.assertEqual(_home.load(self.home, "aaa")["ct0"], "new-ct0")
@@ -310,8 +308,8 @@ class HttpTest(EngineCase):
             site.fetch("https://api.aaa.example/a", headers={"x-extra": "1"})
 
         source = make_source("aaa", run, user_agent="Agent/1", prepare=prepare)
-        self.routes["https://api.aaa.example/a"] = httpx.Response(200, json={})
-        with mock.patch.object(net, "client", wraps=net.client) as made:
+        self.routes["https://api.aaa.example/a"] = _net.reply(200, json={})
+        with mock.patch.object(_net, "Session", wraps=_net.Session) as made:
             self.run_engine(source, targets=["aaa:a", "aaa:b"])
         made.assert_called_once()
         request = self.requests[0]
@@ -332,15 +330,15 @@ class HttpTest(EngineCase):
                     results.append((None, str(error)[:40]))
             results.append(site.fetch("https://api.aaa.example/html").html.css("h1").text)
 
-        self.routes["https://api.aaa.example/gone"] = httpx.Response(404)
-        self.routes["https://api.aaa.example/html"] = httpx.Response(200, html="<h1>Hi</h1>")
+        self.routes["https://api.aaa.example/gone"] = _net.reply(404)
+        self.routes["https://api.aaa.example/html"] = _net.reply(200, html="<h1>Hi</h1>")
         self.run_engine(make_source("aaa", run), targets=["aaa:a"])
         self.assertEqual(results, [404, (404, "GET https://api.aaa.example/gone: HTTP 4"),
                                    (200, "expected JSON from https://api.aaa.examp"), "Hi"])
 
     def test_a_rate_limit_never_stops_the_source(self):
         ran = []
-        answers = [httpx.Response(429)] * 2 + [httpx.Response(200, json={"ok": 1})]
+        answers = [_net.reply(429)] * 2 + [_net.reply(200, json={"ok": 1})]
 
         def run(site):
             ran.append((site.target.value, site.fetch("https://api.aaa.example/feed").json))
@@ -371,7 +369,7 @@ class HttpTest(EngineCase):
 
         def limited(request):
             stop_ref[0].soon.set()
-            return httpx.Response(429)
+            return _net.reply(429)
 
         self.routes["https://api.aaa.example/feed"] = limited
         source = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/feed").json)
@@ -451,7 +449,7 @@ class ClientTest(EngineCase):
         async def run(site):
             pass
 
-        source = make_source("aaa", run, connect=connect, concurrency=1,
+        source = make_source("aaa", run, connect=connect, limits={"aaa.example": 1},
                              files=[File(fetch, name=f"{number}.bin") for number in range(20)])
         finished = []
         runner = threading.Thread(target=lambda: finished.append(self.run_engine(source, targets=["aaa:a"])),
@@ -751,10 +749,10 @@ class QueryAndLimitDryTest(EngineCase):
     def test_query_route_dedupes_and_respects_from(self):
         closed = []
         src = self._query_source(closed=closed)
-        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
-        self.routes[f"{CDN}/3.jpg"] = httpx.Response(200, content=b"3")
-        self.routes[f"{CDN}/4.jpg"] = httpx.Response(200, content=b"4")
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
+        self.routes[f"{CDN}/3.jpg"] = _net.reply(200, content=b"3")
+        self.routes[f"{CDN}/4.jpg"] = _net.reply(200, content=b"4")
         engine = Engine(home=self.home, sources={"srch": src})
 
         report = engine.download(["srch?action comedy"], categories="photo", limit=4)
@@ -766,7 +764,7 @@ class QueryAndLimitDryTest(EngineCase):
     def test_limit_and_stop_close_generator_early(self):
         closed = []
         src = self._query_source(closed=closed)
-        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
         engine = Engine(home=self.home, sources={"srch": src})
 
         # --limit 1 on query route stops after 1 target and closes the generator.
@@ -777,7 +775,7 @@ class QueryAndLimitDryTest(EngineCase):
     def test_again_preserves_flag_for_normal_and_query_targets(self):
         seen_options: list[Options] = []
         src = self._query_source(closed=[])
-        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
         engine = Engine(home=self.home, sources={"srch": src})
         orig_download = job.download
 
@@ -823,7 +821,7 @@ class QueryAndLimitDryTest(EngineCase):
                     yield Post(str(n), [File(f"{CDN}/{n}.jpg", name=f"{n}.jpg")])
 
         for n in range(1, 5):
-            self.routes[f"{CDN}/{n}.jpg"] = httpx.Response(200, content=str(n).encode())
+            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
         engine = Engine(home=self.home, sources={"mlt": Multi})
         report = engine.download(["mlt:example_user"], categories="all", limit=2)
         self.assertTrue(report.ok)
@@ -872,7 +870,7 @@ class SyncedQueryTest(EngineCase):
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
         for n in range(1, 31):
-            self.routes[f"{CDN}/{n}.jpg"] = httpx.Response(200, content=str(n).encode())
+            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
         engine = Engine(home=self.home, sources={"pgd": src})
         # Save the query as synced with 0 initial results by patching pages for initial download,
         # or download --sync with limit=0? No, download --sync with 1st item, or toggle after dry?
@@ -892,7 +890,7 @@ class SyncedQueryTest(EngineCase):
         seen_pages.clear()
         pages[:] = [list(range(31, 36)), *pages]
         for n in range(31, 36):
-            self.routes[f"{CDN}/{n}.jpg"] = httpx.Response(200, content=str(n).encode())
+            self.routes[f"{CDN}/{n}.jpg"] = _net.reply(200, content=str(n).encode())
         report2 = engine.sync()
         self.assertTrue(report2.ok)
         self.assertEqual(len(report2.targets[0].written), 5)
@@ -904,8 +902,8 @@ class SyncedQueryTest(EngineCase):
         pages = [[1, 2]]
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
-        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # User already downloaded pgd:1 (not synced).
         engine.download(["pgd:1"], categories="photo")
@@ -934,8 +932,8 @@ class SyncedQueryTest(EngineCase):
         pages = [[1], [2], [3]]
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages)
-        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
-        self.routes[f"{CDN}/2.jpg"] = httpx.Response(200, content=b"2")
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
+        self.routes[f"{CDN}/2.jpg"] = _net.reply(200, content=b"2")
         engine = Engine(home=self.home, sources={"pgd": src})
         # --limit 1 stops after page 0 and closes the generator without asking for page 1.
         report = engine.download(["pgd?cats"], categories="photo", limit=1, sync=True)
@@ -974,7 +972,7 @@ class SyncedQueryTest(EngineCase):
         pages = [[1]]
         closed, seen_pages = [], []
         src = self._paged_source(pages, closed=closed, seen_pages=seen_pages, fail_on="bad")
-        self.routes[f"{CDN}/1.jpg"] = httpx.Response(200, content=b"1")
+        self.routes[f"{CDN}/1.jpg"] = _net.reply(200, content=b"1")
         empty_src = self._paged_source([], closed=[], seen_pages=[])
         Engine(home=self.home, sources={"pgd": empty_src}).download(
             ["pgd?bad", "pgd?good"], categories="photo", sync=True

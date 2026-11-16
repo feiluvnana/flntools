@@ -5,7 +5,7 @@ in-process (`flnd._shrink`). Only video, probes, DASH joins and archives leave P
 
 Who calls it:
 - `flnd._media` runs `ffmpeg()` and `ffprobe()` for probes and video encodes;
-- `flnd.common.net` runs ffmpeg to join a DASH video's two streams;
+- `flnd._transfer` runs ffmpeg to join a DASH video's two streams;
 - `flnd._unpack` runs `sevenzip()` for 7z and RAR archives and for encrypted zips;
 - `flnd._shrink` reads `Tool.version` to write the tools string a compressed file records.
 

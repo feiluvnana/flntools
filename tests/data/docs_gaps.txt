@@ -115,62 +115,7 @@ flnd/_html.py:_selector: no Raises:
 flnd/_html.py:_selector: no Returns:
 flnd/_html.py:_text_selector: Args: no text
 flnd/_html.py:_text_selector: no Returns:
-flnd/_http.py:Client._back_off: no docstring
-flnd/_http.py:Client._call: Args: no check
-flnd/_http.py:Client._call: Args: no method
-flnd/_http.py:Client._call: Args: no send
-flnd/_http.py:Client._call: Args: no url
-flnd/_http.py:Client._call: no Returns:
-flnd/_http.py:Client._file: no Returns:
-flnd/_http.py:Client._open: no Raises:
-flnd/_http.py:Client._open: no Yields:
-flnd/_http.py:Client._request: no docstring
-flnd/_http.py:Client._send: no docstring
-flnd/_http.py:Client: Args: no cookies
-flnd/_http.py:Client: Args: no headers
-flnd/_http.py:Client: Args: no rate
-flnd/_http.py:Client: Args: no retry
-flnd/_http.py:Client: Args: no stop
-flnd/_http.py:Client: Args: no timeout
-flnd/_http.py:_Headers: no docstring
-flnd/_http.py:_Meter.start: no docstring
-flnd/_http.py:_Meter: Args: no sink
-flnd/_http.py:_Pace.wait: no docstring
-flnd/_http.py:_Pace: Args: no rate
-flnd/_http.py:_Router: Args: no routes
-flnd/_http.py:_answer: no docstring
-flnd/_http.py:_charset: no docstring
-flnd/_http.py:_checked: no docstring
-flnd/_http.py:_client: no docstring
-flnd/_http.py:_cookie_dict: no docstring
-flnd/_http.py:_cookie_from_dict: no docstring
-flnd/_http.py:_reset: no docstring
-flnd/_http.py:_retry_after: no docstring
-flnd/_http.py:_total_bytes: no docstring
-flnd/_http.py:fake: Args: no routes
-flnd/_http.py:fake: no Yields:
-flnd/_loop.py:Pool._attempt: no docstring
-flnd/_loop.py:Pool._await: no docstring
-flnd/_loop.py:Pool._block: Args: no ready
-flnd/_loop.py:Pool._close_loop: no docstring
-flnd/_loop.py:Pool._event_loop: no docstring
-flnd/_loop.py:Pool._next: no docstring
-flnd/_loop.py:Pool._run_calls: no docstring
-flnd/_loop.py:Pool.call: Args: no fn
-flnd/_loop.py:Pool.call: no Raises:
-flnd/_loop.py:Pool.call: no Returns:
-flnd/_loop.py:Pool.submit: Args: no args
-flnd/_loop.py:Pool.submit: Args: no fn
-flnd/_loop.py:Pool.submit: no Raises:
-flnd/_loop.py:Pool: Args: no jobs
-flnd/_loop.py:Pool: Args: no progress
-flnd/_loop.py:Pool: Args: no retries
-flnd/_loop.py:Pool: Args: no stop
-flnd/_loop.py:_Call: no docstring
-flnd/_loop.py:_Task: no docstring
-flnd/_loop.py:_answer: no docstring
 flnd/_loop.py:_cancel_pending: no docstring
-flnd/_loop.py:_size: no docstring
 flnd/_text.py:_rough_redact: Args: no url
 flnd/_text.py:_rough_redact: no Returns:
 flnd/_text.py:duration: Args: no seconds
@@ -231,25 +176,6 @@ flnd/_ui.py:_format_count: no docstring
 flnd/_vault.py:_aes_gcm: Args: no key
 flnd/_vault.py:_aes_gcm: no Raises:
 flnd/_vault.py:_aes_gcm: no Returns:
-flnd/common/net.py:_Row.grow: Args: no new
-flnd/common/net.py:_Row.grow: Args: no old
-flnd/common/net.py:_Row.start: no docstring
-flnd/common/net.py:_Row.update: no docstring
-flnd/common/net.py:_Row: Args: no label
-flnd/common/net.py:_Stream: Args: no row
-flnd/common/net.py:_Stream: Args: no stop
-flnd/common/net.py:_again: no Returns:
-flnd/common/net.py:_recording: Args: no seen
-flnd/common/net.py:_recording: no Yields:
-flnd/common/net.py:_try_mirror: no Returns:
-flnd/common/net.py:client: Args: no jar
-flnd/common/net.py:client: Args: no sign
-flnd/common/net.py:client: Args: no user_agent
-flnd/common/net.py:client: no Returns:
-flnd/common/net.py:cookie_jar: Args: no jar
-flnd/common/net.py:cookie_jar: no Returns:
-flnd/common/net.py:follow: Args: no url
-flnd/common/net.py:follow: no Returns:
 flnd/common/paths.py:kind_of: Args: no name
 flnd/common/paths.py:kind_of: no Returns:
 flnd/engine.py:Engine._discover_and_run: Args: no board
@@ -375,8 +301,6 @@ flnd/job.py:Downloads._dispatch_refresh: Args: no refresh
 flnd/job.py:Downloads._dispatch_refresh: no Raises:
 flnd/job.py:Downloads._download: Args: no queued
 flnd/job.py:Downloads._download: no Returns:
-flnd/job.py:Downloads._drain_pool: Args: no error
-flnd/job.py:Downloads._drain_pool: Args: no pool
 flnd/job.py:Downloads._expired: Args: no queued
 flnd/job.py:Downloads._expired: no Raises:
 flnd/job.py:Downloads._expired: no Returns:
@@ -385,12 +309,7 @@ flnd/job.py:Downloads._fetch: Args: no queued
 flnd/job.py:Downloads._fetch: Args: no received
 flnd/job.py:Downloads._fetch: no Returns:
 flnd/job.py:Downloads._room: no Returns:
-flnd/job.py:Downloads._sync_fetch: Args: no fetch
-flnd/job.py:Downloads._sync_fetch: no Returns:
 flnd/job.py:Downloads._task: Args: no queued
-flnd/job.py:Downloads._task: no Returns:
-flnd/job.py:Downloads.finish: Args: no error
-flnd/job.py:Downloads.finish: no Returns:
 flnd/job.py:Downloads.submit: Args: no queued
 flnd/job.py:Downloads.submit: no Returns:
 flnd/job.py:Downloads.wait: no Raises:
@@ -646,7 +565,6 @@ flnd/site.py:TargetSite.fetch: Args: no in_page
 flnd/site.py:TargetSite.fetch: Args: no method
 flnd/site.py:TargetSite.fetch: Args: no request
 flnd/site.py:TargetSite.fetch: Args: no url
-flnd/site.py:TargetSite.fetch: no Raises:
 flnd/site.py:TargetSite.fetch: no Returns:
 flnd/site.py:_warn_expiring: Args: no jar
 flnd/site.py:_warn_expiring: Args: no source

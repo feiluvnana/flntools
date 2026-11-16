@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import filecmp
 import inspect
@@ -19,7 +20,8 @@ from typing import (
 )
 from urllib.parse import urlsplit
 
-from flnd.common import net, paths
+from flnd import _transfer
+from flnd.common import paths
 from flnd.options import Options, selected
 from flnd.site import SourceRun, TargetSite
 from flnd.errors import (
@@ -28,7 +30,7 @@ from flnd.errors import (
 from flnd.source import (
     Category, File, Post, Range, Resume, Route, Site, Source, Target, day, fill, listing,
 )
-from flnd import _files, _home, _text, _loop
+from flnd import _files, _home, _text
 from flnd._events import Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, landed
 from flnd._ui import ui
@@ -56,6 +58,9 @@ EXPIRED = frozenset({403, 410})
 STOPPED = "stopped by Ctrl-C"
 FINISHING = "stopping: {files} finishing (Ctrl-C again to stop now)"
 WAKE = 0.1
+# A target's queue holds this many times its `jobs` files, queued or downloading, before its
+# listing waits: enough that a burst of small files never starves the transfers.
+QUEUE = 4
 ASKED_TTL = 30 * 24 * 3600
 ASKED_KEY = "redate.asked"
 ALL = "all"
@@ -854,14 +859,22 @@ def _try_link(dest: Path, holder: Path) -> bool:
 
 
 class Downloads:
-    """Concurrent download runner for one target.
+    """One target's downloads: a coroutine per file on the run's loop, fed by the listing.
 
-    Each file is recorded in history as it finishes, then handed to the run's step chain
-    (`flnd._steps`), which unpacks archives and, under `--compress`, compresses media on its
-    own threads.
+    1. The listing thread `submit`s each file. The queue holds `QUEUE` times the source's
+       `jobs` files (queued or downloading); past that, `submit` waits, so a listing never runs
+       far ahead of its downloads and memory stays flat.
+    2. Each file becomes a task on the run's loop (`flnd._transfer.save`), which waits for one
+       of the target's `jobs` places; the source's per-host caps (`flnd.site`), shared by
+       every target, bound the transfers to each host on top of that.
+    3. A file that lands is recorded in history on the loop, then handed to the run's step
+       chain (`flnd._steps`), which unpacks archives and, under `--compress`, compresses media
+       on its own threads.
+    4. An expired link of a lazy post is asked for again on the listing thread, which answers
+       between two files (`_answer`), since a source's listing runs only there.
 
     Args:
-        run: the source's run: its settings, client and loop.
+        run: the source's run: its settings, clients and loop.
         target: the target the files belong to.
         board: the status lines counts go to.
         compress: whether the target's files go through the compress step.
@@ -874,7 +887,10 @@ class Downloads:
         # Whether this target's files go through the compress step once recorded.
         self.compress = compress
         self.source, self.settings = run.source, run.settings
-        self._pool: _loop.Pool | None = None
+        # Set once the listing failed, so a file that hasn't started ends at once.
+        self._halted = False
+        # The target's `jobs` places, made on the loop on first use.
+        self._slots: asyncio.Semaphore | None = None
         self._written: dict[str, Path] = {}
         # Each post's files submitted and not settled yet, and those that landed meanwhile: a
         # post's rows commit together when its last file settles (`_settle`).
@@ -886,7 +902,6 @@ class Downloads:
         self._running = 0
         self._refreshes: deque[_Refresh] = deque()
         self._answering = True
-        self._lister = threading.current_thread()
 
     @property
     def written(self) -> dict[str, Path]:
@@ -895,7 +910,10 @@ class Downloads:
             return dict(self._written)
 
     def submit(self, queued: _Queued) -> bool:
-        """Submit one file for download once pool capacity allows; False on stop."""
+        """Start one file's download on the loop once the queue has room; False on stop.
+
+        Called on the listing thread; it waits while the queue is full, answering refreshes.
+        """
         if not self._room():
             return False
         self._count(queued, queued=1)
@@ -903,7 +921,8 @@ class Downloads:
             post = queued.placed.post.id
             self._open[post] = self._open.get(post, 0) + 1
         try:
-            self._downloads().submit(self._task, queued)
+            # The task never raises (see `_task`), so its future isn't kept.
+            self.run.loop.submit(self._task(queued))
         except BaseException:
             self._count(queued, queued=-1)
             self._settle(queued)
@@ -934,13 +953,25 @@ class Downloads:
             shown = note_text
 
     def finish(self, error: BaseException | None = None) -> tuple[Path, ...]:
-        """Wait for downloads and encodes (or cancel refreshes on error) and return paths."""
+        """Wait for the downloads (or, after `error`, cancel them) and return what landed.
+
+        Args:
+            error: what ended the listing; the files still queued are dropped, and the running
+                ones finish.
+
+        Returns:
+            The paths written, in the order they landed.
+        """
         if error is None:
             self.wait()
         else:
             self._cancel_refreshes()
-        if self._pool is not None:
-            self._drain_pool(self._pool, error)
+            # The files still queued are dropped; the running ones finish (a second Ctrl-C
+            # stops them through the client's stop), so what they fetched isn't lost.
+            self._halted = True
+            with self._changed:
+                while self._pending:
+                    self._changed.wait(WAKE)
         # Tasks a stop cancelled never settled: the files of their posts that did land are in
         # place, so their rows are written now.
         with self._writing:
@@ -958,28 +989,9 @@ class Downloads:
         for refresh in waiting:
             refresh.done.set()
 
-    def _drain_pool(self, pool: _loop.Pool, error: BaseException | None) -> None:
-        """Close `pool` and log any task failures."""
-        if error is not None:
-            pool.stop()
-        for result in pool.results:
-            if not result.ok:
-                item = result.item[0] if isinstance(result.item, tuple) else result.item
-                ui.error("{file}: {kind} {error}", file=item,
-                         kind=type(result.error).__name__, error=result.error)
-                if result.error is not None:
-                    ui.debug("{file}: {chain}", file=item, chain=causes(result.error))
-        pool.close()
-
-    def _downloads(self) -> _loop.Pool:
-        """Lazily create the target's download `worker.Pool`."""
-        if self._pool is None:
-            self._pool = _loop.Pool(jobs=self.source.concurrency)
-        return self._pool
-
     def _room(self) -> bool:
-        """Wait for pool capacity while answering refreshes; False on stop."""
-        limit = 2 * max(self.source.concurrency, 1)
+        """Wait for room in the queue while answering refreshes; False on stop."""
+        limit = QUEUE * max(self.run.jobs, 1)
         while True:
             self._answer()
             with self._changed:
@@ -1000,22 +1012,44 @@ class Downloads:
         """Update counts on the category's status line."""
         self.board.count(self.target, file.placed.post.category, **steps)
 
-    def _task(self, queued: _Queued) -> bool:
-        """Execute one queued download on a worker thread."""
+    async def _task(self, queued: _Queued) -> bool:
+        """One file's task on the loop: its download, counted, and never an exception out.
+
+        A `KeyboardInterrupt` (the second Ctrl-C, `Stopped`) escaping a task would end the
+        loop's thread, so whatever the download raises is logged here, and the listing thread
+        sees the stop through the run's events.
+
+        Returns:
+            Whether the file landed.
+        """
+        started = False
         try:
-            with self._changed:
-                started = not self.settings.stop.soon.is_set()
-                self._running += started
+            if self._slots is None:
+                self._slots = asyncio.Semaphore(max(self.run.jobs, 1))
+            # A file waits here, queued, for one of the target's `jobs` places; the first
+            # Ctrl-C drops the ones still waiting and lets the running ones finish.
+            async with self._slots:
+                with self._changed:
+                    started = not (self._halted or self.settings.stop.soon.is_set())
+                    self._running += started
+                if not started:
+                    return False
+                self._count(queued, queued=-1, downloading=1)
+                try:
+                    return await self._download(queued)
+                finally:
+                    with self._changed:
+                        self._running -= 1
+        except asyncio.CancelledError:
+            raise
+        except BaseException as error:
+            ui.error("{file}: {kind} {error}", file=queued.placed.path,
+                     kind=type(error).__name__, error=error)
+            ui.debug("{file}: {chain}", file=queued.placed.path, chain=causes(error))
+            return False
+        finally:
             if not started:
                 self._count(queued, queued=-1)
-                return False
-            self._count(queued, queued=-1, downloading=1)
-            try:
-                return self._download(queued)
-            finally:
-                with self._changed:
-                    self._running -= 1
-        finally:
             try:
                 self._settle(queued)
             finally:
@@ -1024,7 +1058,7 @@ class Downloads:
     def _settle(self, queued: _Queued) -> None:
         """Count one submitted file of a post as done; the post's last one commits its rows.
 
-        Runs on the download's worker thread. The count and the landed list change under
+        Runs on the loop, as the file's task ends. The count and the landed list change under
         `_writing`; the commit runs outside it, since `flnd.db` has its own lock.
 
         Args:
@@ -1073,15 +1107,16 @@ class Downloads:
             landed(self.settings, Landed(item.queued.key, item.path,
                                          password=placed.file.password, compress=self.compress))
 
-    def _download(self, queued: _Queued) -> bool:
+    async def _download(self, queued: _Queued) -> bool:
         """Download one file, refreshing an expired lazy link once if needed."""
         placed = queued.placed
         received: dict[str, str] = {}
         try:
-            saved = self._fetch(queued, placed.file, received)
+            saved = await self._fetch(queued, placed.file, received)
             if saved is None and queued.refreshed is not None:
-                refreshed = self._expired(queued)
-                saved = self._fetch(queued, refreshed, received) if refreshed is not None else None
+                refreshed = await self._expired(queued)
+                saved = (await self._fetch(queued, refreshed, received)
+                         if refreshed is not None else None)
         # Another run holds this file's part: it saves the file and writes its row, so this run
         # skips it (docs/storage, "Sharing a home").
         except _files.BusyError:
@@ -1098,7 +1133,7 @@ class Downloads:
             ui.debug("{name}: {error}", name=placed.path, error=error)
             ui.debug("{name}: {chain}", name=placed.path, chain=causes(error))
             return False
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             self._count(queued, downloading=-1)
             if self.settings.stop.soon.is_set() and not self.settings.stop.now.is_set():
                 return False
@@ -1127,7 +1162,7 @@ class Downloads:
                 no day.
         """
         post = queued.placed.post
-        dated = day(post.date) or net.served_day(received.get("last-modified"))
+        dated = day(post.date) or _transfer.served_day(received.get("last-modified"))
         row = self._row(queued, saved)
         with self._writing:
             self._written[queued.key] = saved.path
@@ -1154,25 +1189,25 @@ class Downloads:
             files=count if placed.num == 0 and isinstance(count, int) and count > 1 else None,
         )
 
-    def _fetch(
+    async def _fetch(
         self, queued: _Queued, file: File, received: dict[str, str]
     ) -> _files.Saved | None:
         """Download `file` or signal link expiry for a lazy post."""
         placed = queued.placed
         if file.url is None:
             return None
-        if callable(file.url):
-            source = self._sync_fetch(file.url)
-            if source is None:
-                return None
-            file = File(source, audio=file.audio, name=file.name, size=file.size,
-                        password=file.password)
+        saving = _transfer.save(
+            self.run.files, file, queued.dest, label=placed.path,
+            headers=placed.post.headers, kind=placed.kind, received=received,
+            day=day(placed.post.date),
+        )
         try:
-            return net.download(
-                self.run.files, file, queued.dest, label=placed.path,
-                headers=placed.post.headers, kind=placed.kind, received=received,
-                day=day(placed.post.date),
-            )
+            if callable(file.url):
+                # A file the source fetches itself has no host for the client to cap, so it
+                # takes a place under its source's first domain.
+                async with self.run.gate():
+                    return await saving
+            return await saving
         except SiteError as error:
             if error.status not in EXPIRED or not callable(placed.post.files) or queued.refreshed:
                 raise
@@ -1181,15 +1216,12 @@ class Downloads:
             queued.refreshed = error
             return None
 
-    def _expired(self, queued: _Queued) -> File | None:
+    async def _expired(self, queued: _Queued) -> File | None:
         """Re-fetch a lazy post's files on the lister thread for an expired link."""
         refusal = queued.refreshed
         assert refusal is not None
         refresh = _Refresh(queued.placed.post, self.settings.stop)
-        if threading.current_thread() is self._lister:
-            refresh.run()
-        else:
-            self._dispatch_refresh(refresh)
+        await self._dispatch_refresh(refresh)
         if refresh.error is not None:
             ui.warn("{name}: no fresh link: {error}", name=queued.placed.path, error=refresh.error)
             raise refusal
@@ -1203,17 +1235,19 @@ class Downloads:
             raise refusal
         return fresh
 
-    def _dispatch_refresh(self, refresh: _Refresh) -> None:
-        """Queue a refresh onto the lister thread and wait for completion."""
+    async def _dispatch_refresh(self, refresh: _Refresh) -> None:
+        """Queue a refresh onto the lister thread and wait, on the loop, for it to be done."""
         with self._changed:
             if self._answering:
                 self._refreshes.append(refresh)
                 self._changed.notify_all()
             else:
                 refresh.done.set()
-        while not refresh.done.wait(WAKE):
+        # A threading event can't wake a coroutine, so it is polled.
+        while not refresh.done.is_set():
             if self.settings.stop.now.is_set():
                 raise KeyboardInterrupt
+            await asyncio.sleep(WAKE)
 
     def _answer(self) -> None:
         """Process pending link refreshes on the lister thread."""
@@ -1239,14 +1273,6 @@ class Downloads:
         db.fail(run=self.settings.run, item=queued.key, target=_home.key(self.target),
                 error=error, post=placed.post.id, file=str(queued.dest), url=url,
                 request=_serialize_failed(queued))
-
-    def _sync_fetch(self, fetch: Callable[..., Any]) -> Callable[..., Any]:
-        """Wrap a `Fetch` callable so coroutines run on the source's event loop."""
-        def call(dest: Path, progress: Callable[..., None]) -> Any:
-            outcome = fetch(dest, progress)
-            return self.run.run_async(outcome) if inspect.iscoroutine(outcome) else outcome
-
-        return call
 
 
 def download(run: SourceRun, target: Target, board: Board, options: Options) -> TargetReport:
@@ -1735,7 +1761,7 @@ def _read_routeless(
     if isinstance(first, (Target, str)):
         _run_discovered(run, work.ledger.board, options, _chained(first, steps))
         return
-    work.ledger.board.start(target, "", slots=run.source.concurrency)
+    work.ledger.board.start(target, "", slots=run.jobs)
     span = Range(options.since, options.until)
     own = _Kept(_chained(first, steps), "", newest_first=False, span=span, run_async=run.run_async)
     ended, _ = _queue_all(work, own, stop_at_saved=False, limit=options.limit)
@@ -1776,7 +1802,7 @@ def _read_one_category(
 ) -> tuple[Ended, int]:
     """List one category from `start` cursor, catching up from newest if resumed."""
     ui.debug("{target}: list {category}", target=str(target), category=category.name)
-    work.ledger.board.start(target, category.name, slots=run.source.concurrency)
+    work.ledger.board.start(target, category.name, slots=run.jobs)
     stop_at_saved = (
         category.newest_first
         and category.name in listed

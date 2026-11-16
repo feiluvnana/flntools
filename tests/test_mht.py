@@ -2,7 +2,7 @@
 
 import unittest
 
-import httpx
+from flnd import _net
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
@@ -214,18 +214,18 @@ class MimiEngineTest(EngineCase):
         def genres_route(request):
             nonlocal genre_calls
             genre_calls += 1
-            return httpx.Response(200, json=[{"id": 1, "name": "Vanilla"}])
+            return _net.reply(200, json=[{"id": 1, "name": "Vanilla"}])
 
         self.routes[f"{API}genres"] = genres_route
-        self.routes[f"{API}manga/advanced-search"] = httpx.Response(200, json={"items": [{"id": 70982}], "next_cursor": None})
-        self.routes[f"{API}manga/70982"] = httpx.Response(200, json=MANGA)
-        self.routes[f"{API}manga/70982/chapters"] = httpx.Response(200, json=[CHAPTERS[0]])
-        self.routes[f"{API}chapters/1001"] = httpx.Response(200, json={
+        self.routes[f"{API}manga/advanced-search"] = _net.reply(200, json={"items": [{"id": 70982}], "next_cursor": None})
+        self.routes[f"{API}manga/70982"] = _net.reply(200, json=MANGA)
+        self.routes[f"{API}manga/70982/chapters"] = _net.reply(200, json=[CHAPTERS[0]])
+        self.routes[f"{API}chapters/1001"] = _net.reply(200, json={
             "info": CHAPTERS[0],
             "pages": [{"image_url": f"{CDN}/1001/1.webp"}],
         })
-        self.routes[f"{CDN}/1001/1.webp"] = httpx.Response(200, content=b"WEBP1")
-        self.routes[f"{CDN}/covers/70982.webp"] = httpx.Response(200, content=b"COVER1")
+        self.routes[f"{CDN}/1001/1.webp"] = _net.reply(200, content=b"WEBP1")
+        self.routes[f"{CDN}/covers/70982.webp"] = _net.reply(200, content=b"COVER1")
 
         engine = Engine(home=self.home, sources={"mht": Mimi})
         report = engine.download(["mht?genre:vanilla"], categories="all", limit=1)
@@ -242,11 +242,11 @@ class MimiEngineTest(EngineCase):
         self.assertEqual(genre_calls, 2)
 
     def test_cover_query_reuses_search_metadata_without_manga_api(self):
-        self.routes[f"{API}genres"] = httpx.Response(200, json=[{"id": 1, "name": "Vanilla"}])
-        self.routes[f"{API}manga/advanced-search"] = httpx.Response(200, json={
+        self.routes[f"{API}genres"] = _net.reply(200, json=[{"id": 1, "name": "Vanilla"}])
+        self.routes[f"{API}manga/advanced-search"] = _net.reply(200, json={
             "items": [MANGA], "next_cursor": None,
         })
-        self.routes[f"{CDN}/covers/70982.webp"] = httpx.Response(200, content=b"COVER1")
+        self.routes[f"{CDN}/covers/70982.webp"] = _net.reply(200, content=b"COVER1")
 
         engine = Engine(home=self.home, sources={"mht": Mimi})
         report = engine.download(["mht?genre:vanilla"], categories="cover", limit=1)

@@ -1,11 +1,12 @@
 """The job (flnd/job.py): one target of a ported source, from its route to its history rows.
 
-Run through the engine with tests/example_source.py on `httpx.MockTransport`, the clocks of
-net.py and site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
+Run through the engine with tests/example_source.py on `flnd._net.fake`, the clocks of
+`flnd._net` and site.py faked, and through `job.posts` on a `FakeSite` for the listing rules. Also the
 "download Chromium?" question asked up front, an expired link's refresh, and both Ctrl-Cs (with
 a CDN that blocks on events, and the run on a thread of its own). No network, no browser.
 """
 
+import asyncio
 import datetime
 import io
 import os
@@ -17,7 +18,7 @@ from pathlib import Path
 from datetime import date
 from unittest import mock
 
-import httpx
+from flnd import _net
 
 from example_source import API, CDN, FIXTURES, Example
 import fakes
@@ -50,7 +51,7 @@ class JobCase(EngineCase):
     def json_answer(self, url, answer):
         def respond(request):
             data = answer(str(request.url), {"params": dict(request.url.params)}) if callable(answer) else answer
-            return httpx.Response(200, json=data)
+            return _net.reply(200, json=data)
 
         return respond
 
@@ -200,7 +201,7 @@ class SavedTest(JobCase):
             def posts(self, site, user):
                 yield Post("C1abc", lambda: listed.append("C1abc") or [File(f"{CDN}/c{num}.jpg") for num in range(3)])
 
-        self.routes[f"{CDN}/c1.jpg"] = httpx.Response(403)
+        self.routes[f"{CDN}/c1.jpg"] = _net.reply(403)
         self.run_engine(Carousel, targets=["crs:example_user"])
         self.assertEqual(sorted(self.history()), ["crs:C1abc_0", "crs:C1abc_2"])
         del self.routes[f"{CDN}/c1.jpg"]
@@ -227,7 +228,7 @@ class SavedTest(JobCase):
                 yield Post("new1", [File(f"{CDN}/new1.jpg")], date="2026-02-01")
                 yield Post("old1", [File(f"{CDN}/old1.jpg")], date="2026-01-01")
 
-        self.routes[f"{CDN}/old1.jpg"] = httpx.Response(500)
+        self.routes[f"{CDN}/old1.jpg"] = _net.reply(500)
         self.run_engine(Feed, targets=["fed:example_user"])
         self.assertIn("fed:new1_0", self.history())
         self.assertNotIn("fed:old1_0", self.history())
@@ -326,7 +327,7 @@ class FilesTest(JobCase):
 
     def test_a_url_without_an_extension_is_named_by_its_content(self):
         png = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
-        self.routes[f"{CDN}/blob"] = httpx.Response(200, content=png)
+        self.routes[f"{CDN}/blob"] = _net.reply(200, content=png)
 
         class Blob(Source):
             code, name, domains = "blb", "Blob", ("example.com",)
@@ -339,7 +340,7 @@ class FilesTest(JobCase):
         self.assertEqual(self.files("blb"), ["2026-01-02_9.png"])
 
     def test_mtime_is_the_posts_day_else_last_modified(self):
-        self.routes[f"{CDN}/avatars/42.jpg"] = httpx.Response(
+        self.routes[f"{CDN}/avatars/42.jpg"] = _net.reply(
             200, content=b"/avatar", headers={"Last-Modified": "Wed, 21 Oct 2026 07:28:00 GMT"})
         self.run_engine(Example, targets=["exm:example_user"])
         folder = self.target_dir("exm", "example_user")
@@ -623,7 +624,7 @@ class AsyncTest(JobCase):
 
         class Chats(Source):
             code, name, domains = "cht", "Chats", ("example.com",)
-            concurrency = 1
+            limits = {"cdn.example": 1}
 
             @target("{chat}")
             async def chat(self, site, chat):
@@ -702,19 +703,22 @@ class FailureTest(JobCase):
         self.assertEqual(self.files("err", "last"), [])
 
 
-class Cut(httpx.SyncByteStream):
-    """A body that sends `data`, then drops the connection; or, given `gate`, waits on it after the first chunk."""
+class Cut:
+    """A body that sends `data`, then drops the connection; or, given `gate`, waits on it after the first chunk.
+
+    An async iterable, so its wait on `gate` holds up only this transfer, not the run's loop.
+    """
 
     def __init__(self, data, *, gate=None, sent=None):
         self.data, self.gate, self.sent = data, gate, sent
 
-    def __iter__(self):
+    async def __aiter__(self):
         yield self.data[:5]
         if self.sent is not None:
             self.sent.set()
         if self.gate is None:
-            raise httpx.ReadError("connection reset")
-        self.gate.wait(5)
+            raise ConnectionResetError("connection reset")
+        await asyncio.to_thread(self.gate.wait, 5)
         yield self.data[5:7]
         yield self.data[7:]
 
@@ -732,7 +736,7 @@ class RefreshTest(JobCase):
 
         def album(request):
             self.listings += 1
-            return httpx.Response(200, json={"urls": [f"{self.PHOTO}?sig={self.listings}"]})
+            return _net.reply(200, json={"urls": [f"{self.PHOTO}?sig={self.listings}"]})
 
         self.routes[f"{API}/albums/A1"] = album
 
@@ -744,8 +748,8 @@ class RefreshTest(JobCase):
             if sig == "1":
                 range_header = request.headers.get("range", "")
                 if range_header and not range_header.startswith("bytes=0-"):
-                    return httpx.Response(403)
-                return httpx.Response(200, headers={**headers, "Content-Length": "10"}, stream=Cut(self.BODY))
+                    return _net.reply(403)
+                return _net.reply(200, headers={**headers, "Content-Length": "10"}, chunks=Cut(self.BODY))
             return fresh(request, headers)
 
         self.routes[self.PHOTO] = photo
@@ -753,7 +757,7 @@ class RefreshTest(JobCase):
     def test_an_expired_link_calls_lazy_files_once_more_and_resumes(self):
         def fresh(request, headers):
             start = int(request.headers["range"].removeprefix("bytes=").split("-")[0])
-            return httpx.Response(206, content=self.BODY[start:],
+            return _net.reply(206, content=self.BODY[start:],
                                   headers={**headers, "Content-Range": f"bytes {start}-9/10"})
 
         self.cdn(fresh)
@@ -770,7 +774,7 @@ class RefreshTest(JobCase):
                          ["A1.jpg"])
 
     def test_once_per_file_never_in_a_loop(self):
-        self.cdn(lambda request, headers: httpx.Response(410))
+        self.cdn(lambda request, headers: _net.reply(410))
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("albums",)))
         self.assertEqual(self.listings, 2)
         self.assertIn("A1.jpg: GET https://cdn.example/A1/1.jpg: HTTP 410", self.failures())
@@ -779,14 +783,14 @@ class RefreshTest(JobCase):
     def test_a_first_ctrl_c_during_a_refresh_is_no_fresh_link_and_the_target_stops(self):
         """A rate-limit wait inside `files` that the first Ctrl-C cuts short is the graceful stop, not a failure."""
         stop = _run.Stop()
-        self.cdn(lambda request, headers: httpx.Response(500))
+        self.cdn(lambda request, headers: _net.reply(500))
 
         def album(request):
             self.listings += 1
             if self.listings > 1:
                 stop.soon.set()      # the first Ctrl-C, during the refresh's wait
                 raise KeyboardInterrupt
-            return httpx.Response(200, json={"urls": [f"{self.PHOTO}?sig=1"]})
+            return _net.reply(200, json={"urls": [f"{self.PHOTO}?sig=1"]})
 
         self.routes[f"{API}/albums/A1"] = album
         report = self.report(Example, targets=["exm:example_user"], options=Options(categories=("albums",)), stop=stop)
@@ -811,7 +815,7 @@ class RefreshTest(JobCase):
         self.assertTrue(second.done.is_set())
 
     def test_a_post_with_its_files_listed_is_not_refreshed(self):
-        self.routes[f"{CDN}/C1abc_0.jpg"] = httpx.Response(403)
+        self.routes[f"{CDN}/C1abc_0.jpg"] = _net.reply(403)
         self.run_engine(Example, targets=["exm:example_user"], options=Options(categories=("posts",)))
         self.assertEqual(len(self.fetched(f"{CDN}/C1abc_0.jpg")), 1)
         self.assertEqual(len(self.fetched(f"{API}/users/42/posts")), 2)
@@ -868,8 +872,9 @@ class CtrlCTest(JobCase):
         class Slow(Source):
             code, name, domains = "slw", "Slow", ("example.com",)
             folder = ""
-            # One download at a time: post 1's runs, post 2's waits in the queue.
-            concurrency = 1
+            # One download at a time: post 1's runs, posts 2 to 4 wait in the queue (4 times as
+            # many as run).
+            limits = {"cdn.example": 1}
 
             @target("{user}")
             def user(self, site, user):
@@ -886,15 +891,15 @@ class CtrlCTest(JobCase):
                 finally:
                     closed.set()
 
-        def first(request):
+        async def first(request):
             started.set()
-            release.wait(5)
-            return httpx.Response(200, content=b"one")
+            await asyncio.to_thread(release.wait, 5)
+            return _net.reply(200, content=b"one")
 
         self.routes[f"{CDN}/1.7z"] = first
         thread, outcome = self.start(Slow, "slw:example_user")
-        # Post 3 waits for room in the pool: 1 is downloading and 2 is queued.
-        self.until(lambda: started.is_set() and len(listed) == 3)
+        # Post 5 waits for room in the queue: 1 is downloading and 2 to 4 are queued.
+        self.until(lambda: started.is_set() and len(listed) == 5)
         self.stop.soon.set()
         self.until(closed.is_set)
         finishing = "stopping: 1 file finishing (Ctrl-C again to stop now)"
@@ -905,9 +910,10 @@ class CtrlCTest(JobCase):
         self.assertEqual(str(report.targets[0].error), job.STOPPED)
         self.assertEqual(self.files("slw"), ["2026-01-01_1.7z"])
         self.assertIn("slw:1_0", self.history())
-        # Post 2 was queued but not started, so it was dropped; nothing past post 3 was listed.
+        # Posts 2 to 4 were queued but not started, so they were dropped; nothing past post 5 was
+        # listed.
         self.assertEqual(self.fetched(f"{CDN}/2.7z"), [])
-        self.assertEqual(listed, [1, 2, 3])
+        self.assertEqual(listed, [1, 2, 3, 4, 5])
 
     def note(self, board, target):
         """The note under the target's posts line, or None before it opens."""
@@ -935,10 +941,10 @@ class CtrlCTest(JobCase):
             range_header = request.headers.get("range", "")
             if range_header and not range_header.startswith("bytes=0-"):
                 start = int(range_header.removeprefix("bytes=").split("-")[0])
-                return httpx.Response(206, content=body[start:],
+                return _net.reply(206, content=body[start:],
                                       headers={"ETag": '"b1"', "Content-Range": f"bytes {start}-9/10"})
-            return httpx.Response(200, headers={"ETag": '"b1"', "Content-Length": "10"},
-                                  stream=Cut(body, gate=gate, sent=sent))
+            return _net.reply(200, headers={"ETag": '"b1"', "Content-Length": "10"},
+                                  chunks=Cut(body, gate=gate, sent=sent))
 
         self.routes[f"{CDN}/big.7z"] = big
         self.addCleanup(gate.set)
@@ -983,8 +989,8 @@ class CtrlCTest(JobCase):
                 yield Post("1", [File(f"{CDN}/big.7z", name="big.7z")])
 
         body = b"0123456789"
-        self.routes[f"{CDN}/big.7z"] = lambda request: httpx.Response(
-            200, headers={"Content-Length": "10"}, stream=Cut(body, gate=gate, sent=sent))
+        self.routes[f"{CDN}/big.7z"] = lambda request: _net.reply(
+            200, headers={"Content-Length": "10"}, chunks=Cut(body, gate=gate, sent=sent))
         thread, outcome = self.start(Big, "big:example_user")
         self.until(sent.is_set)
         # The first run holds the part, half written: the second run, on the same home, skips it.

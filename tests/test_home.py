@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
+from flnd import _net
 from test_engine import CDN, EngineCase, make_source, noise
 
 from flnd import _home, _vault
@@ -355,8 +355,8 @@ class MigrationTest(DbCase):
 class GoneTest(EngineCase):
     def setUp(self):
         super().setUp()
-        self.routes[f"{CDN}/a.jpg"] = httpx.Response(200, content=noise("JPEG"))
-        self.routes[f"{CDN}/b.jpg"] = httpx.Response(404)
+        self.routes[f"{CDN}/a.jpg"] = _net.reply(200, content=noise("JPEG"))
+        self.routes[f"{CDN}/b.jpg"] = _net.reply(404)
         self.source = make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg"),
                                                 File(f"{CDN}/b.jpg", name="b.jpg")])
 

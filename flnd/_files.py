@@ -5,7 +5,7 @@ Every file flnd writes, a download or a small file of its own, goes through a **
 renames it onto `dest`. A file at its real name is therefore always whole, and the part is its own
 lock: there is no lock file and no home-wide lock.
 
-Who calls it: the downloader (`flnd._http`, `flnd.common.net`) with `resume=True`, and flnd's
+Who calls it: the downloader (`flnd._net`, `flnd._transfer`) with `resume=True`, and flnd's
 own small writes (`write`, cookies, archives, the store converter, tool installs) with the
 default `resume=False`. The job sweeps a target's folder of stale parts (`sweep`). It calls only
 the stdlib.

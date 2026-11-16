@@ -10,7 +10,7 @@ What it times, in order:
 4. hashing 256 MiB in memory, per MiB;
 5. the loop bridge: a thread calling a coroutine on an event loop thread and waiting for it;
 6. flnd's per-file work: `job.place` (paths and names), `text.filename` and `day()`;
-7. the worker pool and a progress row's `advance`.
+7. a no-op task handed to the run's loop, and a progress row's `advance`.
 
 Every number is the best of 3 runs (5 for the short per-call ones). The pages are synthetic and
 use only example handles and example.com-style hosts.
@@ -40,7 +40,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from example_source import CDN, Example  # noqa: E402
 from flnd import job  # noqa: E402
 from flnd.source import File, Post, day  # noqa: E402
-from flnd import _html as selector, _text as text, _loop as worker  # noqa: E402
+from flnd import _html as selector, _text as text  # noqa: E402
+from flnd._loop import Loop  # noqa: E402
 from flnd._ui import ui
 
 EDGES = "data.user.edge_owner_to_timeline_media.edges[].node"
@@ -195,17 +196,22 @@ def per_file(report: kit.Report) -> None:
 
 
 def pool_and_ui(report: kit.Report) -> None:
-    """Time step 7: a no-op task through the worker pool, and a progress row's `advance`."""
+    """Time step 7: a no-op task handed to the run's loop, and a progress row's `advance`.
+
+    The downloads are tasks on the run's loop, each handed over from the listing thread
+    (`Loop.submit`); `loop_task` is that hop's cost, end to end.
+    """
     tasks = 20_000
 
-    def pool() -> None:
-        with worker.Pool(jobs=8) as running:
-            for n in range(tasks):
-                running.submit(abs, n)
-            for _ in running.results:
-                pass
+    async def nothing(n: int) -> int:
+        return n
 
-    report.add("pool_task", kit.best(pool) / tasks * 1e6, "us")
+    def loop() -> None:
+        with Loop() as running:
+            for future in [running.submit(nothing(n)) for n in range(tasks)]:
+                future.result()
+
+    report.add("loop_task", kit.best(loop) / tasks * 1e6, "us")
 
     def executor() -> None:
         with ThreadPoolExecutor(8) as running:

@@ -46,8 +46,9 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
 | `flnd/_home.py` | the home: its layout, `flnd.db` (files, posts, targets, runs, failures, sources' state), the migration of an old home, and the logins in the vault | the engine, the job, the site, `Flnd` |
 | `flnd/options.py` | `Options` and `RunShared`, and the checks of `--only` and folder templates before any work | the engine, the job |
-| `flnd/common/` | `net` (the HTTP client and file downloads), `paths` (content sniffing) | the engine, the site, the job |
-| `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), the run's browser on async Playwright (`_browser`), a SQLite store (`_db`), sealed secrets (`_vault`), atomic files (`_files`), the run's asyncio loop and a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
+| `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
+| `flnd/common/` | `paths` (content sniffing) | the engine, the site, the job |
+| `flnd/_*.py` | the private toolkit: HTTP over curl_cffi on the run's loop (`_net`), the run's browser on async Playwright (`_browser`), a SQLite store (`_db`), sealed secrets (`_vault`), atomic files (`_files`), the run's asyncio loop (`_loop`), the terminal UI (`_ui`) | everything above |
 | `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes, archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
 
 The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,
@@ -71,7 +72,7 @@ only through `flnd.sources.SOURCES`.
    `follow` asked, keeping its cursors and found targets from earlier runs.
 5. **Grouping by source.** The engine runs the targets of one source together, one after
    another, inside one `source_run`: the source's saved cookies are read from the vault, its
-   HTTP client is made (paced to `Source.pace` on its own domains), and its `connect` hook runs
+   HTTP session is made (see "Network" below), and its `connect` hook runs
    (Telegram's client). A source that `requires_login` and has none fails here, for each of its
    targets; any other source without a login warns and goes on with public access.
 6. **One target** (`job.download`). The job removes the stale parts an interrupted run left in
@@ -85,9 +86,10 @@ only through `flnd.sources.SOURCES`.
    `folder` and `filename` templates) and its history key (`<code>:<key>`). A file whose key is
    in the history is skipped. On a sync, 5 saved posts in a row end a `newest_first` category.
    A lazy post's files are listed only once the post is known to be new.
-9. **Downloading** (`Downloads`). Each new file goes to a `flnd._loop.Pool` of
-   `Source.concurrency` threads (8 by default). The pool's queue is bounded, so the listing waits
-   when downloads fall behind. `common/net.download` opens and locks the file's part
+9. **Downloading** (`Downloads`). Each new file becomes a task on the run's loop, which waits
+   for one of the target's places (8 by default, or the source's largest `limits`). The queue
+   holds 4 times as many, so the listing waits when downloads fall behind and memory stays flat.
+   `_transfer.save` opens and locks the file's part
    (`<name>.part`, see `docs/storage`), skipping a file another run is saving, then streams the
    file into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
    with its audio through ffmpeg, checks the content (a web page instead of a photo is a
@@ -116,10 +118,12 @@ A run uses a few threads, and every rule below protects one of them:
 
 - **The main thread** runs the engine and each target's listing: the route, the categories and
   the planning. A source's plain `def` routes therefore run top to bottom, without locks.
-- **The download pool** (`flnd._loop.Pool`, per target) runs the file downloads. Each pool
-  thread writes its file's part, dates it, renames it and writes its history row; the job's
-  `_writing` lock guards the run's own lists of written and failed files, and SQLite serializes
-  the history writes.
+- **The downloads** are tasks on the run's loop (below), one per file, handed over from the
+  listing thread (`Loop.submit`). Each streams its file into its part, dates it, renames it and
+  writes its history row; the job's `_writing` lock guards the run's own lists of written and
+  failed files, and SQLite serializes the history writes. What would block the loop runs off it:
+  a part's bytes go to one writer thread a MiB at a time, a part's open and rename to worker
+  threads, a source's blocking `fetch` function and ffmpeg's DASH merge to worker threads too.
 - **The run's loop** (`flnd._loop.Loop`, made by `site.shared_browser`) is one asyncio event loop
   on a thread of its own. Async Playwright runs on it: one browser per run
   (`flnd._browser.RunBrowser`), launched the first time a target needs a tab and shared by every
@@ -129,6 +133,8 @@ A run uses a few threads, and every rule below protects one of them:
   `feed`, `document`, `evaluate`, `click`) is one call handed to the loop (`Loop.run`, about
   40 µs), which waits for the answer. A response feed reads the matching bodies on the loop as
   they arrive, in order, and the listing thread parses them.
+- **Every HTTP transfer** runs on the same loop: the listing's requests (`Site.fetch` hands
+  each one over and waits) and every file's download (see "Network").
 - **Async sources** run on the same loop through `SourceRun.run_async`: a source with an async
   SDK (Telegram's Telethon), and any `async def` route or category, which reaches the browser by
   awaiting `site.tab` instead of calling the verbs.
@@ -173,6 +179,36 @@ use. The config file's `[source.<code>] scroll` will override it at that same sp
 A target's tab scrolls by script (`window.scrollBy` with a wheel event per step), not with real
 mouse input: the tabs of one shared window are background tabs to Chrome, which gives them no
 mouse events. An element that scrolls on its own (`scroll(within=…)`) gets real wheel events.
+
+## Network
+
+One HTTP library (`flnd/_net.py`) does every request and download, on the run's loop:
+
+- **A session per source** (`_net.Session`, made by `site.source_run`): one curl_cffi
+  `AsyncSession` with Chrome's TLS and HTTP/2 fingerprint, the login's cookies (kept by the
+  session, and written back to the vault at the end), the source's `user_agent`, and its
+  `prepare` hook for requests to its own domains, run before every try.
+- **Two pools** (`_net.Limits`). *Pages*: the listing's requests to the source's own domains
+  share a token bucket per host at the source's `pace`; a 429's `Retry-After` (or X's
+  `x-rate-limit-reset`) holds it, and halves its rate until 20 requests go through. *Media*:
+  every file, and the listing's requests to other hosts, at most 8 at once per host, or the
+  cap the source's `limits` gives the host. A target's downloads also take one of its own
+  places (8, or the source's largest cap), and its queue holds 4 times as many.
+- **Two clients** share the session and the pools: `web` lists and stops at the first Ctrl-C;
+  `files` downloads and stops at the second.
+- **The retry policy** is the library's ([errors.md](errors.md)): 4 more tries after waits of
+  about 1, 2, 4 and 8 s for a timeout, a reset or a 5xx; a 429 waited out, and `Blocked` on the
+  third in a row.
+- **A file** (`_transfer.save`) goes into its part: resumed with `Range` and `If-Range` from what
+  a failed run kept, tried mirror by mirror, a DASH pair fetched at once and joined by ffmpeg.
+  Segmented downloads of big files exist (`Client(segments=True)`) but are off until a real-CDN
+  benchmark shows they pay.
+- **The fake** (`_net.fake`) answers every request from routes or a handler in tests and
+  benchmarks; nothing in `make check` reaches the network.
+
+Instagram's API calls fall back to being sent from the page (`site.fetch(in_page=True)`) when
+the site refuses flnd's client; whether curl_cffi's fingerprint makes that fallback unneeded is
+for a live check on the test account.
 
 ## Where things are kept
 

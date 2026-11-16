@@ -1,9 +1,9 @@
 """Benchmark group `e2e`: a whole flnd run on a faked site, through the real engine and clock.
 
 The site is a source written here, `Bench` (code `bnc`), whose API answers pages of 50 posts;
-each post has a photo and a video of 100 KiB. httpx is given a `MockTransport` that answers
-every request in-process, after an optional sleep that stands in for network latency. Nothing
-leaves the process, and the pace between API requests is the real one.
+each post has a photo and a video of 100 KiB. `flnd._net.fake` answers every request
+in-process on the run's loop, after an optional `asyncio.sleep` that stands in for network
+latency. Nothing leaves the process, and the pace between API requests is the real one.
 
 The runs:
 1. 2,000 posts with no latency and no pace: the engine's own cost, per file;
@@ -19,20 +19,18 @@ Each run is timed once: they are long enough that noise is small.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from unittest import mock
-
-import httpx
 
 import kit
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import File, Post, Site, Source, Target, pages, target
-from flnd import _home, _run
+from flnd import _home, _net, _run
 from flnd._ui import ui
 
 API, CDN, PER_PAGE = "https://api.bench.example", "https://cdn.bench.example", 50
@@ -46,7 +44,7 @@ HEADS = {".jpg": (b"\xff\xd8\xff\xe0", "image/jpeg"), ".mp4": (b"\0\0\0\x18ftypm
 class Fake:
     """What the fake site does in the current run: its size and its latency.
 
-    Module state, not arguments, because `answer` is called by httpx with the request only.
+    Module state, not arguments, because `answer` is called by the fake with the request only.
     """
 
     posts = 0
@@ -78,24 +76,24 @@ class Bench(Source):
                 yield Post(item["id"], [File(url) for url in item["urls"]], date=item["taken_at"])
 
 
-def answer(request: httpx.Request) -> httpx.Response:
+async def answer(request: _net.Request) -> _net.Reply:
     """Answer one request of the fake site: an API page, or a media file.
 
-    Called by httpx on whichever thread made the request, so the sleeps block only that thread,
-    as real network waits would.
+    Called on the run's loop; the sleeps are the loop's, so they hold up only this request, as
+    real network waits would.
     """
     if request.url.host == "api.bench.example":
-        time.sleep(Fake.page_latency)
+        await asyncio.sleep(Fake.page_latency)
         start = int(request.url.params.get("cursor", "0"))
         end = min(start + PER_PAGE, Fake.posts)
         items = [{"id": f"p{n}", "taken_at": 1767312000 - n,
                   "urls": [f"{CDN}/{n}.jpg", f"{CDN}/{n}.mp4"]} for n in range(start, end)]
         cursor = str(end) if end < Fake.posts else None
-        return httpx.Response(200, json={"items": items, "next": cursor})
-    time.sleep(Fake.file_latency)
+        return _net.reply(200, json={"items": items, "next": cursor})
+    await asyncio.sleep(Fake.file_latency)
     head, kind = HEADS[request.url.path[-4:]]
-    return httpx.Response(200, content=head + BODY,
-                          headers={"content-type": kind, "content-length": str(len(head + BODY))})
+    return _net.reply(200, content=head + BODY,
+                      headers={"content-type": kind, "content-length": str(len(head + BODY))})
 
 
 def run(home: Path, *, again: bool = False) -> float:
@@ -143,9 +141,7 @@ def main() -> None:
     """Run the three scenarios and emit the report."""
     report = kit.Report("e2e")
     default_pace = Bench.pace
-    transport = mock.patch.object(httpx.Client, "_init_transport",
-                                  lambda *args, **kwargs: httpx.MockTransport(answer))
-    with transport, ui.scope(dest=io.StringIO(), color=False), \
+    with _net.fake(answer), ui.scope(dest=io.StringIO(), color=False), \
             tempfile.TemporaryDirectory(prefix="flnd-bench-") as scratch:
         # 1 and 2: the engine alone.
         Fake.posts, Bench.pace = 2000, 0.0

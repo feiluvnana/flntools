@@ -14,7 +14,7 @@ from flnd.source import Changed, File, NotFound, Post, Site, Source, day, target
 from flnd import _time as clock, _vault as crypto
 
 if TYPE_CHECKING:
-    import httpx
+    from flnd._net import Request
 
 API = "https://api.moegoat.com/api/"
 API_HOST = "api.moegoat.com"
@@ -107,7 +107,7 @@ class Loibus(Source):
             **fields_of(post),
         )
 
-    def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
+    def prepare(self, request: Request, cookies: Mapping[str, str], /) -> Request:
         """Set referer and origin for source domains, signing API requests with token."""
         request.headers.setdefault("referer", SITE_HEADERS["referer"])
         request.headers.setdefault("origin", SITE_HEADERS["origin"])
@@ -317,12 +317,12 @@ def markdown(text: str) -> str:
 
 
 def sign_request(
-    request: httpx.Request,
+    request: Request,
     *,
     now_ms: int,
     pick: Callable[[Sequence[str]], str] = secrets.choice,
     noise: Callable[[int], str] = secrets.token_hex,
-) -> httpx.Request:
+) -> Request:
     """Add LOIBUS's signature headers to an API request for now_ms."""
     where = urlsplit(str(request.url)).path.removeprefix("/").removeprefix("api/")
     method, at = request.method.lower(), str(now_ms)

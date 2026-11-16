@@ -1,7 +1,7 @@
 """A browser library: async Playwright on an asyncio loop, shared tabs, response capture, scrolling.
 
 A standalone library: it imports the standard library, Playwright and flnd's other library
-modules (`_loop`, `_http`, `_cookies`, `_prompt`, `_ui`, `_text`, `_time`, `errors`), and nothing
+modules (`_loop`, `_net`, `_cookies`, `_prompt`, `_ui`, `_text`, `_time`, `errors`), and nothing
 of flnd's engine. In flnd, `flnd.site.TargetSite` builds the `Site` browser verbs a source calls
 on it, each one call across to the run's loop (`flnd._loop.Loop.run`, about 40 µs).
 
@@ -72,7 +72,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Iterator, Mapping, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from flnd import _http, _prompt, _text, _time
+from flnd import _net, _prompt, _text, _time
 from flnd._cookies import Jar, refuse_profile
 from flnd._ui import ui
 from flnd.errors import Changed, NetworkError, Stopped, ToolError, UsageError
@@ -851,7 +851,7 @@ class Page:
 
     async def fetch(self, url: str, *, method: str = "GET",
                     headers: Mapping[str, str] | None = None, body: Any = None,
-                    check: bool = True) -> _http.Response:
+                    check: bool = True) -> _net.Response:
         """Send one request from the page, with its cookies, origin and TLS.
 
         Args:
@@ -859,10 +859,10 @@ class Page:
             method: the HTTP method.
             headers: extra headers.
             body: a dict (the query for a GET, JSON otherwise), a list (JSON), text or bytes.
-            check: raise for a status of 400 or more, as `flnd._http` does.
+            check: raise for a status of 400 or more, as `flnd._net` does.
 
         Returns:
-            The answer, as `flnd._http` gives one.
+            The answer, as `flnd._net` gives one.
 
         Raises:
             NetworkError: the page couldn't send it or got no answer within `FETCH_TIMEOUT`.
@@ -870,7 +870,7 @@ class Page:
         """
         method = method.upper()
         sent = dict(headers or {})
-        if isinstance(body, Mapping) and method in _http.QUERY_METHODS:
+        if isinstance(body, Mapping) and method in _net.QUERY_METHODS:
             url, body = _with_query(url, body), None
         elif isinstance(body, (Mapping, list)):
             body = json.dumps(body).encode("utf-8")
@@ -895,11 +895,11 @@ class Page:
                 raise NetworkError(f"{where}: no answer within {FETCH_TIMEOUT:g} s",
                                    retryable=True)
             raise NetworkError(_without_values(f"{where}: {result['error']}", sent))
-        response = _http.Response(
+        response = _net.Response(
             status=result["status"], url=result["url"], headers=dict(result["headers"]),
             content=base64.b64decode(result["body"]),
         )
-        return _http._checked(response, method) if check else response
+        return _net._checked(response, method) if check else response
 
     async def scroll(self, *, until: Callable[[], bool] | None = None,
                      within: str | None = None, idle: float = IDLE, style: str = HUMAN) -> int:

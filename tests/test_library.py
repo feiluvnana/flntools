@@ -5,7 +5,7 @@ The gate of the library is that every command of today's CLI can be done through
 alone. The other classes test a `Run` (lazy start, the warning when it is never started, stop,
 async), the events and the report, the reads, and `when`.
 
-Every test runs on `EngineCase`: httpx answers from `self.routes`, the clock is fake, and the
+Every test runs on `EngineCase`: the fake network answers from `self.routes`, the clock is fake, and the
 home is a temporary folder.
 """
 
@@ -17,7 +17,7 @@ import unittest
 import warnings
 from pathlib import Path
 
-import httpx
+from flnd import _net
 
 import flnd
 from flnd._events import encode
@@ -80,7 +80,7 @@ class LibraryCase(EngineCase):
     def serve(self, request):
         if str(request.url).startswith(CDN):
             self.requests.append(request)
-            return httpx.Response(200, content=JPEG)
+            return _net.reply(200, content=JPEG)
         return super().serve(request)
 
     def saved(self, events):
@@ -289,10 +289,10 @@ class EventsTest(LibraryCase):
 
         def serve(request):
             status = 404 if request.url.path.endswith("gone.jpg") else 200
-            return httpx.Response(status, content=JPEG)
+            return _net.reply(status, content=JPEG)
 
         self.serve = lambda request: serve(request) if str(request.url).startswith(CDN) \
-            else httpx.Response(200)
+            else _net.reply(200)
         events = list(self.fl.download("exs:example_user", only="posts"))
         [failed] = [event for event in events if isinstance(event, flnd.Failed)]
         self.assertEqual((failed.post, failed.path.name), ("gone", "2026-03-01_gone.jpg"))
@@ -428,7 +428,7 @@ class CompressTest(EngineCase):
 
         body = io.BytesIO()
         photo(320, 240).save(body, "JPEG", quality=95)
-        self.routes[f"{CDN}/a.jpg"] = httpx.Response(200, content=body.getvalue())
+        self.routes[f"{CDN}/a.jpg"] = _net.reply(200, content=body.getvalue())
         self.fl = self.enterContext(flnd.open(self.home))
         self.fl.add(make_source("aaa", files=[File(f"{CDN}/a.jpg", name="a.jpg")]))
         self.folder = self.home / "media" / "aaa" / "a"

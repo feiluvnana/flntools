@@ -30,9 +30,7 @@ from flnd.errors import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import httpx
-
-    from flnd import _http
+    from flnd import _net
 
 __all__ = ["Blocked", "Category", "Changed", "DateLike", "Error", "Feed", "Fetch", "File", "Login",
            "LoginError", "NetworkError", "NotFound", "Post", "Range", "Route", "Site", "SiteError",
@@ -653,16 +651,21 @@ class Site(Protocol):
         ...
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> _http.Response:
-        """Make one request, paced and retried, and return its `_http.Response`.
+              check: bool = True, in_page: bool = False, **request: Any) -> _net.Response:
+        """Make one request, paced and retried, and return its `Response`.
 
             items = site.fetch(API, params={"cursor": cursor}).json
             profile = site.fetch(f"{API}/users/{user}", check=False)   # read profile.ok
 
-        `request` takes `params` (the query) and `body` (as `_http.fetch`'s). A refusal raises a
-        `SiteError` with its `status` and `response` (`NotFound` for a 404 or 410, `Blocked` for
-        a 429 still refused after its waits), unless `check` is False, which returns the
-        refusal's response; a request that got no answer raises `NetworkError`.
+        `request` takes `params` (the query) and `body`: on a GET a dict is the query; on any
+        other method a dict or list is sent as JSON, and bytes or str as they are. A refusal
+        raises a `SiteError` with its `status` and `response` (`NotFound` for a 404 or 410,
+        `Blocked` for a 429 still refused after its waits), unless `check` is False, which
+        returns the refusal's response; a request that got no answer raises `NetworkError`.
+
+        The request goes out with Chrome's TLS and HTTP/2 fingerprint, the login's cookies and
+        the source's `prepare` headers. `in_page=True` sends it from the target's tab instead,
+        with the page's own cookies and fingerprint, one browser round trip slower.
         """
         ...
 
@@ -1079,9 +1082,10 @@ class Source:
     # How the browser scrolls this source's feeds: "human" (wheel steps, pauses about 0.4 s, at
     # most two tabs at once), so the site flags it less as a bot, or "fast" (no pauses).
     scroll: ClassVar[str] = "human"
-    # Files of one target downloading at once: CDNs are built for many, and the host's own
-    # connection limit in `flnd._http` still holds.
-    concurrency: ClassVar[int] = 8
+    # Files downloading at once from a host, by host name (a subdomain counts as its parent):
+    # `{"cdn.example": 4}`. A host not named takes 8 at once. A file the source fetches itself
+    # (a `fetch` function) counts against its first domain.
+    limits: ClassVar[Mapping[str, int]] = MappingProxyType({})
     # `unsupported`, compiled when the class is created.
     _refusals: ClassVar[tuple[tuple[_Pattern, str], ...]] = ()
 
@@ -1132,6 +1136,15 @@ class Source:
         if getattr(cls, "scroll", "human") not in ("human", "fast"):
             raise SourceError(
                 f"{cls.__name__}.scroll must be 'human' or 'fast', not {cls.scroll!r}"
+            )
+        limits = getattr(cls, "limits", {})
+        if not isinstance(limits, Mapping) or not all(
+            isinstance(host, str) and type(cap) is int and cap > 0
+            for host, cap in limits.items()
+        ):
+            raise SourceError(
+                f"{cls.__name__}.limits: give caps by host, such as {{'cdn.example': 4}}, "
+                "each a whole number above 0"
             )
         if "categories" in vars(cls) or "single_kinds" in vars(cls):
             raise SourceError(
@@ -1196,12 +1209,15 @@ class Source:
             f"{self.code}: can't read {text!r}; write it like {', '.join(self.forms)}", url=link
         )
 
-    def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
+    def prepare(self, request: _net.Request, cookies: Mapping[str, str], /) -> _net.Request:
         """Add headers or signature to a request on source domains before each attempt.
 
             def prepare(self, request, cookies):
                 request.headers["x-csrf-token"] = cookies.get("ct0", "")
                 return request
+
+        `request` has `method`, `url` (a str, with `host`, `path` and `params`), `headers` (by
+        lower-case name) and `content`; `cookies` are the session's now, `{name: value}`.
         """
         return request
 

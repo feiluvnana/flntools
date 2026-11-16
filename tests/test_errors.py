@@ -20,18 +20,19 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import httpx
+from flnd import _net
 
 import flnd
 from flnd import job, sources
 from flnd import _files
-from flnd import _http as http, _time as clock, _tools
+from flnd import _time as clock, _tools
 from flnd.errors import (
     Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
     Stopped, ToolError, UsageError, classify, disk,
 )
 from flnd.source import File, Range, Source, Target, target
 from flnd._ui import ui
+from fakes import download, fetch
 from test_commands import FlndCase
 from test_engine import EngineCase, make_source
 
@@ -44,17 +45,17 @@ ALL = (Error, UsageError, LoginError, SiteError, Blocked, NotFound, Changed, Net
 
 
 class HttpCase(unittest.TestCase):
-    """The real client on `http.fake`, a fake clock, and jitter pinned to the full step."""
+    """The real client on `_net.fake`, a fake clock, and jitter pinned to the full step."""
 
     def setUp(self) -> None:
         self.clock = self.enterContext(clock.use(clock.Fake()))
-        self.enterContext(mock.patch.object(http.random, "uniform", lambda low, high: high))
+        self.enterContext(mock.patch.object(_net.random, "uniform", lambda low, high: high))
         self.enterContext(ui.scope(dest=io.StringIO(), color=False, width=80))
-        self.seen: list[httpx.Request] = []
+        self.seen: list[_net.Request] = []
 
-    def serve(self, answer: httpx.Response | Exception):
+    def serve(self, answer: _net.Reply | Exception):
         """A route that counts its requests and gives `answer` to each."""
-        def route(request: httpx.Request) -> httpx.Response:
+        def route(request: _net.Request) -> _net.Reply:
             self.seen.append(request)
             if isinstance(answer, Exception):
                 raise answer
@@ -111,10 +112,9 @@ class ClassesTest(HttpCase):
         self.assertFalse(error.retryable)
 
     def test_blocked(self):
-        with http.Client(retry=http.Retry(1)) as client, \
-                http.fake({f"{SITE}/": httpx.Response(429, headers={"Retry-After": "9"})}):
+        with _net.fake({f"{SITE}/": _net.reply(429, headers={"Retry-After": "9"})}):
             with self.assertRaises(Blocked) as caught:
-                client.fetch(f"{SITE}/")
+                fetch(f"{SITE}/")
         self.assertEqual((caught.exception.wait, caught.exception.status), (9.0, 429))
         self.assertTrue(caught.exception.retryable)
 
@@ -126,20 +126,20 @@ class ClassesTest(HttpCase):
                 self.assertFalse(error.retryable)
 
     def test_changed(self):
-        with http.fake({f"{SITE}/api": httpx.Response(200, html="<h1>Log in</h1>")}):
-            page = http.fetch(f"{SITE}/api")
+        with _net.fake({f"{SITE}/api": _net.reply(200, html="<h1>Log in</h1>")}):
+            page = fetch(f"{SITE}/api")
         with self.assertRaises(Changed) as caught:
             page.json
         self.assertIn(f"expected JSON from {SITE}/api", str(caught.exception))
         self.assertFalse(caught.exception.retryable)
 
     def test_network_error(self):
-        reset = httpx.ConnectError("connection reset", request=httpx.Request("GET", SITE))
-        with http.Client(retry=http.Retry(1)) as client, http.fake({f"{SITE}/": self.serve(reset)}):
+        reset = ConnectionResetError("connection reset")
+        with _net.fake({f"{SITE}/": self.serve(reset)}):
             with self.assertRaises(NetworkError) as caught:
-                client.fetch(f"{SITE}/")
+                fetch(f"{SITE}/", retries=0)
         self.assertTrue(caught.exception.retryable)
-        self.assertIsInstance(caught.exception.__cause__, httpx.ConnectError)
+        self.assertIn("connection reset", str(caught.exception))
 
     def test_disk_error(self):
         made = disk(OSError(errno.ENOSPC, "No space left on device"), "media/a.jpg")
@@ -183,19 +183,18 @@ class ClassesTest(HttpCase):
         self.assertFalse(issubclass(Stopped, Error))
         stop = threading.Event()
         stop.set()
-        with self.assertRaises(Stopped), http.Client(stop=stop, retry=http.Retry(2)) as client, \
-                http.fake({f"{SITE}/": 503}):
+        with self.assertRaises(Stopped), _net.fake({f"{SITE}/": 503}):
             try:
-                client.fetch(f"{SITE}/")
+                fetch(f"{SITE}/", stop=stop)
             except Error:  # never catches a stop
                 self.fail("except Error caught a Stopped")
         self.assertIs(classify(Stopped()).__class__, Stopped)
 
     def refusal(self, status: int, url: str) -> SiteError:
         """What the client raises for `status` at `url`, after its tries."""
-        with http.Client(retry=http.Retry(1)) as client, http.fake({url: status}):
+        with _net.fake({url: status}):
             try:
-                client.fetch(url)
+                fetch(url, retries=0)
             except SiteError as error:
                 return error
         raise AssertionError(f"no error for HTTP {status}")
@@ -207,33 +206,34 @@ class ClassesTest(HttpCase):
 
 class PolicyTest(HttpCase):
     def test_a_timeout_a_reset_or_a_5xx_is_retried_with_backoff_then_fails(self):
-        timeout = httpx.ReadTimeout("slow", request=httpx.Request("GET", SITE))
-        for answer, kind in ((httpx.Response(503), SiteError), (timeout, NetworkError)):
+        timeout = TimeoutError("slow")
+        for answer, kind in ((_net.reply(503), SiteError), (timeout, NetworkError)):
             self.seen.clear()
             self.clock.slept.clear()
-            with self.subTest(kind=kind.__name__), http.Client(retry=http.Retry(4)) as client, \
-                    http.fake({f"{SITE}/": self.serve(answer)}):
+            with self.subTest(kind=kind.__name__), _net.fake({f"{SITE}/": self.serve(answer)}):
                 with self.assertRaises(kind) as caught:
-                    client.fetch(f"{SITE}/")
+                    fetch(f"{SITE}/")
                 self.assertTrue(caught.exception.retryable)
-                self.assertEqual(len(self.seen), 4)
-                self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0])
+                # The first try and 4 more, after waits of 1, 2, 4 and 8 s.
+                self.assertEqual(len(self.seen), 5)
+                self.assertEqual(self.clock.slept, [1.0, 2.0, 4.0, 8.0])
 
     def test_a_429_waits_what_the_site_asks_then_is_blocked(self):
-        route = self.serve(httpx.Response(429, headers={"Retry-After": "30"}))
-        with http.Client(retry=http.Retry(3)) as client, http.fake({f"{SITE}/": route}):
+        route = self.serve(_net.reply(429, headers={"Retry-After": "30"}))
+        with _net.fake({f"{SITE}/": route}):
             with self.assertRaises(Blocked) as caught:
-                client.fetch(f"{SITE}/")
+                fetch(f"{SITE}/")
+        # The third 429 in a row is the last: two waits, then `Blocked`.
         self.assertEqual(self.clock.slept, [30.0, 30.0])
         self.assertEqual(caught.exception.wait, 30.0)
 
     def test_a_404_or_410_is_gone_and_never_asked_again(self):
         for status in (404, 410):
             self.seen.clear()
-            with self.subTest(status=status), http.Client(retry=http.Retry(4)) as client, \
-                    http.fake({f"{SITE}/": self.serve(httpx.Response(status))}):
+            with self.subTest(status=status), \
+                    _net.fake({f"{SITE}/": self.serve(_net.reply(status))}):
                 with self.assertRaises(NotFound):
-                    client.fetch(f"{SITE}/")
+                    fetch(f"{SITE}/")
                 self.assertEqual((len(self.seen), self.clock.slept), (1, []))
 
     def test_a_401_or_403_on_the_sources_domains_is_a_login_error_for_that_source(self):
@@ -250,51 +250,48 @@ class PolicyTest(HttpCase):
     def test_a_truncated_transfer_keeps_its_part_to_resume(self):
         body = b"0123456789" * 10
 
-        def cut(request: httpx.Request) -> httpx.Response:
+        def cut(request: _net.Request) -> _net.Reply:
             def pieces():
                 yield body[:30]
-                raise httpx.ReadError("connection reset", request=request)
+                raise ConnectionResetError("connection reset")
 
-            return httpx.Response(200, headers={"content-length": str(len(body))}, content=pieces())
+            return _net.reply(200, headers={"content-length": str(len(body))}, chunks=pieces())
 
         folder = Path(self.enterContext(_folder()))
         dest = folder / "a.mp4"
-        with http.Client(retry=http.Retry(1)) as client, http.fake({f"{SITE}/a.mp4": cut}):
+        with _net.fake({f"{SITE}/a.mp4": cut}):
             with self.assertRaises(NetworkError) as caught:
-                client.download(f"{SITE}/a.mp4", dest)
+                download(f"{SITE}/a.mp4", dest, retries=0)
         self.assertTrue(caught.exception.retryable)
         self.assertFalse(dest.exists())
         self.assertEqual(_files._part_path(dest).read_bytes(), body[:30])
         # The next try resumes from byte 30 with a Range request.
-        with http.fake({f"{SITE}/a.mp4": body}):
-            http.download(f"{SITE}/a.mp4", dest)
+        with _net.fake({f"{SITE}/a.mp4": body}):
+            download(f"{SITE}/a.mp4", dest)
         self.assertEqual(dest.read_bytes(), body)
 
     def test_a_parse_failure_is_changed_and_not_retried(self):
-        with http.Client(retry=http.Retry(4)) as client, \
-                http.fake({f"{SITE}/api": self.serve(httpx.Response(200, html="<p>moved</p>"))}):
+        with _net.fake({f"{SITE}/api": self.serve(_net.reply(200, html="<p>moved</p>"))}):
             with self.assertRaises(Changed) as caught:
-                client.fetch(f"{SITE}/api").json
+                fetch(f"{SITE}/api").json
         self.assertEqual(len(self.seen), 1)
         self.assertFalse(caught.exception.retryable)
 
     def test_secrets_never_reach_a_message(self):
         url = f"https://user:{PASSWORD}@example.com/a?token={TOKEN}#{TOKEN}"
-        reset = httpx.ConnectError(f"reset while sending {TOKEN}",
-                                   request=httpx.Request("GET", url))
-        for answer in (httpx.Response(403), httpx.Response(429), reset):
+        reset = ConnectionError(f"reset while sending {TOKEN}")
+        for answer in (_net.reply(403), _net.reply(429), reset):
             with self.subTest(answer=type(answer).__name__), \
-                    http.Client(retry=http.Retry(1)) as client, \
-                    http.fake({"https://example.com/a": self.serve(answer)}):
+                    _net.fake({"https://example.com/a": self.serve(answer)}):
                 with self.assertRaises(Error) as caught:
-                    client.fetch(url, headers={"Authorization": f"Bearer {TOKEN}"})
+                    fetch(url, retries=0, headers={"Authorization": f"Bearer {TOKEN}"})
                 self.assertNotIn(TOKEN, str(caught.exception))
                 self.assertNotIn(PASSWORD, str(caught.exception))
 
 
 class PolicyEngineTest(EngineCase):
     def test_a_file_that_fails_fails_alone(self):
-        self.routes["https://cdn.example/bad.jpg"] = httpx.Response(503)
+        self.routes["https://cdn.example/bad.jpg"] = _net.reply(503)
         source = make_source("aaa", files=[File("https://cdn.example/bad.jpg", name="bad.jpg"),
                                            File("https://cdn.example/good.jpg", name="good.jpg")])
         report = self.report(source, targets=["aaa:example_user"])
@@ -303,7 +300,7 @@ class PolicyEngineTest(EngineCase):
         self.assertEqual(self.failures(), ["bad.jpg: GET https://cdn.example/bad.jpg: HTTP 503"])
 
     def test_a_refused_login_stops_its_source_and_the_others_go_on(self):
-        self.routes["https://api.aaa.example/me"] = httpx.Response(403)
+        self.routes["https://api.aaa.example/me"] = _net.reply(403)
         refused = make_source("aaa", lambda site: site.fetch("https://api.aaa.example/me"))
         report = self.report(refused, make_source("bbb"),
                              targets=["aaa:example_user", "aaa:example_creator",

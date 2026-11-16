@@ -8,17 +8,15 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from urllib.parse import urlsplit
 
-import httpx
 
 from flnd import job
-from flnd.common import net
 from flnd.job import TargetReport
 from flnd.options import Options, RunShared, categories_by_source, validate
 from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_run
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.source import Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
-from flnd import _home, _text
+from flnd import _home, _net, _text
 from flnd._run import Stop, stopping
 from flnd._events import Failed, Planned
 from flnd import _steps
@@ -1094,9 +1092,10 @@ def _is_url(target_text: str) -> bool:
 
 def _follow(url: str) -> str:
     try:
-        return net.follow(url)
-    except httpx.HTTPError as error:
-        raise NetworkError(f"can't follow {_text.redact(url)}: {error}", retryable=True) from None
+        return _net.follow(url)
+    except NetworkError as error:
+        raise NetworkError(f"can't follow {_text.redact(url)}: {error}",
+                           retryable=error.retryable) from None
 
 
 def _run_site(
@@ -1181,7 +1180,7 @@ def _written_back(run: SourceRun) -> Iterator[None]:
     try:
         yield
     finally:
-        _home.write_back(run.settings.home, run.source.code, run.web.raw.cookies.jar)
+        _home.write_back(run.settings.home, run.source.code, run.session.jar)
 
 
 @contextmanager

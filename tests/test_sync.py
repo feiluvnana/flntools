@@ -1,7 +1,7 @@
 """`Engine.sync` and the saved targets (`flnd.db`'s `targets`): the plan, the records,
 `Engine.download`'s use of them, the fetch and the summary.
 
-Each test runs on a temporary `.flnd` with test sources on `httpx.MockTransport` (see `EngineCase`),
+Each test runs on a temporary `.flnd` with test sources on `flnd._net.fake` (see `EngineCase`),
 and the fake screen. `sync=True` marks the target for `flnd sync`; the default keeps it off.
 """
 
@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 import fakes
-import httpx
+from flnd import _net
 from test_engine import CDN, EngineCase, make_source, noise
 
 from flnd.engine import Engine, TargetReport
@@ -30,7 +30,7 @@ class Site:
 
     def serve(self):
         for name, body in self.files.items():
-            self.case.routes[f"{CDN}/{name}"] = httpx.Response(200, content=body)
+            self.case.routes[f"{CDN}/{name}"] = _net.reply(200, content=body)
 
 
 def recorded(record):
@@ -168,7 +168,7 @@ class SavedRunStopTest(SyncCase):
     def setUp(self):
         super().setUp()
         for name in self.NAMES:
-            self.routes[f"{CDN}/{name}"] = httpx.Response(200, content=noise("JPEG"))
+            self.routes[f"{CDN}/{name}"] = _net.reply(200, content=noise("JPEG"))
 
     def test_a_target_with_nothing_lost_still_stops_at_saved_posts(self):
         source = self.feed()

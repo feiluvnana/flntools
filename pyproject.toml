@@ -9,7 +9,8 @@ description = "Dead simple media downloader for TikTok, Facebook, Instagram, and
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "httpx[http2]>=0.27.0",
+    # The HTTP client: libcurl with Chrome's TLS and HTTP/2 fingerprint, on the run's asyncio loop.
+    "curl_cffi>=0.13",
     "playwright==1.65.*",
     "parsel>=1.9.0",
     "python-jsonpath",

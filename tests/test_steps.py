@@ -1,6 +1,6 @@
 """The steps after a file lands (`flnd._steps`): unpack and compress, end to end through the engine.
 
-Every run here fakes the network (`httpx.MockTransport`, from `test_engine`) and uses synthetic
+Every run here fakes the network (`flnd._net.fake`, from `test_engine`) and uses synthetic
 photos and archives. The chain's own threads are real.
 """
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import fakes
-import httpx
+from flnd import _net
 
 from flnd import _home, _steps, _tools
 from flnd.engine import Engine
@@ -41,7 +41,7 @@ class StepsCase(EngineCase):
     def serve_files(self, served: dict[str, bytes]) -> list[File]:
         """Serve each named body from the fake CDN, and return the files a source lists."""
         for name, body in served.items():
-            self.routes[f"{CDN}/{name}"] = httpx.Response(200, content=body)
+            self.routes[f"{CDN}/{name}"] = _net.reply(200, content=body)
         return [File(f"{CDN}/{name}", name=name) for name in served]
 
     def engine(self, files) -> Engine:
@@ -67,14 +67,14 @@ class UnpackTest(StepsCase):
         self.assertIn("Media: 1 archive extracted", self.dest.getvalue())
 
     def test_a_password_from_the_source_opens_the_archive(self):
-        self.routes[f"{CDN}/locked.zip"] = httpx.Response(200, content=CRYPTO_ZIP)
+        self.routes[f"{CDN}/locked.zip"] = _net.reply(200, content=CRYPTO_ZIP)
         files = [File(f"{CDN}/locked.zip", name="locked.zip", password="pw")]
         with _tools.fake({}):
             self.engine(files).download(["aaa:a"], categories="all")
         self.assertEqual((self.folder / "locked" / "a.txt").read_bytes(), b"secret")
 
     def test_a_wrong_password_keeps_the_archive_and_records_failed(self):
-        self.routes[f"{CDN}/locked.zip"] = httpx.Response(200, content=CRYPTO_ZIP)
+        self.routes[f"{CDN}/locked.zip"] = _net.reply(200, content=CRYPTO_ZIP)
         files = [File(f"{CDN}/locked.zip", name="locked.zip", password="nope")]
         with _tools.fake({}):
             report = self.engine(files).download(["aaa:a"], categories="all", compress=True)

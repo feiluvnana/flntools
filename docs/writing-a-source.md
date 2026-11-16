@@ -54,7 +54,12 @@ class Example(Source):
 What each part does:
 
 - **`code`, `name`, `domains`** say what the source is. `domains` also decides which requests
-  get the login's cookies and the source's pace.
+  get the source's `prepare` headers, and which of its listing's requests wait for its `pace`.
+- **`pace`** (0.5 by default) is the least time between two listing requests to the source's
+  own domains. **`limits`** caps the files downloading at once from a host, such as
+  `limits = {"cdn.example.com": 4}`; a host not named takes 8 at once, and a file the source
+  fetches itself (a `fetch` function) counts against its first domain. Every request goes out
+  with Chrome's TLS and HTTP/2 fingerprint.
 - **`@target(...)`** makes `user` a **route**: a method that reads one kind of target. Each
   pattern is one way to write it. `{user}` alone means `exm:<user>`; `example.com/{user}` is a
   link. The method's name, `user`, is the target's kind.
@@ -222,7 +227,7 @@ A source can override a few methods of `Source`:
 
 | hook | when it runs | used by |
 | --- | --- | --- |
-| `prepare(request, cookies)` | before each request to the source's domains: add headers or a signature | ins, twt, loi |
+| `prepare(request, cookies)` | before each request to the source's domains, each try: add headers or a signature to `request` (its `method`, `url` with `host`, `path` and `params`, `headers` by lower-case name, and `content`) | ins, twt, loi |
 | `connect(site)` | once per run: a context manager whose value is `site.client` | tlg |
 | `login(login, method)` | `flnd login <code>` for a source with its own login flow | tlg |
 | `date(site, post)` | for an undated post, once its category ends: one paced request for its day | fbk |

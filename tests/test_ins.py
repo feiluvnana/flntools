@@ -17,18 +17,17 @@ from typing import Any
 from unittest import mock
 
 import fakes
-import httpx
+from flnd import _net
 from fakes import FakeSite, Seen, collect
 from test_dash import INSTAGRAM
 
-from flnd.common import net
 from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import SiteError, LoginError, Target, UsageError, day
 from flnd.sources.common.relay import embedded_results
 from flnd.sources.ins import (APP_ID, Instagram, best_file, files_of, full_size, is_complete, pk_of_code, pk_stamp,
                               post_files, reel_posts, tab_media)
-from flnd import _http as http, _html as selector
+from flnd import _html as selector
 
 SITE = "https://www.instagram.com"
 API = f"{SITE}/api/v1"
@@ -212,7 +211,7 @@ class MediaTest(unittest.TestCase):
     def test_prepare_adds_instagrams_web_headers(self):
         source = Instagram()
         source.api.claim = "hmac.claim"
-        request = source.prepare(httpx.Request("GET", f"{API}/media/1/info/"), {"csrftoken": "tok"})
+        request = source.prepare(_net.Request("GET", f"{API}/media/1/info/"), {"csrftoken": "tok"})
         self.assertEqual({name: request.headers[name] for name in
                           ("x-ig-app-id", "x-asbd-id", "x-ig-www-claim", "x-csrftoken", "x-requested-with", "referer")},
                          {"x-ig-app-id": APP_ID, "x-asbd-id": "129477", "x-ig-www-claim": "hmac.claim",
@@ -655,7 +654,7 @@ class Landing(FakeSite):
 
 class ThrottleTest(unittest.TestCase):
     def test_a_please_wait_answer_is_waited_out_and_the_same_post_saved(self):
-        answers = [SiteError("HTTP 400", status=400, response=http.Response(
+        answers = [SiteError("HTTP 400", status=400, response=_net.Response(
             400, f"{API}/media/{PK['T1']}/info/", {"content-type": "application/json"},
             json.dumps({**THROTTLE, "require_login": True}).encode())), THROTTLE]
         calls = []
@@ -713,7 +712,7 @@ class ThrottleTest(unittest.TestCase):
                        lands={f"{SITE}/p/SINGLE/": [f"{SITE}/accounts/suspended/?next=/p/SINGLE/"]})
         with self.assertRaisesRegex(LoginError, "suspended or locked"):
             list(Instagram().post(site, "SINGLE"))
-        suspended = SiteError("HTTP 403", status=403, response=http.Response(
+        suspended = SiteError("HTTP 403", status=403, response=_net.Response(
             403, f"{SITE}/accounts/suspended/", {"content-type": "text/html"}, b"<html></html>"))
         with self.assertRaisesRegex(LoginError, "suspended or locked"):
             read(options=Options(categories=("tagged",)), json={**JSON, f"{API}/media/{PK['T1']}/info/": suspended})
@@ -725,7 +724,7 @@ class ThrottleTest(unittest.TestCase):
             def fetch(self, url, **options):
                 answer = super().fetch(url, **options)
                 assert answer is not None
-                return http.Response(200, url, {"x-ig-set-www-claim": "hmac.new"}, answer.content)
+                return _net.Response(200, url, {"x-ig-set-www-claim": "hmac.new"}, answer.content)
 
         site = Claiming(Target("ins", "user", "someone"), json=JSON)
         source.api.media(site, PK["R1"])
@@ -862,28 +861,24 @@ class MeTest(unittest.TestCase):
             ]
             step = {"i": 0}
 
-            def handler(request: httpx.Request) -> httpx.Response:
+            def handler(request: _net.Request) -> _net.Reply:
                 url = str(request.url).split("?", 1)[0]
                 if url == f"{API}/friendships/99/following/":
                     body = following_pages[min(step["i"], len(following_pages) - 1)]
-                    return httpx.Response(200, json=body)
+                    return _net.reply(200, json=body)
                 if url.startswith("https://cdn.example/"):
-                    return httpx.Response(200, content=b"IMG")
-                return httpx.Response(404)
+                    return _net.reply(200, content=b"IMG")
+                return _net.reply(404)
 
             def fake_read_tab(profile, site, api, tab):
                 code = "A1" if profile.user == "example_user" else "B1"
                 yield Post(code, [File(f"https://cdn.example/{code.lower()}.jpg")], date=day(STAMP))
 
-            transport = httpx.MockTransport(handler)
             _home.save(home, "ins", cookies.Jar([
                 {"name": "sessionid", "value": "99:abc:1", "domain": ".instagram.com", "path": "/"},
             ]))
             engine = Engine(home=home, sources={"ins": Instagram})
-            real_client = httpx.Client
-            with mock.patch.object(net.httpx, "Client",
-                                   lambda *a, **kw: real_client(*a, **{**kw, "transport": transport})), \
-                    mock.patch("flnd.sources.ins.Profile.read_tab", fake_read_tab):
+            with _net.fake(handler), mock.patch("flnd.sources.ins.Profile.read_tab", fake_read_tab):
                 dry = engine.download(["ins:me"], categories="posts", dry=True)
                 self.assertTrue(dry.ok)
                 self.assertEqual(fakes.targets(home), {})

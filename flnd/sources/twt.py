@@ -32,7 +32,7 @@ from flnd.sources.common.feed import warm_tabs
 from flnd import _html, _text
 
 if TYPE_CHECKING:
-    import httpx
+    from flnd._net import Request
 
 # The user agent Twitter's API has always been sent: a desktop Chrome.
 CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -165,7 +165,7 @@ class Twitter(Source):
         # The GraphQL query table for this run; one source instance serves the whole run.
         self.graph = Graph()
 
-    def prepare(self, request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request:
+    def prepare(self, request: Request, cookies: Mapping[str, str], /) -> Request:
         """Twitter's API headers on every request to x.com's API, with current CSRF token."""
         # The page and script (Graph.refresh reads them) return 401 to the API's bearer token.
         if not request.url.path.startswith("/i/api/"):

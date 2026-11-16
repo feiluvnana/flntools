@@ -95,8 +95,8 @@ the most pixels, bitrate breaking a tie, and skips DASH streams. With no usable 
 `playAddr`. Every CDN address a file has is kept and tried in order.
 
 **Pacing:** `pace` is 0.2, so requests to TikTok's own domains are at least 0.2 seconds apart (a
-code comment says no limit is known). `concurrency` is 8: up to 8 files of one target download at
-once. Requests are sent with a fixed desktop Chrome user agent.
+code comment says no limit is known). It sets no `limits`: up to 8 files download at once from
+each CDN host. Requests are sent with a fixed desktop Chrome user agent.
 
 ## Where files go
 

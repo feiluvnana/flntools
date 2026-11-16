@@ -236,14 +236,13 @@ def history_breaches(source: str) -> list[str]:
     return found
 
 
-# The aliases the fold keeps (`from flnd import _http as http`): each old `shared` name, so that the
+# The aliases the fold keeps (`from flnd import _html as selector`): each old `shared` name, so that the
 # code lines using it didn't change. Each pair is (the alias, the private module it names). A row
 # that renames the uses removes its pairs here, so the list can only shrink. AGENTS.md says no
 # aliases; this is the one exception, and it is temporary.
 TRANSITIONAL_ALIASES = {
     ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"),
-    ("http", "_http"), ("selector", "_html"),
-    ("text", "_text"), ("worker", "_loop"),
+    ("selector", "_html"), ("text", "_text"),
 }
 
 
@@ -311,9 +310,9 @@ class PrivateImportTest(unittest.TestCase):
         self.assertEqual(private_imports(path.read_text(encoding="utf-8")), [])
 
     def test_every_spelling_of_a_private_import_is_found(self):
-        source = ("import flnd._http\nfrom flnd._browser import Page\n"
+        source = ("import flnd._net\nfrom flnd._browser import Page\n"
                   "from flnd import _loop, ui\n")
-        self.assertEqual(private_imports(source), ["flnd._http", "flnd._browser", "flnd._loop"])
+        self.assertEqual(private_imports(source), ["flnd._net", "flnd._browser", "flnd._loop"])
         self.assertEqual(private_imports("from flnd import browser\nimport flnd\n"), [])
 
 

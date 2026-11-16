@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, MutableMapping
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
-from flnd import _browser, _html, _http, job
+from flnd import _browser, _html, _net, job
 from flnd.engine import resolve
 from flnd.options import Options
 from flnd.source import File, NotFound, Post, Range, SiteError, Source, Target
@@ -31,7 +31,7 @@ Answer = Any
 class Seen:
     """What a source did through a `FakeSite`, which keeps its own members to the ones a `Site` has."""
 
-    # (method, url, options) of each `fetch`, options holding `headers`, `in_page` and httpx's.
+    # (method, url, options) of each `fetch`, options holding `headers`, `in_page` and the request's.
     requests: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
     # Each URL `open` loaded.
     visited: list[str] = field(default_factory=list)
@@ -88,19 +88,19 @@ class FakeSite:
         return Range(self._options.since, self._options.until)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> _http.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> _net.Response:
         self._seen.requests.append((method, url, {"headers": dict(headers or {}), "in_page": in_page, **request}))
         base = url.split("?")[0]
         if base in self._json:
             answer = _answer(self._json, url, request)
             if not isinstance(answer, SiteError):
-                return _http.Response(200, url, {"content-type": "application/json"}, jsonlib.dumps(answer).encode())
+                return _net.Response(200, url, {"content-type": "application/json"}, jsonlib.dumps(answer).encode())
         else:
             answer = _answer(self._html, url, request)
             if not isinstance(answer, SiteError):
-                return _http.Response(200, url, {"content-type": "text/html"}, str(answer).encode())
+                return _net.Response(200, url, {"content-type": "text/html"}, str(answer).encode())
         if not check and answer.status is not None:
-            return answer.response or _http.Response(answer.status, url, {})
+            return answer.response or _net.Response(answer.status, url, {})
         raise answer
 
     def open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
@@ -328,3 +328,44 @@ def targets(home) -> dict[str, Any]:
 
     with _home.open(Path(home)) as db:
         return db.targets()
+# ---------------------------------------------------------------------------------------------
+# The HTTP library, driven from a test's own thread
+# ---------------------------------------------------------------------------------------------
+# `flnd._net` runs on an asyncio loop. These run one call on a loop of its own (`asyncio.run`,
+# which carries the test's context, so a fake clock applies), over a fresh session, inside
+# whatever `_net.fake` the test opened. Each is a blocking call, as a script would make.
+
+
+def fetch(url: str, *, retries: int = _net.RETRIES, stop: Any = None, limits: Any = None,
+          session: _net.Session | None = None, **options: Any) -> _net.Response:
+    """`Client.fetch` on a loop of its own: the response, or the error the policy raises."""
+    return asyncio.run(_with_client(lambda client: client.fetch(url, **options), retries=retries,
+                                    stop=stop, limits=limits, session=session))
+
+
+def download(url: Any, dest: Any, *, retries: int = _net.RETRIES, stop: Any = None,
+             resume: bool = True, progress: Any = None, segments: bool = False,
+             headers: Mapping[str, str] | None = None) -> Any:
+    """`Client.fill` into `dest`'s part on a loop of its own; returns where it landed."""
+    from flnd import _files
+
+    async def fill(client: _net.Client) -> Any:
+        with _files.part(dest, resume=resume) as held:
+            await client.fill(url, held, resume=resume, progress=progress, headers=headers)
+        return held.dest
+
+    return asyncio.run(_with_client(fill, retries=retries, stop=stop, segments=segments))
+
+
+async def _with_client(call: Callable[[_net.Client], Any], *, retries: int, stop: Any,
+                       limits: Any = None, session: _net.Session | None = None,
+                       segments: bool = False) -> Any:
+    own = session is None
+    session = session if session is not None else _net.Session()
+    try:
+        client = _net.Client(session, retries=retries, stop=stop, limits=limits,
+                             segments=segments)
+        return await call(client)
+    finally:
+        if own:
+            await session.close()

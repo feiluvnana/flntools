@@ -19,7 +19,7 @@ How a call flows:
    on the caller's thread and returns plain rows from `flnd._events`.
 
 Rules a change must keep:
-- Importing this module imports nothing heavy: the engine, httpx, Playwright and Rich load on
+- Importing this module imports nothing heavy: the engine, curl_cffi, Playwright and Rich load on
   the first call that needs them, so `import flnd` stays fast.
 - Options are keyword-only and at most five per call; a setting past that belongs in the
   config file (`[defaults] again`, read by `_settings`).

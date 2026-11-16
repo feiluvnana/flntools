@@ -16,7 +16,7 @@ writing a source).
 
 How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first
 use of a name (`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine,
-httpx, Playwright and Rich load only when a command needs them, so a script, the CLI's
+curl_cffi, Playwright and Rich load only when a command needs them, so a script, the CLI's
 `--help` and `python -c "import flnd"` stay fast. `tests/test_packaging.py` guards this.
 """
 

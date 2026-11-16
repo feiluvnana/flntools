@@ -28,11 +28,11 @@ Each group is one script in `tests/bench/`, run in a fresh interpreter.
 | group | what it measures |
 | --- | --- |
 | `startup` | process start to exit: `python -c pass`, the imports, `flnd --help` (median of 15) |
-| `net` | flnd's HTTP client from a loopback server: 1 GiB to disk, 2,000 × 100 KiB on 1 and 8 threads |
+| `net` | flnd's HTTP client on the run's loop from a loopback server: 1 GiB to disk, 2,000 × 100 KiB one and 8 at once, and the loop's longest stall on a disk throttled to 20 MB/s |
 | `disk` | writing 5,000 files of 100 KiB: a plain write, a temp file and rename, a download's part |
 | `db` | the history store over 100k rows; SQLite commits per file, per post and per 500 rows |
 | `walk` | listing 100,000 files, and `stat` on known paths |
-| `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, the worker pool |
+| `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, a task handed to the loop |
 | `e2e` | a whole run of the real engine on a faked site, with and without latency |
 | `browser` | headless Chromium on a synthetic infinite-scroll feed; skipped without Chromium |
 | `media` | Pillow's AVIF, WebP and JPEG encoders; the compress step over 1,000 JPEGs; `sync --compress` over 100k done files; ffmpeg's video encoders, skipped without ffmpeg |
@@ -71,7 +71,8 @@ CPython 3.14.6. The numbers a planned change is gated on:
 | --- | ---: | ---: |
 | `startup.help` (`flnd --help`) | 162 ms | ≤ 40 ms |
 | `net.big_rate` (1 GiB to disk) | 1.76 GiB/s | ≥ 4 GiB/s |
-| `net.small_8_threads` (2,000 × 100 KiB) | 927 ms | ≤ 300 ms |
+| `net.small_8_at_once` (2,000 × 100 KiB) | 927 ms | ≤ 300 ms |
+| `net.stall_20mbs` (the loop's longest stall, 20 MB/s disk) | (new) | < 100 ms |
 | `disk.part_write` (per file) | 255 µs | ≤ 130 µs |
 | `db.point_read` | 2.39 µs | ≤ 2.2 µs |
 | `db.commit_per_post` (per file) | 8.1 µs | ≤ 15 µs |
@@ -83,6 +84,42 @@ CPython 3.14.6. The numbers a planned change is gated on:
 | `media.sync_compress_100k` (`sync --compress` over 100k done files) | 0.44 s | ≤ 3 s |
 
 `gates.json` has the rest: 68 numbers in all.
+
+## Network
+
+Every transfer runs on the run's asyncio loop through curl_cffi (`flnd._net`): libcurl's multi
+interface, HTTP/2, Chrome's TLS fingerprint. Measured A/B against the httpx client it replaced,
+on the M5 above while other work ran (load about 8), the median of 3 alternating runs of
+`make bench ARGS=net`:
+
+| metric | httpx, 8 threads | curl_cffi on the loop |
+| --- | ---: | ---: |
+| `net.big_rate` (1 GiB to disk) | 1.62 GiB/s | 3.02 GiB/s |
+| `net.small_8_at_once` (2,000 × 100 KiB, 8 at once) | 744 ms | 615 ms |
+| `net.small_1_at_once` (the same, one at a time) | 997 ms | 798 ms |
+| `net.stall_20mbs` (longest stall of the loop, disk at 20 MB/s) | — | 54 ms |
+
+How a file is written, and why:
+
+- **Bytes go to one writer thread, a MiB at a time.** curl hands the loop 16 KiB chunks; they
+  are gathered, and each full MiB is written on the `flnd-writer` thread while the loop goes
+  on. Measured with the writes on the loop, four files onto a disk throttled to 20 MB/s held the
+  loop up for 1.2 s at a time; on the writer thread, 15 ms. The last piece of a file, under a
+  MiB, is copied into the part's own buffer on the loop and reaches the disk when the part
+  lands, so a small file costs no hop to the writer at all.
+- **A transfer waits for the disk with at most 4 MiB in memory.** curl_cffi queues every chunk
+  curl receives, with no bound; on a disk slower than the network a whole file would wait
+  there. Once 4 MiB of a transfer wait, flnd pauses it (`curl_easy_pause`) until the writer
+  has taken them down to 2 MiB, and TCP holds the server back meanwhile. Measured with two
+  64 MiB files onto a disk throttled to 20 MB/s: at most 4.0 MiB waited per transfer, against
+  62.9 MiB unpaused, in the same time (7.3 s against 7.2 s).
+- **A part's open and rename run on worker threads.** Each is a file-system call of 50 to 150
+  µs, more on a busy disk; on the loop they would run one at a time.
+- **Small files are bound by the disk bookkeeping**, not the client: the client alone fetches
+  2,000 × 100 KiB in about 0.4 s on the same machine, and a part's open, lock and rename add
+  the rest. A rename into one folder is serialized by the file system.
+- `net.stall_20mbs` charges every write of a part as a disk write at 20 MB/s, the last piece's
+  copy into memory included, so it overstates a real slow disk.
 
 ## Disk
 

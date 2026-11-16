@@ -30,7 +30,7 @@ from typing import Any, cast
 from unittest import mock
 
 import no_profiles  # noqa: F401  (refuses real browser profiles)
-from flnd import _browser, _cookies, _http, _time
+from flnd import _browser, _cookies, _net, _time
 from flnd._loop import Loop
 from flnd._ui import ui
 from flnd.errors import Blocked, Changed, Error, NetworkError, SiteError, ToolError
@@ -1192,7 +1192,7 @@ class LocalServer:
 
 
 class FetchTest(PageCase):
-    """`Page.fetch`: a request sent by the page itself, to a local server, returned as an `_http.Response`."""
+    """`Page.fetch`: a request sent by the page itself, to a local server, returned as an `_net.Response`."""
 
     @classmethod
     def setUpClass(cls):
@@ -1215,7 +1215,7 @@ class FetchTest(PageCase):
 
     def test_a_json_body(self):
         response = self.fetch(f"{self.server.url}/json?page=2")
-        self.assertIsInstance(response, _http.Response)
+        self.assertIsInstance(response, _net.Response)
         self.assertEqual((response.status, response.ok, response.url), (200, True, f"{self.server.url}/json?page=2"))
         self.assertEqual(response.headers["Content-Type"], "application/json")
         self.assertEqual(response.json, {"path": "/json", "query": "page=2"})

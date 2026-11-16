@@ -78,7 +78,7 @@ API says the quota is used up, `archive` skips the rest of the day's posts with 
 already counted today is not counted again.
 
 **Pacing:** `pace` is 0.5, so requests to the source's domains are at least half a second apart.
-`concurrency` is 8: up to 8 files of one target download at once. When the links request is
+It sets no `limits`: up to 8 files download at once from each host. When the links request is
 refused as a rate limit, flnd backs off and tries once more.
 
 ## Where files go

@@ -1,6 +1,6 @@
 """Example (example.com): a complete small source over fixtures, and the template a new source starts from.
 
-It is run, not only read: tests/test_job.py drives it through the engine on `httpx.MockTransport`,
+It is run, not only read: tests/test_job.py drives it through the engine on `flnd._net.fake`,
 and through `fakes.collect` on `FIXTURES`. Copy it to `flnd/sources/<code>.py` to start a source:
 keep its shape and replace the site's knowledge (its URLs and JSON paths).
 

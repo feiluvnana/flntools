@@ -19,7 +19,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-import httpx
+from flnd import _net
 
 from flnd import Blocked, Target, sources
 from flnd import cli as flnd_cli
@@ -297,7 +297,7 @@ class FollowTest(RunsCase):
             followed.append(url)
             return "https://www.tiktok.com/@example_creator/video/7301234567890123456"
 
-        with mock.patch("flnd.common.net.follow", follow):
+        with mock.patch("flnd._net.follow", follow):
             self.assertEqual(self.run_app("sync", "https://vm.tiktok.com/ZMabc123/")[0], 0)
         self.assertEqual(followed, ["https://vm.tiktok.com/ZMabc123/"])
         self.assertEqual(self.synced[0][0][0], Target("tik", "video", "7301234567890123456"))
@@ -318,11 +318,10 @@ class OutputTest(FlndCase):
 
         def serve(request):
             if str(request.url).startswith(f"{CDN}/bad"):
-                return httpx.Response(503)
-            return httpx.Response(200, content=jpeg)
+                return _net.reply(503)
+            return _net.reply(200, content=jpeg)
 
-        self.enterContext(mock.patch.object(httpx.Client, "_init_transport",
-                                            lambda *a, **kw: httpx.MockTransport(serve)))
+        self.enterContext(_net.fake(serve))
         from flnd import _time as clock
 
         self.enterContext(clock.use(clock.Fake()))
@@ -445,7 +444,7 @@ class HelpTest(FlndCase):
         import subprocess
 
         code = ("import sys\nfrom flnd.cli import main\nmain(['--help'])\n"
-                "print(sorted(m for m in sys.modules if m.startswith(('flnd.', 'rich', 'httpx'))))")
+                "print(sorted(m for m in sys.modules if m.startswith(('flnd.', 'rich', 'curl_cffi'))))")
         out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                              check=True).stdout.splitlines()[-1]
         self.assertEqual(out, "['flnd.cli', 'flnd.sources', 'flnd.sources._manifest']")

@@ -10,7 +10,7 @@ import unittest
 from datetime import date
 from unittest import mock
 
-import httpx
+from flnd import _net
 
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
@@ -525,7 +525,7 @@ class PrepareTest(unittest.TestCase):
     """Fix 6: the API's headers come from the live cookies, and there is no `cookie` header."""
 
     def prepared(self, target, cookie_values):
-        return Twitter().prepare(httpx.Request("GET", target), cookie_values)
+        return Twitter().prepare(_net.Request("GET", target), cookie_values)
 
     def test_the_api_headers_come_from_the_live_cookies(self):
         request = self.prepared("https://x.com/i/api/graphql/q/UserMedia", {"auth_token": "a", "ct0": "c"})
@@ -551,9 +551,9 @@ class LoginStaysAtHomeTest(EngineCase):
         jar = [{"name": name, "value": value, "domain": ".x.com", "path": "/"}
                for name, value in {"auth_token": "secret", "ct0": "old"}.items()]
         _home.save(self.home, "twt", cookies.Jar(jar))
-        self.routes[url("UserByScreenName")] = httpx.Response(
+        self.routes[url("UserByScreenName")] = _net.reply(
             200, json=USER, headers={"set-cookie": "ct0=new; Domain=x.com; Path=/"})
-        self.routes[url("TweetResultByRestId")] = lambda request: httpx.Response(
+        self.routes[url("TweetResultByRestId")] = lambda request: _net.reply(
             200, json={"data": {"tweetResult": {"result": tweet("100", [
                 {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/p.jpg"},
                 {"type": "video", "video_info": {"variants": [

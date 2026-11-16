@@ -93,8 +93,9 @@ through any wait up to 24 hours by itself, while listing or downloading. A longe
 download is waited out with flnd's back-off countdown, and the download tries again.
 
 **Pacing:** `pace` keeps its default, but it applies only to HTTP requests, which this source
-doesn't make. `concurrency` is 3: every download shares one client and its flood waits, so more at
-once only meets the flood limit sooner.
+doesn't make. `limits` is `{"t.me": 3}`: its files are fetched by its own client, so they count
+against its first domain, 3 at once, since every download shares one client and its flood waits,
+and more at once only meets the flood limit sooner.
 
 ## Where files go
 

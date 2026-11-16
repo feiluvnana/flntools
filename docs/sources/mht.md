@@ -92,7 +92,7 @@ Every request goes to `https://mimihentai.moe/api/`:
    empty or repeats.
 
 **Pacing:** `pace` is 0.5, so requests to `mimihentai.moe` are at least half a second apart.
-`concurrency` is 8: up to 8 files of one target download at once.
+It sets no `limits`: up to 8 files download at once from each host.
 
 ## Where files go
 

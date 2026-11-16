@@ -22,7 +22,7 @@ from flnd.sources.twt import CHROME, Twitter
 
 SOURCES_DIR = Path(__file__).resolve().parent.parent / "flnd" / "sources"
 # A source may not reach the loop (threads) or ask the user (prompts) itself: the engine does that.
-FORBIDDEN = ("httpx", "playwright", "flnd._loop", "flnd._prompt")
+FORBIDDEN = ("httpx", "curl_cffi", "playwright", "flnd._loop", "flnd._prompt")
 FORBIDDEN_NAMES = {"_loop", "_prompt"}
 
 
@@ -54,7 +54,7 @@ class RegistryTest(unittest.TestCase):
         for source in SOURCES.values():
             telegram = source is Telegram
             methods = ("browser", "qr", "phone") if telegram else ("browser", "file")
-            self.assertEqual((source.concurrency, source.login_methods), (3 if telegram else 8, methods))
+            self.assertEqual((source.limits, source.login_methods), ({"t.me": 3} if telegram else {}, methods))
 
     def test_listing_floors(self):
         floors = {"ins": 0.2, "twt": 0.2, "fbk": 0.2, "tik": 0.2, "loi": 0.5, "mht": 0.5}

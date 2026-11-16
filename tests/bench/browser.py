@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 
 import kit
-from flnd import _browser, _cookies, _html, _http
+from flnd import _browser, _cookies, _html, _net
 from flnd._loop import Loop
 
 BATCHES = 30
@@ -105,7 +105,10 @@ def main() -> None:
             _, took = timed(lambda: [loop.run(page.fetch(f"{base}/items1.json"))
                                      for _ in range(50)])
             report.add("page_fetch", took / 50 * 1e3, "ms")
-            _, took = timed(lambda: [_http.fetch(f"{base}/items1.json") for _ in range(50)])
+            client = _net.Client(_net.Session())
+            _, took = timed(lambda: [loop.run(client.fetch(f"{base}/items1.json"))
+                                     for _ in range(50)])
+            loop.run(client.session.close())
             report.add("http_fetch", took / 50 * 1e3, "ms")
             _, took = timed(lambda: loop.run(chrome.close()))
             report.add("close", took * 1e3, "ms")

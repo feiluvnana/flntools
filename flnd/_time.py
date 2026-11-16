@@ -1,7 +1,13 @@
-"""One clock for every private module of flnd: monotonic time, wall time, interruptible sleeps."""
+"""One clock for every private module of flnd: monotonic time, wall time, interruptible sleeps.
+
+`sleep` blocks a thread; `pause` is its twin for a coroutine on an asyncio loop, which waits
+without blocking the loop. Both follow the active clock (`use`), so a test's `Fake` makes every
+wait pass at once and records it in `slept`.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Iterator
@@ -10,10 +16,13 @@ from contextvars import ContextVar
 from typing import Protocol, TypeVar
 
 
-__all__ = ["Clock", "Fake", "now", "sleep", "use", "wall"]
+__all__ = ["Clock", "Fake", "now", "pause", "sleep", "use", "wall"]
 
 # 2026-01-01 UTC, so a test's formatted dates are repeatable.
 FAKE_WALL = 1767225600.0
+# How often a `pause` on the real clock looks at its `stop` event, in seconds: an event can't wake
+# a coroutine, so it is polled.
+POLL = 0.1
 
 C = TypeVar("C", bound="Clock")
 
@@ -107,6 +116,32 @@ def wall() -> float:
 def sleep(seconds: float, *, stop: threading.Event | None = None) -> bool:
     """Sleep on the active clock, waking early if `stop` is set."""
     return _current.get().sleep(seconds, stop=stop)
+
+
+async def pause(seconds: float, *, stop: threading.Event | None = None) -> bool:
+    """Wait `seconds` on the active clock without blocking the loop; False if `stop` was set.
+
+    On the real clock the wait is `asyncio.sleep`, in steps of `POLL` while a `stop` is given;
+    on a fake clock it is the fake's `sleep`, which passes at once.
+
+    Args:
+        seconds: how long; 0 or less returns at once.
+        stop: an event that ends the wait early.
+
+    Returns:
+        True when the wait ran its full time.
+    """
+    clock = _current.get()
+    if not isinstance(clock, _RealClock):
+        return clock.sleep(seconds, stop=stop)
+    end = time.monotonic() + max(0.0, seconds)
+    while True:
+        if stop is not None and stop.is_set():
+            return False
+        left = end - time.monotonic()
+        if left <= 0:
+            return True
+        await asyncio.sleep(left if stop is None else min(left, POLL))
 
 
 @contextmanager

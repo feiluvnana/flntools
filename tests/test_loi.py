@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-import httpx
+from flnd import _net
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 from fakes import FakeSite, Seen, collect
@@ -26,7 +26,7 @@ ENCRYPTED_URL = "GbQQUMfoM0sFLYH/040yiFqXee34SusjXJybD/DgNfA="
 
 class SignTest(unittest.TestCase):
     def test_loix_vectors(self):
-        request = httpx.Request("GET", "https://api.moegoat.com/api/lois/5930?page=1")
+        request = _net.Request("GET", "https://api.moegoat.com/api/lois/5930?page=1")
         signed = sign_request(request, now_ms=1_700_000_000_000, pick=lambda options: options[0],
                               noise=lambda size: "0123456789abcdef01")
         self.assertEqual(signed.headers["x-request-id"], "06056776-a901-4234-856d-789aebcdef50")
@@ -38,24 +38,24 @@ class SignTest(unittest.TestCase):
                          crypto.digest("get|lois/5930||1700000000000|loibus-sec-decoy-salt-v1"))
 
     def test_every_signature_is_new(self):
-        first = sign_request(httpx.Request("GET", "https://api.moegoat.com/api/user/info"), now_ms=1)
-        second = sign_request(httpx.Request("GET", "https://api.moegoat.com/api/user/info"), now_ms=1)
+        first = sign_request(_net.Request("GET", "https://api.moegoat.com/api/user/info"), now_ms=1)
+        second = sign_request(_net.Request("GET", "https://api.moegoat.com/api/user/info"), now_ms=1)
         self.assertNotEqual(first.headers["x-request-id"], second.headers["x-request-id"])
 
     def test_an_api_request_is_signed_and_carries_the_token(self):
         cookies = {"access-token": "Bearer%20tok"}
-        api = Loibus().prepare(httpx.Request("GET", "https://api.moegoat.com/api/lois/1"), cookies)
+        api = Loibus().prepare(_net.Request("GET", "https://api.moegoat.com/api/lois/1"), cookies)
         self.assertEqual((api.headers["authorization"], len(api.headers["x-request-id"])), ("Bearer tok", 36))
         self.assertEqual((api.headers["referer"], api.headers["origin"]), ("https://loix.cc/", "https://loix.cc"))
 
     def test_another_host_of_the_site_gets_no_token_and_no_signature(self):
-        page = Loibus().prepare(httpx.Request("GET", "https://img.moegoat.com/a.jpg"), {"access-token": "tok"})
+        page = Loibus().prepare(_net.Request("GET", "https://img.moegoat.com/a.jpg"), {"access-token": "tok"})
         self.assertNotIn("x-request-id", page.headers)
         self.assertNotIn("authorization", page.headers)
         self.assertEqual(page.headers["referer"], "https://loix.cc/")
 
     def test_without_a_token_the_request_is_signed_only(self):
-        api = Loibus().prepare(httpx.Request("GET", "https://api.moegoat.com/api/lois/1"), {})
+        api = Loibus().prepare(_net.Request("GET", "https://api.moegoat.com/api/lois/1"), {})
         self.assertNotIn("authorization", api.headers)
         self.assertIn("x-request-signature", api.headers)
 
@@ -314,14 +314,14 @@ SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c" + b"\0" * 26
 
 
 class EngineTest(EngineCase):
-    """The source through the real engine, on httpx.MockTransport."""
+    """The source through the real engine, on `flnd._net.fake`."""
 
     def setUp(self):
         super().setUp()
         jar = [{"name": "access-token", "value": "Bearer%20tok", "domain": ".loix.cc", "path": "/"}]
         _home.save(self.home, "loi", cookies.Jar(jar))
-        self.routes.update({f"{API}lois/5930": httpx.Response(200, json={"data": {**POST, "images": []}}),
-                            f"{API}user/info": httpx.Response(200, json=USER)})
+        self.routes.update({f"{API}lois/5930": _net.reply(200, json={"data": {**POST, "images": []}}),
+                            f"{API}user/info": _net.reply(200, json=USER)})
 
     def test_a_retried_request_is_signed_again_and_the_archive_is_saved_as_sent(self):
         attempts = []
@@ -329,12 +329,12 @@ class EngineTest(EngineCase):
         def flaky(request):
             attempts.append(dict(request.headers))
             if len(attempts) == 1:
-                return httpx.Response(503)
-            return httpx.Response(200, json={"data": {"sv_list": [
+                return _net.reply(503)
+            return _net.reply(200, json={"data": {"sv_list": [
                 {"sv_name": "A", "sv_url": encrypt("https://one.example/set.zip")}]}})
 
         self.routes[f"{API}user/loi/download_v6/5930"] = flaky
-        self.routes["https://one.example/set.zip"] = httpx.Response(200, content=SEVEN_ZIP)
+        self.routes["https://one.example/set.zip"] = _net.reply(200, content=SEVEN_ZIP)
         clock = iter(range(1_700_000_000_000, 1_700_000_100_000, 1000))
         with mock.patch("flnd.sources.loi._clock_ms", lambda: next(clock)):
             self.run_engine(Loibus, targets=["loi:5930"], options=Options(categories=("archive",)))
@@ -351,7 +351,7 @@ class EngineTest(EngineCase):
         self.assertNotIn("x-request-id", archive_request.headers)
 
     def test_a_403_on_links_is_soft(self):
-        self.routes[f"{API}user/loi/download_v6/5930"] = httpx.Response(403, json={"message": "VIP only"})
+        self.routes[f"{API}user/loi/download_v6/5930"] = _net.reply(403, json={"message": "VIP only"})
         self.run_engine(Loibus, targets=["loi:5930"], options=Options(categories=("all",)))
         folder = self.target_dir("loi", "5930") / "example_author" / "5930_Night_city_set"
         self.assertTrue((folder / "info.md").is_file())

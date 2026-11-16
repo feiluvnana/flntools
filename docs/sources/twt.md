@@ -106,8 +106,8 @@ as *mirrors* (addresses tried in turn when one refuses). A video is its highest-
 
 **Pace and concurrency.** `pace` is 0.2: at least 0.2 seconds between requests to `x.com` and
 `twitter.com`, page loads included. When an API call is answered with HTTP 429, flnd waits
-until the time X's `x-rate-limit-reset` header (or `Retry-After`) gives. Up to 8 files of a
-target download at once (the default `concurrency`). The browser runs without flnd's stealth
+until the time X's `x-rate-limit-reset` header (or `Retry-After`) gives. Up to 8 files download
+at once from each media host (no `limits` of its own). The browser runs without flnd's stealth
 settings (`stealth = False`).
 
 ## Where files go
