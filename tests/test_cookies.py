@@ -117,7 +117,7 @@ class ChromiumMacTest(BrowserTestCase):
         self.chrome_db(24)
         jar = cookies.load("chrome").filter(domains="instagram.com")
         self.assertEqual({cookie["domain"] for cookie in jar}, MATCHING)
-        first = jar.raw[0]
+        first = jar.list[0]
         self.assertEqual(first, {"name": "c0", "value": "value0", "domain": "instagram.com", "path": "/",
                                  "expires": EXPIRES, "secure": True, "httpOnly": True, "sameSite": "Strict"})
         self.keychain.assert_called_once_with("Chrome Safe Storage")
@@ -163,7 +163,7 @@ class ChromiumMacTest(BrowserTestCase):
         make_chromium_db(database, 20, [
             ("x.com", "auth", "", encrypt_chromium("token", "mac-secret", 1003), "/", EXPIRES_UTC, 1, 0, 1)
         ])
-        jar = cookies.load("brave", profile="Profile 1").raw
+        jar = cookies.load("brave", profile="Profile 1").list
         self.assertEqual((jar[0]["value"], jar[0]["sameSite"]), ("token", "Lax"))
         self.keychain.assert_called_once_with("Brave Safe Storage")
 
@@ -203,7 +203,7 @@ class ChromiumLinuxTest(BrowserTestCase):
         ])
         with mock.patch.object(cookies.ui, "debug") as debug:
             jar = cookies.load("chrome")
-        self.assertEqual([c["name"] for c in jar.raw], ["good", "plain"])
+        self.assertEqual([c["name"] for c in jar.list], ["good", "plain"])
         self.assertEqual((jar["good"], jar["plain"]), ("one", "visible"))
         debug.assert_called_once()
         self.assertEqual(debug.call_args.kwargs["count"], 2)
@@ -301,7 +301,7 @@ class FirefoxTest(BrowserTestCase):
         jar = cookies.load("firefox").filter(domains="instagram.com")
         self.assertEqual({cookie["domain"] for cookie in jar}, MATCHING)
         self.assertNotIn("wrong", jar)
-        self.assertEqual(jar.raw[0], {"name": "f0", "value": "v0", "domain": "instagram.com", "path": "/",
+        self.assertEqual(jar.list[0], {"name": "f0", "value": "v0", "domain": "instagram.com", "path": "/",
                                   "expires": EXPIRES, "secure": True, "httpOnly": False, "sameSite": "Lax"})
 
     def test_install_section_wins_and_milliseconds(self):
@@ -310,14 +310,14 @@ class FirefoxTest(BrowserTestCase):
                                   "[Install4F96D1932A9F858E]\nDefault=Profiles/new\nLocked=1\n")
         make_firefox_db(root / "Profiles/new/cookies.sqlite", [("a.example", "n", "v", "/", EXPIRES * 1000, 0, 1, 0)])
         with mock.patch.object(cookies, "_PLATFORM", "darwin"):
-            jar = cookies.load("firefox").raw
+            jar = cookies.load("firefox").list
         self.assertEqual((jar[0]["expires"], jar[0]["httpOnly"], jar[0]["sameSite"]), (EXPIRES, True, "None"))
 
     def test_named_profile_on_windows(self):
         root = self.home / "AppData/Roaming/Mozilla/Firefox"
         make_firefox_db(root / "Profiles/work/cookies.sqlite", [("a.example", "n", "v", "/", 0, 0, 0, 2)])
         with mock.patch.object(cookies, "_PLATFORM", "win32"), mock.patch.dict(os.environ, {"APPDATA": str(root.parents[1])}):
-            jar = cookies.load("firefox", profile="work").raw
+            jar = cookies.load("firefox", profile="work").list
         self.assertEqual((jar[0]["expires"], jar[0]["sameSite"]), (-1, "Strict"))
 
     def test_missing_profiles_ini(self):
@@ -363,7 +363,7 @@ class LoadTest(FileTestCase):
         path = self.write("c.txt", "# Netscape HTTP Cookie File\n\n"
                                    ".x.com\tTRUE\t/\tTRUE\t1700000000\tsid\tabc\n"
                                    "#HttpOnly_x.com\tFALSE\t/a\tFALSE\t0\ttoken\tq\tw\n")
-        self.assertEqual(cookies.load(path).raw, [
+        self.assertEqual(cookies.load(path).list, [
             {"name": "sid", "value": "abc", "domain": ".x.com", "path": "/", "expires": 1700000000,
              "secure": True, "httpOnly": False, "sameSite": "Lax"},
             {"name": "token", "value": "q\tw", "domain": "x.com", "path": "/a", "expires": -1,
@@ -377,7 +377,7 @@ class LoadTest(FileTestCase):
             {"name": "b", "value": "2", "domain": "x.com", "session": True, "sameSite": "strict"},
             {"name": "c", "value": "3", "domain": "x.com", "expires": -1, "sameSite": "Lax"},
         ]
-        jar = cookies.load(self.write("c.txt", "  " + json.dumps(entries))).raw
+        jar = cookies.load(self.write("c.txt", "  " + json.dumps(entries))).list
         self.assertEqual([(c["expires"], c["sameSite"], c["httpOnly"]) for c in jar],
                          [(1700000000, "None", True), (-1, "Strict", False), (-1, "Lax", False)])
         self.assertEqual(jar[1]["path"], "/")
@@ -417,7 +417,7 @@ class LoadTest(FileTestCase):
         line = "x.com\tFALSE\t/\tFALSE\t0\tn\tv\n"
         path.write_text(line + "#" * (16 * 1024 * 1024 - len(line) - 1) + "\n", encoding="utf-8", newline="\n")
         self.assertEqual(path.stat().st_size, 16 * 1024 * 1024)
-        self.assertEqual([c["name"] for c in cookies.load(path).raw], ["n"])
+        self.assertEqual([c["name"] for c in cookies.load(path).list], ["n"])
 
     def test_raw_cookie_text(self):
         netscape = ".x.com\tTRUE\t/\tFALSE\t0\tsid\tabc\n"
@@ -442,7 +442,7 @@ class LoadTest(FileTestCase):
         netscape = "\ufeff.x.com\tTRUE\t/\tFALSE\t\tsid\tabc\n"
         path = self.folder / "bom.txt"
         path.write_bytes(netscape.encode("utf-8"))
-        jar = cookies.load(path).raw
+        jar = cookies.load(path).list
         self.assertEqual(len(jar), 1)
         self.assertEqual((jar[0]["domain"], jar[0]["expires"], jar[0]["value"]), (".x.com", -1, "abc"))
 
@@ -485,7 +485,7 @@ class JarTest(unittest.TestCase):
         jar = cookies.Jar(source)
         source[0]["value"] = "changed"
         next(iter(jar))["value"] = "changed"
-        jar.raw[0]["value"] = "changed"
+        jar.list[0]["value"] = "changed"
         self.assertEqual(jar["sid"], "1")
         with self.assertRaises(AttributeError):
             jar.extra = 1  # type: ignore[attr-defined]
@@ -501,12 +501,12 @@ class JarTest(unittest.TestCase):
         jar = cookies.Jar([cookie(f"n{index}", domain=domain) for index, domain in enumerate(DOMAINS)]
                           + [{"name": "bare", "value": "1"}])
         self.assertEqual({c["domain"] for c in jar.filter(domains=".INSTAGRAM.com")}, MATCHING)
-        self.assertEqual([c["name"] for c in jar.filter(domains=["notinstagram.com", "instagram.com.evil.net"]).raw],
+        self.assertEqual([c["name"] for c in jar.filter(domains=["notinstagram.com", "instagram.com.evil.net"]).list],
                          ["n4", "n5"])
         self.assertEqual(len(jar.filter(domains=[])), 0)
-        self.assertEqual([c["name"] for c in jar.filter(names=["n0", "n4", "bare"]).raw], ["n0", "n4", "bare"])
-        self.assertEqual([c["name"] for c in jar.filter(names="n1").raw], ["n1"])
-        self.assertEqual([c["name"] for c in jar.filter(domains="instagram.com", names=("n0", "n4")).raw], ["n0"])
+        self.assertEqual([c["name"] for c in jar.filter(names=["n0", "n4", "bare"]).list], ["n0", "n4", "bare"])
+        self.assertEqual([c["name"] for c in jar.filter(names="n1").list], ["n1"])
+        self.assertEqual([c["name"] for c in jar.filter(domains="instagram.com", names=("n0", "n4")).list], ["n0"])
         self.assertEqual(jar.filter(), jar)
         self.assertIsInstance(jar.filter(names=[]), cookies.Jar)
         self.assertEqual(len(jar.filter(names=[])), 0)
@@ -519,7 +519,7 @@ class JarTest(unittest.TestCase):
         merged = saved.merge(refreshed)
         self.assertEqual([(c["name"], c["value"]) for c in merged],
                          [("sid", "old"), ("ct0", "new"), ("lang", "en"), ("guest", "g")])
-        self.assertEqual(merged.raw[1]["expires"], 1_900_000_000)
+        self.assertEqual(merged.list[1]["expires"], 1_900_000_000)
         self.assertEqual(saved["ct0"], "old")
 
     def test_merge_keeps_other_domains_and_paths_apart(self):
@@ -576,7 +576,7 @@ class SaveTest(FileTestCase):
 
     def test_line_break_refused(self):
         with self.assertRaises(cookies.Error):
-            cookies.Jar([{**self.jar.raw[0], "value": "a\nb"}]).save(self.folder / "ins.txt")
+            cookies.Jar([{**self.jar.list[0], "value": "a\nb"}]).save(self.folder / "ins.txt")
         self.assertEqual(list(self.folder.iterdir()), [])
 
 

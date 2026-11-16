@@ -848,7 +848,7 @@ class CookiesTest(BrowserCase):
     def test_a_rejected_cookie_is_logged_without_its_value(self):
         self.live.cookies.add([{"name": "bad", "value": "s3cr3t-value"},
                                {"name": "good", "value": "1", "domain": "example.com"}])
-        self.assertEqual([c["name"] for c in self.live.cookies.get().raw], ["good"])
+        self.assertEqual([c["name"] for c in self.live.cookies.get().list], ["good"])
         self.assertEqual(len(self.lines()), 1)
         self.assertTrue(self.lines()[0].startswith("! cookie bad was rejected: Invalid cookie"))
         self.assertNotIn("s3cr3t-value", self.lines()[0])

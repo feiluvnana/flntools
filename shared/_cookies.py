@@ -135,7 +135,7 @@ class Jar:
         return "; ".join(f"{cookie['name']}={cookie['value']}" for cookie in self._cookies)
 
     @property
-    def raw(self) -> list[Cookie]:
+    def list(self) -> list[Cookie]:
         """The cookies as a new list of new dicts, which the caller may change freely."""
         return [dict(cookie) for cookie in self._cookies]
 

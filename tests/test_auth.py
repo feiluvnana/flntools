@@ -225,9 +225,9 @@ class WriteBackTest(AuthCase):
 
     def test_a_new_tracking_cookie_is_never_added(self):
         self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="old-ct0", _ga="track", guest_id="g")), [])
-        self.assertEqual([c["name"] for c in auth.load(self.home, "twt").raw], ["ct0", "auth_token"])
+        self.assertEqual([c["name"] for c in auth.load(self.home, "twt").list], ["ct0", "auth_token"])
         self.assertEqual(auth.write_back(self.home, "twt", self.current(ct0="new-ct0", _ga="track")), ["ct0"])
-        self.assertEqual([c["name"] for c in auth.load(self.home, "twt").raw], ["ct0", "auth_token"])
+        self.assertEqual([c["name"] for c in auth.load(self.home, "twt").list], ["ct0", "auth_token"])
 
     def test_nothing_is_written_when_nothing_changed_or_there_is_no_login(self):
         with mock.patch.object(auth, "save") as save:

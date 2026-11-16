@@ -129,7 +129,7 @@ def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) 
         OSError: the vault can't be written.
     """
     with secrets(home, code) as vault:
-        vault[COOKIES] = json.dumps(fix_domains(jar).raw)
+        vault[COOKIES] = json.dumps(fix_domains(jar).list)
         if origin is not None:
             vault[ORIGIN] = origin
 
@@ -180,7 +180,7 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
     if not fresh or not (home / paths.SECRETS).is_file():
         return []
     try:
-        saved = load(home, code).raw
+        saved = load(home, code).list
         changed = [
             name for cookie in saved if (name := _refresh_cookie(cookie, fresh)) is not None
         ]
@@ -306,7 +306,7 @@ def _move(home: Path, code: str) -> None:
             jar = cookies.load(path)
             with secrets(home, code) as vault:
                 if COOKIES not in vault:
-                    vault[COOKIES] = json.dumps(fix_domains(jar).raw)
+                    vault[COOKIES] = json.dumps(fix_domains(jar).list)
         # A file that can't be read or isn't a cookie file (cookies.Error is a ValueError), a
         # damaged key (ValueError), or a vault that can't be opened or written (OSError, kv.Error,
         # sqlite3.Error): the plain file is the only copy of the login, so it stays. Each of these

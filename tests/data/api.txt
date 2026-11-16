@@ -287,8 +287,8 @@ shared.cookies.Error(shared.Error)
 shared.cookies.Jar(cookies: Iterable[Cookie] = ())
 shared.cookies.Jar.filter(*, domains: str | Iterable[str] | None = None, names: Iterable[str] | None = None) -> Jar
 shared.cookies.Jar.header: property -> str
+shared.cookies.Jar.list: property -> list[Cookie]
 shared.cookies.Jar.merge(other: Jar | Iterable[Cookie]) -> Jar
-shared.cookies.Jar.raw: property -> list[Cookie]
 shared.cookies.Jar.save(dest: PathLike) -> Path
 shared.cookies.MissingError(shared.cookies.Error, shared.MissingError)
 shared.cookies.UnsafeError(shared.cookies.Error, shared.UnsafeError)

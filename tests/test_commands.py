@@ -85,7 +85,7 @@ class FlndCase(unittest.TestCase):
     def saved(self, code):
         """The cookies the vault holds for a source; no plain cookie file is ever written."""
         self.assertFalse(Path(".flnd/cookies").exists())
-        return auth.load(Path(".flnd"), code).raw
+        return auth.load(Path(".flnd"), code).list
 
 
 class RunsCase(FlndCase):
