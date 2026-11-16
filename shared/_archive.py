@@ -27,6 +27,8 @@ Kind = Literal["file", "dir"]
 
 DRIVE = re.compile(r"^[A-Za-z]:")
 TAR_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+# `unrar vt` names every kind that is not a plain file or folder with one of these words.
+RAR_LINKS = ("link", "junction", "reference")
 
 
 class Error(shared.Error):
@@ -99,7 +101,7 @@ def pack(
     total = len(files)
     if kind == "zip":
         if password:
-            _seven_zip_pack(src_list, out, password=password)
+            _seven_zip_pack(src_list, out, kind, password=password)
         else:
             with fs.stage(out, keep=False) as part:
                 with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -108,7 +110,7 @@ def pack(
                         if progress:
                             progress(done, total)
     elif kind == "7z":
-        _seven_zip_pack(src_list, out, password=password)
+        _seven_zip_pack(src_list, out, kind, password=password)
     else:
         mode = {"tar": "w", "gz": "w:gz", "bz2": "w:bz2", "xz": "w:xz"}[kind]
         with fs.stage(out, keep=False) as part:
@@ -323,22 +325,27 @@ def _7z_tool() -> sh.Tool:
     raise MissingError("7z archives need `7zz` or `7z` on PATH")
 
 
-def _seven_zip_pack(sources: Sequence[Path], out: Path, *, password: str | None) -> None:
+def _seven_zip_pack(
+    sources: Sequence[Path], out: Path, kind: str, *, password: str | None,
+) -> None:
     tool = _7z_tool()
-    args = ["a", "-y"]
+    # `-t` names the format: the stage's name ends in `.stage`, not in `.7z` or `.zip`.
+    args = ["a", "-y", f"-t{kind}"]
     if password:
         args.append(f"-p{password}")
-    args.append(str(out))
-    args.extend(str(s) for s in sources)
-    try:
-        tool.run(*args)
-    except sh.RunError as error:
-        raise Error(str(error)) from error
+    # `--` ends the switches, so a path starting with "-" (`-sdel`) is never read as one.
+    with fs.stage(out, keep=False) as part:
+        # 7zz adds to an archive already there, such as a stage a crash left behind.
+        part.unlink(missing_ok=True)
+        try:
+            tool.run(*args, "--", part, *sources)
+        except sh.RunError as error:
+            raise Error(str(error)) from error
 
 
 def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
     tool = _7z_tool()
-    args = ["l", "-slt", f"-p{password or ''}", str(path)]
+    args = ["l", "-slt", f"-p{password or ''}", "--", str(path)]
     try:
         res = tool.run(*args)
     except sh.RunError as error:
@@ -361,7 +368,12 @@ def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
 
 
 def _7z_entry(cur: dict[str, str]) -> Entry:
-    is_dir = cur.get("Folder") == "+" or cur.get("Attributes", "").startswith("D")
+    # `Attributes` holds Windows flags, then a Unix mode when there is one: `A_ lrwxrwxrwx`.
+    flags, _, mode = cur.get("Attributes", "").partition(" ")
+    # `L` is a Windows reparse point (a link or junction), `l` a Unix symbolic link.
+    if "L" in flags or mode.startswith("l") or cur.get("Symbolic Link") or cur.get("Hard Link"):
+        raise UnsafeError(f"unsafe 7z entry {cur['Path']!r}: a link")
+    is_dir = cur.get("Folder") == "+" or flags.startswith("D")
     size_raw = cur.get("Size", "")
     size = int(size_raw) if size_raw.isdigit() else None
     return Entry(cur["Path"], size, "dir" if is_dir else "file")
@@ -373,7 +385,7 @@ def _unpack_7z(
 ) -> list[Path]:
     tool = _7z_tool()
     flag = "-aos" if conflict == "skip" else "-aoa"
-    args = ["x", "-y", flag, f"-p{password or ''}", f"-o{dest}", str(path)]
+    args = ["x", "-y", flag, f"-p{password or ''}", f"-o{dest}", "--", str(path)]
     try:
         tool.run(*args)
     except sh.RunError as error:
@@ -397,7 +409,7 @@ def _ls_unrar(path: Path, *, password: str | None) -> list[Entry]:
     tool = _unrar_tool()
     pwd_flag = f"-p{password}" if password else "-p-"
     try:
-        res = tool.run("vt", pwd_flag, str(path))
+        res = tool.run("vt", pwd_flag, "--", str(path))
     except sh.RunError as error:
         if error.code == 11 or "password" in error.err.lower():
             raise PasswordError(f"{path.name}: wrong or missing password") from error
@@ -415,6 +427,8 @@ def _ls_unrar(path: Path, *, password: str | None) -> list[Entry]:
             name, size, kind = v, None, "file"
         elif k == "Size" and v.isdigit():
             size = int(v)
+        elif k == "Type" and any(word in v.lower() for word in RAR_LINKS):
+            raise UnsafeError(f"unsafe rar entry {name!r}: {v}")
         elif k == "Type":
             kind = "dir" if "dir" in v.lower() else "file"
     if name is not None:
@@ -430,7 +444,7 @@ def _unpack_unrar(
     pwd_flag = f"-p{password}" if password else "-p-"
     ov_flag = "-o-" if conflict == "skip" else "-o+"
     try:
-        tool.run("x", "-y", ov_flag, pwd_flag, str(path), str(dest) + os.sep)
+        tool.run("x", "-y", ov_flag, pwd_flag, "--", str(path), str(dest) + os.sep)
     except sh.RunError as error:
         if error.code == 11 or "password" in error.err.lower():
             raise PasswordError(f"{path.name}: wrong or missing password") from error

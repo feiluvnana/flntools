@@ -10,10 +10,29 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from shared import archive
+from shared import archive, sh
 
 HAS_7Z = bool(shutil.which("7zz") or shutil.which("7z"))
 HAS_UNRAR = bool(shutil.which("unrar"))
+SEVEN_ZIP = b"7z\xbc\xaf\x27\x1c\x00\x04"
+RAR = b"Rar!\x1a\x07\x00"
+
+
+class FakeTool:
+    """An `sh.fake` handler for 7zz or unrar: it answers `stdout` and records the arguments."""
+
+    def __init__(self, stdout: str = "", made: bytes = b"") -> None:
+        self.stdout, self.made, self.calls = stdout, made, []
+
+    def __call__(self, argv: tuple[str, ...]) -> tuple[int, str, str]:
+        args = argv[1:]
+        self.calls.append(args)
+        if args[0] == "a":
+            # 7zz adds to an archive that is already there, so a fresh one must be new.
+            made = Path(args[-2])
+            assert not made.exists(), f"7zz would add to {made}"
+            made.write_bytes(self.made)
+        return 0, self.stdout, ""
 
 
 class ArchiveCase(unittest.TestCase):
@@ -141,6 +160,56 @@ class SafetyTest(ArchiveCase):
             archive.ls(zipped, limits=archive.Limits(size=3))
         with self.assertRaises(archive.UnsafeError):
             archive.ls(zipped, limits=archive.Limits(ratio=0.01))
+
+    def test_links_listed_by_7z_are_refused(self) -> None:
+        listed = self.root / "links.7z"
+        listed.write_bytes(SEVEN_ZIP)
+        for attributes in ("A_ -rwxr-xr-x", "A_ lrwxrwxrwx", "AL"):
+            with self.subTest(attributes=attributes):
+                tool = FakeTool(f"Path = {listed}\n\nPath = link\nAttributes = {attributes}\n")
+                with sh.fake({"7zz": tool}):
+                    if attributes.startswith("A_ -"):
+                        self.assertEqual(archive.ls(listed)[0].name, "link")
+                    else:
+                        self.assert_refused(archive.UnsafeError, listed)
+
+    def test_links_listed_by_unrar_are_refused(self) -> None:
+        listed = self.root / "links.rar"
+        listed.write_bytes(RAR)
+        for kind in ("Unix symbolic link", "Windows junction", "Hard link"):
+            with self.subTest(kind=kind):
+                tool = FakeTool(f"Name: link\nType: {kind}\nSize: 4\n")
+                with sh.fake({"unrar": tool}):
+                    self.assert_refused(archive.UnsafeError, listed)
+
+    def test_a_path_like_a_switch_reaches_the_tools_as_a_path(self) -> None:
+        sources = self.root / "-sdel"
+        sources.mkdir()
+        listed = self.root / "-x.7z"
+        listed.write_bytes(SEVEN_ZIP)
+        tool = FakeTool()
+        with sh.fake({"7zz": tool}):
+            archive.pack(sources, self.root / "-new.7z")
+            archive.unpack(listed, self.out)
+        unrar = FakeTool()
+        rar = self.root / "-x.rar"
+        rar.write_bytes(RAR)
+        with sh.fake({"unrar": unrar}):
+            archive.unpack(rar, self.out)
+        for call in tool.calls + unrar.calls:
+            with self.subTest(call=call):
+                paths = [arg for arg in call if "-sdel" in arg or "-x." in arg or "-new" in arg]
+                self.assertTrue(paths)
+                self.assertLess(call.index("--"), min(call.index(arg) for arg in paths))
+
+    def test_packing_a_7z_over_an_old_one_replaces_it(self) -> None:
+        out = self.root / "album.7z"
+        out.write_bytes(b"old")
+        # A crash may leave the stage behind; 7zz must not add to it either.
+        (self.root / ".album.7z.stage").write_bytes(b"left")
+        with sh.fake({"7zz": FakeTool(made=b"new")}):
+            archive.pack(self.album, out)
+        self.assertEqual(out.read_bytes(), b"new")
 
     def test_nested_archives_are_not_unpacked(self) -> None:
         inner = self.zip_with({"inner.txt": b"inner"})
