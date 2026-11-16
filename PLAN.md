@@ -292,7 +292,8 @@ flnd/
   _shrink.py       --compress: plan, encode (Pillow in-process for images, ffmpeg for video), verify, place
   _unpack.py       automatic archive extraction (was shared/_archive)
   _media.py        ffmpeg probes, and ffmpeg runs with progress (joining DASH tracks, compressing video)
-  _ui.py           plain and inline progress (Rich, lazy), prompts (input/getpass)
+  _ui.py           full-screen, inline and plain progress (Rich, lazy), prompts (input/getpass)
+  _stats.py        Stats snapshots: counters from the run, psutil for RAM and CPU (lazy)
   _text.py _time.py                file names, templates, days, sizes; the clock and its fake
   _plugins.py      discovery, validation and versioning of external sources, and containing their failures
 docs/              guides for people: architecture, library, CLI, writing a source, errors, storage, performance, one page per site (14.6)
@@ -450,7 +451,13 @@ For each area: the change, the evidence behind it, the risk, and what it does to
 ### 5.7 UI
 - **Plain mode** writes one line per finished file or event, with no Rich (0.07 µs per update).
 - **Inline mode** draws a Rich `Live` at 10 frames a second, coalesced. Row updates only set numbers (0.5 µs each), and one frame redraws them all. Rich is imported only in this mode.
-- **Full screen (Textual) comes later.** It is a separate consumer of the same event stream.
+- **Full screen is the default on a terminal** (user, 2026-11-16: "the default should be altscreen, with good ui and good info"). It is Rich's `Live(screen=True)` on the alternate screen, drawn at 10 frames a second from the same coalesced rows, so it costs what inline mode costs. Rich is already a dependency. Textual would bring scrolling and widgets, but it is used only if its measured import and frame cost stay under the gates below.
+  - **Layout:** a header (totals, throughput, elapsed, ETA when knowable); a targets panel (category, page, posts seen, early-stop state); an active downloads panel (progress, host, speed); a system panel (browser tabs and RAM, flnd's RAM and CPU, ffmpeg and Pillow jobs, free disk); and a tail of warnings and waits, each with its reason ("example.com asked to wait 3 min").
+  - **Keys:** `q` stops gracefully (the first Ctrl-C stage), `p` pauses and resumes. A small reader thread puts the terminal in cbreak mode (`termios`, or `msvcrt` on Windows) and restores it on exit.
+  - **On exit** the terminal is restored and the summary report is printed to the normal screen, so scrollback keeps it. The three Ctrl-C stages show on screen.
+  - **Not a terminal**, `--json` or `--ui plain` give plain lines; `--ui inline` keeps the inline view.
+- **Stats are events too** (section 6): the full screen, `--json` and a script read the same `Stats` snapshots, so the UI has no private way to look inside a run.
+- **Gates:** `flnd --help` no slower (the UI loads lazily); a frame with 1,000 rows ≤ 5 ms at 10 fps; stats sampling < 1% of one core.
 
 ## 6. The library API
 ```python
@@ -488,6 +495,15 @@ with flnd.open("~/Media/flnd") as fl:       # Flnd(home); creates the layout on 
 - **`dry=True` is the preview.** `--dry` and `dry=True` are one spelling for one thing; there is no separate `preview` call.
 - **No hooks.** A script reacts to events by iterating, and the CLI runs a command per saved file with `--exec` (section 9). A second callback path (`fl.on("saved", …)`) would mean two ways to do one thing, keyed by strings a typo silently breaks.
 - **Events are frozen msgspec structs**, so they encode to JSON for `--json` output.
+- **Live stats** (user, 2026-11-16: "flnd should have api to know about how many browser tab, ram usage,… also to show on the ui"). While a run is listened to, it yields a `Stats` event once a second, and `run.stats` holds the latest snapshot (`None` before the first). A `Stats` holds:
+  - **run:** elapsed, files saved, skipped and failed, bytes, current throughput, ETA when the total is known;
+  - **downloads:** files in flight, per host the concurrency and its adaptive cap, queue depth, parts being resumed;
+  - **listing,** per target: category, page, posts seen, early-stop state;
+  - **pacing:** per source, the next allowed request and why it waits (a site's `Retry-After`, a back-off, the human pace);
+  - **browser:** tabs open against the cap, and the RSS of the Chromium process tree;
+  - **process:** flnd's RSS and CPU, ffmpeg and Pillow jobs running, free disk on the home's volume.
+
+  The RAM and CPU of a process tree need `psutil` (13.1); it is imported only when stats are first sampled. Sampling runs on the loop, at most once a second, and only while someone iterates the run, so a `wait()` with no reader samples nothing.
 - **Errors** raised to a script are `flnd.Error` subclasses (section 8). A failed file is an event, not an exception. A script that wants strictness checks `report.failed`, which keeps `download` at five options.
 
 ## 7. The source API and plugins
@@ -644,7 +660,7 @@ flnd.Stopped(KeyboardInterrupt) Ctrl-C or run.stop(): not a failure, and not an 
   - A test greps every log, sample and error message produced by the test suite for the fixtures' secret values.
 
 ## 9. The CLI
-The user's current leanings were the `target` and `auth` groups, `--from`, `--when` and `--compress`, with inline UI, `.flnd` and quiet output as defaults. They are kept where good. The `media` group (`show`, `card`, `album`, with `--by` and `--style`) was removed on 2026-11-16. Groups are flattened, because each verb is unique and shorter to type, as in git, uv and cargo. Flat verbs must not differ by a letter, so `login` with no source lists the logins, and there is no `logins`.
+The user's current leanings were the `target` and `auth` groups, `--from`, `--when` and `--compress`, with inline UI, `.flnd` and quiet output as defaults. They are kept where good, except the UI: on 2026-11-16 the user made full screen the default. The `media` group (`show`, `card`, `album`, with `--by` and `--style`) was removed on 2026-11-16. Groups are flattened, because each verb is unique and shorter to type, as in git, uv and cargo. Flat verbs must not differ by a letter, so `login` with no source lists the logins, and there is no `logins`.
 
 ```
 flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] [--dry] [--exec CMD]
@@ -659,7 +675,7 @@ flnd login [source] [how]            how: chrome | firefox | safari | cookies.tx
 flnd logout <source>
 flnd sources                         built-in and plugin sources, their categories, versions, why one is disabled
 
-global: --home DIR (default: $FLND_HOME, else ./.flnd) · --ui plain|inline (default: inline on a terminal) · -v · --json
+global: --home DIR (default: $FLND_HOME, else ./.flnd) · --ui full|inline|plain (default: full on a terminal) · -v · --json
 ```
 - **`--only` replaces `--from`.** "From" read like a source or a date, and `--only reels,posts` says what it does.
   - Without it, a target gets every category, other people's content included. The user decided this on 2026-11-12, after trying the account's own content as the default.
@@ -701,7 +717,7 @@ There is no `sources/` (plugins load from the user's folder, 7.2) and no `.lock`
 **`config.toml`:**
 ```toml
 [defaults]
-ui = "inline"
+ui = "full"          # full | inline | plain; plain when not a terminal
 compress = false
 when = ""            # e.g. "1y" to bound every download
 
@@ -778,7 +794,8 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | 20 | a resumable queue across runs (pending files kept in `flnd.db`) | 2 | 2 | automatic | later |
 | 21 | proxy rotation and per-source quotas (loi's daily VIP quota, generalised) | 1 | 2 | `[source.x] quota = "15/day"` | later |
 | 22 | a library browser: a local web page or a Textual TUI over `flnd.db` and the media | 2 | 3 | `flnd browse` | later |
-| 23 | full-screen Textual UI | 1 | 2 | `--ui full` | later |
+| 23 | the full-screen UI as the default on a terminal (user, 2026-11-16) | 3 | 2 | `--ui full` | MVP |
+| 28 | live stats: tabs, RAM, CPU, throughput, waits, as `Stats` events and `run.stats` (user, 2026-11-16) | 3 | 1 | `run.stats` | MVP |
 | 24 | process isolation for untrusted plugins | 1 | 2 | — | no: a plugin needs a logged-in `Site`, so a process boundary wouldn't protect the logins (7.2) |
 | 25 | motion, loops, recaps, smart crop | — | — | — | removed with `show` (user, 2026-11-16) |
 | 27 | a fallback to yt-dlp for single video links no source handles | 2 | 1 | a separate `flnd-ytdlp` plugin package | later (ARCHITECTURE.md §12) |
@@ -793,7 +810,8 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | `msgspec` | JSON, records, events | keep | 2–4× `json` |
 | `selectolax` | HTML | **adopt** | 2.6–3.3× parsel; replaces parsel, lxml, cssselect, w3lib, python-jsonpath and jmespath |
 | `cryptography` | the vault | keep | AES-GCM |
-| `rich` | inline progress | keep, lazy | imported only for the inline UI |
+| `rich` | the full-screen and inline UI | keep, lazy | imported only by those two UIs |
+| `psutil` | RAM and CPU of flnd and the browser's process tree, for `Stats` | **adopt** | the stdlib can't measure a child process tree portably; a wheel on every platform; imported on the first sample |
 | `Pillow` | image compression (AVIF, WebP, JPEG) and image probes | **adopt**, in the core | in-process, no avifenc, mozjpeg or caesiumclt; imported only when used |
 | `pyoxipng` | PNG optimisation | **adopt**, in the core | oxipng as a wheel, so no tool download |
 | `telethon` + `cryptg` + `qrcode` | Telegram | keep (the `telegram` extra) | |
@@ -811,8 +829,8 @@ Value and cost are on a scale of 1 to 3. The MVP is what the first release ships
 | `gallery-dl` (as a library) | site code | **no** | GPL-2.0 would bind flnd's license; synchronous, on `requests` (ARCHITECTURE.md §2) |
 | `yt-dlp` | video links no source knows | **later, as a plugin** | public domain, so reusable; kept out of the core (feature 27) |
 
-Direct runtime dependencies drop from 13 to 11:
-- the core holds 8: curl_cffi, playwright, msgspec, selectolax, cryptography, rich, Pillow and pyoxipng. Compression is built in, so its codecs are too; each is imported only when used, so they don't slow startup;
+Direct runtime dependencies drop from 13 to 12:
+- the core holds 9: curl_cffi, playwright, msgspec, selectolax, cryptography, rich, psutil, Pillow and pyoxipng. Compression is built in, so its codecs are too; each is imported only when used, so they don't slow startup;
 - the `telegram` extra holds telethon, cryptg and qrcode.
 
 The installed tree loses about 20 transitive packages (est.). The dev group holds ruff, pdoc and pyright (14.3).
@@ -977,15 +995,17 @@ Each commit is one logical change with `make check` green, and it documents what
 | 15.17 | `feat:load sources from the plugin folder, packages and scripts, with the test kit` (7.2) | the example plugin's tests pass; a broken plugin disables only itself; nothing loads from a home |
 | 15.18 | `feat:compress media and extract archives as files land` (11) | 1,000 JPEGs ≤ 2 min; `sync --compress` over 100k done files ≤ 3 s; savings and SSIM on the real samples recorded in `docs/performance.md` |
 | 15.19 | `feat:add check, dedupe, sidecars, exec and json events` | per-feature tests; `--exec` never starts a shell |
-| 15.20 | `docs:document every module, function and source for human readers` (14.6) | `tests/test_docs.py` passes with an empty allowlist |
-| 15.21 | `docs:rewrite the readme for the rebuilt flnd` | every README example runs in `test_docs` |
+| 15.20 | `feat:add live stats and the full-screen ui` (5.7, 6; features 23 and 28) | `Stats` events and `run.stats` from a faked run, each field tested; `flnd --help` no slower; a frame with 1,000 rows ≤ 5 ms; sampling < 1% of one core; the terminal restored after `q`, Ctrl-C and a crash; the look checked by hand on a real terminal |
+| 15.21 | `docs:document every module, function and source for human readers` (14.6) | `tests/test_docs.py` passes with an empty allowlist |
+| 15.22 | `docs:rewrite the readme for the rebuilt flnd` | every README example runs in `test_docs` |
 
 Why this order:
 - **15.3 is a pure move**, so every later commit's diff stays readable. Pyright leaves only after it (15.4), so the type checker still guards the biggest move.
 - **The errors and the library API come before the CLI and the network.** The CLI is built on the library (15.7), and the network layer raises the new errors (15.9), so neither is written twice.
 - **The biggest measured wins follow** (15.7–15.13). 15.8 and 15.9 split the old single "one loop with curl_cffi" step: the loop and the browser move first, the HTTP client second. Each can then be benchmarked, and reverted, alone.
 - **15.14 changes all seven sources at once**, because source API 1 breaks every source together, and there are no aliases to bridge it. Its mechanical parts go to a low-cost model, and the live runs are done by hand.
-- **Each commit documents what it touches**, and 15.20 covers whatever no commit touched.
+- **Live stats and the full screen come after the features** (15.20), because they report on every part: browser tabs, per-host caps, waits, compression jobs. Until then 15.7's CLI keeps the inline and plain views.
+- **Each commit documents what it touches**, and 15.21 covers whatever no commit touched.
 
 ## 16. Decisions
 The user took every recommended answer below on 2026-11-16. They are decisions now, not open questions.

@@ -45,7 +45,7 @@ flnd login [source] [how]            how: chrome | firefox | safari | cookies.tx
 flnd logout <source>
 flnd sources                         built-in and plugin sources
 
-global options: --home DIR · --ui plain|inline · -v · --json
+global options: --home DIR · --ui full|inline|plain · -v · --json
 ```
 
 - **A target** is `<source>:<name, id or link>`, or just the link: `ins:example_user`, `ins:@example_user` and `https://www.instagram.com/example_user/` are the same target. A search is `<source>?<words>`, as in `mht?romance`. `flnd sources` lists every accepted form.

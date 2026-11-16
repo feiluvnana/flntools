@@ -319,6 +319,7 @@ with flnd.open("~/Media/flnd") as fl:
 ```
 - **A `Run`** is what `download`, `follow`, `sync` and `retry` return. It starts when iterated or waited on (`run.wait()` returns the report), and async code can `async for` it.
 - **Events are the only output.** The CLI's progress, `--json`, and a script's loop are three readers of the same stream, the way gallery-dl's job types read one extractor. There are no callbacks.
+- **Live stats are events too.** Once a second a listened-to run yields a `Stats` snapshot (browser tabs and RAM, flnd's RAM and CPU, downloads in flight and per-host caps, waits and their reasons, free disk), and `run.stats` holds the latest. The full-screen UI, the default on a terminal, draws from those snapshots and the other events, so a script sees everything the screen shows.
 - **The CLI is thin.** Each command turns flags into one library call, and events into lines on screen:
 
 | command | what it does |
