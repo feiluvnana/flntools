@@ -18,7 +18,8 @@ How a question goes:
    again. Input that ends (Ctrl-D) is a `UsageError`.
 
 Rule a change must keep: a question never runs under a live display (`_paused`), which would
-draw over it.
+draw over it. A display that covers the whole terminal (a full-screen view, which also reads
+keys) says so with `covering`, and is stopped for the question too.
 """
 
 from __future__ import annotations
@@ -31,7 +32,32 @@ from typing import Any
 
 from flnd.errors import UsageError
 
-__all__ = ["ask", "choose", "confirm", "interactive"]
+__all__ = ["ask", "choose", "confirm", "covering", "interactive"]
+
+# The displays covering the terminal now (`covering`), innermost last: each has `stop()` and
+# `start()`, and a question stops them first.
+_covers: list[Any] = []
+
+
+@contextmanager
+def covering(display: Any) -> Iterator[None]:
+    """Say that `display` covers the terminal for the block, so a question stops it first.
+
+    A full-screen view takes the screen and the keys: a question asked under it (from any
+    thread) would be neither seen nor typed. `display.stop()` gives the terminal back before
+    the question, and `display.start()` takes it again after.
+
+    Args:
+        display: anything with `stop()` and `start()`.
+
+    Yields:
+        Nothing; the display is known for the block.
+    """
+    _covers.append(display)
+    try:
+        yield
+    finally:
+        _covers.remove(display)
 
 def interactive() -> bool:
     """Whether a person can answer a prompt: standard input is a terminal.
@@ -187,7 +213,8 @@ def _paused() -> Iterator[None]:
 
     A live view and a progress row draw through `_ui.ui.raw`, and Rich nests one live display in
     another (`Console._live_stack`); a question typed under a redrawing display would be
-    overwritten. They stop innermost first and start again outermost first. `_ui` is read only
+    overwritten. A display `covering` the terminal counts as the outermost. They stop innermost
+    first and start again outermost first. `_ui` is read only
     when something already imported it, so a prompt never loads Rich. A display that won't stop
     or start only costs a redraw, so its errors are ignored.
 
@@ -196,8 +223,8 @@ def _paused() -> Iterator[None]:
     """
     module = sys.modules.get("flnd._ui")
     console = getattr(getattr(module, "ui", None), "raw", None)
-    lives = [live for live in getattr(console, "_live_stack", ())
-             if getattr(live, "is_started", False)]
+    lives = [*_covers, *(live for live in getattr(console, "_live_stack", ())
+                         if getattr(live, "is_started", False))]
     stopped = []
     for live in reversed(lives):
         try:

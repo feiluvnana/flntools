@@ -38,7 +38,7 @@ from typing import (
     TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping, TypeVar,
 )
 
-from flnd import _browser, _home, _loop, _net, _prompt, _text, _time, _vault
+from flnd import _browser, _home, _loop, _net, _prompt, _stats, _text, _time, _vault
 from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
 from flnd.source import Range, Request, Source, Target, dig
 from flnd._ui import ui
@@ -180,13 +180,17 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     _warn_expiring(source, jar)
     session, limits = _network(source, jar)
     stop: Stop | None = getattr(settings, "stop", None)
+    # `run.suspend()` holds every new request of the source, listing and downloads alike.
+    limits.suspended = stop.suspended if stop else None
     run = SourceRun(
         source, settings, jar, session,
         _net.Client(session, limits=limits, stop=stop.soon if stop else None),
         _net.Client(session, limits=limits, stop=stop.now if stop else None, pace=False),
     )
     try:
-        yield run
+        # The run's live stats read the source's hosts and waits (`Limits.load`, `.pauses`).
+        with _stats.tracked(_stats.SOURCE, run):
+            yield run
     finally:
         run.close()
 
@@ -576,9 +580,24 @@ class TargetSite:
             self._last_block = _time.now()
 
     def pause(self, seconds: float, reason: str) -> None:
-        """See `flnd.source.Site.pause`."""
-        if seconds > 0 and not _time.sleep(seconds, stop=self._run.web.stop):
-            raise Stopped(f"{self.target}: stopped while waiting: {reason}")
+        """Wait `seconds`, shown with `reason` as the source's wait in the live stats.
+
+        See `flnd.source.Site.pause`.
+
+        Args:
+            seconds: how long; 0 or less doesn't wait.
+            reason: why, in the source's words.
+
+        Raises:
+            Stopped: the run's first Ctrl-C came while waiting.
+        """
+        if seconds <= 0:
+            return
+        # Shown in the live stats as this source's wait, with the source's own reason.
+        wait = (self._run.source.code, str(self.target), _time.now() + seconds, reason)
+        with _stats.tracked(_stats.WAIT, wait):
+            if not _time.sleep(seconds, stop=self._run.web.stop):
+                raise Stopped(f"{self.target}: stopped while waiting: {reason}")
 
     def close(self) -> None:
         """Give back the target's tabs, handing the client the cookies set in them."""
@@ -696,7 +715,11 @@ def shared_browser(settings: RunShared) -> Iterator[None]:
     shared = _browser.RunBrowser(loop)
     settings.browser_pool = shared
     try:
-        yield
+        # The run's live stats sample on this loop, count the browser's tabs, and the free
+        # disk of the home's volume.
+        with (_stats.tracked(_stats.LOOP, loop), _stats.tracked(_stats.BROWSER, shared),
+              _stats.tracked(_stats.HOME, settings.home)):
+            yield
     finally:
         settings.browser_pool = None
         try:
@@ -768,6 +791,8 @@ class Listing:
         self.taken = False
         # Whether the site refused `start`, so the listing began again from the newest.
         self.refused = False
+        # The pages `pages` has read for it so far, for the live stats.
+        self.read = 0
 
 
 def paged(fetch: Callable[..., Any], url: str, *, cursor: str | Callable[[Any], Any],
@@ -807,6 +832,8 @@ def paged(fetch: Callable[..., Any], url: str, *, cursor: str | Callable[[Any], 
     page = _first_page(ask, listing)
     seen: set[str] = set()
     while page not in (None, {}, []):
+        if listing is not None:
+            listing.read += 1
         yield page
         following = cursor(page) if callable(cursor) else dig(page, cursor)
         if following is None or following == "" or str(following) in seen:

@@ -7,7 +7,8 @@ What it offers, for any caller:
 - `Limits`: how hard the session may press each host. A *paced* host gets a token bucket at a
   rate in requests per second; any other host gets a `Cap` on its transfers at once, which
   adapts to what the host can take (AIMD, below). `Limits.load` is a read-only snapshot of
-  each host's cap and transfers in flight.
+  each host's cap and transfers in flight, and `Limits.pauses` of each wait before a host's
+  next request, with its reason. `Limits.suspended`, when set, holds every new request.
 - `Client`: a session with limits, a retry policy and a stop event. `fetch` sends one request;
   `call` paces and retries any coroutine (a page loaded in a browser, a request sent by a page);
   `fill` streams a file, or the first of its mirrors that works, into a `flnd._files.Part`.
@@ -106,8 +107,8 @@ if TYPE_CHECKING:
     from flnd._html import Document
 
 __all__ = [
-    "Cap", "Client", "Headers", "Limits", "Load", "Place", "Reply", "Request", "Response",
-    "Session", "URL", "fake", "follow", "reply",
+    "Cap", "Client", "Headers", "Limits", "Load", "Pause", "Place", "Reply", "Request",
+    "Response", "Session", "URL", "fake", "follow", "reply",
 ]
 
 A = TypeVar("A")
@@ -138,6 +139,13 @@ STEP = 10
 RISE = 0.5
 # After a step that was taken back, clean transfers before the cap probes again.
 HOLD = 100
+# The reasons `Limits.pauses` gives for a wait: the site said when to come back; a refusal
+# halved the pace, or a failure is waited out before it is tried again; the host's own pace.
+RETRY_AFTER = "Retry-After"
+BACK_OFF = "back-off"
+PACE = "pace"
+# How often, in seconds, a request held by `Limits.suspended` looks again.
+SUSPENDED_POLL = 0.1
 # Statuses that say a host is overloaded, so its cap halves (with a reset and a timeout).
 OVERLOADED = (429, 503)
 # Room in the session for requests to the paced hosts, on top of the caps (`Limits.total`).
@@ -395,6 +403,41 @@ class Bucket:
         if self._slow:
             self._slow -= 1
 
+    def ahead(self, now: float) -> tuple[float, str]:
+        """How long a request made at `now` would wait for its token, and why.
+
+        Read only: it computes what `take` would, without taking anything.
+
+        Args:
+            now: the time, on `flnd._time`'s clock.
+
+        Returns:
+            The seconds (0 when a token is there), and `RETRY_AFTER` while a site's hold is the
+            longer wait, `BACK_OFF` while the rate is halved, else `PACE`.
+        """
+        rate = self.rate / 2 if self._slow else self.rate
+        tokens = BURST if self._at is None else min(BURST, self._tokens + (now - self._at) * rate)
+        paced = max(0.0, (1.0 - tokens) / rate)
+        held = self._until - now
+        if held > 0 and held >= paced:
+            return held, RETRY_AFTER
+        return paced, BACK_OFF if self._slow else PACE
+
+
+@dataclass(frozen=True)
+class Pause:
+    """One wait before the next request to a host, as `Limits.pauses` shows it.
+
+    Attributes:
+        host: the host.
+        seconds: how long from now.
+        reason: `RETRY_AFTER`, `BACK_OFF` or `PACE`.
+    """
+
+    host: str
+    seconds: float
+    reason: str
+
 
 @dataclass(frozen=True)
 class Load:
@@ -606,6 +649,12 @@ class Limits:
         self.cap = cap
         self.most = max(cap, most)
         self._caps: dict[str, Cap] = {}
+        # Waits a client is sitting out before trying a host again, by a key of their own:
+        # (host, until, reason). `holding` adds and removes them.
+        self._held: dict[object, tuple[str, float, str]] = {}
+        # When set (a `threading.Event`), no new request starts until it is cleared: each
+        # `slot` waits first. The transfers in flight go on. None never holds.
+        self.suspended: Any = None
 
     @property
     def total(self) -> int:
@@ -620,6 +669,41 @@ class Limits:
             host: Load(cap.value, cap.busy, cap.waiting, cap.most)
             for host, cap in self._caps.items()
         })
+
+    @property
+    def pauses(self) -> tuple[Pause, ...]:
+        """A snapshot of each wait before a host's next request, the longest first.
+
+        A paced host's bucket gives the time to its next token and why (a site's hold, a halved
+        rate, the pace); a client waiting out a 429 or a failure gives what is left of it. A
+        host with nothing to wait for isn't listed.
+        """
+        now = _time.now()
+        found = [Pause(host, seconds, reason)
+                 for host, bucket in self._buckets.items()
+                 for seconds, reason in [bucket.ahead(now)] if seconds > 0]
+        found += [Pause(host, until - now, reason)
+                  for host, until, reason in self._held.values() if until > now]
+        return tuple(sorted(found, key=lambda pause: -pause.seconds))
+
+    @contextmanager
+    def holding(self, host: str, seconds: float, reason: str) -> Iterator[None]:
+        """Show a wait before trying `host` again in `pauses`, for the block.
+
+        Args:
+            host: the host waited for.
+            seconds: how long the wait is, from now.
+            reason: why: `RETRY_AFTER` or `BACK_OFF`.
+
+        Yields:
+            Nothing; the wait shows until the block ends.
+        """
+        key = object()
+        self._held[key] = (host, _time.now() + seconds, reason)
+        try:
+            yield
+        finally:
+            del self._held[key]
 
     @asynccontextmanager
     async def slot(self, host: str, stop: Any = None, *,
@@ -636,8 +720,14 @@ class Limits:
             block that tells it nothing counts for nothing.
 
         Raises:
-            Stopped: `stop` was set while waiting for a token.
+            Stopped: `stop` was set while waiting for a token, or while `suspended`.
         """
+        # A suspension is a person's (a key pressed), so it is waited out in real time, even
+        # under a test's fake clock, whose waits would pass at once and never let the loop run.
+        while self.suspended is not None and self.suspended.is_set():
+            if stop is not None and stop.is_set():
+                raise Stopped("stopped while suspended")
+            await asyncio.sleep(SUSPENDED_POLL)
         if pace and self._paced(host):
             bucket = self._bucket(host)
             if bucket is not None:
@@ -1135,6 +1225,7 @@ class Client:
                     self.limits.blocked(host, wait)
                 if rounds >= ROUNDS:
                     return _given_up(failure, check)
+                reason = BACK_OFF if wait is None else RETRY_AFTER
                 wait = _backoff(rounds) if wait is None else wait
                 ui.warn("{host}: rate limited; waiting {time}",
                         host=host, time=_text.duration(round(wait)))
@@ -1142,11 +1233,13 @@ class Client:
                 tries += 1
                 if tries > self.retries or not _worth(method, failure):
                     return _given_up(failure, check)
+                reason = BACK_OFF
                 wait = _backoff(tries)
                 ui.debug("retry {n}/{total} in {seconds:.1f}s: {reason}",
                          n=tries, total=self.retries, seconds=wait, reason=failure)
-            if not await _time.pause(wait, stop=self.stop):
-                raise Stopped(f"{host}: stopped")
+            with self.limits.holding(host, wait, reason):
+                if not await _time.pause(wait, stop=self.stop):
+                    raise Stopped(f"{host}: stopped")
 
     async def fill(self, url: str | Sequence[str], held: _files.Part, *,
                    headers: Mapping[str, str] | None = None, resume: bool = True,

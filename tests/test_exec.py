@@ -99,7 +99,7 @@ class WatchTest(unittest.TestCase):
         runner = mock.Mock()
         args = mock.Mock(json=True, ui="plain", verbose=False)
         with redirect_stdout(io.StringIO()):
-            self.assertEqual(cli._watch(run, args, runner=runner), 0)
+            self.assertEqual(cli._watch(mock.Mock(ui=None), run, args, runner=runner), 0)
         self.assertEqual([call.args[0].post for call in runner.run.call_args_list], ["1", "2"])
 
 

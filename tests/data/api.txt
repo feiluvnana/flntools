@@ -49,6 +49,7 @@ flnd.Flnd.site(source: str) -> Iterator[Site]
 flnd.Flnd.sources: property -> list[Installed]
 flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = (), *, compress: bool = False) -> Run
 flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
+flnd.Flnd.ui: property -> str | None
 flnd.Flnd.unfollow(targets: str | Target | Sequence[str | Target]) -> list[Target]
 flnd.Installed(code: str, name: str, origin: str, where: str = '', version: str = '', api: int = 0, login: str = '', domains: tuple[str, ...] = (), forms: tuple[str, ...] = (), categories: tuple[str, ...] = (), logins: tuple[str, ...] = (), disabled: str = '')
 flnd.Installed.api: attribute -> int
@@ -117,7 +118,10 @@ flnd.Report.stopped: attribute -> bool
 flnd.Run(work: Callable[[Callable[[Any], None], Stop], Any], *, name: str, closed: threading.Event | None = None)
 flnd.Run.name: attribute
 flnd.Run.report: property -> Report
+flnd.Run.resume() -> None
+flnd.Run.stats: property -> Stats | None
 flnd.Run.stop() -> None
+flnd.Run.suspend() -> None
 flnd.Run.wait() -> Report
 flnd.Saved(target: flnd.source.Target, category: str, post: str, path: pathlib.Path, date: datetime.date | None, size: int)
 flnd.Saved.category: attribute -> str
@@ -141,6 +145,20 @@ flnd.SourceError(flnd.Error)
 flnd.SourceError.hint: attribute
 flnd.SourceError.retryable: attribute
 flnd.SourceError.target: attribute
+flnd.Stats(elapsed: float = 0.0, saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, speed: float = 0.0, eta: float | None = None, stopping: str = '', suspended: bool = False, transfers: flnd._events.Transfers = Transfers(running=0, queued=0, resuming=0, hosts=(), files=()), listing: tuple[flnd._events.Listing, ...] = (), pauses: tuple[flnd._events.Pause, ...] = (), system: flnd._events.System = System(tabs=0, cap=0, browser=0, ram=0, cpu=0.0, ffmpeg=0, pillow=0, unpack=0, steps=0, disk=0))
+flnd.Stats.bytes: attribute -> int
+flnd.Stats.elapsed: attribute -> float
+flnd.Stats.eta: attribute -> float | None
+flnd.Stats.failed: attribute -> int
+flnd.Stats.listing: attribute -> tuple[Listing, ...]
+flnd.Stats.pauses: attribute -> tuple[Pause, ...]
+flnd.Stats.saved: attribute -> int
+flnd.Stats.skipped: attribute -> int
+flnd.Stats.speed: attribute -> float
+flnd.Stats.stopping: attribute -> str
+flnd.Stats.suspended: attribute -> bool
+flnd.Stats.system: attribute -> System
+flnd.Stats.transfers: attribute -> Transfers
 flnd.Stopped(KeyboardInterrupt)
 flnd.Target(text: str, *, kind: str = '')
 flnd.Target.kind: field -> str

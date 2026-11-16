@@ -60,6 +60,7 @@ from flnd.options import Options, selected, stop_after
 from flnd.site import Listing, SourceRun, TargetSite
 from flnd.source import Category, File, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
+from flnd import _events, _stats
 from flnd._events import Failed, Progress, Saved, Skipped
 from flnd._steps import Landed, dedupe, holder, landed, sidecars
 from flnd._ui import ui
@@ -244,6 +245,13 @@ class _Line:
     listed: bool = False
     ended: bool = False
     note: str = ""
+    # For the live stats (`Board.listing`): posts the listing yielded, saved ones in a row,
+    # how it stopped early ("caught up", "cut", "stopped", "failed"; "" when it didn't), and
+    # the site's `Listing` of the category, which counts the pages `site.pages` read.
+    posts: int = 0
+    streak: int = 0
+    how: str = ""
+    listing: Any = None
 
 
 # The counts whose change is worth a `Progress` event. A file moving from queued to downloading
@@ -280,14 +288,40 @@ class Board:
         self._lock = threading.Lock()
         self._lines: dict[tuple[Target, str], _Line] = {}
         self._child_skipped: dict[Target, int] = {}
+        # The run's live stats read the board's rows (`listing`, `queued`) until the run ends.
+        _stats.track(_stats.BOARD, self)
 
-    def start(self, target: Target, category: str, *, slots: int = 0) -> None:
-        """Open the category's line as its listing starts, unless already open."""
+    def start(self, target: Target, category: str, *, slots: int = 0,
+              listing: Any = None) -> None:
+        """Open the category's line as its listing starts, unless already open.
+
+        Args:
+            target: the target listed.
+            category: its category; "" for a target without categories.
+            slots: unused; kept for the callers.
+            listing: the category's `flnd.site.Listing`, whose pages the live stats show.
+        """
         owner = self.parent or target
         with self._lock:
             line = self._lines.get((owner, category))
             if line is None or line.ended:
-                self._open(owner, category)
+                line = self._open(owner, category)
+            if listing is not None:
+                line.listing = listing
+
+    def seen(self, target: Target, category: str, *, streak: int) -> None:
+        """Count one post the listing yielded, and the saved posts in a row so far.
+
+        Args:
+            target: the target listed.
+            category: its category.
+            streak: already-saved posts in a row, toward the early stop.
+        """
+        with self._lock:
+            line = self._lines.get((self.parent or target, category))
+            if line is not None:
+                line.posts += 1
+                line.streak = streak
 
     def count(self, target: Target, category: str, **steps: int) -> None:
         """Add `steps` to the category's counts and refresh its row."""
@@ -303,13 +337,20 @@ class Board:
         if event is not None:
             self.emit(event)
 
-    def listed(self, target: Target, category: str) -> None:
-        """Mark the category's listing complete so its row finishes once nothing is pending."""
+    def listed(self, target: Target, category: str, *, how: str = "") -> None:
+        """Mark the category's listing complete so its row finishes once nothing is pending.
+
+        Args:
+            target: the target listed.
+            category: its category.
+            how: how it stopped early ("caught up", "cut"); "" when it ran out of posts.
+        """
         if self.parent is not None and target != self.parent:
             return
         with self._lock:
             line = self._lines.get((target, category)) or self._open(target, category)
             line.listed = True
+            line.how = how
             event = self._progress(target, category, line)
         self._show(line)
         self.emit(event)
@@ -321,14 +362,22 @@ class Board:
                 line.note = note_text
                 self._show(line)
 
-    def end(self, target: Target, *, failed: bool) -> None:
-        """Finalize every open line for `target` as ok or failed."""
+    def end(self, target: Target, *, failed: bool, how: str = "") -> None:
+        """Finalize every open line for `target` as ok or failed.
+
+        Args:
+            target: the target.
+            failed: whether its open lines end failed.
+            how: why, for the live stats: "stopped", or "" for "failed" when `failed`.
+        """
         if self.parent is not None and target != self.parent:
             return
         for line in self._of(target):
             if line.ended or line.row is None:
                 continue
             line.ended = True
+            if failed:
+                line.how = how or "failed"
             line.row.fail() if failed else line.row.finish()
 
     def row(self, target: Target, category: str) -> Any:
@@ -350,6 +399,47 @@ class Board:
                     for name in vars(total):
                         setattr(total, name, getattr(total, name) + getattr(line.counts, name))
         return total
+
+    def listing(self) -> list[_events.Listing]:
+        """A snapshot of every line, for the live stats: one `Listing` each, in open order.
+
+        Returns:
+            The rows, read under the board's lock; any thread may call it.
+        """
+        with self._lock:
+            return [self._listing(target, category, line)
+                    for (target, category), line in self._lines.items()]
+
+    def queued(self) -> int:
+        """Files found and queued, not started yet, over every line."""
+        with self._lock:
+            return sum(line.counts.queued for line in self._lines.values())
+
+    @staticmethod
+    def _listing(target: Target, category: str, line: _Line) -> _events.Listing:
+        """One line's `Listing`; the caller holds the lock.
+
+        Args:
+            target: the line's target (a search's, for the targets it found).
+            category: the line's category.
+            line: the line.
+
+        Returns:
+            The row, with its state: how it stopped, else listing, finishing or done.
+        """
+        c = line.counts
+        if line.how in ("stopped", "failed"):
+            state = line.how
+        elif not line.listed:
+            state = "listing"
+        elif c.pending:
+            state = "finishing"
+        else:
+            state = line.how or "done"
+        pages = line.listing.read if line.listing is not None else 0
+        return _events.Listing(target, category, pages=pages, posts=line.posts, found=c.found,
+                       saved=c.saved + c.linked, skipped=c.skipped, failed=c.failed,
+                       bytes=c.bytes, streak=line.streak, state=state)
 
     @staticmethod
     def _progress(target: Target, category: str, line: _Line) -> Progress:
@@ -1526,7 +1616,7 @@ def _ended(
         return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
         ui.debug("{target}: stopped", target=str(target))
-        board.end(target, failed=True)
+        board.end(target, failed=True, how="stopped")
         return replace(report, error=Stopped(STOPPED))
     board.end(target, failed=False)
     _summary(board.totals(target), target, time.monotonic() - started)
@@ -1932,6 +2022,8 @@ def _queue_listed(
                 taken += 1
                 queued += outcome is Outcome.QUEUED
                 saved_in_a_row = saved_in_a_row + 1 if outcome is Outcome.SAVED else 0
+            work.downloads.board.seen(work.downloads.target, kept.category,
+                                      streak=saved_in_a_row)
             met_head = met_head or (stops.head is not None and post.id == stops.head)
             # `--limit` is checked as the next post comes, not here: the next may be another part
             # of this one. That reads one more item of the listing, never one more post.
@@ -2033,7 +2125,6 @@ def _list_one(
         How the listing ended, and how many posts it took.
     """
     ui.debug("{target}: list {name}", target=str(target), name=name or target.kind)
-    work.ledger.board.start(target, name, slots=run.jobs)
     start = progress.started.get(name) if newest_first else None
     stops = _Stops(
         sync=newest_first and name in progress.listed and not start,
@@ -2041,6 +2132,8 @@ def _list_one(
         head=progress.seen_heads.get(name),
     )
     listing = progress.listings[name] = Listing(start, label=f"{target}: {name or target.kind}")
+    # The board's line shows the pages this listing reads, in the live stats.
+    work.ledger.board.start(target, name, slots=run.jobs, listing=listing)
     if start:
         ui.info("{target}: {name}: going on where an interrupted run stopped",
                 target=str(target), name=name or target.kind)
@@ -2063,8 +2156,13 @@ def _list_one(
             if ended in (Ended.RAN_OUT, Ended.CAUGHT_UP) and newest.newest is not None:
                 progress.heads[name] = newest.newest
     if ended is not Ended.STOPPED:
-        work.ledger.board.listed(target, name)
+        work.ledger.board.listed(target, name, how=_early(ended))
     return ended, taken
+
+
+def _early(ended: Ended) -> str:
+    """How a listing stopped early, as the live stats show it; "" for one that ran out."""
+    return "" if ended is Ended.RAN_OUT else ended.value
 
 
 def _listed(

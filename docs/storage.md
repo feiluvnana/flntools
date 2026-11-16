@@ -14,7 +14,7 @@ side by side in it.
   flnd.db          what the home remembers: files, posts, targets, runs, failures, …
   secrets.db       the vault: logins and tokens, each sealed (AES-256-GCM)
   secret.key       the vault's key (mode 0600)
-  config.toml      settings (optional): `[defaults]` again, dedupe, sidecars
+  config.toml      settings (optional): `[defaults]` again, dedupe, sidecars, ui
   media/
     <code>/<target>/<category>/…   the downloaded files
   cache/           things safe to delete

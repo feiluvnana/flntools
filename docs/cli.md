@@ -28,7 +28,7 @@ These go before or after the command: `flnd --home ~/Media/flnd sync` and
 | flag | default | what it does |
 | --- | --- | --- |
 | `--home DIR` | `$FLND_HOME`, else `./.flnd` | the home: downloads, history and logins ([storage.md](storage.md)) |
-| `--ui plain\|inline` | `inline` on a terminal, else `plain` | how a run shows: one line per file, or a live view of each target and category |
+| `--ui full\|inline\|plain` | `full` on a terminal, else `plain`; `ui` under `[defaults]` in the home's `config.toml` changes it | how a run shows: the full screen, a live view under the prompt, or one line per file ([What a run prints](#what-a-run-prints)) |
 | `-v`, `--verbose` | off | show flnd's debug lines too, and a bug's traceback instead of a crash file |
 | `--json` | off | print events and rows as JSON lines, for scripts and cron; implies `--ui plain`, and never asks a question |
 | `--help`, `-h` | | print the help of flnd, or of the command it follows |
@@ -265,6 +265,32 @@ the plugin sources as they know the built-ins. With `--json`, one object per sou
 
 ## What a run prints
 
+- **`--ui full`**, the default on a terminal, takes the whole terminal (its alternate screen)
+  while the run goes, redrawn 10 times a second:
+  - a header: the run, its state (running, paused, stopping), the time since it started, and
+    the totals: files saved, already saved and failed, their bytes, the speed, and the time
+    left once every listing is done;
+  - **Targets**: one row per target and category, the busy ones first: listing, finishing (the
+    listing is done, files are still downloading), done, caught up (a sync met 5 saved posts in
+    a row), cut (`--limit`), stopped or failed; with the pages its paged listing read, posts seen, files over
+    found, and size. A wide terminal also shows how close a listing is to stopping early;
+  - **Downloads**: each file in flight with its bar, size, speed and host (`↻` when it went on
+    from a part an earlier run left), how many are queued, and the busiest hosts as files in
+    flight over their adaptive cap, with `+N` waiting;
+  - **System**: browser tabs open (and the most a target holds), the browser's and flnd's RAM,
+    flnd's CPU, ffmpeg and Pillow jobs, files waiting for a compress or unpack step, and free
+    disk on the home's volume;
+  - **Log**: each wait first, with its reason (`www.example.com waits 2m 58s  Retry-After`,
+    `back-off`, or the source's pace), then flnd's latest lines and failures.
+
+  Keys: **`q`** stops gracefully, as a first Ctrl-C does; **`p`** pauses (no new request or file
+  starts; files in flight finish) and resumes. The footer shows the Ctrl-C stages as they
+  happen. On exit the terminal is put back as it was, and what scrollback should keep is
+  printed on the normal screen: each failure with its hint (a dry run's plan on standard
+  output), then the summary. It reads 80 × 24 and uses the room a bigger terminal gives. A
+  question during a run (whether to download Chromium) gives the terminal back while it asks.
+  `--exec`'s commands write to the terminal under the screen: use `--ui inline` to read their
+  output.
 - **`--ui plain`** writes one line per file on standard output: `saved <path>` (the file's final
   path, once every step after it is done), or
   `failed <target> <post>: <message>` with the hint on the next line; with `--dry`,
@@ -273,7 +299,8 @@ the plugin sources as they know the built-ins. With `--json`, one object per sou
   its files saved, skipped and failed, its size and whether it is still listing. Failures print
   above it as they happen. The rows stay on the screen at the end.
 - **`--json`** writes each event as one JSON object per line, its class in `"type"` (`Saved`,
-  `Skipped`, `Failed`, `Progress`, `Planned`), then the run's report as `{"type": "Report", …}`.
+  `Skipped`, `Failed`, `Progress`, `Planned`, and a `Stats` snapshot about once a second; see
+  [library.md](library.md#live-stats)), then the run's report as `{"type": "Report", …}`.
   `ls`, `login`, `logout`, `unfollow`, `sources` and `check` write their rows the same way. An
   error that ends a command is a line too, `{"type": "Error", "error": {"class", "message",
   "hint"}}`, besides its text on standard error. So every line on standard output is one JSON
@@ -304,7 +331,8 @@ instead.
 
 ## Ctrl-C
 
-- The **first** Ctrl-C stops listing and lets the files in progress finish.
+- The **first** Ctrl-C (or `q` on the full screen) stops listing and lets the files in
+  progress finish.
 - The **second** stops at once. Unfinished files stay as parts (`<name>.part`), which the next
   run resumes, and it resumes each category from its saved cursor.
 

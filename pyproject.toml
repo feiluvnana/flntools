@@ -24,6 +24,9 @@ dependencies = [
     # `flnd._shrink`, so `flnd --help` never loads them.
     "Pillow>=12",
     "pyoxipng>=9",
+    # The RAM and CPU of flnd, Chromium and ffmpeg for live stats: imported only by
+    # `flnd._stats`, on a run's first sample, so `flnd --help` never loads it.
+    "psutil>=7",
 ]
 
 [project.scripts]

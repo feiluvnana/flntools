@@ -252,13 +252,6 @@ flnd/job.py:Board._show: Args: no line
 flnd/job.py:Board.count: Args: no category
 flnd/job.py:Board.count: Args: no steps
 flnd/job.py:Board.count: Args: no target
-flnd/job.py:Board.end: Args: no failed
-flnd/job.py:Board.end: Args: no target
-flnd/job.py:Board.listed: Args: no category
-flnd/job.py:Board.listed: Args: no target
-flnd/job.py:Board.start: Args: no category
-flnd/job.py:Board.start: Args: no slots
-flnd/job.py:Board.start: Args: no target
 flnd/job.py:Board.totals: Args: no target
 flnd/job.py:Board.totals: no Returns:
 flnd/job.py:Downloads._dispatch_refresh: Args: no refresh

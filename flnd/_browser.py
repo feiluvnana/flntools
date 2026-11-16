@@ -1375,6 +1375,15 @@ class RunBrowser:
         """Whether a target has asked for a tab yet, so the browser is running."""
         return self._browser is not None
 
+    @property
+    def tabs(self) -> int:
+        """How many tabs are open now, warm ones and the idle one included; 0 before launch.
+
+        Read on the loop, where the browser lives: Playwright's list of the context's pages.
+        A user holds at most `MAX_TABS` of them.
+        """
+        return 0 if self._browser is None else len(self._browser.raw.pages)
+
     def run(self, awaitable: Awaitable[Any]) -> Any:
         """Run `awaitable` on the loop from another thread, and return its value.
 

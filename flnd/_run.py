@@ -10,8 +10,10 @@
    event. `_emit` counts the event into the report, then puts it on a bounded queue. When the
    queue is full, `_emit` waits: the listing waits while the script handles an event, so events
    never pile up in memory.
-3. **Reading.** Iterating takes events off the queue as they come. `wait()` stops queueing
-   (events are still counted), empties the queue and waits for the thread.
+3. **Reading.** Iterating takes events off the queue as they come. Between two (and at least
+   every `WAKE` seconds), it asks the run's `flnd._stats.Meter` for a sample, which comes
+   about once a second as a `Stats` event and is kept as `run.stats`. `wait()` stops queueing
+   (events are still counted), empties the queue and waits for the thread; it never samples.
 4. **End.** The thread puts an end marker on the queue. The reader then raises whatever ended
    the run: a `flnd.Error` that stopped it (a usage mistake, a full disk), or `flnd.Stopped` for
    Ctrl-C. A failed file or target is never raised: it is a `Failed` event and a line of
@@ -24,8 +26,12 @@ Rules a change must keep:
   first Ctrl-C sets `soon` (stop listing, finish what is in flight), the second `now`.
 - A `Run` nobody starts warns with a `ResourceWarning` when it is dropped, the way a coroutine
   nobody awaited does: it is almost always a missing `.wait()`.
-- The module imports only the stdlib and `flnd._events`, never the engine, so `flnd.Run` is
-  cheap to reach.
+- A `Stats` never goes through the queue: the reader makes it, so a sample can't make the
+  engine wait, and a run nobody iterates samples nothing.
+- `suspend()` holds new requests and files (`Stop.suspended`, which each source's limits
+  watch); a stop always wins over it, so a suspended run still stops.
+- The module imports only the stdlib, `flnd._events` and `flnd._stats` (psutil only on the
+  first sample), never the engine, so `flnd.Run` is cheap to reach.
 """
 
 from __future__ import annotations
@@ -39,10 +45,11 @@ import warnings
 from collections.abc import AsyncIterator, Callable, Generator, Iterator
 from typing import TYPE_CHECKING, Any
 
+from flnd import _stats
 from flnd._events import Failed, Planned, Report, Saved, Skipped
 
 if TYPE_CHECKING:
-    from flnd._events import Event
+    from flnd._events import Event, Stats
 
 __all__ = ["Run", "Stop", "stopping"]
 
@@ -53,16 +60,20 @@ QUEUE = 256
 WAKE = 0.1
 # What the worker puts on the queue last, so the reader knows the run is over.
 _END = object()
+# What `_take` gives when nothing came within `WAKE`, so the reader can sample meanwhile.
+_IDLE = object()
 # The message of the `Stopped` a reader gets when Ctrl-C ended the run.
 STOPPED = "stopped by Ctrl-C"
 
 
 class Stop:
-    """A run's two-stage stop state: `soon` stops listing, `now` cancels what is in flight.
+    """A run's two-stage stop state: `soon` stops listing, `now` cancels what is in flight;
+    and `suspended`, which holds new requests until it is cleared.
 
     The engine, the job and the sites all watch the same `Stop`: a listing checks `soon`
-    between posts, and a transfer checks `now` between chunks. Who sets it: `stopping`'s
-    Ctrl-C handler, `Run.stop()`, or a test.
+    between posts, and a transfer checks `now` between chunks; each source's limits wait while
+    `suspended` is set. Who sets it: `stopping`'s Ctrl-C handler, `Run.stop()`,
+    `Run.suspend()`, or a test.
 
     Example:
         >>> stop = Stop()
@@ -74,15 +85,23 @@ class Stop:
     def __init__(self) -> None:
         self.soon = threading.Event()
         self.now = threading.Event()
+        self.suspended = threading.Event()
+
+    @property
+    def stage(self) -> str:
+        """"" while nothing asked to stop, "soon" after a first stop, "now" after a second."""
+        if self.now.is_set():
+            return "now"
+        return "soon" if self.soon.is_set() else ""
 
 
 class Run:
     """One download, follow or sync: iterate it for its events, or `wait()` for its `Report`.
 
     A run starts when it is first iterated or waited on. Iterating yields `Saved`, `Skipped`,
-    `Failed`, `Progress` and (for `dry=True`) `Planned` events as they happen. Breaking out of
-    the loop pauses the run: iterating again goes on where it was, `wait()` finishes it, and
-    leaving the `Flnd`'s `with` stops it.
+    `Failed`, `Progress` and (for `dry=True`) `Planned` events as they happen, and a `Stats`
+    snapshot about once a second. Breaking out of the loop holds the run back: iterating again
+    goes on where it was, `wait()` finishes it, and leaving the `Flnd`'s `with` stops it.
 
     Make one with `Flnd.download`, `follow` or `sync`, not directly.
 
@@ -122,6 +141,11 @@ class Run:
         # The report's counts, kept under `_lock`.
         self._saved = self._skipped = self._bytes = self._planned = 0
         self._failed: list[Failed] = []
+        # The live stats: what the run's parts track themselves in (through the context, as
+        # the clock reaches them), and the latest sample.
+        self._meter = _stats.Meter()
+        self._context.run(_stats.METER.set, self._meter)
+        self._stats: Stats | None = None
 
     # -----------------------------------------------------------------------------------------
     # Reading the run
@@ -148,7 +172,11 @@ class Run:
                 if item is _END:
                     self._over = True
                     break
-                yield item
+                if item is not _IDLE:
+                    yield item
+                stats = self._sample()
+                if stats is not None:
+                    yield stats
         self._raise()
 
     def __aiter__(self) -> AsyncIterator[Event]:
@@ -170,7 +198,11 @@ class Run:
                 if item is _END:
                     self._over = True
                     break
-                yield item
+                if item is not _IDLE:
+                    yield item
+                stats = self._sample()
+                if stats is not None:
+                    yield stats
         except asyncio.CancelledError:
             self.stop()
             raise
@@ -229,6 +261,43 @@ class Run:
                           planned=self._planned, failed=tuple(self._failed),
                           stopped=self._asked)
 
+    @property
+    def stats(self) -> Stats | None:
+        """The latest live snapshot, from about a second ago; None before the first.
+
+        Samples are taken only while the run is iterated (`for event in run`), each also
+        yielded as a `Stats` event; a `wait()` with nobody iterating takes none.
+
+        Example:
+            >>> Run(lambda emit, stop: None, name="nothing").stats is None
+            True
+        """
+        return self._stats
+
+    def suspend(self) -> None:
+        """Hold the run: no new request or file starts until `resume()`.
+
+        The files already downloading finish. A stop still works while suspended, and ends
+        the suspension. Suspending twice is the same as once.
+
+        Example:
+            >>> run = Run(lambda emit, stop: None, name="nothing")
+            >>> run.suspend()
+            >>> run.resume()
+        """
+        self._stop.suspended.set()
+
+    def resume(self) -> None:
+        """Let a suspended run go on where it was; nothing for a run that isn't suspended.
+
+        Example:
+            >>> run = Run(lambda emit, stop: None, name="nothing")
+            >>> run.resume()
+            >>> run.wait().ok
+            True
+        """
+        self._stop.suspended.clear()
+
     def stop(self) -> None:
         """Ask the run to stop gracefully, as a first Ctrl-C does.
 
@@ -248,6 +317,8 @@ class Run:
                 # Nothing to stop: the run is over before it began, and won't warn when dropped.
                 self._over = True
         self._stop.soon.set()
+        # A suspended run would never get to its stop.
+        self._stop.suspended.clear()
 
     def __repr__(self) -> str:
         if self._thread is None:
@@ -318,6 +389,7 @@ class Run:
                                  hint="start runs inside `with flnd.open(home) as fl:`")
             self._thread = threading.Thread(target=self._context.run, args=(self._main,),
                                             name=f"flnd {self.name}", daemon=True)
+            self._meter.start()
         self._thread.start()
 
     def _main(self) -> None:
@@ -330,19 +402,36 @@ class Run:
             self._put(_END)
 
     def _take(self) -> Any:
-        """The next item of the queue, waiting in short steps so Ctrl-C's handler can run.
+        """The next item of the queue, waiting at most `WAKE`, so Ctrl-C's handler can run and
+        the reader can sample in between.
 
         Returns:
-            An event, or the end marker: the one the worker put, or one made here when the
-            worker is gone and the queue is empty.
+            An event; the end marker (the one the worker put, or one made here when the worker
+            is gone and the queue is empty); or `_IDLE` when nothing came in time.
         """
-        while True:
-            try:
-                return self._events.get(timeout=WAKE)
-            except queue.Empty:
-                thread = self._thread
-                if thread is not None and not thread.is_alive() and self._events.empty():
-                    return _END
+        try:
+            return self._events.get(timeout=WAKE)
+        except queue.Empty:
+            thread = self._thread
+            if thread is not None and not thread.is_alive() and self._events.empty():
+                return _END
+            return _IDLE
+
+    def _sample(self) -> Stats | None:
+        """A live snapshot when one is due (about once a second), kept as `stats`; else None.
+
+        Returns:
+            The `Stats` to yield, or None.
+        """
+        with self._lock:
+            saved, skipped, failed, size = (self._saved, self._skipped, len(self._failed),
+                                            self._bytes)
+        stats = self._meter.poll(saved=saved, skipped=skipped, failed=failed, bytes=size,
+                                 stopping=self._stop.stage,
+                                 suspended=self._stop.suspended.is_set())
+        if stats is not None:
+            self._stats = stats
+        return stats
 
     def _empty(self) -> None:
         """Drop every item on the queue, so a worker waiting to put one goes on."""
@@ -403,6 +492,8 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
 
     def handle(_signum: int, _frame: Any) -> None:
         (state.now if state.soon.is_set() else state.soon).set()
+        # A suspended run would never get to its stop: Ctrl-C ends the suspension too.
+        state.suspended.clear()
 
     previous = signal.signal(signal.SIGINT, handle)
     try:

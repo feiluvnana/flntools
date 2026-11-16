@@ -33,6 +33,7 @@ Each group is one script in `tests/bench/`, run in a fresh interpreter.
 | `db` | the history store over 100k rows; SQLite commits per file, per post and per 500 rows |
 | `walk` | listing 100,000 files, and `stat` on known paths |
 | `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, a task handed to the loop |
+| `ui` | a full-screen frame with 1,000 targets and 1,000 files in flight (200 × 60 and 80 × 24), and one live-stats sample of a busy run, as a share of one core |
 | `e2e` | a whole run of the real engine on a faked site, with and without latency |
 | `browser` | headless Chromium on a synthetic infinite-scroll feed; skipped without Chromium |
 | `media` | Pillow's AVIF, WebP and JPEG encoders; the compress step over 1,000 JPEGs; `sync --compress` over 100k done files; ffmpeg's video encoders, skipped without ffmpeg |
@@ -255,3 +256,27 @@ default; the table marks it.
 
 Whether AV1 plays on the user's own devices (Photos and QuickTime on the iPhone and Mac) is
 checked by hand, with a file `--compress` made, before AV1 stays the default.
+
+## The full screen and live stats
+
+Measured on the machine of the baseline (Apple M5, Python 3.14.6), `make bench ARGS=ui`:
+
+| what | time | gate |
+| --- | ---: | ---: |
+| one frame, 1,000 targets and 1,000 files, 200 × 60, true colour (`frame_1000`) | 1.6 ms | ≤ 5 ms |
+| the same frame just after a new `Stats` (rows picked and sorted again) | 2.2 ms | |
+| the 1,000-row frame on 80 × 24 | 0.55 ms | |
+| one sample of a busy run (1,000 listing rows, 200 files, 16 hosts, 12 child processes) | 0.21 ms | |
+| a sample that also lists flnd's child processes, every 5 s | 6.9 ms | |
+| sampling at one a second, as a share of one core (`sample_core`) | 0.16 % | < 1 % |
+| `flnd --help`, before and after (A/B, median of 15 alternating starts) | 24.3 / 24.0 ms | no slower |
+
+- A frame renders only the rows that fit, so its cost doesn't grow with the run; the rows are
+  picked and sorted once per `Stats`, not per frame.
+- Listing a process's children with psutil walks every process of the machine (7 ms on macOS),
+  so the meter lists them every 5 seconds and reads the ones it found in between: 0.2 ms.
+- **Rich, not Textual.** Textual 8.2 would bring scrolling and widgets, but `import textual.app`
+  takes 84 ms (median of 11 starts, 73 ms over the 10 ms of `python -c pass`) against 26 ms for
+  Rich's `Live` and `Console`, which flnd already loads for its inline view. That is more than
+  the whole 40 ms budget of `flnd --help` spent before a run's first request, so the full screen
+  is Rich's `Live(screen=True)`.

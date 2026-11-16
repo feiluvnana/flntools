@@ -510,6 +510,23 @@ class Flnd:
                  for cls in self._added.values()]
         return rows
 
+    @property
+    def ui(self) -> str | None:
+        """How the home's `config.toml` asks the CLI to show a run on a terminal (`[defaults]
+        ui`): "full", "inline" or "plain"; None when it doesn't say.
+
+        Raises:
+            UsageError: the file isn't TOML, or `ui` has a value it doesn't take.
+
+        Example:
+            >>> import flnd
+            >>> flnd.open("example-home").ui is None
+            True
+        """
+        from flnd.options import config
+
+        return config(self.home).ui
+
     def add(self, source: type[Source]) -> None:
         """Add a source for this `Flnd` alone: its targets resolve and download like a built-in's.
 

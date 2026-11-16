@@ -9,7 +9,7 @@ Who calls it: `flnd` (the console script) and `python -m flnd`, through `main`. 
 the library alone (`flnd.open`, its `Run` and events), so anything the command line does, a
 script can do too; `flnd.sources._manifest` for the built-in sources `--help` lists;
 and the library modules `flnd._prompt` (`flnd login`'s questions) and `flnd._ui` (the level of
-flnd's own log lines, and the live view).
+flnd's own log lines, and the live view), and `flnd._screen` (the full-screen view).
 
 How a command runs (`main`):
 1. argparse reads the flags. A mistake prints the usage and exits 2; `--help` prints the help
@@ -17,10 +17,11 @@ How a command runs (`main`):
    and imports no source, no engine and no Rich (it stays under 40 ms).
 2. The command function opens the home (`--home`, else `$FLND_HOME`, else `./.flnd`) and makes
    one library call with the flags.
-3. A run's events become output (`_Plain`, `_Inline` or `_Json`): a line per saved or failed
-   file, a live view on a terminal, or one JSON object per line. With `--exec CMD`, each
-   `Saved` event also runs CMD, without a shell (`_Exec`). The end of a run prints a short
-   summary, and its failures decide the exit code.
+3. A run's events become output (`_Full`, `_Inline`, `_Plain` or `_Json`): the full-screen
+   view on a terminal (the default there), a live view under the prompt, a line per saved or
+   failed file, or one JSON object per line. With `--exec CMD`, each `Saved` event also runs
+   CMD, without a shell (`_Exec`). The end of a run prints a short summary, and its failures
+   decide the exit code.
 4. Whatever ends the command becomes an exit code (`exit_code`): 0 ok, 1 some files or targets
    failed, 2 usage, 3 a login is needed, 4 flnd itself stopped (a full disk, a missing tool, a
    broken source, a bug), 130 Ctrl-C. A `flnd.Error` prints its message and its hint, never a
@@ -65,8 +66,9 @@ CODES = {
     "ToolError": BROKE,
     "SourceError": BROKE,
 }
-# The views of a run: plain lines, or a live view on a terminal (the default there).
-VIEWS = ("plain", "inline")
+# The views of a run: the full screen (the default on a terminal), a live view under the
+# prompt, or plain lines (the default anywhere else).
+VIEWS = ("full", "inline", "plain")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -134,6 +136,9 @@ def exit_code(error: BaseException | None) -> int:
 def _settle(args: argparse.Namespace) -> None:
     """Give each global flag left out its default; `--json` implies the plain view.
 
+    `--ui` left out stays None here: the view a run takes then depends on the home's
+    `config.toml`, which `_view` reads once the home is open.
+
     The global flags are accepted before and after the command, so both parsers leave them
     out unless given (`argparse.SUPPRESS`), and this sets what is still missing.
 
@@ -147,9 +152,6 @@ def _settle(args: argparse.Namespace) -> None:
         args.command = None
     if args.json:
         args.ui = "plain"
-    elif args.ui is None:
-        # Inline only where a person watches: the view draws on standard error.
-        args.ui = "inline" if sys.stderr.isatty() else "plain"
 
 
 def _report(error: Any, *, as_json: bool = False) -> None:
@@ -232,7 +234,7 @@ def download(args: argparse.Namespace) -> int:
     with _open(args) as fl:
         run = fl.download(targets, only=args.only, when=args.when, limit=args.limit,
                           compress=args.compress, dry=args.dry)
-        return _watch(run, args, runner=runner)
+        return _watch(fl, run, args, runner=runner)
 
 
 def follow(args: argparse.Namespace) -> int:
@@ -250,7 +252,7 @@ def follow(args: argparse.Namespace) -> int:
     targets = _targets(args.targets)
     with _open(args) as fl:
         run = fl.follow(targets, only=args.only, when=args.when, compress=args.compress)
-        return _watch(run, args)
+        return _watch(fl, run, args)
 
 
 def sync(args: argparse.Namespace) -> int:
@@ -267,7 +269,7 @@ def sync(args: argparse.Namespace) -> int:
     """
     runner = _runner(args)
     with _open(args) as fl:
-        return _watch(fl.sync(args.targets, compress=args.compress), args, runner=runner)
+        return _watch(fl, fl.sync(args.targets, compress=args.compress), args, runner=runner)
 
 
 def unfollow(args: argparse.Namespace) -> int:
@@ -347,7 +349,7 @@ def retry(args: argparse.Namespace) -> int:
         The run's exit code, once it is built.
     """
     with _open(args) as fl:
-        return _watch(fl.retry(), args)
+        return _watch(fl, fl.retry(), args)
 
 
 def check(args: argparse.Namespace) -> int:
@@ -572,8 +574,8 @@ def _globals() -> argparse.ArgumentParser:
                        help="where downloads, history and logins live "
                             "(default: $FLND_HOME, else ./.flnd)")
     group.add_argument("--ui", choices=VIEWS, default=argparse.SUPPRESS,
-                       help="how a run shows: plain lines, or a live view "
-                            "(default: inline on a terminal)")
+                       help="how a run shows: the full screen, a live view under the prompt, "
+                            "or plain lines (default: full on a terminal, else plain)")
     group.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS,
                        help="show flnd's debug lines, and a bug's traceback")
     group.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
@@ -796,13 +798,16 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
 # Watching a run
 # ---------------------------------------------------------------------------------------------
 
-def _watch(run: flnd.Run, args: argparse.Namespace, *, runner: _Exec | None = None) -> int:
+def _watch(fl: flnd.Flnd, run: flnd.Run, args: argparse.Namespace, *,
+           runner: _Exec | None = None) -> int:
     """Read a run's events into the chosen view, print its end, and return its exit code.
 
     flnd's own log lines are held to warnings for the run (a wait, a login about to expire),
-    or opened to debug lines with `-v`: the events already say what each file did.
+    or opened to debug lines with `-v`: the events already say what each file did. The full
+    screen shows info lines too, in its log panel, where they don't scroll anything away.
 
     Args:
+        fl: the open home, whose `config.toml` may choose the view.
         run: the run, not started yet.
         args: the parsed flags: `--json`, `--ui`, `-v`.
         runner: `--exec`'s command, run for each `Saved` event; None runs nothing.
@@ -814,16 +819,25 @@ def _watch(run: flnd.Run, args: argparse.Namespace, *, runner: _Exec | None = No
         Error: what stopped the whole run (a full disk), from the run.
         Stopped: Ctrl-C ended it.
     """
+    from contextlib import ExitStack
+
     from flnd._ui import ui
 
     view: _View
+    chosen = _view(fl, args)
     if args.json:
         view = _Json()
-    elif args.ui == "inline":
+    elif chosen == "full":
+        view = _Full(run, verbose=args.verbose)
+    elif chosen == "inline":
         view = _Inline(verbose=args.verbose)
     else:
         view = _Plain(verbose=args.verbose)
-    with ui.scope(level="debug" if args.verbose else "warn"), view:
+    quiet = "info" if chosen == "full" else "warn"
+    with ExitStack() as stack:
+        # The view first, so the log's scope (which may write into it) ends before it does.
+        stack.enter_context(view)
+        stack.enter_context(ui.scope(level="debug" if args.verbose else quiet, dest=view.log))
         for event in run:
             view.show(event)
             # The run waits while this runs, so one command at a time, in the order files end.
@@ -944,6 +958,25 @@ def _runner(args: argparse.Namespace) -> _Exec | None:
     return _Exec(command, quiet=args.json) if command is not None else None
 
 
+def _view(fl: flnd.Flnd, args: argparse.Namespace) -> str:
+    """The view a run takes: `--ui`, else the home's `[defaults] ui`, else full screen on a
+    terminal; plain where nobody watches (standard error isn't a terminal).
+
+    The full screen needs a terminal to take over, so off one it is plain whatever was asked;
+    `--ui inline` is kept as asked, and draws its last frame when the run ends.
+
+    Args:
+        fl: the open home.
+        args: the parsed flags; `args.ui` is None when `--ui` was left out.
+
+    Returns:
+        "full", "inline" or "plain".
+    """
+    terminal = sys.stderr.isatty()
+    chosen = args.ui or (fl.ui if terminal else None) or ("full" if terminal else "plain")
+    return "plain" if chosen == "full" and not terminal else chosen
+
+
 def _kind(error: BaseException) -> str:
     """The name of the nearest class of `error` that `CODES` lists; "" for none."""
     return next((kind.__name__ for kind in type(error).__mro__ if kind.__name__ in CODES), "")
@@ -957,6 +990,9 @@ class _View:
     Args:
         verbose: also show what a person rarely needs (each skipped file).
     """
+
+    # Where flnd's own log lines go while the view shows: None leaves them on standard error.
+    log: Any = None
 
     def __init__(self, *, verbose: bool = False) -> None:
         self.verbose = verbose
@@ -1068,6 +1104,7 @@ class _Inline(_View):
 
     def show(self, event: Any) -> None:
         """Keep a `Progress`'s counts for the next frame; print a failure or a plan above.
+        A `Stats` snapshot isn't shown: this view keeps to its rows.
 
         Args:
             event: one event of the run.
@@ -1105,6 +1142,45 @@ class _Inline(_View):
                 counts += f", {step.failed} failed"
             table.add_row(target, category or "-", counts, _text.size(step.bytes), state)
         return table
+
+
+class _Full(_View):
+    """The full-screen view (`flnd._screen.Screen`) on the terminal's alternate screen.
+
+    `q` stops the run gracefully, `p` pauses and resumes it, and Ctrl-C still works in its two
+    stages. flnd's log lines go to the screen's log panel. Leaving it restores the terminal,
+    then prints what scrollback should keep: a dry run's plan and each failure with its hint;
+    `end` then prints the summary under them, as the other views do.
+
+    Args:
+        run: the run, whose name is the screen's title and which the keys act on.
+        verbose: as `_View` takes it.
+    """
+
+    def __init__(self, run: Any, *, verbose: bool = False) -> None:
+        super().__init__(verbose=verbose)
+        from flnd._screen import Screen
+
+        self.screen = Screen(run.name, run=run)
+        self.log = self.screen.log
+
+    def __enter__(self) -> _Full:
+        self.screen.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        try:
+            self.screen.__exit__(*exc)
+        finally:
+            self.screen.close()
+
+    def show(self, event: Any) -> None:
+        """Store the event for the next frame.
+
+        Args:
+            event: one event of the run.
+        """
+        self.screen.show(event)
 
 
 def _failed(event: Any, write: Callable[..., None]) -> None:

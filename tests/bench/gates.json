@@ -391,6 +391,40 @@
       "unit": "ms",
       "better": "lower",
       "baseline": 17.9066
+    },
+    "ui.frame_1000": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 1.564,
+      "target": 5,
+      "gate": "feat:add live stats and the full-screen ui"
+    },
+    "ui.frame_1000_new": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 2.197
+    },
+    "ui.frame_80x24": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.545
+    },
+    "ui.sample": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 0.214
+    },
+    "ui.sample_listing": {
+      "unit": "ms",
+      "better": "lower",
+      "baseline": 6.902
+    },
+    "ui.sample_core": {
+      "unit": "%",
+      "better": "lower",
+      "baseline": 0.155,
+      "target": 1,
+      "gate": "feat:add live stats and the full-screen ui"
     }
   }
 }

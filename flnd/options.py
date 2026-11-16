@@ -89,6 +89,8 @@ CONFIG = "config.toml"
 # What `[defaults] dedupe` takes: "link" (the default) hard-links a file whose bytes are already
 # saved; "off" keeps both copies.
 DEDUPE = ("link", "off")
+# What `[defaults] ui` takes: how the CLI shows a run on a terminal (docs/cli, "Views").
+UIS = ("full", "inline", "plain")
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,9 @@ class Config:
     dedupe: bool = True
     # Write each saved file's post as `<file>.json` beside it (docs/storage).
     sidecars: bool = False
+    # How the CLI shows a run on a terminal when `--ui` isn't given: "full", "inline" or
+    # "plain"; None leaves it to the CLI (full screen).
+    ui: str | None = None
 
 
 def config(home: Path) -> Config:
@@ -120,7 +125,7 @@ def config(home: Path) -> Config:
 
     Example:
         >>> config(Path("no-such-home"))
-        Config(again=False, dedupe=True, sidecars=False)
+        Config(again=False, dedupe=True, sidecars=False, ui=None)
     """
     path = home / CONFIG
     try:
@@ -138,8 +143,11 @@ def config(home: Path) -> Config:
     dedupe = defaults.get("dedupe", "link")
     if dedupe not in DEDUPE:
         raise UsageError(f"{path}: dedupe is \"link\" or \"off\", not {dedupe!r}")
+    ui = defaults.get("ui")
+    if ui is not None and ui not in UIS:
+        raise UsageError(f"{path}: ui is \"full\", \"inline\" or \"plain\", not {ui!r}")
     return Config(again=defaults.get("again", False), dedupe=dedupe == "link",
-                  sidecars=defaults.get("sidecars", False))
+                  sidecars=defaults.get("sidecars", False), ui=ui)
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:

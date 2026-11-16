@@ -34,10 +34,11 @@ from contextlib import ExitStack, asynccontextmanager
 from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlsplit
 
 from flnd.errors import Error, SiteError
 from flnd.source import Fetch, File
-from flnd import _files, _net, _text, _time, _tools
+from flnd import _files, _net, _stats, _text, _time, _tools
 from flnd._ui import ui
 
 __all__ = ["noon", "same_extension", "save", "served_day"]
@@ -242,7 +243,7 @@ async def _save_url(client: _net.Client, url: str, held: _files.Part, label: str
         received: filled with the response's headers.
         stop: set to stop the transfer.
     """
-    with _Row(label) as row:
+    with _Row(label, host=urlsplit(url).hostname or "", resumed=held.size) as row:
         seen = await client.fill(url, held, headers=headers, progress=row.follow(stop))
     if received is not None:
         received.update(seen)
@@ -269,7 +270,7 @@ async def _save_dash(client: _net.Client, video: str, audio: str, held: _files.P
         headers: extra request headers.
         stop: set to stop the transfers.
     """
-    with _Row(label) as row:
+    with _Row(label, host=urlsplit(video).hostname or "") as row:
         await _again(
             partial(_dash_merge, client, video, audio, held, headers, stop, row),
             worth=_merge_again,
@@ -486,21 +487,27 @@ def _sniffed(head: bytes, dest: Path, known: bool) -> Path:
 class _Row:
     """One file's progress (or DASH video and audio's), opened on its first response.
 
-    The row only counts (`drawn=False`): a run's progress is shown from its events.
+    The row only counts (`drawn=False`): a run's progress is shown from its events, and from
+    the live stats, which read each row in flight (`label`, `host`, `resumed`, `bar`) on the loop.
 
     Its streams report from the loop, and a blocking `fetch` function from its worker thread,
     so a lock guards the bar.
 
     Args:
         label: the bar's label, the file's path under its target.
+        host: where the file comes from, for the live stats; "" for a source's `fetch`.
+        resumed: the bytes its part already held from an earlier run (a resume); 0 for none.
     """
 
-    def __init__(self, label: str):
+    def __init__(self, label: str, *, host: str = "", resumed: int = 0):
         self.label, self.stack, self.base = label, ExitStack(), 0.0
+        self.host, self.resumed = host, resumed
         self.bar: Any = None
         self._lock = threading.Lock()
 
     def __enter__(self) -> _Row:
+        # Entered and left on the loop, where the live stats read it.
+        self.stack.enter_context(_stats.tracked(_stats.TRANSFER, self))
         return self
 
     def __exit__(self, *error: Any) -> None:

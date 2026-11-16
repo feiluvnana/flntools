@@ -65,6 +65,12 @@ class Loop:
         self.close()
 
     @property
+    def running(self) -> bool:
+        """Whether the loop's thread was started and the loop isn't closed: work handed to it
+        now runs, and doesn't start it."""
+        return self._loop is not None and not self._closed
+
+    @property
     def here(self) -> bool:
         """Whether the calling code runs on this loop's thread, where it must await, not `run`."""
         return self._thread is not None and threading.get_ident() == self._thread.ident

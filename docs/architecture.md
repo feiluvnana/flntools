@@ -52,6 +52,8 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/_transfer.py` | one post's file into its part: mirrors, DASH merges, a source's `fetch` function, the content check | the job |
 | `flnd/_*.py` | the private toolkit: HTTP over curl_cffi on the run's loop (`_net`), the run's browser on async Playwright (`_browser`), a SQLite store (`_db`), sealed secrets (`_vault`), atomic files (`_files`), the run's asyncio loop (`_loop`), the terminal UI (`_ui`) | everything above |
 | `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes (dedupe, unpack, compress, the sidecar, `Saved`), archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
+| `flnd/_stats.py` | live stats: what a run's parts track (limits, browser, boards, the chain, transfers, the home), sampled into a `flnd.Stats` once a second while the run is read, with psutil for RAM and CPU | `Run` |
+| `flnd/_screen.py` | the full-screen view (`--ui full`): Rich on the alternate screen, drawn from the events and `Stats`, with `q` and `p` read by a key thread | the CLI |
 | `flnd/_check.py` | `check`: the history against the disk, and the repair ([storage.md](storage.md#checking-a-home)) | `Flnd.check` |
 
 The rule between them: a source imports `flnd.source` and the standard library (and, lazily, an
@@ -185,6 +187,19 @@ A run uses a few threads, and every rule below protects one of them:
   engine closes the chain, waiting for them, before it closes history.
 - **Ctrl-C** is handled by `flnd._run.stopping`: the first one sets `stop.soon` (stop listing,
   let running files finish), the second sets `stop.now` (stop at once, keep the parts).
+  `run.suspend()` sets `stop.suspended`, which each source's limits wait on before a new
+  request; a stop clears it.
+- **Live stats** are made on the reader's thread: between two events (or every 0.1 s) the run
+  asks its `flnd._stats.Meter` for a sample, at most once a second. The meter copies what the
+  loop owns (each source's hosts and waits, the tabs, the files in flight) with one call handed
+  to the loop, waiting at most 50 ms for it, so a loop busy handing an event to this same
+  reader never deadlocks it; the boards, the chain's lanes and psutil's process numbers are
+  read on the reader's thread, so the system calls never hold up a transfer. The parts of a
+  run show themselves to the meter (`_stats.tracked`) through the run's context, as the clock
+  reaches them. A `Stats` never goes through the event queue.
+- **The full screen** (`flnd._screen`) draws on Rich's refresh thread at 10 frames a second
+  from what the events stored; a key thread reads `q` and `p` in cbreak mode and puts the
+  terminal's mode back when the screen closes, however the run ended.
 
 ## The browser
 
