@@ -493,6 +493,8 @@ class Profile:
     picture: str | None = None
     # Whether user result arrived, avoiding redundant page loads.
     described: bool = False
+    # Whether the profile page loaded: read once, even when it brought no user result.
+    loaded: bool = False
     # The profile's highlights as `(id, title)`, in the order the results list them.
     highlights: list[tuple[str, str]] = field(default_factory=list)
     # The codes each tab listed, so a post a result repeats is yielded once.
@@ -548,10 +550,11 @@ class Profile:
         2026-11: the page no longer embeds the user or the highlights; its own GraphQL calls bring
         them, so those are read too, once the network is quiet.
         """
-        if self.described:
+        if self.described or self.loaded:
             return
         with watch_responses(site, GRAPHQL) as responses:
             if load(site, f"{SITE}/{self.user}/"):
+                self.loaded = True
                 for result in embedded_results(site.page.document):
                     self.note(result)
                 for result in responses:

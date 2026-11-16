@@ -744,6 +744,16 @@ class ThrottleTest(unittest.TestCase):
                 self.assertTrue(load(site, f"{SITE}/{name}/"))
                 self.assertEqual(site._seen.back_offs, [])
 
+    def test_a_profile_page_without_its_user_is_loaded_once(self):
+        from flnd.sources.ins import Profile
+
+        site = FakeSite(Target("ins", "user", "example_user"),
+                        pages={f"{SITE}/example_user/": "<html></html>"})
+        profile = Profile("example_user")
+        for _ in range(3):
+            profile.describe(site)
+        self.assertEqual(site._seen.visited, [f"{SITE}/example_user/"])
+
     def test_persistent_login_wall_in_api_get_marks_media_refused_and_falls_back(self):
         seen = Seen()
         pages = {
