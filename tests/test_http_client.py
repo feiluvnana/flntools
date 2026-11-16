@@ -1,4 +1,4 @@
-"""`http.Client`: the token bucket per host, 429 waits, and staged, resumed, segmented downloads.
+"""`http.Client`: the token bucket per host, 429 waits, and resumed, segmented downloads.
 
 The network is `http.fake`, and waits a fake `clock`, so nothing opens a socket or sleeps.
 """
@@ -15,7 +15,7 @@ import httpx
 
 from flnd import _time as clock, _http as http
 from flnd._ui import ui
-from flnd.errors import SiteError, Stopped
+from flnd.errors import NetworkError, SiteError, Stopped
 
 SITE = "https://www.example.com"
 FILE = f"{SITE}/file.bin"
@@ -54,7 +54,7 @@ class ClientCase(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.dest = Path(folder.name) / "file.bin"
-        self.stage = self.dest.with_name(".file.bin.stage")
+        self.stage = self.dest.with_name("file.bin.part")
         self.sent: list[tuple[float, httpx.Request]] = []
 
     def client(self, **options) -> http.Client:
@@ -136,7 +136,7 @@ class DownloadTest(ClientCase):
         self.assertEqual((sink.total, sink.count), (len(BODY), len(BODY)))
         self.assertFalse(self.stage.exists())
 
-    def test_resumes_a_partial_stage_with_a_range(self):
+    def test_resumes_a_partial_part_with_a_range(self):
         self.stage.write_bytes(BODY[:6])
         sink = Sink()
         with http.fake({FILE: self.logged(BODY)}):
@@ -153,7 +153,7 @@ class DownloadTest(ClientCase):
         self.assertEqual(self.dest.read_bytes(), BODY)
         self.assertEqual(self.ranges(), ["bytes=0-", "bytes=100-"])
 
-    def test_a_416_on_a_whole_stage_commits_it(self):
+    def test_a_416_on_a_whole_part_lands_it(self):
         self.stage.write_bytes(BODY)
         with http.fake({FILE: self.logged(BODY)}):
             self.client().download(FILE, self.dest)
@@ -167,7 +167,41 @@ class DownloadTest(ClientCase):
         self.assertEqual(self.dest.read_bytes(), BODY)
         self.assertEqual(self.ranges(), [f"bytes={len(BODY) + 5}-", "bytes=0-"])
 
-    def test_a_failed_mirror_drops_its_stage_before_the_next(self):
+    def test_a_resume_names_the_etag_it_kept_and_a_changed_file_starts_over(self):
+        tagged = lambda body, tag: lambda request: (
+            httpx.Response(206, content=body[6:], headers={"ETag": tag,
+                                                            "Content-Range": f"bytes 6-{len(body) - 1}/{len(body)}"})
+            if request.headers.get("if-range") == tag
+            else httpx.Response(200, content=body, headers={"ETag": tag}))
+        cut = httpx.Response(200, headers={"content-length": str(len(BODY)), "ETag": '"v1"'},
+                             stream=Cut(BODY[:6]))
+        with http.fake({FILE: lambda request: cut}), self.assertRaises(NetworkError):
+            self.client(retry=http.Retry(1)).download(FILE, self.dest)
+        self.assertEqual(self.stage.read_bytes(), BODY[:6])
+        self.assertEqual(self.stage.with_name("file.bin.part.json").read_text(), '{"etag": "\\"v1\\""}')
+        # The same file: the range comes, under its ETag.
+        with http.fake({FILE: self.logged(tagged(BODY, '"v1"'))}):
+            self.client().download(FILE, self.dest)
+        self.assertEqual(self.dest.read_bytes(), BODY)
+        self.assertEqual([r.headers.get("if-range") for _, r in self.sent], ['"v1"'])
+        self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()), ["file.bin"])
+
+    def test_a_file_that_changed_since_the_part_comes_whole(self):
+        self.stage.write_bytes(b"OLD BYTES")
+        self.stage.with_name("file.bin.part.json").write_text('{"etag": "\\"v1\\""}')
+        with http.fake({FILE: self.logged(lambda request: httpx.Response(200, content=BODY, headers={"ETag": '"v2"'}))}):
+            self.client().download(FILE, self.dest)
+        self.assertEqual(self.dest.read_bytes(), BODY)
+        self.assertEqual(self.sent[0][1].headers.get("if-range"), '"v1"')
+        self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()), ["file.bin"])
+
+    def test_a_weak_etag_is_never_an_if_range(self):
+        self.assertIsNone(http._validator({"etag": 'W/"x"'}))
+        self.assertEqual(http._validator({"etag": 'W/"x"', "last-modified": "Mon, 02 Jan 2026 00:00:00 GMT"}),
+                         "Mon, 02 Jan 2026 00:00:00 GMT")
+        self.assertEqual(http._validator({"etag": '"x"'}), '"x"')
+
+    def test_a_failed_mirror_empties_the_part_before_the_next(self):
         cut = lambda request: httpx.Response(200, headers={"content-length": "5000"}, stream=Cut(b"A" * 100))
         routes = {f"{SITE}/a/file.bin": self.logged(cut), f"{SITE}/b/file.bin": self.logged(BODY)}
         with http.fake(routes):
@@ -180,7 +214,7 @@ class DownloadTest(ClientCase):
             self.client().download([f"{SITE}/a", f"{SITE}/b"], self.dest)
         self.assertFalse(self.dest.exists())
 
-    def test_a_stop_keeps_the_stage_for_the_next_run(self):
+    def test_a_stop_keeps_the_part_for_the_next_run(self):
         stop = threading.Event()
 
         def pieces() -> Iterator[bytes]:
@@ -243,12 +277,20 @@ class SegmentTest(ClientCase):
         self.assertEqual(self.dest.read_bytes(), BODY)
         self.assertEqual(self.ranges()[-1], f"bytes={quarter}-")
 
-    def test_segments_that_all_fail_leave_an_empty_stage_and_no_holes(self):
+    def test_segments_that_all_fail_leave_nothing(self):
         with mock.patch.object(http._Segments, "one", side_effect=KeyboardInterrupt), \
                 http.fake({FILE: BODY}), self.assertRaises(KeyboardInterrupt):
             self.client().download(FILE, self.dest)
-        self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()), [".file.bin.stage"])
-        self.assertEqual(self.stage.stat().st_size, 0)
+        self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()), [])
+
+    def test_a_part_a_crash_left_with_holes_starts_over(self):
+        self.stage.write_bytes(bytes(len(BODY)))
+        self.stage.with_name("file.bin.part.json").write_text('{"holes": true}')
+        with http.fake({FILE: self.logged(BODY)}):
+            self.client().download(FILE, self.dest)
+        self.assertEqual(self.dest.read_bytes(), BODY)
+        self.assertEqual(self.ranges()[0], "bytes=0-")
+        self.assertEqual(sorted(path.name for path in self.dest.parent.iterdir()), ["file.bin"])
 
 
 if __name__ == "__main__":

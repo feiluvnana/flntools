@@ -23,9 +23,10 @@ side by side in it.
     sources.db                     each source's own state
     secrets.db                     logins, encrypted
     secret.key                     the key to secrets.db (mode 0600)
-    .lock                          held while a download or sync changes targets.db
-    locks/<hash>.lock              one per target folder, held while it downloads
 ```
+
+There is no lock file anywhere: each file being written locks itself (see
+[Sharing a home](#sharing-a-home)).
 
 `paths.LOGS` names a `log/` folder, but nothing writes there yet: today a run logs to the
 terminal only (`-v` for debug lines).
@@ -45,9 +46,52 @@ media/ins/example_user/reels/2026-01-03_C2def.mp4
 Each site's page under [sources/](README.md#sites) shows its own layout. A file's modified time
 is its post's date, at noon UTC, so a file browser sorts by when it was posted.
 
-A file is written as a hidden stage file beside it, `.<name>.stage`, and renamed into place once
-complete, so a file with its real name is always whole. The next run on a target removes the
-stale stages an interrupted run left in its folder.
+## Parts
+
+Every file flnd writes, a download or a small file of its own, is first written as a **part**:
+`<name>.part` beside it (`posts/2026-01-02_C1abc_0.jpg.part`), renamed onto its real name once
+whole. So a file with its real name is always whole. A name too long for the file system with
+`.part.json` added (255 bytes) gets a shorter part, its first 180 bytes and an 8-character
+digest: `<head>.<digest>.part`.
+
+A download's part:
+1. is opened and locked before any request is sent (see [Sharing a home](#sharing-a-home));
+2. is written as the bytes arrive, from every mirror and retry of the file, and checked through
+   the open file: a web page where a photo was expected is removed, never renamed;
+3. gets its post's day, at noon UTC, as its modified time, set on the open file just before it
+   closes (the rename keeps it); with no post date, the server's `Last-Modified` day;
+4. is renamed under the name its content calls for (`a.jpg` holding a WebP lands as `a.webp`);
+5. and only then gets its history row. A crash between the rename and the row leaves a whole
+   file without a row.
+
+Nothing is flushed to the disk per file (no `fsync`): a power cut may lose the last files, which
+the next sync downloads again, but never leaves a half file under a real name.
+
+### Resuming
+
+A download that fails or is stopped keeps its part, and the next run goes on from it:
+
+- it asks the server for the rest, `Range: bytes=<size>-`;
+- beside the part, `<name>.part.json` keeps the file's validator, its `ETag` (or its
+  `Last-Modified` date when the ETag is weak or missing), and the next run sends it as
+  `If-Range`. A file that changed on the server comes whole, and the part starts over from 0,
+  so old and new bytes are never spliced;
+- a `416` for the part's size means the part is already whole, and any other `416` starts over;
+- a big file fetched in 4 ranges at once writes them into the part at their offsets. Until
+  they all arrive, the part's `.part.json` says it has holes (`"holes": true`), so a part a
+  crash left that way starts over instead of passing for a whole file;
+- a Telegram document keeps the offsets of its parts in the same `.part.json`, written only
+  after the bytes they count are flushed, so a resume never skips bytes the file doesn't hold.
+
+An empty part is removed when its download fails. The `.part.json` is removed when its file
+lands.
+
+### Stale parts
+
+When a run starts on a target, it removes the parts under the target's folder that nothing has
+touched for 7 days and that no run holds, with their `.part.json`. A `.part.json` without its
+part goes after an hour. The hidden `.<name>.stage` files older versions of flnd left go like
+parts, and their `.lock` files like a `.part.json`.
 
 ## The stores
 
@@ -114,14 +158,24 @@ with mode 0600.
 `flnd auth logout` removes a source's rows. Deleting `secret.key` makes every saved login
 unreadable; log in again after.
 
-## Locks and sharing a home
+## Sharing a home
 
-- `metadata/.lock` is held by `flnd download` and `flnd sync` while they record targets, so two
-  runs on one home take turns there.
-- Each target's folder has its own lock in `metadata/locks/`, so two runs never download the same
-  target at once; the second waits.
-- Every stage file is locked by the run writing it.
+Two runs may use one home at once: one terminal syncing while another downloads, or cron firing
+during a manual run. Nothing makes the second run wait for the first.
+
+- **A part is its own lock.** The run writing it holds an exclusive lock on the open file
+  (`flock` on macOS and Linux, `msvcrt.locking` on Windows), taken when the part is opened. A
+  second run that finds a part locked skips that file as "being saved by another run", without
+  sending a request, and the first run writes the file's row. The lock goes with the file
+  descriptor, so a run that crashes frees it at once.
+- A run that opens a part just as another lands it sees that the name now holds another file,
+  and skips it too.
+- flnd's own small files (a cache, a sidecar, a cookie file) wait for each other instead of
+  skipping.
 - The stores are SQLite, which serializes writers; a writer waits up to 30 s for another.
+- Two runs that record the same target in `targets.db` at once each write their own view of it,
+  and the last one wins.
+- On a file system without locks (some network shares), files are written unlocked.
 
 ## Backing up and moving
 

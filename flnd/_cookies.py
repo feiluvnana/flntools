@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Union
 
-from flnd import _files as fs
+from flnd import _files
 from flnd._ui import ui
 from flnd.errors import LoginError, UsageError
 
@@ -153,10 +153,10 @@ class Jar:
         text = _netscape_text(self._cookies)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Mode 0600: the file is a login. The atomic write means a reader never sees half a file.
-        with fs.stage(path, keep=False) as part:
-            part.write_bytes(text.encode("utf-8"))
+        with _files.part(path) as held:
             if os.name != "nt":
-                os.chmod(part, 0o600)
+                os.chmod(held.fd, 0o600)
+            held.write(text.encode("utf-8"))
         return path
 
     def __getitem__(self, name: str) -> str:

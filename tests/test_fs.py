@@ -1,13 +1,18 @@
-"""Tests for `flnd._files`: atomic writes, stages, locks, walks and stale stage sweeps."""
+"""Tests for `flnd._files`: parts, their locks, small writes, walks and stale-part sweeps.
+
+Two processes sharing a home are played by two threads: a POSIX `flock` belongs to an open file
+description, so two opens in one process exclude each other just as two processes do.
+"""
 
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from flnd import _time as clock
-from flnd import _files as fs
+from flnd import _files
+from flnd import _time
 from flnd.errors import DiskError
 
 
@@ -22,141 +27,213 @@ class FsCase(unittest.TestCase):
         return sorted(path.name for path in self.folder.iterdir())
 
 
-class StageTest(FsCase):
-    def test_stage_has_a_fixed_hidden_name_and_lands_on_dest(self):
-        with fs.stage(self.dest) as temp:
-            self.assertEqual(temp, self.folder / ".a.txt.stage")
-            temp.write_text("new")
+class PartTest(FsCase):
+    def test_a_part_sits_beside_dest_and_lands_on_it_with_its_size_and_time(self):
+        with _files.part(self.dest, resume=True) as held:
+            self.assertEqual(held.path, self.folder / "a.txt.part")
+            held.write(b"new")
+            held.mtime = 1_000_000.0
             self.assertFalse(self.dest.exists())
-        self.assertEqual(self.dest.read_text(), "new")
+        self.assertEqual(self.dest.read_bytes(), b"new")
         self.assertEqual(self.names(), ["a.txt"])
+        found = self.dest.stat()
+        self.assertEqual(held.saved, _files.Saved(self.dest, 3, found.st_mtime_ns))
+        self.assertEqual(found.st_mtime, 1_000_000.0)
 
-    def test_a_long_name_gets_a_short_stage_with_a_digest(self):
+    def test_the_folder_is_made_when_missing(self):
+        dest = self.folder / "x" / "y" / "a.jpg"
+        with _files.part(dest, resume=True) as held:
+            held.write(b"x")
+        self.assertEqual(dest.read_bytes(), b"x")
+
+    def test_a_long_name_gets_a_short_part_with_a_digest(self):
         dest = self.folder / ("Tiếng Việt 日本語 " * 10 + ".mp4")
         self.assertLessEqual(len(dest.name.encode()), 255)
-        with fs.stage(dest) as temp:
-            self.assertLessEqual(len((temp.name + ".lock").encode()), 255)
-            self.assertRegex(temp.name, r"^\..+\.[0-9a-f]{8}\.stage$")
-            temp.write_text("x")
-        with fs.stage(dest) as again:
-            self.assertEqual(again, temp)
-        self.assertEqual(dest.read_text(), "x")
-
-    def test_an_error_keeps_the_stage_for_the_next_run_to_resume(self):
-        self.dest.write_text("old")
         with self.assertRaises(ValueError):
-            with fs.stage(self.dest) as temp:
-                temp.write_text("half")
+            with _files.part(dest, resume=True) as held:
+                self.assertLessEqual(len((held.path.name + ".json.part").encode()), 255)
+                self.assertRegex(held.path.name, r"^.+\.[0-9a-f]{8}\.part$")
+                held.write(b"x")
                 raise ValueError("boom")
-        self.assertEqual(self.dest.read_text(), "old")
-        self.assertEqual(self.names(), [".a.txt.stage", "a.txt"])
-        with fs.stage(self.dest) as again:
-            self.assertEqual(again.read_text(), "half")
-            with again.open("a") as file:
-                file.write(" more")
-        self.assertEqual(self.dest.read_text(), "half more")
+        with _files.part(dest, resume=True) as again:
+            self.assertEqual((again.path, again.size), (held.path, 1))
+        self.assertEqual(dest.read_bytes(), b"x")
 
-    def test_keep_false_or_interrupt_removes_the_stage(self):
+    def test_a_failed_download_keeps_its_part_and_the_next_run_resumes_it(self):
         self.dest.write_text("old")
-        for error in (ValueError("boom"), KeyboardInterrupt()):
-            with self.subTest(error=type(error).__name__):
-                with self.assertRaises(type(error)):
-                    with fs.stage(self.dest, keep=False) as temp:
-                        temp.write_text("half")
-                        raise error
-                self.assertEqual(self.dest.read_text(), "old")
-                self.assertEqual(self.names(), ["a.txt"])
+        with self.assertRaises(KeyboardInterrupt):
+            with _files.part(self.dest, resume=True) as held:
+                held.write(b"half")
+                held.note(etag='"e1"')
+                raise KeyboardInterrupt
+        self.assertEqual(self.dest.read_text(), "old")
+        self.assertEqual(self.names(), ["a.txt", "a.txt.part", "a.txt.part.json"])
+        with _files.part(self.dest, resume=True) as again:
+            self.assertEqual((again.size, again.meta), (4, {"etag": '"e1"'}))
+            again.write(b" more")
+        self.assertEqual(self.dest.read_bytes(), b"half more")
+        self.assertEqual(self.names(), ["a.txt"])
 
-    def test_a_second_writer_gets_busy_error_after_timeout(self):
-        with fs.stage(self.dest):
-            with self.assertRaises(fs.BusyError) as ctx:
-                with fs.stage(self.dest, timeout=0.01):
-                    self.fail("block must not run")
-        self.assertIsInstance(ctx.exception, DiskError)
+    def test_an_empty_or_dropped_part_is_removed(self):
+        with self.assertRaises(ValueError):
+            with _files.part(self.dest, resume=True):
+                raise ValueError("nothing written")
+        with _files.part(self.dest, resume=True) as held:
+            held.write(b"a web page")
+            held.drop()
+        self.assertEqual(self.names(), [])
 
-    def test_a_block_that_moves_the_stage_away_wins(self):
-        with fs.stage(self.dest) as temp:
-            temp.write_text("x")
-            os.replace(temp, self.folder / "b.txt")
-        self.assertEqual(self.names(), ["b.txt"])
+    def test_a_reset_starts_over_and_forgets_the_sidecar(self):
+        (self.folder / "a.txt.part").write_bytes(b"stale bytes")
+        (self.folder / "a.txt.part.json").write_text('{"etag": "\\"old\\""}')
+        with _files.part(self.dest, resume=True) as held:
+            self.assertEqual(held.meta, {"etag": '"old"'})
+            held.reset()
+            self.assertEqual((held.size, held.meta), (0, {}))
+            held.write(b"fresh")
+        self.assertEqual(self.dest.read_bytes(), b"fresh")
+        self.assertEqual(self.names(), ["a.txt"])
 
-    def test_failed_replace_wraps_os_error_in_fs_error(self):
+    def test_write_at_and_head_use_the_descriptor(self):
+        with _files.part(self.dest, resume=True) as held:
+            held.write_at(3, b"def")
+            held.write_at(0, b"abc")
+            self.assertEqual(held.head(4), b"abcd")
+            held.cut(5)
+        self.assertEqual(self.dest.read_bytes(), b"abcde")
+
+    def test_a_failed_rename_is_a_disk_error_and_removes_a_writes_part(self):
         with mock.patch("os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(DiskError) as ctx:
-                with fs.stage(self.dest, keep=False) as temp:
-                    temp.write_text("new")
+                _files.write(self.dest, b"new")
         self.assertIsInstance(ctx.exception.__cause__, OSError)
         self.assertEqual(self.names(), [])
 
 
+class LockTest(FsCase):
+    def test_a_second_download_of_a_held_part_is_busy(self):
+        with _files.part(self.dest, resume=True) as held:
+            held.write(b"mine")
+            with self.assertRaises(_files.BusyError) as ctx:
+                with _files.part(self.dest, resume=True):
+                    self.fail("the block must not run")
+        self.assertIsInstance(ctx.exception, DiskError)
+        self.assertIn("being saved by another run", str(ctx.exception))
+        self.assertEqual(self.dest.read_bytes(), b"mine")
+
+    def test_a_part_landed_between_open_and_lock_is_busy_not_rewritten(self):
+        """The second run opened the old part just before the first renamed it into place."""
+        first = _files.part(self.dest, resume=True)
+        held = first.__enter__()
+        held.write(b"whole")
+        real = _files._lock
+
+        def late(fd, *, wait):
+            first.__exit__(None, None, None)
+            return real(fd, wait=wait)
+
+        with mock.patch.object(_files, "_lock", late):
+            with self.assertRaises(_files.BusyError):
+                with _files.part(self.dest, resume=True):
+                    self.fail("the block must not run")
+        self.assertEqual(self.dest.read_bytes(), b"whole")
+        self.assertEqual(self.names(), ["a.txt"])
+
+    def test_a_small_write_waits_for_the_other_writer(self):
+        order = []
+        with _files.part(self.dest) as held:
+            held.write(b"first")
+            other = threading.Thread(target=lambda: order.append(_files.write(self.dest, b"second")))
+            other.start()
+            other.join(0.2)
+            self.assertTrue(other.is_alive())
+            order.append("first")
+        other.join(5)
+        self.assertEqual(order, ["first", self.dest])
+        self.assertEqual(self.dest.read_bytes(), b"second")
+        self.assertEqual(self.names(), ["a.txt"])
+
+    def test_two_runs_on_one_home_save_a_file_once(self):
+        """Two writers race for one file: one saves it, the other is told it's busy."""
+        start = threading.Barrier(2)
+        outcomes = []
+
+        def run(data):
+            start.wait()
+            try:
+                with _files.part(self.dest, resume=True) as held:
+                    held.write(data)
+                    _time.sleep(0.05)
+                outcomes.append("saved")
+            except _files.BusyError:
+                outcomes.append("busy")
+
+        threads = [threading.Thread(target=run, args=(data,)) for data in (b"one", b"two")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+        self.assertEqual(sorted(outcomes), ["busy", "saved"])
+        self.assertIn(self.dest.read_bytes(), (b"one", b"two"))
+        self.assertEqual(self.names(), ["a.txt"])
+
+
+class CountTest(FsCase):
+    """The disk bookkeeping of one download, counted in system calls, not timed."""
+
+    CALLS = ("open", "stat", "lstat", "fstat", "utime", "replace", "unlink", "close")
+
+    def count(self, body):
+        counts = dict.fromkeys(self.CALLS, 0)
+        patches = []
+        for name in self.CALLS:
+            real = getattr(os, name)
+
+            def spy(*args, _real=real, _name=name, **kwargs):
+                counts[_name] += 1
+                return _real(*args, **kwargs)
+
+            patches.append(mock.patch.object(_files.os, name, spy))
+        for patch in patches:
+            patch.start()
+        try:
+            body()
+        finally:
+            for patch in patches:
+                patch.stop()
+        return {name: n for name, n in counts.items() if n}
+
+    def download(self, dest):
+        with _files.part(dest, resume=True) as held:
+            held.write(b"x" * 1000)
+            held.mtime = 1_000_000.0
+
+    def test_a_new_download_opens_once_and_never_stats_a_path(self):
+        counts = self.count(lambda: self.download(self.dest))
+        self.assertEqual(counts, {"open": 1, "fstat": 1, "utime": 1, "replace": 1, "close": 1})
+
+    def test_a_resumed_download_adds_one_stat_to_check_its_part(self):
+        (self.folder / "a.txt.part").write_bytes(b"half")
+        counts = self.count(lambda: self.download(self.dest))
+        self.assertEqual(counts, {"open": 2, "stat": 1, "fstat": 2, "utime": 1, "replace": 1,
+                                  "close": 1})
+
+
 class WriteTest(FsCase):
-    def test_write_bytes_or_text_over_a_stale_stage(self):
-        (self.folder / ".a.txt.stage").write_bytes(b"left by a crash, longer")
-        self.assertEqual(fs.write(self.dest, b"one\ntwo\n"), self.dest)
+    def test_write_bytes_or_text_over_a_stale_part(self):
+        (self.folder / "a.txt.part").write_bytes(b"left by a crash, longer")
+        self.assertEqual(_files.write(self.dest, b"one\ntwo\n"), self.dest)
         self.assertEqual(self.dest.read_bytes(), b"one\ntwo\n")
-        fs.write(self.dest, "text")
+        _files.write(self.dest, "text")
         self.assertEqual(self.dest.read_text(), "text")
         self.assertEqual(self.names(), ["a.txt"])
 
-    def test_replace_false_refuses_an_existing_dest(self):
-        self.dest.write_text("old")
-        with self.assertRaises(fs.ExistsError) as ctx:
-            fs.write(self.dest, b"new", replace=False)
-        self.assertIsInstance(ctx.exception, DiskError)
-        self.assertEqual(self.dest.read_text(), "old")
-        self.assertEqual(self.names(), ["a.txt"])
-
-    def test_replace_false_never_overwrites_a_file_created_meanwhile(self):
-        real = fs._write_bytes
-
-        def racing(temp, data):
-            real(temp, data)
-            self.dest.write_text("theirs")
-
-        with mock.patch.object(fs, "_write_bytes", racing):
-            with self.assertRaises(fs.ExistsError):
-                fs.write(self.dest, b"mine", replace=False)
-        self.assertEqual(self.dest.read_text(), "theirs")
-        self.assertEqual(self.names(), ["a.txt"])
-
-    def test_replace_false_without_hard_links_checks_then_replaces(self):
-        with mock.patch.object(fs.os, "link", side_effect=OSError("no links")):
-            fs.write(self.dest, b"new", replace=False)
-            self.assertEqual(self.dest.read_bytes(), b"new")
-            with self.assertRaises(fs.ExistsError):
-                fs.write(self.dest, b"again", replace=False)
-        self.assertEqual(self.names(), ["a.txt"])
-
-    def test_sync_flushes_before_replace(self):
-        with mock.patch.object(fs.os, "fsync", wraps=os.fsync) as spy:
-            out = fs.write(self.dest, b"durable", sync=True)
-        self.assertGreaterEqual(spy.call_count, 1)
-        self.assertEqual(out, self.dest)
-        self.assertEqual(self.dest.read_bytes(), b"durable")
-
-
-class TouchTest(FsCase):
-    def test_touch_sets_both_times(self):
-        self.dest.write_text("x")
-        fs.touch(self.dest, mtime=1_000_000.0)
-        stat = self.dest.stat()
-        self.assertEqual((stat.st_atime, stat.st_mtime), (1_000_000.0, 1_000_000.0))
-        with self.assertRaises(DiskError):
-            fs.touch(self.folder / "missing", mtime=0)
-
-
-class WalkTest(FsCase):
-    def test_walk_yields_files_recursively_and_skips_stages(self):
-        (self.folder / "sub" / "deep").mkdir(parents=True)
-        for name in ("a.jpg", "sub/b.MP4", "sub/deep/c.txt", ".x.jpg.stage", ".x.jpg.stage.lock",
-                     ".x.jpg.stage.json", ".old.1234abcd.part", ".hidden.jpg"):
-            (self.folder / name).write_text("x")
-        found = sorted(os.path.relpath(e.path, self.folder) for e in fs.walk(self.folder))
-        self.assertEqual(found, [".hidden.jpg", "a.jpg", os.path.join("sub", "b.MP4"),
-                                 os.path.join("sub", "deep", "c.txt")])
-        media = sorted(e.name for e in fs.walk(self.folder, suffix=(".jpg", ".mp4")))
-        self.assertEqual(media, [".hidden.jpg", "a.jpg", "b.MP4"])
-        self.assertTrue(all(isinstance(e, os.DirEntry) for e in fs.walk(self.folder)))
+    def test_a_failed_write_leaves_nothing(self):
+        with self.assertRaises(ValueError):
+            with _files.part(self.dest) as held:
+                held.write(b"half")
+                raise ValueError("boom")
+        self.assertEqual(self.names(), [])
 
 
 class WindowsReplaceTest(FsCase):
@@ -169,111 +246,78 @@ class WindowsReplaceTest(FsCase):
                 raise PermissionError(13, "locked", str(target))
             real(source, target)
 
-        return mock.patch.object(fs.os, "replace", replace), calls
+        return calls, replace
 
     def test_windows_retries_permission_error(self):
-        patch, calls = self.held(3)
-        with patch, mock.patch.object(fs, "WINDOWS", True), clock.use(clock.Fake()) as fake:
-            fs.write(self.dest, b"new")
+        calls, replace = self.held(3)
+        (self.folder / "x").write_bytes(b"new")
+        with mock.patch.object(_files.os, "replace", replace), \
+                mock.patch.object(_files, "WINDOWS", True), _time.use(_time.Fake()) as fake:
+            _files._replace(self.folder / "x", self.dest)
         self.assertEqual(self.dest.read_bytes(), b"new")
         self.assertEqual(len(calls), 4)
         self.assertEqual(fake.slept, [0.05] * 3)
 
-    def test_windows_gives_up_with_fs_error(self):
-        self.dest.write_bytes(b"old")
-        patch, calls = self.held(100)
-        with patch, mock.patch.object(fs, "WINDOWS", True), clock.use(clock.Fake()):
-            with self.assertRaises(DiskError) as ctx:
-                fs.write(self.dest, b"new")
-        self.assertIsInstance(ctx.exception.__cause__, PermissionError)
-        self.assertEqual(self.dest.read_bytes(), b"old")
+    def test_windows_gives_up_after_about_a_second(self):
+        calls, replace = self.held(100)
+        (self.folder / "x").write_bytes(b"new")
+        with mock.patch.object(_files.os, "replace", replace), \
+                mock.patch.object(_files, "WINDOWS", True), _time.use(_time.Fake()):
+            with self.assertRaises(PermissionError):
+                _files._replace(self.folder / "x", self.dest)
         self.assertEqual(len(calls), 20)
 
 
-class LockTest(FsCase):
-    def test_lock_folder_and_file_path(self):
-        with fs.lock(self.folder) as flock:
-            self.assertIsInstance(flock, fs.filelock.FileLock)
-            self.assertTrue((self.folder / ".lock").exists())
-        custom = self.folder / "sub" / "custom.lock"
-        with fs.lock(custom) as flock:
-            self.assertIsInstance(flock, fs.filelock.FileLock)
-            self.assertTrue(custom.exists())
-
-    def test_lock_timeout_raises_fs_error(self):
-        lock_file = self.folder / "a.lock"
-        with fs.lock(lock_file):
-            timeout_err = fs.filelock.Timeout(str(lock_file))
-            with mock.patch("filelock.FileLock.acquire", side_effect=timeout_err):
-                with self.assertRaises(DiskError):
-                    with fs.lock(lock_file, timeout=0.01):
-                        pass
-
-
-class LockErrorTest(FsCase):
-    def test_an_os_error_inside_the_block_is_not_wrapped(self):
-        with self.assertRaises(FileNotFoundError) as ctx:
-            with fs.lock(self.folder / "a.lock"):
-                open(self.folder / "missing")
-        self.assertNotIsInstance(ctx.exception, DiskError)
-
-    def test_timeout_raises_busy_error(self):
-        path = self.folder / "a.lock"
-        with fs.lock(path):
-            with self.assertRaises(fs.BusyError):
-                with fs.lock(path, timeout=0):
-                    self.fail("block must not run")
+class WalkTest(FsCase):
+    def test_walk_yields_files_recursively_and_skips_parts(self):
+        (self.folder / "sub" / "deep").mkdir(parents=True)
+        for name in ("a.jpg", "sub/b.MP4", "sub/deep/c.txt", "x.jpg.part", "x.jpg.part.json",
+                     ".x.jpg.stage", ".x.jpg.stage.lock", ".x.jpg.stage.json", ".old.1234abcd.part",
+                     ".hidden.jpg"):
+            (self.folder / name).write_text("x")
+        found = sorted(os.path.relpath(e.path, self.folder) for e in _files.walk(self.folder))
+        self.assertEqual(found, [".hidden.jpg", "a.jpg", os.path.join("sub", "b.MP4"),
+                                 os.path.join("sub", "deep", "c.txt")])
+        self.assertTrue(all(isinstance(e, os.DirEntry) for e in _files.walk(self.folder)))
 
 
 class SweepTest(FsCase):
-    def test_sweep_respects_settle_and_keep_and_cleans_orphan_sidecars(self):
-        bare_old = self.folder / ".a.11111111.part"
-        bare_new = self.folder / ".b.stage"
-        resumable_mid = self.folder / ".c.stage"
-        resumable_mid_side = self.folder / ".c.stage.json"
-        resumable_old = self.folder / ".d.stage"
-        resumable_old_side = self.folder / ".d.stage.json"
-        orphan_side = self.folder / ".e.55555555.part.info"
-        keep_file = self.folder / "real.mp4"
-        for p in (
-            bare_old, bare_new, resumable_mid, resumable_mid_side,
-            resumable_old, resumable_old_side, orphan_side, keep_file,
-        ):
-            p.write_text("x")
+    def age(self, path, seconds, now):
+        os.utime(path, (now - seconds, now - seconds))
 
+    def test_sweep_keeps_parts_a_week_and_clears_orphans_after_an_hour(self):
         now = 1_000_000.0
-        os.utime(bare_old, (now - 4000, now - 4000))
-        os.utime(bare_new, (now - 100, now - 100))
-        os.utime(resumable_mid, (now - 4000, now - 4000))
-        os.utime(resumable_old, (now - 800_000, now - 800_000))
-        os.utime(orphan_side, (now - 4000, now - 4000))
-
-        fake = clock.Fake()
+        files = {
+            "new.jpg.part": 4000, "new.jpg.part.json": 4000,      # resumable: kept
+            "old.jpg.part": 800_000, "old.jpg.part.json": 800_000,  # a week old: removed
+            "lone.jpg.part.json": 4000,                            # orphan sidecar: removed
+            "young.jpg.part.json": 100,                            # orphan, too new: kept
+            ".legacy.mp4.stage": 800_000, ".legacy.mp4.stage.lock": 800_000,  # removed
+            ".gone.stage.lock": 4000,                              # orphan old lock: removed
+            "real.mp4": 800_000,                                   # media: kept
+        }
+        for name, seconds in files.items():
+            (self.folder / name).write_text("x")
+            self.age(self.folder / name, seconds, now)
+        fake = _time.Fake()
         fake.advance(now - fake.wall)
-        with clock.use(fake):
-            removed = fs.sweep(self.folder, keep=7 * 86_400, settle=3_600)
-        self.assertEqual(removed, 4)
-        self.assertFalse(bare_old.exists())
-        self.assertTrue(bare_new.exists())
-        self.assertTrue(resumable_mid.exists())
-        self.assertTrue(resumable_mid_side.exists())
-        self.assertFalse(resumable_old.exists())
-        self.assertFalse(resumable_old_side.exists())
-        self.assertFalse(orphan_side.exists())
-        self.assertTrue(keep_file.exists())
+        with _time.use(fake):
+            removed = _files.sweep(self.folder)
+        self.assertEqual(removed, 6)
+        self.assertEqual(self.names(), ["new.jpg.part", "new.jpg.part.json", "real.mp4",
+                                        "young.jpg.part.json"])
 
-    def test_sweep_skips_a_held_stage_and_clears_orphan_locks(self):
-        held = self.folder / ".a.stage"
-        orphan_lock = self.folder / ".b.stage.lock"
-        for path in (held, orphan_lock):
-            path.write_text("x")
-            os.utime(path, (0, 0))
-        with fs.stage(self.folder / "a", keep=False):
-            removed = fs.sweep(self.folder)
-            self.assertEqual(self.names(), [".a.stage", ".a.stage.lock"])
-            held.unlink()
-        self.assertEqual(removed, 1)
-        self.assertEqual(self.names(), [])
+    def test_sweep_skips_a_part_another_run_holds(self):
+        with _files.part(self.folder / "a", resume=True) as held:
+            held.write(b"x")
+            os.utime(held.path, (0, 0))
+            self.assertEqual(_files.sweep(self.folder), 0)
+            self.assertEqual(self.names(), ["a.part"])
+        self.assertEqual(self.names(), ["a"])
 
     def test_sweep_missing_folder_returns_zero(self):
-        self.assertEqual(fs.sweep(self.folder / "nope"), 0)
+        self.assertEqual(_files.sweep(self.folder / "nope"), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

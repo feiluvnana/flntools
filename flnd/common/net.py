@@ -1,9 +1,17 @@
-"""flnd's HTTP: the source's httpx client, its cookies, and downloads."""
+"""flnd's HTTP: the source's httpx client, its cookies, and downloads.
+
+A download (`download`) goes through one part (`flnd._files.part`): it is opened and locked once,
+before any request, so a file another run is saving raises `BusyError` at once, and every
+mirror, retry and DASH merge of the file then writes into that same part. Its content is
+checked through the part's descriptor, it gets its post's date as its modified time, and it is
+renamed under the name its content calls for: one rename, one `fstat`, and no second open.
+"""
 
 from __future__ import annotations
 
 import atexit
-import os
+import datetime
+import email.utils
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
@@ -16,11 +24,14 @@ import httpx
 from flnd.common import paths
 from flnd.errors import Error, SiteError
 from flnd.source import Fetch, File
-from flnd import _time as clock, _files as fs, _http as http, _tools as sh, _text as text
+from flnd import _files
+from flnd import _time as clock, _http as http, _tools as sh, _text as text
 from flnd._ui import ui
 
 # Tries for one `fetch` function of a file, or one DASH merge, before its error is raised.
 ATTEMPTS = 3
+# A saved file's modified time is noon UTC of its post's day.
+NOON = 12
 # Extensions that name one format, so a `.jpeg` holding a JPEG keeps its name.
 SAME_EXTENSIONS = {".jpeg": ".jpg", ".tiff": ".tif", ".m4v": ".mp4"}
 
@@ -54,40 +65,84 @@ def cookie_jar(jar: Iterable[dict]) -> httpx.Cookies:
 def download(client: http.Client, file: File, dest: Path, *, label: str,
              headers: Mapping[str, str] | None = None, kind: str | None = None,
              received: MutableMapping[str, str] | None = None,
-             stop: threading.Event | None = None) -> Path:
-    """Save one `File` under a progress bar, trying mirrors in order, and return the path."""
+             stop: threading.Event | None = None,
+             day: datetime.date | None = None) -> _files.Saved:
+    """Save one `File` under a progress bar, trying mirrors in order.
+
+    Args:
+        client: the source's client.
+        file: what to fetch: a URL, mirrors, a `fetch` function, or a DASH pair.
+        dest: where it lands; the extension may change to what its content calls for.
+        label: the progress bar's label.
+        headers: extra request headers.
+        kind: what the file must be (`paths.IMAGE`, …, `paths.SNIFF`); None checks nothing.
+        received: filled with the file response's headers.
+        stop: set to stop the transfer.
+        day: the post's day, which becomes the file's modified time (noon UTC); None uses the
+            server's `Last-Modified`, else leaves the time of the write.
+
+    Returns:
+        Where the file landed, with its size and modified time.
+
+    Raises:
+        BusyError: another run is saving this file; nothing was sent.
+        Error: the last mirror failed.
+    """
     if file.url is None:
         raise ValueError("download needs a URL or a fetch function")
     halt = stop if stop is not None else getattr(client, "_stop", None)
     mirrors: list[str | Fetch] = (
         [file.url] if isinstance(file.url, str) or callable(file.url) else list(file.url))
-    for number, mirror in enumerate(mirrors, start=1):
-        try:
-            return _try_mirror(
-                client, mirror, file, dest, label, headers, kind, received, halt,
-            )
-        # The last mirror's failure is the file's; an earlier one's is a warning, and the next
-        # mirror is tried. A `Stopped` is a KeyboardInterrupt, so it is never caught here.
-        except Exception as error:
-            if number == len(mirrors):
-                raise
-            reason = error
-        ui.warn("mirror {n} failed: {reason}; trying next", n=number, reason=reason)
-    raise ValueError("download needs a URL or a fetch function")
+    with _files.part(dest, resume=True) as held:
+        if day is not None:
+            held.mtime = noon(day)
+        for number, mirror in enumerate(mirrors, start=1):
+            try:
+                _try_mirror(client, mirror, file, held, label, headers, kind, received, halt)
+                break
+            # The last mirror's failure is the file's; an earlier one's is a warning, and the
+            # next mirror is tried. A `Stopped` is a KeyboardInterrupt, so it is never caught.
+            except Exception as error:
+                if number == len(mirrors):
+                    raise
+                reason = error
+            # The next mirror may serve other bytes, so it starts from an empty part.
+            held.reset()
+            ui.warn("mirror {n} failed: {reason}; trying next", n=number, reason=reason)
+    assert held.saved is not None
+    return held.saved
+
+
+def noon(day: datetime.date) -> float:
+    """Noon UTC of `day`, in epoch seconds: the modified time of a file posted that day."""
+    moment = datetime.datetime.combine(day, datetime.time(NOON), tzinfo=datetime.timezone.utc)
+    return moment.timestamp()
 
 
 def _try_mirror(
-    client: http.Client, mirror: str | Fetch, file: File, dest: Path, label: str,
+    client: http.Client, mirror: str | Fetch, file: File, held: _files.Part, label: str,
     headers: Mapping[str, str] | None, kind: str | None,
     received: MutableMapping[str, str] | None, stop: threading.Event | None,
-) -> Path:
-    """Download one mirror (fetch callback, DASH pair, or URL) into `dest`."""
+) -> None:
+    """Download one mirror (fetch callback, DASH pair, or URL) into the part `held`.
+
+    Args:
+        client: the source's client.
+        mirror: a URL or a `fetch` function.
+        file: the file, for its size and DASH audio.
+        held: the file's locked part.
+        label: the progress bar's label.
+        headers: extra request headers.
+        kind: what the file must be, or None.
+        received: filled with the response's headers.
+        stop: set to stop the transfer.
+    """
     if callable(mirror):
-        save = partial(_save_fetch, mirror, dest, label, file.size, kind, stop)
+        save = partial(_save_fetch, mirror, held, label, file.size, kind, stop)
         return _again(save, worth=_fetch_again)
     if file.audio is not None:
-        return _save_dash(client, mirror, file.audio, dest, label, headers, stop)
-    return _save_url(client, mirror, dest, label, headers, file.size, kind, received, stop)
+        return _save_dash(client, mirror, file.audio, held, label, headers, stop)
+    return _save_url(client, mirror, held, label, headers, file.size, kind, received, stop)
 
 
 _follow_client: httpx.Client | None = None
@@ -114,47 +169,85 @@ def follow(url: str) -> str:
     return str(client.head(url).url)
 
 
-def _save_url(client: http.Client, url: str, dest: Path, label: str,
+def _save_url(client: http.Client, url: str, held: _files.Part, label: str,
               headers: Mapping[str, str] | None, size: int | None, kind: str | None,
               received: MutableMapping[str, str] | None,
-              stop: threading.Event | None) -> Path:
-    """Download one URL, check it as `kind`, and save it under the name its content calls for."""
+              stop: threading.Event | None) -> None:
+    """Download one URL into `held`, date it, and check it as `kind`.
+
+    Args:
+        client: the source's client.
+        url: the file.
+        held: the file's locked part.
+        label: the progress bar's label.
+        headers: extra request headers.
+        size: the size the source gave, or None.
+        kind: what the file must be, or None to check nothing.
+        received: filled with the response's headers.
+        stop: set to stop the transfer.
+    """
     seen: dict[str, str] = {}
     with _Row(label) as row, _recording(seen):
-        saved = client.download(url, dest, headers=headers, progress=row.follow(stop))
+        client.fill(url, held, headers=headers, progress=row.follow(stop))
     if received is not None:
         received.update(seen)
-    if kind is None:
-        return saved
-    known = "content-length" in seen or size is not None
-    final = _sniffed(saved, dest, known) if kind == paths.SNIFF else _as_media(
-        saved, dest, kind, known
-    )
-    if final != saved:
-        os.replace(saved, final)
-    return final
+    if held.mtime is None:
+        served = served_day(seen.get("last-modified"))
+        if served is not None:
+            held.mtime = noon(served)
+    if kind is not None:
+        _place(held, kind, "content-length" in seen or size is not None)
 
 
-def _save_dash(client: http.Client, video: str, audio: str, dest: Path, label: str,
-               headers: Mapping[str, str] | None, stop: threading.Event | None) -> Path:
-    """Download a DASH video and its audio stream, saving merged as `dest`."""
+def _save_dash(client: http.Client, video: str, audio: str, held: _files.Part, label: str,
+               headers: Mapping[str, str] | None, stop: threading.Event | None) -> None:
+    """Download a DASH video and its audio stream, merged into `held`.
+
+    Args:
+        client: the source's client.
+        video: the video stream's URL.
+        audio: the audio stream's URL.
+        held: the file's locked part, which ffmpeg writes.
+        label: the progress bar's label.
+        headers: extra request headers.
+        stop: set to stop the transfers.
+    """
     with _Row(label) as row:
-        return _again(
-            partial(_dash_merge, client, video, audio, dest, headers, stop, row),
+        _again(
+            partial(_dash_merge, client, video, audio, held, headers, stop, row),
             worth=_merge_again,
         )
 
 
-def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
+def _dash_merge(client: http.Client, video: str, audio: str, held: _files.Part,
                 headers: Mapping[str, str] | None, stop: threading.Event | None,
-                row: _Row) -> Path:
-    """Fetch DASH video and audio streams in parallel and merge them into `dest`."""
-    streams = [dest.with_name(f".{dest.name}.{name}.stage") for name in ("video", "audio")]
-    try:
+                row: _Row) -> None:
+    """Fetch DASH video and audio streams in parallel and merge them into `held`.
+
+    Each stream is a part of its own beside the file (`<name>.video.part`), locked like any
+    other, so a failed try resumes it and a sweep clears it. The streams never land: once
+    merged they are dropped.
+
+    Args:
+        client: the source's client.
+        video: the video stream's URL.
+        audio: the audio stream's URL.
+        held: the file's locked part, which ffmpeg writes.
+        headers: extra request headers.
+        stop: set to stop the transfers.
+        row: the progress bar both streams count on.
+
+    Raises:
+        KeyboardInterrupt: a second Ctrl-C came before the merge.
+    """
+    dest = held.dest
+    with ExitStack() as parts:
+        streams = [parts.enter_context(_files.part(dest.with_name(f"{dest.name}.{name}"),
+                                                   resume=True))
+                   for name in ("video", "audio")]
         with ThreadPoolExecutor(max_workers=2) as pool:
             started = [
-                pool.submit(client.download, url, stream, headers=headers,
-                            progress=row.follow(stop))
+                pool.submit(client.fill, url, stream, headers=headers, progress=row.follow(stop))
                 for url, stream in zip((video, audio), streams)
             ]
             for running in started:
@@ -162,21 +255,21 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
         if stop is not None and stop.is_set():
             raise KeyboardInterrupt
         row.caption("merging")
-        if dest.is_file() and dest.stat().st_size == 0:
-            dest.unlink()
         ffmpeg = sh.find("ffmpeg")
         fmt = "webm" if dest.suffix.lower() == ".webm" else "mp4"
         flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
-        with fs.stage(dest, keep=False) as part:
+        try:
+            # ffmpeg truncates and rewrites the locked part in place (`-y`), by its name.
             ffmpeg.run(
-                "-y", "-i", str(streams[0]), "-i", str(streams[1]),
-                "-c", "copy", *flags, "-f", fmt, str(part),
+                "-y", "-i", str(streams[0].path), "-i", str(streams[1].path),
+                "-c", "copy", *flags, "-f", fmt, str(held.path),
             )
+        finally:
+            # Merged or not, the streams go: a failed merge (a short stream, a container that
+            # can't hold them) is tried again from new downloads.
+            for stream in streams:
+                stream.drop()
         row.caption("merged")
-        return dest
-    finally:
-        for stream in streams:
-            stream.unlink(missing_ok=True)
 
 
 def _fetch_again(error: Exception) -> bool:
@@ -251,43 +344,75 @@ def _record(response: httpx.Response) -> None:
         seen.update((name.lower(), value) for name, value in response.headers.items())
 
 
-def _save_fetch(fetch: Fetch, dest: Path, label: str, size: int | None, kind: str | None,
-                stop: threading.Event | None) -> Path:
-    """Have `fetch(dest, progress)` write into a stage, check it, and rename onto `dest`."""
-    # The stage outlives a failed fetch, so a fetch that resumes (Telegram's) picks it up.
-    with fs.stage(dest) as part:
-        with _Row(label) as row:
-            row.start(size)
-            fetch(part, partial(row.stoppable, stop=stop))
-            try:
-                final = _placed(part, dest, kind, size is not None)
-            except BaseException:
-                # A whole file that fails its check would fail again on resume.
-                part.unlink(missing_ok=True)
-                raise
-        if final != dest:
-            os.replace(part, final)
-    return final
+def _save_fetch(fetch: Fetch, held: _files.Part, label: str, size: int | None,
+                kind: str | None, stop: threading.Event | None) -> None:
+    """Have `fetch(path, progress)` write into the part `held`, then check it as `kind`.
+
+    Args:
+        fetch: the source's function, given the part's path and a progress callback.
+        held: the file's locked part.
+        label: the progress bar's label.
+        size: the size the source gave, or None.
+        kind: what the file must be, or None to check nothing.
+        stop: set to stop at the fetch's next progress report.
+    """
+    # A fetch that resumes (Telegram's) keeps its offsets in `<part>.json`, which goes when the
+    # part lands.
+    held.side = True
+    with _Row(label) as row:
+        row.start(size)
+        fetch(held.path, partial(row.stoppable, stop=stop))
+    if kind is not None:
+        _place(held, kind, size is not None)
 
 
-def _placed(part: Path, dest: Path, kind: str | None, known: bool) -> Path:
-    """Where the fetched `part` goes, by `kind` and its content."""
-    if kind == paths.SNIFF:
-        return _sniffed(part, dest, known)
-    return dest if kind is None else _as_media(part, dest, kind, known)
+def _place(held: _files.Part, kind: str, known: bool) -> None:
+    """Point `held` at the name its content calls for, or drop it when it isn't `kind`.
+
+    A whole file that fails its check would fail again on resume, so its part is removed.
+
+    Args:
+        held: the finished part; its first bytes are read through its descriptor.
+        kind: `paths.SNIFF`, or what the file must be (`paths.IMAGE`, …).
+        known: whether the server or the source gave the size.
+
+    Raises:
+        SiteError: the content is a web page where media was expected.
+    """
+    try:
+        head = held.head()
+        if kind == paths.SNIFF:
+            held.dest = _sniffed(head, held.dest, known)
+        else:
+            held.dest = _as_media(head, held.dest, kind, known)
+    except BaseException:
+        held.drop()
+        raise
 
 
-def _as_media(part: Path, dest: Path, kind: str, known: bool) -> Path:
-    """Where a downloaded photo or video goes by content; raises on web page or corrupt."""
-    extension = paths.checked(part, kind, decode=not known)
+def _as_media(head: bytes, dest: Path, kind: str, known: bool) -> Path:
+    """Where a photo or video starting with `head` goes; raises on a web page."""
+    extension = paths.checked(head, kind, decode=not known)
     if extension is None or same_extension(extension, dest.suffix):
         return dest
     return dest.with_suffix(extension)
 
 
-def _sniffed(part: Path, dest: Path, known: bool) -> Path:
-    """Where a file whose content decides its kind goes: media by content, else as `dest`."""
-    extension = paths.sniff(part)
+def _sniffed(head: bytes, dest: Path, known: bool) -> Path:
+    """Where a file whose content decides its kind goes: media by content, else as `dest`.
+
+    Args:
+        head: the file's first bytes.
+        dest: its planned path.
+        known: whether its size was given.
+
+    Returns:
+        `dest` with the extension its content calls for added, or `dest` as it is.
+
+    Raises:
+        SiteError: the content is a web page.
+    """
+    extension = paths.sniff(head)
     if extension in paths.PAGES:
         raise paths.not_media("a file")
     # `kind_of` reads a name's extension, and ".mp4" alone is a name without one.
@@ -295,8 +420,28 @@ def _sniffed(part: Path, dest: Path, known: bool) -> Path:
     if extension is None or kind is None:
         # An archive, a document, or nothing `sniff` knows: kept as it came.
         return dest
-    paths.checked(part, kind, decode=not known)
+    paths.checked(head, kind, decode=not known)
     return dest.with_name(dest.name + extension)
+
+
+def served_day(value: str | None) -> datetime.date | None:
+    """The UTC day of an HTTP `Last-Modified` date.
+
+    Args:
+        value: the header's value, or None.
+
+    Returns:
+        The day, or None when the header is missing or malformed.
+    """
+    if not value:
+        return None
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return when.astimezone(datetime.timezone.utc).date()
 
 
 def same_extension(one: str, other: str) -> bool:

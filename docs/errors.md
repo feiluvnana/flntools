@@ -68,7 +68,7 @@ declared twice) raises `SourceError` when its class is made.
 | a 404 or 410, a private item | `NotFound` | never | the file or target fails |
 | a 401 or 403 from the source's own domains, a login wall | `LoginError` | never | the source stops: its other targets fail with the same error, and the other sources go on |
 | a 401 or 403 from another host (a CDN's expired link) | `SiteError` | a 403 or 410 on a post whose files the source lists lazily lists them again once, for a fresh link | the file fails alone |
-| a truncated transfer | `NetworkError` | yes, resuming from the stage file | the stage is kept for the next run |
+| a truncated transfer | `NetworkError` | yes, resuming from the part | the part is kept for the next run |
 | an answer that doesn't parse, a web page where media was expected | `Changed`, `SiteError` | never | the file or target fails |
 | no space, no permission, a name too long | `DiskError` | never | the run stops |
 | a missing or failing ffmpeg, 7zz or browser | `ToolError` | a DASH merge that ffmpeg failed is tried 3 times in all; a missing tool never | the file or target fails |

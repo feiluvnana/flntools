@@ -948,15 +948,53 @@ class CtrlCTest(JobCase):
         self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
         folder = self.target_dir("big", "example_user")
         names = sorted(path.name for path in folder.iterdir())
-        self.assertEqual(names, [".big.7z.stage"])
+        # The part, and beside it the ETag its bytes came under.
+        self.assertEqual(names, ["big.7z.part", "big.7z.part.json"])
 
-        # The next run resumes the part.
+        # The next run resumes the part, sending the ETag so a changed file comes whole.
         self.stop.soon.clear()
         self.stop.now.clear()
         self.run_engine(Big, targets=["big:example_user"])
         self.assertEqual((folder / "big.7z").read_bytes(), body)
-        self.assertTrue(self.fetched(f"{CDN}/big.7z")[-1].headers["range"].startswith("bytes=5-"))
+        last = self.fetched(f"{CDN}/big.7z")[-1]
+        self.assertTrue(last.headers["range"].startswith("bytes=5-"))
+        self.assertEqual(last.headers["if-range"], '"b1"')
         self.assertEqual(sorted(path.name for path in folder.iterdir()), ["big.7z"])
+
+    def test_two_runs_on_one_home_save_a_file_once(self):
+        """A second run finds the file's part locked, skips it, and the first run writes its row."""
+        sent, gate = threading.Event(), threading.Event()
+        self.addCleanup(gate.set)
+
+        class Big(Source):
+            code, name, domains = "big", "Big", ("example.com",)
+            folder = ""
+
+            @target("{user}")
+            def user(self, site, user):
+                return user
+
+            @user.category
+            def posts(self, site, user):
+                yield Post("1", [File(f"{CDN}/big.7z", name="big.7z")])
+
+        body = b"0123456789"
+        self.routes[f"{CDN}/big.7z"] = lambda request: httpx.Response(
+            200, headers={"Content-Length": "10"}, stream=Cut(body, gate=gate, sent=sent))
+        thread, outcome = self.start(Big, "big:example_user")
+        self.until(sent.is_set)
+        # The first run holds the part, half written: the second run, on the same home, skips it.
+        second = self.report(Big, targets=["big:example_user"])
+        self.assertEqual(second.files, 0)
+        self.assertIn("big.7z: being saved by another run", self.dest.getvalue())
+        gate.set()
+        thread.join(10)
+        self.assertEqual(outcome["report"].files, 1)
+        folder = self.target_dir("big", "example_user")
+        self.assertEqual((folder / "big.7z").read_bytes(), body)
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["big.7z"])
+        self.assertEqual(list(self.history()), ["big:1_0"])
+        self.assertEqual(len(self.fetched(f"{CDN}/big.7z")), 1)
 
 
 class BrowserUpFrontTest(JobCase):

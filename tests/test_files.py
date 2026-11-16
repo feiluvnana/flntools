@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from flnd.common import paths
-from flnd import _files as fs
+from flnd import _files
 from flnd._ui import ui
 from flnd.errors import SiteError
 
@@ -27,12 +27,12 @@ class FilesCase(unittest.TestCase):
 
 
 class PartNameTest(FilesCase):
-    def test_fs_stage_names_match_what_sweep_removes(self):
-        """Every temporary file flnd writes comes from `fs.stage`, so the sweep's glob matches it."""
-        with fs.stage(self.tmp / "a.jpg") as part:
-            self.assertEqual(part.parent, self.tmp)
-            self.assertTrue(fnmatch.fnmatch(part.name, paths.PART_GLOB), part.name)
-            self.assertEqual(part.name, ".a.jpg.stage")
+    def test_part_names_match_what_sweep_removes(self):
+        """Every file flnd writes goes through a part, so the sweep's glob matches it."""
+        with _files.part(self.tmp / "a.jpg") as held:
+            self.assertEqual(held.path.parent, self.tmp)
+            self.assertTrue(fnmatch.fnmatch(held.path.name, paths.PART_GLOB), held.path.name)
+            self.assertEqual(held.path.name, "a.jpg.part")
 
 
 class CheckedTest(FilesCase):

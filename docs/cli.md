@@ -156,8 +156,8 @@ instead.
 ## Ctrl-C
 
 - The **first** Ctrl-C stops listing and lets the files in progress finish.
-- The **second** stops at once. Unfinished files stay as stage files, and the next run resumes
-  each category from its saved cursor.
+- The **second** stops at once. Unfinished files stay as parts (`<name>.part`), which the next
+  run resumes, and it resumes each category from its saved cursor.
 
 ## For contributors
 

@@ -242,7 +242,7 @@ def history_breaches(source: str) -> list[str]:
 # aliases; this is the one exception, and it is temporary.
 TRANSITIONAL_ALIASES = {
     ("browser", "_browser"), ("cli", "_cli"),
-    ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"), ("fs", "_files"),
+    ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"),
     ("http", "_http"), ("prompt", "_prompt"), ("selector", "_html"), ("sh", "_tools"),
     ("store", "_db"), ("text", "_text"), ("worker", "_loop"),
 }

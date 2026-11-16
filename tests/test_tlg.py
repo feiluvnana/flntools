@@ -672,7 +672,7 @@ class DownloadTest(DownloadCase):
                 on_disk.append((dest.stat().st_size, json.loads(data)["done"][0]))
 
             with open(dest, "r+b") as file, mock.patch.object(tlg, "REQUEST", 8), \
-                    mock.patch.object(tlg.fs, "write", side_effect=save):
+                    mock.patch.object(tlg._files, "write", side_effect=save):
                 download = tlg._Download(site, SimpleNamespace(size=16), file, lambda *_: None,
                                          sidecar=sidecar, done=[3])
                 asyncio.run(download.run())

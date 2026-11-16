@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import Union
 
 from flnd import _vault as crypto
-from flnd import _files as fs
+from flnd import _files
 from flnd import _http as http
 from flnd.errors import DiskError, ToolError
 
@@ -146,7 +146,7 @@ class Tool:
             known[key] = {"mtime": mtime, "version": version}
             # A read-only cache costs a spawn next time, not the answer.
             with suppress(DiskError):
-                fs.write(cache, json.dumps(known, indent=1, sort_keys=True))
+                _files.write(cache, json.dumps(known, indent=1, sort_keys=True))
         return version
 
 
@@ -324,11 +324,13 @@ def _download(name: str, specs: Mapping[tuple[str, str], Spec] | None) -> Tool:
                            hint=f"install {name}, or put it on PATH")
     bin_name = spec.bin or (f"{name}.exe" if key[0] == "windows" else name)
     target = _cache_root() / name / spec.sha256[:12] / Path(bin_name).name
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Two threads finding one tool download it once.
-    with fs.lock(target.parent):
-        if not target.is_file():
-            _provision(spec, bin_name, target)
+    # Two threads finding one tool download it once: the second waits on the binary's part,
+    # then finds the binary there.
+    with _files.part(target) as held:
+        if target.is_file():
+            held.drop()
+        else:
+            _provision(spec, bin_name, held)
     return Tool(target, name)
 
 
@@ -344,9 +346,19 @@ def _cache_root() -> Path:
     return root / "flntools" / "tools"
 
 
-def _provision(spec: Spec, bin_name: str, target: Path) -> None:
+def _provision(spec: Spec, bin_name: str, held: _files.Part) -> None:
+    """Download the tool's archive, check its sha256, and write the binary into `held`.
+
+    Args:
+        spec: where to download it and its sha256.
+        bin_name: the binary's path inside the archive.
+        held: the binary's part, held so two threads download it once.
+
+    Raises:
+        ToolError: the download's sha256 isn't the spec's.
+    """
     archive_name = PurePosixPath(spec.url.split("?", 1)[0]).name or "download"
-    stage = target.parent / f".{archive_name}.download"
+    stage = held.dest.parent / f".{archive_name}.download"
     try:
         http.download(spec.url, stage)
         actual = crypto.digest(stage, algorithm="sha256")
@@ -354,24 +366,33 @@ def _provision(spec: Spec, bin_name: str, target: Path) -> None:
             raise ToolError(
                 f"{archive_name}: sha256 mismatch (expected {spec.sha256}, got {actual})"
             )
-        _install_artifact(stage, archive_name, bin_name, target)
+        _install_artifact(stage, archive_name, bin_name, held)
     finally:
         stage.unlink(missing_ok=True)
 
 
-def _install_artifact(stage: Path, archive_name: str, bin_name: str, target: Path) -> None:
+def _install_artifact(stage: Path, archive_name: str, bin_name: str, held: _files.Part) -> None:
+    """Write the binary from the downloaded `stage` into `held`, executable.
+
+    Args:
+        stage: the downloaded archive, or the binary itself.
+        archive_name: the download's file name, whose extension says what it is.
+        bin_name: the binary's path inside an archive.
+        held: the binary's part.
+    """
     lower = archive_name.lower()
     if lower.endswith(".zip"):
-        _extract_zip(stage, bin_name, target)
+        held.write(_extract_zip(stage, bin_name))
     elif lower.endswith((".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tar")):
-        _extract_tar(stage, bin_name, target)
+        held.write(_extract_tar(stage, bin_name))
     else:
-        fs.write(target, stage.read_bytes())
+        held.write(stage.read_bytes())
     if os.name != "nt":
-        target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        mode = os.fstat(held.fd).st_mode
+        os.chmod(held.fd, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _extract_zip(archive_path: Path, bin_name: str, target: Path) -> None:
+def _extract_zip(archive_path: Path, bin_name: str) -> bytes:
     wanted = bin_name.lstrip("./")
     with zipfile.ZipFile(archive_path) as zf:
         for info in zf.infolist():
@@ -381,12 +402,11 @@ def _extract_zip(archive_path: Path, bin_name: str, target: Path) -> None:
             if ".." in PurePosixPath(member).parts:
                 raise ToolError(f"unsafe zip member {info.filename!r}")
             if member == wanted or member.endswith(f"/{wanted}"):
-                fs.write(target, zf.read(info))
-                return
+                return zf.read(info)
     raise MissingError(f"{bin_name!r} not found in {archive_path.name}")
 
 
-def _extract_tar(archive_path: Path, bin_name: str, target: Path) -> None:
+def _extract_tar(archive_path: Path, bin_name: str) -> bytes:
     wanted = bin_name.lstrip("./")
     with tarfile.open(archive_path) as tf:
         for member in tf.getmembers():
@@ -399,6 +419,5 @@ def _extract_tar(archive_path: Path, bin_name: str, target: Path) -> None:
                 stream = tf.extractfile(member)
                 if stream is None:
                     break
-                fs.write(target, stream.read())
-                return
+                return stream.read()
     raise MissingError(f"{bin_name!r} not found in {archive_path.name}")

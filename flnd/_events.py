@@ -68,7 +68,7 @@ class Saved(msgspec.Struct, frozen=True, tag=True):
 
 
 class Skipped(msgspec.Struct, frozen=True, tag=True):
-    """A file or a whole post wasn't downloaded, because it is already saved.
+    """A file or a whole post wasn't downloaded: it is already saved, or another run is saving it.
 
     Example:
         >>> from flnd.source import Target

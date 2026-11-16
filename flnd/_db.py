@@ -22,7 +22,7 @@ import os
 import sqlite3
 import threading
 from collections.abc import Iterator, MutableMapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar, Union
 
@@ -269,19 +269,28 @@ def _is_sqlite(path: Path) -> bool:
 
 
 def _convert(path: Path) -> None:
-    """Rewrite a JSON store (`{table: {key: value}}`) as SQLite, in place and atomically."""
-    held = path.with_name(f".{path.name}.convert.lock")
-    try:
-        # Two openers of one old store would each rebuild the same staged file.
-        with _files.lock(held):
-            if not _is_sqlite(path):
-                _rewrite(path)
-    finally:
-        with suppress(OSError):
-            held.unlink(missing_ok=True)
+    """Rewrite a JSON store (`{table: {key: value}}`) as SQLite, in place and atomically.
+
+    Two openers of one old store would each rebuild it, so the store's part is held as a lock
+    while one does: the second waits, then finds the store converted. The part only locks: on
+    macOS a `flock` and SQLite's own locks on one file exclude each other, so the SQLite file is
+    built beside it, as `.<name>.convert`, and renamed over the JSON.
+    """
+    with _files.part(path) as held:
+        held.drop()
+        if not _is_sqlite(path):
+            _rewrite(path)
 
 
 def _rewrite(path: Path) -> None:
+    """Write the JSON store at `path` as SQLite, beside it, then rename it over `path`.
+
+    Args:
+        path: the old JSON store, which its caller holds the part of.
+
+    Raises:
+        DiskError: the JSON can't be read, or isn't an object of tables.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:

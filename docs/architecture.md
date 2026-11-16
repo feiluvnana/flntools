@@ -74,9 +74,9 @@ only through `flnd.sources.SOURCES`.
    HTTP client is made (paced to `Source.pace` on its own domains), and its `connect` hook runs
    (Telegram's client). A source that `requires_login` and has none fails here, for each of its
    targets; any other source without a login warns and goes on with public access.
-6. **One target** (`job.download`). The job takes a lock for the target's folder (in
-   `metadata/locks/`), removes stale stage files an interrupted run left there, and queues the
-   files that failed last time, so they are tried first.
+6. **One target** (`job.download`). The job removes the stale parts an interrupted run left in
+   the target's folder (a week old, and held by no run), and queues the files that failed last
+   time, so they are tried first. Nothing locks the target: each file's part locks itself.
 7. **Listing.** The route runs and returns the profile; then each wanted category yields its
    posts, page by page. A category whose listing was interrupted resumes from its saved cursor,
    then catches up from the newest post. `--time` drops posts outside the range; after 5 posts
@@ -87,12 +87,14 @@ only through `flnd.sources.SOURCES`.
    A lazy post's files are listed only once the post is known to be new.
 9. **Downloading** (`Downloads`). Each new file goes to a `flnd._loop.Pool` of
    `Source.concurrency` threads (8 by default). The pool's queue is bounded, so the listing waits
-   when downloads fall behind. `common/net.download` streams the file into a stage file, tries
-   mirrors in order, merges a DASH video with its audio through ffmpeg, checks the content (a
-   web page instead of a photo is a failure, not a file) and gives it the extension its content
-   calls for. The stage is then renamed onto the real name.
-10. **Finishing a file.** The file's modified time is set to its post's date (at noon UTC), and
-    its history row is written: path, size, post id, category and date. The same file in two
+   when downloads fall behind. `common/net.download` opens and locks the file's part
+   (`<name>.part`, see `docs/storage`), skipping a file another run is saving, then streams the
+   file into it, resuming what a failed run kept. It tries mirrors in order, merges a DASH video
+   with its audio through ffmpeg, checks the content (a web page instead of a photo is a
+   failure, not a file) and gives it the extension its content calls for. The part gets its
+   post's date (at noon UTC) as its modified time and is renamed onto the real name.
+10. **Finishing a file.** Its history row is written: path, size and modified time (from the
+    part, so nothing stats the file again), post id, category and date. The same file in two
     categories is saved once and linked from the second (a relative symlink, or a hard link where
     symlinks aren't allowed).
 11. **Ending the target.** The job saves the categories it listed to their end, the cursors of
@@ -111,7 +113,7 @@ A run uses a few threads, and every rule below protects one of them:
 - **The main thread** runs the engine and each target's listing: the route, the categories and
   the planning. A source's plain `def` routes therefore run top to bottom, without locks.
 - **The download pool** (`flnd._loop.Pool`, per target) runs the file downloads. Each pool
-  thread writes its file's stage, renames it, sets its date and writes its history row; the job's
+  thread writes its file's part, dates it, renames it and writes its history row; the job's
   `_writing` lock guards the run's own lists of written and failed files, and SQLite serializes
   the history writes.
 - **The browser thread.** Playwright runs on one thread of its own (`site._BrowserPool`), shared by
@@ -120,7 +122,7 @@ A run uses a few threads, and every rule below protects one of them:
 - **An event loop for async sources.** A source with an async SDK (Telegram's Telethon) runs its
   coroutines on its own loop through `SourceRun.run_async`.
 - **Ctrl-C** is handled by `flnd._cli.stopping`: the first one sets `stop.soon` (stop listing,
-  let running files finish), the second sets `stop.now` (stop at once, keep the stage files).
+  let running files finish), the second sets `stop.now` (stop at once, keep the parts).
 
 ## Where things are kept
 

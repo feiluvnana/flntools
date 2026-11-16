@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Callable, Literal, Sequence, Union
 
-from flnd import _files as fs
+from flnd import _files
 from flnd import _tools as sh
 from flnd.errors import DiskError, SiteError
 
@@ -89,8 +88,8 @@ def pack(
         if password:
             _seven_zip_pack(src_list, out, kind, password=password)
         else:
-            with fs.stage(out, keep=False) as part:
-                with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            with _files.part(out) as held:
+                with zipfile.ZipFile(held.path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                     for done, (disk_path, arc_name) in enumerate(files, 1):
                         zf.write(disk_path, arc_name)
                         if progress:
@@ -99,8 +98,8 @@ def pack(
         _seven_zip_pack(src_list, out, kind, password=password)
     else:
         mode = {"tar": "w", "gz": "w:gz", "bz2": "w:bz2", "xz": "w:xz"}[kind]
-        with fs.stage(out, keep=False) as part:
-            with tarfile.open(part, mode) as tf:  # type: ignore[call-overload]
+        with _files.part(out) as held:
+            with tarfile.open(held.path, mode) as tf:  # type: ignore[call-overload]
                 for done, (disk_path, arc_name) in enumerate(files, 1):
                     tf.add(disk_path, arcname=arc_name)
                     if progress:
@@ -304,11 +303,23 @@ def _unpack_tar(
 
 
 def _save(stream: IO[bytes], target: Path, *, replace: bool) -> None:
-    """Copy `stream` onto `target` atomically, piece by piece."""
+    """Copy `stream` onto `target` through its part, a chunk at a time.
+
+    Args:
+        stream: an archive entry, open for reading.
+        target: where it lands.
+        replace: overwrite a file already at `target`.
+
+    Raises:
+        DiskError: `target` exists and `replace` is off, or it can't be written.
+    """
     if not replace and target.exists():
         raise DiskError(f"{target} already exists")
-    with fs.stage(target, keep=False) as part, part.open("wb") as out:
-        shutil.copyfileobj(stream, out, CHUNK)
+    with _files.part(target) as held:
+        # Unbuffered, so an entry costs one chunk of memory however big it is.
+        while chunk := stream.read(CHUNK):
+            held.write_at(held.size, chunk)
+            held.size += len(chunk)
 
 
 def _7z_tool() -> sh.Tool:
@@ -325,15 +336,22 @@ def _seven_zip_pack(
     sources: Sequence[Path], out: Path, kind: str, *, password: str | None,
 ) -> None:
     tool = _7z_tool()
-    # `-t` names the format: the stage's name ends in `.stage`, not in `.7z` or `.zip`.
+    # `-t` names the format: the part's name ends in `.part`, not in `.7z` or `.zip`.
     args = ["a", "-y", f"-t{kind}"]
     if password:
         args.append(f"-p{password}")
     # `--` ends the switches, so a path starting with "-" (`-sdel`) is never read as one.
-    with fs.stage(out, keep=False) as part:
-        # 7zz adds to an archive already there, such as a stage a crash left behind.
-        part.unlink(missing_ok=True)
-        tool.run(*args, "--", part, *sources)
+    # 7zz adds to an archive already there, and reads an empty file (a fresh part) as a broken
+    # one, so it writes a file of its own, which then replaces `out`. Its name ends in `.part`,
+    # so a sweep clears it after a crash.
+    temp = out.with_name(f"{out.name}.7z.part")
+    temp.unlink(missing_ok=True)
+    try:
+        tool.run(*args, "--", temp, *sources)
+        os.replace(temp, out)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:

@@ -24,7 +24,8 @@ import httpx
 
 import flnd
 from flnd import job, sources
-from flnd import _cli as cli, _files as fs, _http as http, _time as clock, _tools as sh
+from flnd import _files
+from flnd import _cli as cli, _http as http, _time as clock, _tools as sh
 from flnd.errors import (
     Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
     Stopped, ToolError, UsageError, classify, disk,
@@ -147,9 +148,9 @@ class ClassesTest(HttpCase):
         self.assertEqual(disk(OSError(errno.ENAMETOOLONG, "File name too long")).hint,
                          "use a shorter --home or folder template")
         refused = OSError(errno.EACCES, "Permission denied")
-        with mock.patch.object(fs.os, "replace", side_effect=refused):
+        with mock.patch.object(_files.os, "replace", side_effect=refused):
             with self.assertRaises(DiskError) as caught:
-                fs.write(Path(self.enterContext(_folder())) / "a.txt", "x")
+                _files.write(Path(self.enterContext(_folder())) / "a.txt", "x")
         self.assertIn("Permission denied", str(caught.exception))
         self.assertFalse(caught.exception.retryable)
 
@@ -263,7 +264,7 @@ class PolicyTest(HttpCase):
                 client.download(f"{SITE}/a.mp4", dest)
         self.assertTrue(caught.exception.retryable)
         self.assertFalse(dest.exists())
-        self.assertEqual(fs._stage_path(dest).read_bytes(), body[:30])
+        self.assertEqual(_files._part_path(dest).read_bytes(), body[:30])
         # The next try resumes from byte 30 with a Range request.
         with http.fake({f"{SITE}/a.mp4": body}):
             http.download(f"{SITE}/a.mp4", dest)

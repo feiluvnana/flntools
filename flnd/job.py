@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import email.utils
 import filecmp
 import inspect
 import os
@@ -32,7 +31,7 @@ from flnd.errors import (
 from flnd.source import (
     Category, File, Post, Range, Resume, Route, Site, Source, Target, day, fill, listing,
 )
-from flnd import _vault, _files, _db, _text, _loop
+from flnd import _files, _db, _text, _loop
 from flnd._events import Failed, Progress, Saved, Skipped
 from flnd._ui import ui
 
@@ -1033,6 +1032,14 @@ class Downloads:
             if saved is None and queued.refreshed is not None:
                 refreshed = self._expired(queued)
                 saved = self._fetch(queued, refreshed, received) if refreshed is not None else None
+        # Another run holds this file's part: it saves the file and writes its row, so this run
+        # skips it (docs/storage, "Sharing a home").
+        except _files.BusyError:
+            self._count(queued, downloading=-1, skipped=1)
+            self.settings.emit(Skipped(self.target, placed.post.category, placed.post.id,
+                                       queued.dest))
+            ui.info("{name}: being saved by another run", name=placed.path)
+            return False
         # A file the site or the network failed fails alone; the run goes on (docs/errors).
         except (SiteError, NetworkError) as error:
             self._record_failed(queued)
@@ -1056,21 +1063,23 @@ class Downloads:
         self._downloaded(queued, saved, received)
         return True
 
-    def _downloaded(self, queued: _Queued, saved: Path, received: Mapping[str, str]) -> None:
+    def _downloaded(
+        self, queued: _Queued, saved: _files.Saved, received: Mapping[str, str]
+    ) -> None:
         """Record a downloaded file's history row."""
-        placed = queued.placed
-        row = self._build_row(queued, saved)
-        dated = day(placed.post.date) or _served_day(received.get("last-modified"))
-        self._finish(queued, saved, _Finished(row, dated))
+        post = queued.placed.post
+        dated = day(post.date) or net.served_day(received.get("last-modified"))
+        self._finish(queued, saved.path, self._build_row(queued, saved), dated)
 
-    def _build_row(self, queued: _Queued, saved: Path) -> dict[str, Any]:
+    def _build_row(self, queued: _Queued, saved: _files.Saved) -> dict[str, Any]:
         """Build the initial history dict for one downloaded file via `msgspec.Struct`."""
         placed = queued.placed
         posted = day(placed.post.date)
         count = placed.values.get("count", 1)
         record = _HistoryRow(
-            path=str(saved),
-            size=saved.stat().st_size,
+            path=str(saved.path),
+            size=saved.size,
+            mtime=saved.mtime,
             at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             id=placed.post.id,
             category=placed.post.category,
@@ -1080,7 +1089,9 @@ class Downloads:
         )
         return msgspec.structs.asdict(record)
 
-    def _fetch(self, queued: _Queued, file: File, received: dict[str, str]) -> Path | None:
+    def _fetch(
+        self, queued: _Queued, file: File, received: dict[str, str]
+    ) -> _files.Saved | None:
         """Download `file` or signal link expiry for a lazy post."""
         placed = queued.placed
         if file.url is None:
@@ -1094,6 +1105,7 @@ class Downloads:
             return net.download(
                 self.run.files, file, queued.dest, label=placed.path,
                 headers=placed.post.headers, kind=placed.kind, received=received,
+                day=day(placed.post.date),
             )
         except SiteError as error:
             if error.status not in EXPIRED or not callable(placed.post.files) or queued.refreshed:
@@ -1146,27 +1158,32 @@ class Downloads:
                 refresh = self._refreshes.popleft()
             refresh.run()
 
-    def _finish(self, queued: _Queued, path: Path, finished: _Finished) -> None:
-        """Set modified time, stamp, and write history row."""
+    def _finish(self, queued: _Queued, path: Path, row: dict[str, Any],
+                dated: datetime.date | None) -> None:
+        """Write a landed file's history row, count it saved, and emit `Saved`.
+
+        Args:
+            queued: the file's queue entry.
+            path: where it landed.
+            row: its history row, with its size and modified time from the landing.
+            dated: the day its modified time was set to; None when it kept the write's.
+        """
         try:
-            if finished.day is not None:
-                _set_mtime(path, finished.day)
-            finished.row.update(paths.stamp(path))
             with self._writing:
                 self._written[queued.key] = path
                 self._succeeded.add(queued.key)
                 self._failed.pop(queued.key, None)
-            self.settings.history[queued.key] = finished.row
+            self.settings.history[queued.key] = row
         except BaseException:
             with self._writing:
                 self._written.pop(queued.key, None)
                 self._succeeded.discard(queued.key)
             self._count(queued, downloading=-1, failed=1)
             raise
-        size = finished.row.get("size", 0)
+        size = row.get("size", 0)
         self._count(queued, downloading=-1, saved=1, bytes=size)
         post = queued.placed.post
-        self.settings.emit(Saved(self.target, post.category, post.id, path, finished.day, size))
+        self.settings.emit(Saved(self.target, post.category, post.id, path, dated, size))
 
     def _record_failed(self, queued: _Queued) -> None:
         if (entry := _serialize_failed(queued)) is not None:
@@ -1186,12 +1203,10 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     """Download one target of a source, counting progress on `board`."""
     if run.settings.stop.soon.is_set():
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
-    folder = paths.target_folder(run.settings.home, target)
-    # The lock lives in metadata, not the target folder, so media folders hold only media.
-    lock = run.settings.home / paths.METADATA / "locks" / f"{_vault.digest(str(folder))[:16]}.lock"
-    with _files.lock(lock):
-        _files.sweep(folder)
-        return _run_download(run, target, board, options)
+    # No lock on the target: each file's part locks itself, so two runs may share a target and
+    # the sweep passes over the parts another run holds.
+    _files.sweep(paths.target_folder(run.settings.home, target))
+    return _run_download(run, target, board, options)
 
 
 def _run_download(
@@ -1372,14 +1387,6 @@ def causes(error: BaseException) -> str:
     return " <- ".join(links)
 
 
-@dataclass
-class _Finished:
-    """Metadata needed to finalize one downloaded file."""
-
-    row: dict[str, Any]
-    day: datetime.date | None
-
-
 def _redated(
     path: Path, found: datetime.date, filename: str, *, estimated: bool
 ) -> Path | None:
@@ -1419,19 +1426,6 @@ def _set_mtime(path: Path, dated: datetime.date) -> None:
         os.utime(path, (stamp, stamp))
     except OSError as error:
         ui.debug("{name}: modified time not set: {error}", name=path.name, error=error)
-
-
-def _served_day(value: str | None) -> datetime.date | None:
-    """Parse an HTTP `Last-Modified` date header into a UTC date, or None."""
-    if not value:
-        return None
-    try:
-        when = email.utils.parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=datetime.timezone.utc)
-    return when.astimezone(datetime.timezone.utc).date()
 
 
 @dataclass

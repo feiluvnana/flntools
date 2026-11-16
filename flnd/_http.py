@@ -5,7 +5,7 @@
     r = http.fetch(url, check=False)                              # no raise on 4xx/5xx
     with http.Client(rate=2.0, retry=http.Retry(3, statuses=(429, 503)), timeout=30) as c:
         c.fetch(url, method="POST", body={"a": 1})                # a dict or list is JSON
-        c.download([mirror1, mirror2], "a.zip", progress=row)     # staged, resumed, size-checked
+        c.download([mirror1, mirror2], "a.zip", progress=row)     # a part, resumed, size-checked
     with http.fake({"https://example.com/api": {"ok": True}}): ...
 
 `body` is the one way to send data: on a GET or HEAD a dict becomes the query string; on any
@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, Mapping, Sequence, TypeVar, Union, cast,
+    TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence, TypeVar, Union, cast,
 )
 
 import msgspec
@@ -76,9 +76,6 @@ MAX_WAIT = 8.0
 MAX_BACKOFF = 3600.0
 # A reset larger than this is a Unix time, not a number of seconds.
 EPOCH = 1_000_000_000.0
-# Writes reach the disk this many bytes at a time; `stop` and progress see every network read,
-# and a dropped connection loses nothing already read.
-CHUNK = 1 << 20
 # A file this big, on a server that serves ranges, comes in SEGMENTS parallel parts.
 SEGMENTED = 64 << 20
 SEGMENTS = 4
@@ -227,25 +224,60 @@ class Client:
     def download(self, url: str | Sequence[str], dest: PathLike, *,
                  headers: Mapping[str, str] | None = None, resume: bool = True,
                  progress: Any = None) -> Path:
-        """Stream `url`, or the first of several mirrors that works, through a stage onto `dest`."""
+        """Stream `url`, or the first of several mirrors that works, through a part onto `dest`.
+
+        Args:
+            url: the file's URL, or mirrors of it tried in order.
+            dest: where the file lands; its folder is made when missing.
+            headers: extra request headers.
+            resume: go on from the bytes a failed run kept in the part, and keep them on
+                failure; False starts from 0 and keeps nothing.
+            progress: a sink for the bytes as they come.
+
+        Returns:
+            `dest`.
+
+        Raises:
+            BusyError: `resume` is on and another run is saving `dest`.
+            Error: the last mirror failed (see the module's list).
+        """
+        with _files.part(dest, resume=resume) as held:
+            self.fill(url, held, headers=headers, resume=resume, progress=progress)
+        return held.dest
+
+    def fill(self, url: str | Sequence[str], held: _files.Part, *,
+             headers: Mapping[str, str] | None = None, resume: bool = True,
+             progress: Any = None) -> None:
+        """Stream `url`, or the first of several mirrors that works, into the open part `held`.
+
+        The caller owns the part: it decides where it lands and what happens on failure.
+
+        Args:
+            url: the file's URL, or mirrors of it tried in order.
+            held: the locked part, from `flnd._files.part`.
+            headers: extra request headers.
+            resume: go on from the bytes the part holds, with `If-Range` on the validator its
+                sidecar kept; False empties it first.
+            progress: a sink for the bytes as they come.
+
+        Raises:
+            Error: the last mirror failed (see the module's list).
+        """
         mirrors = [url] if isinstance(url, str) else list(url)
         if not mirrors:
             raise ValueError("download needs a URL")
-        target = Path(dest)
         meter = _Meter(progress)
-        with _files.stage(target, keep=resume) as part:
-            for mirror in mirrors[:-1]:
-                try:
-                    attempt = functools.partial(self._file, mirror, part, headers, resume, meter)
-                    self._call(mirror, attempt)
-                    return target
-                except Error as error:
-                    ui.debug("{url} failed: {reason}; trying the next mirror",
-                             url=_text.redact(mirror), reason=error)
-                    # The next mirror may serve other bytes: a Range on this stage would splice.
-                    part.unlink(missing_ok=True)
-            self._call(mirrors[-1], lambda: self._file(mirrors[-1], part, headers, resume, meter))
-        return target
+        for mirror in mirrors[:-1]:
+            try:
+                attempt = functools.partial(self._file, mirror, held, headers, resume, meter)
+                self._call(mirror, attempt)
+                return
+            except Error as error:
+                ui.debug("{url} failed: {reason}; trying the next mirror",
+                         url=_text.redact(mirror), reason=error)
+                # The next mirror may serve other bytes: a Range on this part would splice.
+                held.reset()
+        self._call(mirrors[-1], lambda: self._file(mirrors[-1], held, headers, resume, meter))
 
     def _call(self, url: str, send: Callable[[], A], *, method: str = "GET",
               check: bool = True) -> A:
@@ -305,39 +337,79 @@ class Client:
             msg = f"{method} {_text.redact(url)}: {type(error).__name__}: {error}"
             raise NetworkError(_without_userinfo(msg, url)) from error
 
-    def _file(self, url: str, part: Path, headers: Mapping[str, str] | None, resume: bool,
-              meter: _Meter) -> None:
-        """One try at a file: resume the stage, or start over, or fetch it in segments."""
-        offset = part.stat().st_size if resume and part.exists() else 0
-        with self._open(url, headers, f"bytes={offset}-") as response:
+    def _file(self, url: str, held: _files.Part, headers: Mapping[str, str] | None,
+              resume: bool, meter: _Meter) -> None:
+        """One try at a file: resume the part, or start over, or fetch it in segments.
+
+        1. Start from 0 when not resuming, or when a crash left a segmented part with holes.
+        2. Ask for `bytes=<size>-`, with `If-Range` on the validator the part kept, so a file
+           that changed comes whole (a 200) instead of spliced.
+        3. A 206 goes on from the part's end; a 200 starts it over; a 416 is a whole part or a
+           restart; a big whole file on a server with ranges comes in segments.
+
+        Args:
+            url: the file.
+            held: the locked part it goes into.
+            headers: extra request headers.
+            resume: go on from the part's bytes; False empties it first.
+            meter: where the bytes are counted.
+        """
+        if not resume or (held.size and held.meta.get("holes")):
+            held.reset()
+        offset = held.size
+        validator = held.meta.get("etag") if offset else None
+        with self._open(url, headers, f"bytes={offset}-", validator) as response:
             status = response.status_code
             start = offset if status == 206 else 0
             total = _total_bytes(response.headers, start)
+            if status != 416:
+                if not start and held.size:
+                    held.reset()
+                held.note(etag=_validator(response.headers))
             whole = status == 206 and start == 0 and total is not None and total >= SEGMENTED
             if status != 416 and not whole:
-                return self._write(url, response, part, start, total, meter)
+                return self._write(url, response, held, start, total, meter)
         if status == 416:
-            return self._unsatisfied(url, part, headers, offset, total, meter)
+            return self._unsatisfied(url, held, headers, offset, total, meter)
         assert total is not None
-        _Segments(self, url, part, headers, meter).fetch(total)
+        _Segments(self, url, held, headers, meter).fetch(total)
 
-    def _unsatisfied(self, url: str, part: Path, headers: Mapping[str, str] | None,
+    def _unsatisfied(self, url: str, held: _files.Part, headers: Mapping[str, str] | None,
                      offset: int, total: int | None, meter: _Meter) -> None:
-        """A 416 on `Range: bytes=offset-`: the stage is whole, or it is dropped and restarted."""
+        """A 416 on `Range: bytes=offset-`: the part is whole, or it starts over from 0.
+
+        Args:
+            url: the file.
+            held: the part.
+            headers: extra request headers.
+            offset: the range's start, which was the part's size.
+            total: the file's size from `Content-Range: */<total>`, or None.
+            meter: where the bytes are counted.
+
+        Raises:
+            SiteError: a 416 for a range from 0, which no retry would mend.
+        """
         if total == offset:
-            part.touch()
             meter.start(offset, offset)
             return
         if not offset:
             raise SiteError(f"GET {_text.redact(url)}: HTTP 416", status=416)
-        part.unlink()
-        self._file(url, part, headers, False, meter)
+        self._file(url, held, headers, False, meter)
 
     @contextmanager
-    def _open(self, url: str, headers: Mapping[str, str] | None,
-              span: str) -> Iterator[httpx.Response]:
-        """Stream a GET for `span`, raising for a 4xx or 5xx other than 416."""
-        request = self._request("GET", url, {**(headers or {}), "Range": span}, None)
+    def _open(self, url: str, headers: Mapping[str, str] | None, span: str,
+              validator: str | None = None) -> Iterator[httpx.Response]:
+        """Stream a GET for `span`, raising for a 4xx or 5xx other than 416.
+
+        Args:
+            url: the file.
+            headers: extra request headers.
+            span: the `Range` header's value.
+            validator: an ETag or date for `If-Range`: the server sends the range only while the
+                file still matches it, and the whole file otherwise.
+        """
+        extra = {"Range": span, **({"If-Range": validator} if validator else {})}
+        request = self._request("GET", url, {**(headers or {}), **extra}, None)
         try:
             response = self._raw.send(request, stream=True)
             try:
@@ -352,23 +424,36 @@ class Client:
         except (httpx.HTTPError, httpx.InvalidURL) as error:
             raise NetworkError(_failed(request, error)) from error
 
-    def _write(self, url: str, response: httpx.Response, part: Path, start: int,
+    def _write(self, url: str, response: httpx.Response, held: _files.Part, start: int,
                total: int | None, meter: _Meter) -> None:
+        """Append the response's body to the part, and fail a transfer that came short.
+
+        Args:
+            url: the file, for messages.
+            response: the open streamed response.
+            held: the part.
+            start: where the response's bytes begin in the file.
+            total: the file's size, or None when the server didn't say.
+            meter: where the bytes are counted.
+
+        Raises:
+            DiskError: the part can't be written.
+            NetworkError: the body ended before `total` (retryable).
+            Stopped: the client's `stop` was set.
+        """
         meter.start(total, start)
-        done = start
         try:
-            with part.open("ab" if start else "wb", buffering=CHUNK) as handle:
-                for chunk in response.iter_bytes():
-                    self._check(url)
-                    handle.write(chunk)
-                    done += len(chunk)
-                    meter.add(len(chunk))
+            for chunk in response.iter_bytes():
+                self._check(url)
+                held.write(chunk)
+                meter.add(len(chunk))
+            held.flush()
         # A full disk or a refused folder is the disk's failure, not the site's: the run stops.
         except OSError as error:
-            raise disk(error, part) from error
-        if total is not None and done < total:
-            raise NetworkError(f"GET {_text.redact(url)}: truncated at {done} of {total} bytes",
-                               retryable=True)
+            raise disk(error, held.path) from error
+        if total is not None and held.size < total:
+            raise NetworkError(f"GET {_text.redact(url)}: truncated at {held.size} of {total} "
+                               "bytes", retryable=True)
 
     def _check(self, url: str) -> None:
         if self._stop is not None and self._stop.is_set():
@@ -445,44 +530,69 @@ class _Meter:
 
 
 class _Segments:
-    """One file fetched as SEGMENTS ranges in parallel, each written at its own offset."""
+    """One file fetched as SEGMENTS ranges in parallel, each written at its own offset.
 
-    def __init__(self, client: Client, url: str, part: Path,
+    The ranges land in the part itself. Until they all arrive the part has holes, so its
+    sidecar says so first (`holes`): a crash then makes the next run start over instead of
+    taking a part of the right size for a whole one.
+
+    Args:
+        client: the client whose `_open` sends each range.
+        url: the file.
+        held: the part the ranges land in.
+        headers: extra request headers.
+        meter: where the bytes are counted.
+    """
+
+    def __init__(self, client: Client, url: str, held: _files.Part,
                  headers: Mapping[str, str] | None, meter: _Meter):
         self.client, self.url, self.headers, self.meter = client, url, headers, meter
-        self.part = part
-        # A sibling of the stage: a crash leaves holes here, never in the stage a resume reads.
-        self.pieces = part.with_suffix(".seg" + part.suffix)
+        self.held = held
         self.failed = threading.Event()
         self.written: list[int] = []
 
     def fetch(self, total: int) -> None:
+        """Fetch every segment; on a failure keep the first one's bytes, which run from 0.
+
+        Args:
+            total: the file's size.
+
+        Raises:
+            Error: the first segment's failure, once every segment has stopped.
+        """
         self.meter.start(total, 0)
-        with self.pieces.open("wb") as handle:
-            handle.truncate(total)
+        self.held.note(holes=True)
+        self.held.flush_note()
         size = -(-total // SEGMENTS)
         spans = [(start, min(start + size, total) - 1) for start in range(0, total, size)]
         self.written = [0] * len(spans)
         with ThreadPoolExecutor(len(spans)) as pool:
             runs = [pool.submit(self.one, index, span) for index, span in enumerate(spans)]
         errors = [error for run in runs if (error := run.exception()) is not None]
-        os.replace(self.pieces, self.part)
         if errors:
             # Only the first segment runs on from byte 0, so a resume streams the rest from there.
-            with self.part.open("r+b") as handle:
-                handle.truncate(self.written[0])
+            self.held.cut(self.written[0])
+            self.held.note(holes=None)
             raise errors[0]
+        self.held.size = total
 
     def one(self, index: int, span: tuple[int, int]) -> None:
+        """Fetch one segment, and fail it when it came short.
+
+        Args:
+            index: which segment, from 0.
+            span: its first and last byte, inclusive.
+
+        Raises:
+            NetworkError: the server sent no range, or a short one (retryable).
+        """
         start, end = span
         try:
-            with self.client._open(self.url, self.headers, f"bytes={start}-{end}") as response, \
-                    self.pieces.open("r+b", buffering=CHUNK) as handle:
+            with self.client._open(self.url, self.headers, f"bytes={start}-{end}") as response:
                 if response.status_code != 206:
                     raise NetworkError(f"GET {_text.redact(self.url)}: no range {start}-{end}",
                                        retryable=True)
-                handle.seek(start)
-                if not self.copy(index, response, handle):
+                if not self.copy(index, start, response):
                     return
             if self.written[index] != end - start + 1:
                 raise NetworkError(f"GET {_text.redact(self.url)}: range {start}-{end} "
@@ -491,14 +601,29 @@ class _Segments:
             self.failed.set()
             raise
 
-    def copy(self, index: int, response: httpx.Response, handle: BinaryIO) -> bool:
-        """Write segment `index` as it comes; False when another segment failed first."""
+    def copy(self, index: int, start: int, response: httpx.Response) -> bool:
+        """Write a segment as it comes.
+
+        Args:
+            index: which segment, from 0.
+            start: its first byte in the file.
+            response: its open streamed response.
+
+        Returns:
+            True when it came whole; False when it stopped because another segment failed.
+
+        Raises:
+            DiskError: the part can't be written.
+        """
         for chunk in response.iter_bytes():
             self.client._check(self.url)
             # The first segment's bytes are kept for a resume, so it alone runs on.
             if index and self.failed.is_set():
                 return False
-            handle.write(chunk)
+            try:
+                self.held.write_at(start + self.written[index], chunk)
+            except OSError as error:
+                raise disk(error, self.held.path) from error
             self.written[index] += len(chunk)
             self.meter.add(len(chunk))
         return True
@@ -591,6 +716,23 @@ def _host(url: str) -> str:
         return (httpx.URL(url).host or "").lower()
     except httpx.InvalidURL as error:
         raise NetworkError(f"{_text.redact(url)}: InvalidURL: {error}") from error
+
+
+def _validator(headers: Mapping[str, str]) -> str | None:
+    """What `If-Range` can name a response's file by: a strong ETag, else its date, else None.
+
+    A weak ETag (`W/"..."`) may not be used in `If-Range` (RFC 9110, 13.1.5).
+
+    Args:
+        headers: the response's headers.
+
+    Returns:
+        The validator, or None when the response has neither.
+    """
+    tag = headers.get("etag")
+    if tag and not tag.startswith("W/"):
+        return tag
+    return headers.get("last-modified")
 
 
 def _total_bytes(headers: Mapping[str, str], offset: int) -> int | None:

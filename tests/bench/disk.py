@@ -1,9 +1,12 @@
 """Benchmark group `disk`: what writing one downloaded file costs, per file.
 
-5,000 files of 100 KiB each, best of 3, each run in a fresh scratch folder. The plain
-`open` + `write` is the floor; a temp file plus `os.replace` is what an atomic write needs at
-least; `fs.write` is what flnd does today (a stage file, a lock file, then a replace). The gap
-between the floor and `fs.write` is the bookkeeping the rewrite of the disk layer is gated on.
+5,000 files of 100 KiB each, best of 3, each run in a fresh scratch folder:
+- `plain_write`: `open` + `write`, the floor;
+- `temp_replace`: a temp file plus `os.replace`, the least an atomic write costs;
+- `part_write`: what a download does: open and lock `<name>.part`, write it, set its modified
+  time on the descriptor, `fstat` it for the history row, and rename it into place;
+- `fs_write`: `flnd._files.write`, a small file of flnd's own, through the same part.
+The gap between the floor and `part_write` is the disk bookkeeping per file.
 """
 
 from __future__ import annotations
@@ -15,10 +18,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 import kit
-from flnd import _files as fs
+from flnd import _files
 
 COUNT = 5000
 DATA = os.urandom(100 * 1024)
+# A post's date, as the downloader sets it: noon UTC.
+MTIME = 1_767_355_200.0
 
 
 def plain(folder: Path) -> None:
@@ -37,16 +42,18 @@ def temp_and_replace(folder: Path) -> None:
         os.replace(temp, folder / str(n))
 
 
+def part_write(folder: Path) -> None:
+    """Write every file as a download does: a locked part, its time, one `fstat`, a rename."""
+    for n in range(COUNT):
+        with _files.part(folder / str(n), resume=True) as held:
+            held.write(DATA)
+            held.mtime = MTIME
+
+
 def fs_write(folder: Path) -> None:
-    """Write every file with `flnd._files.write`, as flnd does today."""
+    """Write every file with `flnd._files.write`."""
     for n in range(COUNT):
-        fs.write(folder / str(n), DATA)
-
-
-def fs_write_no_replace(folder: Path) -> None:
-    """`fs.write(replace=False)`: a stage, a lock and a hard link, which never overwrites."""
-    for n in range(COUNT):
-        fs.write(folder / str(n), DATA, replace=False)
+        _files.write(folder / str(n), DATA)
 
 
 def per_file(write: Callable[[Path], None]) -> float:
@@ -54,6 +61,9 @@ def per_file(write: Callable[[Path], None]) -> float:
 
     Args:
         write: one of the functions above, given the folder to write into.
+
+    Returns:
+        Microseconds per file.
     """
     with tempfile.TemporaryDirectory(prefix="flnd-bench-") as scratch:
         folder = Path(scratch, "out")
@@ -69,7 +79,7 @@ def main() -> None:
     """Time each way of writing and emit the report."""
     report = kit.Report("disk")
     for name, write in (("plain_write", plain), ("temp_replace", temp_and_replace),
-                        ("fs_write", fs_write), ("fs_write_no_replace", fs_write_no_replace)):
+                        ("part_write", part_write), ("fs_write", fs_write)):
         report.add(name, per_file(write), "us")
     report.emit()
 

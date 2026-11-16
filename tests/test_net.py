@@ -250,8 +250,8 @@ class DownloadTest(NetCase):
             thread.join(5)
         self.assertIsInstance(outcome.get("error"), KeyboardInterrupt)
         self.assertEqual(went_on, [])
-        # The stage stays for the next run to resume; nothing reaches m.mp4.
-        self.assertEqual([path.name for path in (self.tmp / "posts").iterdir()], [".m.mp4.stage"])
+        # The part stays for the next run to resume; nothing reaches m.mp4.
+        self.assertEqual([path.name for path in (self.tmp / "posts").iterdir()], ["m.mp4.part"])
 
     def test_a_fetch_function_that_gets_a_web_page_is_called_once(self):
         """Fix 9: a fetch function retries every Exception, so `final` is what stops a login wall costing three tries."""
@@ -298,19 +298,19 @@ class MediaDownloadTest(NetCase):
 
     def test_a_file_named_by_its_content_is_renamed_onto_that_name(self):
         with self.client(httpx.Response(200, content=photo("WEBP"))) as client:
-            self.assertEqual(self.download(client, "https://cdn.example/a.jpg", kind="image").name, "a.webp")
+            self.assertEqual(self.download(client, "https://cdn.example/a.jpg", kind="image").path.name, "a.webp")
         self.assertEqual(self.names(), ["a.webp"])
 
     def test_content_decides_the_extension(self):
         with self.client(httpx.Response(200, content=photo("WEBP"))) as client:
-            self.assertEqual(self.download(client, "https://cdn.example/a.jpg", kind="image"), self.tmp / "posts" / "a.webp")
+            self.assertEqual(self.download(client, "https://cdn.example/a.jpg", kind="image").path, self.tmp / "posts" / "a.webp")
         self.assertEqual(self.names(), ["a.webp"])
         with self.client(httpx.Response(200, content=photo("JPEG"))) as client:
-            self.assertEqual(self.download(client, "https://cdn.example/b.jpeg", "b.jpeg", kind="image").name, "b.jpeg")
+            self.assertEqual(self.download(client, "https://cdn.example/b.jpeg", "b.jpeg", kind="image").path.name, "b.jpeg")
 
     def test_an_mp4_keeps_its_name(self):
         with self.client(httpx.Response(200, content=b"\0\0\0\x18ftypisom" + bytes(32))) as client:
-            self.assertEqual(self.download(client, "https://cdn.example/v.mp4", "v.mp4", kind="video").name, "v.mp4")
+            self.assertEqual(self.download(client, "https://cdn.example/v.mp4", "v.mp4", kind="video").path.name, "v.mp4")
 
     def test_a_web_page_is_requested_once(self):
         """Fix 9: a login wall is the same page on every attempt, so it fails at once instead of three times."""
@@ -329,7 +329,7 @@ class MediaDownloadTest(NetCase):
 
     def test_files_and_archives_are_never_renamed(self):
         with self.client(httpx.Response(200, content=photo("WEBP"))) as client:
-            self.assertEqual(self.download(client, "https://cdn.example/f.zip", "f.zip").name, "f.zip")
+            self.assertEqual(self.download(client, "https://cdn.example/f.zip", "f.zip").path.name, "f.zip")
 
 
 class DashDownloadTest(NetCase):
@@ -366,7 +366,7 @@ class DashDownloadTest(NetCase):
         with self.client() as client, patcher:
             saved = self.merged(client)
         self.assertEqual(len(calls), 1)
-        self.assertEqual([path.name for path in saved.parent.iterdir()], ["r.mp4"])
+        self.assertEqual([path.name for path in saved.path.parent.iterdir()], ["r.mp4"])
 
     def test_merge_temp_files_are_named_part(self):
         """Every file a DASH download writes before its rename matches the part names `flnd._files.sweep` removes."""
@@ -384,21 +384,22 @@ class DashDownloadTest(NetCase):
 
     def test_a_second_ctrl_c_before_the_merge_stops_it(self):
         """The merge is ffmpeg's and can't see `stop`, so a second Ctrl-C after the streams stops before it."""
-        real = http.Client.download
+        real = http.Client.fill
 
-        def transfer(client, url, dest, **kwargs):
-            saved = real(client, url, dest, **kwargs)
+        def transfer(client, url, held, **kwargs):
+            real(client, url, held, **kwargs)
             if url == self.AUDIO:
                 self.stop.set()
-            return saved
 
         patcher, calls = self.fake_ffmpeg()
         with self.client() as client, patcher, \
-                mock.patch.object(http.Client, "download", transfer), \
+                mock.patch.object(http.Client, "fill", transfer), \
                 self.assertRaises(KeyboardInterrupt):
             self.merged(client)
         self.assertEqual(calls, [])
-        self.assertEqual(list((self.tmp / "reels").iterdir()), [])
+        # The streams came whole, so their parts stay for the next run; the empty file's goes.
+        self.assertEqual(sorted(path.name for path in (self.tmp / "reels").iterdir()),
+                         ["r.mp4.audio.part", "r.mp4.video.part"])
 
     def test_a_container_that_cant_hold_the_streams_fails(self):
         patcher, _ = self.fake_ffmpeg(fail=True)

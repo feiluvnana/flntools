@@ -16,7 +16,8 @@ from flnd.source import (
     Error, Fetch, File, Login, LoginError, NetworkError, NotFound, Post, Site, Source, Target,
     UsageError, target,
 )
-from flnd import _browser as browser, _files as fs
+from flnd import _files
+from flnd import _browser as browser
 
 TELEGRAM_WEB = "https://web.telegram.org/"
 # Telegram's production data centers, as every client ships them.
@@ -373,7 +374,7 @@ class _Download:
                 # The offsets may only count bytes the file holds, or a resume would skip them.
                 self.file.flush()
                 payload = json.dumps({"size": self.size, "done": self.done}).encode("utf-8")
-                fs.write(self.sidecar, payload)
+                _files.write(self.sidecar, payload)
             self.progress(sum(self.done), self.size)
         if self.done[number] == before:
             raise NetworkError(f"Telegram sent nothing from byte {position} of {self.size}",

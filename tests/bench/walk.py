@@ -1,6 +1,6 @@
 """Benchmark group `walk`: listing a media folder of 100,000 files, and `stat` on known paths.
 
-The tree is 100 folders of 1,000 empty files each, made once in a scratch folder. `fs.walk` is
+The tree is 100 folders of 1,000 empty files each, made once in a scratch folder. `_files.walk` is
 what flnd uses to list a folder today; `os.scandir` is the floor; `Path.rglob` with `is_file()`
 is what folder statistics use today, and is the slow one. A walk that also reads each file's
 size (`entry.stat()`) costs a `stat` per file, which is why the hot path avoids it.
@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 import kit
-from flnd import _files as fs
+from flnd import _files
 
 FOLDERS, PER_FOLDER = 100, 1000
 FILES = FOLDERS * PER_FOLDER
@@ -43,12 +43,12 @@ def main() -> None:
             (root / str(folder)).mkdir(parents=True)
             for n in range(PER_FOLDER):
                 (root / str(folder) / f"{n}.jpg").touch()
-        report.add("fs_walk", kit.best(lambda: sum(1 for _ in fs.walk(root))) * 1e3, "ms")
+        report.add("fs_walk", kit.best(lambda: sum(1 for _ in _files.walk(root))) * 1e3, "ms")
         report.add("scandir", kit.best(lambda: scandir(root)) * 1e3, "ms")
         report.add("rglob_is_file",
                    kit.best(lambda: sum(1 for p in root.rglob("*") if p.is_file())) * 1e3, "ms")
         report.add("fs_walk_stat",
-                   kit.best(lambda: sum(e.stat().st_size for e in fs.walk(root))) * 1e3, "ms")
+                   kit.best(lambda: sum(e.stat().st_size for e in _files.walk(root))) * 1e3, "ms")
         paths = [root / str(n % FOLDERS) / f"{n % PER_FOLDER}.jpg" for n in range(STATS)]
         report.add("stat", kit.best(lambda: [os.stat(p) for p in paths]) / STATS * 1e6, "us")
     report.emit()

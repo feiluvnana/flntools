@@ -54,12 +54,18 @@
       "better": "lower",
       "baseline": 1196.6848
     },
-    "disk.fs_write": {
+    "disk.part_write": {
       "unit": "us",
       "better": "lower",
       "baseline": 255.0324,
       "target": 130,
-      "gate": "perf:write downloads to a locked part and rename"
+      "gate": "perf:write downloads to a locked part and rename",
+      "note": "the baseline is what a download's file cost before parts: fs.write's stage, lock file and replace"
+    },
+    "disk.fs_write": {
+      "unit": "us",
+      "better": "lower",
+      "baseline": 255.0324
     },
     "disk.plain_write": {
       "unit": "us",
@@ -70,11 +76,6 @@
       "unit": "us",
       "better": "lower",
       "baseline": 110.502
-    },
-    "disk.fs_write_no_replace": {
-      "unit": "us",
-      "better": "lower",
-      "baseline": 449.5144
     },
     "db.point_read": {
       "unit": "us",

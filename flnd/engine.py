@@ -19,7 +19,7 @@ from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_r
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.source import Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
-from flnd import _cli, _files, _db, _text
+from flnd import _cli, _db, _text
 from flnd._events import Failed, Planned
 from flnd._ui import ui
 
@@ -186,7 +186,7 @@ class Engine:
             ui.info("nothing to sync")
             return Report(())
         _validate_targets(self.sources, None, [t for t, _ in chosen])
-        with _cli.stopping(self.stop) as stop, _files.lock(self.home / paths.METADATA / ".lock"):
+        with _cli.stopping(self.stop) as stop:
             results: dict[int, TargetReport] = {}
             pool_settings = RunShared(home=self.home, history={}, stop=stop, emit=self.emit)
             with shared_browser(pool_settings):
@@ -322,7 +322,7 @@ class Engine:
         stop: _cli.Stopping,
         keep: bool = False,
     ) -> Report:
-        """Download non-query targets sequentially with metadata locking.
+        """Download non-query targets in order, recording each in targets.db first.
 
         Args:
             resolved: the targets, in order.
@@ -337,28 +337,27 @@ class Engine:
         Raises:
             KeyboardInterrupt: the run was stopped.
         """
-        with _files.lock(self.home / paths.METADATA / ".lock"):
-            rows = flnd.targets.rows(self.home)
-            chosen = [
-                (
-                    target,
-                    replace(
-                        by_source[target.source],
-                        stop_at_saved=(
-                            by_source[target.source].stop_at_saved
-                            or (
-                                not by_source[target.source].again
-                                and flnd.targets.key(target) in rows
-                                and flnd.targets.sync_enabled(rows[flnd.targets.key(target)])
-                            )
-                        ),
+        rows = flnd.targets.rows(self.home)
+        chosen = [
+            (
+                target,
+                replace(
+                    by_source[target.source],
+                    stop_at_saved=(
+                        by_source[target.source].stop_at_saved
+                        or (
+                            not by_source[target.source].again
+                            and flnd.targets.key(target) in rows
+                            and flnd.targets.sync_enabled(rows[flnd.targets.key(target)])
+                        )
                     ),
-                )
-                for target in resolved
-            ]
-            flnd.targets.record(self.home, chosen, sync=sync, keep=keep)
-            reports = self._run(chosen, stop=stop)
-            return self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)
+                ),
+            )
+            for target in resolved
+        ]
+        flnd.targets.record(self.home, chosen, sync=sync, keep=keep)
+        reports = self._run(chosen, stop=stop)
+        return self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)
 
     def _complete_download(
         self,
@@ -525,7 +524,7 @@ class Engine:
         """Download a mix of discovering and normal targets in caller order."""
         reports: list[TargetReport] = []
         pool_settings = RunShared(home=self.home, history={}, stop=stop, emit=self.emit)
-        with _files.lock(self.home / paths.METADATA / ".lock"), shared_browser(pool_settings):
+        with shared_browser(pool_settings):
             for target in resolved:
                 options = by_source[target.source]
                 if self._is_query(target):

@@ -29,7 +29,7 @@ Each group is one script in `tests/bench/`, run in a fresh interpreter.
 | --- | --- |
 | `startup` | process start to exit: `python -c pass`, the imports, `flnd --help` (median of 15) |
 | `net` | flnd's HTTP client from a loopback server: 1 GiB to disk, 2,000 × 100 KiB on 1 and 8 threads |
-| `disk` | writing 5,000 files of 100 KiB, from a plain write up to `fs.write` |
+| `disk` | writing 5,000 files of 100 KiB: a plain write, a temp file and rename, a download's part |
 | `db` | the history store over 100k rows; SQLite commits per file, per post and per 500 rows |
 | `walk` | listing 100,000 files, and `stat` on known paths |
 | `cpu` | JSON, a JSON path, HTML parsing, hashing, the loop bridge, path planning, the worker pool |
@@ -72,7 +72,7 @@ CPython 3.14.6. The numbers a planned change is gated on:
 | `startup.help` (`flnd --help`) | 162 ms | ≤ 40 ms |
 | `net.big_rate` (1 GiB to disk) | 1.76 GiB/s | ≥ 4 GiB/s |
 | `net.small_8_threads` (2,000 × 100 KiB) | 927 ms | ≤ 300 ms |
-| `disk.fs_write` (per file) | 255 µs | ≤ 130 µs |
+| `disk.part_write` (per file) | 255 µs | ≤ 130 µs |
 | `db.point_read` | 2.39 µs | ≤ 2.2 µs |
 | `db.commit_per_post` (per file) | 8.1 µs | ≤ 15 µs |
 | `e2e.sync_nothing_new` | 4 ms (4,000 files) | ≤ 0.3 s (100k files) |
@@ -83,3 +83,20 @@ CPython 3.14.6. The numbers a planned change is gated on:
 | `sync --compress` over 100k done files | not built yet | ≤ 3 s |
 
 `gates.json` has the rest: 68 numbers in all.
+
+## Disk
+
+What writing one downloaded file costs beyond the write itself, per file of 100 KiB, measured
+A/B on the M5 above while other work ran (the median of 5 alternating runs of the best of 3):
+
+| how | µs per file |
+| --- | ---: |
+| `open` + `write` (the floor) | 70.8 |
+| before parts: a stage file, a lock file, a replace | 303.4 |
+| a download's part: open and lock, write, set the time, one `fstat`, rename | 126.2 |
+
+The lock file cost more than the write itself. A part needs one `open` and one `flock`, and
+the history row takes the file's size and time from the `fstat` before the rename, so nothing
+stats the file again. A part that a failed run left costs one `stat` more, to check that no
+other run landed it meanwhile. `tests/test_fs.py` counts these calls, so a change that adds one
+fails `make check`.

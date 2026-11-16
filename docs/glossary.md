@@ -83,7 +83,7 @@ encrypted in the home's vault (`metadata/secrets.db`, with its key in `metadata/
 The least time between two requests to a source's own domains, in seconds (`Source.pace`, 0.5 by
 default). File downloads from a CDN aren't paced; they are limited by `Source.concurrency`.
 
-## Stage file
-A file being written: a hidden `.<name>.stage` file beside its destination, locked by the run
-writing it (`.<name>.stage.lock`) and renamed onto its real name once complete. A run removes the
-stale stage files an earlier, interrupted run left in the target's folder.
+## Part
+A file being written: `<name>.part` beside its destination, locked by the run writing it and
+renamed onto its real name once whole. A failed download keeps its part, and the next run
+resumes it; a run removes the parts nothing has touched for a week. See `docs/storage`.

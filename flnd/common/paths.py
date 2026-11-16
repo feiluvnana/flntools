@@ -4,8 +4,8 @@
 and secrets, and `log/` with one log per run. Every module takes its path from the table
 below, joined onto flnd's home folder, and never hardcodes paths.
 
-`net` stages downloads in temporary files matching `PART_GLOB`, which `flnd._files.sweep`
-removes; `flnd._files.write` writes small files atomically.
+Every file is written as a part, `<name>.part`, beside it (`flnd._files.part`); the names
+match `PART_GLOB`, and `flnd._files.sweep` removes the stale ones.
 
 `checked` provides media validation used by `net` and the job.
 
@@ -38,8 +38,8 @@ SOURCE_STATE = METADATA / "sources.db"
 SECRETS = METADATA / "secrets.db"
 KEY = METADATA / "secret.key"
 
-# Temporary files match (`flnd._files`'s stage names) and `flnd._files.sweep` removes them.
-PART_GLOB = ".*.stage"
+# What a part's name looks like (`flnd._files.part`), which `flnd._files.sweep` removes when stale.
+PART_GLOB = "*.part"
 # What `sniff` names a server's web page or JSON answer: a login wall or an error page.
 PAGES = (".html", ".json")
 # The kinds of saved file; each gets its extension from its content.
@@ -113,13 +113,24 @@ def target_folder(home: Path, target: Target) -> Path:
     return home / MEDIA / target.source / text.filename(target.value)
 
 
-def sniff(path: Path) -> str | None:
-    """Sniff a common media, archive, or web-page extension from `path`'s leading bytes."""
-    try:
-        with path.open("rb") as handle:
-            head = handle.read(64)
-    except OSError:
-        return None
+def sniff(path: Path | bytes) -> str | None:
+    """Sniff a common media, archive, or web-page extension from a file's leading bytes.
+
+    Args:
+        path: the file, or its first 64 bytes already read (a download reads them through its
+            part's descriptor).
+
+    Returns:
+        The extension, with its dot, or None when the bytes say nothing known.
+    """
+    if isinstance(path, bytes):
+        head = path
+    else:
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(64)
+        except OSError:
+            return None
     if head.startswith(b"\xff\xd8\xff"):
         return ".jpg"
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -159,8 +170,20 @@ def sniff(path: Path) -> str | None:
     return None
 
 
-def checked(path: Path, kind: str, *, decode: bool = True) -> str | None:
-    """The extension a media file calls for, once validated not a web page."""
+def checked(path: Path | bytes, kind: str, *, decode: bool = True) -> str | None:
+    """The extension a media file calls for, once validated not a web page.
+
+    Args:
+        path: the file, or its first 64 bytes.
+        kind: what it must be (`IMAGE`, `VIDEO`, `AUDIO`), named in the error.
+        decode: unused, kept for the callers' signature.
+
+    Returns:
+        The extension its content calls for, or None when unknown.
+
+    Raises:
+        SiteError: the content is a web page or JSON.
+    """
     del decode
     extension = sniff(path)
     if extension in PAGES:
