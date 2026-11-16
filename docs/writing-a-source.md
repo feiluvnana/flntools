@@ -70,7 +70,10 @@ What each part does:
   up to its own cap for one that is. Name a host only when it is known to refuse more, as
   Telegram's flood limit does. A file the source fetches itself (a `fetch` function) counts
   against its first domain. Every request goes out
-  with Chrome's TLS and HTTP/2 fingerprint.
+  with Chrome's TLS and HTTP/2 fingerprint. A home may set its own `pace`, `limits` and
+  `scroll` for the source, and a proxy, under `[sources.<code>]` in its `config.toml`
+  ([storage.md](storage.md#settings-configtoml)): the class says what suits the site, the home
+  what suits its user.
 - **`@target(...)`** makes `user` a **route**: a method that reads one kind of target. Each
   pattern is one way to write it: `exm:{user}` after the code, `example.com/{user}` as a link.
   The method's name, `user`, is the target's kind.

@@ -45,9 +45,9 @@ flnd.Flnd(home: str | os.PathLike[str] | None = None, *, again: bool | None = No
 flnd.Flnd.add(source: type[Source]) -> None
 flnd.Flnd.check(*, fix: bool = False) -> Checked
 flnd.Flnd.close() -> None
-flnd.Flnd.download(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, limit: int | None = None, compress: bool = False, dry: bool = False) -> Run
+flnd.Flnd.download(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, limit: int | None = None, compress: bool | None = None, dry: bool = False) -> Run
 flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: str | None = None) -> list[Record]
-flnd.Flnd.follow(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, compress: bool = False) -> Run
+flnd.Flnd.follow(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, compress: bool | None = None) -> Run
 flnd.Flnd.home: attribute
 flnd.Flnd.login(source: str, how: str) -> Login
 flnd.Flnd.logins: property -> list[Login]
@@ -56,7 +56,7 @@ flnd.Flnd.retry() -> Run
 flnd.Flnd.site(source: str) -> Iterator[Site]
 flnd.Flnd.sources: property -> list[Installed]
 flnd.Flnd.status: property -> Status | None
-flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = (), *, compress: bool = False) -> Run
+flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = (), *, compress: bool | None = None) -> Run
 flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
 flnd.Flnd.ui: property -> str | None
 flnd.Flnd.unfollow(targets: str | Target | Sequence[str | Target]) -> list[Target]

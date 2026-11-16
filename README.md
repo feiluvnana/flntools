@@ -152,7 +152,8 @@ A sync is smart about what it has:
   length, keeps an SSIM of 0.98 or more (photos), and saves at least 5%; otherwise the original
   stays. `flnd sync --compress` also shrinks files saved earlier, and a target followed with
   `--compress` has its new files compressed on every sync. AV1 doesn't play on older Apple
-  devices, so leave `--compress` off for files meant for them.
+  devices: for files meant for them, set `video = "hevc"` under `[compress]` in `config.toml`,
+  and videos go to HEVC (x265) instead.
 - **Archives unpack by themselves** (`.zip`, `.7z`, `.rar`, `.tar*`) into a folder of their name
   beside them. A site that knows the password (LOIBUS) passes it on. Unpacking refuses archive
   tricks: paths that escape the folder, links of any kind, and zip bombs. The archive is kept,
@@ -199,12 +200,36 @@ Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./
   flnd.db                     what was saved, the targets, run history and failures (SQLite)
   secrets.db                  logins, encrypted
   secret.key                  the key to secrets.db
-  config.toml                 optional settings: [defaults] again, dedupe, sidecars, ui
+  config.toml                 optional settings (below)
   logs/                       crash reports and samples of changed site answers, kept 30 days
 ```
 A home made by an older flnd (with `metadata/`) is migrated on first use, so nothing is
 downloaded again. The old files are only read, so the older flnd still works on it.
 [docs/storage.md](docs/storage.md) describes every file and table.
+
+### Settings
+`<home>/config.toml` holds defaults for every run and settings per site. A flag given for one run
+wins over it, and it wins over flnd's default:
+
+```toml
+[defaults]
+compress = true                 # as if every download, follow and sync had --compress
+when = "1y"                     # as if they had --when 1y; "" for every day
+
+[compress]
+video = "hevc"                  # x265 instead of AV1, for devices that can't play AV1
+
+[sources.ins]
+pace = 1.0                      # seconds between page requests
+scroll = "fast"                 # or "human", the default
+limits = { "cdninstagram.com" = 8 }   # files at once from that host
+proxy = "socks5://127.0.0.1:1080"     # HTTP requests only: the browser isn't proxied
+stop_after = 5                  # saved posts in a row that end a sync
+```
+
+`--no-compress` and `--when ""` undo the defaults for one run. A wrong value stops flnd with the
+file, the key and what it takes; an unknown key is a warning.
+[docs/storage.md](docs/storage.md#settings-configtoml) lists every key.
 
 ## Use it from Python
 `flnd.open(home)` gives a `Flnd`, whose methods are the commands. A download returns a run that

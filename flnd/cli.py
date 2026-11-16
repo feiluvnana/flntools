@@ -614,8 +614,10 @@ def _only(sub: argparse.ArgumentParser) -> None:
 
 
 def _when(sub: argparse.ArgumentParser) -> None:
+    # Left out, it is None, and the library reads `[defaults] when` from config.toml.
     sub.add_argument("--when", metavar="WHEN",
-                     help="posts from 2026, 2026-06, 2026-06-15, 2026-01..2026-03, or 30d")
+                     help="posts from 2026, 2026-06, 2026-06-15, 2026-01..2026-03, or 30d; "
+                          "\"\" for every day")
 
 
 def _again(sub: argparse.ArgumentParser) -> None:
@@ -630,9 +632,12 @@ def _again(sub: argparse.ArgumentParser) -> None:
 
 
 def _compress(sub: argparse.ArgumentParser) -> None:
-    sub.add_argument("--compress", action="store_true",
+    # `--compress` and `--no-compress`; neither leaves it None, and the library reads
+    # `[defaults] compress` from config.toml.
+    sub.add_argument("--compress", action=argparse.BooleanOptionalAction, default=None,
                      help="shrink photos and videos as they land when a smaller copy looks the "
-                          "same, and remove each archive once it is extracted")
+                          "same, and remove each archive once it is extracted; --no-compress "
+                          "turns off [defaults] compress for this run")
 
 
 def _exec(sub: argparse.ArgumentParser) -> None:

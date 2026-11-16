@@ -34,7 +34,8 @@ These go before or after the command: `flnd --home ~/Media/flnd sync` and
 | `--help`, `-h` | | print the help of flnd, or of the command it follows |
 | `--version`, `-V` | | print flnd's version |
 
-A flag given on the command line wins; then the environment (`FLND_HOME`); then the default.
+A flag given on the command line wins; then the environment (`FLND_HOME`); then the home's
+`config.toml` ([storage.md](storage.md#settings-configtoml)); then the default.
 
 ## Targets
 
@@ -63,9 +64,9 @@ flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] 
 | --- | --- | --- |
 | `<targets…>` | standard input | the targets; with none, flnd reads them from standard input, one per line, skipping blank lines and lines starting with `#` |
 | `--only CATS` | every category | only these categories, such as `reels,posts`; may be given more than once. With targets from several sources, `ins:reels` names one source's. A single post has no categories, so `--only` with one is a usage error |
-| `--when WHEN` | every day | only posts from these days: a year `2026`, a month `2026-06`, a day `2026-06-15`, a range `2026-01..2026-03` (either end may be left out), or a span back from today `30d`, `8w`, `1y` |
+| `--when WHEN` | `when` under `[defaults]` in `config.toml`, else every day | only posts from these days: a year `2026`, a month `2026-06`, a day `2026-06-15`, a range `2026-01..2026-03` (either end may be left out), or a span back from today `30d`, `8w`, `1y`; `--when ""` takes every day, whatever the config says |
 | `--limit N` | no limit | at most N posts per target, or N targets found by a search; at least 1 |
-| `--compress` | off | replace each saved photo and video by a smaller copy that looks the same, when one passes every check, and remove each archive once it is extracted ([media.md](media.md)) |
+| `--compress`, `--no-compress` | `compress` under `[defaults]` in `config.toml`, else off | replace each saved photo and video by a smaller copy that looks the same, when one passes every check, and remove each archive once it is extracted ([media.md](media.md)); `--no-compress` turns a configured default off for this run |
 | `--dry` | off | list what would be downloaded (each file `new` or `saved`, or the targets a search finds), and download and write nothing |
 | `--again` | off | list every post again, past the stop at saved posts and the saved cursors, and ask again for files the site answered 404 or 410 for, which are otherwise recorded gone and skipped ([storage.md](storage.md)); `again = true` under `[defaults]` in the home's `config.toml` makes it the default |
 | `--exec CMD` | none | run a command once for each saved file, after every step (compress included), without a shell: see [Running a command per file](#running-a-command-per-file) |
@@ -126,8 +127,9 @@ flnd follow <targets…> [--only CATS] [--when WHEN] [--compress] [--again]
 ```
 
 `--only` and `--compress` are kept with each target for later syncs (a target followed with
-`--compress` has its new files compressed by every sync); following again replaces them.
-`--when` bounds this first download only. The flags read as `download`'s do.
+`--compress`, or with `compress = true` in the config, has its new files compressed by every
+sync); following again replaces them. `--when` bounds this first download only. The flags read
+as `download`'s do.
 
 ## `flnd sync`
 
@@ -143,7 +145,9 @@ target. A followed search downloads only the targets it hadn't found before.
 
 `--compress` compresses the new files as they land, then the files these targets saved
 before that aren't done yet; a file compressed, or kept with the same tools, is skipped
-without being opened ([media.md](media.md)).
+without being opened ([media.md](media.md)). Without the flag, `compress` under `[defaults]` in
+the home's `config.toml` decides, and `--no-compress` overrides it. A sync has no `--when`, but
+`when` under `[defaults]` bounds it too.
 
 ## `flnd unfollow`
 

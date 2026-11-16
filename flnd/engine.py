@@ -242,20 +242,25 @@ class Engine:
                 ended.append(report)
                 return report
 
-    def sync(self, targets: Sequence[Target | str] = (), *, compress: bool = False) -> Report:
+    def sync(self, targets: Sequence[Target | str] = (), *, compress: bool = False,
+             time: Range | None = None) -> Report:
         """Bring synced targets up to date: fetch new posts and sum up.
 
         Args:
             targets: only these targets; every synced target when empty.
             compress: shrink the new files as they land, then the files these targets saved
                 before that aren't done yet (docs/media).
+            time: the days every target takes posts from (`[defaults] when` in config.toml);
+                None for every day.
 
         Returns:
             One `TargetReport` per target.
         """
         resolved = self._resolved(targets)
+        span = time or Range()
         # A target followed with `compress` compresses its new files on every sync.
-        chosen = [(target, replace(options, compress=compress or options.compress))
+        chosen = [(target, replace(options, compress=compress or options.compress,
+                                   since=span.since, until=span.until))
                   for target, options in self._plan(resolved)]
         if not chosen:
             ui.info("nothing to sync")

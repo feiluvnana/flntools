@@ -889,16 +889,21 @@ class Session:
         handles: transfers at once in all; more wait for a handle. curl makes a handle only
             when a transfer needs one, so a large number costs nothing until it is used; give
             `Limits.total`, so the session never holds transfers below the caps.
+        proxy: the proxy every request goes through, as curl reads one
+            (`http://host:port`, `socks5://host:port`, `socks5h://…` to look names up there
+            too); None for none. A fake (`fake`) answers without it.
     """
 
     def __init__(self, *, headers: Mapping[str, str] | None = None,
                  cookies: Iterable[Mapping[str, Any]] = (),
                  prepare: Callable[[Request], Request | None] | None = None,
-                 timeout: float = TIMEOUT, handles: int = PAGES + SPREAD * MOST) -> None:
+                 timeout: float = TIMEOUT, handles: int = PAGES + SPREAD * MOST,
+                 proxy: str | None = None) -> None:
         self.headers = Headers(headers or {})
         self.prepare = prepare
         self.timeout = timeout
         self.handles = handles
+        self.proxy = proxy
         self.jar = http.cookiejar.CookieJar()
         self.add(cookies)
         self._raw: Any = None
@@ -979,7 +984,7 @@ class Session:
         """curl_cffi's `AsyncSession`, made on first use, on the running loop.
 
         Returns:
-            The session, with Chrome's fingerprint and `handles` curl handles.
+            The session, with Chrome's fingerprint, `handles` curl handles and the proxy.
 
         Raises:
             ImportError: curl_cffi isn't installed, with the command that installs it.
@@ -990,7 +995,9 @@ class Session:
             except ImportError:
                 raise ImportError("flnd._net needs curl_cffi: pip install curl_cffi") from None
 
-            self._raw = AsyncSession(max_clients=self.handles, impersonate=IMPERSONATE)
+            # `proxy` (None for none) is curl's CURLOPT_PROXY for every transfer of the session.
+            self._raw = AsyncSession(max_clients=self.handles, impersonate=IMPERSONATE,
+                                     proxy=self.proxy)
         return self._raw
 
     async def _curl(self, request: Request) -> _Answer:

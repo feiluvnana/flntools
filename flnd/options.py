@@ -5,15 +5,21 @@ This is flnd's own module (not a library): it knows sources, targets and the hom
   files earlier runs failed on;
 - `RunShared`, what every source of a run shares: the home, its database, the stop signal, the
   browser, the event sink;
-- `Config` and `config`, the `[defaults]` of the home's `config.toml`, and `stop_after`, its
-  `[sources.<code>]` settings (docs/storage);
+- `Config`, `SourceConfig` and `config`: every setting of the home's `config.toml`, read and
+  checked in one place (docs/storage, "config.toml");
 - `categories_by_source`, `validate` and `unknown`, which check `--only` against the targets'
   sources before anything is fetched, and `selected`, which applies it to one source.
 
 Who calls it: the engine (`flnd.engine`) builds the `Options` and `RunShared` of a run and
 checks `--only`; the job reads them; the library (`flnd._library`) and the steps after a download
-(`flnd._steps`) read `config`. What it
-calls: `flnd._home` (the database type), `flnd.source` (`Source`, `Target`) and `flnd.errors`.
+(`flnd._steps`), a source's run (`flnd.site`) and the job read `config`. What it calls:
+`flnd._home` (the database type), `flnd.source` (`Source`, `Target`), `flnd._ui` (a warning for
+a key the config file has that flnd doesn't take) and `flnd.errors`.
+
+How a setting resolves: a flag (or a library argument) given for one run, then the environment
+(`FLND_HOME`, `FLND_SOURCES`, which only say where things are), then `config.toml`, then the
+default. `config` reads and checks the whole file at once, so a bad value anywhere fails any
+command that reads it, with the file, the key and the values it takes in the message.
 
 How `--only` is checked, before any request:
 1. Each entry is split at commas; an entry `<code>:<names>` whose code is a source of the run
@@ -33,15 +39,18 @@ from __future__ import annotations
 import datetime
 import functools
 import tomllib
+import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from flnd import _home
+from flnd._ui import ui
 from flnd.errors import UsageError
-from flnd.source import Source, Target
+from flnd.source import SCROLLS, Source, Target
 
 if TYPE_CHECKING:
     from flnd._run import Stop
@@ -111,76 +120,6 @@ class RunShared:
     # Resolves the text of a target a listing yielded, on any source (the engine's `resolve`);
     # None outside the engine, where a source reads only its own.
     resolve: Callable[[str], Target] | None = field(default=None, repr=False)
-
-
-# ---------------------------------------------------------------------------------------------
-# The home's config file
-# ---------------------------------------------------------------------------------------------
-
-# The home's settings file (docs/storage).
-CONFIG = "config.toml"
-# What `[defaults] dedupe` takes: "link" (the default) hard-links a file whose bytes are already
-# saved; "off" keeps both copies.
-DEDUPE = ("link", "off")
-# What `[defaults] ui` takes: how the CLI shows a run on a terminal (docs/cli, "Views").
-UIS = ("full", "inline", "plain")
-
-
-@dataclass(frozen=True)
-class Config:
-    """The `[defaults]` of a home's `config.toml` that flnd reads, with their defaults.
-
-    The library's calls keep to five options each, so a setting past those lives here.
-    """
-
-    # List every post again and ask again for files recorded gone (the CLI's `--again`).
-    again: bool = False
-    # Hard-link a saved file whose bytes another saved file already has (docs/storage).
-    dedupe: bool = True
-    # Write each saved file's post as `<file>.json` beside it (docs/storage).
-    sidecars: bool = False
-    # How the CLI shows a run on a terminal when `--ui` isn't given: "full", "inline" or
-    # "plain"; None leaves it to the CLI (full screen).
-    ui: str | None = None
-
-
-def config(home: Path) -> Config:
-    """Read the `[defaults]` of a home's `config.toml`.
-
-    Args:
-        home: the home folder; a home without the file reads as every default.
-
-    Returns:
-        The settings.
-
-    Raises:
-        UsageError: the file isn't TOML, or a setting has a value it doesn't take.
-
-    Example:
-        >>> config(Path("no-such-home"))
-        Config(again=False, dedupe=True, sidecars=False, ui=None)
-    """
-    path = home / CONFIG
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return Config()
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
-    defaults = data.get("defaults", {})
-    if not isinstance(defaults, dict):
-        defaults = {}
-    for name in ("again", "sidecars"):
-        if not isinstance(defaults.get(name, False), bool):
-            raise UsageError(f"{path}: {name} is true or false, not {defaults[name]!r}")
-    dedupe = defaults.get("dedupe", "link")
-    if dedupe not in DEDUPE:
-        raise UsageError(f"{path}: dedupe is \"link\" or \"off\", not {dedupe!r}")
-    ui = defaults.get("ui")
-    if ui is not None and ui not in UIS:
-        raise UsageError(f"{path}: ui is \"full\", \"inline\" or \"plain\", not {ui!r}")
-    return Config(again=defaults.get("again", False), dedupe=dedupe == "link",
-                  sidecars=defaults.get("sidecars", False), ui=ui)
 
 
 def selected(options: Options, source: type[Source]) -> tuple[str, ...]:
@@ -461,60 +400,368 @@ def _names_of(route: Any) -> frozenset[str]:
 
 
 # ---------------------------------------------------------------------------------------------
-# Settings from config.toml
+# The home's config file
 # ---------------------------------------------------------------------------------------------
 
+# The home's settings file (docs/storage, "config.toml").
+CONFIG = "config.toml"
+# What `[defaults] dedupe` takes: "link" (the default) hard-links a file whose bytes are already
+# saved; "off" keeps both copies.
+DEDUPE = ("link", "off")
+# What `[defaults] ui` takes: how the CLI shows a run on a terminal (docs/cli, "Views").
+UIS = ("full", "inline", "plain")
+# What `[compress] video` takes: the codec `--compress` turns videos into (docs/media). "hevc"
+# is x265, for devices that can't play AV1.
+VIDEOS = ("av1", "hevc")
+# The proxy schemes `[sources.<code>] proxy` takes: the ones curl speaks. `socks5h` also looks
+# host names up through the proxy.
+PROXIES = ("http", "https", "socks5", "socks5h")
 # How many saved posts in a row end a sync by default (`stop_after`).
 STOP_AFTER = 5
+# Every key each table takes. A key not listed is warned about, never silently ignored, so a
+# typo (`[defaults] compres = true`) can't pass for a setting that works.
+KEYS = {
+    "defaults": ("again", "dedupe", "sidecars", "ui", "compress", "when"),
+    "compress": ("video",),
+}
+SOURCE_KEYS = ("pace", "scroll", "limits", "proxy", "stop_after")
 
 
-def stop_after(home: Path, code: str) -> int:
-    """How many saved posts in a row end a sync of one of a source's `newest_first` listings.
+@dataclass(frozen=True)
+class SourceConfig:
+    """One source's `[sources.<code>]` settings in config.toml; None leaves it to the source.
 
-    Read from `[sources.<code>] stop_after = N` in the home's config.toml, like gallery-dl's
-    `skip = "abort:N"`: a site that pins many posts above its newest needs more than 5.
+    Each setting overrides what the source's class says (`flnd.source.Source`), for this home.
+    """
+
+    # Seconds between the source's page requests; overrides `Source.pace`.
+    pace: float | None = None
+    # How its browser feeds scroll, "human" or "fast"; overrides `Source.scroll`.
+    scroll: str | None = None
+    # The most files at once from a media host, by host; merged over `Source.limits`, so a host
+    # named in both takes this number.
+    limits: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    # The proxy every HTTP request of the source goes through (`socks5://127.0.0.1:1080`);
+    # None for none. The browser isn't proxied: it is one window every source shares.
+    proxy: str | None = None
+    # Saved posts in a row that end a sync of one of its `newest_first` listings.
+    stop_after: int = STOP_AFTER
+
+
+@dataclass(frozen=True)
+class Config:
+    """The settings of a home's `config.toml`, with their defaults (docs/storage).
+
+    The library's calls keep to five options each, so a setting past those lives here. A flag or
+    a library argument given for one run wins over the file; the file wins over the default.
+    """
+
+    # List every post again and ask again for files recorded gone (the CLI's `--again`).
+    again: bool = False
+    # Hard-link a saved file whose bytes another saved file already has (docs/storage).
+    dedupe: bool = True
+    # Write each saved file's post as `<file>.json` beside it (docs/storage).
+    sidecars: bool = False
+    # How the CLI shows a run on a terminal when `--ui` isn't given: "full", "inline" or
+    # "plain"; None leaves it to the CLI (full screen).
+    ui: str | None = None
+    # Compress what a download, follow or sync saves when `--compress` isn't given.
+    compress: bool = False
+    # The days a download, follow or sync takes when `--when` isn't given, as `--when` writes
+    # them (`"1y"`); "" for every day.
+    when: str = ""
+    # The codec `--compress` turns videos into: "av1" or "hevc".
+    video: str = "av1"
+    # Each source's own settings, by code; a source not named has `SourceConfig()`.
+    sources: Mapping[str, SourceConfig] = field(default_factory=lambda: MappingProxyType({}))
+
+    def source(self, code: str) -> SourceConfig:
+        """One source's settings: its `[sources.<code>]` table, or every default.
+
+        Args:
+            code: the source's code.
+
+        Returns:
+            The settings.
+
+        Example:
+            >>> Config().source("ins").stop_after
+            5
+        """
+        return self.sources.get(code) or SourceConfig()
+
+
+def config(home: Path) -> Config:
+    """Read and check the home's `config.toml`: every setting flnd takes, in one place.
+
+    The file is read on each call (it is small), and parsed once per content, so a run that
+    asks many times pays one parse, and a key it doesn't know is warned about once.
 
     Args:
-        home: the home folder.
-        code: the source's code.
+        home: the home folder; a home without the file reads as every default.
 
     Returns:
-        The number; `STOP_AFTER` when the file or the setting isn't there.
+        The settings.
 
     Raises:
-        UsageError: the file isn't TOML, or the setting isn't a whole number of at least 1.
+        UsageError: the file isn't TOML, or a setting has a value it doesn't take; the message
+            names the file, the table and key, and the values it takes.
+
+    Example:
+        >>> config(Path("no-such-home")) == Config()
+        True
     """
     path = home / CONFIG
     try:
-        stamp = path.stat().st_mtime_ns
-    except OSError:
-        return STOP_AFTER
-    settings = _sources_settings(path, stamp).get(code, {})
-    value = settings.get("stop_after", STOP_AFTER) if isinstance(settings, dict) else STOP_AFTER
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise UsageError(f"{path}: [sources.{code}] stop_after is a whole number of at least 1, "
-                         f"not {value!r}")
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return Config()
+    except (OSError, UnicodeDecodeError) as error:
+        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
+    return _parsed(path, text)
+
+
+@functools.lru_cache(maxsize=8)
+def _parsed(path: Path, text: str) -> Config:
+    """Parse and check one content of a config file; cached by path and text.
+
+    1. Parse the TOML; a syntax error names its line.
+    2. Warn about each table and key flnd doesn't take.
+    3. Check each setting's value, and build the `Config`.
+
+    Args:
+        path: the file, for messages.
+        text: its content.
+
+    Returns:
+        The settings.
+
+    Raises:
+        UsageError: the text isn't TOML, or a value is one its key doesn't take.
+    """
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
+    _warn_unknown(path, data)
+    defaults = _table(path, data, "defaults")
+    compress = _table(path, data, "compress")
+    sources = _table(path, data, "sources")
+    where = "defaults"
+    ui = defaults.get("ui")
+    if ui is not None:
+        _choice(path, where, "ui", ui, UIS)
+    return Config(
+        again=_flag(path, where, "again", defaults.get("again", False)),
+        dedupe=_choice(path, where, "dedupe", defaults.get("dedupe", "link"), DEDUPE) == "link",
+        sidecars=_flag(path, where, "sidecars", defaults.get("sidecars", False)),
+        ui=ui,
+        compress=_flag(path, where, "compress", defaults.get("compress", False)),
+        when=_when_text(path, defaults.get("when", "")),
+        video=_choice(path, "compress", "video", compress.get("video", "av1"), VIDEOS),
+        sources=MappingProxyType({
+            code: _source(path, code, _table(path, sources, code, within="sources"))
+            for code in sources
+        }),
+    )
+
+
+def _source(path: Path, code: str, table: Mapping[str, Any]) -> SourceConfig:
+    """Check one `[sources.<code>]` table.
+
+    Args:
+        path: the config file, for messages.
+        code: the source's code, as the table names it.
+        table: the table.
+
+    Returns:
+        The source's settings.
+
+    Raises:
+        UsageError: a value is one its key doesn't take.
+    """
+    where = f"sources.{code}"
+    pace = table.get("pace")
+    if pace is not None and (not isinstance(pace, (int, float)) or isinstance(pace, bool)
+                             or pace < 0):
+        raise _bad(path, where, "pace", "a number of seconds, 0 or more", pace)
+    scroll = table.get("scroll")
+    if scroll is not None:
+        _choice(path, where, "scroll", scroll, SCROLLS)
+    limits = table.get("limits", {})
+    if not isinstance(limits, dict) or not all(
+            isinstance(host, str) and host and isinstance(n, int) and not isinstance(n, bool)
+            and n >= 1 for host, n in limits.items()):
+        raise _bad(path, where, "limits", 'a table of "<host>" = <files at once, at least 1>',
+                   limits)
+    proxy = table.get("proxy")
+    if proxy is not None:
+        _proxy(path, where, proxy)
+    stop = table.get("stop_after", STOP_AFTER)
+    if not isinstance(stop, int) or isinstance(stop, bool) or stop < 1:
+        raise _bad(path, where, "stop_after", "a whole number of at least 1", stop)
+    return SourceConfig(pace=None if pace is None else float(pace), scroll=scroll,
+                        limits=MappingProxyType(dict(limits)), proxy=proxy, stop_after=stop)
+
+
+def _warn_unknown(path: Path, data: Mapping[str, Any]) -> None:
+    """Warn about each table and key of the file that flnd doesn't take.
+
+    A key is warned about rather than refused, so a file written for a newer flnd still opens
+    in an older one.
+
+    Args:
+        path: the config file, for messages.
+        data: the parsed file.
+    """
+    unknown: list[str] = []
+    for name, value in data.items():
+        if name == "sources":
+            for code, table in value.items() if isinstance(value, dict) else ():
+                keys = table if isinstance(table, dict) else {}
+                unknown += [f"[sources.{code}] {key}" for key in keys if key not in SOURCE_KEYS]
+        elif name in KEYS:
+            keys = value if isinstance(value, dict) else {}
+            unknown += [f"[{name}] {key}" for key in keys if key not in KEYS[name]]
+        else:
+            unknown.append(f"[{name}]")
+    for setting in unknown:
+        ui.warn("{path}: {setting} is not a setting flnd knows; it is ignored",
+                path=str(path), setting=setting)
+
+
+def _table(path: Path, data: Mapping[str, Any], name: str, *,
+           within: str = "") -> Mapping[str, Any]:
+    """A table of the file, or an empty one when it isn't there.
+
+    Args:
+        path: the config file, for messages.
+        data: the table it is in.
+        name: its name.
+        within: the name of the table it is in, for messages; "" for the top.
+
+    Returns:
+        The table.
+
+    Raises:
+        UsageError: the name holds a value that isn't a table.
+    """
+    value = data.get(name, {})
+    if not isinstance(value, dict):
+        shown = f"{within}.{name}" if within else name
+        raise UsageError(f"{path}: {shown} is a table ([{shown}]), not {value!r}",
+                         hint="fix the file, or move it away")
     return value
 
 
-@functools.lru_cache(maxsize=4)
-def _sources_settings(path: Path, stamp: int) -> dict[str, Any]:
-    """The `[sources]` table of a config file, read once per change of the file (`stamp`).
+def _flag(path: Path, where: str, name: str, value: Any) -> bool:
+    """A setting that is true or false.
 
     Args:
-        path: the config file to read.
-        stamp: a number that changes whenever the file does (its modification time); it only
-            keys the cache, so a changed file is read again.
+        path: the config file, for messages.
+        where: the table, as `[…]` writes it: `defaults`, `sources.ins`.
+        name: the key.
+        value: what the file has.
 
     Returns:
-        The `[sources]` table, or an empty dict when the file has none or it is not a table.
+        The value.
 
     Raises:
-        UsageError: the file can't be read or is not valid TOML.
+        UsageError: it is anything else.
     """
+    if not isinstance(value, bool):
+        raise _bad(path, where, name, "true or false", value)
+    return value
+
+
+def _choice(path: Path, where: str, name: str, value: Any, allowed: Sequence[str]) -> str:
+    """A setting that is one of a few words.
+
+    Args:
+        path: the config file, for messages.
+        where: the table, as `[…]` writes it: `defaults`, `sources.ins`.
+        name: the key.
+        value: what the file has.
+        allowed: the words it takes.
+
+    Returns:
+        The value.
+
+    Raises:
+        UsageError: it is any other value.
+    """
+    if value not in allowed:
+        raise _bad(path, where, name, " or ".join(f'"{word}"' for word in allowed), value)
+    return value
+
+
+def _when_text(path: Path, value: Any) -> str:
+    """`[defaults] when`, checked as `--when` reads it; "" for every day.
+
+    Args:
+        path: the config file, for messages.
+        value: what the file has.
+
+    Returns:
+        The text, stripped.
+
+    Raises:
+        UsageError: it isn't text `--when` takes.
+    """
+    from flnd._library import WHEN_USAGE, _when
+
+    allowed = 'text --when takes ("1y", "2026", "2026-01..2026-03"), or ""'
+    if not isinstance(value, str):
+        raise _bad(path, "defaults", "when", allowed, value)
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise UsageError(f"{path}: {error}", hint="fix the file, or move it away") from None
-    found = data.get("sources", {})
-    return found if isinstance(found, dict) else {}
+        _when(value)
+    except UsageError:
+        raise _bad(path, "defaults", "when", allowed, value, hint=WHEN_USAGE) from None
+    return value.strip()
+
+
+def _proxy(path: Path, where: str, value: Any) -> None:
+    """Check a proxy: `<scheme>://<host>[:<port>]`, the scheme one curl speaks.
+
+    Args:
+        path: the config file, for messages.
+        where: the table, as `[…]` writes it: `defaults`, `sources.ins`.
+        value: what the file has.
+
+    Raises:
+        UsageError: it is anything else.
+    """
+    allowed = " or ".join(f'"{scheme}://<host>:<port>"' for scheme in PROXIES)
+    if not isinstance(value, str):
+        raise _bad(path, where, "proxy", allowed, value)
+    parts = urllib.parse.urlsplit(value)
+    # A proxy may carry a user and password (`socks5://user:secret@host:1080`), which never
+    # reach a message: the error shows the address with them cut out.
+    shown = value
+    if "@" in parts.netloc:
+        shown = value.replace(parts.netloc, "…@" + parts.netloc.rpartition("@")[2], 1)
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    if parts.scheme not in PROXIES or not parts.hostname or port == -1:
+        raise _bad(path, where, "proxy", allowed, shown)
+
+
+def _bad(path: Path, where: str, name: str, allowed: str, value: Any, *,
+         hint: str | None = None) -> UsageError:
+    """The error for a setting with a value it doesn't take.
+
+    Args:
+        path: the config file.
+        where: the table, as `[…]` writes it: `defaults`, `sources.ins`.
+        name: the key.
+        allowed: what it takes, in words.
+        value: what the file has.
+        hint: what to do; by default, to fix the line.
+
+    Returns:
+        The `UsageError`, naming the file, the table, the key and what it takes.
+    """
+    return UsageError(f"{path}: [{where}] {name} is {allowed}, not {value!r}",
+                      hint=hint or f"fix the line in {path}, or remove it for the default")

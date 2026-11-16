@@ -96,7 +96,7 @@ from flnd.errors import (
     Stopped,
     classify,
 )
-from flnd.options import Options, Retry, stop_after
+from flnd.options import Options, Retry
 from flnd.site import Listing, SourceRun, TargetSite
 from flnd.source import Category, File, NotFound, Post, Range, Route, Site, Source, Target
 from flnd.sources import SOURCES
@@ -2715,7 +2715,7 @@ def _list_one(
     ui.debug("{target}: list {name}", target=str(target), name=name or target.kind)
     stops = _Stops(
         sync=newest_first and name in progress.listed,
-        streak=stop_after(run.settings.home, run.source.code),
+        streak=run.config.stop_after,
         head=progress.seen_heads.get(name),
     )
     if stops.sync:

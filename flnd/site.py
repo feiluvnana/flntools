@@ -26,8 +26,9 @@ loop), `flnd._vault` and `flnd._home` (secrets, state, cookies), `flnd._prompt` 
 A run, step by step:
 1. `shared_browser` makes the run's one event loop and its `RunBrowser`, which launches nothing
    until a target asks for a tab.
-2. `source_run` loads the source's login cookies from the home, warns of any about to expire,
-   and builds its `_net.Session` and two clients over one `_net.Limits` (below).
+2. `source_run` reads the source's `[sources.<code>]` settings from the home's config.toml
+   (`flnd.options.config`), loads its login cookies from the home, warns of any about to
+   expire, and builds its `_net.Session` and two clients over one `_net.Limits` (below).
 3. Each target gets a `TargetSite`. Its `fetch` and browser verbs run on the target's listing
    thread, and each hands one coroutine to the run's loop and waits for it.
 4. A refusal from the source's own domains with 401 or 403 becomes a `LoginError`; every other
@@ -44,14 +45,16 @@ The network side of a source (docs/architecture, "Network"): one `flnd._net.Sess
 login's cookies, the source's user agent and its `sign` hook (for requests to its own
 domains), and one `flnd._net.Limits` with two pools:
 - *pages*, the listing's requests to the source's own `domains`: a token bucket at the
-  source's `pace`, which a 429's wait holds and halves;
+  source's `pace` (or the config's `pace` for it), which a 429's wait holds and halves;
 - *media*, every file download, and the listing's requests to other hosts: a cap per host
   that starts at `MEDIA_CAP` transfers at once and adapts (`flnd._net.Cap`): it halves when
-  the host is overloaded, and grows up to `MEDIA_MOST`, or the source's own `limits` for that
-  host, while the host's throughput still rises. A site's files often come from its own domain
-  (TikTok's CDN hosts), and holding them to the listing's pace would serialize them.
+  the host is overloaded, and grows up to `MEDIA_MOST`, or the `limits` for that host (the
+  source's, with the config's over them), while the host's throughput still rises. A site's
+  files often come from its own domain (TikTok's CDN hosts), and holding them to the
+  listing's pace would serialize them.
 Two clients share them: `web` lists (paced), and stops at the first Ctrl-C; `files` downloads
-(capped), and stops at the second.
+(capped), and stops at the second. A `proxy` in the config carries every request of the
+session; the browser, shared by every source, isn't proxied.
 """
 
 from __future__ import annotations
@@ -69,6 +72,7 @@ from typing import (
 from flnd import _browser, _home, _loop, _net, _prompt, _stats, _text, _time, _vault
 from flnd._ui import ui
 from flnd.errors import Blocked, LoginError, SiteError, SourceError, Stopped, UsageError
+from flnd.options import SourceConfig, config
 from flnd.source import Range, Request, Source, Target, dig
 
 if TYPE_CHECKING:
@@ -116,6 +120,9 @@ class SourceRun:
     web: _net.Client
     # The files' downloads, over the same session and limits: stopped by the second Ctrl-C.
     files: _net.Client
+    # The source's `[sources.<code>]` settings in the home's config.toml: pace, scroll, limits,
+    # proxy and stop_after, each over what the source's class says.
+    config: SourceConfig = field(default_factory=SourceConfig)
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
     _state: _home.Home | None = field(default=None, repr=False)
@@ -123,6 +130,8 @@ class SourceRun:
     # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
     _own_loop: _loop.Loop | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
+    # Whether a target already said that the browser doesn't use the config's proxy.
+    _told_proxy: bool = field(default=False, repr=False)
 
     @property
     def loop(self) -> _loop.Loop:
@@ -137,10 +146,10 @@ class SourceRun:
     @property
     def jobs(self) -> int:
         """The most files of one target downloading at once: as many as one host's cap may
-        grow to (`MEDIA_MOST`, or the source's largest `limits` above it), so a target never
-        holds a host below its cap. A target's queue holds 4 times as many before its listing
-        waits."""
-        return max([MEDIA_MOST, *self.source.limits.values()])
+        grow to (`MEDIA_MOST`, or the largest `limits` above it, the source's or the config's),
+        so a target never holds a host below its cap. A target's queue holds 4 times as many
+        before its listing waits."""
+        return max([MEDIA_MOST, *_limits(self.source, self.config).values()])
 
     @property
     def load(self) -> Mapping[str, _net.Load]:
@@ -205,8 +214,10 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
     """Open one source's resources for a run, and close them however the block ends.
 
     The login's cookies are read from the home once, here, and a cookie of the login that has
-    expired or expires within `EXPIRY_WARNING` is a warning line. Nothing is sent yet: the
-    session connects on its first request.
+    expired or expires within `EXPIRY_WARNING` is a warning line. The source's
+    `[sources.<code>]` settings in the home's config.toml are read here too, and set its pace,
+    its hosts' caps and its proxy. Nothing is sent yet: the session connects on its first
+    request.
 
     Args:
         settings: what the run shares across sources: the home, its database, the stop flag
@@ -215,10 +226,14 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
 
     Yields:
         The `SourceRun`, tracked by the run's live stats while the block runs.
+
+    Raises:
+        UsageError: the home's config.toml has a value it doesn't take.
     """
+    configured = config(settings.home).source(source.code)
     jar = _home.load(settings.home, source.code)
     _warn_expiring(source, jar)
-    session, limits = _network(source, jar)
+    session, limits = _network(source, jar, configured)
     stop: Stop | None = getattr(settings, "stop", None)
     # `run.suspend()` holds every new request of the source, listing and downloads alike.
     limits.suspended = stop.suspended if stop else None
@@ -226,6 +241,7 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
         source, settings, jar, session,
         _net.Client(session, limits=limits, stop=stop.soon if stop else None),
         _net.Client(session, limits=limits, stop=stop.now if stop else None, pace=False),
+        configured,
     )
     try:
         # The run's live stats read the source's hosts and waits (`Limits.load`, `.pauses`).
@@ -235,21 +251,24 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
         run.close()
 
 
-def _network(source: Source,
-             jar: Iterable[Mapping[str, Any]]) -> tuple[_net.Session, _net.Limits]:
+def _network(source: Source, jar: Iterable[Mapping[str, Any]],
+             settings: SourceConfig) -> tuple[_net.Session, _net.Limits]:
     """A source's session and limits: its pace on its own domains, caps on every other host.
 
     Args:
         source: the source; its `pace`, `limits`, `user_agent` and `sign` are read.
         jar: the login's cookies.
+        settings: the source's config.toml settings, whose `pace`, `limits` and `proxy` win
+            over the source's own.
 
     Returns:
-        The session, with the source's `sign` hook on requests to its own domains, and the
-        limits both of its clients share.
+        The session, with the source's `sign` hook on requests to its own domains and the
+        config's proxy, and the limits both of its clients share.
     """
-    rate = 1.0 / source.pace if source.pace > 0 else None
+    pace = source.pace if settings.pace is None else settings.pace
+    rate = 1.0 / pace if pace > 0 else None
     limits = _net.Limits(paced=lambda host: _matches_domain(source, host), rate=rate,
-                         caps=source.limits, cap=MEDIA_CAP, most=MEDIA_MOST)
+                         caps=_limits(source, settings), cap=MEDIA_CAP, most=MEDIA_MOST)
 
     def prepare(request: _net.Request) -> _net.Request | None:
         # Runs on the loop before each try; the hook only adds headers, so it costs little. The
@@ -265,8 +284,14 @@ def _network(source: Source,
         return None
 
     headers = {"User-Agent": source.user_agent} if source.user_agent else None
-    session = _net.Session(headers=headers, cookies=jar, prepare=prepare, handles=limits.total)
+    session = _net.Session(headers=headers, cookies=jar, prepare=prepare, handles=limits.total,
+                           proxy=settings.proxy)
     return session, limits
+
+
+def _limits(source: Source, settings: SourceConfig) -> Mapping[str, int]:
+    """The most files at once per media host: the source's `limits`, the config's over them."""
+    return {**source.limits, **settings.limits}
 
 
 class TargetSite:
@@ -549,14 +574,23 @@ class TargetSite:
 
         Returns:
             The target's `Tabs` in the run's browser, or, outside a run, in a browser of the
-            site's own, which `close` closes. They scroll in the source's `scroll` style.
+            site's own, which `close` closes. They scroll in the config's `scroll` for the
+            source, else the source's own.
         """
         if self._tabs is None:
             if self._shared is None:
                 self._shared = _browser.RunBrowser(self._run.loop, stealth=self._source.stealth)
                 self._own = True
-            # The source's own `scroll` until the config file can set one per source.
-            self._tabs = _browser.Tabs(self._shared, self._run.jar, scroll=self._source.scroll)
+            settings = self._run.config
+            if settings.proxy is not None and not self._run._told_proxy:
+                self._run._told_proxy = True
+                # The browser is one window every source of the run shares, so it can't take
+                # one source's proxy: say so, rather than let page loads leave unproxied
+                # without a word.
+                ui.warn("{code}: the browser doesn't use the proxy in config.toml; only the "
+                        "source's HTTP requests do", code=self._source.code)
+            style = settings.scroll or self._source.scroll
+            self._tabs = _browser.Tabs(self._shared, self._run.jar, scroll=style)
         return self._tabs
 
     def _browser_cookies(self) -> list[Mapping[str, Any]]:

@@ -649,9 +649,10 @@ class SyncStopTest(JobCase):
         self.engine.sync(["fed:example_user"])
         self.assertEqual(self.listed, self.ids[:3])
         self.home.joinpath("config.toml").write_text("[sources.fed]\nstop_after = 0\n")
-        report = self.engine.sync(["fed:example_user"])
-        self.assertIsInstance(report.targets[0].error, UsageError)
-        self.assertIn("[sources.fed] stop_after is a whole number of at least 1", str(report.targets[0].error))
+        # A bad setting stops the whole run as a usage error, before the source sends anything.
+        with self.assertRaises(UsageError) as caught:
+            self.engine.sync(["fed:example_user"])
+        self.assertIn("[sources.fed] stop_after is a whole number of at least 1", str(caught.exception))
 
     def test_a_feed_that_is_not_newest_first_is_never_stopped(self):
         listed = []

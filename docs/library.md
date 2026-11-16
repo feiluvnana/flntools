@@ -127,9 +127,9 @@ Every option is keyword-only:
 | option | what it does |
 | --- | --- |
 | `only` | the categories to take: `["reels"]`, or `"reels,posts"`. None (the default) takes every category. A single post has none, so `only` with one is a usage error |
-| `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"` |
+| `when` | the days to take posts from: `"2026"`, `"2026-06"`, `"2026-06-15"`, `"2026-01..2026-03"` (either end may be left out), or a span back from today: `"30d"`, `"8w"`, `"1y"`; `""` for every day. None (the default) takes `when` under `[defaults]` in the home's `config.toml`, which bounds `sync` too |
 | `limit` | at most this many posts per target, or targets per search |
-| `compress` | shrink each photo and video as it lands, when a smaller copy looks the same, and remove each archive once it is extracted ([media.md](media.md)); `sync(compress=True)` also takes files saved before |
+| `compress` | shrink each photo and video as it lands, when a smaller copy looks the same, and remove each archive once it is extracted ([media.md](media.md)); `sync(compress=True)` also takes files saved before. None (the default) takes `compress` under `[defaults]` in `config.toml`, so `False` turns it off for one call |
 | `dry` | plan instead: `Planned` events, and nothing is written |
 
 ```python
@@ -336,7 +336,10 @@ no site. `fl.login("ins", "chrome")` reads a browser's cookies the same way.
 `download` and `follow` then lists each post again and asks again for files the site answered
 404 or 410 for (recorded as gone, [storage.md](storage.md)). Without it, `again = true` under
 `[defaults]` in the home's `config.toml` does the same. The same table turns off dedupe
-(`dedupe = "off"`) and turns on sidecars (`sidecars = true`), [storage.md](storage.md#dedupe).
+(`dedupe = "off"`), turns on sidecars (`sidecars = true`), and gives `compress` and `when` their
+defaults; `[sources.<code>]` sets a source's pace, scroll, limits and proxy
+([storage.md](storage.md#settings-configtoml)). An argument given to a call always wins over
+the file.
 A run draws nothing on the terminal:
 the CLI draws it from the run's events, and flnd's own warnings (a wait a site asked for, a
 login about to expire) go to standard error.

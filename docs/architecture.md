@@ -92,7 +92,7 @@ The rules between them:
 | `flnd/engine.py` | `Engine`: every command as a method; target resolution (`resolve`, `owner`); searches and the targets listings link to | `Flnd` |
 | `flnd/job.py` | one target's run: the listing, the early stops and the listing's head, resuming cursors and gaps, retrying failures, planning (`Ledger`), the downloads on the loop (`Downloads`), the progress rows (`Board`), history rows | the engine |
 | `flnd/site.py` | `SourceRun` (a source's cookies, HTTP session, clients and browser for a run), `TargetSite` (the `Site` a route sees: requests, `pages`, the browser verbs, wall detection, `back_off`), `LoginSite`, and `shared_browser`, the run's loop and browser | the engine, the job |
-| `flnd/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, and `stop_after` from config.toml | the engine, the job, the library |
+| `flnd/options.py` | `Options` and `RunShared`, the check of `--only` and the templates before any work, and `config`: every setting of config.toml, read and checked in one place | the engine, the job, the library, `site`, `_steps` |
 | `flnd/source.py` | source API 1: `Source` and its checks, `@target`, `Post`, `File`, `Target`, `Site`, `Login` and `cookies`, `Request`, `dig`, errors | every source |
 | `flnd/sources/` | the seven built-in sources, one module each, and `SOURCES`, the registry of every source, plugins included, each imported on first use | the engine and the library |
 | `flnd/sources/_manifest.py` | each built-in source as plain data (code, domains, forms, categories), made by `make manifest` | `--help`, `SOURCES` (which imports a source only when used), link resolution |
@@ -386,7 +386,8 @@ moment. `fast` has no such limit.
 
 **Where the style comes from.** A source sets `scroll = "human"` or `"fast"` on its class;
 `TargetSite` hands it to the target's `Tabs`, which every feed and `site.scroll` of that target
-use. The config file's `[source.<code>] scroll` will override it at that same spot.
+use. The home's `[sources.<code>] scroll` in config.toml overrides it at that same spot
+(`TargetSite._browser`).
 
 A target's tab scrolls by script (`window.scrollBy` with a wheel event per step), not with real
 mouse input: the tabs of one shared window are background tabs to Chrome, which gives them no
@@ -399,7 +400,12 @@ One HTTP library (`flnd/_net.py`) does every request and download, on the run's 
 - **A session per source** (`_net.Session`, made by `site.source_run`): one curl_cffi
   `AsyncSession` with Chrome's TLS and HTTP/2 fingerprint, the login's cookies (kept by the
   session, and written back to the vault at the end), the source's `user_agent`, and its
-  `sign` hook for requests to its own domains, run before every try.
+  `sign` hook for requests to its own domains, run before every try. A `proxy` under
+  `[sources.<code>]` in config.toml goes to curl for every transfer of the session; the browser,
+  one window for every source, isn't proxied.
+- **The home's settings win over the class's**: `source_run` reads the source's
+  `[sources.<code>]` table (`options.config`), whose `pace` replaces the source's, whose
+  `limits` merge over the source's, and whose `scroll` the target's tabs take.
 - **Two pools** (`_net.Limits`). *Pages*: the listing's requests to the source's own domains
   share a token bucket per host at the source's `pace`; a 429's `Retry-After` (or X's
   `x-rate-limit-reset`) holds it, and halves its rate until 20 requests go through. *Media*:
@@ -571,11 +577,15 @@ The choices that explain how flnd behaves, made with its user in November 2026:
 10. **Plugins load from the user's folder or installed packages, never from a home**, since a
     home is often the current folder, and code there may not be the user's own.
 11. **The vault's key is a file** beside it (`secret.key`), so an unattended sync can open it.
-12. **`--compress` encodes videos to AV1**, and photos in-process with Pillow and pyoxipng,
-    which are part of the core install ([media.md](media.md)).
+12. **`--compress` encodes videos to AV1**, with `[compress] video = "hevc"` in config.toml
+    for devices that can't play it, and photos in-process with Pillow and pyoxipng, which are
+    part of the core install ([media.md](media.md)).
 13. **One `Source` class per site**, with routes and categories (above).
 14. **A fixed chain of steps** after each file (above).
 15. **Ruff is the only lint, and pyright is informational** (`make type`), never a gate.
+16. **Settings resolve in one order**: a flag (or a library argument), then the environment,
+    then config.toml, then the default. The file is read and checked in one place; a bad value
+    is a usage error naming the key, and an unknown key a warning.
 
 ## Where to go next
 

@@ -14,8 +14,8 @@ side by side in it.
   flnd.db          what the home remembers: files, posts, targets, runs, failures, …
   secrets.db       the vault: logins and tokens, each sealed (AES-256-GCM)
   secret.key       the vault's key (mode 0600)
-  config.toml      settings (optional): `[defaults]` again, dedupe, sidecars, ui;
-                   `[sources.<code>]` stop_after
+  config.toml      settings (optional): `[defaults]`, `[compress]`, `[sources.<code>]`
+                   (see Settings, below)
   media/
     <code>/<target>/<category>/…   the downloaded files
   cache/           reserved for things safe to delete; nothing writes there yet
@@ -271,6 +271,52 @@ column. The next download or sync of the target retries every failed file that h
   secret is ever here. `flnd logout` removes the source's row.
 - `probes`: what ffmpeg found in a file; safe to empty.
 - `meta`: the schema's `version`, and `migrated`, when an old home was migrated.
+
+## Settings: config.toml
+
+The home's settings, all optional; a home without the file has every default. A setting given for
+one run (a flag, or a library argument) wins over the file, and the file over the default. The
+environment only says where things are (`FLND_HOME`, `FLND_SOURCES`), so it never meets these.
+
+```toml
+[defaults]
+again = false        # list every post again, and ask again for files recorded gone (--again)
+dedupe = "link"      # "link" a file whose bytes are saved already, or "off" to keep both
+sidecars = false     # write <file>.json beside each saved file
+ui = "full"          # "full", "inline" or "plain": how a run shows on a terminal (--ui)
+compress = false     # compress what download, follow and sync save (--compress, --no-compress)
+when = ""            # the days every download, follow and sync takes, as --when writes them
+                     # ("1y", "2026", "2026-01.."); "" for every day
+
+[compress]
+video = "av1"        # "av1", or "hevc" (x265) for devices that can't play AV1
+
+[sources.ins]        # one table per source, by its code
+pace = 1.0           # seconds between its page requests (over the source's own pace)
+scroll = "human"     # "human" or "fast": how its browser feeds scroll
+limits = { "cdninstagram.com" = 8 }   # the most files at once from a host
+proxy = "socks5://127.0.0.1:1080"     # every HTTP request of the source goes through it
+stop_after = 5       # saved posts in a row that end a sync of a newest-first listing
+```
+
+- **`[defaults] when`** bounds a sync too, which has no `--when` of its own. Give `--when ""` (or
+  `when=""` in the library) for every day in one run.
+- **`[sources.<code>]`** settings win over what the source's class says: `pace` over
+  `Source.pace` (0 is no pace), `scroll` over `Source.scroll`, and `limits` merged over
+  `Source.limits`, so a host named in both takes the file's number. A host's cap still adapts
+  under it ([architecture.md](architecture.md#network)).
+- **`proxy`** takes `http://`, `https://`, `socks5://` or `socks5h://` (which also looks host
+  names up through the proxy), with a user and password if the proxy needs them. It carries
+  every request and download of the source's HTTP session. **The browser isn't proxied**: one
+  window serves every source of a run, and a source's proxy can't be set per tab, so a source
+  that opens pages (Instagram, TikTok, Facebook, Twitter/X) loads them directly. A run says so
+  once, as a warning, when such a source opens its first tab.
+- **A bad value** stops the command as a usage error that names the file, the key and what it
+  takes: `config.toml: [sources.ins] scroll is "human" or "fast", not 'slow'`. A key flnd doesn't
+  know is a warning (`[defaults] compres is not a setting flnd knows; it is ignored`), so a typo
+  never passes for a setting that works.
+
+The code: `flnd/options.py` (`config`) reads and checks the whole file, in one place.
 
 ## The vault: `secrets.db` and `secret.key`
 

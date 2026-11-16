@@ -96,7 +96,6 @@ class Landed:
         path: where it is.
         password: an archive's password from its source; None for none.
         compress: whether its target asked for `--compress`.
-        video: "av1" or "hevc", the codec its videos go to.
         hash: the SHA-256 of its bytes, which finds the hard links dedupe made; None for none.
         event: the `Saved` to send once its steps are done, with the path and size they leave;
             None for a file an earlier run saved (`backlog`), which sends nothing.
@@ -107,7 +106,6 @@ class Landed:
     path: Path
     password: str | None = None
     compress: bool = False
-    video: str = "av1"
     hash: bytes | None = None
     event: Saved | None = None
     meta: Mapping[str, Any] | None = field(default=None, hash=False)
@@ -148,16 +146,18 @@ class Chain:
         emit: where `Saved` events go (the run's sink); None drops them.
         dedupe: whether a file whose bytes are already saved becomes a hard link to them.
         sidecars: whether each saved file gets `<file>.json` with its post's metadata.
+        video: the codec `--compress` turns videos into: "av1" (the default) or "hevc", which
+            is x265, for devices that can't play AV1 (`[compress] video` in config.toml).
     """
 
     def __init__(self, db: Home | None, stop: Any = None, *,
                  emit: Callable[[Any], None] | None = None, dedupe: bool = True,
-                 sidecars: bool = False) -> None:
+                 sidecars: bool = False, video: str = "av1") -> None:
         from flnd import _shrink
 
         self.db, self.stop = db, stop
         self.emit = emit or (lambda event: None)
-        self.dedupe, self.sidecars = dedupe, sidecars
+        self.dedupe, self.sidecars, self.video = dedupe, sidecars, video
         self.savings = _shrink.Savings()
         self.tally = _Tally()
         self._lanes: dict[str, _Lane] = {}
@@ -188,7 +188,7 @@ class Chain:
             return
         self._lane("photo" if of in _shrink.PHOTOS else "video").put(item)
 
-    def backlog(self, rows: Iterable[FileRow], *, video: str = "av1") -> int:
+    def backlog(self, rows: Iterable[FileRow]) -> int:
         """Queue saved files that still need unpacking or compressing.
 
         A file is done when it was compressed, or kept or failed with today's tools. Its kind
@@ -196,7 +196,6 @@ class Chain:
 
         Args:
             rows: the targets' file rows (`Home.unfinished`), read once.
-            video: "av1" or "hevc".
 
         Returns:
             How many files were queued.
@@ -206,14 +205,14 @@ class Chain:
         queued = 0
         for row in rows:
             self._seed_one(row)
-            item = Landed(row.key, Path(row.path), compress=True, video=video, hash=row.hash)
+            item = Landed(row.key, Path(row.path), compress=True, hash=row.hash)
             if _unpack.is_archive(item.path):
                 if not row.unpacked:
                     self.landed(item)
                     queued += 1
                 continue
             of = _shrink.kind(item.path)
-            if of is None or _done(row, _shrink.tools(of, video=video)):
+            if of is None or _done(row, _shrink.tools(of, video=self.video)):
                 continue
             self.landed(item)
             queued += 1
@@ -357,7 +356,7 @@ class Chain:
 
             kill = self.stop.now if self.stop is not None else None
             try:
-                outcome = _shrink.shrink(item.path, record=moved, video=item.video, stop=kill)
+                outcome = _shrink.shrink(item.path, record=moved, video=self.video, stop=kill)
             except DiskError as error:
                 self.tally.failed += 1
                 ui.error("{name}: {error}", name=item.path.name, error=error)
@@ -803,7 +802,7 @@ def attached(settings: Any) -> Iterator[Chain]:
 
     found = config(settings.home)
     chain = Chain(settings.db, settings.stop, emit=settings.emit, dedupe=found.dedupe,
-                  sidecars=found.sidecars)
+                  sidecars=found.sidecars, video=found.video)
     settings.chain = chain
     try:
         # The run's live stats read the lanes' jobs (`Chain.jobs`) while the chain is open.
