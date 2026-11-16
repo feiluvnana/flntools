@@ -230,6 +230,42 @@ class RunTest(LibraryCase):
         self.assertLess(run.report.saved, 30)
         self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)
 
+    def test_a_third_ctrl_c_puts_the_terminal_back_and_exits_at_once(self):
+        import signal
+
+        from flnd import _run
+        from flnd._ui import ui
+
+        class Quit(BaseException):
+            """What the patched `os._exit` raises, so the test sees the exit instead of dying."""
+
+        undone = []
+        self.enterContext(mock.patch.object(site_module, "MEDIA_MOST", 1))
+        self.listing["example_user", "posts"] = [f"p{n}" for n in range(30)]
+        warn = self.enterContext(mock.patch.object(ui, "warn"))
+        run = self.fl.download("exs:example_user", only="posts")
+        with mock.patch.object(_run.os, "_exit", side_effect=Quit) as exit_now, \
+                _run.restoring(lambda: undone.append("keys")), \
+                _run.restoring(lambda: undone.append("screen")):
+            with self.assertRaises(Quit):
+                for event in run:
+                    if isinstance(event, flnd.Saved) and run.report.saved == 1:
+                        # Three in a row, on the reader's thread as a terminal sends them.
+                        signal.raise_signal(signal.SIGINT)
+                        self.assertEqual(run._stop.stage, "soon")
+                        signal.raise_signal(signal.SIGINT)
+                        self.assertEqual(run._stop.stage, "now")
+                        warn.assert_called_once_with(_run.AGAIN)
+                        signal.raise_signal(signal.SIGINT)
+        exit_now.assert_called_once_with(130)
+        # Newest first, the way the `with` blocks would have unwound.
+        self.assertEqual(undone, ["screen", "keys"])
+        self.assertIn("Ctrl-C again to quit now", _run.AGAIN)
+        self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)
+        # The worker saw the second Ctrl-C: it ends on its own, keeping its parts.
+        with self.assertRaises(flnd.Stopped):
+            run.wait()
+
     def test_async_for_and_await(self):
         async def main():
             events = [event async for event in self.fl.download("exs:example_user", only="reels")]

@@ -354,7 +354,12 @@ instead.
 - The **second** stops at once. Unfinished files stay as parts (`<name>.part`), which the next
   run resumes, and it resumes each category from its saved cursor; a sync cut short this way is
   finished by the next sync, which jumps to where it stopped
-  ([architecture.md](architecture.md#smart-sync)).
+  ([architecture.md](architecture.md#smart-sync)). It says `Ctrl-C again to quit now`, since
+  closing the browser and writing the last rows may take a moment.
+- The **third** quits at once, exit code 130: the terminal's mode and the normal screen are put
+  back first, then flnd exits without waiting for anything. The parts on disk stay and resume
+  as after a second Ctrl-C; the rows of the posts in progress are lost, and the next run finds
+  their files on disk and skips them.
 
 ## For contributors
 

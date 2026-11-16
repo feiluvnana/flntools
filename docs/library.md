@@ -157,9 +157,11 @@ with flnd.open(home) as fl:
   event, so events never pile up in memory.
 - **`run.stop()`** asks the run to stop as a first Ctrl-C does: listing stops, the files in
   progress finish, and the run ends normally with `report.stopped` set.
-- **Ctrl-C** while a script reads a run on the main thread works in two stages: the first stops
-  listing and finishes the files in progress, the second stops at once. Either way, reading the
-  run then raises `flnd.Stopped`, a `KeyboardInterrupt`.
+- **Ctrl-C** while a script reads a run on the main thread works in three stages: the first
+  stops listing and finishes the files in progress, the second stops at once (and warns that a
+  third quits), and the third ends the process at once with exit status 130 (`os._exit`: no
+  `finally` or `atexit` of the script runs). After the first or second, reading the run raises
+  `flnd.Stopped`, a `KeyboardInterrupt`.
 - **A run nobody starts** warns with a `ResourceWarning` when it is dropped, the way a coroutine
   nobody awaited does: it is almost always a missing `.wait()`.
 - **From asyncio code,** `async for event in run` and `await run` do the same without blocking

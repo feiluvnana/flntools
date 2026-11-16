@@ -23,7 +23,11 @@ Rules a change must keep:
 - `_emit` is called from several threads, and may wait for the reader, so no caller holds a lock
   while calling it.
 - Only the reader's thread installs the Ctrl-C handler, and only when it is the main thread: the
-  first Ctrl-C sets `soon` (stop listing, finish what is in flight), the second `now`.
+  first Ctrl-C sets `soon` (stop listing, finish what is in flight), the second `now` (cancel
+  what is in flight, keeping the parts) and says a third quits, and the third exits at once
+  (`quit_now`): it runs the terminal's undo steps (`restoring`), then `os._exit(130)`, which
+  runs no `finally` and joins no thread. Whatever changes the terminal (the full screen, the
+  key reader) registers its undo with `restoring`, so the shell gets its terminal back.
 - A `Run` nobody starts warns with a `ResourceWarning` when it is dropped, the way a coroutine
   nobody awaited does: it is almost always a missing `.wait()`.
 - A `Stats` never goes through the queue: the reader makes it, so a sample can't make the
@@ -31,15 +35,18 @@ Rules a change must keep:
 - `suspend()` holds new requests and files (`Stop.suspended`, which each source's limits
   watch); a stop always wins over it, so a suspended run still stops.
 - The module imports only the stdlib, `flnd._events` and `flnd._stats` (psutil only on the
-  first sample), never the engine, so `flnd.Run` is cheap to reach.
+  first sample), and `flnd._ui` on a second Ctrl-C, never the engine, so `flnd.Run` is cheap
+  to reach.
 """
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
 import queue
 import signal
+import sys
 import threading
 import warnings
 from collections.abc import AsyncIterator, Callable, Generator, Iterator
@@ -51,7 +58,7 @@ from flnd._events import NOTHING_NEW, RESUMING, Failed, Planned, Progress, Repor
 if TYPE_CHECKING:
     from flnd._events import Event, Stats
 
-__all__ = ["Run", "Stop", "stopping"]
+__all__ = ["Run", "Stop", "quit_now", "restoring", "stopping"]
 
 # How many events wait for the reader before the run waits for it. Large enough that a reader
 # printing a line per event never slows a download down; small enough to bound memory.
@@ -64,6 +71,14 @@ _END = object()
 _IDLE = object()
 # The message of the `Stopped` a reader gets when Ctrl-C ended the run.
 STOPPED = "stopped by Ctrl-C"
+# What the second Ctrl-C says, so a person knows a third one quits without waiting.
+AGAIN = "stopping now: the files in flight are cancelled; Ctrl-C again to quit now"
+# The exit status of a third Ctrl-C: 128 + SIGINT (2), what a shell reports for a Ctrl-C.
+QUIT_STATUS = 130
+# The undo steps a hard exit runs, in the order they were registered (`restoring`): each puts
+# back something on the terminal. A list, not a lock-guarded structure: it is changed and read
+# on the main thread only, where the signal handler runs too.
+_RESTORERS: list[Callable[[], None]] = []
 
 
 class Stop:
@@ -478,7 +493,12 @@ class Run:
 
 @contextlib.contextmanager
 def stopping(state: Stop | None = None) -> Iterator[Stop]:
-    """Make Ctrl-C stop in two stages for the block: the first sets `soon`, the second `now`.
+    """Make Ctrl-C stop in three stages for the block: `soon`, then `now`, then exit at once.
+
+    1. The first Ctrl-C sets `soon`: listing stops, the files in flight finish.
+    2. The second sets `now`: the files in flight are cancelled, their parts kept, and a line
+       says a third Ctrl-C quits now (`AGAIN`).
+    3. The third quits at once (`quit_now`), with the terminal put back.
 
     Only the main thread can install a signal handler: Python runs handlers there alone. On
     any other thread (a run's worker) the state is yielded as it is, and whoever owns it sets
@@ -501,12 +521,73 @@ def stopping(state: Stop | None = None) -> Iterator[Stop]:
         return
 
     def handle(_signum: int, _frame: Any) -> None:
-        (state.now if state.soon.is_set() else state.soon).set()
         # A suspended run would never get to its stop: Ctrl-C ends the suspension too.
         state.suspended.clear()
+        if state.now.is_set():
+            quit_now()
+        elif state.soon.is_set():
+            state.now.set()
+            # `ui`'s lock is reentrant, so this line can't deadlock on code this handler
+            # interrupted while it was logging.
+            from flnd._ui import ui
+
+            ui.warn(AGAIN)
+        else:
+            state.soon.set()
 
     previous = signal.signal(signal.SIGINT, handle)
     try:
         yield state
     finally:
         signal.signal(signal.SIGINT, previous)
+
+
+@contextlib.contextmanager
+def restoring(undo: Callable[[], None]) -> Iterator[None]:
+    """Register `undo` for the block: what a third Ctrl-C runs before it exits.
+
+    `undo` must be quick and take no lock another thread may hold, since it runs inside the
+    signal handler: put a terminal mode back, write an escape sequence. Undo steps run newest
+    first, the way `with` blocks unwind.
+
+    Args:
+        undo: what puts the terminal back.
+
+    Yields:
+        Nothing; leaving the block forgets `undo`.
+
+    Example:
+        >>> with restoring(lambda: None):
+        ...     pass
+    """
+    _RESTORERS.append(undo)
+    try:
+        yield
+    finally:
+        _RESTORERS.remove(undo)
+
+
+def quit_now() -> None:
+    """Exit the process at once, as a third Ctrl-C does, with the terminal put back.
+
+    1. Run each registered undo step (`restoring`), newest first; one that fails is skipped,
+       so the rest still run.
+    2. Show the cursor again on a terminal, which an inline live view may have hidden.
+    3. Flush standard output and error, then `os._exit(QUIT_STATUS)`. No `finally`, `atexit`
+       or thread join runs, so nothing can hold the exit up; parts already on disk stay, and
+       the next run resumes them, as after a second Ctrl-C.
+    """
+    for undo in reversed(list(_RESTORERS)):
+        try:
+            undo()
+        except BaseException:  # noqa: BLE001 - one failed undo must not keep the others back
+            pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None and stream.isatty():
+                stream.write("\x1b[?25h")
+            if stream is not None:
+                stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(QUIT_STATUS)

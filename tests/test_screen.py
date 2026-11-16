@@ -91,6 +91,7 @@ class FrameTest(unittest.TestCase):
         self.assertIn("Ctrl-C again to stop now", screen.text().splitlines()[-1])
         screen.show(stats(stopping="now"))
         self.assertIn("stopping now", screen.text().splitlines()[-1])
+        self.assertIn("Ctrl-C again to quit now", screen.text(width=120).splitlines()[-1])
 
     def test_text_from_a_site_cannot_move_the_cursor(self):
         screen = Screen("download", console=console())
@@ -210,6 +211,23 @@ class RestoreTest(unittest.TestCase):
                 self.assertFalse(self.screen._live.is_started)
             self.assertTrue(self.screen._live.is_started)
             self.assertNotEqual(self.terminal.mode, self.original)
+        self.assert_restored()
+
+    def test_a_hard_exit_puts_the_mode_and_the_screen_back_without_leaving_the_with(self):
+        from flnd import _run
+
+        terminal = io.StringIO()
+        terminal.isatty = lambda: True
+        self.screen.console = Console(file=terminal, width=80, height=24, force_terminal=True)
+        with self.screen:
+            self.assertNotEqual(self.terminal.mode, self.original)
+            self.assertEqual(_run._RESTORERS, [self.screen.restore_now])
+            # What a third Ctrl-C runs before `os._exit`.
+            for undo in reversed(_run._RESTORERS):
+                undo()
+            self.assertEqual(self.terminal.mode, self.original)
+            self.assertIn("\x1b[?25h\x1b[?1049l", terminal.getvalue())
+        self.assertEqual(_run._RESTORERS, [])
         self.assert_restored()
 
     def test_off_a_terminal_keys_change_nothing(self):

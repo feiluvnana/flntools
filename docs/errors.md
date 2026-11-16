@@ -177,8 +177,6 @@ A file a retry brought back is a `Saved` event with `retried=True`; the end of t
 ## Not built yet
 
 - One cookie refresh from the browser before a 401 or 403 becomes a `LoginError`.
-- The third stage of Ctrl-C; today the first stops listing and finishes the files in progress,
-  and the second stops at once ([cli.md](cli.md#ctrl-c)).
 
 ## Common messages
 

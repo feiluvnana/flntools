@@ -137,10 +137,12 @@ A sync is smart about what it has:
   fixes it. A site whose login is optional downloads what's public, and says so.
 - **Mistakes** you can fix (usage, login, disk, a tool) print `error: …` and what to do, never a
   traceback. A bug writes its traceback to `<home>/logs/crash-<time>.txt` (`-v` prints it).
-- **Ctrl-C** works in two stages:
+- **Ctrl-C** works in three stages:
   1. the first (or `q` on the full screen) stops listing and lets the files in progress finish;
   2. the second stops at once. Unfinished files stay as `<name>.part` and resume on the next
-     run.
+     run;
+  3. the third quits at once, with the terminal put back, without waiting for the browser to
+     close or the last rows to be written.
 
   A file is written under its real name only once it is whole, so nothing is ever left
   half-written.

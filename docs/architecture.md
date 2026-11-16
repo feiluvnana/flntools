@@ -298,7 +298,11 @@ A run uses a few threads, joined by bounded queues, and every rule below protect
   already done. The engine closes the chain, waiting for its lanes, before it closes history.
 - **Ctrl-C** is handled by `flnd._run.stopping`, on the reader's thread when it is the main
   thread: the first one sets `stop.soon` (stop listing, drop queued files, let running files
-  finish), the second sets `stop.now` (stop at once, keep the parts). `run.suspend()` sets
+  finish), the second sets `stop.now` (stop at once, keep the parts) and warns that a third
+  quits, and the third calls `flnd._run.quit_now`: it runs the undo steps registered with
+  `flnd._run.restoring` (the full screen's `Screen.restore_now`, which puts back the key
+  reader's terminal mode and leaves the alternate screen without a lock or a join), then
+  `os._exit(130)`. `run.suspend()` sets
   `stop.suspended`, which each source's limits wait on before a new request; a stop clears it.
 - **Live stats** are made on the reader's thread: between two events (or every 0.1 s) the run
   asks its `flnd._stats.Meter` for a sample, at most once a second. The meter copies what the

@@ -29,7 +29,9 @@ with a thousand targets draws as fast as one with ten.
 Rules a change must keep:
 - The terminal always comes back: leaving the `with` (normally, on Ctrl-C, or on a crash)
   restores the key reader's terminal mode first, then leaves the alternate screen. `Keys`
-  restores what it changed even when its thread fails.
+  restores what it changed even when its thread fails. A third Ctrl-C exits without leaving
+  the `with` (`flnd._run.quit_now`), so the screen registers `restore_now` for it: the mode
+  and the alternate screen are put back there too, with no lock taken and no thread joined.
 - Text from a site (a target, a file name, a log line) is shown as plain `Text`, never as
   markup, with control codes stripped, so it can't style or move anything.
 - A frame never raises: a bug in drawing shows one line instead of ending the run.
@@ -52,7 +54,7 @@ from rich.control import strip_control_codes
 from rich.text import Text
 from rich.theme import Theme
 
-from flnd import _prompt, _text
+from flnd import _prompt, _run, _text
 from flnd._ui import PALETTE
 
 __all__ = ["Keys", "Screen"]
@@ -79,6 +81,9 @@ LOG_STYLES = {"!": "warn", "✗": "error", "x": "error", "✓": "ok", "+": "ok",
 # The speed shown is smoothed over samples, so a burst doesn't make it jump: this much of the
 # new sample, the rest of the old.
 SMOOTH = 0.5
+# What puts a terminal back after a hard exit: show the cursor, leave the alternate screen. They
+# undo what Rich's `Live(screen=True)` writes when it starts.
+SHOW_CURSOR, LEAVE_SCREEN = "\x1b[?25h", "\x1b[?1049l"
 # Terminal escape sequences (CSI, OSC, and the two-byte ones), stripped from any text a site
 # gave, so a caption or a file name can't move the cursor or restyle the screen.
 _ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
@@ -141,6 +146,8 @@ class Screen:
         try:
             self.start()
             self._stack.enter_context(_prompt.covering(self))
+            # A third Ctrl-C exits without leaving this `with`: it puts the terminal back here.
+            self._stack.enter_context(_run.restoring(self.restore_now))
         except BaseException:
             self.stop()
             raise
@@ -166,6 +173,20 @@ class Screen:
         finally:
             if self._live is not None and self._live.is_started:
                 self._live.stop()
+
+    def restore_now(self) -> None:
+        """Put the terminal back at once, for a hard exit: the key reader's mode, then the screen.
+
+        Unlike `stop`, it joins no thread and takes no lock, so it can run in a signal handler
+        while Rich's refresh thread draws: it sets the saved mode back (`Keys.restore`) and
+        writes the escape sequences that show the cursor and leave the alternate screen.
+        """
+        if self._keys is not None:
+            self._keys.restore()
+        console = self.console
+        if console.is_terminal:
+            console.file.write(SHOW_CURSOR + (LEAVE_SCREEN if console.is_alt_screen else ""))
+            console.file.flush()
 
     def close(self) -> None:
         """Print what the normal screen's scrollback should keep: the plan of a dry run, then
@@ -575,7 +596,8 @@ class Screen:
                              " resume" if suspended else " pause", style="info")
         stage = stats.stopping if stats is not None else ""
         if stage == "now":
-            say = Text("stopping now: the files in flight are cancelled", style="error")
+            say = Text("stopping now: the files in flight are cancelled · Ctrl-C again to quit "
+                       "now", style="error")
         elif stage == "soon" or self._quit:
             running = stats.transfers.running if stats is not None else 0
             say = Text(f"stopping: {running} files finishing · Ctrl-C again to stop now",
@@ -741,6 +763,16 @@ class Keys:
             saved, self._saved = self._saved, None
             if saved is not None and self._fd is not None:
                 self.terminal.tcsetattr(self._fd, self.terminal.TCSADRAIN, saved)
+
+    def restore(self) -> None:
+        """Put the terminal's mode back now, without waiting for the reader: for a hard exit.
+
+        `stop` joins the reader's thread first; a signal handler about to exit can't wait for
+        that, and the thread dies with the process anyway.
+        """
+        saved = self._saved
+        if saved is not None and self._fd is not None:
+            self.terminal.tcsetattr(self._fd, self.terminal.TCSANOW, saved)
 
     def _posix(self) -> None:
         """The reader on POSIX: wait for a byte with `select`, so `stop` is seen in `POLL`."""
