@@ -66,15 +66,23 @@ def _hit_saved(items: list[dict[str, Any]], wanted: str) -> bool:
         return False
     return any(
         not item["playlist"] and caught_up(item["id"], posted=item.get("date"))
-        for item in items
+        for item in firsts(items)
     )
+
+
+def firsts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The first item of each post: a photo post gives one item per photo, all with its id."""
+    found: dict[str, dict[str, Any]] = {}
+    for item in items:
+        found.setdefault(item["id"], item)
+    return list(found.values())
 
 
 def older_streak(items: list[dict[str, Any]], since: date | None, streak: int) -> int:
     """Count consecutive items older than `since`, carrying `streak` forward."""
     if since is None:
         return streak
-    for item in items:
+    for item in firsts(items):
         posted = day(item.get("date"))
         if posted is None:
             continue

@@ -484,6 +484,20 @@ class ScrollTest(unittest.TestCase):
                               options=Options(categories=("videos",)))
         self.assertEqual([item.key for item in saved], ["7300000000000000001", "7300000000000000002"])
 
+    def test_a_photo_post_counts_once_toward_each_streak(self):
+        from flnd.sources.tik import _hit_saved, older_streak
+
+        photos = [{"id": "P", "date": 1699000000, "playlist": None, "kind": "image", "idx": n}
+                  for n in range(1, 7)]
+        items = [*photos, {"id": "V", "date": 1699000000, "playlist": None, "kind": "video", "idx": 0}]
+        asked = []
+        with mock.patch("flnd.sources.tik.caught_up",
+                        side_effect=lambda pid, **_: asked.append(pid) or False):
+            self.assertFalse(_hit_saved(items, "videos"))
+        self.assertEqual(asked, ["P", "V"])
+        since = datetime(2023, 11, 14, tzinfo=timezone.utc).date()
+        self.assertEqual(older_streak(photos, since, 0), 1)
+
     def test_clicked_tabs_collect_all_batches_before_yielding(self):
         r1 = {"hasMore": True, "itemList": [video("7300000000000000010", f"{CDN}/r1.mp4", createTime=1700000000)]}
         r2 = {"hasMore": False, "itemList": [video("7300000000000000011", f"{CDN}/r2.mp4", createTime=1700000001)]}
