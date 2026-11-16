@@ -459,7 +459,7 @@ class Api:
         msg = str(data.get("message", "")).lower() if isinstance(data, dict) else ""
         has_login = isinstance(data, dict) and data.get("require_login")
         has_checkpoint = any(key in msg for key in CHECKPOINTS)
-        walled = any(where.startswith(wall) for wall in WALLS) or has_login or has_checkpoint
+        walled = is_wall(where) or has_login or has_checkpoint
         if (refused or walled) and not self.in_page and not throttled(data):
             # Instagram may refuse httpx TLS fingerprint; tab fetch has Chrome's.
             self.in_page = True
@@ -618,7 +618,7 @@ def load(site: Site, url: str) -> bool:
         where = urlsplit(site.page.url).path
         if where.startswith(SUSPENDED):
             raise suspended()
-        if not any(where.startswith(wall) for wall in WALLS):
+        if not is_wall(where):
             return True
         if walls >= WALL_ATTEMPTS:
             raise LoginError(
@@ -628,6 +628,12 @@ def load(site: Site, url: str) -> bool:
         walls += 1
         # Throttled session is sent to login wall or challenge; lifts after wait.
         site.back_off("Instagram showed a login wall")
+
+
+def is_wall(path: str) -> bool:
+    """Whether `path` is a login wall or challenge page."""
+    # A whole segment: a profile like `/challengers/` only starts with `/challenge`.
+    return any(path == wall or path.startswith(f"{wall}/") for wall in WALLS)
 
 
 def suspended() -> LoginError:

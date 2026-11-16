@@ -580,6 +580,19 @@ class LoginStaysAtHomeTest(EngineCase):
                 ))
 
 
+    def test_a_handle_that_starts_like_the_login_path_is_read(self):
+        from fakes import FakeSite
+        from flnd.sources.twt import Account, Timeline
+
+        site = FakeSite(Target("twt", "user", "login_example"),
+                        pages={"https://x.com/login_example": "<html></html>"})
+        # Warming the later tabs comes right after the wall check, so reaching it means none was seen.
+        with mock.patch("flnd.sources.twt.warm_tabs", side_effect=LookupError("past the wall")):
+            with self.assertRaisesRegex(LookupError, "past the wall"):
+                list(Twitter().read_browser(
+                    site, Account("login_example", {"rest_id": "42"}), Timeline("posts", "UserTweets", ""),
+                ))
+
 if __name__ == "__main__":
     unittest.main()
 

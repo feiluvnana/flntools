@@ -735,6 +735,15 @@ class ThrottleTest(unittest.TestCase):
             list(Instagram().post(site, "SINGLE"))
         self.assertEqual(site._seen.back_offs, ["Instagram showed a login wall"] * 2)
 
+    def test_a_profile_whose_name_starts_like_a_wall_is_not_one(self):
+        from flnd.sources.ins import load
+
+        for name in ("challenge_example", "challengers"):
+            with self.subTest(name=name):
+                site = Landing(Target("ins", "user", name), pages=PAGES, lands={})
+                self.assertTrue(load(site, f"{SITE}/{name}/"))
+                self.assertEqual(site._seen.back_offs, [])
+
     def test_persistent_login_wall_in_api_get_marks_media_refused_and_falls_back(self):
         seen = Seen()
         pages = {

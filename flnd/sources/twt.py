@@ -291,7 +291,9 @@ class Twitter(Source):
         with watch_responses(site, f"/{timeline.query}", scroll=True) as responses:
             if not site.goto(profile + timeline.tab):
                 return
-            if urlsplit(site.page.url).path.startswith(WALLS):
+            path = urlsplit(site.page.url).path
+            # A whole segment: a handle like `login_example` only starts with `/login`.
+            if any(path == wall or path.startswith(f"{wall}/") for wall in WALLS):
                 raise LoginError(
                     "twt: X asked for a login or locked this account; "
                     "check it in a browser or run flnd auth login twt"
