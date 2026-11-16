@@ -15,7 +15,8 @@ from unittest import mock
 
 from test_engine import make_source
 
-from flnd import Blocked, Engine, Target, TargetReport
+from flnd import Blocked, Target
+from flnd.engine import Engine, TargetReport
 from flnd import cli as flnd_cli
 from flnd import sources
 from flnd.common import auth, paths

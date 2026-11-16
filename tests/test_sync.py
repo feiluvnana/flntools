@@ -12,7 +12,8 @@ from unittest import mock
 import httpx
 from test_engine import CDN, EngineCase, make_source, noise
 
-from flnd import Engine, Range, TargetReport
+from flnd.engine import Engine, TargetReport
+from flnd.source import Range
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import File, Post, Source, Target, target

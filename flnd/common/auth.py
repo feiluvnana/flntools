@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 # A source's own login (tlg) raises it too; `auth.LoginError` is the same class.
 from flnd.common import paths
 from flnd.errors import DiskError, Error, LoginError
-from flnd import _cookies as cookies, _db, _vault as crypto, _text as text
+from flnd import _cookies, _db, _vault, _text
 from flnd._ui import ui
 
 if TYPE_CHECKING:
@@ -64,10 +64,10 @@ KEY_POLL = 0.01
 DAMAGED_KEY = "delete it, then log in again: flnd auth login"
 
 
-def from_browser(source: Source, *, browser: str, profile: str | None = None) -> cookies.Jar:
+def from_browser(source: Source, *, browser: str, profile: str | None = None) -> _cookies.Jar:
     """The source's cookies from an installed browser, for each of its domains."""
     try:
-        return _own(source, cookies.load(browser, profile=profile))
+        return _own(source, _cookies.load(browser, profile=profile))
     # Every way reading a browser fails: missing file, platform refusal, bad decrypt, or no crypto.
     except (OSError, RuntimeError, ValueError, ImportError, Error) as error:
         raise LoginError(
@@ -76,15 +76,15 @@ def from_browser(source: Source, *, browser: str, profile: str | None = None) ->
         ) from None
 
 
-def from_file(source: Source, path: Path) -> cookies.Jar:
+def from_file(source: Source, path: Path) -> _cookies.Jar:
     """The source's cookies from a Netscape or JSON cookie file; a whole browser export works."""
     try:
-        return _own(source, cookies.load(path))
+        return _own(source, _cookies.load(path))
     except (OSError, ValueError, Error) as error:
         raise LoginError(f"{source.code}: can't read {path}: {error}") from None
 
 
-def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
+def store(source: Source, jar: _cookies.Jar, *, home: Path, origin: str) -> str:
     """Check that the jar proves a login, seal it in the source's vault, and return summary.
 
         auth.store(Instagram(), jar, home=Path(".flnd"), origin="Chrome")
@@ -112,10 +112,10 @@ def store(source: Source, jar: cookies.Jar, *, home: Path, origin: str) -> str:
     for path in _cookie_files(home, source.code):
         path.unlink(missing_ok=True)
     _remove_if_empty(home / COOKIE_FOLDER)
-    return f"{source.code}: logged in from {origin} ({text.count(len(jar), 'cookie')})"
+    return f"{source.code}: logged in from {origin} ({_text.count(len(jar), 'cookie')})"
 
 
-def save(home: Path, code: str, jar: cookies.Jar, *, origin: str | None = None) -> None:
+def save(home: Path, code: str, jar: _cookies.Jar, *, origin: str | None = None) -> None:
     """Seal a source's cookie jar in its vault as `cookies`, replacing existing ones.
 
         auth.save(Path(".flnd"), "ins", jar)
@@ -187,7 +187,7 @@ def write_back(home: Path, code: str, current: Iterable[Cookie]) -> list[str]:
             name for cookie in saved if (name := _refresh_cookie(cookie, fresh)) is not None
         ]
         if changed:
-            save(home, code, cookies.Jar(saved))
+            save(home, code, _cookies.Jar(saved))
             ui.debug("{code}: refreshed {names}", code=code, names=", ".join(changed))
         return changed
     except (OSError, ValueError, Error) as error:
@@ -219,7 +219,7 @@ def _refresh_cookie(cookie: dict, fresh: list[Cookie]) -> str | None:
     return str(cookie["name"])
 
 
-def load(home: Path, code: str) -> cookies.Jar:
+def load(home: Path, code: str) -> _cookies.Jar:
     """The source's saved cookies, or an empty jar when it never logged in.
 
         jar = auth.load(Path(".flnd"), "ins")
@@ -239,10 +239,10 @@ def load(home: Path, code: str) -> cookies.Jar:
     """
     _move(home, code)
     if not (home / paths.SECRETS).is_file():
-        return cookies.Jar()
+        return _cookies.Jar()
     with secrets(home, code) as vault:
         text = vault.get(COOKIES)
-    return fix_domains(cookies.Jar(json.loads(text))) if text else cookies.Jar()
+    return fix_domains(_cookies.Jar(json.loads(text))) if text else _cookies.Jar()
 
 
 def logged_in(home: Path, code: str) -> bool:
@@ -306,7 +306,7 @@ def _move(home: Path, code: str) -> None:
         if not path.is_file():
             continue
         try:
-            jar = cookies.load(path)
+            jar = _cookies.load(path)
             with secrets(home, code) as vault:
                 if COOKIES not in vault:
                     vault[COOKIES] = json.dumps(fix_domains(jar).list)
@@ -333,10 +333,10 @@ def _remove_if_empty(folder: Path) -> None:
         pass
 
 
-def fix_domains(jar: cookies.Jar) -> cookies.Jar:
+def fix_domains(jar: _cookies.Jar) -> _cookies.Jar:
     """flnd's legacy fix-up: every domain gets a leading dot, and every path defaults to `/`."""
     # Exported files often hold host-only domains; dot lets every subdomain see the cookie.
-    return cookies.Jar(
+    return _cookies.Jar(
         {
             **cookie,
             "domain": "." + cookie.get("domain", "").lstrip("."),
@@ -346,7 +346,7 @@ def fix_domains(jar: cookies.Jar) -> cookies.Jar:
     )
 
 
-def _own(source: Source, jar: cookies.Jar) -> cookies.Jar:
+def _own(source: Source, jar: _cookies.Jar) -> _cookies.Jar:
     """The cookies of `jar` for the source's domains and their subdomains, domain by domain."""
     return jar.filter(domains=source.domains)
 
@@ -380,11 +380,11 @@ class Vault(MutableMapping[str, str]):
 
     def __getitem__(self, name: str) -> str:
         sealed = base64.b64decode(self._db[self._slot(name)])
-        decrypted = crypto.decrypt(sealed, self._secret_key(), context=self._context(name))
+        decrypted = _vault.decrypt(sealed, self._secret_key(), context=self._context(name))
         return decrypted.decode("utf-8")
 
     def __setitem__(self, name: str, value: str) -> None:
-        sealed = crypto.encrypt(value, self._secret_key(), context=self._context(name))
+        sealed = _vault.encrypt(value, self._secret_key(), context=self._context(name))
         self._db[self._slot(name)] = base64.b64encode(sealed).decode("ascii")
 
     def __delitem__(self, name: str) -> None:
@@ -392,10 +392,10 @@ class Vault(MutableMapping[str, str]):
 
     def __iter__(self) -> Iterator[str]:
         prefix = self._slot("")
-        return iter([key[len(prefix):] for key, _ in self._db.rows.prefix(prefix).get()])
+        return iter([key[len(prefix):] for key, _ in self._db.prefixed(prefix)])
 
     def __len__(self) -> int:
-        return self._db.rows.prefix(self._slot("")).count
+        return len(self._db.prefixed(self._slot("")))
 
     def __enter__(self) -> Vault:
         return self

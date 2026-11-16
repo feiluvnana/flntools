@@ -6,7 +6,7 @@ import httpx
 from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
-from flnd import Engine
+from flnd.engine import Engine
 from flnd.options import Options
 from flnd.source import SiteError, Target, UsageError
 from flnd.sources.mht import API, Mimi, cover_name, format_order, page_name

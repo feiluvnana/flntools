@@ -9,9 +9,10 @@ from typing import Annotated, Optional, Sequence
 import cyclopts
 from rich.table import Table
 
-from flnd import Engine, LoginError, Range, Report, UsageError, __version__
+from flnd import LoginError, UsageError, __version__
+from flnd.engine import Engine, Report
 from flnd.sources import SOURCES
-from flnd import _cli as cli, _prompt as prompt, _text as text
+from flnd import _cli, _prompt, _text
 from flnd._ui import ui
 
 # Data folder relative to current working directory: stores logins, history, settings.
@@ -46,7 +47,7 @@ def epilog() -> str:
     )
 
 
-app = cli.App(name="flnd", help=f"{describe()}\n\n{epilog()}", logs=HOME / "logs")
+app = _cli.App(name="flnd", help=f"{describe()}\n\n{epilog()}", logs=HOME / "logs")
 app.raw.version = __version__
 
 
@@ -92,14 +93,14 @@ def download(
         report = Engine(home=HOME).download(
             resolved_targets,
             categories=categories,
-            time=Range() if time is None else time,
+            time=time,
             limit=limit,
             dry=dry,
             sync=sync,
             again=again,
         )
     if not dry:
-        ui.ok("Complete. {files}", files=text.count(report.files, "file"))
+        ui.ok("Complete. {files}", files=_text.count(report.files, "file"))
     return _ended(report)
 
 
@@ -137,9 +138,9 @@ def target_ls() -> int:
         table.add_column(col)
     for item in items:
         stats = (
-            text.count(item.seen, "seen")
+            _text.count(item.seen, "seen")
             if item.query
-            else f"{text.count(item.files, 'file')}, {text.size(item.size)}"
+            else f"{_text.count(item.files, 'file')}, {_text.size(item.size)}"
         )
         cats = ", ".join(f"{cat}: {st}" for cat, st in item.categories.items())
         table.add_row(
@@ -198,7 +199,7 @@ def login_command() -> int:
     method = (
         methods[0]
         if len(methods) == 1
-        else prompt.choose(
+        else _prompt.choose(
             f"Log in to {source.name}",
             {METHOD_LABELS.get(name, name): name for name in methods},
         )
@@ -242,7 +243,7 @@ def auth_ls() -> int:
         table.add_column(col)
     for item in Engine(home=HOME).auth_ls():
         exp = ", ".join(
-            f"{name} expired" if rem <= 0 else f"{name} in {text.duration(rem)}"
+            f"{name} expired" if rem <= 0 else f"{name} in {_text.duration(rem)}"
             for name, rem in item.expiring
         )
         table.add_row(item.code, item.name, item.state, item.origin, exp)
@@ -268,9 +269,9 @@ def _ended(report: Report) -> int:
     """
     errors = [target.error for target in report.targets if target.error is not None]
     if any(isinstance(error, KeyboardInterrupt) for error in errors):
-        return cli.STOPPED
+        return _cli.STOPPED
     if any(isinstance(error, LoginError) for error in errors):
-        return cli.exit_code(LoginError(""))
+        return _cli.exit_code(LoginError(""))
     return 1 if errors else 0
 
 
@@ -290,9 +291,9 @@ def _read_targets(targets: Sequence[str]) -> list[str]:
 
 def _ask_cookie_login(engine: Engine, method: str) -> dict[str, Optional[str]]:
     if method == "file":
-        return {"path": prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()}
+        return {"path": _prompt.ask("Path to cookies.txt or .json", validate=_readable).strip()}
     choices = {label: name for name, label in engine.browsers.items()}
-    return {"browser": prompt.choose("Read cookies from", choices), "profile": None}
+    return {"browser": _prompt.choose("Read cookies from", choices), "profile": None}
 
 
 def _ask_source(engine: Engine) -> str:
@@ -301,7 +302,7 @@ def _ask_source(engine: Engine) -> str:
         f"{source.name} ({code})" + (f" · {logins[code]}" if code in logins else ""): code
         for code, source in SOURCES.items()
     }
-    return prompt.choose("Log in to", options)
+    return _prompt.choose("Log in to", options)
 
 
 def _readable(raw: str) -> bool | str:

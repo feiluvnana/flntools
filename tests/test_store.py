@@ -60,7 +60,7 @@ class MappingTest(StoreCase):
 
     def test_an_unwritten_table_reads_empty(self):
         self.assertEqual(len(self.db["nothing"]), 0)
-        self.assertEqual(self.db["nothing"].rows.get(), [])
+        self.assertEqual(self.db["nothing"].prefixed(""), [])
         self.assertNotIn("x", self.db["nothing"])
 
     def test_tables_are_separate_and_listed(self):
@@ -104,10 +104,10 @@ class RowTest(StoreCase):
         with self.assertRaises(DiskError):
             self.db[File]["a.jpg"]
         with self.assertRaises(DiskError):
-            self.db[File].rows.get()
+            self.db[File].prefixed("")
 
 
-class RowsTest(StoreCase):
+class PrefixedTest(StoreCase):
     def setUp(self):
         super().setUp()
         self.files = self.db[File]
@@ -117,29 +117,12 @@ class RowsTest(StoreCase):
         }.items():
             self.files[key] = row
 
-    def keys(self, query):
-        return [key for key, _ in query.get()]
-
-    def test_prefix_filter_sort_and_limit_run_in_sql(self):
-        rows = self.files.rows
-        self.assertEqual(self.keys(rows.prefix("ins/")), ["ins/a.jpg", "ins/b.jpg", "ins/d.png"])
-        self.assertEqual(self.keys(rows.filter(state="failed")), ["ins/b.jpg", "twt/c.mp4"])
-        self.assertEqual(self.keys(rows.prefix("ins/").filter(state="kept").sort("size", desc=True)),
-                         ["ins/d.png", "ins/a.jpg"])
-        self.assertEqual(self.keys(rows.sort("size").limit(2)), ["twt/c.mp4", "ins/a.jpg"])
-        self.assertEqual(rows.prefix("ins/").count, 3)
-        self.assertEqual(rows.filter(state="failed").first, ("ins/b.jpg", File("failed", 9)))
-
-    def test_a_predicate_sees_key_and_value(self):
-        query = self.files.rows.filter(lambda pair: pair[1].size > 6).sort("key", desc=True)
-        self.assertEqual(self.keys(query), ["ins/d.png", "ins/b.jpg"])
-
-    def test_json_tables_filter_by_field(self):
-        self.kv["a"] = {"sync": True}
-        self.kv["b"] = {"sync": False}
-        self.kv["c"] = {}
-        self.assertEqual(self.keys(self.kv.rows.filter(sync=True)), ["a"])
-        self.assertEqual(self.keys(self.kv.rows.filter(sync=None)), ["c"])
+    def test_prefixed_reads_the_keys_that_start_with_a_text_in_order(self):
+        self.assertEqual([key for key, _ in self.files.prefixed("ins/")],
+                         ["ins/a.jpg", "ins/b.jpg", "ins/d.png"])
+        self.assertEqual(self.files.prefixed("twt/"), [("twt/c.mp4", File("failed", 1))])
+        self.assertEqual(len(self.files.prefixed("")), 4)
+        self.assertEqual(self.files.prefixed("zzz/"), [])
 
 
 class BatchTest(StoreCase):

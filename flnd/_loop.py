@@ -25,8 +25,7 @@ from collections.abc import Awaitable, Iterator
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, Literal, TypeVar
 
-from flnd import _time as clock
-from flnd._sink import Sink
+from flnd import _time
 
 __all__ = ["Pool", "Result"]
 
@@ -80,7 +79,7 @@ class Pool:
         jobs: int | Literal["cpu", "io"] = "io",
         retries: int = 0,
         stop: threading.Event | None = None,
-        progress: Sink | None = None,
+        progress: Any = None,
     ) -> None:
         if retries < 0:
             raise ValueError(f"retries must be non-negative, not {retries}")
@@ -271,7 +270,7 @@ class Pool:
             except BaseException as error:
                 if attempts > self._retries or self.stopping:
                     return Result(task.item, error=error, attempts=attempts)
-                if not clock.sleep(_backoff(attempts), stop=self._halt):
+                if not _time.sleep(_backoff(attempts), stop=self._halt):
                     return Result(task.item, error=error, attempts=attempts)
 
     def _await_if_needed(self, value: Any) -> Any:

@@ -26,8 +26,9 @@ NAMES = snapshot.api_names()
 
 # W7: prefixes that only say "this is a function".
 PREFIXES = ("get_", "do_", "to_", "try_", "load_from_", "make_", "create_")
-# Rule 6: at most this many options after the first parameter.
-MAX_OPTIONS = 4
+# Rule 6: at most this many options after the first parameter (AGENTS.md: "Options are
+# keyword-only, at most 5").
+MAX_OPTIONS = 5
 # §2.2: option names the vocabulary has another word for.
 RENAMED = {"out": "dest", "dest_dir": "dest", "preset": "level"}
 POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -35,12 +36,7 @@ POSITIONAL = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR
 # Every breach today's code has, by the module it is in. Each module's
 # step-4 commit renames its names and removes its own entries here, with the api.txt diff that shows
 # the renames. Nothing else is exempt: a new name that breaks a convention fails.
-ALLOWED: dict[str, tuple[str, ...]] = {
-    "flnd": (
-        "flnd.Engine.download: 6 options, more than 4",
-        "flnd.download: 7 options, more than 4",
-    ),
-}
+ALLOWED: dict[str, tuple[str, ...]] = {}
 
 
 def breaches() -> set[str]:
@@ -245,13 +241,10 @@ def history_breaches(source: str) -> list[str]:
 # that renames the uses removes its pairs here, so the list can only shrink. AGENTS.md says no
 # aliases; this is the one exception, and it is temporary.
 TRANSITIONAL_ALIASES = {
-    ("archive", "_unpack"), ("browser", "_browser"), ("cli", "_cli"),
+    ("browser", "_browser"), ("cli", "_cli"),
     ("clock", "_time"), ("cookies", "_cookies"), ("crypto", "_vault"), ("fs", "_files"),
     ("http", "_http"), ("prompt", "_prompt"), ("selector", "_html"), ("sh", "_tools"),
     ("store", "_db"), ("text", "_text"), ("worker", "_loop"),
-    ("_archive", "_unpack"), ("_clock", "_time"), ("_crypto", "_vault"), ("_fs", "_files"),
-    ("_selector", "_html"), ("_sh", "_tools"), ("_store", "_db"), ("_worker", "_loop"),
-    ("run_plan", "run"),  # a function, not a module: `_query.run` as `run_plan`
 }
 
 

@@ -45,11 +45,10 @@ from typing import (
 
 import msgspec
 
-from flnd import _time as clock
-from flnd import _cookies as cookies
-from flnd import _files as fs
-from flnd import _text as text
-from flnd._sink import Sink
+from flnd import _time
+from flnd import _cookies
+from flnd import _files
+from flnd import _text
 from flnd.errors import Blocked, Changed, Error, NetworkError, NotFound, SiteError, Stopped, disk
 from flnd._ui import ui
 
@@ -145,9 +144,9 @@ class Response:
     @property
     def html(self) -> Selection:
         """The body as a `flnd._html` `Selection`."""
-        from flnd import _html as _selector
+        from flnd import _html
 
-        return self._cached("html", lambda: _selector.parse(self.text))
+        return self._cached("html", lambda: _html.parse(self.text))
 
     def _cached(self, name: str, compute: Callable[[], Any]) -> Any:
         key = f"_cached_{name}"
@@ -159,7 +158,7 @@ class Response:
         try:
             return msgspec.json.decode(self.content)
         except msgspec.DecodeError as error:
-            msg = f"expected JSON from {text.redact(self.url)}, got {self.text[:80]!r}: {error}"
+            msg = f"expected JSON from {_text.redact(self.url)}, got {self.text[:80]!r}: {error}"
             raise Changed(msg, status=self.status, response=self) from None
 
 
@@ -171,7 +170,7 @@ def fetch(url: str, *, method: str = "GET", headers: Mapping[str, str] | None = 
 
 def download(url: str | Sequence[str], dest: PathLike, *,
              headers: Mapping[str, str] | None = None, resume: bool = True,
-             progress: Sink | None = None) -> Path:
+             progress: Any = None) -> Path:
     """Download `url`, or the first mirror that works, with the default client."""
     return _client().download(url, dest, headers=headers, resume=resume, progress=progress)
 
@@ -179,7 +178,7 @@ def download(url: str | Sequence[str], dest: PathLike, *,
 class Client:
     """A session: cookies, headers, a pace per host, and one retry and timeout for every call."""
 
-    def __init__(self, *, cookies: cookies.Jar | None = None,
+    def __init__(self, *, cookies: _cookies.Jar | None = None,
                  headers: Mapping[str, str] | None = None, timeout: float = 30.0,
                  rate: float | None = None, retry: Retry = Retry(),
                  stop: threading.Event | None = None) -> None:
@@ -203,12 +202,12 @@ class Client:
         return self._raw
 
     @property
-    def cookies(self) -> cookies.Jar:
+    def cookies(self) -> _cookies.Jar:
         """Active `cookies.Jar` bound to this session."""
-        return cookies.Jar(_cookie_dict(cookie) for cookie in self._raw.cookies.jar)
+        return _cookies.Jar(_cookie_dict(cookie) for cookie in self._raw.cookies.jar)
 
     @cookies.setter
-    def cookies(self, jar: cookies.Jar) -> None:
+    def cookies(self, jar: _cookies.Jar) -> None:
         """Replace the client's cookies from `jar`."""
         self._raw.cookies.clear()
         for cookie in jar:
@@ -227,14 +226,14 @@ class Client:
 
     def download(self, url: str | Sequence[str], dest: PathLike, *,
                  headers: Mapping[str, str] | None = None, resume: bool = True,
-                 progress: Sink | None = None) -> Path:
+                 progress: Any = None) -> Path:
         """Stream `url`, or the first of several mirrors that works, through a stage onto `dest`."""
         mirrors = [url] if isinstance(url, str) else list(url)
         if not mirrors:
             raise ValueError("download needs a URL")
         target = Path(dest)
         meter = _Meter(progress)
-        with fs.stage(target, keep=resume) as part:
+        with _files.stage(target, keep=resume) as part:
             for mirror in mirrors[:-1]:
                 try:
                     attempt = functools.partial(self._file, mirror, part, headers, resume, meter)
@@ -242,7 +241,7 @@ class Client:
                     return target
                 except Error as error:
                     ui.debug("{url} failed: {reason}; trying the next mirror",
-                             url=text.redact(mirror), reason=error)
+                             url=_text.redact(mirror), reason=error)
                     # The next mirror may serve other bytes: a Range on this stage would splice.
                     part.unlink(missing_ok=True)
             self._call(mirrors[-1], lambda: self._file(mirrors[-1], part, headers, resume, meter))
@@ -269,11 +268,11 @@ class Client:
         wait = jittered if hinted is None else hinted
         if isinstance(error, Blocked):
             ui.warn("{host}: rate limited; waiting {time}",
-                    host=host, time=text.duration(round(wait)))
+                    host=host, time=_text.duration(round(wait)))
         else:
             ui.debug("retry {n}/{total} in {seconds:.1f}s: {reason}",
                      n=attempt, total=self._retry.times, seconds=wait, reason=error)
-        if not clock.sleep(wait, stop=self._stop):
+        if not _time.sleep(wait, stop=self._stop):
             raise Stopped(f"{host}: stopped")
 
     def _send(self, method: str, url: str, headers: Mapping[str, str] | None,
@@ -303,7 +302,7 @@ class Client:
         try:
             return self._raw.build_request(method, url, headers=headers, **options)
         except (httpx.HTTPError, httpx.InvalidURL) as error:
-            msg = f"{method} {text.redact(url)}: {type(error).__name__}: {error}"
+            msg = f"{method} {_text.redact(url)}: {type(error).__name__}: {error}"
             raise NetworkError(_without_userinfo(msg, url)) from error
 
     def _file(self, url: str, part: Path, headers: Mapping[str, str] | None, resume: bool,
@@ -330,7 +329,7 @@ class Client:
             meter.start(offset, offset)
             return
         if not offset:
-            raise SiteError(f"GET {text.redact(url)}: HTTP 416", status=416)
+            raise SiteError(f"GET {_text.redact(url)}: HTTP 416", status=416)
         part.unlink()
         self._file(url, part, headers, False, meter)
 
@@ -368,12 +367,12 @@ class Client:
         except OSError as error:
             raise disk(error, part) from error
         if total is not None and done < total:
-            raise NetworkError(f"GET {text.redact(url)}: truncated at {done} of {total} bytes",
+            raise NetworkError(f"GET {_text.redact(url)}: truncated at {done} of {total} bytes",
                                retryable=True)
 
     def _check(self, url: str) -> None:
         if self._stop is not None and self._stop.is_set():
-            raise Stopped(f"{text.redact(url)}: stopped")
+            raise Stopped(f"{_text.redact(url)}: stopped")
 
 
 @contextmanager
@@ -407,19 +406,23 @@ class _Pace:
         if self._rate is None:
             return
         with self._lock:
-            now = clock.now()
+            now = _time.now()
             tokens, at = self._hosts.get(host, (BURST, now))
             # A token is taken at once, so threads waiting together queue one interval apart.
             tokens = min(BURST, tokens + (now - at) * self._rate) - 1.0
             self._hosts[host] = (tokens, now)
-        if tokens < 0 and not clock.sleep(-tokens / self._rate, stop=stop):
+        if tokens < 0 and not _time.sleep(-tokens / self._rate, stop=stop):
             raise Stopped(f"{host}: stopped")
 
 
 class _Meter:
-    """Where a download stands on its sink, moved from several threads at once."""
+    """Where a download stands on its sink, moved from several threads at once.
 
-    def __init__(self, sink: Sink | None):
+    The sink is anything with a settable `total` and an `advance(n)`: a `ui.Row`, or the job's
+    per-file stream; None reports nothing.
+    """
+
+    def __init__(self, sink: Any):
         self._sink = sink
         self._at = 0
         self._lock = threading.Lock()
@@ -476,13 +479,13 @@ class _Segments:
             with self.client._open(self.url, self.headers, f"bytes={start}-{end}") as response, \
                     self.pieces.open("r+b", buffering=CHUNK) as handle:
                 if response.status_code != 206:
-                    raise NetworkError(f"GET {text.redact(self.url)}: no range {start}-{end}",
+                    raise NetworkError(f"GET {_text.redact(self.url)}: no range {start}-{end}",
                                        retryable=True)
                 handle.seek(start)
                 if not self.copy(index, response, handle):
                     return
             if self.written[index] != end - start + 1:
-                raise NetworkError(f"GET {text.redact(self.url)}: range {start}-{end} "
+                raise NetworkError(f"GET {_text.redact(self.url)}: range {start}-{end} "
                                    f"ended at {self.written[index]} bytes", retryable=True)
         except BaseException:
             self.failed.set()
@@ -516,7 +519,7 @@ class _Router:
             route = next((answer for prefix, answer in self.prefixes if url.startswith(prefix)),
                          None)
         if route is None:
-            raise NetworkError(f"{request.method} {text.redact(url)}: no route in http.fake")
+            raise NetworkError(f"{request.method} {_text.redact(url)}: no route in http.fake")
         if callable(route):
             route = route(request)
         return _answer(route, request)
@@ -548,7 +551,7 @@ def _with_query(url: str, params: Mapping[str, Any]) -> str:
     try:
         return str(httpx.URL(url).copy_merge_params(params))
     except httpx.InvalidURL as error:
-        raise NetworkError(f"{text.redact(url)}: InvalidURL: {error}") from error
+        raise NetworkError(f"{_text.redact(url)}: InvalidURL: {error}") from error
 
 
 def _retries(retry: Retry, method: str, error: Error) -> bool:
@@ -587,7 +590,7 @@ def _host(url: str) -> str:
     try:
         return (httpx.URL(url).host or "").lower()
     except httpx.InvalidURL as error:
-        raise NetworkError(f"{text.redact(url)}: InvalidURL: {error}") from error
+        raise NetworkError(f"{_text.redact(url)}: InvalidURL: {error}") from error
 
 
 def _total_bytes(headers: Mapping[str, str], offset: int) -> int | None:
@@ -650,7 +653,7 @@ def _response(raw: httpx.Response) -> Response:
 
 def _checked(response: Response, method: str) -> Response:
     status = response.status
-    where = f"{method} {text.redact(response.url)}"
+    where = f"{method} {_text.redact(response.url)}"
     if status < 400:
         return response
     if status == 429:
@@ -677,7 +680,7 @@ def _retry_after(value: str | None) -> float | None:
             when = email.utils.parsedate_to_datetime(value)
         except (TypeError, ValueError):
             return None
-        seconds = when.timestamp() - clock.wall()
+        seconds = when.timestamp() - _time.wall()
     if not math.isfinite(seconds):
         return None
     return min(max(0.0, seconds), MAX_BACKOFF)
@@ -691,7 +694,7 @@ def _reset(headers: Mapping[str, str]) -> float | None:
             continue
         if not math.isfinite(reset):
             continue
-        seconds = reset - clock.wall() if reset > EPOCH else reset
+        seconds = reset - _time.wall() if reset > EPOCH else reset
         return min(max(0.0, seconds) + 1.0, MAX_BACKOFF)
     return None
 
@@ -725,7 +728,7 @@ def _cookie_from_dict(cookie: Mapping[str, Any]) -> http.cookiejar.Cookie:
 
 
 def _failed(request: httpx.Request, error: Exception) -> str:
-    msg = f"{request.method} {text.redact(str(request.url))}: {type(error).__name__}: {error}"
+    msg = f"{request.method} {_text.redact(str(request.url))}: {type(error).__name__}: {error}"
     return _without_userinfo(_scrub(msg, request), str(request.url))
 
 

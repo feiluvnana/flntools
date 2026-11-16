@@ -57,15 +57,23 @@ Where a paged listing got to. flnd saves each category's cursor when a run is in
 next run resumes from it, then catches up from the newest post.
 
 ## Event
-A report of something a run did: a file saved, skipped or failed, or progress made. **Not built
-yet.** Today a run draws its progress on the terminal and returns a `Report` at the end. The
-rebuilt library reports a run as a stream of events (`Saved`, `Skipped`, `Failed`, `Progress`)
-that the CLI and scripts both read.
+A report of something a run did: a file saved (`flnd.Saved`), skipped (`flnd.Skipped`) or
+failed (`flnd.Failed`), the counts so far (`flnd.Progress`), or, for a dry run, a file planned
+(`flnd.Planned`). A script reads a run's events by iterating it ([library.md](library.md)).
+Today's CLI still draws its own progress lines; the rebuilt CLI draws them from the events.
+
+## Run
+One `download`, `follow` or `sync` of the library (`flnd.Run`). It starts when it is first
+iterated or waited on, yields its events as they happen, and ends with a `flnd.Report`.
+
+## Record
+A saved file's row: its path, size, post and date (`flnd.Record`). `fl.files()` lists them,
+from the history today.
 
 ## Home
-The folder flnd keeps everything in: downloads, history, logins and settings. Today it is
-`.flnd` in the current folder, and the library functions take `home=` to use another one. Its
-layout is in [storage.md](storage.md).
+The folder flnd keeps everything in: downloads, history, logins and settings. The library's
+`flnd.open(home)` takes it; without one, it is `$FLND_HOME`, else `.flnd` in the current folder,
+which is also the CLI's. Its layout is in [storage.md](storage.md).
 
 ## Login
 A source's saved credentials: browser cookies for most sites, a session for Telegram. Logins are

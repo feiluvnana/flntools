@@ -17,6 +17,8 @@ TARGETS_TABLE = "targets"
 SYNC = "sync"
 SEEN = "seen"
 QUERY = "query"
+# The categories a followed target syncs (the library's `follow(only=...)`); absent: every one.
+ONLY = "only"
 COMPLETE = "complete"
 CURSORS = "cursors"
 FAILED = "failed"
@@ -54,6 +56,14 @@ def query_name(row: Mapping[str, Any]) -> str | None:
     return str(found) if isinstance(found, str) and found else None
 
 
+def only(row: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The categories a followed target was given to sync, or None for every category."""
+    found = row.get(ONLY)
+    if isinstance(found, list) and found and all(isinstance(name, str) for name in found):
+        return tuple(found)
+    return None
+
+
 def synced(saved: Mapping[str, Any]) -> dict[str, Any]:
     """Return rows in `saved` whose `sync` is enabled (defaulting missing to True)."""
     return {name: row for name, row in saved.items()
@@ -66,9 +76,19 @@ def sync_enabled(row: Mapping[str, Any]) -> bool:
 
 
 def record(
-    home: Path, chosen: Sequence[tuple[Target, Options]], *, sync: bool | None = None
+    home: Path, chosen: Sequence[tuple[Target, Options]], *, sync: bool | None = None,
+    keep: bool = False,
 ) -> None:
-    """Save each target's settings and `--sync` in `targets.db`, keeping progress state."""
+    """Save each target's settings and `--sync` in `targets.db`, keeping progress state.
+
+    Args:
+        home: the home folder.
+        chosen: each target with its options.
+        sync: True follows the targets; None keeps each one's state (new ones follow), False
+            leaves new ones unfollowed.
+        keep: whether to save each target's categories for later syncs (the library's
+            `follow`); otherwise the saved ones stay as they were.
+    """
     if not chosen:
         return
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
@@ -76,6 +96,10 @@ def record(
         for target, options in chosen:
             old = saved.get(key(target))
             kept = _kept_fields(old, options)
+            if keep:
+                kept.pop(ONLY, None)
+                if options.categories and ALL not in options.categories:
+                    kept[ONLY] = list(options.categories)
             is_sync = _next_sync(old, sync)
             saved[key(target)] = {
                 "kind": target.kind, SYNC: is_sync, "at": now, **kept,
@@ -89,8 +113,9 @@ def _kept_fields(old: Any, options: Options) -> dict[str, Any]:
         for name in (COMPLETE, CURSORS, FAILED):
             if isinstance(old.get(name), dict) and old[name]:
                 kept[name] = old[name]
-        if isinstance(old.get(SEEN), list) and old[SEEN]:
-            kept[SEEN] = old[SEEN]
+        for name in (SEEN, ONLY):
+            if isinstance(old.get(name), list) and old[name]:
+                kept[name] = old[name]
     if options.query:
         kept[QUERY] = options.query
     elif isinstance(old, dict) and isinstance(old.get(QUERY), str) and old[QUERY]:

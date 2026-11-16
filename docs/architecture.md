@@ -14,7 +14,8 @@ here also changes this page, so the page always describes the code you have chec
                  you
                   │
    flnd/cli.py ───┤  the command line (cyclopts): flags in, progress lines out
-   flnd/__init__  │  a few library functions over the engine
+   flnd/__init__  │  the library: flnd.open, Flnd, Run, events (names load lazily)
+   flnd/_library  │  Flnd's methods; flnd/_run.py: Run; flnd/_events.py: events, Report
                   ▼
    flnd/engine.py    Engine: resolves targets, checks options, runs each target in turn
         │
@@ -33,8 +34,11 @@ here also changes this page, so the page always describes the code you have chec
 | part | what it holds | who calls it |
 | --- | --- | --- |
 | `flnd/cli.py` | the commands: `download`, `sync`, `target …`, `auth …` | the `flnd` script |
-| `flnd/__init__.py` | `source`, `resolve`, `open`, `download`, and the engine's types | scripts |
-| `flnd/engine.py` | `Engine`: every command as a method, and target resolution | the CLI, scripts |
+| `flnd/__init__.py` | the public names, each imported from its module on first use | scripts |
+| `flnd/_library.py` | `open` and `Flnd`: each command as a method, over the engine | scripts |
+| `flnd/_run.py` | `Run`: a command on its own thread, read as a stream of events | `Flnd` |
+| `flnd/_events.py` | the events (`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`), `Report`, `Login`, `Record`, `Tracked` | the engine, the job, `Run` |
+| `flnd/engine.py` | `Engine`: every command as a method, and target resolution | the CLI, `Flnd` |
 | `flnd/job.py` | one target's run: listing, planning, the download pool, history rows | the engine |
 | `flnd/site.py` | `SourceRun` (a source's cookies, clients and browser for a run) and `TargetSite` (the `Site` a route sees) | the engine, the job |
 | `flnd/source.py` | the source API: `Source`, `@target`, `Post`, `File`, `Site`, `Target`, errors | every source |

@@ -24,7 +24,9 @@ import httpx
 
 from flnd import job
 from flnd.common import auth, net, paths
-from flnd import Blocked, Engine, LoginError, Range, Report, Target, TargetReport, UsageError
+from flnd import Blocked, LoginError, Target, UsageError
+from flnd.engine import Engine, Report, TargetReport
+from flnd.source import Range
 from flnd.options import Options
 from flnd.site import LoginSite
 from flnd.source import SiteError, File, Post, Source, target
@@ -347,8 +349,8 @@ class HttpTest(EngineCase):
         real_stopping = cli.stopping
 
         @contextmanager
-        def capture_stopping():
-            with real_stopping() as stop:
+        def capture_stopping(state=None):
+            with real_stopping(state) as stop:
                 stop_ref.append(stop)
                 yield stop
 
@@ -500,14 +502,14 @@ class ApiTest(EngineCase):
         with paths.table(self.home / paths.TARGETS, "targets") as targets:
             return dict(targets.items())
 
-    def test_flnd_exports_exactly_the_engine_api(self):
+    def test_flnd_exports_exactly_the_library(self):
         import flnd
 
         self.assertEqual(sorted(flnd.__all__), [
-            "AuthInfo", "Blocked", "Changed", "DiskError", "Engine", "Error", "LoginError",
-            "NetworkError", "NotFound", "Range", "Report", "SOURCES", "SiteError", "Source",
-            "SourceError", "Stopped", "Target", "TargetInfo", "TargetReport", "ToolError",
-            "UsageError", "__version__", "download", "open", "resolve", "source",
+            "Blocked", "Changed", "DiskError", "Error", "Event", "Failed", "Flnd", "Login",
+            "LoginError", "NetworkError", "NotFound", "Planned", "Progress", "Record", "Report",
+            "Run", "Saved", "SiteError", "Skipped", "SourceError", "Stopped", "Target",
+            "ToolError", "Tracked", "UsageError", "__version__", "open",
         ])
         self.assertFalse(hasattr(Engine, "LoginError"))
         self.assertFalse(hasattr(Engine, "run"))
@@ -943,8 +945,8 @@ class SyncedQueryTest(EngineCase):
         real_stopping = cli.stopping
 
         @contextmanager
-        def capture_stopping():
-            with real_stopping() as stop:
+        def capture_stopping(state=None):
+            with real_stopping(state) as stop:
                 stop_ref.append(stop)
                 yield stop
 

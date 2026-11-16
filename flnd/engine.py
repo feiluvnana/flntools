@@ -19,7 +19,8 @@ from flnd.site import LoginSite, SourceRun, TargetSite, shared_browser, source_r
 from flnd.errors import DiskError, Error, LoginError, NetworkError, Stopped, UsageError
 from flnd.source import Range, Source, Target, _Unmatched
 from flnd.sources import SOURCES
-from flnd import _cli as cli, _files as fs, _db as store, _text as text
+from flnd import _cli, _files, _db, _text
+from flnd._events import Failed, Planned
 from flnd._ui import ui
 
 __all__ = ["AuthInfo", "Engine", "Report", "TargetInfo", "TargetReport"]
@@ -94,8 +95,21 @@ class Engine:
         *,
         home: Path = Path(".flnd"),
         sources: Mapping[str, type[Source]] = SOURCES,
+        emit: Callable[[Any], None] | None = None,
+        stop: _cli.Stopping | None = None,
     ) -> None:
+        """Make the engine of one home.
+
+        Args:
+            home: the home folder.
+            sources: the sources it knows, by code.
+            emit: where its runs send their events (`flnd._run.Run._emit`); None drops them.
+            stop: the stop state its runs watch, when the caller owns it (a library run, whose
+                `stop()` sets it); None makes one per command, set by Ctrl-C.
+        """
         self.home, self.sources = home, sources
+        self.emit: Callable[[Any], None] = emit or (lambda event: None)
+        self.stop = stop
 
     def resolve(self, texts: Sequence[str]) -> list[Target]:
         """Resolve every target string through its owning source."""
@@ -106,18 +120,41 @@ class Engine:
         targets: Sequence[Target | str],
         *,
         categories: str | Sequence[str] | None = None,
-        time: Range | str = Range(),
+        time: Range | str | None = None,
         limit: int | None = None,
         dry: bool = False,
         sync: bool = False,
         again: bool = False,
+        every: bool = False,
+        keep: bool = False,
     ) -> Report:
-        """Download each target with its saved or given options and return a `Report`."""
+        """Download each target with its saved or given options and return a `Report`.
+
+        Args:
+            targets: the targets, as text or resolved.
+            categories: `--from`: the categories to take; None for none named.
+            time: `--time`, as text or a `Range`; None for no limit.
+            limit: at most this many posts per target, or targets per search; None for all.
+            dry: plan what would be saved (`Planned` events), and write nothing.
+            sync: follow the targets, so `sync` takes them later.
+            again: ignore saved cursors and the stop at saved posts.
+            every: whether no `categories` means every category (the library's `only=None`)
+                rather than a usage error for a profile (today's CLI).
+            keep: whether to save `categories` with each target, for later syncs (`follow`).
+
+        Returns:
+            One `TargetReport` per target, in order.
+
+        Raises:
+            UsageError: a bad target, category, time or limit, before anything is fetched.
+            DiskError: the home can't be written; the run stopped.
+            KeyboardInterrupt: Ctrl-C (or the run's stop) ended it.
+        """
         if limit is not None and limit < 1:
             raise UsageError("--limit must be at least 1")
-        span = Range.parse(time) if isinstance(time, str) else time
+        span = Range.parse(time) if isinstance(time, str) else (time or Range())
         resolved = self._resolved(targets)
-        cats_map = categories_by_source(categories, resolved, self.sources)
+        cats_map = categories_by_source(categories, resolved, self.sources, every=every)
         _validate_targets(self.sources, categories, resolved)
         base = Options(
             since=span.since,
@@ -130,7 +167,7 @@ class Engine:
             code: replace(base, categories=cats_map.get(code))
             for code in {t.source for t in resolved}
         }
-        with cli.stopping() as stop:
+        with _cli.stopping(self.stop) as stop:
             if dry:
                 return self._finish_report(self._dry_run(resolved, by_source, span, stop), stop)
             ui.info("Storage: {path}", path=(self.home / paths.MEDIA).resolve())
@@ -139,7 +176,7 @@ class Engine:
                     resolved, by_source, span=span, sync=sync, stop=stop
                 )
                 return self._complete_download(resolved, reports, sync=sync, stop=stop)
-            return self._download_normal(resolved, by_source, sync=sync, stop=stop)
+            return self._download_normal(resolved, by_source, sync=sync, stop=stop, keep=keep)
 
     def sync(self, targets: Sequence[Target | str] = ()) -> Report:
         """Bring synced targets up to date: fetch new posts and sum up."""
@@ -149,9 +186,9 @@ class Engine:
             ui.info("nothing to sync")
             return Report(())
         _validate_targets(self.sources, None, [t for t, _ in chosen])
-        with cli.stopping() as stop, fs.lock(self.home / paths.METADATA / ".lock"):
+        with _cli.stopping(self.stop) as stop, _files.lock(self.home / paths.METADATA / ".lock"):
             results: dict[int, TargetReport] = {}
-            pool_settings = RunShared(home=self.home, history={}, stop=stop)
+            pool_settings = RunShared(home=self.home, history={}, stop=stop, emit=self.emit)
             with shared_browser(pool_settings):
                 self._sync_normal(chosen, results, pool_settings, stop)
                 self._sync_queries(chosen, results, pool_settings, stop)
@@ -268,7 +305,7 @@ class Engine:
         return tuple(code for code, source in self.sources.items() if source.login is Source.login)
 
     def _interactive_login(self, code: str, source: Source, method: str) -> str:
-        with cli.stopping() as stop:
+        with _cli.stopping() as stop:
             settings = RunShared(home=self.home, history={}, stop=stop, interactive=True)
             with source_run(settings, source) as run:
                 source.login(LoginSite(run), method)
@@ -282,10 +319,25 @@ class Engine:
         by_source: Mapping[str, Options],
         *,
         sync: bool,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
+        keep: bool = False,
     ) -> Report:
-        """Download non-query targets sequentially with metadata locking."""
-        with fs.lock(self.home / paths.METADATA / ".lock"):
+        """Download non-query targets sequentially with metadata locking.
+
+        Args:
+            resolved: the targets, in order.
+            by_source: each source's options, by code.
+            sync: whether to follow the targets.
+            stop: the run's stop state.
+            keep: whether to save each target's categories for later syncs.
+
+        Returns:
+            One `TargetReport` per target, in order.
+
+        Raises:
+            KeyboardInterrupt: the run was stopped.
+        """
+        with _files.lock(self.home / paths.METADATA / ".lock"):
             rows = flnd.targets.rows(self.home)
             chosen = [
                 (
@@ -304,7 +356,7 @@ class Engine:
                 )
                 for target in resolved
             ]
-            flnd.targets.record(self.home, chosen, sync=sync)
+            flnd.targets.record(self.home, chosen, sync=sync, keep=keep)
             reports = self._run(chosen, stop=stop)
             return self._complete_download(resolved, reports, sync=sync, stop=stop, rows=rows)
 
@@ -314,7 +366,7 @@ class Engine:
         reports: Sequence[TargetReport],
         *,
         sync: bool,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
         rows: Mapping[str, Any] | None = None,
     ) -> Report:
         report = self._finish_report(Report(tuple(reports)), stop)
@@ -322,7 +374,7 @@ class Engine:
             self._warn_unsynced(resolved, rows=rows)
         return report
 
-    def _finish_report(self, report: Report, stop: cli.Stopping) -> Report:
+    def _finish_report(self, report: Report, stop: _cli.Stopping) -> Report:
         if stop.soon.is_set():
             raise KeyboardInterrupt
         _log_totals(report)
@@ -333,7 +385,7 @@ class Engine:
         chosen: Sequence[tuple[Target, Options]],
         results: dict[int, TargetReport],
         pool_settings: RunShared,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> None:
         """Sync non-query targets and store their `TargetReport` entries in `results`."""
         indices = [i for i, (target, _) in enumerate(chosen) if not self._is_query(target)]
@@ -356,7 +408,7 @@ class Engine:
         chosen: Sequence[tuple[Target, Options]],
         results: dict[int, TargetReport],
         pool_settings: RunShared,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> None:
         """Sync query targets and store their `TargetReport` entries in `results`."""
         indices = [i for i, (target, _) in enumerate(chosen) if self._is_query(target)]
@@ -410,15 +462,27 @@ class Engine:
         resolved: Sequence[Target],
         by_source: Mapping[str, Options],
         span: Range,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> Report:
         reports: list[TargetReport] = []
-        settings = RunShared(home=self.home, history={}, stop=stop, dry=True)
+        # A dry run reads the history to tell "saved" from "new", but never makes it: a home
+        # without one stays untouched.
+        history = self._saved_rows()
+        settings = RunShared(
+            home=self.home, history=history, stop=stop, dry=True, emit=self.emit,
+        )
         with shared_browser(settings):
             for target in resolved:
                 opts = by_source[target.source]
                 reports.append(self._dry_one(settings, target, opts, span, stop))
         return Report(tuple(reports))
+
+    def _saved_rows(self) -> dict[str, Any]:
+        """Every history row by key, read once; `{}` when the home has no history yet."""
+        if not (self.home / paths.HISTORY).is_file():
+            return {}
+        with self._history() as history:
+            return dict(history.items())
 
     def _dry_one(
         self,
@@ -426,7 +490,7 @@ class Engine:
         target: Target,
         options: Options,
         span: Range,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> TargetReport:
         """Run a dry-run plan for a single target."""
         source = self.sources[target.source]()
@@ -434,7 +498,7 @@ class Engine:
             account = TargetSite(run, Target(source.code, ACCOUNT, ""))
             if not source.logged_in(account) and source.requires_login:
                 failed = job.logged_out(target)
-                job.tell(target, failed)
+                job.tell(target, failed, self.emit)
                 return TargetReport(target, (), 0, error=failed)
             try:
                 with _connected(run, account):
@@ -445,7 +509,7 @@ class Engine:
                 return TargetReport(target, (), 0, error=Stopped(job.STOPPED))
             except Exception as error:
                 failed = job.failure(error, target, source)
-                job.tell(target, failed)
+                job.tell(target, failed, self.emit)
                 return TargetReport(target, (), 0, error=failed)
             return TargetReport(target, (), 0)
 
@@ -456,12 +520,12 @@ class Engine:
         *,
         span: Range,
         sync: bool,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> list[TargetReport]:
         """Download a mix of discovering and normal targets in caller order."""
         reports: list[TargetReport] = []
-        pool_settings = RunShared(home=self.home, history={}, stop=stop)
-        with fs.lock(self.home / paths.METADATA / ".lock"), shared_browser(pool_settings):
+        pool_settings = RunShared(home=self.home, history={}, stop=stop, emit=self.emit)
+        with _files.lock(self.home / paths.METADATA / ".lock"), shared_browser(pool_settings):
             for target in resolved:
                 options = by_source[target.source]
                 if self._is_query(target):
@@ -484,7 +548,7 @@ class Engine:
         *,
         span: Range,
         sync: bool,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
         browser_pool: Any = None,
     ) -> list[TargetReport]:
         """Discover targets from a discovering route and download each one."""
@@ -494,11 +558,12 @@ class Engine:
         with self._history() as history, self._targets() as saved_targets, ui.group() as group:
             settings = RunShared(
                 home=self.home, history=history, targets=saved_targets,
-                stop=stop, browser_pool=browser_pool,
+                stop=stop, browser_pool=browser_pool, emit=self.emit,
             )
             board = job.Board(
                 group, subject_width=len(str(target)),
                 label_width=self._label_width([(target, options)]), parent=target,
+                emit=self.emit,
             )
             with shared_browser(settings), source_run(settings, source) as run:
                 if err := _require_auth(source, run, target):
@@ -517,7 +582,7 @@ class Engine:
         reports: list[TargetReport],
         *,
         span: Range,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> None:
         """Discover query children, download each, and record the query's seen set."""
         seen_keys: list[str] = []
@@ -541,7 +606,7 @@ class Engine:
             reports.append(TargetReport(target, (), 0, error=Stopped(job.STOPPED)))
         except Exception as error:
             failed = job.failure(error, target, run.source)
-            job.tell(target, failed)
+            job.tell(target, failed, self.emit)
             reports.append(TargetReport(target, (), 0, error=failed))
         finally:
             board.end(target, failed=any(r.error is not None for r in reports))
@@ -555,7 +620,7 @@ class Engine:
         child: Target,
         board: job.Board,
         child_opts: Options,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> TargetReport:
         if child.source == parent.source:
             return job.download(run, child, board, child_opts)
@@ -569,7 +634,7 @@ class Engine:
         target: Target,
         options: Options,
         *,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
         browser_pool: Any = None,
     ) -> TargetReport:
         """Run a dry-run plan for a single target."""
@@ -580,11 +645,12 @@ class Engine:
         with self._history() as history, self._targets() as saved_targets, ui.group() as group:
             settings = RunShared(
                 home=self.home, history=history, targets=saved_targets,
-                stop=stop, browser_pool=browser_pool,
+                stop=stop, browser_pool=browser_pool, emit=self.emit,
             )
             board = job.Board(
                 group, subject_width=len(str(target)),
                 label_width=self._label_width([(target, options)]), parent=target,
+                emit=self.emit,
             )
             with shared_browser(settings), source_run(settings, source) as run:
                 if err := _require_auth(source, run, target):
@@ -601,7 +667,7 @@ class Engine:
         board: job.Board,
         seen_keys: set[str],
         known_keys: set[str],
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
     ) -> TargetReport:
         """Run discovery and download for a synced query target."""
         written: list[Path] = []
@@ -618,7 +684,7 @@ class Engine:
         except Exception as error:
             failed = True
             ended = job.failure(error, target, run.source)
-            job.tell(target, ended)
+            job.tell(target, ended, self.emit)
             return TargetReport(target, tuple(written), skipped, error=ended)
         finally:
             board.end(target, failed=failed or child_failed is not None)
@@ -634,7 +700,7 @@ class Engine:
         board: job.Board,
         seen_keys: set[str],
         known_keys: set[str],
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
         written: list[Path],
         seen_to_mark: list[str],
     ) -> tuple[int, Error | Stopped | None]:
@@ -708,6 +774,7 @@ class Engine:
             (
                 target,
                 Options(
+                    categories=flnd.targets.only(rows.get(flnd.targets.key(target), {})),
                     query=flnd.targets.query_name(rows.get(flnd.targets.key(target), {})),
                 ),
             )
@@ -743,7 +810,7 @@ class Engine:
         self,
         chosen: Sequence[tuple[Target, Options]],
         *,
-        stop: cli.Stopping,
+        stop: _cli.Stopping,
         browser_pool: Any = None,
     ) -> list[TargetReport]:
         """Run each target sequentially 1 by 1, grouped by site session."""
@@ -754,12 +821,12 @@ class Engine:
         with self._history() as history, self._targets() as saved, ui.group() as rows:
             run_settings = RunShared(
                 home=self.home, history=history, targets=saved,
-                stop=stop, browser_pool=browser_pool,
+                stop=stop, browser_pool=browser_pool, emit=self.emit,
             )
             board = job.Board(
                 rows,
                 subject_width=max((len(str(target)) for target, _ in chosen), default=0),
-                label_width=self._label_width(chosen),
+                label_width=self._label_width(chosen), emit=self.emit,
             )
             work = [
                 (
@@ -790,10 +857,10 @@ class Engine:
             ]
         return max(map(len, labels), default=0)
 
-    def _history(self) -> AbstractContextManager[store.Table[Any]]:
+    def _history(self) -> AbstractContextManager[_db.Table[Any]]:
         return paths.table(self.home / paths.HISTORY, HISTORY_TABLE)
 
-    def _targets(self) -> AbstractContextManager[store.Table[Any]]:
+    def _targets(self) -> AbstractContextManager[_db.Table[Any]]:
         return paths.table(self.home / paths.TARGETS, flnd.targets.TARGETS_TABLE)
 
 
@@ -811,7 +878,7 @@ def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetRepor
     account = TargetSite(run, Target(source.code, ACCOUNT, ""))
     if not source.logged_in(account) and source.requires_login:
         failed = job.logged_out(target)
-        job.tell(target, failed)
+        job.tell(target, failed, run.settings.emit)
         return TargetReport(target, (), 0, error=failed)
     if not source.logged_in(account):
         ui.warn("{code}: not logged in, using public access; run flnd auth login", code=source.code)
@@ -821,13 +888,31 @@ def _require_auth(source: Source, run: SourceRun, target: Target) -> TargetRepor
 def _log_dry(
     run: SourceRun, target: Target, options: Options, span: Range, *, is_query: bool,
 ) -> None:
+    """List what a download of `target` would save: a log line and a `Planned` event each.
+
+    A file is "saved" when its history row or its file is already there, else "new". A
+    search plans each target it finds, with no post and no path.
+
+    Args:
+        run: the source's run, whose settings hold the history and the event sink.
+        target: the target to plan.
+        options: its options (categories, limit, time).
+        span: the time range a search filters by.
+        is_query: whether the target is a search.
+    """
+    emit = run.settings.emit
     if is_query:
         with closing(job.discover(run, target, limit=options.limit, time_range=span)) as found:
             for item in found:
                 ui.info("{target}", target=str(item))
+                emit(Planned(item, "", None, "new"))
         return
+    folder = paths.target_folder(run.settings.home, target)
     for placed in job.plan(run, target, options):
         ui.info("{target}: {path}", target=str(target), path=placed.path)
+        dest = folder.joinpath(*placed.path.split("/"))
+        saved = f"{run.source.code}:{placed.key}" in run.settings.history or dest.is_file()
+        emit(Planned(target, placed.post.id, dest, "saved" if saved else "new"))
 
 
 def _folder_stats(folder: Path) -> tuple[int, int]:
@@ -926,7 +1011,7 @@ def _follow(url: str) -> str:
     try:
         return net.follow(url)
     except httpx.HTTPError as error:
-        raise NetworkError(f"can't follow {text.redact(url)}: {error}", retryable=True) from None
+        raise NetworkError(f"can't follow {_text.redact(url)}: {error}", retryable=True) from None
 
 
 def _run_site(
@@ -955,7 +1040,7 @@ def _run_site(
         if not source.logged_in(account) and source.requires_login:
             for planned in group:
                 failed = job.logged_out(planned.target)
-                job.tell(planned.target, failed)
+                job.tell(planned.target, failed, run_settings.emit)
                 reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
             return
         if not source.logged_in(account):
@@ -970,6 +1055,7 @@ def _run_site(
                 if login is not None:
                     board.end(planned.target, failed=True)
                     reports[planned.number] = TargetReport(planned.target, (), 0, error=login)
+                    run_settings.emit(Failed(planned.target, login))
                     continue
                 report = job.download(run, planned.target, board, planned.options)
                 reports[planned.number] = report
@@ -986,7 +1072,14 @@ def _fail_unreached(
     reports: dict[int, TargetReport],
     board: job.Board,
 ) -> None:
-    """Execute all planned targets for one source site and record their reports."""
+    """Fail every target of a source that broke before it could run them, one event each.
+
+    Args:
+        work: the source, and its targets in order.
+        error: what broke it (a source that can't start, a bug in its `connect`).
+        reports: filled with a failed report for each target not reported yet.
+        board: the run's progress rows, which end failed; its sink gets one `Failed` per target.
+    """
     source, group = work
     ui.error("{source}: {error}", source=source.code, error=error)
     for planned in group:
@@ -994,6 +1087,7 @@ def _fail_unreached(
         if planned.number not in reports:
             failed = job.failure(error, planned.target, source)
             reports[planned.number] = TargetReport(planned.target, (), 0, error=failed)
+            board.emit(Failed(planned.target, failed))
 
 
 @contextmanager

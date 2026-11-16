@@ -1,24 +1,6 @@
 # Docstring and docs gaps that tests/test_docs.py allows today, one per line.
 # Fix a gap, then delete its line: the list may only shrink.
-docs/library.md: 2 skipped python blocks
-flnd/__init__.py:download: Args: no again
-flnd/__init__.py:download: Args: no categories
-flnd/__init__.py:download: Args: no dry
-flnd/__init__.py:download: Args: no home
-flnd/__init__.py:download: Args: no limit
-flnd/__init__.py:download: Args: no sync
-flnd/__init__.py:download: Args: no targets
-flnd/__init__.py:download: Args: no time
-flnd/__init__.py:download: no Example:
-flnd/__init__.py:download: no Returns:
-flnd/__init__.py:open: Args: no code
-flnd/__init__.py:open: Args: no home
-flnd/__init__.py:open: Args: no time
-flnd/__init__.py:open: no Example:
-flnd/__init__.py:open: no Yields:
-flnd/__init__.py:resolve: Args: no text
-flnd/__init__.py:resolve: no Example:
-flnd/__init__.py:resolve: no Returns:
+docs/library.md: 1 skipped python blocks
 flnd/_browser.py:Browser.open: Args: no idle
 flnd/_browser.py:Browser.open: Args: no timeout
 flnd/_browser.py:Browser.open: Args: no url
@@ -128,7 +110,6 @@ flnd/_cli.py:_cyclopts_app: Args: no name
 flnd/_cli.py:_cyclopts_app: no Returns:
 flnd/_cli.py:_exit_code: Args: no result
 flnd/_cli.py:_exit_code: no Returns:
-flnd/_cli.py:stopping: no Yields:
 flnd/_cookies.py:Jar.filter: Args: no domains
 flnd/_cookies.py:Jar.filter: Args: no names
 flnd/_cookies.py:Jar.filter: no Returns:
@@ -198,14 +179,8 @@ flnd/_db.py:Table._write: no docstring
 flnd/_db.py:Table: Args: no db
 flnd/_db.py:Table: Args: no kind
 flnd/_db.py:Table: Args: no name
-flnd/_db.py:_Pushed._where: no docstring
-flnd/_db.py:_Pushed.run: no docstring
-flnd/_db.py:_Pushed: Args: no prefix
-flnd/_db.py:_Pushed: Args: no table
 flnd/_db.py:_connect: no docstring
 flnd/_db.py:_convert: Args: no path
-flnd/_db.py:_on_values: Args: no plan
-flnd/_db.py:_on_values: no Returns:
 flnd/_db.py:_rewrite: no docstring
 flnd/_db.py:open: Args: no path
 flnd/_db.py:open: no Returns:
@@ -410,14 +385,6 @@ flnd/_prompt.py:choose: no Returns:
 flnd/_prompt.py:confirm: Args: no default
 flnd/_prompt.py:confirm: Args: no message
 flnd/_prompt.py:confirm: no Returns:
-flnd/_query.py:Query.filter: Args: no equal
-flnd/_query.py:Query.filter: Args: no predicate
-flnd/_query.py:Query.filter: no Returns:
-flnd/_query.py:Query: Args: no plan
-flnd/_query.py:Query: Args: no source
-flnd/_query.py:run: Args: no plan
-flnd/_query.py:run: Args: no rows
-flnd/_query.py:run: no Returns:
 flnd/_text.py:_rough_redact: Args: no url
 flnd/_text.py:_rough_redact: no Returns:
 flnd/_text.py:duration: Args: no seconds
@@ -724,7 +691,6 @@ flnd/dry.py:render_tree: Args: no target_text
 flnd/dry.py:render_tree: no Returns:
 flnd/dry.py:tree: Args: no placed
 flnd/dry.py:tree: no Yields:
-flnd/engine.py:AuthInfo: no Example:
 flnd/engine.py:Engine._discover_and_run: Args: no board
 flnd/engine.py:Engine._discover_and_run: Args: no options
 flnd/engine.py:Engine._discover_and_run: Args: no reports
@@ -738,11 +704,6 @@ flnd/engine.py:Engine._download_mixed: Args: no span
 flnd/engine.py:Engine._download_mixed: Args: no stop
 flnd/engine.py:Engine._download_mixed: Args: no sync
 flnd/engine.py:Engine._download_mixed: no Returns:
-flnd/engine.py:Engine._download_normal: Args: no by_source
-flnd/engine.py:Engine._download_normal: Args: no resolved
-flnd/engine.py:Engine._download_normal: Args: no stop
-flnd/engine.py:Engine._download_normal: Args: no sync
-flnd/engine.py:Engine._download_normal: no Returns:
 flnd/engine.py:Engine._dry_one: Args: no options
 flnd/engine.py:Engine._dry_one: Args: no settings
 flnd/engine.py:Engine._dry_one: Args: no span
@@ -808,59 +769,28 @@ flnd/engine.py:Engine._unrecorded: Args: no known
 flnd/engine.py:Engine._unrecorded: Args: no rows
 flnd/engine.py:Engine._unrecorded: no Yields:
 flnd/engine.py:Engine._warn_unsynced: no docstring
-flnd/engine.py:Engine.auth_ls: no Example:
 flnd/engine.py:Engine.auth_ls: no Returns:
-flnd/engine.py:Engine.download: Args: no again
-flnd/engine.py:Engine.download: Args: no categories
-flnd/engine.py:Engine.download: Args: no dry
-flnd/engine.py:Engine.download: Args: no limit
-flnd/engine.py:Engine.download: Args: no sync
-flnd/engine.py:Engine.download: Args: no targets
-flnd/engine.py:Engine.download: Args: no time
-flnd/engine.py:Engine.download: no Example:
-flnd/engine.py:Engine.download: no Raises:
-flnd/engine.py:Engine.download: no Returns:
 flnd/engine.py:Engine.login: Args: no browser
 flnd/engine.py:Engine.login: Args: no code
 flnd/engine.py:Engine.login: Args: no method
 flnd/engine.py:Engine.login: Args: no path
 flnd/engine.py:Engine.login: Args: no profile
-flnd/engine.py:Engine.login: no Example:
 flnd/engine.py:Engine.login: no Raises:
 flnd/engine.py:Engine.login: no Returns:
 flnd/engine.py:Engine.logout: Args: no codes
-flnd/engine.py:Engine.logout: no Example:
 flnd/engine.py:Engine.logout: no Raises:
 flnd/engine.py:Engine.logout: no Returns:
-flnd/engine.py:Engine.resolve: Args: no texts
-flnd/engine.py:Engine.resolve: no Example:
-flnd/engine.py:Engine.resolve: no Returns:
 flnd/engine.py:Engine.sync: Args: no targets
-flnd/engine.py:Engine.sync: no Example:
 flnd/engine.py:Engine.sync: no Returns:
 flnd/engine.py:Engine.target_del: Args: no targets
-flnd/engine.py:Engine.target_del: no Example:
 flnd/engine.py:Engine.target_del: no Raises:
 flnd/engine.py:Engine.target_del: no Returns:
-flnd/engine.py:Engine.target_ls: no Example:
-flnd/engine.py:Engine.target_ls: no Returns:
 flnd/engine.py:Engine.target_sync: Args: no enabled
 flnd/engine.py:Engine.target_sync: Args: no targets
-flnd/engine.py:Engine.target_sync: no Example:
 flnd/engine.py:Engine.target_sync: no Raises:
 flnd/engine.py:Engine.target_sync: no Returns:
-flnd/engine.py:Engine: Args: no home
-flnd/engine.py:Engine: Args: no sources
-flnd/engine.py:Engine: no Example:
-flnd/engine.py:Report: no Example:
-flnd/engine.py:TargetInfo: no Example:
 flnd/engine.py:_connected: no docstring
-flnd/engine.py:_fail_unreached: Args: no board
-flnd/engine.py:_fail_unreached: Args: no error
-flnd/engine.py:_fail_unreached: Args: no reports
-flnd/engine.py:_fail_unreached: Args: no work
 flnd/engine.py:_folder_stats: no docstring
-flnd/engine.py:_log_dry: no docstring
 flnd/engine.py:_log_totals: no docstring
 flnd/engine.py:_require_auth: no docstring
 flnd/engine.py:_split_target: Args: no cleaned
@@ -887,10 +817,6 @@ flnd/job.py:Board.start: Args: no slots
 flnd/job.py:Board.start: Args: no target
 flnd/job.py:Board.totals: Args: no target
 flnd/job.py:Board.totals: no Returns:
-flnd/job.py:Board: Args: no label_width
-flnd/job.py:Board: Args: no parent
-flnd/job.py:Board: Args: no rows
-flnd/job.py:Board: Args: no subject_width
 flnd/job.py:Downloads._build_row: Args: no queued
 flnd/job.py:Downloads._build_row: Args: no saved
 flnd/job.py:Downloads._build_row: no Returns:
@@ -950,11 +876,6 @@ flnd/job.py:Ledger._queue_post_files: no Returns:
 flnd/job.py:Ledger._saved_first: Args: no category
 flnd/job.py:Ledger._saved_first: Args: no post
 flnd/job.py:Ledger._saved_first: no Returns:
-flnd/job.py:Ledger._skip_held: Args: no category
-flnd/job.py:Ledger._skip_held: Args: no dest
-flnd/job.py:Ledger._skip_held: Args: no held
-flnd/job.py:Ledger._skip_held: Args: no item_key
-flnd/job.py:Ledger._skip_held: Args: no name
 flnd/job.py:Ledger._target_undated_rows: no Returns:
 flnd/job.py:Ledger.is_saved: Args: no category
 flnd/job.py:Ledger.is_saved: Args: no post_id
@@ -971,7 +892,6 @@ flnd/job.py:Ledger: Args: no options
 flnd/job.py:Ledger: Args: no run
 flnd/job.py:Ledger: Args: no site
 flnd/job.py:Ledger: Args: no target
-flnd/job.py:TargetReport: no Example:
 flnd/job.py:_Kept: Args: no category
 flnd/job.py:_Kept: Args: no newest_first
 flnd/job.py:_Kept: Args: no run_async
@@ -1171,11 +1091,6 @@ flnd/options.py:_split: Args: no sources
 flnd/options.py:_split: Args: no used
 flnd/options.py:_split: no Raises:
 flnd/options.py:_split: no Returns:
-flnd/options.py:categories_by_source: Args: no categories
-flnd/options.py:categories_by_source: Args: no sources
-flnd/options.py:categories_by_source: Args: no targets
-flnd/options.py:categories_by_source: no Raises:
-flnd/options.py:categories_by_source: no Returns:
 flnd/options.py:unknown: Args: no names
 flnd/options.py:unknown: Args: no sources
 flnd/options.py:unknown: no Returns:
@@ -1857,9 +1772,6 @@ flnd/targets.py:keep_failed: Args: no target
 flnd/targets.py:mark_seen: Args: no home
 flnd/targets.py:mark_seen: Args: no keys
 flnd/targets.py:mark_seen: Args: no target
-flnd/targets.py:record: Args: no chosen
-flnd/targets.py:record: Args: no home
-flnd/targets.py:record: Args: no sync
 flnd/targets.py:validate: Args: no from_selection
 flnd/targets.py:validate: Args: no sources
 flnd/targets.py:validate: Args: no targets

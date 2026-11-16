@@ -44,7 +44,8 @@ never swallows a Ctrl-C.
 import flnd
 
 try:
-    flnd.resolve("zzz:example_user")
+    with flnd.open() as fl:
+        fl.download("zzz:example_user")
 except flnd.Error as error:
     assert isinstance(error, flnd.UsageError)
     print(error)        # unknown source 'zzz'. Sources: tik, fbk, ins, twt, loi, tlg, mht

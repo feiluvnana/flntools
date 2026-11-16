@@ -1,10 +1,4 @@
 flnd: module
-flnd.AuthInfo(code: str, name: str, state: str, origin: str, expiring: list[tuple[str, float]])
-flnd.AuthInfo.code: field -> str
-flnd.AuthInfo.expiring: field -> list[tuple[str, float]]
-flnd.AuthInfo.name: field -> str
-flnd.AuthInfo.origin: field -> str
-flnd.AuthInfo.state: field -> str
 flnd.Blocked(flnd.SiteError)
 flnd.Blocked.hint: attribute
 flnd.Blocked.response: attribute
@@ -22,25 +16,38 @@ flnd.DiskError(flnd.Error)
 flnd.DiskError.hint: attribute
 flnd.DiskError.retryable: attribute
 flnd.DiskError.target: attribute
-flnd.Engine(*, home: Path = Path('.flnd'), sources: Mapping[str, type[Source]] = SOURCES)
-flnd.Engine.auth_ls() -> list[AuthInfo]
-flnd.Engine.browsers: property -> dict[str, str]
-flnd.Engine.cookie_logins: property -> tuple[str, ...]
-flnd.Engine.download(targets: Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False) -> Report
-flnd.Engine.home: attribute
-flnd.Engine.login(code: str, method: str, *, browser: str | None = None, profile: str | None = None, path: Path | str | None = None) -> str
-flnd.Engine.logins: property -> dict[str, str]
-flnd.Engine.logout(codes: Iterable[str]) -> list[str]
-flnd.Engine.resolve(texts: Sequence[str]) -> list[Target]
-flnd.Engine.sources: attribute
-flnd.Engine.sync(targets: Sequence[Target | str] = ()) -> Report
-flnd.Engine.target_del(targets: Sequence[Target | str]) -> list[Target]
-flnd.Engine.target_ls() -> list[TargetInfo]
-flnd.Engine.target_sync(targets: Sequence[Target | str], *, enabled: bool) -> list[Target]
 flnd.Error(Exception)
 flnd.Error.hint: attribute
 flnd.Error.retryable: attribute
 flnd.Error.target: attribute
+flnd.Event: Union
+flnd.Failed(target: flnd.source.Target, error: flnd.errors.Error, post: str = '', path: pathlib.Path | None = None)
+flnd.Failed.error: attribute -> Error
+flnd.Failed.path: attribute -> Path | None
+flnd.Failed.post: attribute -> str
+flnd.Failed.target: attribute -> Target
+flnd.Flnd(home: str | os.PathLike[str] | None = None)
+flnd.Flnd.add(source: type[Source]) -> None
+flnd.Flnd.check(*, fix: bool = False) -> list[Record]
+flnd.Flnd.close() -> None
+flnd.Flnd.download(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, limit: int | None = None, compress: bool = False, dry: bool = False) -> Run
+flnd.Flnd.files(*, target: str | Target | None = None, kind: str | None = None, since: str | None = None) -> list[Record]
+flnd.Flnd.follow(targets: str | Target | Sequence[str | Target], *, only: str | Sequence[str] | None = None, when: str | None = None, compress: bool = False) -> Run
+flnd.Flnd.home: attribute
+flnd.Flnd.login(source: str, how: str) -> Login
+flnd.Flnd.logins: property -> list[Login]
+flnd.Flnd.logout(source: str) -> bool
+flnd.Flnd.retry() -> Run
+flnd.Flnd.site(source: str) -> Iterator[Site]
+flnd.Flnd.sync(targets: str | Target | Sequence[str | Target] = (), *, compress: bool = False) -> Run
+flnd.Flnd.targets(*, source: str | None = None) -> list[Tracked]
+flnd.Flnd.unfollow(targets: str | Target | Sequence[str | Target]) -> list[Target]
+flnd.Login(source: str, name: str, state: str, origin: str = '', expiring: tuple[tuple[str, float], ...] = ())
+flnd.Login.expiring: attribute -> tuple[tuple[str, float], ...]
+flnd.Login.name: attribute -> str
+flnd.Login.origin: attribute -> str
+flnd.Login.source: attribute -> str
+flnd.Login.state: attribute -> str
 flnd.LoginError(flnd.Error)
 flnd.LoginError.hint: attribute
 flnd.LoginError.retryable: attribute
@@ -55,46 +62,60 @@ flnd.NotFound.response: attribute
 flnd.NotFound.retryable: attribute
 flnd.NotFound.status: attribute
 flnd.NotFound.target: attribute
-flnd.Range(since: datetime.date | None = None, until: datetime.date | None = None)
-flnd.Range.parse(text: str) -> Range
-flnd.Range.since: field -> datetime.date | None
-flnd.Range.until: field -> datetime.date | None
-flnd.Report(targets: tuple[TargetReport, ...])
-flnd.Report.failed: property -> tuple[Target, ...]
-flnd.Report.files: property -> int
+flnd.Planned(target: flnd.source.Target, post: str, path: pathlib.Path | None, state: str)
+flnd.Planned.path: attribute -> Path | None
+flnd.Planned.post: attribute -> str
+flnd.Planned.state: attribute -> str
+flnd.Planned.target: attribute -> Target
+flnd.Progress(target: flnd.source.Target, category: str, found: int = 0, saved: int = 0, skipped: int = 0, failed: int = 0, bytes: int = 0, listed: bool = False)
+flnd.Progress.bytes: attribute -> int
+flnd.Progress.category: attribute -> str
+flnd.Progress.failed: attribute -> int
+flnd.Progress.found: attribute -> int
+flnd.Progress.listed: attribute -> bool
+flnd.Progress.saved: attribute -> int
+flnd.Progress.skipped: attribute -> int
+flnd.Progress.target: attribute -> Target
+flnd.Record(key: str, path: pathlib.Path, size: int, post: str = '', category: str = '', date: datetime.date | None = None, at: str = '')
+flnd.Record.at: attribute -> str
+flnd.Record.category: attribute -> str
+flnd.Record.date: attribute -> datetime.date | None
+flnd.Record.key: attribute -> str
+flnd.Record.kind: property -> str | None
+flnd.Record.path: attribute -> Path
+flnd.Record.post: attribute -> str
+flnd.Record.size: attribute -> int
+flnd.Report(saved: int = 0, skipped: int = 0, bytes: int = 0, planned: int = 0, failed: tuple[flnd._events.Failed, ...] = (), stopped: bool = False)
+flnd.Report.bytes: attribute -> int
+flnd.Report.failed: attribute -> tuple[Failed, ...]
 flnd.Report.ok: property -> bool
-flnd.Report.targets: field -> tuple[TargetReport, ...]
-flnd.SOURCES: dict
+flnd.Report.planned: attribute -> int
+flnd.Report.saved: attribute -> int
+flnd.Report.skipped: attribute -> int
+flnd.Report.stopped: attribute -> bool
+flnd.Run(work: Callable[[Callable[[Any], None], Stop], Any], *, name: str, closed: threading.Event | None = None)
+flnd.Run.name: attribute
+flnd.Run.report: property -> Report
+flnd.Run.stop() -> None
+flnd.Run.wait() -> Report
+flnd.Saved(target: flnd.source.Target, category: str, post: str, path: pathlib.Path, date: datetime.date | None, size: int)
+flnd.Saved.category: attribute -> str
+flnd.Saved.date: attribute -> datetime.date | None
+flnd.Saved.path: attribute -> Path
+flnd.Saved.post: attribute -> str
+flnd.Saved.size: attribute -> int
+flnd.Saved.target: attribute -> Target
 flnd.SiteError(flnd.Error)
 flnd.SiteError.hint: attribute
 flnd.SiteError.response: attribute
 flnd.SiteError.retryable: attribute
 flnd.SiteError.status: attribute
 flnd.SiteError.target: attribute
-flnd.Source()
-flnd.Source.browser: attribute -> ClassVar[bool]
-flnd.Source.categories: attribute -> ClassVar[tuple[str, ...]]
-flnd.Source.concurrency: attribute -> ClassVar[int]
-flnd.Source.connect(site: Site, /) -> Any
-flnd.Source.date(site: Site, post: Post, /) -> DateLike
-flnd.Source.fields: attribute -> ClassVar[tuple[str, ...]]
-flnd.Source.filename: attribute -> ClassVar[str]
-flnd.Source.folder: attribute -> ClassVar[str]
-flnd.Source.forms: attribute -> ClassVar[tuple[str, ...]]
-flnd.Source.key: attribute -> ClassVar[str]
-flnd.Source.logged_in(site: Site, /) -> bool
-flnd.Source.login(login: Login, method: str, /) -> None
-flnd.Source.login_methods: attribute -> ClassVar[tuple[str, ...]]
-flnd.Source.needs: attribute -> ClassVar[tuple[str, ...]]
-flnd.Source.pace: attribute -> ClassVar[float]
-flnd.Source.prepare(request: httpx.Request, cookies: Mapping[str, str], /) -> httpx.Request
-flnd.Source.requires_login: attribute -> ClassVar[bool]
-flnd.Source.resolve(text: str) -> Target
-flnd.Source.routes: attribute -> ClassVar[tuple[Route, ...]]
-flnd.Source.single_kinds: attribute -> ClassVar[tuple[str, ...]]
-flnd.Source.stealth: attribute -> ClassVar[bool]
-flnd.Source.unsupported: attribute -> ClassVar[Mapping[str, str]]
-flnd.Source.user_agent: attribute -> ClassVar[str | None]
+flnd.Skipped(target: flnd.source.Target, category: str, post: str, path: pathlib.Path | None = None)
+flnd.Skipped.category: attribute -> str
+flnd.Skipped.path: attribute -> Path | None
+flnd.Skipped.post: attribute -> str
+flnd.Skipped.target: attribute -> Target
 flnd.SourceError(flnd.Error)
 flnd.SourceError.hint: attribute
 flnd.SourceError.retryable: attribute
@@ -105,32 +126,25 @@ flnd.Target.kind: field -> str
 flnd.Target.query: field -> bool
 flnd.Target.source: field -> str
 flnd.Target.value: field -> str
-flnd.TargetInfo(target: Target, sync: bool, at: str, files: int, size: int, seen: int, categories: dict[str, str], query: bool)
-flnd.TargetInfo.at: field -> str
-flnd.TargetInfo.categories: field -> dict[str, str]
-flnd.TargetInfo.files: field -> int
-flnd.TargetInfo.query: field -> bool
-flnd.TargetInfo.seen: field -> int
-flnd.TargetInfo.size: field -> int
-flnd.TargetInfo.sync: field -> bool
-flnd.TargetInfo.target: field -> Target
-flnd.TargetReport(target: Target, written: tuple[Path, ...], skipped: int, error: Error | Stopped | None = None)
-flnd.TargetReport.error: field -> Error | Stopped | None
-flnd.TargetReport.skipped: field -> int
-flnd.TargetReport.target: field -> Target
-flnd.TargetReport.written: field -> tuple[Path, ...]
 flnd.ToolError(flnd.Error)
 flnd.ToolError.hint: attribute
 flnd.ToolError.retryable: attribute
 flnd.ToolError.target: attribute
+flnd.Tracked(target: flnd.source.Target, follow: bool = False, at: str = '', files: int = 0, size: int = 0, seen: int = 0, categories: dict[str, str] = <factory>, query: bool = False)
+flnd.Tracked.at: attribute -> str
+flnd.Tracked.categories: attribute -> dict[str, str]
+flnd.Tracked.files: attribute -> int
+flnd.Tracked.follow: attribute -> bool
+flnd.Tracked.query: attribute -> bool
+flnd.Tracked.seen: attribute -> int
+flnd.Tracked.size: attribute -> int
+flnd.Tracked.target: attribute -> Target
 flnd.UsageError(flnd.Error)
 flnd.UsageError.hint: attribute
 flnd.UsageError.retryable: attribute
 flnd.UsageError.target: attribute
 flnd.__version__: str
-flnd.download(targets: Target | str | Sequence[Target | str], *, categories: str | Sequence[str] | None = None, time: Range | str = Range(since=None, until=None), limit: int | None = None, dry: bool = False, sync: bool = False, again: bool = False, home: Path = Path('.flnd')) -> Report
-flnd.open(code: str, *, home: Path = Path('.flnd'), time: Range | str = Range(since=None, until=None)) -> Iterator[TargetSite]
-flnd.resolve(text: str) -> Target
+flnd.open(home: str | os.PathLike[str] | None = None) -> Flnd
 flnd.source: module
 flnd.source.Blocked(flnd.SiteError)
 flnd.source.Blocked.hint: attribute

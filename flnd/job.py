@@ -32,11 +32,12 @@ from flnd.errors import (
 from flnd.source import (
     Category, File, Post, Range, Resume, Route, Site, Source, Target, day, fill, listing,
 )
-from flnd import _vault as crypto, _files as fs, _db as store, _text as text, _loop as worker
+from flnd import _vault, _files, _db, _text, _loop
+from flnd._events import Failed, Progress, Saved, Skipped
 from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from flnd import _cli as cli
+    from flnd import _cli
 
 __all__ = [
     "STOPPED", "Board", "Counts", "Downloads", "Ledger", "Placed", "TargetReport",
@@ -135,13 +136,17 @@ def failure(error: BaseException, target: Target, source: Source | None = None) 
     return made
 
 
-def tell(target: Target, error: Error) -> None:
-    """Log the failure that ended `target`: its message, its hint, and with `-v` its causes.
+def tell(target: Target, error: Error, emit: Callable[[Any], None]) -> None:
+    """Report the failure that ended `target`: a `Failed` event, and its log lines.
+
+    The log lines are its message, its hint, and with `-v` its causes.
 
     Args:
         target: the target it ended.
         error: the failure, as `failure` made it.
+        emit: the run's event sink (`RunShared.emit`), which gets one `Failed` event.
     """
+    emit(Failed(target, error))
     ui.error("{target}: {error}", target=str(target), error=error)
     if error.hint:
         ui.info("{target}: {hint}", target=str(target), hint=error.hint)
@@ -213,14 +218,37 @@ class _Line:
     note: str = ""
 
 
+# The counts whose change is worth a `Progress` event. A file moving from queued to downloading
+# isn't: a script sees it when the file is saved, skipped or fails.
+PROGRESS_STEPS = frozenset({"found", "saved", "skipped", "failed", "linked"})
+
+
+def _ignore(event: Any) -> None:
+    """The sink of a run nobody listens to: the event is dropped."""
+
+
 class Board:
-    """Status board drawing per-target, per-category progress in a `ui.Group`."""
+    """Status board drawing per-target, per-category progress in a `ui.Group`.
+
+    It is also where `Progress` events come from: each count that a script cares about
+    (`PROGRESS_STEPS`), and each listing that ends, sends the category's counts to `emit`. The
+    event is made under the board's lock, so its counts agree, and sent after it is released,
+    since a sink may wait for the script to take the event.
+
+    Args:
+        rows: the `ui.Group` the rows are drawn in.
+        subject_width: the width the targets are padded to; 0 to leave them as they are.
+        label_width: the width the categories are padded to; 0 to leave them as they are.
+        parent: the search whose found targets share this board's rows; None for a plain run.
+        emit: the run's event sink; None drops the events.
+    """
 
     def __init__(
         self, rows: Any, *, subject_width: int = 0, label_width: int = 0,
-        parent: Target | None = None,
+        parent: Target | None = None, emit: Callable[[Any], None] | None = None,
     ) -> None:
         self.rows, self.widths, self.parent = rows, (subject_width, label_width), parent
+        self.emit = emit or _ignore
         self._lock = threading.Lock()
         self._lines: dict[tuple[Target, str], _Line] = {}
         self._child_skipped: dict[Target, int] = {}
@@ -242,7 +270,10 @@ class Board:
                 setattr(line.counts, name, getattr(line.counts, name) + step)
             if self.parent is not None and target != self.parent and "skipped" in steps:
                 self._child_skipped[target] = self._child_skipped.get(target, 0) + steps["skipped"]
+            event = self._progress(owner, category, line) if PROGRESS_STEPS & steps.keys() else None
         self._show(line)
+        if event is not None:
+            self.emit(event)
 
     def listed(self, target: Target, category: str) -> None:
         """Mark the category's listing complete so its row finishes once nothing is pending."""
@@ -251,7 +282,9 @@ class Board:
         with self._lock:
             line = self._lines.get((target, category)) or self._open(target, category)
             line.listed = True
+            event = self._progress(target, category, line)
         self._show(line)
+        self.emit(event)
 
     def note(self, target: Target, note_text: str) -> None:
         """Attach a status note to each open line for `target`."""
@@ -289,6 +322,13 @@ class Board:
                     for name in vars(total):
                         setattr(total, name, getattr(total, name) + getattr(line.counts, name))
         return total
+
+    @staticmethod
+    def _progress(target: Target, category: str, line: _Line) -> Progress:
+        """The `Progress` event of one line's counts; the caller holds the lock."""
+        c = line.counts
+        return Progress(target, category, found=c.found, saved=c.saved + c.linked,
+                        skipped=c.skipped, failed=c.failed, bytes=c.bytes, listed=line.listed)
 
     def _open(self, target: Target, category: str) -> _Line:
         """Open a new `ui.Row` for `(target, category)` under the lock."""
@@ -334,7 +374,7 @@ class Board:
         if c.failed:
             parts.append(f"{c.failed} failed")
         if c.bytes:
-            parts.append(text.size(c.bytes))
+            parts.append(_text.size(c.bytes))
         if line.note:
             parts.append(line.note)
         return " | ".join(parts)
@@ -453,12 +493,12 @@ def _resolve_name(
     post: Post, file: File, filename: str, values: Mapping[str, Any], extension: str
 ) -> str:
     """Compute a safe filename for one file of `post`."""
-    formatted = fill(filename, values) or text.filename(post.id)
+    formatted = fill(filename, values) or _text.filename(post.id)
     if file.name is None:
         return formatted + extension
     if file.content is None and PurePosixPath(file.name).stem in _stems(filename, values):
         return formatted + PurePosixPath(file.name).suffix
-    return text.filename(file.name)
+    return _text.filename(file.name)
 
 
 def _stems(filename: str, values: Mapping[str, Any]) -> set[str]:
@@ -499,7 +539,7 @@ class Ledger:
         post = dated
         skipped = self._saved_first(post, category) if post.lazy else None
         if skipped is not None:
-            self._skip(post.category)
+            self._skip(post.category, post.id)
             ui.debug("{post}: already saved", post=post.id)
             return skipped, []
         listed = list(post.files()) if callable(post.files) else list(post.files)
@@ -518,14 +558,14 @@ class Ledger:
             dest = self.folder.joinpath(*placed.path.split("/"))
             if placed.file.content is not None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                fs.write(dest, placed.file.content)
+                _files.write(dest, placed.file.content)
                 continue
             item_key = f"{self.source.code}:{placed.key}"
             held = self._held(dest, item_key)
             if held is not None:
                 if dest not in self._queued and item_key not in self._queued:
                     found += 1
-                self._skip_held(post.category, placed.path, dest, item_key, held)
+                self._skip_held(post, placed.path, dest, item_key, held)
                 continue
             self.board.count(self.target, post.category, found=1)
             self._queued.update(dict.fromkeys((dest, item_key), placed.path))
@@ -535,9 +575,18 @@ class Ledger:
             return Outcome.QUEUED, todo
         return (Outcome.SAVED if found else Outcome.EMPTY), []
 
-    def _skip_held(self, category: str, name: str, dest: Path, item_key: str, held: str) -> None:
-        """Count a skipped file and link it when held in another category's folder."""
-        self._skip(category)
+    def _skip_held(self, post: Post, name: str, dest: Path, item_key: str, held: str) -> None:
+        """Count a skipped file and link it when held in another category's folder.
+
+        Args:
+            post: the post the file belongs to.
+            name: the file's path under the target's folder.
+            dest: where the file would go.
+            item_key: its history key.
+            held: the name of the file that holds the same content.
+        """
+        category = post.category
+        self._skip(category, post.id, dest)
         if held == name:
             ui.debug("skip {name}", name=name)
             return
@@ -614,7 +663,7 @@ class Ledger:
             dated += 1
         self._save_asked()
         if dated:
-            self.site.info("{files} dated", files=text.count(dated, "saved file"))
+            self.site.info("{files} dated", files=_text.count(dated, "saved file"))
         return dated
 
     def _target_undated_rows(self) -> list[tuple[str, dict[str, Any]]]:
@@ -623,7 +672,7 @@ class Ledger:
         prefix = f"{self.target.source}:"
         # A store reads only this source's rows, in SQL; any other mapping is filtered here.
         rows = (
-            history.rows.prefix(prefix).get() if isinstance(history, store.Table)
+            history.prefixed(prefix) if isinstance(history, _db.Table)
             else [(k, r) for k, r in list(history.items()) if k.startswith(prefix)]
         )
         return [(k, r) for k, r in rows if self._undated(r)]
@@ -712,7 +761,7 @@ class Ledger:
         if not hold:
             return post
         if item_key in self._waiting:
-            self._skip(post.category)
+            self._skip(post.category, post.id)
             ui.debug("{post}: listed twice", post=post.id)
             return None
         self._waiting[item_key] = post
@@ -772,9 +821,16 @@ class Ledger:
                 return None
         return Outcome.EMPTY if any(k in self._queued for k in checked) else Outcome.SAVED
 
-    def _skip(self, category: str) -> None:
-        """Count one file found and skipped on `category`'s status line."""
+    def _skip(self, category: str, post: str, path: Path | None = None) -> None:
+        """Count one file (or post) found and skipped, and send its `Skipped` event.
+
+        Args:
+            category: the category whose status line counts it.
+            post: the post's id.
+            path: the file skipped; None when the whole post was.
+        """
         self.board.count(self.target, category, found=1, skipped=1)
+        self.settings.emit(Skipped(self.target, category, post, path))
 
     def _held(self, dest: Path | None, item_key: str) -> str | None:
         """Return the name holding a file if queued, on disk, or in history, else None."""
@@ -824,7 +880,7 @@ class Downloads:
     def __init__(self, run: SourceRun, target: Target, board: Board) -> None:
         self.run, self.target, self.board = run, target, board
         self.source, self.settings = run.source, run.settings
-        self._pool: worker.Pool | None = None
+        self._pool: _loop.Pool | None = None
         self._written: dict[str, Path] = {}
         self._failed: dict[str, dict[str, Any]] = {}
         self._succeeded: set[str] = set()
@@ -878,7 +934,7 @@ class Downloads:
                 if not self._pending:
                     return
                 note_text = (
-                    FINISHING.format(files=text.count(self._running, "file"))
+                    FINISHING.format(files=_text.count(self._running, "file"))
                     if self.settings.stop.soon.is_set()
                     else None
                 )
@@ -908,7 +964,7 @@ class Downloads:
         for refresh in waiting:
             refresh.done.set()
 
-    def _drain_pool(self, pool: worker.Pool, error: BaseException | None) -> None:
+    def _drain_pool(self, pool: _loop.Pool, error: BaseException | None) -> None:
         """Close `pool` and log any task failures."""
         if error is not None:
             pool.stop()
@@ -921,10 +977,10 @@ class Downloads:
                     ui.debug("{file}: {chain}", file=item, chain=causes(result.error))
         pool.close()
 
-    def _downloads(self) -> worker.Pool:
+    def _downloads(self) -> _loop.Pool:
         """Lazily create the target's download `worker.Pool`."""
         if self._pool is None:
-            self._pool = worker.Pool(jobs=self.source.concurrency)
+            self._pool = _loop.Pool(jobs=self.source.concurrency)
         return self._pool
 
     def _room(self) -> bool:
@@ -981,6 +1037,7 @@ class Downloads:
         except (SiteError, NetworkError) as error:
             self._record_failed(queued)
             self._count(queued, downloading=-1, failed=1)
+            self.settings.emit(Failed(self.target, error, post=placed.post.id, path=queued.dest))
             ui.error("{name}: {error}", name=placed.path, error=error)
             ui.debug("{name}: {chain}", name=placed.path, chain=causes(error))
             return False
@@ -1106,7 +1163,10 @@ class Downloads:
                 self._succeeded.discard(queued.key)
             self._count(queued, downloading=-1, failed=1)
             raise
-        self._count(queued, downloading=-1, saved=1, bytes=finished.row.get("size", 0))
+        size = finished.row.get("size", 0)
+        self._count(queued, downloading=-1, saved=1, bytes=size)
+        post = queued.placed.post
+        self.settings.emit(Saved(self.target, post.category, post.id, path, finished.day, size))
 
     def _record_failed(self, queued: _Queued) -> None:
         if (entry := _serialize_failed(queued)) is not None:
@@ -1128,9 +1188,9 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
         return TargetReport(target, (), 0, error=Stopped(STOPPED))
     folder = paths.target_folder(run.settings.home, target)
     # The lock lives in metadata, not the target folder, so media folders hold only media.
-    lock = run.settings.home / paths.METADATA / "locks" / f"{crypto.digest(str(folder))[:16]}.lock"
-    with fs.lock(lock):
-        fs.sweep(folder)
+    lock = run.settings.home / paths.METADATA / "locks" / f"{_vault.digest(str(folder))[:16]}.lock"
+    with _files.lock(lock):
+        _files.sweep(folder)
         return _run_download(run, target, board, options)
 
 
@@ -1265,7 +1325,7 @@ def _ended(
         if not isinstance(error, Exception):
             raise error
         failed = failure(error, target, run.source)
-        tell(target, failed)
+        tell(target, failed, run.settings.emit)
         board.end(target, failed=True)
         return replace(report, error=failed)
     if run.settings.stop.soon.is_set():
@@ -1284,9 +1344,9 @@ def _ended(
 
 def _summary(totals: Counts, target: Target, seconds: float) -> None:
     """Log one line for a finished target: files saved, size, skips, failures and time."""
-    parts = [text.count(totals.saved, "file") + " saved"] if totals.saved else []
+    parts = [_text.count(totals.saved, "file") + " saved"] if totals.saved else []
     if totals.bytes:
-        parts.append(text.size(totals.bytes))
+        parts.append(_text.size(totals.bytes))
     if totals.linked:
         parts.append(f"{totals.linked} linked")
     if totals.skipped:
@@ -1294,7 +1354,7 @@ def _summary(totals: Counts, target: Target, seconds: float) -> None:
     if totals.failed:
         parts.append(f"{totals.failed} failed (retried next run)")
     body = ", ".join(parts) or "nothing new"
-    line = f"{body} in {text.duration(seconds)}"
+    line = f"{body} in {_text.duration(seconds)}"
     (ui.warn if totals.failed else ui.ok)("{target}: {line}", target=str(target), line=line)
 
 
@@ -1393,7 +1453,7 @@ class _Refresh:
     """A download's request for a lazy post's files on the lister thread."""
 
     post: Post
-    stop: cli.Stopping
+    stop: _cli.Stopping
     done: threading.Event = field(default_factory=threading.Event)
     files: list[File] | None = None
     error: Exception | None = None

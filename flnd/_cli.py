@@ -176,9 +176,20 @@ class App:
 
 
 @contextmanager
-def stopping() -> Iterator[Stopping]:
-    """Install a two-stage Ctrl-C handler setting `soon` then `now` on SIGINT."""
-    state = Stopping(soon=threading.Event(), now=threading.Event())
+def stopping(state: Stopping | None = None) -> Iterator[Stopping]:
+    """Install a two-stage Ctrl-C handler setting `soon` then `now` on SIGINT.
+
+    Only the main thread can install a signal handler. Elsewhere (a library run's worker
+    thread) the state is yielded as it is, and whoever owns it sets it: the run's consumer,
+    which installs the handler on its own thread, or `run.stop()`.
+
+    Args:
+        state: the state to set; None makes a new one.
+
+    Yields:
+        The state, whose `soon` the first Ctrl-C sets and `now` the second.
+    """
+    state = state or Stopping(soon=threading.Event(), now=threading.Event())
     if threading.current_thread() is not threading.main_thread():
         yield state
         return

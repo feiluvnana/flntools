@@ -62,9 +62,12 @@ def history(report: kit.Report, scratch: Path) -> None:
         report.add("contains", kit.best(lambda: [k in table for k in probes]) / PROBES * 1e6, "us")
         # Keys "ins:00000000" to "ins:00009999": 10,000 rows.
         report.add("prefix_scan_10k",
-                   kit.best(lambda: table.rows.prefix("ins:0000").get()) * 1e3, "ms")
-        # `size` lives inside the JSON value, so this filter reads every row's JSON.
-        report.add("filter_json", kit.best(lambda: table.rows.filter(size=5).get()) * 1e3, "ms")
+                   kit.best(lambda: table.prefixed("ins:0000")) * 1e3, "ms")
+        # `size` lives inside the JSON value, so this filter decodes every row's JSON. The
+        # store has no SQL filter any more: flnd's reads filter in Python until flnd.db's
+        # real columns.
+        report.add("filter_json", kit.best(
+            lambda: [key for key, value in table.items() if value["size"] == 5]) * 1e3, "ms")
 
 
 def commits(report: kit.Report, scratch: Path) -> None:

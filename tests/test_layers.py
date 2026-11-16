@@ -10,9 +10,9 @@ The rules:
    `flnd.sources.common` package, `flnd` itself (its version) and the toolkit: the private
    `flnd._x` modules that used to be the `shared` package;
 2. `flnd.source` imports nothing from flnd but the toolkit: it is what sources see, not the engine;
-3. `flnd/cli.py` imports from flnd only `flnd` (the engine API), `flnd.sources` (for help and
-   login's list) and the toolkit: every decision is the engine's, so the CLI only parses, asks and
-   prints;
+3. `flnd/cli.py` imports from flnd only `flnd` (the library), `flnd.engine` (until the CLI is
+   rebuilt on the library), `flnd.sources` (for help and login's list) and the toolkit: every
+   decision is the engine's, so the CLI only parses, asks and prints;
 4. nothing imports `flnd.cli` but `flnd/__main__.py`, which is how `python -m flnd` starts it.
 
 Nothing is exempt: step 7 moved the CLI's decisions into the engine, which emptied the list of
@@ -26,8 +26,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLND = ROOT / "flnd"
 
-# Rule 3: everything cli.py may import from flnd, besides the toolkit.
-CLI_ALLOWED = {"flnd", "flnd.sources"}
+# Rule 3: everything cli.py may import from flnd, besides the toolkit. `flnd.engine` is there
+# until the CLI is rebuilt on the library (`flnd.open`), which then has every command.
+CLI_ALLOWED = {"flnd", "flnd.sources", "flnd.engine"}
 
 
 def toolkit(name: str) -> bool:

@@ -87,12 +87,12 @@ class ClassesTest(HttpCase):
         self.assertEqual((plain.hint, plain.target, plain.retryable), ("", None, False))
 
     def test_usage_error(self):
-        with self.assertRaises(UsageError):
-            flnd.resolve("nosuchsource:example_user")
+        with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
+            fl.download("nosuchsource:example_user")
         with self.assertRaises(UsageError):
             Range.parse("yesterday")
-        with self.assertRaises(UsageError):
-            flnd.source("nosuchsource")
+        with self.assertRaises(UsageError), flnd.open("unused-home") as fl:
+            fl.logout("nosuchsource")
 
     def test_login_error(self):
         made = job.failure(self.refusal(403, "https://api.aaa.example/me"),

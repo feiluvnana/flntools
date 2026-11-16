@@ -42,10 +42,59 @@ def missing_dependency_message(module: str, package: str) -> str:
     return run_python(code).stdout.strip()
 
 
+def loaded_after(code: str) -> set[str]:
+    """The top-level packages and flnd's modules a fresh interpreter has loaded after `code`."""
+    shown = ("import sys\n"
+             f"{code}\n"
+             "print(' '.join(sorted(name for name in sys.modules\n"
+             "                      if name.startswith('flnd') or '.' not in name)))")
+    result = run_python(shown)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return set(result.stdout.split())
+
+
+# What only a command may load: the engine, the network, the browser, the screen and the CLI's
+# framework. `import flnd` must load none of them, or every script and `flnd --help` pays.
+HEAVY = {"flnd.engine", "flnd.job", "flnd.site", "httpx", "playwright", "rich", "cyclopts",
+         "curl_cffi", "msgspec"}
+
+
+class LazyImportTest(unittest.TestCase):
+    def test_import_flnd_loads_only_its_own_init(self):
+        loaded = loaded_after("import flnd")
+        self.assertEqual({name for name in loaded if name.startswith("flnd")}, {"flnd"})
+        self.assertEqual(loaded & HEAVY, set())
+
+    def test_the_library_names_load_no_engine_network_or_browser(self):
+        code = ("import flnd\n"
+                "flnd.open, flnd.Run, flnd.Saved, flnd.Report, flnd.Error, flnd.Target")
+        loaded = loaded_after(code)
+        self.assertEqual(loaded & (HEAVY - {"rich", "msgspec"}), set())
+
+    def test_every_public_name_resolves_and_is_listed(self):
+        import flnd
+
+        homes = set(vars(flnd)["_HOMES"])
+        self.assertEqual(set(flnd.__all__), homes | {"__version__"})
+        for name in flnd.__all__:
+            with self.subTest(name=name):
+                self.assertIsNotNone(getattr(flnd, name))
+        with self.assertRaises(AttributeError):
+            flnd.Engine  # noqa: B018 - the engine is no public name
+
+
 class MissingDependencyTest(unittest.TestCase):
-    # The lazy-loading guards (which modules a bare import loads) return with the lazy
-    # `flnd/__init__` of the CLI rebuild: `import flnd` still loads the engine until then, and the
-    # engine imports httpx itself, so a missing httpx is reported by the engine, not by `_http`.
+
+    def test_missing_httpx_names_the_package_to_install(self):
+        # `import flnd` loads nothing, so `_http` is the first to meet a missing httpx.
+        self.assertEqual(missing_dependency_message("_http", "httpx"),
+                         "flnd._http needs httpx: pip install httpx")
+
+    def test_a_name_loads_its_module_on_first_use(self):
+        code = ("import sys, flnd\nbefore = 'flnd._library' in sys.modules\n"
+                "print(before, flnd.open.__module__, 'open' in dir(flnd))")
+        self.assertEqual(run_python(code).stdout.strip(), "False flnd._library True")
 
     def test_missing_parsel_names_the_package_to_install(self):
         message = missing_dependency_message("_html", "parsel")

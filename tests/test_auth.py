@@ -98,7 +98,7 @@ class VaultedCookiesTest(AuthCase):
         self.assertEqual([(cookie["name"], cookie["domain"]) for cookie in auth.load(self.home, "ins")],
                          [("sessionid", ".instagram.com")])
         with paths.table(self.home / paths.SECRETS, "secrets") as db:
-            self.assertEqual([key for key, _ in db.rows.prefix("ins:").get()], ["ins:cookies", "ins:origin"])
+            self.assertEqual([key for key, _ in db.prefixed("ins:")], ["ins:cookies", "ins:origin"])
             self.assertNotIn(b"ins-session", base64.b64decode(db.get("ins:cookies")))
         self.assertEqual(auth.origin(self.home, "ins"), "cookies.txt")
 

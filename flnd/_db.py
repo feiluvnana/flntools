@@ -10,7 +10,7 @@
 
     files = db[File]
     files["a.jpg"] = File("kept", 1000)
-    files.rows.prefix("a").filter(state="kept").get()   # [("a.jpg", File(...))], run in SQL
+    files.prefixed("a")                                 # [("a.jpg", File(...))], read in SQL
     with db.batch():                                    # one transaction for many writes
         ...
 """
@@ -28,11 +28,10 @@ from typing import Any, ClassVar, Generic, TypeVar, Union
 
 import msgspec
 
-from flnd import _files as fs
-from flnd._query import Plan, Query, run as run_plan
+from flnd import _files
 from flnd.errors import DiskError
 
-__all__ = ["Db", "Row", "Rows", "Table", "open"]
+__all__ = ["Db", "Row", "Table", "open"]
 
 PathLike = Union[str, "os.PathLike[str]"]
 V = TypeVar("V")
@@ -186,10 +185,22 @@ class Table(MutableMapping[str, V], Generic[V]):
         """Remove every row."""
         self._write("DELETE FROM {}", ())
 
-    @property
-    def rows(self) -> Rows[V]:
-        """Every (key, value) pair as a query; `prefix`, `filter`, `sort` and `limit` run in SQL."""
-        return Rows(_Pushed(self))
+    def prefixed(self, text: str) -> list[tuple[str, V]]:
+        """Every (key, value) pair whose key starts with `text`, in key order, read in SQL.
+
+        The history keeps one source's rows under `<code>:`, and the vault one source's
+        secrets under its slot, so this is how either reads one source without the others.
+
+        Args:
+            text: the start of the keys; "" for every row.
+
+        Returns:
+            The pairs, sorted by key.
+        """
+        # A range on the primary key, so SQLite reads only those rows: every key that starts
+        # with `text` sorts between `text` and `text` followed by the highest code point.
+        return self._pairs("SELECT key, value FROM {} WHERE key >= ? AND key < ? ORDER BY key",
+                           (text, text + "\U0010ffff"))
 
     def _pairs(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[str, V]]:
         return [(key, self._load(raw)) for key, raw in self._select(sql, args)]
@@ -218,95 +229,6 @@ class Table(MutableMapping[str, V], Generic[V]):
             )
             self._made = True
         self.db._run(sql.format(self._sql_name), args)
-
-
-class Rows(Query[tuple[str, V]]):
-    """A table's rows as a query, with `prefix` to keep keys that start with a text."""
-
-    def prefix(self, text: str) -> Rows[V]:
-        """Keep rows whose key starts with `text`."""
-        source = self._source
-        assert isinstance(source, _Pushed)
-        return Rows(_Pushed(source.table, source.prefix + text), self._plan)
-
-    def filter(self, predicate: Any = None, /, **equal: Any) -> Rows[V]:
-        """Keep rows where `predicate((key, value))` holds and each value field equals its value."""
-        found = super().filter(predicate, **equal)
-        return Rows(found._source, found._plan)
-
-    def sort(self, by: Any, *, desc: bool = False) -> Rows[V]:
-        """Order rows by a value field, `"key"`, or a key function of `(key, value)`."""
-        found = super().sort(by, desc=desc)
-        return Rows(found._source, found._plan)
-
-    def limit(self, n: int) -> Rows[V]:
-        """Keep at most `n` rows."""
-        found = super().limit(n)
-        return Rows(found._source, found._plan)
-
-
-class _Pushed(Generic[V]):
-    """Runs a `Plan` over a table: in SQL when it can, else filtering decoded rows in Python."""
-
-    def __init__(self, table: Table[V], prefix: str = "") -> None:
-        self.table, self.prefix = table, prefix
-
-    def run(self, plan: Plan) -> list[tuple[str, V]]:
-        where, args = self._where(plan)
-        if plan.predicates or callable(plan.by):
-            rows = self.table._pairs(f"SELECT key, value FROM {{}}{where} ORDER BY key", args)
-            return run_plan(rows, _on_values(plan))
-        order = " ORDER BY key"
-        if isinstance(plan.by, str) and plan.by != "key":
-            order = " ORDER BY json_extract(value, ?)"
-            args = (*args, f"$.{plan.by}")
-        if plan.by is not None and plan.desc:
-            order += " DESC"
-        limit = "" if plan.limit is None else f" LIMIT {int(plan.limit)}"
-        return self.table._pairs(f"SELECT key, value FROM {{}}{where}{order}{limit}", args)
-
-    def count(self, plan: Plan) -> int:
-        if plan.predicates or plan.limit is not None:
-            return len(self.run(plan))
-        where, args = self._where(plan)
-        found = self.table._select(f"SELECT count(*) FROM {{}}{where}", args)
-        return found[0][0] if found else 0
-
-    def _where(self, plan: Plan) -> tuple[str, tuple[Any, ...]]:
-        clauses: list[str] = []
-        args: list[Any] = []
-        if self.prefix:
-            clauses.append("key >= ? AND key < ?")
-            args += [self.prefix, self.prefix + "\U0010ffff"]
-        for name, value in plan.equal:
-            if name == "key":
-                clauses.append("key = ?")
-                args.append(value)
-            elif value is None:
-                clauses.append("json_extract(value, ?) IS NULL")
-                args.append(f"$.{name}")
-            else:
-                clauses.append("json_extract(value, ?) = ?")
-                args += [f"$.{name}", value]
-        return (" WHERE " + " AND ".join(clauses) if clauses else ""), tuple(args)
-
-
-def _on_values(plan: Plan) -> Plan:
-    """`plan` with its equality filters and sort field read from a (key, value) pair's value."""
-    def read(pair: tuple[str, Any], name: str) -> Any:
-        key, value = pair
-        if name == "key":
-            return key
-        return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
-
-    by = plan.by
-    if isinstance(by, str):
-        field_name = by
-        by = lambda pair: read(pair, field_name)  # noqa: E731
-    checks = tuple(
-        (lambda pair, n=name, v=value: read(pair, n) == v) for name, value in plan.equal
-    )
-    return Plan(predicates=(*checks, *plan.predicates), by=by, desc=plan.desc, limit=plan.limit)
 
 
 def open(path: PathLike) -> Db:
@@ -351,7 +273,7 @@ def _convert(path: Path) -> None:
     held = path.with_name(f".{path.name}.convert.lock")
     try:
         # Two openers of one old store would each rebuild the same staged file.
-        with fs.lock(held):
+        with _files.lock(held):
             if not _is_sqlite(path):
                 _rewrite(path)
     finally:

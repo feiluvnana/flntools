@@ -1,106 +1,105 @@
-"""flnd: a dead simple media downloader, usable as a Python library or CLI."""
+"""flnd: a media downloader for Instagram, TikTok, X, Facebook, Telegram and more, as a library.
+
+    import flnd
+
+    with flnd.open("~/Media/flnd") as fl:
+        for event in fl.download("ins:example_user", only=["reels"]):
+            if isinstance(event, flnd.Saved):
+                print(event.path)
+
+What it holds: the public names a script uses, and nothing else. `flnd.open(home)` gives a
+`Flnd`, whose methods are the CLI's commands; a download returns a `Run`, whose events
+(`Saved`, `Skipped`, `Failed`, `Progress`, `Planned`) are the only output; `Report`, `Login`,
+`Record` and `Tracked` are what the reads return; the errors are the one hierarchy of
+`flnd.errors`. A source is written against `flnd.source` instead (see the docs' guide to
+writing a source).
+
+How it loads: every name is lazy. `import flnd` imports nothing but this file, and the first
+use of a name (`flnd.open`, `flnd.Saved`) imports the one module that defines it. The engine,
+httpx, Playwright and Rich load only when a command needs them, so a script, the CLI's
+`--help` and `python -c "import flnd"` stay fast. `tests/test_packaging.py` guards this.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from pathlib import Path
+import importlib
+from typing import TYPE_CHECKING, Any
 
 __version__ = "0.1.0"
 
-from flnd.engine import AuthInfo, Engine, Report, TargetInfo, TargetReport
-from flnd.errors import (
-    Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError, SourceError,
-    Stopped, ToolError, UsageError,
-)
-from flnd.options import RunShared
-from flnd.site import TargetSite, source_run
-from flnd.source import Range, Source, Target
-from flnd.sources import SOURCES
-from flnd import _cli
+# Where each public name is defined. A name is imported from its module on first use, then
+# kept in this module's globals, so `__getattr__` runs once per name.
+_HOMES = {
+    "Flnd": "flnd._library",
+    "open": "flnd._library",
+    "Run": "flnd._run",
+    "Event": "flnd._events",
+    "Failed": "flnd._events",
+    "Login": "flnd._events",
+    "Planned": "flnd._events",
+    "Progress": "flnd._events",
+    "Record": "flnd._events",
+    "Report": "flnd._events",
+    "Saved": "flnd._events",
+    "Skipped": "flnd._events",
+    "Tracked": "flnd._events",
+    "Target": "flnd.source",
+    "Blocked": "flnd.errors",
+    "Changed": "flnd.errors",
+    "DiskError": "flnd.errors",
+    "Error": "flnd.errors",
+    "LoginError": "flnd.errors",
+    "NetworkError": "flnd.errors",
+    "NotFound": "flnd.errors",
+    "SiteError": "flnd.errors",
+    "SourceError": "flnd.errors",
+    "Stopped": "flnd.errors",
+    "ToolError": "flnd.errors",
+    "UsageError": "flnd.errors",
+}
 
+# Written out, not built from `_HOMES`, so linters and editors can read it; a test checks that
+# the two agree.
 __all__ = [
-    "AuthInfo",
-    "Blocked",
-    "Changed",
-    "DiskError",
-    "Engine",
-    "Error",
-    "LoginError",
-    "NetworkError",
-    "NotFound",
-    "Range",
-    "Report",
-    "SOURCES",
-    "SiteError",
-    "Source",
-    "SourceError",
-    "Stopped",
-    "Target",
-    "TargetInfo",
-    "TargetReport",
-    "ToolError",
-    "UsageError",
-    "__version__",
-    "download",
-    "open",
-    "resolve",
-    "source",
+    "Blocked", "Changed", "DiskError", "Error", "Event", "Failed", "Flnd", "Login", "LoginError",
+    "NetworkError", "NotFound", "Planned", "Progress", "Record", "Report", "Run", "Saved",
+    "SiteError", "Skipped", "SourceError", "Stopped", "Target", "ToolError", "Tracked",
+    "UsageError", "__version__", "open",
 ]
 
-
-def source(code: str) -> Source:
-    """Instantiate a registered source by its short code (e.g. `'twt'`, `'ins'`)."""
-    cls = SOURCES.get(code)
-    if cls is None:
-        raise UsageError(f"unknown source {code!r}; known: {', '.join(SOURCES)}")
-    return cls()
-
-
-def resolve(text: str) -> Target:
-    """Resolve one target spec or URL into a `Target`."""
-    return Engine().resolve([text])[0]
-
-
-@contextmanager
-def open(
-    code: str,
-    *,
-    home: Path = Path(".flnd"),
-    time: Range | str = Range(),
-) -> Iterator[TargetSite]:
-    """Open a `Site` for `code` with saved cookies, HTTP client, and state."""
-    src = source(code)
-    span = Range.parse(time) if isinstance(time, str) else time
-    with _cli.stopping() as stop:
-        settings = RunShared(home=home, history={}, stop=stop)
-        with source_run(settings, src) as run:
-            site = TargetSite(run, Target(src.code, "account", ""), time=span)
-            try:
-                yield site
-            finally:
-                site.close()
-
-
-def download(
-    targets: Target | str | Sequence[Target | str],
-    *,
-    categories: str | Sequence[str] | None = None,
-    time: Range | str = Range(),
-    limit: int | None = None,
-    dry: bool = False,
-    sync: bool = False,
-    again: bool = False,
-    home: Path = Path(".flnd"),
-) -> Report:
-    """Download one or more targets sequentially and return a `Report`."""
-    items = [targets] if isinstance(targets, (str, Target)) else list(targets)
-    return Engine(home=home).download(
-        items,
-        categories=categories,
-        time=time,
-        limit=limit,
-        dry=dry,
-        sync=sync,
-        again=again,
+if TYPE_CHECKING:
+    from flnd._events import (
+        Event, Failed, Login, Planned, Progress, Record, Report, Saved, Skipped, Tracked,
     )
+    from flnd._library import Flnd, open
+    from flnd._run import Run
+    from flnd.errors import (
+        Blocked, Changed, DiskError, Error, LoginError, NetworkError, NotFound, SiteError,
+        SourceError, Stopped, ToolError, UsageError,
+    )
+    from flnd.source import Target
+
+
+def __getattr__(name: str) -> Any:
+    """Import a public name from the module that defines it, on its first use.
+
+    Args:
+        name: the attribute asked for.
+
+    Returns:
+        The object, which is also kept in this module, so the next use is a plain lookup.
+
+    Raises:
+        AttributeError: `name` isn't one of flnd's public names (nor a submodule).
+    """
+    home = _HOMES.get(name)
+    if home is None:
+        raise AttributeError(f"module 'flnd' has no attribute {name!r}")
+    value = getattr(importlib.import_module(home), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """The public names, with what is already loaded, for `dir(flnd)` and completion."""
+    return sorted({*globals(), *_HOMES})

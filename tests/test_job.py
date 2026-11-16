@@ -25,7 +25,8 @@ from test_engine import EngineCase, make_source
 
 from flnd import cli as flnd_cli
 from flnd import engine as engine_module
-from flnd import Engine, job
+from flnd import job
+from flnd.engine import Engine
 from flnd.common import paths
 from flnd.options import Options
 from flnd.source import (
