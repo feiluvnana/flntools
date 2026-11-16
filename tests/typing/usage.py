@@ -54,12 +54,16 @@ with ui.group("download") as rows:
     assert_type(rows.add("ins:example", total=12).total, Optional[float])
 ui.multi("download")  # pyright: ignore[reportAttributeAccessIssue]
 
-tool = sh.tool("7zz", platforms={("linux", "amd64"): sh.Spec("https://example.com/7zz", "0" * 64)})
+tool = sh.find("7zz", specs={("linux", "amd64"): sh.Spec("https://example.com/7zz", "0" * 64)})
 assert_type(tool, sh.Tool)
 assert_type(tool.path, Path)
 assert_type(tool.run("--help"), sh.Result)
-assert_type(sh.run(["echo", "hi"]), sh.Result)
-sh.tool("7zz", checksum="0" * 64)  # pyright: ignore[reportCallIssue]
+assert_type(tool.version, str)
+for line in tool.stream("--help"):
+    assert_type(line, str)
+assert_type(sh.run("echo", "hi").out, str)
+sh.run(["echo", "hi"])  # pyright: ignore[reportArgumentType]
+sh.find("7zz", platforms={})  # pyright: ignore[reportCallIssue]
 
 jar = cookies.load("cookies.txt").filter(domains="example.com")
 assert_type(jar, cookies.Jar)

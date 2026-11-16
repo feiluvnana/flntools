@@ -56,10 +56,6 @@ ALLOWED: dict[str, tuple[str, ...]] = {
         "shared.http.download: option progress, a callback, not a sink",
         "shared.http.fetch: 8 options, more than 4",
     ),
-    "shared.sh": (
-        "shared.sh.Tool.run: 5 options, more than 4",
-        "shared.sh.run: 5 options, more than 4",
-    ),
     "shared.worker": (
         "shared.worker.Pool: option progress, a callback, not a sink",
         "shared.worker.map: 6 options, more than 4",
@@ -98,7 +94,8 @@ def option_breaches(name: Any) -> set[str]:
             found |= {f"{name.name}: positional option {parameter.name}" for parameter in parameters[1:]
                       if parameter.kind in POSITIONAL and parameter.default is not inspect.Parameter.empty}
         for parameter, scope in expanded(parameters, name.obj, function):
-            if parameter.name in RENAMED:
+            field = name.kind == "class" and parameter.kind in POSITIONAL
+            if parameter.name in RENAMED and not field:
                 found.add(f"{name.name}: option {parameter.name}, not {RENAMED[parameter.name]}")
             if parameter.name == "progress" and progress_callback(parameter.annotation, scope):
                 found.add(f"{name.name}: option progress, a callback, not a sink")
@@ -426,6 +423,13 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(option_breaches(self.name("function", build)),
                          {"shared.x.f: option out, not dest", "shared.x.f: option dest_dir, not dest",
                           "shared.x.f: option preset, not level"})
+
+    def test_a_record_field_is_data_not_an_option(self):
+        class Result:
+            def __init__(self, code, out, *, dest_dir=None): ...
+
+        self.assertEqual(option_breaches(self.name("class", Result)),
+                         {"shared.x.f: option dest_dir, not dest"})
 
     def test_progress_callback_is_recognised(self):
         scope = {"Progress": typing.Callable[..., Any]}

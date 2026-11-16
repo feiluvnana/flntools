@@ -344,15 +344,14 @@ class DashDownloadTest(NetCase):
     def fake_ffmpeg(self, *, fail=False):
         calls = []
 
-        class FakeTool:
-            def run(self, *args, **kwargs):
-                calls.append(args)
-                if fail:
-                    raise sh.RunError("bad container", returncode=1)
-                Path(args[-1]).write_bytes(b"\0\0\0\x18ftypisommerged")
-                return sh.Result(args, 0, "", "")
+        def ffmpeg(args):
+            calls.append(args[1:])
+            if fail:
+                return 1, "", "bad container"
+            Path(args[-1]).write_bytes(b"\0\0\0\x18ftypisommerged")
+            return 0, "", ""
 
-        return mock.patch("shared.sh.tool", return_value=FakeTool()), calls
+        return sh.fake({"ffmpeg": ffmpeg}), calls
 
     def merged(self, client, name="r.mp4"):
         return net.download(client, File(self.VIDEO, audio=self.AUDIO),

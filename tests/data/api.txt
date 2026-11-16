@@ -366,15 +366,15 @@ shared.selector.parse(source: Any) -> Selection
 shared.sh: module
 shared.sh.Error(shared.Error)
 shared.sh.MissingError(shared.sh.Error, shared.MissingError)
-shared.sh.Result(returncode: int, stdout: str, stderr: str, args: tuple[str, ...])
+shared.sh.Result(code: int, out: str, err: str, args: tuple[str, ...] = ())
 shared.sh.Result.args: field -> tuple[str, ...]
-shared.sh.Result.returncode: field -> int
-shared.sh.Result.stderr: field -> str
-shared.sh.Result.stdout: field -> str
+shared.sh.Result.code: field -> int
+shared.sh.Result.err: field -> str
+shared.sh.Result.out: field -> str
 shared.sh.RunError(shared.sh.Error)
-shared.sh.RunError.returncode: attribute
-shared.sh.RunError.stderr: attribute
-shared.sh.RunError.stdout: attribute
+shared.sh.RunError.code: attribute
+shared.sh.RunError.err: attribute
+shared.sh.RunError.out: attribute
 shared.sh.Spec(url: str, sha256: str, bin: str = '')
 shared.sh.Spec.bin: field -> str
 shared.sh.Spec.sha256: field -> str
@@ -382,10 +382,13 @@ shared.sh.Spec.url: field -> str
 shared.sh.Tool(path: Path, name: str)
 shared.sh.Tool.name: field -> str
 shared.sh.Tool.path: field -> Path
-shared.sh.Tool.run(*args: str | os.PathLike[str], cwd: PathLike | None = None, env: Mapping[str, str] | None = None, check: bool = True, timeout: float | None = None, capture: bool = True) -> Result
+shared.sh.Tool.run(*args: str | os.PathLike[str], cwd: PathLike | None = None, env: Mapping[str, str] | None = None, check: bool = True, timeout: float | None = None) -> Result
+shared.sh.Tool.stream(*args: str | os.PathLike[str], cwd: PathLike | None = None, env: Mapping[str, str] | None = None, timeout: float | None = None) -> Iterator[str]
+shared.sh.Tool.version: property -> str
 shared.sh.UnsafeError(shared.sh.Error, shared.UnsafeError)
-shared.sh.run(cmd: Sequence[str | os.PathLike[str]], *, cwd: PathLike | None = None, env: Mapping[str, str] | None = None, check: bool = True, timeout: float | None = None, capture: bool = True) -> Result
-shared.sh.tool(name: str, *, platforms: Mapping[tuple[str, str], Spec] | None = None, dest: PathLike | None = None) -> Tool
+shared.sh.fake(handlers: Mapping[str, Handler]) -> Iterator[None]
+shared.sh.find(name: str, *, specs: Mapping[tuple[str, str], Spec] | None = None) -> Tool
+shared.sh.run(*args: str | os.PathLike[str], cwd: PathLike | None = None, env: Mapping[str, str] | None = None, check: bool = True, timeout: float | None = None) -> Result
 shared.store: module
 shared.store.ClosedError(shared.store.Error, RuntimeError)
 shared.store.Db(path: Path)

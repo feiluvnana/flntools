@@ -317,7 +317,7 @@ def _unpack_tar(
 def _7z_tool() -> sh.Tool:
     for name in ("7zz", "7z"):
         try:
-            return sh.tool(name)
+            return sh.find(name)
         except sh.MissingError:
             continue
     raise MissingError("7z archives need `7zz` or `7z` on PATH")
@@ -342,12 +342,12 @@ def _ls_7z(path: Path, *, password: str | None) -> list[Entry]:
     try:
         res = tool.run(*args)
     except sh.RunError as error:
-        if "password" in error.stderr.lower() or "wrong password" in error.stdout.lower():
+        if "password" in error.err.lower() or "wrong password" in error.out.lower():
             raise PasswordError(f"{path.name}: wrong or missing password") from error
         raise BrokenError(str(error)) from error
     entries: list[Entry] = []
     cur: dict[str, str] = {}
-    for line in res.stdout.splitlines():
+    for line in res.out.splitlines():
         if not line.strip():
             if "Path" in cur:
                 entries.append(_7z_entry(cur))
@@ -377,7 +377,7 @@ def _unpack_7z(
     try:
         tool.run(*args)
     except sh.RunError as error:
-        if "password" in error.stderr.lower():
+        if "password" in error.err.lower():
             raise PasswordError(f"{path.name}: wrong or missing password") from error
         raise BrokenError(str(error)) from error
     written = [_safe_dest(dest, e.name) for e in entries if e.kind == "file"]
@@ -388,7 +388,7 @@ def _unpack_7z(
 
 def _unrar_tool() -> sh.Tool:
     try:
-        return sh.tool("unrar")
+        return sh.find("unrar")
     except sh.MissingError as error:
         raise MissingError("RAR archives need `unrar` on PATH") from error
 
@@ -399,14 +399,14 @@ def _ls_unrar(path: Path, *, password: str | None) -> list[Entry]:
     try:
         res = tool.run("vt", pwd_flag, str(path))
     except sh.RunError as error:
-        if error.returncode == 11 or "password" in error.stderr.lower():
+        if error.code == 11 or "password" in error.err.lower():
             raise PasswordError(f"{path.name}: wrong or missing password") from error
         raise BrokenError(str(error)) from error
     entries: list[Entry] = []
     name: str | None = None
     size: int | None = None
     kind: Kind = "file"
-    for line in res.stdout.splitlines():
+    for line in res.out.splitlines():
         key, _, val = line.partition(":")
         k, v = key.strip(), val.strip()
         if k == "Name":
@@ -432,7 +432,7 @@ def _unpack_unrar(
     try:
         tool.run("x", "-y", ov_flag, pwd_flag, str(path), str(dest) + os.sep)
     except sh.RunError as error:
-        if error.returncode == 11 or "password" in error.stderr.lower():
+        if error.code == 11 or "password" in error.err.lower():
             raise PasswordError(f"{path.name}: wrong or missing password") from error
         raise BrokenError(str(error)) from error
     written = [_safe_dest(dest, e.name) for e in entries if e.kind == "file"]

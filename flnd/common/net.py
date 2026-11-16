@@ -173,7 +173,7 @@ def _dash_merge(client: http.Client, video: str, audio: str, dest: Path,
         row.caption("merging")
         if dest.is_file() and dest.stat().st_size == 0:
             dest.unlink()
-        ffmpeg = sh.tool("ffmpeg")
+        ffmpeg = sh.find("ffmpeg")
         fmt = "webm" if dest.suffix.lower() == ".webm" else "mp4"
         flags = ["-movflags", "+faststart"] if fmt == "mp4" else []
         with fs.stage(dest, keep=False) as part:

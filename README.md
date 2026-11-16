@@ -24,7 +24,7 @@ run `uv run --no-project scripts/dev.py <task>`, or install make with `winget in
 the listing for real with the saved login in `.flnd`, downloads and records nothing, and prints each post
 with its planned file paths and URLs (without their signed query).
 
-`ffmpeg` on your `PATH` (or downloaded via `shared.sh.tool`) is used to join Facebook and Instagram DASH video/audio streams.
+`ffmpeg` on your `PATH` (or downloaded via `shared.sh.find`) is used to join Facebook and Instagram DASH video/audio streams.
 
 flnd needs [Google Chrome](https://www.google.com/chrome/), installed the usual way, for the sources
 that open a browser. When Chrome is missing, flnd asks once, in a terminal, whether to download Chromium
