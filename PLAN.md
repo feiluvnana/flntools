@@ -618,8 +618,9 @@ flnd media show  <targets|paths…> [--by post|day|month|year|all] [--style clas
 flnd media card  <targets|paths…> [--by post|day|month] [--style strip|grid|polaroid|postcard] [--when WHEN]
 flnd media album <targets|paths…> [--by month|year|all] [--when WHEN]
 
-global: -v, --ui plain|inline|full, --home DIR
+global: --ui plain|inline|full (default inline), --home DIR (default .flnd), -v (off by default)
 ```
+- **Defaults** (user, 2026-11-16): the UI is `inline`, falling back to `plain` when stdout isn't a terminal; the home is `.flnd`; output isn't verbose unless `-v` is given.
 - **`download` syncs by default.** Every downloaded target is followed, and `flnd sync` updates them all. `target forget` stops syncing a target; its files stay. `--sync`, `track`/`untrack` and `--again` are gone.
 - **`--from` is optional.** The default is the target's own content (posts, reels, videos); `--from all` adds tagged posts, reposts and the rest.
 - **`--when`** takes `2026`, `2026-06`, `2026-06-15`, `2026-01..2026-03`, or `30d` (the last 30 days). It replaces `--time SINCE,UNTIL`.
