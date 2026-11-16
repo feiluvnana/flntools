@@ -1046,7 +1046,7 @@ class NavigationRaceTest(BrowserCase):
 
     def test_a_page_that_keeps_navigating_warns_and_reads_as_empty(self):
         page, loads = self.page(10)
-        self.assertEqual(page.document.css("#x::text").all, [])
+        self.assertEqual(page.document.css("#x::text").get(), [])
         self.assertEqual(len(loads), 2)
         self.assertTrue(any("kept navigating" in line for line in self.lines()))
 

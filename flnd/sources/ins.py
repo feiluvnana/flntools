@@ -892,7 +892,7 @@ def full_size(item: dict) -> bool:
     """Whether listed item has full file (video or >=90% width image)."""
     if item.get("media_type") == 2 or item.get("video_versions"):
         return bool(item.get("video_versions") or item.get("video_dash_manifest"))
-    images = selector.parse(item).jmespath("image_versions2.candidates").all
+    images = selector.parse(item).jmespath("image_versions2.candidates").get()
     original = item.get("original_width")
     if not images or not isinstance(original, (int, float)) or original <= 0:
         return False
@@ -911,12 +911,13 @@ def post_media(result: Any, code: str | None = None) -> dict | None:
 
 def story_items(result: Any) -> list[dict]:
     """The stories of a story or highlight page."""
-    return [item for item in selector.parse(result).jmespath(STORIES).all if isinstance(item, dict)]
+    items = selector.parse(result).jmespath(STORIES).get()
+    return [item for item in items if isinstance(item, dict)]
 
 
 def listed_highlights(result: Any) -> list[tuple[str, str]]:
     """The profile's highlights as `(id, title)`, from the result that lists them."""
-    nodes = selector.parse(result).jmespath("data.highlights.edges[].node").all
+    nodes = selector.parse(result).jmespath("data.highlights.edges[].node").get()
     return [(str(node["id"]).removeprefix("highlight:"), node.get("title") or "highlight")
             for node in nodes if isinstance(node, dict) and node.get("id")]
 
@@ -939,7 +940,7 @@ def best_file(media: dict) -> tuple[str, str, str | None] | None:
     videos = media.get("video_versions") or []
     if videos:
         return max(videos, key=_area)["url"], "mp4", None
-    images = selector.parse(media).jmespath("image_versions2.candidates").all
+    images = selector.parse(media).jmespath("image_versions2.candidates").get()
     if images:
         url = max(images, key=_area)["url"]
         return url, image_extension(url), None

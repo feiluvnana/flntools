@@ -347,9 +347,9 @@ shared.selector.Error(shared.Error)
 shared.selector.MissingError(shared.selector.Error, shared.MissingError)
 shared.selector.QueryError(shared.selector.Error, ValueError)
 shared.selector.Selection(raw: Raw)
-shared.selector.Selection.all: property -> list[Any]
 shared.selector.Selection.css(query: str) -> Selection
 shared.selector.Selection.first: property -> Any
+shared.selector.Selection.get() -> list[Any]
 shared.selector.Selection.jmespath(query: str) -> Selection
 shared.selector.Selection.json: property -> Selection
 shared.selector.Selection.jsonpath(query: str) -> Selection

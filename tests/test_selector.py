@@ -68,7 +68,7 @@ class ParseTest(unittest.TestCase):
                 with self.subTest(type(source).__name__):
                     page = selector.parse(source)
                     self.assertIsInstance(page.raw, parsel.Selector)
-                    self.assertEqual(page.css("a[href*='/video/']::attr(href)").all, ["/video/1", "/video/2"])
+                    self.assertEqual(page.css("a[href*='/video/']::attr(href)").get(), ["/video/1", "/video/2"])
 
     def test_each_json_source(self):
         text = '{"a": {"b": [1, 2]}}'
@@ -114,13 +114,13 @@ class HtmlTest(unittest.TestCase):
         self.page = selector.parse(HTML)
 
     def test_css_and_xpath(self):
-        self.assertEqual(self.page.css("li a::text").all, ["one", "two", "about"])
+        self.assertEqual(self.page.css("li a::text").get(), ["one", "two", "about"])
         self.assertEqual(self.page.xpath("//meta[@property='og:image']/@content").first, "https://example.com/og.jpg")
         self.assertEqual(self.page.css("ul").css("li").xpath("./a/@href").first, "/video/1")
 
     def test_first_and_all_are_text(self):
         self.assertEqual(self.page.css("li a").first, '<a href="/video/1">one</a>')
-        self.assertIsInstance(self.page.css("li").all[0], str)
+        self.assertIsInstance(self.page.css("li").get()[0], str)
 
     def test_text_collapses_whitespace(self):
         self.assertEqual(self.page.css("h1").text, "Example User")
@@ -130,7 +130,7 @@ class HtmlTest(unittest.TestCase):
         missing = self.page.css("h2")
         self.assertEqual(missing.text, "")
         self.assertIsNone(missing.first)
-        self.assertEqual(missing.all, [])
+        self.assertEqual(missing.get(), [])
         self.assertFalse(missing)
         self.assertEqual(len(missing), 0)
 
@@ -159,7 +159,7 @@ class JmespathTest(unittest.TestCase):
 
     def test_path_projection_and_index(self):
         self.assertEqual(self.data.jmespath("data.user.id").first, "9")
-        self.assertEqual(self.data.jmespath("data.user.edges[].node.id").all, [1, 2])
+        self.assertEqual(self.data.jmespath("data.user.edges[].node.id").get(), [1, 2])
         self.assertEqual(self.data.jmespath("data.user.edges[1].node").first, {"id": 2})
 
     def test_list_result_is_split_into_items(self):
@@ -169,7 +169,7 @@ class JmespathTest(unittest.TestCase):
         self.assertEqual([edge.jmespath("node.id").first for edge in edges], [1, 2])
 
     def test_scalar_or_object_result_is_one_item(self):
-        self.assertEqual(self.data.jmespath("data.user.id").all, ["9"])
+        self.assertEqual(self.data.jmespath("data.user.id").get(), ["9"])
         self.assertEqual(len(self.data.jmespath("data.user")), 1)
 
     def test_missing_path_is_empty(self):
@@ -177,7 +177,7 @@ class JmespathTest(unittest.TestCase):
             with self.subTest(query):
                 missing = self.data.jmespath(query)
                 self.assertIsNone(missing.first)
-                self.assertEqual(missing.all, [])
+                self.assertEqual(missing.get(), [])
                 self.assertFalse(missing)
         self.assertEqual(self.data.jmespath("data.nope").first or "", "")
 
@@ -193,18 +193,18 @@ class JmespathTest(unittest.TestCase):
 class JsonpathTest(unittest.TestCase):
     def test_key_at_any_depth_in_document_order(self):
         data = {"a": {"url": 1, "b": {"url": 2}}, "list": [{"url": 3}, [{"x": {"url": 4}}]]}
-        self.assertEqual(selector.parse(data).jsonpath("$..url").all, [1, 2, 3, 4])
+        self.assertEqual(selector.parse(data).jsonpath("$..url").get(), [1, 2, 3, 4])
 
     def test_matches_are_json_values(self):
         found = selector.parse(DATA).jsonpath("$..node")
-        self.assertEqual(found.all, [{"id": 1}, {"id": 2}])
-        self.assertEqual(found.jmespath("id").all, [1, 2])
+        self.assertEqual(found.get(), [{"id": 1}, {"id": 2}])
+        self.assertEqual(found.jmespath("id").get(), [1, 2])
 
     def test_keyword_like_key(self):
-        self.assertEqual(selector.parse({"a": {"missing": 1}}).jsonpath("$..missing").all, [1])
+        self.assertEqual(selector.parse({"a": {"missing": 1}}).jsonpath("$..missing").get(), [1])
 
     def test_no_match(self):
-        self.assertEqual(selector.parse(DATA).jsonpath("$..absent").all, [])
+        self.assertEqual(selector.parse(DATA).jsonpath("$..absent").get(), [])
         self.assertIsNone(selector.parse(DATA).jsonpath("$..absent").first)
 
     def test_invalid_expression_raises(self):
@@ -214,7 +214,7 @@ class JsonpathTest(unittest.TestCase):
     def test_list_result_is_split_into_matches(self):
         found = selector.parse({"items": [1, 2, None, 3]}).jsonpath("$.items")
         self.assertEqual(found.first, 1)
-        self.assertEqual(found.all, [1, 2, 3])
+        self.assertEqual(found.get(), [1, 2, 3])
 
 
 @unittest.skipIf(selector is None, "the selector extra is not installed")
@@ -266,13 +266,13 @@ class JsonTest(unittest.TestCase):
     def test_json_string_is_parsed(self):
         api = selector.parse({"payload": '{"user": {"id": 7}}', "list": ["[1]", "2"]})
         self.assertEqual(api.jmespath("payload").json.jmespath("user.id").first, 7)
-        self.assertEqual(api.jmespath("list").json.all, [[1], 2])
+        self.assertEqual(api.jmespath("list").json.get(), [[1], 2])
 
     def test_parsed_json_is_kept(self):
         data = self.page.script(id="__NEXT_DATA__")
-        self.assertEqual(data.json.all, data.all)
+        self.assertEqual(data.json.get(), data.get())
         self.assertEqual(self.page.script(id="__NEXT_DATA__").json.jmespath("props").first, {"user": "someone"})
-        self.assertEqual(selector.parse(DATA).jmespath("data.user.edges").json.jmespath("node.id").all, [1, 2])
+        self.assertEqual(selector.parse(DATA).jmespath("data.user.edges").json.jmespath("node.id").get(), [1, 2])
 
     def test_empty(self):
         self.assertFalse(self.page.css("h2::text").json)

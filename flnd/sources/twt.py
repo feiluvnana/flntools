@@ -396,7 +396,7 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
         "data.user.result.timeline.timeline.instructions"
         " || data.user.result.timeline_v2.timeline.instructions"
         " || data.search_by_raw_query.search_timeline.timeline.instructions"
-    ).all
+    ).get()
     tweets, cursor = [], None
     for entry in timeline_entries(instructions):
         content = entry.get("content") or entry.get("item") or {}
@@ -496,11 +496,11 @@ def tweet_posts(
     posted = datetime.strptime(created_at, CREATED_AT) if created_at else None
     quoted = selector.parse(tweet).jmespath("quoted_status_result.result").first
     quoted_media = (
-        selector.parse(unwrap(quoted).get("legacy") or {}).jmespath("extended_entities.media").all
+        selector.parse(unwrap(quoted).get("legacy") or {}).jmespath("extended_entities.media").get()
         if isinstance(quoted, dict) else []
     )
     found_media = [(index, media) for index, media in
-                   enumerate(selector.parse(legacy).jmespath("extended_entities.media").all)]
+                   enumerate(selector.parse(legacy).jmespath("extended_entities.media").get())]
     found_media += [(f"q{index}", media) for index, media in enumerate(quoted_media)]
     for index, media in found_media:
         found = best_file(media)
@@ -529,7 +529,7 @@ def tweet_posts(
 
 def card_image(tweet: dict) -> str | None:
     """A tweet's card image, at its largest; None when it has no card or no image."""
-    values = selector.parse(tweet).jmespath("card.legacy.binding_values").all
+    values = selector.parse(tweet).jmespath("card.legacy.binding_values").get()
     images = {
         entry.get("key"): selector.parse(entry).jmespath("value.image_value.url").first
         for entry in values if isinstance(entry, dict)
@@ -557,7 +557,7 @@ def best_file(media: dict) -> tuple[str | tuple[str, ...], str] | None:
         # smaller sizes are mirrors for when it refuses one, tried in this order.
         sizes = tuple(f"{url}?name={size}" for size in PHOTO_SIZES)
         return sizes, PurePosixPath(urlsplit(url).path).suffix.lstrip(".") or "jpg"
-    variants = selector.parse(media).jmespath("video_info.variants").all
+    variants = selector.parse(media).jmespath("video_info.variants").get()
     # Only MP4 variants are kept: streaming playlists aren't files the engine can save as MP4.
     mp4s = [variant for variant in variants if variant.get("content_type") == "video/mp4"]
     if not mp4s:

@@ -111,7 +111,7 @@ def has_captcha(site: Site) -> bool:
     """
     page = site.page.document
     has_captcha_css = bool(page.css(CAPTCHA_CSS))
-    visible = " ".join(page.xpath(VISIBLE_TEXT).all)
+    visible = " ".join(page.xpath(VISIBLE_TEXT).get())
     return has_captcha_css or bool(CAPTCHA_TEXT.search(visible))
 
 
@@ -359,7 +359,7 @@ class TikTok(Source):
             yield post_of(site, item, "videos")
         if not profile.found["videos"] and profile.on_page:
             # A walled API gave nothing: read each post linked on the page from its embed page.
-            links = [match.group(2) for href in site.page.document.css(POST_LINKS).all
+            links = [match.group(2) for href in site.page.document.css(POST_LINKS).get()
                      if (match := re.search(r"/(video|photo)/(\d+)", href))]
             for video_id in dict.fromkeys(links):
                 yield from embed_posts(site, video_id)
@@ -503,7 +503,7 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
         return []
     items = []
     # Post list uses itemList, story list uses storyList or story_list.
-    for raw in selector.parse(data).jmespath("itemList || storyList || story_list").all:
+    for raw in selector.parse(data).jmespath("itemList || storyList || story_list").get():
         item_id = str(raw.get("id") or raw.get("aweme_id") or "")
         if not item_id:
             continue
@@ -511,12 +511,12 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
         common = {"id": item_id, "date": stamp_of(raw, item_id), "playlist": pl_name}
 
         # A photo post has `imagePost` and no video; the two are never both read.
-        images = selector.parse(raw).jmespath("imagePost.images").all
+        images = selector.parse(raw).jmespath("imagePost.images").get()
         if images:
             # A photo-mode carousel: each picture is a file of its own, numbered from 1.
             for idx, img in enumerate(images):
                 path = "imageURL.urlList || displayImage.urlList || thumbnail.urlList"
-                url_list = selector.parse(img).jmespath(path).all
+                url_list = selector.parse(img).jmespath(path).get()
                 if url_list:
                     items.append({
                         **common, "url": mirrors(url_list), "kind": "image",
@@ -566,7 +566,7 @@ def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
         (_pixels(entry), entry.get("Bitrate") or 0, m)
         for entry in video.get("bitrateInfo") or []
         if isinstance(entry, dict) and not _is_dash(entry)
-        and (urls := selector.parse(entry).jmespath("PlayAddr.UrlList").all)
+        and (urls := selector.parse(entry).jmespath("PlayAddr.UrlList").get())
         and (m := mirrors(urls))
     ]
     if candidates:

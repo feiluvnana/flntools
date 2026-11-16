@@ -24,7 +24,7 @@ def meta_results(site: Site, url: str) -> list[Any]:
 def embedded_results(page: selector.Selection) -> list[Any]:
     """Every GraphQL result embedded in a page, each shaped like a response: `{"data": {…}}`."""
     found = []
-    for text in page.css(SCRIPTS).all:
+    for text in page.css(SCRIPTS).get():
         if "__bbox" not in text:
             continue
         try:

@@ -264,12 +264,12 @@ class Facebook(Source):
                 continue
             cards = [
                 card for result in results
-                for card in selector.parse(result).jmespath(STORY_CARDS).all
+                for card in selector.parse(result).jmespath(STORY_CARDS).get()
                 if isinstance(card, dict)
             ]
             for card in cards:
                 stamp = posted_on(card)
-                for media in selector.parse(card).jmespath("attachments[].media").all:
+                for media in selector.parse(card).jmespath("attachments[].media").get():
                     item = video_item(media, stamp) or photo_item(media, stamp)
                     if item is not None:
                         yield post_of(item, "stories", headers=CDN_HEADERS)
@@ -432,7 +432,7 @@ def post_of(
 
 def album_links(data: Any) -> dict[str, str]:
     """The albums a result lists, as {url: title}: each album's tile on the albums tab."""
-    tiles = selector.parse(data).jsonpath("$..[?@.__typename == 'TimelineAppCollectionItem']").all
+    tiles = selector.parse(data).jsonpath("$..[?@.__typename == 'TimelineAppCollectionItem']").get()
     return {
         tile["url"]: selector.parse(tile).jmespath("title.text").first or "album"
         for tile in tiles
@@ -459,12 +459,12 @@ def read_header(result: Any) -> Header | None:
     cover_id = found.jmespath("cover_photo.photo.id").first
     sections = found.jmespath(
         "profile_tabs.profile_user.timeline_nav_app_sections.edges[].node"
-    ).all
+    ).get()
     paths = {section.get("tab_key") for section in sections} | {
         collection.get("tab_key") for section in sections
-        for collection in selector.parse(section).jmespath("all_collections.nodes").all}
+        for collection in selector.parse(section).jmespath("all_collections.nodes").get()}
     buckets = [
-        str(node["id"]) for node in found.jmespath("story_bucket.nodes").all if node.get("id")
+        str(node["id"]) for node in found.jmespath("story_bucket.nodes").get() if node.get("id")
     ]
     return Header(
         user_id=user.get("id"),
@@ -533,7 +533,7 @@ def video_item(node: dict, stamp: Any) -> Item | None:
             video_id, streams.video, "video", stamp, audio=streams.audio,
             extension=streams.extension,
         )
-    progressive = selector.parse(node).jmespath(PROGRESSIVE).all
+    progressive = selector.parse(node).jmespath(PROGRESSIVE).get()
     # The HD file comes first by its quality tag, then the other progressive files, then the node's
     # own URLs (HD before SD): every one a mirror, tried in order when one refuses.
     hd = [

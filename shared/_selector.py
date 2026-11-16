@@ -2,12 +2,12 @@
 
 `parse` reads HTML or JSON text, bytes, file Path, response, or dict/list into a
 `Selection`. Queries chain: `css`/`xpath` on HTML, `jmespath`/`jsonpath` on JSON.
-`script` and `json` extract embedded JSON. `first` and `all` return matches.
+`script` and `json` extract embedded JSON. `first` and `get()` return matches.
 
     from shared import selector
 
     page = selector.parse(response)
-    page.css("a[href*='/video/']::attr(href)").all
+    page.css("a[href*='/video/']::attr(href)").get()
     page.script(id="__NEXT_DATA__").jmespath("props.user").first
     selector.parse({"data": {"id": "9"}}).jmespath("data.id").first
 
@@ -80,10 +80,10 @@ class Selection:
     """The matches of a query over HTML or JSON, with each query returning a new `Selection`.
 
         page = selector.parse(html)
-        page.css("a::attr(href)").all                       # ["/video/1", "/video/2"]
+        page.css("a::attr(href)").get()                       # ["/video/1", "/video/2"]
         page.script(id="__NEXT_DATA__").jmespath("props.user").first
 
-    `first` and `all` give text for HTML matches and Python values for JSON matches. A
+    `first` and `get()` give text for HTML matches and Python values for JSON matches. A
     `Selection` is falsy when it has no matches, `len` counts them, and iterating gives one
     `Selection` per match. Made by `parse`, not directly. It is never changed once made; read
     an HTML one from one thread at a time, as lxml needs.
@@ -164,7 +164,7 @@ class Selection:
     def json(self) -> Selection:
         """Each match's text parsed as JSON, as a JSON `Selection`; empty when there are no matches.
 
-            page.css("script#data::text").json.jmespath("items").all
+            page.css("script#data::text").json.jmespath("items").get()
             api.jmespath("payload").json.jmespath("user.id").first     # JSON sent inside a string
 
         The text of an HTML element is all its text nodes, joined as they are; a text or attribute
@@ -188,8 +188,7 @@ class Selection:
         """The first match, or None when there is none: text for HTML, a Python value for JSON."""
         return self._matches.get()
 
-    @property
-    def all(self) -> list[Any]:
+    def get(self) -> list[Any]:
         """Every match, as a list: text for HTML, Python values for JSON."""
         return self._matches.getall()
 

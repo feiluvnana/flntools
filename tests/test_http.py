@@ -224,7 +224,7 @@ class ResponseTest(unittest.TestCase):
                              b"<h1>Hello</h1><a href='/a'>a</a>")
         self.assertIsInstance(page.html, selector.Selection)
         self.assertEqual(page.html.css("h1::text").first, "Hello")
-        self.assertEqual(page.html.css("a::attr(href)").all, ["/a"])
+        self.assertEqual(page.html.css("a::attr(href)").get(), ["/a"])
 
     def test_text_uses_the_charset(self):
         page = http.Response(200, "https://example.com/", {"Content-Type": "text/plain; charset=latin-1"},
