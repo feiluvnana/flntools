@@ -30,7 +30,7 @@ from flnd.source import (
     Category, FetchError, File, LoginError, Post, Range, Resume, Route, Site, Source, Target,
     day, fill, listing,
 )
-from shared import fs, text, ui, worker
+from shared import crypto, fs, text, ui, worker
 
 if TYPE_CHECKING:
     from shared import cli
@@ -1032,7 +1032,9 @@ def download(run: SourceRun, target: Target, board: Board, options: Options) -> 
     if run.settings.stop.soon.is_set():
         return TargetReport(target, (), 0, error=STOPPED)
     folder = paths.target_folder(run.settings.home, target)
-    with fs.lock(folder / ".flnd.lock"):
+    # The lock lives in metadata, not the target folder, so media folders hold only media.
+    lock = run.settings.home / paths.METADATA / "locks" / f"{crypto.digest(str(folder))[:16]}.lock"
+    with fs.lock(lock):
         fs.sweep(folder)
         return _run_download(run, target, board, options)
 

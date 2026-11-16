@@ -89,7 +89,9 @@ class App:
         try:
             return _exit_code(self._raw(tokens))
         except (UsageError, CycloptsError) as error:
-            Console(stderr=True).print(f"[red]✗[/red] {error}")
+            from shared._ui import ui
+
+            ui.error("{error}", error=str(error))
             return 2
         except KeyboardInterrupt:
             return 130

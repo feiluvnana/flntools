@@ -133,7 +133,7 @@ class DownloadTest(RunsCase):
         self.assertEqual(self.runs[1][2], Options(categories=("all",), again=True))
 
     def test_from_with_a_single_post_is_a_usage_error(self):
-        message = ("✗ --from applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
+        message = (" --from applies to profiles and chats; ins:C1abcDEFghi is one post, downloaded whole: "
                    "give it without --from")
         for targets in (("https://www.instagram.com/p/C1abcDEFghi/",),
                         ("ins:example_user", "https://www.instagram.com/p/C1abcDEFghi/")):
@@ -193,6 +193,7 @@ class DownloadTest(RunsCase):
     def test_help(self):
         code, stdout, _ = self.run_app("--help")
         self.assertEqual(code, 0)
+        stdout = " ".join(stdout.split())  # Rich wraps the description to the console's width
         self.assertIn("Dead simple media downloader for TikTok, Facebook, Instagram, Twitter/X, LOIBUS, Telegram, "
                       "and mimihentai.", stdout)
         self.assertIn("Sources: tik, fbk, ins, twt, loi, tlg, mht", stdout)
@@ -603,9 +604,9 @@ class LogoutTest(FlndCase):
     def test_bare_is_a_usage_error_listing_the_logged_in_sources(self):
         code, _, out = self.run_app("auth", "logout")
         self.assertEqual(code, 2)
-        self.assertIn("✗ give the sources to log out of, or all; no source is logged in", out)
+        self.assertIn(" give the sources to log out of, or all; no source is logged in", out)
         self.log_in("twt", "ins")
-        self.assertIn("✗ give the sources to log out of, or all; logged in: ins, twt",
+        self.assertIn(" give the sources to log out of, or all; logged in: ins, twt",
                       self.run_app("auth", "logout")[2])
 
     def test_an_unknown_source_and_the_old_flag(self):
