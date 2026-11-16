@@ -13,6 +13,9 @@ AGENTS.md › Writing sets the rules this file checks. Each check is a test clas
 4. `CliTest` checks that `docs/cli.md` names every command and every option the CLI parses.
 5. `SourcePageTest` checks that each built-in source has `docs/sources/<code>.md`, and that no
    page is left for a source that is gone.
+6. `ReadmeTest` runs the `python` blocks of `README.md` offline, and parses every `flnd …`
+   command line of its `bash` blocks with the CLI's own argparse parser, so a command, a flag or
+   an example the README shows can't drift from the code.
 
 A gap fails `test_no_gap`, with one line per gap naming the module or the name and the rule it
 breaks, so new code is documented as it is written. There is no allowlist: fix the gap, or
@@ -53,8 +56,11 @@ DOCS = ROOT / "docs"
 SHORT = 5
 # The headings of a Google-style docstring this file reads. `Examples:` is accepted too.
 SECTION = re.compile(r"^\s*(Args|Arguments|Returns|Yields|Raises|Examples?):\s*$")
-# The marker that skips the `python` block right after it. Every skipped block is a gap.
-SKIP = "<!-- docs-test: skip -->"
+# The marker that skips the `python` block right after it, with an optional reason:
+# `<!-- docs-test: skip -->` or `<!-- docs-test: skip: it needs a real site -->`. A skipped block
+# in `docs/` is a gap; one in the README must give its reason, and is still compiled.
+SKIP = re.compile(r"^<!-- docs-test: skip(?:: (?P<reason>.+?))? -->$")
+README = ROOT / "README.md"
 # The terms the glossary must define (PLAN.md's list of the words every page uses).
 TERMS = ("target", "source", "route", "category", "post", "file", "event", "home")
 
@@ -369,6 +375,34 @@ class DocstringTest(unittest.TestCase):
 # 2. Pages: the python blocks of docs/
 # ---------------------------------------------------------------------------------------------
 
+def fenced_blocks(page: Path) -> list[tuple[int, str, str, str]]:
+    """Each fenced block of a page: its first line number, language, code, and the line before.
+
+    Args:
+        page: a markdown file.
+
+    Returns:
+        `(line, language, code, before)` per block, in page order: `line` is the number of the
+        block's first code line, `language` the word after the fence ("" for none), and
+        `before` the stripped line above the fence, where a `SKIP` marker sits.
+    """
+    lines = page.read_text(encoding="utf-8").splitlines()
+    blocks: list[tuple[int, str, str, str]] = []
+    start: int | None = None
+    fence = language = ""
+    for number, line in enumerate(lines):
+        stripped = line.strip()
+        if start is None and stripped.startswith("```"):
+            fence = stripped[: len(stripped) - len(stripped.lstrip("`"))]
+            language = stripped[len(fence):].strip()
+            start = number + 1
+        elif start is not None and stripped == fence:
+            before = lines[start - 2].strip() if start >= 2 else ""
+            blocks.append((start + 1, language, "\n".join(lines[start:number]), before))
+            start = None
+    return blocks
+
+
 def python_blocks(page: Path) -> list[tuple[int, str, bool]]:
     """Each fenced `python` block of a page: its first line number, its code, and whether the
     `SKIP` marker sits on the line before its fence.
@@ -379,24 +413,8 @@ def python_blocks(page: Path) -> list[tuple[int, str, bool]]:
     Returns:
         `(line, code, skipped)` per block, in page order.
     """
-    lines = page.read_text(encoding="utf-8").splitlines()
-    blocks: list[tuple[int, str, bool]] = []
-    start: int | None = None
-    fence = ""
-    for number, line in enumerate(lines):
-        stripped = line.strip()
-        if start is None and stripped.startswith("```"):
-            fence = stripped[: len(stripped) - len(stripped.lstrip("`"))]
-            if stripped[len(fence):].strip() == "python":
-                start = number + 1
-            else:
-                start = -1  # another language's block: skip to its end
-        elif start is not None and stripped == fence:
-            if start >= 0:
-                skipped = start >= 2 and lines[start - 2].strip() == SKIP
-                blocks.append((start + 1, "\n".join(lines[start:number]), skipped))
-            start = None
-    return blocks
+    return [(line, code, bool(SKIP.match(before)))
+            for line, language, code, before in fenced_blocks(page) if language == "python"]
 
 
 @contextlib.contextmanager
@@ -548,6 +566,97 @@ class SourcePageTest(unittest.TestCase):
 
         pages = {page.stem for page in (DOCS / "sources").glob("*.md")}
         self.assertEqual(sorted(pages), sorted(SOURCES))
+
+
+# ---------------------------------------------------------------------------------------------
+# 6. The README
+# ---------------------------------------------------------------------------------------------
+
+# The words a shell joins commands with; each part is checked as a command of its own.
+JOINERS = {"|", "||", "&&", ";"}
+
+
+def commands(code: str) -> list[list[str]]:
+    """The arguments of every `flnd` command in a block of shell lines.
+
+    Each line is split the way a POSIX shell splits words (`shlex`), comments dropped, and cut at
+    `|`, `&&`, `||` and `;`. A part runs flnd when one of its words is a program named `flnd`
+    (`flnd`, `/path/to/flnd`, `uv run flnd`, or the command of a cron line); what follows that
+    word is flnd's arguments. A line ending in `\\` goes on on the next.
+
+    Args:
+        code: the block's lines.
+
+    Returns:
+        One argument list per `flnd` command, without the `flnd` itself.
+    """
+    import shlex
+
+    found: list[list[str]] = []
+    for line in code.replace("\\\n", " ").splitlines():
+        part: list[str] = []
+        for word in [*shlex.split(line, comments=True), ";"]:
+            if word not in JOINERS:
+                part.append(word)
+                continue
+            at = next((i for i, w in enumerate(part) if Path(w).name == "flnd"), None)
+            if at is not None:
+                found.append(part[at + 1:])
+            part = []
+    return found
+
+
+def parse_error(args: list[str]) -> str:
+    """What the CLI's parser says about `flnd <args>`: "" when it parses.
+
+    Args:
+        args: flnd's arguments, as a shell would pass them.
+
+    Returns:
+        argparse's message (an unknown command or flag, a missing value), or "".
+    """
+    from flnd.cli import parser
+
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+            parser().parse_args(args)
+    except SystemExit as stop:
+        if stop.code:
+            return stderr.getvalue().strip().splitlines()[-1]
+    return ""
+
+
+class ReadmeTest(unittest.TestCase):
+    """The README's examples are true: its Python runs, and its `flnd` command lines parse."""
+
+    def test_python_blocks_run(self) -> None:
+        # The blocks share one namespace, in page order: "Add a site" defines a source in one
+        # block and tests it with `flnd.testing` in the next. A block marked to skip (one that
+        # needs a real site) must say why, and is compiled, so at least its syntax is checked.
+        namespace: dict[str, object] = {"__name__": "docs_readme"}
+        for line, language, code, before in fenced_blocks(README):
+            if language != "python":
+                continue
+            with self.subTest(line=line):
+                compiled = compile(code, f"README.md:{line}", "exec")
+                skip = SKIP.match(before)
+                if skip:
+                    self.assertTrue(skip["reason"], f"README.md:{line}: say why it is skipped")
+                    continue
+                with scratch(), contextlib.redirect_stdout(io.StringIO()):
+                    exec(compiled, namespace)
+
+    def test_commands_parse(self) -> None:
+        checked = 0
+        for line, language, code, _ in fenced_blocks(README):
+            if language not in ("bash", "sh", "shell"):
+                continue
+            for args in commands(code):
+                checked += 1
+                with self.subTest(line=line, command=" ".join(["flnd", *args])):
+                    self.assertEqual(parse_error(args), "")
+        self.assertGreater(checked, 5, "README.md shows no flnd command lines")
 
 
 if __name__ == "__main__":
