@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     from flnd.source import Site
-    from flnd import _html as selector
+    from flnd import _html
 
 __all__ = ["embedded_results", "meta_results"]
 
@@ -16,12 +16,12 @@ SCRIPTS = 'script[type="application/json"]::text'
 
 def meta_results(site: Site, url: str) -> list[Any]:
     """Load a Facebook or Instagram page and return its embedded GraphQL results, or []."""
-    if not site.goto(url):
+    if not site.open(url):
         return []
-    return embedded_results(site.page.document)
+    return embedded_results(site.document())
 
 
-def embedded_results(page: selector.Selection) -> list[Any]:
+def embedded_results(page: _html.Selection) -> list[Any]:
     """Every GraphQL result embedded in a page, each shaped like a response: `{"data": {…}}`."""
     found = []
     for text in page.css(SCRIPTS).get():

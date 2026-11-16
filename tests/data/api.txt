@@ -170,6 +170,8 @@ flnd.source.Error(Exception)
 flnd.source.Error.hint: attribute
 flnd.source.Error.retryable: attribute
 flnd.source.Error.target: attribute
+flnd.source.Feed(*args, **kwargs)
+flnd.source.Feed.close() -> None
 flnd.source.Fetch: _CallableGenericAlias
 flnd.source.File(url: str | Sequence[str] | Fetch, *, audio: str | None = None, name: str | None = None, size: int | None = None, password: str | None = None)
 flnd.source.File.audio: field -> str | None
@@ -226,17 +228,25 @@ flnd.source.Route.patterns: attribute
 flnd.source.Route.shown: attribute
 flnd.source.Site(*args, **kwargs)
 flnd.source.Site.back_off(reason: str, *, retry_after: float | None = None) -> None
+flnd.source.Site.click(css: str, *, timeout: float = 10.0) -> None
 flnd.source.Site.client: property -> Any
 flnd.source.Site.cookies: property -> Mapping[str, str]
-flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> http.Response
-flnd.source.Site.goto(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
+flnd.source.Site.document() -> Any
+flnd.source.Site.evaluate(js: str, *, arg: Any = None) -> Any
+flnd.source.Site.feed(match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = False, lines: bool = False) -> Feed
+flnd.source.Site.fetch(url: str, *, method: str = 'GET', headers: Mapping[str, str] | None = None, check: bool = True, in_page: bool = False, **request: Any) -> _http.Response
 flnd.source.Site.handoff(*, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool
 flnd.source.Site.info(message: str, **fields: Any) -> None
-flnd.source.Site.page: property -> browser.Page
+flnd.source.Site.open(url: str, *, idle: bool = False, timeout: float = 30.0) -> bool
+flnd.source.Site.pause(seconds: float, reason: str) -> None
+flnd.source.Site.scroll(*, until: Callable[[], bool] | None = None, idle: float = 10.0) -> int
 flnd.source.Site.secrets: property -> MutableMapping[str, str]
 flnd.source.Site.state: property -> MutableMapping[str, Any]
+flnd.source.Site.tab: property -> Awaitable[Any]
 flnd.source.Site.target: property -> Target
 flnd.source.Site.time: property -> Range
+flnd.source.Site.url: property -> str
+flnd.source.Site.wait(css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool] | None = None, idle: bool = False, timeout: float = 30.0) -> None
 flnd.source.Site.warn(message: str, **fields: Any) -> None
 flnd.source.SiteError(flnd.Error)
 flnd.source.SiteError.hint: attribute

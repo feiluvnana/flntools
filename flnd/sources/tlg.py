@@ -16,8 +16,7 @@ from flnd.source import (
     Error, Fetch, File, Login, LoginError, NetworkError, NotFound, Post, Site, Source, Target,
     UsageError, target,
 )
-from flnd import _files
-from flnd import _browser as browser
+from flnd import _browser, _files
 
 TELEGRAM_WEB = "https://web.telegram.org/"
 # Telegram's production data centers, as every client ships them.
@@ -471,26 +470,15 @@ async def two_step(login: Login, client: Any) -> None:
 
 def read_telegram_web() -> dict[str, str]:
     """Telegram Web's local storage from Chrome's default profile."""
-    from urllib.parse import urlparse
-
     err_msg = "tlg: can't read Telegram Web in Chrome: {error}; try a QR code instead"
     try:
-        # Headless: the read happens without a window, so nothing is shown to the user.
-        with browser.open(profile="Default", headless=True) as chrome:
-            page = chrome.open(TELEGRAM_WEB, idle=True)
-            # Check where the tab is and say it plainly.
-            if urlparse(page.url).hostname != urlparse(TELEGRAM_WEB).hostname:
-                raise LoginError(
-                    "tlg: Chrome could not open Telegram Web; check connection, "
-                    "or try a QR code instead"
-                )
-            try:
-                return page.raw.evaluate("Object.assign({}, localStorage)")
-            # What evaluate raises when the tab navigated away or closed meanwhile.
-            except Exception as error:
-                raise LoginError(err_msg.format(error=error)) from None
+        storage = _browser.local_storage(TELEGRAM_WEB, profile="Default")
     except (Error, OSError, RuntimeError, ValueError) as error:
         raise LoginError(err_msg.format(error=error)) from None
+    if storage is None:
+        raise LoginError("tlg: Chrome could not open Telegram Web; check connection, "
+                         "or try a QR code instead")
+    return storage
 
 
 def from_web_storage(storage: Mapping[str, str]) -> str:

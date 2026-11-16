@@ -47,7 +47,7 @@ here also changes this page, so the page always describes the code you have chec
 | `flnd/options.py` | `Options` and `RunShared` | the engine, the job |
 | `flnd/common/` | `auth` (the login vault), `net` (the HTTP client and file downloads), `paths` (the home's layout and content sniffing) | the engine, the site, the job |
 | `flnd/dry.py` | a contributor's tool: prints the files one target would save | `make try` |
-| `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), Playwright (`_browser`), SQLite stores (`_db`), atomic files (`_files`), a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
+| `flnd/_*.py` | the private toolkit: HTTP over httpx (`_http`), the run's browser on async Playwright (`_browser`), SQLite stores (`_db`), atomic files (`_files`), the run's asyncio loop and a thread pool (`_loop`), the terminal UI (`_ui`) | everything above |
 | `flnd/_steps.py`, `_unpack.py`, `_shrink.py`, `_media.py`, `_tools.py` | the steps after a file lands ([media.md](media.md)): the chain and its lanes, archive extraction, `--compress`, probes and ffmpeg runs, and finding ffmpeg and 7zz | the job and the engine |
 
 The rule between them: a source imports `flnd.source`, its helpers in `flnd/sources/common/`,
@@ -119,11 +119,18 @@ A run uses a few threads, and every rule below protects one of them:
   thread writes its file's part, dates it, renames it and writes its history row; the job's
   `_writing` lock guards the run's own lists of written and failed files, and SQLite serializes
   the history writes.
-- **The browser thread.** Playwright runs on one thread of its own (`site._BrowserPool`), shared by
-  every source of a run, so one Chrome window serves them all. A source's calls on `site.page`
-  are forwarded to that thread and wait for the answer.
-- **An event loop for async sources.** A source with an async SDK (Telegram's Telethon) runs its
-  coroutines on its own loop through `SourceRun.run_async`.
+- **The run's loop** (`flnd._loop.Loop`, made by `site.shared_browser`) is one asyncio event loop
+  on a thread of its own. Async Playwright runs on it: one browser per run
+  (`flnd._browser.RunBrowser`), launched the first time a target needs a tab and shared by every
+  source, so one Chrome window serves them all. Each target gets its own tab, and up to six in
+  all with the warm tabs that pre-load the pages it will open next (`flnd._browser.Tabs`). A
+  source never holds a Playwright object: each browser verb of `Site` (`open`, `wait`, `scroll`,
+  `feed`, `document`, `evaluate`, `click`) is one call handed to the loop (`Loop.run`, about
+  40 µs), which waits for the answer. A response feed reads the matching bodies on the loop as
+  they arrive, in order, and the listing thread parses them.
+- **Async sources** run on the same loop through `SourceRun.run_async`: a source with an async
+  SDK (Telegram's Telethon), and any `async def` route or category, which reaches the browser by
+  awaiting `site.tab` instead of calling the verbs.
 - **The step chain's lanes** (`flnd._steps`): one thread for archives, two for photos and one
   for videos, fed by bounded queues once a file's history row is written. They update that row
   when they change the file; the engine closes the chain, waiting for them, before it closes

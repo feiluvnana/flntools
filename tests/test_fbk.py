@@ -1,8 +1,8 @@
 """Facebook: the routes, the profile header, the tabs and categories, the media walker, stories and pictures.
 
 What it fakes: the site and the browser. `fakes.collect` runs the routes and categories on a `FakeSite`,
-whose tab (`FeedSite`) delivers the pages' embedded results, the responses of a first load, and one
-batch of responses per scroll. No network and no browser; a `back_off` only records.
+whose tab (`FeedSite`) shows the pages' embedded results, and whose feeds get the responses of a first
+load and one batch of responses per scroll. No network and no browser; a `back_off` only records.
 """
 
 import datetime
@@ -191,91 +191,50 @@ TAB_URLS = {"photos": f"{SITE}/example.page/photos_by", "reels": f"{SITE}/exampl
 PROFILE_SCROLLS_BY_URL = {TAB_URLS[tab]: batches for tab, batches in PROFILE_SCROLLS.items()}
 
 
-class FeedRaw:
-    """Fake Playwright tab event emitter for `feed.Responses`."""
-
-    def __init__(self):
-        self.listeners = []
-
-    def on(self, event, listener):
-        if event == "response":
-            self.listeners.append(listener)
-
-    def remove_listener(self, event, listener):
-        if event == "response" and listener in self.listeners:
-            self.listeners.remove(listener)
-
-    def emit(self, data):
-        response = SimpleNamespace(
-            url="https://www.facebook.com/api/graphql/",
-            text=lambda: json.dumps(data),
-            request=None,
-        )
-        for listener in list(self.listeners):
-            listener(response)
-
-
-class FeedPage:
-    """A tab for `watch_responses`: it delivers `early` when the network is awaited and one batch of `scrolls` per scroll."""
-
-    def __init__(self, site, scrolls, early, redirects):
-        self.site = site
-        self.raw = FeedRaw()
-        self.scrolls = {url: list(batches) for url, batches in scrolls.items()}
-        self.early = {url: list(batch) for url, batch in early.items()}
-        self.redirects = redirects
-        self.scrolled = 0
-
-    @property
-    def _page(self):
-        fget = FakeSite.page.fget
-        assert fget is not None
-        return fget(self.site)
-
-    @property
-    def document(self):
-        return self._page.document
-
-    @property
-    def url(self):
-        return self.redirects.get(self._page.url, self._page.url)
-
-    def deliver(self, batch):
-        for data in batch:
-            self.raw.emit(data)
-
-    def scroll(self, *, until=None, **options):
-        self.scrolled += 1
-        batches = self.scrolls.get(self._page.url, [])
-        self.deliver(batches.pop(0) if batches else [])
-        return 1
-
-    def wait(self, css=None, *, idle=False, timeout=30.0):
-        self.deliver(self.early.pop(self._page.url, []))
+# Where the feed's responses come from: what `fbk.FEED` matches.
+GRAPHQL = "https://www.facebook.com/api/graphql/"
 
 
 class FeedSite(FakeSite):
-    """A `FakeSite` whose tab delivers responses; see `FeedPage`.
+    """A `FakeSite` whose tab delivers `early` when the network is awaited and one batch of `scrolls` per scroll.
 
     Args:
+        scrolls: `{url: [batch, …]}`: each scroll on that page brings the next batch of responses.
+        early: `{url: batch}`: what waiting for the network on that page brings, once.
+        redirects: `{url: shown}`: where the tab says it is after opening a URL.
         lifted: what a `back_off` changes, as a block lifting would: `{url: page}` replaces those
             pages, and every redirect goes.
     """
 
     def __init__(self, *args, scrolls=(), early=(), redirects=(), lifted=None, **options):
         super().__init__(*args, **options)
-        self.feed = FeedPage(self, dict(scrolls), dict(early), dict(redirects))
+        self.scrolls = {url: list(batches) for url, batches in dict(scrolls).items()}
+        self.early = {url: list(batch) for url, batch in dict(early).items()}
+        self.redirects = dict(redirects)
         self.lifted = lifted
 
     @property
-    def page(self) -> Any:
-        return self.feed
+    def url(self):
+        opened = super().url
+        return self.redirects.get(opened, opened)
+
+    def _deliver(self, *, scroll):
+        opened = super().url
+        if scroll:
+            self._seen.scrolls += 1
+            batches = self.scrolls.get(opened, [])
+            batch = batches.pop(0) if batches else []
+        else:
+            batch = self.early.pop(opened, [])
+        for data in batch:
+            for feed in list(self._feeds):
+                feed._push(GRAPHQL, data)
 
     def back_off(self, reason, *, retry_after=None):
         super().back_off(reason, retry_after=retry_after)
         if self.lifted is not None:
             self._pages.update(self.lifted)
-            self.feed.redirects.clear()
+            self.redirects.clear()
 
 
 def read(text="fbk:example.page", *, pages=None, scrolls=None, early=None, redirects=None, seen=None, lifted=None,
@@ -501,9 +460,11 @@ class AlternatingSite:
         self.shown, self.loads, self.back_offs = shown, 0, []
 
     @property
-    def page(self):
-        url, text = self.shown[self.loads % len(self.shown)]
-        return SimpleNamespace(url=url, document=SimpleNamespace(text=text))
+    def url(self):
+        return self.shown[self.loads % len(self.shown)][0]
+
+    def document(self):
+        return SimpleNamespace(text=self.shown[self.loads % len(self.shown)][1])
 
     def back_off(self, reason):
         self.back_offs.append(reason)

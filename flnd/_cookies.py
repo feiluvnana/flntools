@@ -56,6 +56,44 @@ _WINDOWS_EPOCH_OFFSET = 11_644_473_600
 # The cookie database version from which each value starts with SHA-256(host), 32 bytes.
 _HOST_HASH_VERSION = 24
 _HOST_HASH_SIZE = 32
+# Set by flnd's test suite (`make test`, and `tests/fakes.py`): while set, a browser profile in
+# the real home folder is refused, so no test can read a person's real cookies or logins.
+NO_PROFILES = "FLND_TEST_NO_PROFILES"
+
+
+def refuse_profile(folder: Path) -> None:
+    """Refuse `folder`, a browser profile about to be read or copied, if the test suite is running.
+
+    When the `FLND_TEST_NO_PROFILES` environment variable is set, a profile inside the real home
+    folder raises at once; one inside a temporary folder (a test's fake home) is allowed. The
+    real home is the account's own, not `Path.home()`, which a test may point elsewhere. Without
+    the variable this does nothing.
+
+    Args:
+        folder: the profile folder (or the folder holding the profiles).
+
+    Raises:
+        RuntimeError: the variable is set and `folder` is in the real home.
+    """
+    if not os.environ.get(NO_PROFILES):
+        return
+    real_home = _real_home().resolve()
+    if Path(folder).resolve().is_relative_to(real_home):
+        raise RuntimeError(f"{NO_PROFILES} is set: a test may not read or copy the real browser "
+                           f"profile {folder}; fake the home folder or the browser instead")
+
+
+def _real_home() -> Path:
+    """The account's home folder, from the operating system, whatever `Path.home` says.
+
+    Returns:
+        The password database's home on POSIX, or `%USERPROFILE%` on Windows.
+    """
+    if _PLATFORM == "win32":
+        return Path(os.environ.get("USERPROFILE") or os.path.expanduser("~"))
+    import pwd
+
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
 # Errors: cookies are read to log in, so a cookie file that is broken, too big or unreadable, and
@@ -230,7 +268,9 @@ def _identity(cookie: Cookie) -> tuple[str, str, str]:
 
 def _load_firefox(profile: str | None) -> list[Cookie]:
     """Read cookies from a Firefox `cookies.sqlite` database."""
-    with _open_copy(_firefox_profile(profile) / "cookies.sqlite") as connection:
+    folder = _firefox_profile(profile)
+    refuse_profile(folder)
+    with _open_copy(folder / "cookies.sqlite") as connection:
         try:
             rows = connection.execute(
                 "SELECT host, name, value, path, expiry, isSecure, isHttpOnly, sameSite "
@@ -249,6 +289,7 @@ def _load_firefox(profile: str | None) -> list[Cookie]:
 
 def _firefox_profile(profile: str | None) -> Path:
     root = _firefox_root()
+    refuse_profile(root)
     if profile is not None:
         named = root / profile
         return named if named.is_dir() else root / "Profiles" / profile
@@ -330,6 +371,7 @@ def _cookie(name: str, value: str, domain: str, path: str, expires: int,
 def _load_chromium(browser: str, profile: str) -> list[Cookie]:
     """Every cookie of a Chromium-family profile, each encrypted value decrypted."""
     folder = _chromium_root(browser) / profile
+    refuse_profile(folder)
     # Chromium 96 moved the database into Network/; an older profile still has it at the top.
     database = folder / "Network" / "Cookies"
     if not database.is_file() and (folder / "Cookies").is_file():

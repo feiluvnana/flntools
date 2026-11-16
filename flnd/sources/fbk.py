@@ -2,7 +2,7 @@
 
 Everything is read in a browser logged in with saved cookies. The route loads the profile
 page once to extract header metadata (pictures, story buckets, tab paths). Tab categories
-read Comet GraphQL results from HTML and scroll to the end with watch_responses before
+read Comet GraphQL results from HTML and scroll to the end with `site.feed` before
 yielding media posts.
 
 Media results yield photos (highest resolution) and videos (DASH streams or progressive
@@ -26,8 +26,8 @@ from urllib.parse import parse_qs, urlsplit
 from flnd.source import Blocked, File, LoginError, Post, Site, Source, day, target
 from flnd.sources.common import dash
 from flnd.sources.common.relay import meta_results
-from flnd.sources.common.feed import warm_tabs, watch_responses
-from flnd import _html as selector
+from flnd.sources.common.feed import warm_tabs
+from flnd import _html
 
 SITE = "https://www.facebook.com"
 # What a single post, reel or video is refused with: only a profile is read.
@@ -193,7 +193,7 @@ class Facebook(Source):
         """A profile by user name or id: Target("fbk", "user", "example.page")."""
         url = f"{SITE}/{user}"
         # Subscribed before the page loads, so the responses of its first load are kept as well.
-        with watch_responses(site, FEED, lines=True) as arrived:
+        with site.feed(FEED, lines=True) as arrived:
             results = read_page(site, url)
             # Waits for the network to go quiet once, which a page that failed to load doesn't need.
             early = list(arrived) if results is not None else []
@@ -228,7 +228,7 @@ class Facebook(Source):
             site.info("{tab}: this profile has no such tab", tab=tab.category)
             return
         listed: dict[str, str] = {}
-        with watch_responses(site, FEED, scroll=True, lines=True) as responses:
+        with site.feed(FEED, scroll=True, lines=True) as responses:
             results = read_page(site, f"{profile.url}/{path}")
             if results is None:
                 return
@@ -264,12 +264,12 @@ class Facebook(Source):
                 continue
             cards = [
                 card for result in results
-                for card in selector.parse(result).jmespath(STORY_CARDS).get()
+                for card in _html.parse(result).jmespath(STORY_CARDS).get()
                 if isinstance(card, dict)
             ]
             for card in cards:
                 stamp = posted_on(card)
-                for media in selector.parse(card).jmespath("attachments[].media").get():
+                for media in _html.parse(card).jmespath("attachments[].media").get():
                     item = video_item(media, stamp) or photo_item(media, stamp)
                     if item is not None:
                         yield post_of(item, "stories", headers=CDN_HEADERS)
@@ -296,25 +296,24 @@ def read_page(site: Site, url: str) -> list[Any] | None:
         results = meta_results(site, url)
         if results:
             return results
-        # Check tab url to see if page failed to load vs refusal vs empty page.
-        page = site.page
+        # Where the tab is tells a page that didn't load from a refusal and from an empty page.
         # The first segment: a profile like `/login.example` is no wall. The counts never reset
         # each other, so a wall and a block in turn still give up.
-        if urlsplit(page.url).path.split("/")[1:2] in (["login"], ["login.php"]):
+        if urlsplit(site.url).path.split("/")[1:2] in (["login"], ["login.php"]):
             if walls >= WALL_ATTEMPTS:
                 raise LoginError("fbk: Facebook kept asking for a login",
                                  hint="run flnd auth login, then try again")
             walls += 1
             site.back_off(LOGIN_WALL)
             continue
-        if BLOCKED in page.document.text.lower():
+        if BLOCKED in site.document().text.lower():
             if blocks >= BLOCK_ATTEMPTS:
                 raise Blocked(TEMPORARILY_BLOCKED)
             blocks += 1
             site.back_off(TEMPORARILY_BLOCKED)
             continue
-        # Site.goto keeps tab where it was on failure; wrong URL means page didn't load.
-        return [] if _place(page.url) == _place(url) else None
+        # `site.open` leaves the tab where it was on failure; elsewhere means it didn't load.
+        return [] if _place(site.url) == _place(url) else None
 
 
 
@@ -326,7 +325,7 @@ def _place(url: str) -> tuple[str, str]:
 
 def _read_album(site: Site, url: str, *, title: str, owner: str | None) -> Iterator[Post]:
     """Scroll one album page and stream its media posts."""
-    with watch_responses(site, FEED, scroll=True, lines=True) as responses:
+    with site.feed(FEED, scroll=True, lines=True) as responses:
         results = read_page(site, url)
         if results is None:
             return
@@ -351,7 +350,7 @@ def read_tab(site: Site, profile: Profile, tab: Tab) -> Iterator[Post]:
 def _collect_tab(site: Site, profile: Profile, path: str) -> Iterator[tuple[Any, str | None]]:
     """Scroll one tab to its end, yielding `(result, owner)` pairs live."""
     blocks = 0
-    with watch_responses(site, FEED, scroll=True, lines=True) as responses:
+    with site.feed(FEED, scroll=True, lines=True) as responses:
         if path or profile.results is None:
             results = read_page(site, f"{profile.url}/{path}")
             if results is None:
@@ -433,11 +432,11 @@ def post_of(
 
 def album_links(data: Any) -> dict[str, str]:
     """The albums a result lists, as {url: title}: each album's tile on the albums tab."""
-    tiles = selector.parse(data).jsonpath("$..[?@.__typename == 'TimelineAppCollectionItem']").get()
+    tiles = _html.parse(data).jsonpath("$..[?@.__typename == 'TimelineAppCollectionItem']").get()
     return {
-        tile["url"]: selector.parse(tile).jmespath("title.text").first or "album"
+        tile["url"]: _html.parse(tile).jmespath("title.text").first or "album"
         for tile in tiles
-        if selector.parse(tile).jmespath("node.__typename").first == "Album" and tile.get("url")
+        if _html.parse(tile).jmespath("node.__typename").first == "Album" and tile.get("url")
     }
 
 
@@ -450,10 +449,10 @@ def tab_path(tab: Tab, paths: set[str]) -> str | None:
 
 def read_header(result: Any) -> Header | None:
     """Profile header pictures, story buckets and tab paths, or None."""
-    user = selector.parse(result).jmespath(HEADER).first
+    user = _html.parse(result).jmespath(HEADER).first
     if not isinstance(user, dict):
         return None
-    found = selector.parse(user)
+    found = _html.parse(user)
     picture = found.jmespath("profilePicLarge.uri").first
     picture_id = found.jmespath("profilePhoto.id").first
     cover = found.jmespath("cover_photo.photo.image.uri").first
@@ -463,7 +462,7 @@ def read_header(result: Any) -> Header | None:
     ).get()
     paths = {section.get("tab_key") for section in sections} | {
         collection.get("tab_key") for section in sections
-        for collection in selector.parse(section).jmespath("all_collections.nodes").get()}
+        for collection in _html.parse(section).jmespath("all_collections.nodes").get()}
     buckets = [
         str(node["id"]) for node in found.jmespath("story_bucket.nodes").get() if node.get("id")
     ]
@@ -511,7 +510,7 @@ def media_items(
     # A node's own date wins; a node without one keeps the nearest dated parent's.
     stamp = posted_on(data) or stamp
     item = video_item(data, stamp) or photo_item(data, stamp)
-    owned_by = selector.parse(data).jmespath("owner.id || video_owner.id").first
+    owned_by = _html.parse(data).jmespath("owner.id || video_owner.id").first
     if item is not None and item.id not in seen and not (owner and owned_by and owned_by != owner):
         seen.add(item.id)
         yield item
@@ -529,17 +528,17 @@ def video_item(node: dict, stamp: Any) -> Item | None:
     if not ("Video" in typename or "Reel" in typename or "progressive_urls" in node):
         return None
     video_id = str(node.get("id") or node.get("video_id") or "")
-    if video_id and (streams := dash.best(selector.parse(node).jmespath(MANIFEST).first)):
+    if video_id and (streams := dash.best(_html.parse(node).jmespath(MANIFEST).first)):
         return Item(
             video_id, streams.video, "video", stamp, audio=streams.audio,
             extension=streams.extension,
         )
-    progressive = selector.parse(node).jmespath(PROGRESSIVE).get()
+    progressive = _html.parse(node).jmespath(PROGRESSIVE).get()
     # The HD file comes first by its quality tag, then the other progressive files, then the node's
     # own URLs (HD before SD): every one a mirror, tried in order when one refuses.
     hd = [
         entry for entry in progressive
-        if selector.parse(entry).jmespath("metadata.quality").first == "HD"
+        if _html.parse(entry).jmespath("metadata.quality").first == "HD"
     ]
     found = (
         [entry.get("progressive_url") for entry in hd + progressive]
@@ -561,10 +560,10 @@ def photo_item(node: dict, stamp: Any) -> Item | None:
             or any(key in node for key in ("large_share_image", "viewer_image", "photo_image"))):
         return None
     photo_id = str(node.get("id") or node.get("photo_id") or node.get("legacy_photo_id") or "")
-    url = selector.parse(node).jmespath(PHOTO_URL).first
+    url = _html.parse(node).jmespath(PHOTO_URL).first
     if not photo_id or not url:
         return None
-    return Item(photo_id, url, "image", stamp, selector.parse(node).jmespath("album.name").first)
+    return Item(photo_id, url, "image", stamp, _html.parse(node).jmespath("album.name").first)
 
 
 def posted_on(node: dict) -> Any:

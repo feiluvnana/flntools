@@ -1,83 +1,11 @@
 # Docstring and docs gaps that tests/test_docs.py allows today, one per line.
 # Fix a gap, then delete its line: the list may only shrink.
 docs/library.md: 1 skipped python blocks
-flnd/_browser.py:Browser.open: Args: no idle
-flnd/_browser.py:Browser.open: Args: no timeout
-flnd/_browser.py:Browser.open: Args: no url
-flnd/_browser.py:Browser.open: no Returns:
-flnd/_browser.py:Browser: Args: no close_steps
-flnd/_browser.py:Browser: Args: no context
-flnd/_browser.py:Browser: Args: no headless
-flnd/_browser.py:Browser: Args: no page_viewport
-flnd/_browser.py:BrowserCookies.add: Args: no jar
-flnd/_browser.py:BrowserCookies: Args: no browser
-flnd/_browser.py:Page._area: Args: no target
-flnd/_browser.py:Page._area: no Raises:
-flnd/_browser.py:Page._area: no Returns:
-flnd/_browser.py:Page._fetch: Args: no request
-flnd/_browser.py:Page._fetch: no Raises:
-flnd/_browser.py:Page._fetch: no Returns:
 flnd/_browser.py:Page._move: Args: no target
-flnd/_browser.py:Page._steady: Args: no fallback
-flnd/_browser.py:Page._steady: Args: no read
-flnd/_browser.py:Page._steady: Args: no tries
-flnd/_browser.py:Page._steady: Args: no what
-flnd/_browser.py:Page._steady: no Returns:
-flnd/_browser.py:Page._wait_for_progress: Args: no before
-flnd/_browser.py:Page._wait_for_progress: Args: no count
-flnd/_browser.py:Page._wait_for_progress: Args: no longest
-flnd/_browser.py:Page._wait_for_progress: Args: no target
-flnd/_browser.py:Page._wait_for_progress: no Returns:
-flnd/_browser.py:Page._wheel: Args: no distance
-flnd/_browser.py:Page.fetch: Args: no body
-flnd/_browser.py:Page.fetch: Args: no check
-flnd/_browser.py:Page.fetch: Args: no headers
-flnd/_browser.py:Page.fetch: Args: no method
-flnd/_browser.py:Page.fetch: Args: no url
-flnd/_browser.py:Page.fetch: no Returns:
-flnd/_browser.py:Page.handoff: Args: no message
-flnd/_browser.py:Page.handoff: Args: no timeout
-flnd/_browser.py:Page.handoff: Args: no until
-flnd/_browser.py:Page.handoff: no Raises:
-flnd/_browser.py:Page.handoff: no Returns:
-flnd/_browser.py:Page.requests: Args: no match
-flnd/_browser.py:Page.requests: no Returns:
-flnd/_browser.py:Page.responses: Args: no match
-flnd/_browser.py:Page.responses: no Returns:
-flnd/_browser.py:Page: Args: no browser
-flnd/_browser.py:Page: Args: no raw
-flnd/_browser.py:Watch: Args: no step
-flnd/_browser.py:Watch: Args: no stop
-flnd/_browser.py:_Scroller: Args: no idle
-flnd/_browser.py:_Scroller: Args: no page
-flnd/_browser.py:_Scroller: Args: no until
-flnd/_browser.py:_Scroller: Args: no within
-flnd/_browser.py:_cached_headful_ua: no docstring
 flnd/_browser.py:_channel: Args: no playwright
 flnd/_browser.py:_channel: no Raises:
 flnd/_browser.py:_channel: no Returns:
 flnd/_browser.py:_chrome_executable: no Returns:
-flnd/_browser.py:_copy_profile: Args: no name
-flnd/_browser.py:_copy_profile: no Raises:
-flnd/_browser.py:_copy_profile: no Returns:
-flnd/_browser.py:_headful_user_agent: Args: no remote
-flnd/_browser.py:_headful_user_agent: no Returns:
-flnd/_browser.py:_headful_user_agent_of: Args: no channel
-flnd/_browser.py:_headful_user_agent_of: Args: no playwright
-flnd/_browser.py:_headful_user_agent_of: no Returns:
-flnd/_browser.py:_json_bodies: Args: no lines
-flnd/_browser.py:_json_bodies: Args: no response
-flnd/_browser.py:_json_bodies: no Returns:
-flnd/_browser.py:_launch: Args: no args
-flnd/_browser.py:_launch: Args: no copied
-flnd/_browser.py:_launch: Args: no headless
-flnd/_browser.py:_launch: Args: no locale
-flnd/_browser.py:_launch: Args: no playwright
-flnd/_browser.py:_launch: Args: no profile
-flnd/_browser.py:_launch: Args: no stealth
-flnd/_browser.py:_launch: Args: no timezone
-flnd/_browser.py:_launch: Args: no viewport
-flnd/_browser.py:_launch: no Returns:
 flnd/_browser.py:_matcher: Args: no match
 flnd/_browser.py:_matcher: no Raises:
 flnd/_browser.py:_matcher: no Returns:
@@ -87,19 +15,10 @@ flnd/_browser.py:_open_context: Args: no launch_options
 flnd/_browser.py:_open_context: Args: no playwright
 flnd/_browser.py:_open_context: Args: no profile
 flnd/_browser.py:_open_context: no Returns:
-flnd/_browser.py:_profile_name: Args: no profile
-flnd/_browser.py:_profile_name: no Raises:
-flnd/_browser.py:_profile_name: no Returns:
 flnd/_browser.py:_raw_error: no Returns:
 flnd/_browser.py:_raw_timeout: no Returns:
 flnd/_browser.py:_start_playwright: no Raises:
 flnd/_browser.py:_start_playwright: no Returns:
-flnd/_browser.py:attach: Args: no cdp
-flnd/_browser.py:attach: no Returns:
-flnd/_browser.py:open: Args: no headless
-flnd/_browser.py:open: Args: no profile
-flnd/_browser.py:open: Args: no stealth
-flnd/_browser.py:open: no Returns:
 flnd/_cli.py:App.group: Args: no default
 flnd/_cli.py:App.group: Args: no help
 flnd/_cli.py:App.group: Args: no name
@@ -876,28 +795,6 @@ flnd/site.py:LoginSite.ask: Args: no secret
 flnd/site.py:LoginSite.ask: no Raises:
 flnd/site.py:LoginSite.ask: no Returns:
 flnd/site.py:LoginSite: Args: no run
-flnd/site.py:TargetSite._connect: no Returns:
-flnd/site.py:TargetSite._new_tab: no Returns:
-flnd/site.py:TargetSite._pop_tab: Args: no watch
-flnd/site.py:TargetSite._push_tab: Args: no scroll
-flnd/site.py:TargetSite._push_tab: Args: no watch
-flnd/site.py:TargetSite._start_warm: Args: no tab
-flnd/site.py:TargetSite._start_warm: Args: no url
-flnd/site.py:TargetSite._start_warm: no Returns:
-flnd/site.py:TargetSite._start_warm_watch: Args: no tab
-flnd/site.py:TargetSite._stop_warm_watch: Args: no tab
-flnd/site.py:TargetSite._stop_warm_watch: no Returns:
-flnd/site.py:TargetSite._switch_tab: Args: no tab
-flnd/site.py:TargetSite._visit_tab: Args: no idle
-flnd/site.py:TargetSite._visit_tab: Args: no page
-flnd/site.py:TargetSite._visit_tab: Args: no pre_visit
-flnd/site.py:TargetSite._visit_tab: Args: no timeout
-flnd/site.py:TargetSite._visit_tab: Args: no url
-flnd/site.py:TargetSite._visit_tab: no Raises:
-flnd/site.py:TargetSite._visit_tab: no Returns:
-flnd/site.py:TargetSite.back_off: Args: no reason
-flnd/site.py:TargetSite.back_off: Args: no retry_after
-flnd/site.py:TargetSite.back_off: no Raises:
 flnd/site.py:TargetSite.fetch: Args: no check
 flnd/site.py:TargetSite.fetch: Args: no headers
 flnd/site.py:TargetSite.fetch: Args: no in_page
@@ -906,32 +803,8 @@ flnd/site.py:TargetSite.fetch: Args: no request
 flnd/site.py:TargetSite.fetch: Args: no url
 flnd/site.py:TargetSite.fetch: no Raises:
 flnd/site.py:TargetSite.fetch: no Returns:
-flnd/site.py:TargetSite.goto: Args: no idle
-flnd/site.py:TargetSite.goto: Args: no timeout
-flnd/site.py:TargetSite.goto: Args: no url
-flnd/site.py:TargetSite.goto: no Returns:
-flnd/site.py:_BrowserPool._call: no docstring
-flnd/site.py:_BrowserPool._ensure_browser: no docstring
-flnd/site.py:_BrowserPool.open_tab: Args: no jar
-flnd/site.py:_BrowserPool.open_tab: Args: no owner
-flnd/site.py:_BrowserPool.open_tab: no Returns:
-flnd/site.py:_BrowserPool.release: Args: no raws
-flnd/site.py:_PacedPage.scroll: Args: no idle
-flnd/site.py:_PacedPage.scroll: Args: no until
-flnd/site.py:_PacedPage.scroll: Args: no within
-flnd/site.py:_PacedPage.scroll: no Returns:
-flnd/site.py:_PacedPage: Args: no owner
-flnd/site.py:_PacedPage: Args: no raw
-flnd/site.py:_PacedPage: Args: no speed
-flnd/site.py:_RawProxy: Args: no call
-flnd/site.py:_RawProxy: Args: no obj
-flnd/site.py:_SharedBrowser: Args: no jar
-flnd/site.py:_SharedBrowser: Args: no pool
-flnd/site.py:_SharedCookies: Args: no jar
-flnd/site.py:_SharedCookies: Args: no pool
 flnd/site.py:_warn_expiring: Args: no jar
 flnd/site.py:_warn_expiring: Args: no source
-flnd/site.py:shared_browser: Args: no settings
 flnd/site.py:shared_browser: no Yields:
 flnd/site.py:source_run: Args: no settings
 flnd/site.py:source_run: Args: no source
@@ -941,6 +814,8 @@ flnd/source.py:Category: Args: no function
 flnd/source.py:Category: Args: no key
 flnd/source.py:Category: Args: no newest_first
 flnd/source.py:Category: no Example:
+flnd/source.py:Feed.close: no Example:
+flnd/source.py:Feed: no Example:
 flnd/source.py:File.text: no Example:
 flnd/source.py:File.text: no Returns:
 flnd/source.py:File: no Example:
@@ -980,6 +855,10 @@ flnd/source.py:Route: Args: no patterns
 flnd/source.py:Route: Args: no shown
 flnd/source.py:Route: no Example:
 flnd/source.py:Site.back_off: no Example:
+flnd/source.py:Site.click: no Example:
+flnd/source.py:Site.document: no Example:
+flnd/source.py:Site.evaluate: no Example:
+flnd/source.py:Site.feed: no Example:
 flnd/source.py:Site.fetch: Args: no check
 flnd/source.py:Site.fetch: Args: no headers
 flnd/source.py:Site.fetch: Args: no in_page
@@ -987,12 +866,12 @@ flnd/source.py:Site.fetch: Args: no method
 flnd/source.py:Site.fetch: Args: no request
 flnd/source.py:Site.fetch: Args: no url
 flnd/source.py:Site.fetch: no Example:
-flnd/source.py:Site.goto: Args: no idle
-flnd/source.py:Site.goto: Args: no timeout
-flnd/source.py:Site.goto: Args: no url
-flnd/source.py:Site.goto: no Example:
 flnd/source.py:Site.handoff: no Example:
 flnd/source.py:Site.info: no Example:
+flnd/source.py:Site.open: no Example:
+flnd/source.py:Site.pause: no Example:
+flnd/source.py:Site.scroll: no Example:
+flnd/source.py:Site.wait: no Example:
 flnd/source.py:Site.warn: no Example:
 flnd/source.py:Site: no Example:
 flnd/source.py:Source.connect: no Example:
@@ -1059,18 +938,6 @@ flnd/source.py:target: no Example:
 flnd/source.py:target: no Returns:
 flnd/sources/common/dash.py:best: Args: no manifest
 flnd/sources/common/dash.py:best: no Returns:
-flnd/sources/common/feed.py:Responses._adopt: Args: no page
-flnd/sources/common/feed.py:Responses._enqueue: Args: no body
-flnd/sources/common/feed.py:Responses._enqueue: Args: no response
-flnd/sources/common/feed.py:Responses._iterate: no Yields:
-flnd/sources/common/feed.py:Responses._on_response: Args: no response
-flnd/sources/common/feed.py:Responses: Args: no lines
-flnd/sources/common/feed.py:Responses: Args: no match
-flnd/sources/common/feed.py:Responses: Args: no scroll
-flnd/sources/common/feed.py:Responses: Args: no site
-flnd/sources/common/feed.py:_matches: Args: no match
-flnd/sources/common/feed.py:_matches: Args: no url
-flnd/sources/common/feed.py:_matches: no Returns:
 flnd/sources/common/relay.py:_results: no docstring
 flnd/sources/common/relay.py:embedded_results: Args: no page
 flnd/sources/common/relay.py:embedded_results: no Returns:

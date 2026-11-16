@@ -154,8 +154,13 @@ A route acts on the site only through `site`, which `flnd.source.Site` describes
 | member | what it does |
 | --- | --- |
 | `site.fetch(url, params=…, method=…, headers=…, check=…)` | one request, paced and retried; `.json`, `.text`, `.html` on the answer; a refusal raises a `SiteError` with its `status` (`NotFound` for a 404 or 410, `Blocked` for a 429) unless `check=False`; no answer raises `NetworkError` |
-| `site.goto(url)`, `site.page` | load a page in the target's browser tab, and use the tab |
+| `site.open(url)`, `site.url` | load a page in the target's browser tab (False when it didn't load), and where the tab is now |
+| `site.feed(match, scroll=…, lines=…)` | the JSON of the responses whose URL matches, as the page receives them; with `scroll=True` it scrolls for more until the feed ends. Open it before the page that sends them |
+| `site.document()` | the tab's page now, parsed: `.css(…)`, `.xpath(…)`, `.script(…)`, `.text` |
+| `site.wait(css=…, url=…)`, `site.scroll(until=…)` | wait for an element or a URL; scroll like a person until the feed ends |
+| `site.evaluate(js)`, `site.click(css)` | run a script in the page; click an element |
 | `site.handoff(until=…, message=…)` | ask a person to do a step in the browser window, such as a captcha |
+| `site.pause(seconds, reason)` | wait, as a page that needs time to settle does |
 | `site.cookies`, `site.secrets` | the login's cookies, and the source's encrypted secrets |
 | `site.state` | a small store of the source's own, kept between runs |
 | `site.client` | what the source's `connect` hook gave, such as Telegram's client |
@@ -178,8 +183,14 @@ A source can override a few methods of `Source`:
 | `logged_in(site)` | whether a login is saved; by default, one of `needs` is in the cookies | tlg |
 | `resolve(text)` | for target forms no pattern can say | tlg |
 
-A route or category may be `async def`; it then runs on the source's own event loop, as
-Telegram's do.
+The browser is one per run, launched the first time a target opens a page, and each target
+works in its own tab. A source never gets a Playwright object from the verbs above, so its code
+doesn't depend on Playwright's API.
+
+A route or category may be `async def`; it then runs on the run's event loop, as Telegram's do.
+There it can't call the browser verbs (they would wait for the loop they run on); it awaits
+`site.tab` for Playwright's own page instead. That page is outside the source API's version
+promise, since Playwright's API isn't flnd's to keep stable.
 
 ## 8. Adding it to flnd
 

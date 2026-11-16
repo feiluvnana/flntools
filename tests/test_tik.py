@@ -1,7 +1,7 @@
 """TikTok: its routes, the names and keys of every file it saves, the captcha, the tabs, and one video from its embed page.
 
-What is faked: the site's answers (`FakeSite` through `collect`), and the browser's tab, by `FakeTab`,
-which hands the profile's JSON responses to whoever watches for them when the source scrolls.
+What is faked: the site's answers (`FakeSite` through `collect`), and the browser's tab, by `TabSite`,
+whose feeds get the profile's JSON responses when the source scrolls.
 No network, no browser, no wait is slept.
 """
 
@@ -10,7 +10,6 @@ import os
 import time
 import unittest
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -118,78 +117,40 @@ def profile_page(*tabs, video_count=2, sec_uid=None):
             f"{json.dumps(data)}</script></body></html>")
 
 
-class FakeRaw:
-    """Fake Playwright tab event emitter for `feed.Responses`."""
+class TabSite(FakeSite):
+    """A `FakeSite` whose tab shows `html` whatever URL it opened: a string, or a function of the site.
 
-    def __init__(self):
-        self.listeners = []
-        self._fallback = mock.MagicMock()
-
-    def on(self, event, listener):
-        if event == "response":
-            self.listeners.append(listener)
-
-    def remove_listener(self, event, listener):
-        if event == "response" and listener in self.listeners:
-            self.listeners.remove(listener)
-
-    def __getattr__(self, name):
-        return getattr(self._fallback, name)
-
-
-class FakeTab:
-    """The browser's tab as `watch_responses` and the source use it: responses are delivered when the page scrolls.
-
-    Args:
-        seen: what the `FakeSite` records, which `html` may read (the back-offs, the pages loaded).
-        feeds: (URL, JSON) responses the site would send, in order. One goes to every watcher whose
-            match takes its URL, on the first scroll or wait after that watcher started; one nobody
-            watches for stays until somebody does, as a tab's list comes only once it is clicked.
-        html: the page's HTML, or a function of the tab giving it.
+    The function may read `site.seen` (the back-offs, the pages loaded) and `site.scrolls`.
     """
 
-    def __init__(self, seen, feeds=(), html: Any = ""):
-        self.seen = seen
-        self.pending = list(feeds)
-        self.html = html
-        self.scrolls = 0
-        self.raw = FakeRaw()
+    html: Any = ""
 
     @property
+    def seen(self):
+        return self._seen
+
+    @property
+    def scrolls(self):
+        return self._seen.scrolls
+
     def document(self):
         return selector.parse(self.html(self) if callable(self.html) else self.html)
 
-    def deliver(self):
-        for url, data in list(self.pending):
-            consumed = False
 
-            def text(d=data):
-                nonlocal consumed
-                consumed = True
-                return json.dumps(d)
-
-            response = SimpleNamespace(url=url, text=text, request=None)
-            for listener in list(self.raw.listeners):
-                listener(response)
-            if consumed:
-                self.pending.remove((url, data))
-
-    def scroll(self, *, until=None, **options):
-        self.scrolls += 1
-        self.deliver()
-        return 1
-
-    def wait(self, css=None, *, idle=False, timeout=30.0):
-        self.deliver()
-
-
-def run(text, *, feeds=(), html: Any = "", pages=None, json=None, options=Options(), cookies=None):
-    """What the job would download for `text`, with `FakeTab` as the browser: (saved files, seen, tab)."""
+def run(text, *, feeds=(), html: Any = "", pages=None, json=None, options=Options(), cookies=None, site=TabSite):
+    """What the job would download for `text`, through `site` (a `TabSite` class): (saved files, seen, site)."""
     seen = Seen()
-    tab = FakeTab(seen, feeds, html)
-    with mock.patch.object(FakeSite, "page", property(lambda site: tab)):
-        saved = collect(TikTok, text, html=pages, json=json, options=options, seen=seen, cookies=cookies)
-    return saved, seen, tab
+    made = []
+
+    def make(*args, **kwargs):
+        made.append(site(*args, **kwargs))
+        made[-1].html = html
+        return made[-1]
+
+    with mock.patch("fakes.FakeSite", make):
+        saved = collect(TikTok, text, html=pages, json=json, options=options, seen=seen, cookies=cookies,
+                        feeds=feeds)
+    return saved, seen, made[0] if made else None
 
 
 # What the profile `someone` answers with while it scrolls, in the order the old source got them: the
@@ -326,18 +287,16 @@ class TikTokTest(unittest.TestCase):
         feed = [(f"{API}/api/post/item_list/?count=30",
                  {"hasMore": False, "itemList": [video("7300000000000000001", f"{CDN}/1.mp4", createTime=1700000000)]})]
 
-        class Walled(FakeTab):
+        class Walled(TabSite):
             """The grid is covered once the page has scrolled, and the feed comes only after the back-off."""
 
-            def deliver(self):
+            def _release(self):
                 if self.seen.back_offs:
-                    super().deliver()
+                    super()._release()
 
-        seen = Seen()
-        tab = Walled(seen, feed, lambda tab: "<body><div id='captcha_container'>Drag the slider</div></body>"
-                     if tab.scrolls and not tab.seen.back_offs else "<body></body>")
-        with mock.patch.object(FakeSite, "page", property(lambda site: tab)):
-            saved = collect(TikTok, "tik:someone", seen=seen, options=Options(categories=("videos",)))
+        saved, seen, _ = run("tik:someone", feeds=feed, site=Walled, options=Options(categories=("videos",)),
+                             html=lambda tab: "<body><div id='captcha_container'>Drag the slider</div></body>"
+                             if tab.scrolls and not tab.seen.back_offs else "<body></body>")
         self.assertEqual(len(seen.back_offs), 1)
         self.assertEqual([item.path for item in saved], [f"videos/{DAY}_7300000000000000001.mp4"])
 

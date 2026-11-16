@@ -1,4 +1,20 @@
-"""One bounded `Pool` for threads and coroutines, with retries, backpressure and an owner thread.
+"""The run's asyncio `Loop`, and the bounded `Pool` the downloads run on.
+
+`Loop` is one asyncio event loop on a thread of its own. A run makes one
+(`flnd.site.shared_browser`), and everything async of that run happens on it: the browser
+(`flnd._browser`) and an async source's coroutines (Telegram's Telethon). Other threads hand it
+work with `Loop.run`, which waits for the answer; that hop costs about 40 µs, small against one
+browser round trip (0.4 ms).
+
+    with Loop() as loop:
+        title = loop.run(page.evaluate("document.title"))
+
+Rules a change must keep:
+- `Loop.run` is never called on the loop's own thread: it would wait for itself forever, so it
+  raises instead. Code already on the loop awaits.
+- Closing cancels whatever still runs on the loop, then stops its thread.
+
+`Pool` is a thread pool with retries and backpressure, which a target's downloads run on:
 
     with worker.Pool(jobs=8, retries=2, stop=event, progress=row) as pool:
         for x in items:
@@ -27,7 +43,7 @@ from typing import Any, Callable, Generic, Literal, TypeVar
 
 from flnd import _time
 
-__all__ = ["Pool", "Result"]
+__all__ = ["Loop", "Pool", "Result"]
 
 R = TypeVar("R")
 
@@ -37,6 +53,107 @@ MAX_BACKOFF = 8.0
 WAKE = 0.1
 # How long closing waits for the event loop's cancelled tasks before leaving them.
 LOOP_GRACE = 10.0
+
+
+class Loop:
+    """One asyncio event loop on its own thread, started on first use; `run` hands it a coroutine.
+
+        with Loop() as loop:
+            loop.run(asyncio.sleep(0.1))
+
+    Any thread may call `run`, except the loop's own (see `run`). `close` (or leaving `with`)
+    cancels what still runs and ends the thread; a closed loop refuses more work.
+    """
+
+    def __init__(self) -> None:
+        # Guards the start and the close, which two listing threads may reach at once.
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._closed = False
+
+    def __enter__(self) -> Loop:
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
+
+    @property
+    def here(self) -> bool:
+        """Whether the calling code runs on this loop's thread, where it must await, not `run`."""
+        return self._thread is not None and threading.get_ident() == self._thread.ident
+
+    def run(self, awaitable: Awaitable[R]) -> R:
+        """Run `awaitable` on the loop, wait for it, and return its value or raise its error.
+
+        Args:
+            awaitable: a coroutine (or any awaitable) made for this loop.
+
+        Returns:
+            What the awaitable returned.
+
+        Raises:
+            RuntimeError: the loop is closed, or this is the loop's own thread, which would wait
+                for itself forever.
+
+        A Ctrl-C while waiting cancels the coroutine on the loop before it goes on up.
+        """
+        try:
+            loop = self._started()
+            if self.here:
+                raise RuntimeError("Loop.run was called on the loop's own thread; await it instead")
+        except RuntimeError:
+            # Closed, so nothing will ever await it, and Python would warn of that.
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            raise
+        future = asyncio.run_coroutine_threadsafe(_carried(awaitable), loop)
+        try:
+            ok, value = future.result()
+        except BaseException:
+            future.cancel()
+            raise
+        if not ok:
+            raise value
+        return value
+
+    def close(self) -> None:
+        """Cancel what still runs on the loop, stop it and end its thread; once."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            loop, thread = self._loop, self._thread
+        if loop is None or thread is None:
+            return
+        cancelled = asyncio.run_coroutine_threadsafe(_cancel_pending(), loop)
+        concurrent.futures.wait([cancelled], timeout=LOOP_GRACE)
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(LOOP_GRACE)
+        if not thread.is_alive():
+            loop.close()
+
+    def _started(self) -> asyncio.AbstractEventLoop:
+        """The event loop, with its thread started on the first call.
+
+        Returns:
+            The running event loop.
+
+        Raises:
+            RuntimeError: the loop is closed.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("the loop is closed")
+            if self._loop is None:
+                # On Windows the default loop is the proactor, which Playwright's driver needs
+                # for its subprocess pipes; elsewhere the selector loop serves both.
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(
+                    target=_serve_loop, args=(self._loop,), name="flnd-loop", daemon=True,
+                )
+                self._thread.start()
+            return self._loop
 
 
 # Using a `Pool` after it closed or stopped is a bug in the caller, so it raises the builtin
@@ -337,6 +454,27 @@ def _backoff(attempts: int) -> float:
 
 async def _awaited(awaitable: Awaitable[R]) -> R:
     return await awaitable
+
+
+async def _carried(awaitable: Awaitable[R]) -> tuple[bool, Any]:
+    """`(True, value)`, or `(False, error)` for any error but a cancel, for `Loop.run` to raise.
+
+    asyncio lets a `KeyboardInterrupt` (and so `flnd.Stopped`) raised in a task out of the loop,
+    which would end the loop's thread and leave its caller waiting forever; carried back as a
+    value, it is raised on the caller's thread instead, where it belongs.
+
+    Args:
+        awaitable: what `Loop.run` was given.
+
+    Returns:
+        Whether it returned, and its value or its error.
+    """
+    try:
+        return True, await awaitable
+    except asyncio.CancelledError:
+        raise
+    except BaseException as error:
+        return False, error
 
 
 def _serve_loop(loop: asyncio.AbstractEventLoop) -> None:

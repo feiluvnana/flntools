@@ -1,7 +1,9 @@
 """Fakes for testing sources without the network or a browser: `FakeSite` and `collect`.
 
-- `FakeSite` is a `flnd.source.Site` with exactly its 13 members, answering `fetch` from fixtures
-  keyed by URL without its query, and recording what the source did in a `Seen`.
+- `FakeSite` is a `flnd.source.Site` with exactly its members, answering `fetch` from fixtures
+  keyed by URL without its query, and recording what the source did in a `Seen`. Its browser
+  shows the `pages` fixture for the URL last opened, and its feeds get the `feeds` fixture's
+  responses when they scroll or wait (`FakeFeed`).
 - `collect(source, text, …)` resolves a target, runs its route and wanted categories on a
   `FakeSite`, lists lazy files, and names and keys each file as the job would: a list of `Saved`.
 """
@@ -10,15 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import json as jsonlib
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, MutableMapping
-from unittest import mock
 
-from flnd import job
+import no_profiles  # noqa: F401  (refuses real browser profiles)
+from flnd import _browser, _html, _http, job
 from flnd.engine import resolve
 from flnd.options import Options
 from flnd.source import File, NotFound, Post, Range, SiteError, Source, Target
-from flnd import _browser as browser, _http as http
 
 
 # A fixture: data for a URL, a SiteError to raise, or a function of (url, request) giving either.
@@ -27,12 +29,14 @@ Answer = Any
 
 @dataclass
 class Seen:
-    """What a source did through a `FakeSite`, which keeps its own members to the 13 a `Site` has."""
+    """What a source did through a `FakeSite`, which keeps its own members to the ones a `Site` has."""
 
     # (method, url, options) of each `fetch`, options holding `headers`, `in_page` and httpx's.
     requests: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
-    # Each URL `goto` loaded.
+    # Each URL `open` loaded.
     visited: list[str] = field(default_factory=list)
+    # How many times a feed scrolled for more.
+    scrolls: int = 0
     # Each `info` line, and each `warn` line after "! ".
     messages: list[str] = field(default_factory=list)
     # The reason of each `back_off`.
@@ -50,7 +54,10 @@ class FakeSite:
         cookies: the login's cookies.
         json: data for a URL, a `SiteError` to raise, or a function of `(url, request)` giving either.
         html: page text for a URL, as `json`.
-        pages: the HTML `page` shows after `goto` loaded a URL; "" for one not listed.
+        pages: the HTML `document()` shows after `open` loaded a URL; "" for one not listed.
+        feeds: (URL, JSON) responses the site would send, in order. Each goes to every open feed whose
+            match takes its URL, the next time a feed scrolls or waits; one nobody watches for stays
+            until somebody does, as a tab's list comes only once it is clicked.
         options: the run's options; `time` reads `--time` from them.
         client: what `client` gives, such as a fake SDK client.
         seen: where it records; a new `Seen` when None.
@@ -59,7 +66,8 @@ class FakeSite:
     def __init__(self, target: Target, *, cookies: Mapping[str, str] | None = None,
                  json: Mapping[str, Answer] | None = None, html: Mapping[str, Answer] | None = None,
                  pages: Mapping[str, str] | None = None, options: Options = Options(), client: Any = None,
-                 seen: Seen | None = None, state: MutableMapping[str, Any] | None = None):
+                 seen: Seen | None = None, state: MutableMapping[str, Any] | None = None,
+                 feeds: Any = ()):
         self.target = target
         self.client = client
         self.state: MutableMapping[str, Any] = state if state is not None else {}
@@ -68,7 +76,8 @@ class FakeSite:
         self._cookies = dict(cookies or {})
         self._json, self._html, self._pages = dict(json or {}), dict(html or {}), dict(pages or {})
         self._options = options
-        self._raw_page = mock.MagicMock()
+        self._pending = list(feeds)
+        self._feeds: list[FakeFeed] = []
 
     @property
     def cookies(self) -> Mapping[str, str]:
@@ -79,34 +88,69 @@ class FakeSite:
         return Range(self._options.since, self._options.until)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> http.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> _http.Response:
         self._seen.requests.append((method, url, {"headers": dict(headers or {}), "in_page": in_page, **request}))
         base = url.split("?")[0]
         if base in self._json:
             answer = _answer(self._json, url, request)
             if not isinstance(answer, SiteError):
-                return http.Response(200, url, {"content-type": "application/json"}, jsonlib.dumps(answer).encode())
+                return _http.Response(200, url, {"content-type": "application/json"}, jsonlib.dumps(answer).encode())
         else:
             answer = _answer(self._html, url, request)
             if not isinstance(answer, SiteError):
-                return http.Response(200, url, {"content-type": "text/html"}, str(answer).encode())
+                return _http.Response(200, url, {"content-type": "text/html"}, str(answer).encode())
         if not check and answer.status is not None:
-            return answer.response or http.Response(answer.status, url, {})
+            return answer.response or _http.Response(answer.status, url, {})
         raise answer
 
-    def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
+    def open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
         self._seen.visited.append(url)
         return True
+
+    @property
+    def url(self) -> str:
+        return self._seen.visited[-1] if self._seen.visited else "about:blank"
+
+    def wait(self, css: str | None = None, *, url: Any = None, idle: bool = False, timeout: float = 30.0) -> None:
+        pass
+
+    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 10.0) -> int:
+        return 0
+
+    def feed(self, match: Any, *, scroll: bool = False, lines: bool = False) -> FakeFeed:
+        return FakeFeed(self, match, scroll=scroll)
+
+    def document(self) -> Any:
+        # The page of the URL last opened, even where a subclass reports a redirect as `url`.
+        return _html.parse(self._pages.get(self._seen.visited[-1] if self._seen.visited else "", ""))
+
+    def evaluate(self, js: str, *, arg: Any = None) -> Any:
+        return None
+
+    def click(self, css: str, *, timeout: float = 10.0) -> None:
+        pass
 
     def handoff(self, *, until: Callable[[], bool], message: str, timeout: float | None = None) -> bool:
         return until()
 
     @property
-    def page(self) -> browser.Page:
-        url = self._seen.visited[-1] if self._seen.visited else "about:blank"
-        self._raw_page.content.return_value = self._pages.get(url, "")
-        self._raw_page.url = url
-        return browser.Page(self._raw_page, mock.MagicMock())
+    async def tab(self) -> Any:
+        raise NotImplementedError("FakeSite has no Playwright page")
+
+    def pause(self, seconds: float, reason: str) -> None:
+        pass
+
+    def _deliver(self, *, scroll: bool) -> None:
+        """A feed scrolled (counted in `seen`) or waited: `_release` what is pending."""
+        if scroll:
+            self._seen.scrolls += 1
+        self._release()
+
+    def _release(self) -> None:
+        """Hand each pending response to every open feed that matches it; a test may hold them back."""
+        for url, data in list(self._pending):
+            if [feed for feed in list(self._feeds) if feed._push(url, data)]:
+                self._pending.remove((url, data))
 
     def info(self, message: str, **fields: Any) -> None:
         self._seen.messages.append(message.format(**fields))
@@ -116,6 +160,61 @@ class FakeSite:
 
     def back_off(self, reason: str, *, retry_after: float | None = None) -> None:
         self._seen.back_offs.append(reason)
+
+
+class FakeFeed:
+    """What `FakeSite.feed` returns: the `feeds` fixture's responses whose URL matches, as `Site.feed` gives them.
+
+    Iterating yields what is waiting; then, with `scroll`, it asks the site to deliver once more and ends when
+    nothing new came, and without `scroll` it asks once and ends, as the engine's feed waits once for quiet.
+    """
+
+    def __init__(self, site: FakeSite, match: Any, *, scroll: bool = False):
+        self._site = site
+        self._matches = _browser._matcher(match)
+        self._scroll = scroll
+        self._waiting: deque[Any] = deque()
+        self._closed = False
+        site._feeds.append(self)
+        self._items = self._iterate()
+
+    def _push(self, url: str, data: Any) -> bool:
+        if self._closed or not self._matches(url):
+            return False
+        self._waiting.append(data)
+        return True
+
+    def __iter__(self) -> FakeFeed:
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._items)
+
+    def __enter__(self) -> FakeFeed:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._site._feeds.remove(self)
+
+    def _iterate(self) -> Any:
+        try:
+            while True:
+                while self._waiting:
+                    yield self._waiting.popleft()
+                self._site._deliver(scroll=self._scroll)
+                if not self._scroll:
+                    while self._waiting:
+                        yield self._waiting.popleft()
+                    return
+                if not self._waiting:
+                    return
+        finally:
+            self.close()
 
 
 @dataclass(frozen=True)
@@ -138,7 +237,8 @@ class Saved:
 def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | None = None,
             html: Mapping[str, Answer] | None = None, pages: Mapping[str, str] | None = None,
             options: Options = Options(), cookies: Mapping[str, str] | None = None, client: Any = None,
-            seen: Seen | None = None, state: MutableMapping[str, Any] | None = None) -> list[Saved]:
+            seen: Seen | None = None, state: MutableMapping[str, Any] | None = None,
+            feeds: Any = ()) -> list[Saved]:
     """What the job would download for `text`: its route and wanted categories run on a `FakeSite`.
 
         saved = collect(Example, "exm:example_user", json=FIXTURES, options=Options(categories=("posts",)))
@@ -147,7 +247,7 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
     Args:
         source: the source class.
         text: the target as people write it, `code:` or a link.
-        json, html, pages, cookies, client, seen: the `FakeSite`'s, as it takes them.
+        json, html, pages, cookies, client, seen, feeds: the `FakeSite`'s, as it takes them.
         state: the site's saved state, shared by runs that pass the same dict.
         options: `--from` and `--time`.
 
@@ -159,7 +259,7 @@ def collect(source: type[Source], text: str, *, json: Mapping[str, Answer] | Non
     """
     target = resolve(text, {source.code: source})
     site = FakeSite(target, cookies=cookies, json=json, html=html, pages=pages, options=options, client=client,
-                    seen=seen, state=state)
+                    seen=seen, state=state, feeds=feeds)
     instance = source()
     categories = {category.name: category for route in source.routes for category in route.categories}
     loop = asyncio.new_event_loop()

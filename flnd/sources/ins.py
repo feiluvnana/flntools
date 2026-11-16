@@ -27,9 +27,9 @@ from flnd.source import (
     target,
 )
 from flnd.sources.common import dash
-from flnd.sources.common.feed import warm_tabs, watch_responses
+from flnd.sources.common.feed import warm_tabs
 from flnd.sources.common.relay import embedded_results
-from flnd import _http as http, _html as selector, _text as text
+from flnd import _html, _http, _text
 
 if TYPE_CHECKING:
     import httpx
@@ -212,7 +212,7 @@ class Instagram(Source):
             if reels is None:
                 warm_tabs(site, [f"{SITE}/stories/highlights/{hid}/" for hid, _ in chunk])
             for highlight_id, title in chunk:
-                folder = f"highlights/{text.filename(title)}"
+                folder = f"highlights/{_text.filename(title)}"
                 if reels is None:
                     posts = story_posts(site, f"{SITE}/stories/highlights/{highlight_id}/", folder)
                 else:
@@ -450,7 +450,7 @@ class Api:
         )
 
     def _waited(
-        self, site: Site, response: http.Response | None, *, refused: bool, walls: int,
+        self, site: Site, response: _http.Response | None, *, refused: bool, walls: int,
     ) -> int | None:
         """Next wall count if waited or moved to tab, else None."""
         # The suspended page is the hard stop: nothing is retried past it.
@@ -516,7 +516,7 @@ class Profile:
         """Scroll one profile tab until it ends or hits `OLD_STREAK`, yielding results live."""
         since = site.time.since if tab in ("posts", "reels", "reposts") else None
         ended, old = False, 0
-        with watch_responses(site, GRAPHQL, scroll=True) as responses:
+        with site.feed(GRAPHQL, scroll=True) as responses:
             if not load(site, f"{SITE}/{self.user}/{TABS[tab]}"):
                 # Raised, not returned: a tab that ended here would be recorded complete.
                 raise SiteError(f"{tab}: the page didn't load")
@@ -529,7 +529,7 @@ class Profile:
                     if not self.listed[name]
                 ],
             )
-            for result in embedded_results(site.page.document):
+            for result in embedded_results(site.document()):
                 yield result
                 old = older_streak(result, tab, since, old)
                 if (state := page_state(result, tab)) is not None:
@@ -557,10 +557,10 @@ class Profile:
         """
         if self.described or self.loaded:
             return
-        with watch_responses(site, GRAPHQL) as responses:
+        with site.feed(GRAPHQL) as responses:
             if load(site, f"{SITE}/{self.user}/"):
                 self.loaded = True
-                for result in embedded_results(site.page.document):
+                for result in embedded_results(site.document()):
                     self.note(result)
                 for result in responses:
                     self.note(result)
@@ -570,7 +570,7 @@ class Profile:
         if not isinstance(result, dict):
             return
         # Only the profile's first result describes its user; later pages may describe others.
-        user = selector.parse(result).jmespath("data.user").first
+        user = _html.parse(result).jmespath("data.user").first
         picture = profile_picture(result)
         if not self.described and isinstance(user, dict):
             self.described = True
@@ -621,9 +621,9 @@ def load(site: Site, url: str) -> bool:
     """
     walls = 0
     while True:
-        if not site.goto(url):
+        if not site.open(url):
             return False
-        where = urlsplit(site.page.url).path
+        where = urlsplit(site.url).path
         if where.startswith(SUSPENDED):
             raise suspended()
         if not is_wall(where):
@@ -674,7 +674,7 @@ def throttled(result: Any) -> bool:
     return isinstance(result, dict) and THROTTLED in str(result.get("message", ""))
 
 
-def _json(response: http.Response | None) -> Any:
+def _json(response: _http.Response | None) -> Any:
     """A response's JSON, or None when there is no response or it isn't JSON."""
     if response is None:
         return None
@@ -687,10 +687,10 @@ def _json(response: http.Response | None) -> Any:
 
 def post_page(site: Site, code: str) -> dict | None:
     """Open post page and return embedded or GraphQL post, or None with warning."""
-    with watch_responses(site, GRAPHQL) as responses:
+    with site.feed(GRAPHQL) as responses:
         if not load(site, f"{SITE}/p/{code}/"):
             return None
-        for result in embedded_results(site.page.document):
+        for result in embedded_results(site.document()):
             if media := post_media(result, code):
                 return media
         for result in responses:
@@ -723,7 +723,7 @@ def story_posts(site: Site, url: str, folder: str) -> Iterator[Post]:
     if not load(site, url):
         return
     stories = [
-        story for result in embedded_results(site.page.document)
+        story for result in embedded_results(site.document())
         for story in story_items(result)
     ]
     yield from reel_posts(site, stories, folder)
@@ -745,7 +745,7 @@ def reel_posts(site: Site, stories: list[dict], folder: str) -> Iterator[Post]:
             mname = file_name(day(story.get("taken_at")), f"{story_id}_music", "m4a")
             files.append(File(music, name=mname))
         yield Post(story_id, files, date=story.get("taken_at"), headers=CDN_HEADERS)
-    cnt = text.count(len(stories), "story", plural="stories")
+    cnt = _text.count(len(stories), "story", plural="stories")
     site.info("{folder}: {stories}", folder=folder, stories=cnt)
 
 
@@ -755,7 +755,7 @@ def story_music(story: dict) -> str | None:
     Args:
         story: one story's JSON, from the reels API or a story page.
     """
-    return selector.parse(story).jmespath(STORY_MUSIC).first
+    return _html.parse(story).jmespath(STORY_MUSIC).first
 
 
 def file_name(taken: Any, stem: str, extension: str) -> str:
@@ -819,7 +819,7 @@ def connection_of(result: Any, tab: str) -> dict | None:
         result: one JSON result the tab's page or requests sent.
         tab: one of `TABS`.
     """
-    found = selector.parse(result)
+    found = _html.parse(result)
     for path in TAB_CONNECTIONS[tab]:
         connection = found.jmespath(f"data.{path}").first
         if isinstance(connection, dict):
@@ -906,7 +906,7 @@ def full_size(item: dict) -> bool:
     """Whether listed item has full file (video or >=90% width image)."""
     if item.get("media_type") == 2 or item.get("video_versions"):
         return bool(item.get("video_versions") or item.get("video_dash_manifest"))
-    images = selector.parse(item).jmespath("image_versions2.candidates").get()
+    images = _html.parse(item).jmespath("image_versions2.candidates").get()
     original = item.get("original_width")
     if not images or not isinstance(original, (int, float)) or original <= 0:
         return False
@@ -915,7 +915,7 @@ def full_size(item: dict) -> bool:
 
 def post_media(result: Any, code: str | None = None) -> dict | None:
     """The post a post's own page shows, or None when this result isn't it."""
-    media = selector.parse(result).jmespath(POST).first
+    media = _html.parse(result).jmespath(POST).first
     if not isinstance(media, dict):
         return None
     if code is not None and media.get("code") and media.get("code") != code:
@@ -925,20 +925,20 @@ def post_media(result: Any, code: str | None = None) -> dict | None:
 
 def story_items(result: Any) -> list[dict]:
     """The stories of a story or highlight page."""
-    items = selector.parse(result).jmespath(STORIES).get()
+    items = _html.parse(result).jmespath(STORIES).get()
     return [item for item in items if isinstance(item, dict)]
 
 
 def listed_highlights(result: Any) -> list[tuple[str, str]]:
     """The profile's highlights as `(id, title)`, from the result that lists them."""
-    nodes = selector.parse(result).jmespath("data.highlights.edges[].node").get()
+    nodes = _html.parse(result).jmespath("data.highlights.edges[].node").get()
     return [(str(node["id"]).removeprefix("highlight:"), node.get("title") or "highlight")
             for node in nodes if isinstance(node, dict) and node.get("id")]
 
 
 def profile_picture(result: Any) -> str | None:
     """The largest profile picture of the profile's user, from the result that describes them."""
-    return selector.parse(result).jmespath("data.user.hd_profile_pic_url_info.url").first
+    return _html.parse(result).jmespath("data.user.hd_profile_pic_url_info.url").first
 
 
 def post_files(media: dict) -> list[tuple[str, str, str | None]]:
@@ -954,7 +954,7 @@ def best_file(media: dict) -> tuple[str, str, str | None] | None:
     videos = media.get("video_versions") or []
     if videos:
         return max(videos, key=_area)["url"], "mp4", None
-    images = selector.parse(media).jmespath("image_versions2.candidates").get()
+    images = _html.parse(media).jmespath("image_versions2.candidates").get()
     if images:
         url = max(images, key=_area)["url"]
         return url, image_extension(url), None

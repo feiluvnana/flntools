@@ -12,7 +12,7 @@ from unittest import mock
 
 import httpx
 
-from fakes import Seen, collect
+from fakes import FakeSite, Seen, collect
 from test_engine import EngineCase
 
 from flnd.common import auth
@@ -202,7 +202,7 @@ TODAY = [
 
 
 class Feed:
-    """What `watch_responses` gives: the responses the browser would have read, by the timeline watched."""
+    """What `site.feed` gives: the responses the browser would have read, by the timeline watched."""
 
     def __init__(self, answers, match):
         raw = [data for query, data in answers.items() if f"/{query}" == match]
@@ -218,7 +218,7 @@ class Feed:
 
 def browser(answers):
     """Patch the scroll to read `answers`, `{query: page | [pages]}`, when a timeline's tab is watched."""
-    return mock.patch("flnd.sources.twt.watch_responses", lambda site, match, scroll=False: Feed(answers, match))
+    return mock.patch.object(FakeSite, "feed", lambda site, match, scroll=False, lines=False: Feed(answers, match))
 
 
 def pairs(saved):
@@ -350,8 +350,8 @@ class TimelineTest(unittest.TestCase):
                         yield entry
                 return gen()
 
-        with mock.patch("flnd.sources.twt.watch_responses",
-                        lambda site, match, scroll=False: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)):
+        with mock.patch.object(FakeSite, "feed",
+                        lambda site, match, scroll=False, lines=False: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)):
             saved = collect(Twitter, "twt:someone",
                             options=Options(categories=("posts",), since=date(2026, 11, 8)),
                             json={url("UserByScreenName"): USER})
@@ -373,8 +373,8 @@ class TimelineTest(unittest.TestCase):
                 return gen()
 
         with (
-            mock.patch("flnd.sources.twt.watch_responses",
-                       lambda site, match, scroll=False: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)),
+            mock.patch.object(FakeSite, "feed",
+                       lambda site, match, scroll=False, lines=False: RecordingFeed({"UserOriginalsTimeline": [p1, p2, p3]}, match)),
             mock.patch("flnd.sources.twt.caught_up", side_effect=lambda tid, **_: tid == "2"),
         ):
             saved = collect(Twitter, "twt:someone", options=Options(categories=("posts",)),
@@ -485,7 +485,6 @@ class RefreshTest(unittest.TestCase):
         self.assertIn("refreshed 2 query ids from x.com's script", seen.messages)
 
     def test_the_refreshed_table_is_kept_for_the_next_run(self):
-        from fakes import FakeSite
         source = Twitter()
         site = FakeSite(Target("twt", "user", "someone"), html={HOME: HOME_PAGE, SCRIPT: MAIN_JS})
         self.assertTrue(source.graph.refresh(site))
@@ -580,12 +579,11 @@ class LoginStaysAtHomeTest(EngineCase):
         self.assertTrue(any(path.name.endswith("_100_0.jpg") for path in self.target_dir("twt", "100").rglob("*")))
 
     def test_read_browser_login_wall_raises_login_error(self):
-        from fakes import FakeSite
         from flnd.sources.twt import Account, Timeline
 
         site = FakeSite(Target("twt", "user", "example_handle"),
                         pages={"https://x.com/example_handle": "<html></html>"})
-        with mock.patch.object(FakeSite, "goto",
+        with mock.patch.object(FakeSite, "open",
                                side_effect=lambda url: (site._seen.visited.append("https://x.com/i/flow/login"), True)[1]):
             with self.assertRaisesRegex(LoginError, "flnd auth login twt"):
                 list(Twitter().read_browser(
@@ -594,7 +592,6 @@ class LoginStaysAtHomeTest(EngineCase):
 
 
     def test_a_handle_that_starts_like_the_login_path_is_read(self):
-        from fakes import FakeSite
         from flnd.sources.twt import Account, Timeline
 
         site = FakeSite(Target("twt", "user", "login_example"),

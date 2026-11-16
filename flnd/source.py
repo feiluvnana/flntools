@@ -17,11 +17,11 @@ import threading
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType, MethodType
-from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Iterable, Iterator, Mapping,
+from typing import (TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, Iterable, Iterator, Mapping,
                     MutableMapping, Protocol, Sequence, Union)
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from flnd import _text as text
+from flnd import _text
 from flnd._ui import ui
 from flnd.errors import (
     Blocked, Changed, Error, LoginError, NetworkError, NotFound, SiteError, SourceError, UsageError,
@@ -32,9 +32,9 @@ if TYPE_CHECKING:
 
     import httpx
 
-    from flnd import _browser as browser, _http as http
+    from flnd import _http
 
-__all__ = ["Blocked", "Category", "Changed", "DateLike", "Error", "Fetch", "File", "Login",
+__all__ = ["Blocked", "Category", "Changed", "DateLike", "Error", "Feed", "Fetch", "File", "Login",
            "LoginError", "NetworkError", "NotFound", "Post", "Range", "Route", "Site", "SiteError",
            "Source", "SourceError", "Target", "UsageError", "day", "fill", "pages", "target"]
 
@@ -476,13 +476,13 @@ def fill(template: str, fields: Mapping[str, Any], *, safe: bool = True) -> str:
         fill("{date}_{id}{index}", {"id": "C1abc", "date": "", "index": ""})  # "C1abc"
         fill("{author}/{id} {title}", {"author": "a/b", "id": 7})            # "a_b/7"
 
-    Passes path segments through `text.filename` when `safe` is True.
+    Passes path segments through `_text.filename` when `safe` is True.
     """
     segments = []
     for segment in _split(template, "/"):
         piece = _fill_segment(segment, fields)
         if piece:
-            segments.append(text.filename(piece) if safe else piece)
+            segments.append(_text.filename(piece) if safe else piece)
     return "/".join(segments)
 
 
@@ -587,17 +587,54 @@ def _side(text: str) -> datetime.date | None:
     return datetime.datetime.strptime(text, "%Y-%m-%d").date()
 
 
+class Feed(Protocol):
+    """What `Site.feed` returns: the JSON of matching responses, as they arrive.
+
+        with site.feed("/graphql", scroll=True) as pages:
+            site.open(url)
+            for page in pages:
+                ...
+
+    Iterate it for each body, oldest first. Leaving `with`, or the end of the iteration, stops it.
+    """
+
+    def __iter__(self) -> Iterator[Any]:
+        """The bodies, each a parsed JSON value."""
+        ...
+
+    def __next__(self) -> Any:
+        """The next body; with `scroll`, scrolling the tab until one comes or the feed ends."""
+        ...
+
+    def __enter__(self) -> Feed:
+        """The feed itself."""
+        ...
+
+    def __exit__(self, *exc_info: object) -> None:
+        """`close`."""
+        ...
+
+    def close(self) -> None:
+        """Stop watching; a second call does nothing."""
+        ...
+
+
 class Site(Protocol):
     """The handle every route and category acts through, for one target.
 
         data = site.fetch(f"{API}/users/{user}", params={"count": 50}).json
-        if site.goto(f"https://www.example.com/{user}/"):
-            title = site.page.document.css("h1::text").first
+        if site.open(f"https://www.example.com/{user}/"):
+            title = site.document().css("h1::text").first
         site.back_off("asked to wait a few minutes")
 
     The engine's is `flnd.site.TargetSite`; tests use `tests.fakes.FakeSite`. Every request to the
     source's own `domains` waits its turn under the source's `pace`, and a rate limit or a 5xx is
     waited out and tried again here, a few times, so a source never sleeps or retries itself.
+
+    The browser verbs (`open`, `wait`, `scroll`, `feed`, `document`, `evaluate`, `click`) drive
+    the target's tab in the run's one browser, launched the first time a target needs it. A
+    source never gets a Playwright object from them, so its code doesn't depend on Playwright's
+    API. They are for a plain `def` route or category; an `async def` one awaits `site.tab`.
     """
 
     @property
@@ -616,23 +653,119 @@ class Site(Protocol):
         ...
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> http.Response:
-        """Make one request, paced and retried, and return its `http.Response`.
+              check: bool = True, in_page: bool = False, **request: Any) -> _http.Response:
+        """Make one request, paced and retried, and return its `_http.Response`.
 
             items = site.fetch(API, params={"cursor": cursor}).json
             profile = site.fetch(f"{API}/users/{user}", check=False)   # read profile.ok
 
-        `request` takes `params` (the query) and `body` (as `http.fetch`'s). A refusal raises a
+        `request` takes `params` (the query) and `body` (as `_http.fetch`'s). A refusal raises a
         `SiteError` with its `status` and `response` (`NotFound` for a 404 or 410, `Blocked` for
         a 429 still refused after its waits), unless `check` is False, which returns the
         refusal's response; a request that got no answer raises `NetworkError`.
         """
         ...
 
-    def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
-        """Load `url` in target tab, paced; False when it didn't load or answered 400 or more.
+    def open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
+        """Load `url` in the target's tab, paced; False when it didn't load or answered 400 or more.
 
-        A 429 is waited out with `back_off` and the page loaded again, as long as it takes.
+            if site.open(f"https://www.example.com/{user}/"):
+                where = site.url
+
+        Args:
+            url: the page.
+            idle: also wait until the network has been quiet for a moment, not only for `load`.
+            timeout: seconds before the page counts as not loaded.
+
+        Returns:
+            Whether it loaded. A page that didn't is logged, not raised, and the tab stays where
+            it was. A 429 is waited out and the page loaded again, a few times.
+        """
+        ...
+
+    @property
+    def url(self) -> str:
+        """The tab's URL now, after redirects; "about:blank" before a page was opened."""
+        ...
+
+    def wait(self, css: str | None = None, *, url: str | re.Pattern[str] | Callable[[str], bool]
+             | None = None, idle: bool = False, timeout: float = 30.0) -> None:
+        """Wait until `css` matches an element, `url` matches the tab's URL, and (`idle`) quiet.
+
+            site.wait(".grid")
+            site.wait(url="**/reels/")
+
+        Args:
+            css: a CSS selector; waits for a visible element to match it. None doesn't wait.
+            url: a glob, a compiled regex or a predicate over the URL. None doesn't wait.
+            idle: also wait until the network has been quiet for 500 ms. With neither `css` nor
+                `url`, False waits for the `load` event.
+            timeout: seconds for every condition together.
+
+        Raises:
+            NetworkError: `timeout` passed first; the message names what was waited for.
+        """
+        ...
+
+    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 10.0) -> int:
+        """Scroll the tab like a person until its feed ends or `until()` is True.
+
+        Args:
+            until: asked before each scroll; True stops.
+            idle: seconds without the page growing at its bottom before the feed counts as ended.
+
+        Returns:
+            How many scrolls it made.
+        """
+        ...
+
+    def feed(self, match: str | re.Pattern[str] | Callable[[str], bool], *, scroll: bool = False,
+             lines: bool = False) -> Feed:
+        """Watch the tab for responses whose URL matches, and iterate their JSON.
+
+            with site.feed("/graphql", scroll=True) as pages:
+                if site.open(f"https://www.example.com/{user}/"):
+                    for page in pages:
+                        ...
+
+        Open it before the page that sends the responses, or the first ones are missed.
+
+        Args:
+            match: a substring of the URL, a compiled regex searched in it, or a predicate.
+            scroll: when none is waiting, scroll the tab for more, and end when the feed ends.
+                Without it, the feed waits once for the network to go quiet, and ends.
+            lines: each body holds one JSON value per line (NDJSON).
+
+        Returns:
+            The `Feed`, to iterate and close.
+        """
+        ...
+
+    def document(self) -> Any:
+        """The tab's page now, parsed: a `Selection` with `css`, `xpath`, `script` and `text`."""
+        ...
+
+    def evaluate(self, js: str, *, arg: Any = None) -> Any:
+        """Run JavaScript in the tab and return its value.
+
+        Args:
+            js: an expression, or a function that takes `arg`.
+            arg: the function's argument; JSON values only.
+
+        Returns:
+            The value, as JSON carries it.
+        """
+        ...
+
+    def click(self, css: str, *, timeout: float = 10.0) -> None:
+        """Click the first element `css` matches, waiting for it to be clickable.
+
+        Args:
+            css: a CSS selector.
+            timeout: seconds before giving up.
+
+        Raises:
+            NetworkError: nothing clickable matched within `timeout`, or the tab closed.
         """
         ...
 
@@ -652,8 +785,21 @@ class Site(Protocol):
         ...
 
     @property
-    def page(self) -> browser.Page:
-        """The target's tab, a `flnd._browser.Page`, opened on first use; scrolling is paced."""
+    def tab(self) -> Awaitable[Any]:
+        """For an `async def` route or category: `page = await site.tab`, Playwright's own page.
+
+        It is outside the source API's version promise, since Playwright's API isn't flnd's to
+        keep stable; plain code uses the verbs above.
+        """
+        ...
+
+    def pause(self, seconds: float, reason: str) -> None:
+        """Wait `seconds`, as a page that needs time to settle does; a stop ends it.
+
+        Args:
+            seconds: how long.
+            reason: why, for the people watching the run.
+        """
         ...
 
     @property

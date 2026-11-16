@@ -1,6 +1,6 @@
 """TikTok: profile videos, photo posts, stories, playlists, reposts, liked, and favorites.
 
-Every profile feed is read in the browser with `watch_responses`, streaming items while
+Every profile feed is read in the browser with `site.feed`, streaming items while
 scrolling to the end. Captchas trigger back-off and reload.
 
 One video, by id or URL, is read from the public embed page without a browser.
@@ -17,14 +17,18 @@ import re
 from collections import deque
 from datetime import date
 from pathlib import PurePosixPath
-from typing import Any, Callable, Dict, Generator, Iterator, List, Mapping, NamedTuple, Sequence
+from typing import (
+    TYPE_CHECKING, Any, Callable, Dict, Generator, Iterator, List, Mapping, NamedTuple, Sequence,
+)
 from urllib.parse import urlsplit
 
 from flnd.source import (
     Blocked, File, NetworkError, Post, Site, SiteError, Source, caught_up, day, fill, target,
 )
-from flnd.sources.common.feed import Responses, watch_responses
-from flnd import _html as selector
+from flnd import _html
+
+if TYPE_CHECKING:
+    import flnd.source
 
 # The user agent TikTok's embed page and CDN have always been sent: a desktop Chrome.
 TIKTOK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -104,7 +108,7 @@ FEEDS = (
 
 
 def is_feed_of(category: str) -> Callable[[str], bool]:
-    """A match for the responses of the feeds listing `category`, as `watch_responses` takes it.
+    """A match for the responses of the feeds listing `category`, as `site.feed` takes it.
 
     Args:
         category: a feed's category: "videos", "stories", "reposts", "favorites" or "liked".
@@ -119,7 +123,7 @@ def has_captcha(site: Site) -> bool:
     Args:
         site: the target's site, whose open page is checked.
     """
-    page = site.page.document
+    page = site.document()
     has_captcha_css = bool(page.css(CAPTCHA_CSS))
     visible = " ".join(page.xpath(VISIBLE_TEXT).get())
     return has_captcha_css or bool(CAPTCHA_TEXT.search(visible))
@@ -152,8 +156,8 @@ class Profile:
         self._loaded: bool | None = None
         # The post list's pages from the browser, scrolling to the end;
         # and the stories' page responses (no scrolling: they come with the load).
-        self._posts: Responses | None = None
-        self._stories: Responses | None = None
+        self._posts: flnd.source.Feed | None = None
+        self._stories: flnd.source.Feed | None = None
         self._started = False
         # The post feed's items waiting for the category that wants them: a playlist's or not.
         self._queues: Dict[str, deque[Dict[str, Any]]] = {"videos": deque(), "playlists": deque()}
@@ -168,8 +172,8 @@ class Profile:
         """Open profile on first call, or reload with watchers if `feeds` is needed later."""
         if self._loaded is None:
             if feeds:
-                self._posts = watch_responses(self.site, is_feed_of("videos"), scroll=True)
-                self._stories = watch_responses(self.site, is_feed_of("stories"))
+                self._posts = self.site.feed(is_feed_of("videos"), scroll=True)
+                self._stories = self.site.feed(is_feed_of("stories"))
             self._loaded = self._load()
             return self._loaded
         if feeds and self._posts is None and not self._started:
@@ -202,7 +206,7 @@ class Profile:
         if not self.open(feeds=False):
             return
         css = f'[data-e2e="{tab}"]'
-        if not self.site.page.document.css(css):
+        if not self.site.document().css(css):
             self.site.info("{tab}: not public on this account", tab=category)
             return
         for data in self._click_batches(category, css):
@@ -225,16 +229,16 @@ class Profile:
             attempts += 1
             # Unsolved captcha handled as rate limit: back off, then reload page.
             self.site.back_off("TikTok captcha")
-            self.site.goto(self.url)
-            self.site.page.raw.wait_for_timeout(SETTLE * 1000)
+            self.site.open(self.url)
+            self.site.pause(SETTLE, "letting the profile settle")
 
     def _click_batches(self, category: str, css: str) -> Iterator[Any]:
         """Click a profile tab and yield its responses live while scrolling to the end."""
-        with watch_responses(self.site, is_feed_of(category), scroll=True) as responses:
+        with self.site.feed(is_feed_of(category), scroll=True) as responses:
             try:
-                self.site.page.raw.locator(css).first.click(timeout=CLICK_TIMEOUT * 1000)
-            # Playwright errors can't be named here; tab that won't open is skipped.
-            except Exception as error:
+                self.site.click(css, timeout=CLICK_TIMEOUT)
+            # Nothing to click in time, or the tab closed: that tab is skipped.
+            except NetworkError as error:
                 self.site.warn("{tab}: the tab didn't open: {error}", tab=category,
                                error=str(error).splitlines()[0])
                 return
@@ -246,21 +250,21 @@ class Profile:
     def _watch(self, *, posts: bool = False, stories: bool = False) -> bool:
         """Start feed watchers and load the profile page."""
         if posts:
-            self._posts = watch_responses(self.site, is_feed_of("videos"), scroll=True)
+            self._posts = self.site.feed(is_feed_of("videos"), scroll=True)
         if stories:
-            self._stories = watch_responses(self.site, is_feed_of("stories"))
+            self._stories = self.site.feed(is_feed_of("stories"))
         self._loaded = self._load()
         return self._loaded
 
     def _load(self) -> bool:
         """Load the profile, wait out any captcha, and read its own data."""
-        if not self.site.goto(self.url):
+        if not self.site.open(self.url):
             raise SiteError("the profile didn't load")
         # The captcha shows a few seconds after the load event, over a page that looks ready.
-        self.site.page.raw.wait_for_timeout(SETTLE * 1000)
+        self.site.pause(SETTLE, "letting the profile settle")
         self.wait_out_captcha()
         # Reload finding no data keeps earlier data, preserving secUid.
-        doc_user = self.site.page.document.script(PAGE_DATA).jmespath(USER).first
+        doc_user = self.site.document().script(PAGE_DATA).jmespath(USER).first
         self.user = doc_user or self.user or {}
         return True
 
@@ -276,7 +280,7 @@ class Profile:
                 ended, old = yield from self._drain_posts(wanted, since, old)
                 if ended or self.found["videos"] or not has_captcha(self.site):
                     break
-                self._posts = watch_responses(self.site, is_feed_of("videos"), scroll=True)
+                self._posts = self.site.feed(is_feed_of("videos"), scroll=True)
                 self.wait_out_captcha()
         finally:
             self._end()
@@ -308,7 +312,7 @@ class Profile:
             self._posts = None
         if not self._told:
             self._told = True
-            listed = selector.parse(self.user).jmespath("stats.videoCount").first
+            listed = _html.parse(self.user).jmespath("stats.videoCount").first
             self.site.info(
                 "videos: {n} found; the profile lists {listed}",
                 n=self.found["videos"], listed=listed,
@@ -370,7 +374,7 @@ class TikTok(Source):
             yield post_of(site, item, "videos")
         if not profile.found["videos"] and profile.on_page:
             # A walled API gave nothing: read each post linked on the page from its embed page.
-            links = [match.group(2) for href in site.page.document.css(POST_LINKS).get()
+            links = [match.group(2) for href in site.document().css(POST_LINKS).get()
                      if (match := re.search(r"/(video|photo)/(\d+)", href))]
             for video_id in dict.fromkeys(links):
                 yield from embed_posts(site, video_id)
@@ -435,7 +439,7 @@ class TikTok(Source):
         """The profile picture under avatar/avatar_<id>.jpg; keyed by path."""
         if not profile.open(feeds=False):
             return
-        url = selector.parse(profile.user).jmespath("user.avatarLarger").first
+        url = _html.parse(profile.user).jmespath("user.avatarLarger").first
         if url:
             # The path's last part is "<id>~<size options>.jpeg"; the id names the picture.
             picture_id = PurePosixPath(urlsplit(url).path).name.split("~")[0]
@@ -459,7 +463,7 @@ def embed_posts(site: Site, video_id: str) -> Iterator[Post]:
         return
     data = page.script("__NEXT_DATA__").first
     item_struct = (
-        selector.parse(data).jmespath("props.pageProps.itemStruct").first
+        _html.parse(data).jmespath("props.pageProps.itemStruct").first
         if data else None
     )
     if not item_struct:
@@ -512,20 +516,20 @@ def items_of(data: Any) -> List[Dict[str, Any]]:
         return []
     items = []
     # Post list uses itemList, story list uses storyList or story_list.
-    for raw in selector.parse(data).jmespath("itemList || storyList || story_list").get():
+    for raw in _html.parse(data).jmespath("itemList || storyList || story_list").get():
         item_id = str(raw.get("id") or raw.get("aweme_id") or "")
         if not item_id:
             continue
-        pl_name = selector.parse(raw).jmespath("playlist.name || playlist_info.name").first
+        pl_name = _html.parse(raw).jmespath("playlist.name || playlist_info.name").first
         common = {"id": item_id, "date": stamp_of(raw, item_id), "playlist": pl_name}
 
         # A photo post has `imagePost` and no video; the two are never both read.
-        images = selector.parse(raw).jmespath("imagePost.images").get()
+        images = _html.parse(raw).jmespath("imagePost.images").get()
         if images:
             # A photo-mode carousel: each picture is a file of its own, numbered from 1.
             for idx, img in enumerate(images):
                 path = "imageURL.urlList || displayImage.urlList || thumbnail.urlList"
-                url_list = selector.parse(img).jmespath(path).get()
+                url_list = _html.parse(img).jmespath(path).get()
                 if url_list:
                     items.append({
                         **common, "url": mirrors(url_list), "kind": "image",
@@ -575,7 +579,7 @@ def best_video(video: Dict[str, Any]) -> str | tuple[str, ...] | None:
         (_pixels(entry), entry.get("Bitrate") or 0, m)
         for entry in video.get("bitrateInfo") or []
         if isinstance(entry, dict) and not _is_dash(entry)
-        and (urls := selector.parse(entry).jmespath("PlayAddr.UrlList").get())
+        and (urls := _html.parse(entry).jmespath("PlayAddr.UrlList").get())
         and (m := mirrors(urls))
     ]
     if candidates:

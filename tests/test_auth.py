@@ -17,6 +17,7 @@ from unittest import mock
 
 import httpx
 
+import no_profiles  # noqa: F401  (refuses real browser profiles)
 from flnd.common import auth, paths
 from flnd.sources.ins import Instagram
 from flnd import _cookies as cookies, _vault as crypto

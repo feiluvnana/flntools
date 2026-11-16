@@ -318,27 +318,39 @@ def decode_session(string):
 
 
 class FakeTab:
+    """The tab `flnd._browser.local_storage` opens: it lands on `url`, and `evaluate` answers its script."""
+
     def __init__(self, url, evaluate):
-        self.url, self.raw = url, SimpleNamespace(evaluate=evaluate)
+        async def evaluated(script):
+            return evaluate(script)
+
+        self.url, self.raw = url, SimpleNamespace(evaluate=evaluated)
+
+    async def goto(self, url, **options):
+        return None
 
 
 class FakeChrome:
     def __init__(self, tab):
-        self.tab = tab
+        self._tab = tab
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *exc_info):
+    async def __aexit__(self, *exc_info):
         return None
 
-    def open(self, url, **options):
-        return self.tab
+    async def tab(self, **options):
+        return self._tab
 
 
 class ReadTelegramWebTest(unittest.TestCase):
     def read(self, tab):
-        with mock.patch("flnd._browser.open", lambda **options: FakeChrome(tab)):
+        async def launch(**options):
+            return FakeChrome(tab)
+
+        # Never the real browser: a real launch would copy the user's own Chrome profile.
+        with mock.patch("flnd._browser.launch", launch):
             return read_telegram_web()
 
     def test_the_storage_of_a_tab_that_reached_telegram_web(self):
@@ -602,9 +614,9 @@ class DownloadTest(DownloadCase):
         self.assertEqual((self.folder / "video" / "2026-01-05_13.mp4").read_bytes(), b"video")
         self.assertEqual(self.download(), 0)
         self.assertEqual(len(self.telegram.downloads), 5)
-        # One client per run, closed at its end, on the group's own loop.
+        # One client per run, closed at its end, on the run's loop.
         self.assertEqual([client.connected for client in self.telegram.clients], [False, False])
-        self.assertEqual(self.telegram.threads, {"flnd-worker-loop"})
+        self.assertEqual(self.telegram.threads, {"flnd-loop"})
         self.assertEqual(self.telegram.clients[0].flood_sleep_threshold, 24 * 3600)
 
     def test_a_flood_wait_is_waited_out_and_retried(self):

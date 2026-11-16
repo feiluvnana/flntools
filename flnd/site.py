@@ -1,15 +1,24 @@
-"""The engine's `Site` and `Login`: what a source's routes, categories and login act through."""
+"""The engine's `Site` and `Login`: what a source's routes, categories and login act through.
+
+- `source_run` opens one source's resources for a run (`SourceRun`): its cookies, its HTTP
+  clients, its store, and the run's loop that its async code runs on.
+- `TargetSite` is the `Site` a route or category gets for one target. `fetch` goes through the
+  source's paced client. The browser verbs (`open`, `wait`, `scroll`, `feed`, `document`,
+  `evaluate`, `click`) each hand one call to the run's loop, where `flnd._browser` drives the tab.
+- `shared_browser` gives a run its loop and its one browser (`flnd._browser.RunBrowser`), shared
+  by every source and target, and closes both when the run ends.
+
+Threads: a `TargetSite` is used on its target's listing thread, or, in an `async def` category,
+on the loop, where only `site.tab` (awaited) reaches the browser.
+"""
 
 from __future__ import annotations
 
-import concurrent.futures
 import functools
-import random
 import threading
-from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from types import MappingProxyType, SimpleNamespace
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Iterator, Mapping, MutableMapping, TypeVar,
 )
@@ -19,14 +28,12 @@ import httpx
 from flnd.common import auth, net, paths
 from flnd.errors import Blocked, SourceError, Stopped, UsageError
 from flnd.source import Range, Source, Target
-from flnd import (
-    _browser as browser, _time as clock, _http as http, _prompt as prompt,
-    _db as store, _text as text, _loop as worker,
-)
+from flnd import _browser, _db, _http, _loop, _prompt, _text, _time
 from flnd._ui import ui
 
 if TYPE_CHECKING:
-    from flnd import _cli as cli, _cookies as cookies
+    from flnd import _cli, _cookies
+    from flnd._html import Selection
 
     from flnd.options import RunShared
 
@@ -36,17 +43,6 @@ T = TypeVar("T")
 # Tries in all for a site request, sent by the client or by the tab: a 5xx or a request that
 # couldn't be sent may go through next time, after about 1, 2 and 4 s.
 ATTEMPTS = 4
-# The least seconds between two bottom scrolls at 1x.
-SCROLL_FLOOR = 0.05
-# Most open tabs kept in a single target browser window when warming or nesting watches.
-MAX_TABS = 6
-# Full-page scrolling moves the DOM directly so background tabs never stall on mouse wheel.
-SCROLL_BY = (
-    "d => { window.scrollBy(0, d);"
-    " window.dispatchEvent(new WheelEvent('wheel', {deltaY: d, bubbles: true})); }"
-)
-# Static asset resource types skipped when buffering background-warmed tab responses.
-ASSET_TYPES = frozenset({"image", "media", "font", "stylesheet", "script", "manifest"})
 # How soon before a login cookie expires a run warns of it, in seconds: a day, so a scheduled
 # `flnd sync` warns the run before the one that meets the login wall.
 EXPIRY_WARNING = 24 * 3600
@@ -54,30 +50,41 @@ EXPIRY_WARNING = 24 * 3600
 
 @dataclass
 class SourceRun:
-    """One source's resources for a run: cookies, HTTP clients, `connect` client, and stores."""
+    """One source's resources for a run: cookies, HTTP clients, `connect` client, stores, loop."""
 
     # The source, as one instance for the whole run.
     source: Source
     # What the run shares across sources: flnd's folder, the history, targets.db, the stop flag.
     settings: RunShared
     # The login's cookies.
-    jar: cookies.Jar
+    jar: _cookies.Jar
     # The source's own requests, in its pace; `web.raw` holds the cookies the site sets.
-    web: http.Client
+    web: _http.Client
     # The files' downloads, over the same cookies, each CDN host backing off on its own.
-    files: http.Client
+    files: _http.Client
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
-    _state: store.Db | None = field(default=None, repr=False)
+    _state: _db.Db | None = field(default=None, repr=False)
     _secrets: auth.Vault | None = field(default=None, repr=False)
-    _tasks: worker.Pool | None = field(default=None, repr=False)
+    # A loop of the source's own, made only outside a run (`shared_browser` gives the run's).
+    _own_loop: _loop.Loop | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     @property
-    def state(self) -> store.Table[Any]:
+    def loop(self) -> _loop.Loop:
+        """The run's loop, where the browser and async code run; the source's own outside a run."""
+        shared = self.settings.browser_pool
+        if shared is not None:
+            return shared.loop
+        if self._own_loop is None:
+            self._own_loop = _loop.Loop()
+        return self._own_loop
+
+    @property
+    def state(self) -> _db.Table[Any]:
         """The source's `store` table in `.flnd/metadata/sources.db`, opened on first use."""
         if self._state is None:
-            self._state = store.open(self.settings.home / paths.SOURCE_STATE)
+            self._state = _db.open(self.settings.home / paths.SOURCE_STATE)
         return self._state[self.source.code]
 
     @property
@@ -88,13 +95,11 @@ class SourceRun:
         return self._secrets
 
     def run_async(self, coroutine: Coroutine[Any, Any, T]) -> T:
-        """Run a coroutine on this source's own event loop, started on first use."""
-        if self._tasks is None:
-            self._tasks = worker.Pool(jobs=1)
-        return self._tasks.wait(lambda: coroutine)
+        """Run a coroutine on `loop`, wait for it, and return its value."""
+        return self.loop.run(coroutine)
 
     def close(self) -> None:
-        """Close the client, stores and event loop; once."""
+        """Close the client, stores and the source's own loop; once."""
         if self._closed:
             return
         self._closed = True
@@ -104,14 +109,14 @@ class SourceRun:
             for db in (self._state, self._secrets):
                 if db is not None:
                     db.close()
-            if self._tasks is not None:
-                self._tasks.close()
+            if self._own_loop is not None:
+                self._own_loop.close()
 
 
 def _make_client(raw: httpx.Client, *, rate: float | None,
-                 stop: threading.Event | None) -> http.Client:
-    """An `http.Client` over the source's `raw` client, in its pace, trying `ATTEMPTS` times."""
-    client = http.Client(rate=rate, retry=http.Retry(ATTEMPTS), stop=stop)
+                 stop: threading.Event | None) -> _http.Client:
+    """An `_http.Client` over the source's `raw` client, in its pace, trying `ATTEMPTS` times."""
+    client = _http.Client(rate=rate, retry=_http.Retry(ATTEMPTS), stop=stop)
     client._raw.close()
     client._raw = raw
     return client
@@ -139,8 +144,8 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
                 request.headers.update(signed.headers)
 
     raw = net.client(user_agent=source.user_agent, jar=jar, sign=sign)
-    state = store.open(settings.home / paths.SOURCE_STATE)
-    stop: cli.Stopping | None = getattr(settings, "stop", None)
+    state = _db.open(settings.home / paths.SOURCE_STATE)
+    stop: _cli.Stopping | None = getattr(settings, "stop", None)
     run = SourceRun(
         source, settings, jar,
         _make_client(raw, rate=rate, stop=stop.soon if stop else None),
@@ -165,39 +170,32 @@ class TargetSite:
         target: the target it acts for.
         time: the target's `--time`.
 
-    Used on the job's thread only: the browser is Playwright's sync API, which is single-threaded.
-    `close()` closes the browser.
+    Used on the target's listing thread. Each browser verb makes one call to the run's loop; the
+    tabs are the target's share of the run's browser (`flnd._browser.Tabs`), opened on first use.
+    `close()` gives them back, and closes a browser the site launched for itself outside a run.
     """
 
     def __init__(self, run: SourceRun, target: Target, *, time: Range = Range()):
         self.target, self.time = target, time
         self._run = run
         self._source = run.source
-        self._browser: Any = None
-        self._page: _PacedPage | None = None
-        self._stack: list[_PacedPage] = []
-        self._idle_tabs: deque[_PacedPage] = deque()
-        self._warmed: dict[str, tuple[_PacedPage, browser.Visit | None]] = {}
-        self._pending_warm: deque[str] = deque()
-        self._active_watches: list[tuple[Any, bool, bool]] = []
-        self._warm_buffers: dict[_PacedPage, tuple[list[tuple[Any, str]], Any]] = {}
-        self._warm_lock = threading.Lock()
-        # Any URL on the source's own domains names its pace, for a throttle seen on a page.
-        self._home = f"https://{run.source.domains[0]}/"
+        # The run's browser; outside a run, one of the site's own, made on first use.
+        self._shared: _browser.RunBrowser | None = run.settings.browser_pool
+        self._own = False
+        self._tabs: _browser.Tabs | None = None
+
+    # -- requests -------------------------------------------------------------------------------
 
     @property
     def cookies(self) -> Mapping[str, str]:
         """See `flnd.source.Site.cookies`."""
         merged = {cookie["name"]: cookie["value"] for cookie in self._run.jar}
         merged.update(_names(self._run.web.raw.cookies))
-        if self._browser is not None:
-            merged.update(
-                {cookie["name"]: cookie["value"] for cookie in self._browser.cookies.get()}
-            )
+        merged.update({cookie["name"]: cookie["value"] for cookie in self._browser_cookies()})
         return MappingProxyType(merged)
 
     def fetch(self, url: str, *, method: str = "GET", headers: Mapping[str, str] | None = None,
-              check: bool = True, in_page: bool = False, **request: Any) -> http.Response:
+              check: bool = True, in_page: bool = False, **request: Any) -> _http.Response:
         """Make one request, paced and retried."""
         options = dict(request)
         url = _with_query(url, options.pop("params", None))
@@ -205,38 +203,50 @@ class TargetSite:
         if options:
             raise SourceError(f"fetch takes params and body, not {', '.join(sorted(options))}")
         if in_page:
-            page = self.page
-            send = functools.partial(page.fetch, url, method=method, headers=headers, body=body)
+            tabs = self._verbs()
+
+            def send() -> _http.Response:
+                # A new coroutine for each try: the client may send it again.
+                return tabs.run(tabs.page.fetch(url, method=method, headers=headers, body=body))
         else:
-            if self._browser is not None:
-                # Cookies set in the browser reach the client too, as a logged-in page sends them.
-                self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
+            # Cookies set in the browser reach the client too, as a logged-in page sends them.
+            if cookies := self._browser_cookies():
+                self._run.web.raw.cookies.update(net.cookie_jar(cookies))
             send = functools.partial(self._run.web._send, method.upper(), url, headers, body)
         # The client raises flnd's errors as they are (`flnd._http`): a refusal is a `SiteError`
         # with its status and response, no answer a `NetworkError`, and a stop `Stopped`.
         return self._run.web._call(url, send, method=method.upper(), check=check)
 
-    def goto(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
-        """Load `url` in the target's tab, paced."""
-        if url in self._pending_warm:
-            self._pending_warm.remove(url)
-        warmed = self._warmed.pop(url, None)
-        if warmed is not None:
-            page, pre_visit = warmed
-            self._switch_tab(page)
-            self._fill_warm_tabs()
+    # -- the browser ----------------------------------------------------------------------------
+
+    def open(self, url: str, *, idle: bool = False, timeout: float = 30.0) -> bool:
+        """Load `url` in the target's tab; see `flnd.source.Site.open`.
+
+        A warm tab already loading `url` (`flnd._browser.Tabs.warm`) becomes the target's tab,
+        and only its load is waited for: its request went out when it was warmed, so it isn't
+        paced again. Any other load waits its turn under the source's pace, through the source's
+        client, which waits out a 429 and tries again.
+
+        Args:
+            url: the page.
+            idle: also wait for the network to go quiet.
+            timeout: seconds before the page counts as not loaded.
+
+        Returns:
+            Whether it loaded with a status under 400; a page that didn't is a warning line.
+        """
+        tabs = self._verbs()
+        warmed, first = tabs.take_warm(url)
+        if warmed and first is not None:
+            # A warm tab already had its first answer, so it isn't paced again: wait for its load.
+            try:
+                tabs.run(tabs.page.wait(idle=idle, timeout=timeout))
+            except _browser.WaitError as error:
+                self.warn("could not open {url}: {error}", url=url, error=error)
+                return False
+            visit: _browser.Visit | None = first
         else:
-            page, pre_visit = self.page, None
-        if pre_visit is not None:
-            visit = self._visit_tab(
-                page, url=url, pre_visit=pre_visit, idle=idle, timeout=timeout,
-            )
-        else:
-            visit = self._run.web._call(
-                url,
-                lambda: self._visit_tab(page, url=url, pre_visit=None,
-                                        idle=idle, timeout=timeout),
-            )
+            visit = self._run.web._call(url, lambda: self._visit(tabs, url, idle, timeout))
         if visit is None:
             return False
         if visit.status >= 400:
@@ -244,181 +254,137 @@ class TargetSite:
             return False
         return True
 
+    def _visit(self, tabs: _browser.Tabs, url: str, idle: bool,
+               timeout: float) -> _browser.Visit | None:
+        """Load `url` in the target's tab: one try, which the source's client paces and repeats.
+
+        Args:
+            tabs: the target's tabs.
+            url: the page.
+            idle: also wait for the network to go quiet.
+            timeout: seconds before the page counts as not loaded.
+
+        Returns:
+            Where it landed, or None when it didn't load.
+
+        Raises:
+            Blocked: the page answered 429, with its `Retry-After`, so the client waits it out.
+        """
+        visit = tabs.run(tabs.page.goto(url, idle=idle, timeout=timeout))
+        if visit is not None and visit.status == 429:
+            raw_wait = visit.headers.get("retry-after")
+            wait = float(raw_wait) if raw_wait and raw_wait.isdigit() else None
+            raise Blocked(f"GET {_text.redact(url)}: HTTP 429", wait=wait, status=429)
+        return visit
+
+    @property
+    def url(self) -> str:
+        """See `flnd.source.Site.url`."""
+        if self._tabs is None or not self._tabs.opened:
+            return "about:blank"
+        return self._tabs.page.url
+
+    def wait(self, css: str | None = None, *, url: _browser.Match | None = None,
+             idle: bool = False, timeout: float = 30.0) -> None:
+        """See `flnd.source.Site.wait`."""
+        tabs = self._verbs()
+        tabs.run(tabs.page.wait(css, url=url, idle=idle, timeout=timeout))
+
+    def scroll(self, *, until: Callable[[], bool] | None = None, idle: float = 10.0) -> int:
+        """Scroll the target's tab until its feed ends or `until()`; see `flnd.source.Site.scroll`.
+
+        Args:
+            until: asked here, on the listing thread, before each scroll; True stops.
+            idle: seconds without growth at the bottom before the feed counts as ended.
+
+        Returns:
+            How many scrolls it made.
+        """
+        tabs = self._verbs()
+        scroller = tabs.run(tabs.page.scroller(idle=idle))
+        # One step per call to the loop, with `until` asked here, on the listing thread.
+        while not (until is not None and until()) and tabs.run(scroller.step()):
+            pass
+        return scroller.scrolls
+
+    def feed(self, match: _browser.Match, *, scroll: bool = False,
+             lines: bool = False) -> _browser.Feed:
+        """See `flnd.source.Site.feed`."""
+        return _browser.Feed(self._verbs(), match, scroll=scroll, lines=lines)
+
+    def document(self) -> Selection:
+        """The tab's page now, parsed; see `flnd.source.Site.document`.
+
+        Returns:
+            The page as a `Selection`, parsed here, on the listing thread, not on the loop.
+        """
+        from flnd._html import parse
+
+        tabs = self._verbs()
+        return parse(tabs.run(tabs.page.content()))
+
+    def evaluate(self, js: str, *, arg: Any = None) -> Any:
+        """See `flnd.source.Site.evaluate`."""
+        tabs = self._verbs()
+        return tabs.run(tabs.page.evaluate(js, arg))
+
+    def click(self, css: str, *, timeout: float = 10.0) -> None:
+        """See `flnd.source.Site.click`."""
+        tabs = self._verbs()
+        tabs.run(tabs.page.click(css, timeout=timeout))
+
     def handoff(
         self, *, until: Callable[[], bool], message: str, timeout: float | None = None
     ) -> bool:
-        """Wait for a person to complete a step in the browser tab.
-
-        See `flnd.source.Site.handoff`.
-        """
-        return self.page.handoff(until=until, message=message, timeout=timeout)
+        """See `flnd.source.Site.handoff`."""
+        return self._verbs().handoff(until=until, message=message, timeout=timeout,
+                                       stop=self._run.web._stop)
 
     @property
-    def page(self) -> browser.Page:
-        """See `flnd.source.Site.page`."""
-        if self._stack:
-            return self._stack[-1]
-        if self._page is None:
-            self._page = self._new_tab()
-        return self._page
-
-    @property
-    def _current_watch(self) -> Any | None:
-        """The innermost active response watcher, if any."""
-        return self._active_watches[-1][0] if self._active_watches else None
-
-    def _new_tab(self) -> _PacedPage:
-        """Return an idle tab in this browser window, or open a new tab."""
-        if self._idle_tabs:
-            return self._idle_tabs.popleft()
-        if self._browser is None:
-            self._browser = self._connect()
-        opened = self._browser.open()
-        return _PacedPage(opened.raw, opened.browser, speed=lambda: 1.0)
-
-    def _recycle_tab(self, tab: _PacedPage) -> None:
-        """Keep `tab` in `_idle_tabs` for reuse without opening another window."""
-        if tab not in self._idle_tabs:
-            self._idle_tabs.append(tab)
-
-    def _switch_tab(self, tab: _PacedPage) -> None:
-        """Make `tab` active for `self.page`, recycle the old tab, and rebind any watcher."""
-        if self._stack:
-            old = self._stack[-1]
-            self._stack[-1] = tab
-        else:
-            old = self._page
-            self._page = tab
-        if old is not None and old is not tab:
-            self._recycle_tab(old)
-        watch = self._current_watch
-        if watch is not None:
-            watch._adopt(tab)
-        else:
-            self._stop_warm_watch(tab)
-
-    def _push_tab(self, watch: Any, *, scroll: bool = False) -> None:
-        """Register `watch`, opening another tab in the same window when nested scrolling."""
-        pushed = scroll and any(active_scroll for _, _, active_scroll in self._active_watches)
-        if pushed:
-            _ = self.page
-            self._stack.append(self._new_tab())
-        self._active_watches.append((watch, pushed, scroll))
-
-    def _pop_tab(self, watch: Any) -> None:
-        """Unregister `watch` and recycle any nested tab slot it pushed."""
-        for index in range(len(self._active_watches) - 1, -1, -1):
-            if self._active_watches[index][0] is watch:
-                _, pushed, _ = self._active_watches.pop(index)
-                if pushed and self._stack:
-                    self._recycle_tab(self._stack.pop())
-                return
+    async def tab(self) -> Any:
+        """See `flnd.source.Site.tab`."""
+        return (await self._browser().current()).raw
 
     def _warm_tabs(self, urls: Iterable[str]) -> None:
-        """Queue `urls` and open background tabs in the same window up to `MAX_TABS`."""
-        for url in urls:
-            if url not in self._warmed and url not in self._pending_warm:
-                self._pending_warm.append(url)
-        self._fill_warm_tabs()
+        """Start loading `urls` in background tabs; see `flnd.sources.common.feed.warm_tabs`."""
+        self._verbs().warm(urls)
 
-    def _fill_warm_tabs(self) -> None:
-        """Start loading queued warm URLs into idle or new tabs up to `MAX_TABS`."""
-        _ = self.page
-        while self._pending_warm:
-            held = (1 if self._page is not None else 0) + len(self._stack) + len(self._warmed)
-            if held >= MAX_TABS:
-                return
-            url = self._pending_warm.popleft()
-            if url in self._warmed:
-                continue
-            tab = self._new_tab()
-            ok, visit = self._start_warm(tab, url)
-            if not ok:
-                self._recycle_tab(tab)
-                continue
-            self._warmed[url] = (tab, visit)
+    def _verbs(self) -> _browser.Tabs:
+        """`_browser()`, for a browser verb, which only plain `def` code may call.
 
-    def _start_warm(self, tab: _PacedPage, url: str) -> tuple[bool, browser.Visit | None]:
-        """Begin non-blocking navigation on `tab`, returning `(ok, pre_visit)`."""
-        raw_goto = getattr(tab.raw, "goto", None)
-        if not callable(raw_goto):
-            return True, None
-        self._start_warm_watch(tab)
-        try:
-            response: Any = raw_goto(url, wait_until="commit", timeout=15_000)
-        # Network errors shouldn't break warming; `goto` falls back to loading normally.
-        except Exception:
-            self._stop_warm_watch(tab)
-            return False, None
-        if response is not None and isinstance(getattr(response, "status", None), int):
-            return True, browser.Visit(response.status, response.url, dict(response.headers))
-        return True, None
+        Returns:
+            The target's tabs.
 
-    def _start_warm_watch(self, tab: _PacedPage) -> None:
-        """Buffer non-asset responses arriving while `tab` loads in the background."""
-        self._stop_warm_watch(tab)
-        if not callable(getattr(tab.raw, "remove_listener", None)):
-            return
-        buf: list[tuple[Any, str]] = []
+        Raises:
+            SourceError: called from async code on the run's loop, where the verb would wait for
+                the loop it runs on; that code awaits `site.tab` instead.
+        """
+        if self._run.loop.here:
+            raise SourceError("the browser verbs of `site` are for a plain `def` route or "
+                              "category; an `async def` one awaits `site.tab` instead")
+        return self._browser()
 
-        def collect(response: Any) -> None:
-            request = getattr(response, "request", None)
-            if getattr(request, "resource_type", "xhr") in ASSET_TYPES:
-                return
-            try:
-                body = response.text()
-            except Exception:
-                return
-            with self._warm_lock:
-                buf.append((response, body))
+    def _browser(self) -> _browser.Tabs:
+        """The target's tabs, made on first use.
 
-        tab.raw.on("response", collect)
-        with self._warm_lock:
-            self._warm_buffers[tab] = (buf, collect)
+        Returns:
+            The target's `Tabs` in the run's browser, or, outside a run, in a browser of the
+            site's own, which `close` closes.
+        """
+        if self._tabs is None:
+            if self._shared is None:
+                self._shared = _browser.RunBrowser(self._run.loop, stealth=self._source.stealth)
+                self._own = True
+            self._tabs = _browser.Tabs(self._shared, self._run.jar)
+        return self._tabs
 
-    def _stop_warm_watch(self, tab: Any) -> list[tuple[Any, str]]:
-        """Stop buffering background responses on `tab` and return what arrived."""
-        with self._warm_lock:
-            entry = self._warm_buffers.pop(tab, None)
-        if entry is None:
+    def _browser_cookies(self) -> list[Mapping[str, Any]]:
+        """The browser's cookies, or none when this target never opened a tab."""
+        if self._tabs is None or self._shared is None or not self._shared.launched:
             return []
-        buf, collect = entry
-        remove = getattr(tab.raw, "remove_listener", None)
-        if callable(remove):
-            try:
-                remove("response", collect)
-            except Exception:
-                pass
-        with self._warm_lock:
-            return list(buf)
+        return list(self._tabs.run(self._shared.cookies()))
 
-    def _take_warm_responses(self, page: Any) -> list[tuple[Any, str]]:
-        """Stop warming listener on `page` and return its captured responses."""
-        return self._stop_warm_watch(page)
-
-    def _visit_tab(
-        self,
-        page: browser.Page,
-        *,
-        url: str,
-        pre_visit: browser.Visit | None,
-        idle: bool,
-        timeout: float,
-    ) -> browser.Visit | None:
-        """Finish waiting for a pre-warmed tab, or navigate `page` normally."""
-        if pre_visit is None:
-            visit = page.goto(url, idle=idle, timeout=timeout)
-            if visit is not None and visit.status == 429:
-                raw_wait = visit.headers.get("retry-after") if visit.headers else None
-                wait = float(raw_wait) if raw_wait and raw_wait.isdigit() else None
-                raise Blocked(f"GET {text.redact(url)}: HTTP 429", wait=wait, status=429)
-            return visit
-        try:
-            page.wait(idle=idle, timeout=timeout)
-        except browser.WaitError as error:
-            self.warn("could not open {url}: {error}", url=url, error=error)
-            return None
-        return pre_visit
+    # -- the rest -------------------------------------------------------------------------------
 
     @property
     def client(self) -> Any:
@@ -448,48 +414,27 @@ class TargetSite:
         """Count one rate limit and wait it out."""
         seconds = retry_after if retry_after is not None else 5.0
         ui.warn("{target}: {reason}; waiting {time}", target=str(self.target),
-                reason=reason, time=text.duration(round(seconds)))
-        if seconds > 0 and not clock.sleep(seconds, stop=self._run.web._stop):
-            raise Stopped(f"{self.target}: stopped")
+                reason=reason, time=_text.duration(round(seconds)))
+        self.pause(seconds, reason)
 
-    def _held_pages(self) -> list[_PacedPage]:
-        pages = [*self._stack, *self._idle_tabs, *(tab for tab, _ in self._warmed.values())]
-        if self._page is not None:
-            pages.append(self._page)
-        return pages
+    def pause(self, seconds: float, reason: str) -> None:
+        """See `flnd.source.Site.pause`."""
+        if seconds > 0 and not _time.sleep(seconds, stop=self._run.web._stop):
+            raise Stopped(f"{self.target}: stopped while waiting: {reason}")
 
     def close(self) -> None:
-        """Close or release the target's tabs, giving the client the cookies set in them."""
-        held = self._held_pages()
+        """Give back the target's tabs, handing the client the cookies set in them."""
+        tabs, cookies = self._tabs, self._browser_cookies()
+        self._tabs = None
         try:
-            for tab in held:
-                self._stop_warm_watch(tab)
-            pool = self._run.settings.browser_pool
-            if self._browser is not None:
-                self._run.web.raw.cookies.update(net.cookie_jar(self._browser.cookies.get()))
-                if pool is None:
-                    self._browser.close()
-                else:
-                    pool.release(tab.raw for tab in held)
+            if cookies:
+                self._run.web.raw.cookies.update(net.cookie_jar(cookies))
+            if tabs is not None:
+                tabs.close()
         finally:
-            self._browser = self._page = None
-            self._stack.clear()
-            self._idle_tabs.clear()
-            self._warmed.clear()
-            self._pending_warm.clear()
-            self._active_watches.clear()
-            with self._warm_lock:
-                self._warm_buffers.clear()
-
-    def _connect(self) -> Any:
-        """The target's browser, with the source's settings and the login's cookies."""
-        if (pool := self._run.settings.browser_pool) is not None:
-            return pool.browser_for(self._run.jar)
-        source = self._source
-        # Visible (open's default), so a person can solve a captcha in it.
-        opened = browser.open(stealth=source.stealth)
-        opened.cookies.add(self._run.jar)
-        return opened
+            if self._own and self._shared is not None:
+                self._shared.close()
+                self._shared, self._own = None, False
 
 
 class LoginSite:
@@ -501,7 +446,7 @@ class LoginSite:
     @property
     def interactive(self) -> bool:
         """Whether `ask` can ask: `flnd login` in a terminal."""
-        return self._run.settings.interactive and prompt.interactive()
+        return self._run.settings.interactive and _prompt.interactive()
 
     def ask(self, message: str, *, secret: bool = False, description: str = "") -> str:
         """Ask a question with `prompt.ask`, and return what was typed."""
@@ -510,7 +455,7 @@ class LoginSite:
                              hint="run flnd auth login in a terminal")
         if description:
             ui.info(description)
-        return prompt.ask(message, secret=secret)
+        return _prompt.ask(message, secret=secret)
 
     @property
     def secrets(self) -> MutableMapping[str, str]:
@@ -522,225 +467,33 @@ class LoginSite:
         ui.info("{code}: " + message, code=self._run.source.code, **fields)
 
 
-class _PacedPage(browser.Page):
-    """The target's tab: a `Page` whose bottom scrolls wait at least `SCROLL_FLOOR` * speed."""
-
-    def __init__(self, raw: Any, owner: Any, *, speed: Callable[[], float]):
-        super().__init__(raw, owner)
-        self._speed = speed
-        self._scrolling_within = False
-
-    def scroll(
-        self, *, until: Callable[[], bool] | None = None,
-        within: str | None = None, idle: float = 10.0,
-    ) -> int:
-        """`Page.scroll` tracking whether scrolling within a container."""
-        self._scrolling_within = within is not None
-        try:
-            return super().scroll(until=until, within=within, idle=idle)
-        finally:
-            self._scrolling_within = False
-
-    def _pause(self, floor: float) -> None:
-        super()._pause(max(floor, SCROLL_FLOOR * self._speed()))
-
-    def _move(self, target: Any) -> None:
-        if target is not None:
-            super()._move(target)
-            return
-        _, _, _, height = self._area(None)
-        self._wheel(height * random.uniform(1.8, 2.6))
-
-    def _wheel(self, distance: float) -> None:
-        if self._scrolling_within:
-            super()._wheel(distance)
-            return
-        self._steady(lambda: self.raw.evaluate(SCROLL_BY, distance), None, "scroll the page")
-
-
 @contextmanager
 def shared_browser(settings: RunShared) -> Iterator[None]:
-    """Share one browser window across every source and target running under `settings`."""
+    """Give a run its loop and its one browser, shared by every source and target; then close both.
+
+        with shared_browser(settings):
+            ...                     # settings.browser_pool is the run's `RunBrowser`
+
+    Args:
+        settings: the run's; `browser_pool` holds the `flnd._browser.RunBrowser` while it runs.
+
+    Entered again inside a run, it changes nothing. The browser launches only when a target first
+    asks for a tab, so a run that never needs one never starts it.
+    """
     if settings.browser_pool is not None:
         yield
         return
-    pool = _BrowserPool()
-    settings.browser_pool = pool
+    loop = _loop.Loop()
+    shared = _browser.RunBrowser(loop)
+    settings.browser_pool = shared
     try:
         yield
     finally:
         settings.browser_pool = None
-        pool.close()
-
-
-def _wrap_raw(value: Any, call: Callable[..., Any]) -> Any:
-    if type(value).__module__.startswith("playwright."):
-        return _RawProxy(value, call)
-    return value
-
-
-def _unwrap_raw(value: Any) -> Any:
-    if isinstance(value, _RawProxy):
-        return object.__getattribute__(value, "_obj")
-    return value
-
-
-class _RawProxy:
-    """Forward Playwright page, locator and mouse calls onto `_BrowserPool`'s thread."""
-
-    def __init__(self, obj: Any, call: Callable[..., Any]):
-        object.__setattr__(self, "_obj", obj)
-        object.__setattr__(self, "_call", call)
-
-    def __getattr__(self, name: str) -> Any:
-        if name == "wait_for_timeout" and callable(
-            self._call(getattr, self._obj, "wait_for_timeout", None)
-        ):
-            return self._wait_for_timeout
-        value = self._call(getattr, self._obj, name)
-        if callable(value):
-            return lambda *args, **kwargs: _wrap_raw(
-                self._call(value, *args, **kwargs), self._call,
-            )
-        return _wrap_raw(value, self._call)
-
-    def _wait_for_timeout(self, ms: float) -> Any:
-        if ms > 2:
-            clock.sleep((ms - 2) / 1000.0)
-        return self._call(lambda n: self._obj.wait_for_timeout(n), min(ms, 2))
-
-
-class _SharedCookies:
-    """Cookie view over a shared `_BrowserPool` matching `browser.BrowserCookies`."""
-
-    def __init__(self, pool: _BrowserPool, jar: Any):
-        self._pool = pool
-        self._jar = jar
-
-    def get(self) -> Any:
-        """Current cookies of the shared browser."""
-        return self._pool.cookies()
-
-    def add(self, jar: Any) -> None:
-        """Merge `jar` into the shared browser context."""
-        self._pool.add_cookies(jar)
-
-    def clear(self) -> None:
-        """Clear cookies on the shared browser."""
-
-
-class _SharedBrowser:
-    """Browser view over a shared `_BrowserPool` for one source's cookies."""
-
-    def __init__(self, pool: _BrowserPool, jar: Any):
-        self._pool = pool
-        self._jar = jar
-        self.cookies = _SharedCookies(pool, jar)
-
-    @property
-    def _headless(self) -> bool:
-        return self._pool.headless()
-
-    def open(self) -> Any:
-        """Open or reuse a tab in the shared browser window."""
-        return self._pool.open_tab(self._jar, self)
-
-    def close(self) -> None:
-        """Leave the shared window open until `shared_browser` exits."""
-
-
-class _BrowserPool:
-    """One browser window and Playwright thread shared across every source in a run."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
-        self._thread_id: int | None = None
-        self._browser: browser.Browser | None = None
-        self._idle: deque[Any] = deque()
-        self._jars: list[Any] = []
-
-    def browser_for(self, jar: Any) -> _SharedBrowser:
-        return _SharedBrowser(self, jar)
-
-    def _call(self, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-        if self._thread_id == threading.get_ident():
-            return fn(*args, **kwargs)
-        with self._lock:
-            if self._executor is None:
-                self._executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="flnd-browser",
-                )
-                self._thread_id = self._executor.submit(threading.get_ident).result()
-            executor = self._executor
-        return executor.submit(fn, *args, **kwargs).result()
-
-    def _ensure_browser(self, jar: Any) -> browser.Browser:
-        if self._browser is None:
-            self._browser = browser.open(stealth=True)
-        if not any(seen is jar for seen in self._jars):
-            self._browser.cookies.add(jar)
-            self._jars.append(jar)
-        return self._browser
-
-    def open_tab(self, jar: Any, owner: _SharedBrowser) -> Any:
-        """Open or reuse a tab on the pool thread and return a proxied page handle."""
-        def acquire() -> Any:
-            chrome = self._ensure_browser(jar)
-            raw = self._idle.popleft() if self._idle else chrome.open().raw
-            return SimpleNamespace(raw=_RawProxy(raw, self._call), browser=owner)
-
-        return self._call(acquire)
-
-    def release(self, raws: Iterable[Any]) -> None:
-        """Keep at most one idle tab so the window stays open, closing extra tabs."""
-        if self._browser is None:
-            return
-        targets = list(raws)
-
-        def drop() -> None:
-            seen: set[int] = set()
-            for proxied in targets:
-                raw = _unwrap_raw(proxied)
-                if id(raw) in seen or any(item is raw for item in self._idle):
-                    continue
-                seen.add(id(raw))
-                if not self._idle:
-                    self._idle.append(raw)
-                elif callable(close := getattr(raw, "close", None)):
-                    try:
-                        close()
-                    except Exception:
-                        pass
-
-        self._call(drop)
-
-    def cookies(self) -> Any:
-        if self._browser is None:
-            return []
-        return self._call(lambda: self._browser.cookies.get() if self._browser else [])
-
-    def headless(self) -> bool:
-        return bool(getattr(self._browser, "_headless", False))
-
-    def add_cookies(self, jar: Any) -> None:
-        if self._browser is None:
-            return
-        self._call(lambda: self._ensure_browser(jar))
-
-    def close(self) -> None:
-        """Close the shared browser window and stop the Playwright thread."""
         try:
-            if self._browser is not None:
-                self._call(self._browser.close)
+            shared.close()
         finally:
-            self._browser = None
-            self._idle.clear()
-            self._jars.clear()
-            if self._executor is not None:
-                self._executor.shutdown(wait=True)
-                self._executor = None
-                self._thread_id = None
+            loop.close()
 
 
 def _with_query(url: str, params: Mapping[str, Any] | None) -> str:
@@ -750,7 +503,7 @@ def _with_query(url: str, params: Mapping[str, Any] | None) -> str:
 
 def _warn_expiring(source: Source, jar: Any) -> None:
     """Warn of login cookies (`source.needs`) that have expired or will expire soon."""
-    now = clock.wall()
+    now = _time.wall()
     for cookie in jar:
         expires = cookie.get("expires", -1)
         # -1 (or 0) is a session cookie, which lasts as long as the browser it came from said.
@@ -768,7 +521,7 @@ def _warn_expiring(source: Source, jar: Any) -> None:
         elif expires - now <= EXPIRY_WARNING:
             ui.warn(
                 "{code}: the login cookie {name} expires in {time}; run flnd login again soon",
-                code=source.code, name=cookie["name"], time=text.duration(expires - now),
+                code=source.code, name=cookie["name"], time=_text.duration(expires - now),
             )
 
 

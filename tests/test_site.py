@@ -1,10 +1,12 @@
-"""flnd/site.py's `TargetSite` and the source helpers built on a `Site` (`watch_responses`, `meta_results`).
+"""flnd/site.py's `TargetSite`, with the browser part it drives (`flnd._browser`'s `Tabs` and `Feed`).
 
-`TargetSite` runs on a real `source_run` over `httpx.MockTransport`, with a fake browser whose tab
-answers `goto` from a script; the clock is `clock.Fake`, so no wait is slept. Also
-checks `FakeSite` has exactly the 13 members of `Site`. No network, no browser.
+`TargetSite` runs on a real `source_run` over `httpx.MockTransport`, and on a real loop, with a fake
+browser (`FakeBrowser`, patched in for `flnd._browser.launch`) whose tabs answer `goto` from a script;
+the clock is `clock.Fake`, so no wait is slept. Also checks `FakeSite` has exactly the members of
+`Site`. No network, no browser.
 """
 
+import asyncio
 import io
 import json
 import threading
@@ -12,7 +14,6 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest import mock
 
 import httpx
@@ -20,55 +21,94 @@ import httpx
 from example_source import API, CDN, Example
 from fakes import FakeSite
 
-from flnd import site as site_module
+from flnd import _browser
 from flnd.common import auth, net, paths
 from flnd.options import RunShared
 from flnd.site import TargetSite, shared_browser, source_run
 from flnd.source import SiteError, File, Site, Target
-from flnd.sources.common.feed import warm_tabs, watch_responses
+from flnd.sources.common.feed import warm_tabs
 from flnd.sources.common.relay import meta_results
 from flnd import _cli as cli, _time as clock, _cookies as cookies, _http as http
 from flnd._ui import ui
 from flnd._browser import Page
-from flnd.errors import Blocked, SourceError
+from flnd.errors import Blocked, SourceError, UsageError
 
 PAGE = "https://www.example.com/example_user/"
 
 
 class FakeRaw:
-    """Playwright's page, as far as `Page.goto` and `TargetSite` use it: `goto` answers from `statuses`."""
+    """Playwright's page, as far as `flnd._browser.Page` and `Tabs` use it: `goto` answers from `statuses`.
 
-    def __init__(self, statuses, headers=None):
+    Its coroutines run on the run's loop, as Playwright's would. `emit` sends a response to the tab's
+    listeners; `waits` and `wait_untils` record what was waited for.
+    """
+
+    def __init__(self, statuses=(200,) * 20, headers=None):
         self.statuses, self.headers = list(statuses), headers or {}
-        self.main_frame = object()
-        self.listeners = []
-        self.loaded = []
+        self.loaded, self.wait_untils, self.waits = [], [], []
+        self.events = {}
+        self.url = "about:blank"
+        self.closed = False
 
     def on(self, event, listener):
-        self.listeners.append(listener)
+        self.events.setdefault(event, []).append(listener)
 
-    def goto(self, url, wait_until="load", timeout=30000):
+    def remove_listener(self, event, listener):
+        listeners = self.events.get(event, [])
+        if listener in listeners:
+            listeners.remove(listener)
+
+    async def goto(self, url, wait_until="load", timeout=30000):
         self.loaded.append(url)
+        self.wait_untils.append((url, wait_until))
         status = self.statuses.pop(0)
-        request = SimpleNamespace(is_navigation_request=lambda: True, frame=self.main_frame)
-        for listener in self.listeners:
-            listener(SimpleNamespace(request=request, headers=self.headers.get(status, {})))
         # Playwright gives no response for a page that didn't load.
         if status is None:
             return None
+        self.url = url
         return SimpleNamespace(status=status, url=url, headers=self.headers.get(status, {}))
+
+    async def wait_for_load_state(self, state, timeout=30000):
+        self.waits.append(state)
+
+    async def close(self):
+        self.closed = True
+
+    async def emit(self, url, body):
+        """Deliver one response to the tab's listeners, and let their body reads finish."""
+        async def text():
+            return body
+
+        response = SimpleNamespace(url=url, request=SimpleNamespace(resource_type="xhr"), text=text)
+        for listener in list(self.events.get("response", ())):
+            listener(response)
+        await asyncio.sleep(0)
+
+    @property
+    def listening(self):
+        return bool(self.events.get("response"))
 
 
 class FakeBrowser:
-    def __init__(self, raw):
-        self._jar = []
-        self.raw, self.closed = raw, False
-        self.cookies = SimpleNamespace(get=lambda: self._jar, add=self._jar.extend)
+    """The browser `flnd._browser.launch` gives, opening a real `Page` over `make_raw()` for each tab."""
 
-    def open(self):
-        return SimpleNamespace(raw=self.raw, browser=self)
+    def __init__(self, make_raw, options):
+        self.make_raw, self.options = make_raw, options
+        self.opened, self.added = [], []
+        self.headless = self.closed = False
 
-    def close(self):
+    async def tab(self, *, by_script=False):
+        raw = self.make_raw()
+        self.opened.append(raw)
+        return Page(raw, self, by_script=by_script)
+
+    async def cookies(self):
+        return cookies.Jar(self.added)
+
+    async def add_cookies(self, jar):
+        self.added.extend(jar)
+
+    async def close(self):
         self.closed = True
 
 
@@ -84,10 +124,18 @@ class SiteCase(unittest.TestCase):
         self.stop = cli.Stopping(soon=threading.Event(), now=threading.Event())
         self.requests = []
         self.raw = FakeRaw([200])
+        # What each tab gets: this test's `raw` by default; a fresh one per tab for the tab tests.
+        self.make_raw = lambda: self.raw
+        self.browsers = []
+
+        async def launch(**options):
+            self.browsers.append(FakeBrowser(lambda: self.make_raw(), options))
+            return self.browsers[-1]
+
         real_client = httpx.Client
         for patcher in (mock.patch.object(net.httpx, "Client",
                                           lambda *a, **kw: real_client(*a, **{**kw, "transport": httpx.MockTransport(self.serve)})),
-                        mock.patch("flnd._browser.open", lambda **options: FakeBrowser(self.raw))):
+                        mock.patch("flnd._browser.launch", launch)):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.fake = self.enterContext(clock.use(clock.Fake()))
@@ -112,7 +160,9 @@ class SiteCase(unittest.TestCase):
         opened = source_run(RunShared(home=self.home, history={}, stop=self.stop), source())
         run = opened.__enter__()
         self.addCleanup(opened.__exit__, None, None, None)
-        return run, TargetSite(run, Target(source.code, "user", "example_user"))
+        site = TargetSite(run, Target(source.code, "user", "example_user"))
+        self.addCleanup(site.close)
+        return run, site
 
     def lines(self):
         return self.dest.getvalue().splitlines()
@@ -144,22 +194,22 @@ class ExpiringLoginTest(SiteCase):
 
 
 class ProtocolTest(unittest.TestCase):
-    def test_fake_site_has_exactly_the_13_members(self):
+    def test_fake_site_has_exactly_the_members_of_site(self):
         def public(kind):
             return {name for name in dir(kind) if not name.startswith("_")}
 
         members = {name for name in vars(Site) if not name.startswith("_")}
-        self.assertEqual(len(members), 13)
+        self.assertEqual(len(members), 21)
         fake = FakeSite(Target("exm", "user", "example_user"))
         self.assertEqual(public(fake), members)
         self.assertEqual(public(TargetSite) | {"target", "time"}, members | {"close"})
 
 
-class GotoTest(SiteCase):
+class OpenTest(SiteCase):
     def test_a_429_backs_off_for_its_retry_after_and_loads_again(self):
         self.raw = FakeRaw([429, 200], headers={429: {"retry-after": "30"}})
         _, site = self.open()
-        self.assertTrue(site.goto(PAGE))
+        self.assertTrue(site.open(PAGE))
         self.assertEqual(self.raw.loaded, [PAGE, PAGE])
         self.assertGreaterEqual(self.now, 30.0)
         self.assertTrue(any("rate limited; waiting 30.0s" in line for line in self.lines()), self.lines())
@@ -167,20 +217,20 @@ class GotoTest(SiteCase):
     def test_a_404_warns_and_returns_false(self):
         self.raw = FakeRaw([404])
         _, site = self.open()
-        self.assertFalse(site.goto(PAGE))
+        self.assertFalse(site.open(PAGE))
         self.assertIn(f"! exm:example_user: {PAGE}: HTTP 404", self.lines())
 
     def test_a_page_that_did_not_load(self):
         self.raw = FakeRaw([None])
         _, site = self.open()
-        self.assertFalse(site.goto(PAGE))
+        self.assertFalse(site.open(PAGE))
 
     def test_ctrl_c_ends_a_wait(self):
         self.raw = FakeRaw([429], headers={429: {"retry-after": "30"}})
         _, site = self.open()
         self.stop.soon.set()
         with self.assertRaises(KeyboardInterrupt):
-            site.goto(PAGE)
+            site.open(PAGE)
 
 
 class PaceTest(SiteCase):
@@ -190,7 +240,7 @@ class PaceTest(SiteCase):
         site.fetch(f"{API}/users/example_user")
         # Example's pace is 0.5 s between two requests to one host.
         self.assertEqual(self.now, 0.5)
-        site.goto(PAGE)
+        site.open(PAGE)
         site.fetch(f"{CDN}/a.jpg")
         self.assertEqual(self.now, 0.5)
 
@@ -249,14 +299,15 @@ class FetchTest(SiteCase):
         answer = http.Response(200, f"{API}/feed", {"content-type": "application/json"}, b'{"items": []}')
         errors = [Blocked("HTTP 429", wait=5.0, status=429),
                   SiteError("HTTP 503", status=503, retryable=True)]
-        with mock.patch.object(Page, "fetch", side_effect=[*errors, answer]) as fetch:
+        with mock.patch.object(Page, "fetch", new=mock.AsyncMock(side_effect=[*errors, answer])) as fetch:
             self.assertEqual(site.fetch(f"{API}/feed", in_page=True, params={"a": 1}).json, {"items": []})
         self.assertEqual(fetch.call_args.args[0], f"{API}/feed?a=1")
 
     def test_in_page_refusals_are_fetch_errors(self):
         _, site = self.open()
         refusal = http.Response(400, f"{API}/feed", {"content-type": "application/json"}, b'{"status": "fail"}')
-        with mock.patch.object(Page, "fetch", side_effect=SiteError("HTTP 400", status=400, response=refusal)), \
+        refused = mock.AsyncMock(side_effect=SiteError("HTTP 400", status=400, response=refusal))
+        with mock.patch.object(Page, "fetch", new=refused), \
                 self.assertRaises(SiteError) as caught:
             site.fetch(f"{API}/feed", in_page=True)
         self.assertEqual(caught.exception.status, 400)
@@ -270,262 +321,250 @@ class FetchTest(SiteCase):
         class Wide(Example):
             stealth = False
 
-        opened = []
-
-        def connect(**options):
-            browser: Any = FakeBrowser(self.raw)
-            browser.options, browser.added = options, []
-            browser.cookies = SimpleNamespace(get=lambda: browser.added, add=browser.added.extend)
-            opened.append(browser)
-            return browser
-
-        with mock.patch("flnd._browser.open", connect):
-            auth.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
-                                                      "path": "/"}]))
-            _, site = self.open(Wide)
-            # Nothing opens until a source asks for the page.
-            self.assertEqual(opened, [])
-            self.assertTrue(site.goto(PAGE))
-            [browser] = opened
-            # Visible (open's default, so no headless=), with the computer's own language and timezone.
-            self.assertEqual(browser.options, {"stealth": False})
-            self.assertEqual([cookie["name"] for cookie in browser.added], ["token"])
-            self.assertFalse(browser.closed)
-            site.close()
-        self.assertTrue(browser.closed)
-
-    def test_the_default_browser_is_stealthy(self):
-        seen = []
-        with mock.patch("flnd._browser.open", lambda **options: seen.append(options) or FakeBrowser(self.raw)):
-            _, site = self.open()
-            site.goto(PAGE)
-        self.assertEqual(seen, [{"stealth": True}])
-
-    def test_close_closes_the_browser(self):
-        _, site = self.open()
-        opened = site.page
-        browser = cast(FakeBrowser, opened.browser)
+        auth.save(self.home, "exm", cookies.Jar([{"name": "token", "value": "t", "domain": ".example.com",
+                                                  "path": "/"}]))
+        _, site = self.open(Wide)
+        # Nothing opens until a source asks for the page.
+        self.assertEqual(self.browsers, [])
+        self.assertTrue(site.open(PAGE))
+        [browser] = self.browsers
+        # Visible (launch's default, so no headless=).
+        self.assertEqual(browser.options, {"stealth": False})
+        self.assertEqual([cookie["name"] for cookie in browser.added], ["token"])
+        self.assertEqual(site.url, PAGE)
+        self.assertFalse(browser.closed)
         site.close()
         self.assertTrue(browser.closed)
 
+    def test_the_default_browser_is_stealthy(self):
+        _, site = self.open()
+        site.open(PAGE)
+        self.assertEqual([browser.options for browser in self.browsers], [{"stealth": True}])
 
-class StubRaw:
-    def __init__(self):
-        self.listeners = []
-        self.stopped = False
+    def test_before_a_page_the_tab_is_blank_and_no_browser_starts(self):
+        _, site = self.open()
+        self.assertEqual(site.url, "about:blank")
+        self.assertEqual(dict(site.cookies), {})
+        site.close()
+        self.assertEqual(self.browsers, [])
 
-    def on(self, event, listener):
-        self.listeners.append(listener)
+    def test_a_verb_called_from_async_code_on_the_loop_says_what_to_use(self):
+        run, site = self.open()
 
-    def remove_listener(self, event, listener):
-        if listener in self.listeners:
-            self.listeners.remove(listener)
-        self.stopped = True
+        async def category():
+            site.open(PAGE)
 
-    def emit(self, data):
-        response = SimpleNamespace(url="https://example.com/graphql", text=lambda: json.dumps(data), request=None)
-        for listener in list(self.listeners):
-            listener(response)
+        with self.assertRaisesRegex(SourceError, "await"):
+            run.run_async(category())
+
+    def test_async_code_gets_the_raw_tab(self):
+        run, site = self.open()
+
+        async def category():
+            return await site.tab
+
+        self.assertIs(run.run_async(category()), self.raw)
 
 
-class StubPage:
-    """A tab for `watch_responses`: `scroll` delivers the next batch of responses, then the feed ends."""
+class FeedRaw(FakeRaw):
+    """A tab whose next batch of responses comes with each scroll, or with a wait for a quiet network."""
 
     def __init__(self, batches):
-        self.raw = StubRaw()
+        super().__init__()
         self.batches = list(batches)
         self.scrolls = 0
-        self.waits = 0
 
-    def deliver(self):
+    async def deliver(self):
         for data in self.batches.pop(0) if self.batches else []:
-            self.raw.emit(data)
+            await self.emit("https://example.com/graphql", json.dumps(data))
 
-    def scroll(self, *, until=None, **options):
-        self.scrolls += 1
-        self.deliver()
-        return 1
-
-    def wait(self, css=None, *, idle=False, timeout=30.0):
-        self.waits += 1
-        self.deliver()
+    async def wait_for_load_state(self, state, timeout=30000):
+        await super().wait_for_load_state(state, timeout)
+        await self.deliver()
 
 
-class WatchTest(unittest.TestCase):
+class StubScroller:
+    """`Page.scroller` for a `FeedRaw`: a step delivers the next batch, and the feed ends with none left."""
+
+    def __init__(self, raw):
+        self.raw, self.scrolls = raw, 0
+
+    async def step(self):
+        self.raw.scrolls += 1
+        more = bool(self.raw.batches)
+        await self.raw.deliver()
+        return more
+
+
+class FeedTest(SiteCase):
+    def setUp(self):
+        super().setUp()
+
+        async def scroller(page, **options):
+            return StubScroller(page.raw)
+
+        patcher = mock.patch.object(Page, "scroller", scroller)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_scrolling_yields_each_response_until_the_feed_ends(self):
-        page = StubPage([[{"n": 2}], [{"n": 3}, {"n": 4}]])
-        site: Any = SimpleNamespace(page=page)
-        responses = watch_responses(site, "graphql", scroll=True)
-        page.raw.emit({"n": 1})     # the first load, which came before any scroll
+        self.raw = FeedRaw([[{"n": 2}], [{"n": 3}, {"n": 4}]])
+        run, site = self.open()
+        responses = site.feed("graphql", scroll=True)
+        # The first load, which came before any scroll.
+        run.loop.run(self.raw.emit("https://example.com/graphql", '{"n": 1}'))
         self.assertEqual([data["n"] for data in responses], [1, 2, 3, 4])
         # The last scroll found nothing new: the feed ended, and watching stopped.
-        self.assertEqual((page.scrolls, page.raw.stopped), (3, True))
+        self.assertEqual((self.raw.scrolls, self.raw.listening), (3, False))
 
     def test_without_scrolling_it_waits_for_a_quiet_network_once(self):
-        page = StubPage([[{"n": 2}]])
-        with watch_responses(cast(Any, SimpleNamespace(page=page)), "graphql") as responses:
-            page.raw.emit({"n": 1})
+        self.raw = FeedRaw([[{"n": 2}]])
+        run, site = self.open()
+        with site.feed("graphql") as responses:
+            run.loop.run(self.raw.emit("https://example.com/graphql", '{"n": 1}'))
             self.assertEqual([data["n"] for data in responses], [1, 2])
-        self.assertEqual((page.scrolls, page.waits, page.raw.stopped), (0, 1, True))
+        self.assertEqual((self.raw.scrolls, self.raw.waits, self.raw.listening), (0, ["networkidle"], False))
 
+    def test_ndjson_lines_and_a_body_that_is_not_json(self):
+        self.raw = FeedRaw([])
+        run, site = self.open()
+        with site.feed(lambda url: url.endswith("/graphql"), lines=True) as responses:
+            run.loop.run(self.raw.emit("https://example.com/graphql", '{"n": 1}\n\n{"n": 2}\n'))
+            run.loop.run(self.raw.emit("https://example.com/graphql", "<p>not json</p>"))
+            run.loop.run(self.raw.emit("https://example.com/other", '{"n": 9}'))
+            self.assertEqual([data["n"] for data in responses], [1, 2])
 
-class TabRaw(FakeRaw):
-    """Fake Playwright tab tracking listeners, wait states, and navigation wait_until modes."""
+    def test_responses_keep_their_order_however_their_bodies_finish(self):
+        run, site = self.open()
+        feed = site.feed("graphql")
 
-    def __init__(self, status=200):
-        super().__init__([status] * 20)
-        self.wait_until_calls = []
-        self.waits = []
-        self.events = {}
-        self.closed = False
+        async def two():
+            slow_done = asyncio.Event()
 
-    def close(self):
-        self.closed = True
+            async def slow():
+                await slow_done.wait()
+                return '{"n": 1}'
 
-    def on(self, event, listener):
-        self.events.setdefault(event, []).append(listener)
+            async def fast():
+                slow_done.set()
+                return '{"n": 2}'
 
-    def remove_listener(self, event, listener):
-        listeners = self.events.get(event, [])
-        if listener in listeners:
-            listeners.remove(listener)
+            for text in (slow, fast):
+                response = SimpleNamespace(url="https://example.com/graphql", text=text)
+                for listener in list(self.raw.events["response"]):
+                    listener(response)
+            for _ in range(3):
+                await asyncio.sleep(0)
 
-    def goto(self, url, wait_until="load", timeout=30000):
-        self.wait_until_calls.append((url, wait_until))
-        self.loaded.append(url)
-        return SimpleNamespace(status=200, url=url, headers={})
-
-    def wait_for_load_state(self, state, timeout=30000):
-        self.waits.append(state)
-
-    def emit(self, url, body):
-        """Deliver a JSON response event on this tab to active response listeners."""
-        request = SimpleNamespace(is_navigation_request=lambda: False, frame=object())
-        response = SimpleNamespace(url=url, headers={}, request=request, text=lambda: body)
-        for listener in list(self.events.get("response", ())):
-            listener(response)
-
-
-class MultiTabBrowser:
-    """Fake single-window `Browser` opening a distinct `TabRaw` on each `open()` call."""
-
-    def __init__(self):
-        self.opened = []
-        self._jar = []
-        self.cookies = SimpleNamespace(get=lambda: self._jar, add=self._jar.extend)
-        self.closed = False
-
-    def open(self):
-        raw = TabRaw()
-        self.opened.append(raw)
-        return SimpleNamespace(raw=raw, browser=self)
-
-    def close(self):
-        self.closed = True
+        run.loop.run(two())
+        self.assertEqual([data["n"] for data in feed], [1, 2])
 
 
 class TabTest(SiteCase):
-    def _open_multi_browser(self):
-        browsers = []
+    def setUp(self):
+        super().setUp()
+        self.make_raw = FakeRaw
 
-        def connect(**options):
-            browser = MultiTabBrowser()
-            browsers.append(browser)
-            return browser
-
-        patcher = mock.patch("flnd._browser.open", connect)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        _, site = self.open()
-        self.addCleanup(site.close)
-        return browsers, site
-
-    def test_warm_tabs_preloads_in_one_window_and_rebinds_active_watch(self):
-        browsers, site = self._open_multi_browser()
+    def test_warm_tabs_preloads_in_one_window_and_moves_the_open_feed(self):
+        run, site = self.open()
         urls = [f"{API}/item/{i}" for i in range(8)]
         warm_tabs(site, urls)
-        self.assertEqual(len(browsers), 1)
-        browser = browsers[0]
-        self.assertEqual(len(browser.opened), site_module.MAX_TABS)
-        warmed_calls = [call for tab in browser.opened[1:] for call in tab.wait_until_calls]
-        self.assertEqual(warmed_calls, [(url, "commit") for url in urls[:site_module.MAX_TABS - 1]])
+        [browser] = self.browsers
+        self.assertEqual(len(browser.opened), _browser.MAX_TABS)
+        warmed = [call for tab in browser.opened[1:] for call in tab.wait_untils]
+        self.assertEqual(warmed, [(url, "commit") for url in urls[:_browser.MAX_TABS - 1]])
 
-        with watch_responses(site, "graphql", scroll=False) as responses:
-            self.assertTrue(site.goto(urls[0]))
-            adopted = cast(TabRaw, site.page.raw)
-            self.assertIn((urls[0], "commit"), adopted.wait_until_calls)
+        with site.feed("graphql") as responses:
+            self.assertTrue(site.open(urls[0]))
+            adopted = site._browser().page.raw
+            self.assertIn((urls[0], "commit"), adopted.wait_untils)
             self.assertEqual(adopted.waits, ["load"])
-            adopted.emit(f"{API}/graphql", '{"n": 42}')
+            run.loop.run(adopted.emit(f"{API}/graphql", '{"n": 42}'))
             self.assertEqual([item["n"] for item in responses], [42])
-        # Adopting urls[0] recycled the displaced tab and queued the next URL in the same window.
-        self.assertEqual(len(browsers), 1)
-        self.assertEqual(len(browser.opened), site_module.MAX_TABS)
-        self.assertTrue(site.goto(urls[1]))
-        self.assertEqual(len(browsers), 1)
+        # Taking urls[0] recycled the displaced tab and warmed the next URL in the same window.
+        self.assertEqual(len(self.browsers), 1)
+        self.assertEqual(len(browser.opened), _browser.MAX_TABS)
+        self.assertTrue(site.open(urls[1]))
+        self.assertEqual(len(self.browsers), 1)
 
-    def test_nested_scrolling_watch_opens_second_tab_while_passive_watch_shares_tab(self):
-        browsers, site = self._open_multi_browser()
-        main = site.page
-        with watch_responses(site, "videos", scroll=True):
-            self.assertIs(site.page, main)
-            with watch_responses(site, "stories", scroll=False):
-                self.assertIs(site.page, main)
-                self.assertEqual(len(browsers[0].opened), 1)
-            with watch_responses(site, "comments", scroll=True):
-                nested = site.page
+    def test_nested_scrolling_feed_opens_a_second_tab_while_a_passive_feed_shares_the_tab(self):
+        _, site = self.open()
+        tabs = site._browser()
+        main = tabs.page
+        with site.feed("videos", scroll=True):
+            self.assertIs(tabs.page, main)
+            with site.feed("stories", scroll=False):
+                self.assertIs(tabs.page, main)
+                self.assertEqual(len(self.browsers[0].opened), 1)
+            with site.feed("comments", scroll=True):
+                nested = tabs.page
                 self.assertIsNot(nested, main)
-                self.assertEqual((len(browsers), len(browsers[0].opened)), (1, 2))
-            self.assertIs(site.page, main)
-            with watch_responses(site, "replies", scroll=True):
-                self.assertIs(site.page, nested)
-                self.assertEqual(len(browsers[0].opened), 2)
-        self.assertIs(site.page, main)
+                self.assertEqual((len(self.browsers), len(self.browsers[0].opened)), (1, 2))
+            self.assertIs(tabs.page, main)
+            with site.feed("replies", scroll=True):
+                self.assertIs(tabs.page, nested)
+                self.assertEqual(len(self.browsers[0].opened), 2)
+        self.assertIs(tabs.page, main)
 
     def test_shared_browser_uses_one_window_across_sources_and_replays_warm_responses(self):
-        browsers = []
-
         class FacebookLike(Example):
             code = "fbk"
 
         class InstagramLike(Example):
             code = "ins"
 
-        def connect(**options):
-            browsers.append(MultiTabBrowser())
-            return browsers[-1]
-
         settings = RunShared(home=self.home, history={}, stop=self.stop)
-        with mock.patch("flnd._browser.open", connect):
-            with shared_browser(settings):
-                def run_target(source_cls, target, warm_url):
+        failures = []
+        with shared_browser(settings):
+            def run_target(source_cls, target, warm_url):
+                try:
                     with source_run(settings, source_cls()) as run:
                         site = TargetSite(run, target)
                         try:
                             warm_tabs(site, [warm_url])
-                            # Simulate a response arriving while the background tab warms.
-                            tab = next(t for t in browsers[0].opened if warm_url in t.loaded)
-                            tab.emit(f"{API}/graphql", '{"warm": 1}')
-                            with watch_responses(site, "graphql", scroll=False) as responses:
-                                self.assertTrue(site.goto(warm_url))
+                            # A response arriving while the background tab warms.
+                            tab = next(t for t in self.browsers[0].opened if warm_url in t.loaded)
+                            run.loop.run(tab.emit(f"{API}/graphql", '{"warm": 1}'))
+                            with site.feed("graphql") as responses:
+                                self.assertTrue(site.open(warm_url))
                                 self.assertEqual([item["warm"] for item in responses], [1])
                         finally:
                             site.close()
+                except BaseException as error:
+                    failures.append(error)
 
-                t1 = threading.Thread(
-                    target=run_target,
-                    args=(FacebookLike, Target("fbk", "user", "example_user"), f"{API}/fbk"),
-                )
-                t2 = threading.Thread(
-                    target=run_target,
-                    args=(InstagramLike, Target("ins", "user", "example_user"), f"{API}/ins"),
-                )
-                t1.start()
-                t2.start()
-                t1.join()
-                t2.join()
-                self.assertEqual(len(browsers), 1)
-                self.assertFalse(browsers[0].closed)
-            self.assertTrue(browsers[0].closed)
+            threads = [
+                threading.Thread(target=run_target,
+                                 args=(FacebookLike, Target("fbk", "user", "example_user"), f"{API}/fbk")),
+                threading.Thread(target=run_target,
+                                 args=(InstagramLike, Target("ins", "user", "example_user"), f"{API}/ins")),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(failures, [])
+            self.assertEqual(len(self.browsers), 1)
+            self.assertFalse(self.browsers[0].closed)
+        self.assertTrue(self.browsers[0].closed)
+
+
+class HandoffTest(SiteCase):
+    def test_done_at_once_done_later_and_a_timeout(self):
+        _, site = self.open()
+        self.assertTrue(site.handoff(until=lambda: True, message="Solve it"))
+        answers = iter([False, False, True])
+        self.assertTrue(site.handoff(until=lambda: next(answers), message="Solve it"))
+        self.assertEqual(self.now, 1.0)
+        self.assertFalse(site.handoff(until=lambda: False, message="Solve it", timeout=5))
+        self.assertGreaterEqual(self.now, 6.0)
+
+    def test_a_headless_window_cannot_be_handed_to_a_person(self):
+        _, site = self.open()
+        site.open(PAGE)
+        self.browsers[0].headless = True
+        with self.assertRaisesRegex(UsageError, "headless"):
+            site.handoff(until=lambda: False, message="Solve it")
 
 
 class MetaResultsTest(unittest.TestCase):
@@ -536,9 +575,9 @@ class MetaResultsTest(unittest.TestCase):
         self.assertEqual(meta_results(site, PAGE), [{"data": {"user": {"id": "42"}}}])
 
     def test_a_page_that_did_not_load_gives_none(self):
-        site = mock.Mock(goto=mock.Mock(return_value=False))
+        site = mock.Mock(open=mock.Mock(return_value=False))
         self.assertEqual(meta_results(site, PAGE), [])
-        site.page.document.assert_not_called()
+        site.document.assert_not_called()
 
 
 if __name__ == "__main__":

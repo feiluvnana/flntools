@@ -1,24 +1,26 @@
-"""`flnd._browser`: `open` and its profiles, the Chromium offer, `Browser`, `Page` and `Subscription`.
+"""`flnd._browser`: `launch` and its profile copy, the Chromium offer, `Browser`, `Page`, `Capture`, scrolling.
 
+Every coroutine runs on one `flnd._loop.Loop` for the module (`run`), as the run's loop runs them.
 The profile and Chromium tests fake Playwright, the home folder and the temp folder, so no real
 profile or browser is touched. The page tests run Playwright's own Chromium, headless, on pages
 served from memory (`fulfill`), and skip without it. `Page.fetch`'s tests serve their page from a
-real HTTP server on 127.0.0.1 (`LocalServer`), since a request the page sends itself must leave it. The scroll timing tests fake the page and the clock.
+real HTTP server on 127.0.0.1 (`LocalServer`), since a request the page sends itself must leave it.
+The scroll timing tests fake the page and the clock. `TargetSite`'s use of all this (tabs, warm
+tabs, feeds) is in `test_site.py`.
 """
 
+import asyncio
 import importlib
 import json
 import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
@@ -26,17 +28,25 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
-from flnd import _time as clock, _cookies as cookies, _http as http
-from flnd import _browser as browser
+import no_profiles  # noqa: F401  (refuses real browser profiles)
+from flnd import _browser, _cookies, _http, _time
+from flnd._loop import Loop
 from flnd._ui import ui
-from flnd.errors import Blocked, Error, SiteError, ToolError
+from flnd.errors import Blocked, Changed, Error, NetworkError, SiteError, ToolError
 
 # The real lookup, before BrowserCase patches it out.
-CHROME_INSTALLED = browser._chrome_installed
+CHROME_INSTALLED = _browser._chrome_installed
+# The loop every coroutine of this module runs on.
+LOOP = Loop()
+run = LOOP.run
+
+
+def tearDownModule():
+    LOOP.close()
 
 
 def chromium_installed() -> bool:
-    """Whether Playwright's own Chromium is downloaded; checked without open, which could ask to download it."""
+    """Whether Playwright's own Chromium is downloaded; checked without launch, which could ask to download it."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -69,7 +79,6 @@ FEED_PAGE = """<!doctype html><html><body style="margin:0">
   }
   add(5);
   addEventListener("wheel", event => wheels.push(Math.round(event.deltaY)));
-  if (params.get("fetch") === "1") addEventListener("wheel", () => fetch("/api/other"));
   addEventListener("scroll", () => {
     lowest = Math.max(lowest, scrollY);
     if (scrollY < lowest - innerHeight / 2) wentUp = true;
@@ -103,29 +112,27 @@ BOX_PAGE = """<!doctype html><html><body style="margin:0">
 API_BODIES = {
     "/api/graphql": ("application/json", json.dumps({"data": {"n": 1}})),
     "/api/other": ("application/json", json.dumps({"other": True})),
-    "/api/html": ("text/html", "<p>not json</p>"),
-    "/api/stream": ("application/x-ndjson", '{"line": 1}\n\n{"line": 2}\n'),
 }
 
 
-def fulfill(route):
+async def fulfill(route):
     """Serves https://site.test/ from memory, so no test ever touches the network."""
     url = route.request.url
     if url.startswith("https://bad.test/"):
-        route.abort()
+        await route.abort()
         return
     path = url.removeprefix("https://site.test").split("?")[0]
     if path == "/feed":
-        route.fulfill(status=200, content_type="text/html", body=FEED_PAGE)
+        await route.fulfill(status=200, content_type="text/html", body=FEED_PAGE)
         return
     if path == "/box":
-        route.fulfill(status=200, content_type="text/html", body=BOX_PAGE)
+        await route.fulfill(status=200, content_type="text/html", body=BOX_PAGE)
         return
     if path == "/missing":
-        route.fulfill(status=404, content_type="text/html", body="<p>not here</p>")
+        await route.fulfill(status=404, content_type="text/html", body="<p>not here</p>")
         return
     content_type, body = API_BODIES.get(path, ("text/html", "<html><head><title>Home</title></head><body>home</body></html>"))
-    route.fulfill(status=200, content_type=content_type, body=body)
+    await route.fulfill(status=200, content_type=content_type, body=body)
 
 
 class BrowserCase(unittest.TestCase):
@@ -136,9 +143,9 @@ class BrowserCase(unittest.TestCase):
         self.previous_level = ui.level
         # The bundled build, so results don't depend on whether this machine has Chrome installed,
         # and no earlier test's "no" to the Chromium download, or failed download, is remembered.
-        for patcher in (mock.patch.object(browser, "_chrome_installed", return_value=False),
-                        mock.patch.object(browser, "_chromium_declined", False),
-                        mock.patch.object(browser, "_chromium_failed", None)):
+        for patcher in (mock.patch.object(_browser, "_chrome_installed", return_value=False),
+                        mock.patch.object(_browser, "_chromium_declined", False),
+                        mock.patch.object(_browser, "_chromium_failed", None)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -152,19 +159,52 @@ class BrowserCase(unittest.TestCase):
 
 class ImportTest(BrowserCase):
     def test_without_playwright(self):
-        blocked = {"playwright": None, "playwright.sync_api": None}
+        blocked = {"playwright": None, "playwright.async_api": None}
         with mock.patch.dict(sys.modules, blocked):
             sys.modules.pop("flnd._browser", None)
-            fresh = importlib.import_module("flnd._browser")
-            self.assertFalse(hasattr(fresh, "chrome_user_agent"))
-            with self.assertRaisesRegex(ImportError, re.escape("pip install playwright")):
-                fresh.open()
+            try:
+                fresh = importlib.import_module("flnd._browser")
+                with self.assertRaisesRegex(ImportError, re.escape("pip install playwright")):
+                    run(fresh.launch())
+            finally:
+                sys.modules["flnd._browser"] = _browser
+
+
+class FakePlaywright:
+    """Playwright's driver as `launch` uses it before `_open_context`: it only stops."""
+
+    def __init__(self, executable="/fake/chromium"):
+        self.chromium = SimpleNamespace(executable_path=executable)
+        self.stops = 0
+
+    async def stop(self):
+        self.stops += 1
+
+
+class FakeContext:
+    """A `BrowserContext` that keeps cookies, and rejects any without a domain, quoting it whole."""
+
+    def __init__(self):
+        self.stored = []
+        self.scripts = []
+
+    async def add_init_script(self, script):
+        self.scripts.append(script)
+
+    async def add_cookies(self, cookies):
+        for cookie in cookies:
+            if "domain" not in cookie:
+                raise _browser._raw_error()(f"Invalid cookie {cookie}")
+            self.stored.append(cookie)
+
+    async def cookies(self):
+        return [dict(cookie) for cookie in self.stored]
 
 
 class ProfileCopyTest(BrowserCase):
-    """`open(profile=<name>)`: which profiles are names, and the copy, which holds Telegram Web's login,
-    never staying in the temp folder (fix #14). A fake home holds the profiles and a private temp
-    folder the copies, so no real profile is touched. No browser."""
+    """`launch(profile=<name>)`: the copy, which holds Telegram Web's login, never staying in the temp
+    folder (fix #14). A fake home holds the profiles and a private temp folder the copies, so no real
+    profile is touched. No browser."""
 
     def setUp(self):
         super().setUp()
@@ -172,7 +212,7 @@ class ProfileCopyTest(BrowserCase):
         self.addCleanup(folder.cleanup)
         self.home = Path(folder.name) / "home"
         platform = sys.platform if sys.platform in ("darwin", "win32") else "linux"
-        self.root = self.home / browser.PROFILE_ROOTS[platform]
+        self.root = self.home / _browser.PROFILE_ROOTS[platform]
         (self.root / "Default").mkdir(parents=True)
         (self.root / "Default" / "Preferences").write_text("{}")
         self.temp = Path(folder.name) / "temp"
@@ -181,31 +221,26 @@ class ProfileCopyTest(BrowserCase):
                         mock.patch.object(tempfile, "tempdir", str(self.temp))):
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.playwright = mock.Mock()
+        self.playwright = FakePlaywright()
         self.launches = []
 
     def copies(self) -> list[Path]:
         return list(self.temp.glob("flnd-chrome-*"))
 
-    def open_context(self, playwright, profile, channel, launch_options, context_options):
+    async def open_context(self, playwright, profile, channel, launch_options, context_options):
         """Records what _launch asked for; the copy is checked while it exists."""
         profile = Path(profile)
         self.launches.append((profile, channel, launch_options["args"][-1],
                               stat.S_IMODE(profile.stat().st_mode), (profile / "Default" / "Preferences").is_file()))
-        return mock.Mock(), [playwright.stop]
+        return FakeContext(), [playwright.stop]
 
     def launch(self, **options):
-        with mock.patch.object(browser, "_start_playwright", return_value=self.playwright), \
-                mock.patch.object(browser, "_open_context", self.open_context):
-            return browser.open(**options)
+        async def start():
+            return self.playwright
 
-    def test_names_and_folders(self):
-        for profile in ("Default", "Profile 1", "Person 2"):
-            self.assertEqual(browser._profile_name(profile), profile)
-        for profile in (None, Path("Default"), "./Default", "profiles/Default", "/tmp/profile", ".", ".."):
-            self.assertIsNone(browser._profile_name(profile), profile)
-        with self.assertRaises(ValueError):
-            browser._profile_name("")
+        with mock.patch.object(_browser, "_start_playwright", start), \
+                mock.patch.object(_browser, "_open_context", self.open_context):
+            return run(_browser.launch(**options))
 
     def test_a_name_is_copied_privately_into_chrome_and_deleted_on_close(self):
         chrome = self.launch(profile="Default")
@@ -216,48 +251,49 @@ class ProfileCopyTest(BrowserCase):
             # mkdtemp's mode: no other user of the machine can read the copy's logins.
             self.assertEqual(mode, 0o700)
         self.assertEqual(self.copies(), [copy])
-        chrome.close()
+        run(chrome.close())
         self.assertEqual(self.copies(), [])
 
-    def test_a_folder_is_used_as_it_is_and_never_deleted(self):
-        folder = self.home / "kept"
-        folder.mkdir()
-        with mock.patch.object(browser, "_channel", return_value="chromium"):
-            for profile in (folder, str(folder)):
-                self.launch(profile=profile).close()
-        self.assertEqual([(path, channel) for path, channel, *_ in self.launches],
-                         [(folder, "chromium"), (folder, "chromium")])
+    def test_a_path_or_nothing_is_no_profile_name(self):
+        for profile in ("", "./Default", "profiles/Default", "/tmp/profile", ".", ".."):
+            with self.subTest(profile=profile), self.assertRaises(ValueError):
+                self.launch(profile=profile)
         self.assertEqual(self.copies(), [])
 
     def test_an_unknown_name_raises_before_playwright_starts(self):
-        with mock.patch.object(browser, "_start_playwright") as start:
+        with mock.patch.object(_browser, "_start_playwright") as start:
             with self.assertRaisesRegex(FileNotFoundError, "no Chrome profile named 'Profile 9'"):
-                browser.open(profile="Profile 9")
+                run(_browser.launch(profile="Profile 9"))
         start.assert_not_called()
         self.assertEqual(self.copies(), [])
 
-    def test_copy_deleted_without_playwright(self):
-        with mock.patch.object(browser, "_start_playwright", side_effect=ImportError("no playwright")):
-            with self.assertRaises(ImportError):
-                browser.open(profile="Default")
-        self.assertEqual(self.copies(), [])
+    def test_copy_deleted_without_playwright_or_on_ctrl_c_before_launch(self):
+        for error in (ImportError("no playwright"), KeyboardInterrupt()):
+            with self.subTest(error=error):
+                async def start(error=error):
+                    raise error
 
-    def test_copy_deleted_on_ctrl_c_before_launch(self):
-        with mock.patch.object(browser, "_start_playwright", side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                browser.open(profile="Default")
-        self.assertEqual(self.copies(), [])
+                with mock.patch.object(_browser, "_start_playwright", start), self.assertRaises(type(error)):
+                    run(_browser.launch(profile="Default"))
+                self.assertEqual(self.copies(), [])
 
     def test_copy_deleted_when_the_launch_fails(self):
-        for error in (KeyboardInterrupt(), RuntimeError(browser.NEEDS_CHROME)):
+        for error in (KeyboardInterrupt(), RuntimeError(_browser.NEEDS_CHROME)):
             with self.subTest(error=error):
-                playwright = mock.Mock()
-                with mock.patch.object(browser, "_start_playwright", return_value=playwright), \
-                        mock.patch.object(browser, "_open_context", side_effect=error):
+                playwright = FakePlaywright()
+
+                async def start(playwright=playwright):
+                    return playwright
+
+                async def fail(*args, error=error):
+                    raise error
+
+                with mock.patch.object(_browser, "_start_playwright", start), \
+                        mock.patch.object(_browser, "_open_context", fail):
                     with self.assertRaises(type(error)):
-                        browser.open(profile="Default")
+                        run(_browser.launch(profile="Default"))
                 self.assertEqual(self.copies(), [])
-                playwright.stop.assert_called_once()
+                self.assertEqual(playwright.stops, 1)
 
     def test_copy_deleted_when_the_copy_fails(self):
         """A copy that fails half way, Ctrl-C included, must not leave the profile's logins in the temp folder."""
@@ -265,7 +301,7 @@ class ProfileCopyTest(BrowserCase):
             with self.subTest(error=error):
                 with mock.patch.object(shutil, "copytree", side_effect=error) as copytree:
                     with self.assertRaises(type(error)):
-                        browser.open(profile="Default")
+                        run(_browser.launch(profile="Default"))
                 # The copy was started inside the private temp folder, so an empty glob means it was deleted.
                 self.assertTrue(Path(copytree.call_args.args[1]).is_relative_to(self.temp))
                 self.assertEqual(self.copies(), [])
@@ -285,7 +321,7 @@ class FakeInstaller:
 
 
 class ChromeOnlyTest(BrowserCase):
-    """Which browser open launches, and the Chromium download offered without Chrome. No browser starts."""
+    """Which browser launch starts, and the Chromium download offered without Chrome. No browser starts."""
 
     def setUp(self):
         super().setUp()
@@ -293,22 +329,24 @@ class ChromeOnlyTest(BrowserCase):
         self.addCleanup(folder.cleanup)
         # Where Playwright would keep its Chromium: nothing there until the fake installer runs.
         self.chromium = Path(folder.name) / "chromium-1" / "chrome"
-        self.playwright = mock.Mock()
-        self.playwright.chromium.executable_path = str(self.chromium)
+        self.playwright = FakePlaywright(str(self.chromium))
         self.installs = []
         self.launched = []
-        self.context = mock.Mock()
-        for patcher in (mock.patch.object(browser, "_start_playwright", return_value=self.playwright),
-                        mock.patch.object(browser, "_open_context", self.open_context),
-                        mock.patch.object(browser.subprocess, "Popen", self.popen),
+
+        async def start():
+            return self.playwright
+
+        for patcher in (mock.patch.object(_browser, "_start_playwright", start),
+                        mock.patch.object(_browser, "_open_context", self.open_context),
+                        mock.patch.object(_browser.subprocess, "Popen", self.popen),
                         mock.patch("playwright._impl._driver.compute_driver_executable",
                                    return_value=("/driver/node", "/driver/cli.js"))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def open_context(self, playwright, profile, channel, launch_options, context_options):
+    async def open_context(self, playwright, profile, channel, launch_options, context_options):
         self.launched.append(channel)
-        return self.context, [playwright.stop]
+        return FakeContext(), [playwright.stop]
 
     def popen(self, argv, **options):
         """Playwright's installer: it prints progress lines, then the browser is there."""
@@ -320,25 +358,31 @@ class ChromeOnlyTest(BrowserCase):
 
     def terminal(self, *keys):
         answers = iter(keys)
-        p = mock.patch.object(browser.prompt, "confirm", side_effect=lambda *a, **kw: next(answers) == "y")
+        p = mock.patch.object(_browser._prompt, "confirm", side_effect=lambda *a, **kw: next(answers) == "y")
         p.start()
         self.addCleanup(p.stop)
 
+    def launch_and_close(self):
+        run(self._launch_and_close())
+
+    async def _launch_and_close(self):
+        await (await _browser.launch()).close()
+
     def test_chrome_is_launched_when_installed(self):
-        with mock.patch.object(browser, "_chrome_installed", return_value=True):
-            browser.open().close()
+        with mock.patch.object(_browser, "_chrome_installed", return_value=True):
+            self.launch_and_close()
         self.assertEqual((self.launched, self.installs), (["chrome"], []))
 
     def test_a_downloaded_chromium_is_used_without_asking(self):
         self.chromium.parent.mkdir(parents=True)
         self.chromium.write_text("")
         self.terminal()   # Any question would read a key, and there is none.
-        browser.open().close()
+        self.launch_and_close()
         self.assertEqual((self.launched, self.installs), (["chromium"], []))
 
     def test_yes_downloads_chromium_then_launches_it(self):
         self.terminal("y")
-        browser.open().close()
+        self.launch_and_close()
         self.assertEqual(self.launched, ["chromium"])
         (argv, options), = self.installs
         self.assertEqual(argv, ["/driver/node", "/driver/cli.js", "install", "--no-shell", "chromium"])
@@ -346,51 +390,49 @@ class ChromeOnlyTest(BrowserCase):
         # Into Playwright's user cache: the installer's folder is left to Playwright.
         self.assertNotIn("PLAYWRIGHT_BROWSERS_PATH", {key: value for key, value in options["env"].items()
                                                       if key not in os.environ})
-        out = self.dest.getvalue()
-        self.assertIn("Downloading Chromium", out)
+        self.assertIn("Downloading Chromium", self.dest.getvalue())
         # A later run finds it and doesn't ask: the screen has no key left to answer with.
-        browser.open().close()
+        self.launch_and_close()
         self.assertEqual((self.launched, len(self.installs)), (["chromium", "chromium"], 1))
 
     def test_no_raises_naming_chrome_and_is_asked_once(self):
         self.terminal("n")
         for _ in range(2):
             with self.assertRaises(ToolError) as caught:
-                browser.open()
+                run(_browser.launch())
             self.assertEqual(str(caught.exception), "flnd needs Google Chrome: install it from https://www.google.com/chrome/")
-            self.assertEqual(caught.exception.hint, browser.INSTALL_CHROME)
+            self.assertEqual(caught.exception.hint, _browser.INSTALL_CHROME)
         self.assertEqual((self.launched, self.installs), ([], []))
-        self.assertEqual(self.playwright.stop.call_count, 2)
+        self.assertEqual(self.playwright.stops, 2)
 
     def test_without_a_terminal_it_raises_naming_chrome(self):
         with mock.patch.object(sys.stdin, "isatty", return_value=False), \
                 self.assertRaisesRegex(ToolError, "^flnd needs Google Chrome: install it"):
-            browser.open()
+            run(_browser.launch())
         self.assertEqual((self.launched, self.installs), ([], []))
-        self.assertNotIn(browser.CHROMIUM_QUESTION, self.dest.getvalue())
+        self.assertNotIn(_browser.CHROMIUM_QUESTION, self.dest.getvalue())
 
     def test_a_failed_download(self):
         self.terminal("y")
-        with mock.patch.object(browser.subprocess, "Popen", return_value=FakeInstaller("Error: ENOSPC\n", 1)), \
+        with mock.patch.object(_browser.subprocess, "Popen", return_value=FakeInstaller("Error: ENOSPC\n", 1)), \
                 self.assertRaisesRegex(ToolError, "exited with 1: Error: ENOSPC"):
-            browser.open()
+            run(_browser.launch())
         self.assertEqual(self.launched, [])
         self.assertIn("Downloading Chromium", self.dest.getvalue())
 
     def test_a_failed_download_is_raised_again_without_asking(self):
         asked = []
-        failure = ToolError("Chromium was not downloaded: Playwright's installer exited "
-                                       "with 1: Error: ENOSPC")
-        with mock.patch.object(browser.prompt, "confirm", lambda *args, **options: asked.append(args) or True), \
-                mock.patch.object(browser, "_install_chromium", side_effect=failure) as install:
+        failure = ToolError("Chromium was not downloaded: Playwright's installer exited with 1: Error: ENOSPC")
+        with mock.patch.object(_browser._prompt, "confirm", lambda *args, **options: asked.append(args) or True), \
+                mock.patch.object(_browser, "_install_chromium", side_effect=failure) as install:
             for _ in range(2):
                 with self.assertRaises(ToolError) as caught:
-                    browser.open()
+                    run(_browser.launch())
                 self.assertIs(caught.exception, failure)
         self.assertEqual((len(asked), install.call_count, self.launched), (1, 1, []))
 
     def test_two_threads_at_once_ask_once_and_download_once(self):
-        # Each source's session opens its browser on its own thread; both find Chromium missing together.
+        # Two runs in one process may find Chromium missing together.
         asked, installs, channels = [], [], []
         start = threading.Barrier(2)
 
@@ -407,10 +449,10 @@ class ChromeOnlyTest(BrowserCase):
 
         def open_one():
             start.wait()
-            channels.append(browser._channel(self.playwright))
+            channels.append(_browser._channel(self.playwright))
 
-        with mock.patch.object(browser.prompt, "confirm", confirm), \
-                mock.patch.object(browser, "_install_chromium", install):
+        with mock.patch.object(_browser._prompt, "confirm", confirm), \
+                mock.patch.object(_browser, "_install_chromium", install):
             threads = [threading.Thread(target=open_one) for _ in range(2)]
             for thread in threads:
                 thread.start()
@@ -423,7 +465,7 @@ class ChromeOnlyTest(BrowserCase):
         with mock.patch.object(Path, "is_file", lambda path: found.append(str(path)) or False):
             for platform, env in (("darwin", {}), ("linux", {}),
                                   ("win32", {"LOCALAPPDATA": "C:/Users/a/AppData/Local", "PROGRAMFILES": "C:/PF"})):
-                with mock.patch.object(browser.sys, "platform", platform), mock.patch.dict(os.environ, env, clear=True):
+                with mock.patch.object(_browser.sys, "platform", platform), mock.patch.dict(os.environ, env, clear=True):
                     self.assertFalse(CHROME_INSTALLED())
         self.assertEqual([Path(path) for path in found], [
             Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"), Path("/opt/google/chrome/chrome"),
@@ -431,263 +473,175 @@ class ChromeOnlyTest(BrowserCase):
             Path("C:/PF/Google/Chrome/Application/chrome.exe")])
 
 
+class HeadfulAgentTest(unittest.TestCase):
+    def test_the_headed_name_is_measured_once_per_executable(self):
+        _browser._HEADFUL_UA.clear()
+        self.addCleanup(_browser._HEADFUL_UA.clear)
+        probes = []
+
+        class Remote:
+            async def new_context(self):
+                probes.append(1)
+                page = SimpleNamespace(evaluate=mock.AsyncMock(return_value="Mozilla HeadlessChrome/120"))
+                return SimpleNamespace(new_page=mock.AsyncMock(return_value=page), close=mock.AsyncMock())
+
+        playwright = FakePlaywright("/fake/chrome/bin")
+        first = run(_browser._headful_ua(cast(Any, playwright), "chromium", Remote()))
+        second = run(_browser._headful_ua(cast(Any, playwright), "chromium", Remote()))
+        self.assertEqual((first, second, len(probes)), ("Mozilla Chrome/120", "Mozilla Chrome/120", 1))
+
+
 @needs_chromium
-class ChannelTest(unittest.TestCase):
-    """The channel a headless launch passes, pinned without a real browser."""
-
-    def launched(self, channel, *, profile):
-        playwright = mock.Mock()
-        options = {"headless": True, "args": []}
-        with mock.patch.object(browser, "_headful_user_agent", return_value="Chrome/1"):
-            browser._open_context(playwright, profile, channel, options, {})
-        chromium = playwright.chromium
-        return [call.kwargs["channel"] for call in chromium.launch.call_args_list + chromium.launch_persistent_context.call_args_list]
-
-    def test_headful_ua_is_cached_per_executable_path(self):
-        browser._HEADFUL_UA.clear()
-        playwright = mock.Mock()
-        playwright.chromium.executable_path = "/fake/chrome/bin"
-        with mock.patch.object(browser, "_headful_user_agent", return_value="Chrome/120") as probe:
-            first = browser._headful_user_agent_of(playwright, "chromium")
-            second = browser._headful_user_agent_of(playwright, "chromium")
-        self.assertEqual((first, second), ("Chrome/120", "Chrome/120"))
-        probe.assert_called_once()
-        browser._HEADFUL_UA.clear()
-
-    def test_bundled_chromium_is_launched_through_the_chromium_channel(self):
-        # With no channel, Playwright would run the headless shell, which flnd doesn't install.
-        for profile in (None, "profile"):
-            self.assertEqual(self.launched(None, profile=profile)[-1], "chromium")
-            self.assertEqual(set(self.launched("chromium", profile=profile)), {"chromium"})
-
-    def test_installed_chrome_keeps_its_channel(self):
-        for profile in (None, "profile"):
-            self.assertEqual(set(self.launched("chrome", profile=profile)), {"chrome"})
-
-
-class OpenTest(BrowserCase):
-    def setUp(self):
-        super().setUp()
-        self.folder = tempfile.TemporaryDirectory()
-        self.addCleanup(self.folder.cleanup)
-
+class LaunchTest(BrowserCase):
     def test_incognito_leaves_nothing_behind(self):
-        with browser.open(headless=True) as b:
-            b.cookies.add([{"name": "sid", "value": "1", "domain": "site.test", "expires": time.time() + 3600}])
-            self.assertEqual(len(b.cookies.get()), 1)
-        with browser.open(headless=True) as b:
-            self.assertEqual(len(b.cookies.get()), 0)
+        async def check():
+            async with await _browser.launch(headless=True) as chrome:
+                await chrome.add_cookies([{"name": "sid", "value": "1", "domain": "site.test",
+                                           "expires": time.time() + 3600}])
+                first = len(await chrome.cookies())
+            async with await _browser.launch(headless=True) as chrome:
+                return first, len(await chrome.cookies())
 
-    def test_headless_reports_its_own_user_agent(self):
-        with browser.open(headless=True) as b:
-            agent = b.open().raw.evaluate("navigator.userAgent")
+        self.assertEqual(run(check()), (1, 0))
+
+    def test_headless_reports_a_headed_user_agent_and_hides_webdriver(self):
+        async def check(stealth):
+            async with await _browser.launch(headless=True, stealth=stealth) as chrome:
+                tab = await chrome.tab()
+                return await tab.evaluate("navigator.userAgent"), await tab.evaluate("navigator.webdriver")
+
+        agent, webdriver = run(check(True))
         self.assertIn("Chrome/", agent)
         self.assertNotIn("Headless", agent)
-        with browser.open(headless=True, profile=Path(self.folder.name) / "profile") as b:
-            self.assertEqual(b.open().raw.evaluate("navigator.userAgent"), agent)
-
-    def test_profile_keeps_a_cookie(self):
-        profile = Path(self.folder.name) / "profile"
-        with browser.open(headless=True, profile=profile) as b:
-            b.cookies.add([{"name": "sid", "value": "1", "domain": "site.test", "expires": time.time() + 3600}])
-        with browser.open(headless=True, profile=profile) as b:
-            self.assertEqual([cookie["name"] for cookie in b.cookies.get()], ["sid"])
+        self.assertIsNone(webdriver)
+        self.assertIs(run(check(False))[1], False)
 
     def test_an_installed_profile_is_copied_and_deleted(self):
-        home = Path(self.folder.name)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        home = Path(folder.name)
         platform = sys.platform if sys.platform in ("darwin", "win32") else "linux"
-        root = home / browser.PROFILE_ROOTS[platform]
+        root = home / _browser.PROFILE_ROOTS[platform]
         (root / "Profile 1" / "Cache").mkdir(parents=True)
         (root / "Profile 1" / "Preferences").write_text("{}")
         (root / "Profile 1" / "Cache" / "big").write_text("cache")
         (root / "Local State").write_text("{}")
         temp = home / "temp"
         temp.mkdir()
-        # The bundled Chromium stands in for real Chrome.
-        with mock.patch.object(Path, "home", return_value=home), mock.patch.object(tempfile, "tempdir", str(temp)), \
-                mock.patch.object(browser, "PROFILE_CHANNEL", None):
-            with browser.open(headless=True, profile="Profile 1") as b:
+
+        async def check():
+            async with await _browser.launch(headless=True, profile="Profile 1") as chrome:
                 copy, = temp.glob("flnd-chrome-*")
                 self.assertTrue((copy / "Default" / "Preferences").is_file())
                 self.assertTrue((copy / "Local State").is_file())
                 # Chromium makes its own Cache once it runs; the profile's wasn't copied into it.
                 self.assertFalse((copy / "Default" / "Cache" / "big").exists())
-                self.assertEqual(b.open().url, "about:blank")
+                self.assertEqual((await chrome.tab()).url, "about:blank")
+            return copy
+
+        # The bundled Chromium stands in for real Chrome.
+        with mock.patch.object(Path, "home", return_value=home), mock.patch.object(tempfile, "tempdir", str(temp)), \
+                mock.patch.object(_browser, "PROFILE_CHANNEL", "chromium"):
+            copy = run(check())
         self.assertFalse(copy.exists())
 
-    def test_cdp_attaches_and_leaves_it_running(self):
-        user_data = Path(self.folder.name) / "chromium"
-        chromium = subprocess.Popen([chromium_path(), "--headless=new", "--remote-debugging-port=0",
-                                     f"--user-data-dir={user_data}", "about:blank"],
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.addCleanup(chromium.wait)
-        self.addCleanup(chromium.terminate)
-        endpoint = f"http://127.0.0.1:{debugging_port(user_data)}"
-        with browser.attach(endpoint) as b:
-            b.open()
-            b.cookies.add([{"name": "sid", "value": "1", "domain": "site.test"}])
-            self.assertEqual([cookie["name"] for cookie in b.cookies.get()], ["sid"])
-        self.assertIsNone(chromium.poll())
-        with urllib.request.urlopen(f"{endpoint}/json/version") as response:
-            self.assertEqual(response.status, 200)
-
     def test_closed_after_an_exception(self):
-        chromium = None
-        page = None
-        with self.assertRaises(ValueError):
-            with browser.open(headless=True) as b:
-                chromium = b.raw.browser
-                page = b.open()
+        async def fail(seen):
+            async with await _browser.launch(headless=True) as chrome:
+                seen.append(chrome.raw.browser)
                 raise ValueError("boom")
-        assert page is not None and chromium is not None
-        self.assertTrue(page.raw.is_closed())
-        self.assertFalse(chromium.is_connected())
 
-    def test_webdriver_hidden(self):
-        with browser.open(headless=True) as b:
-            self.assertIsNone(b.open().raw.evaluate("navigator.webdriver"))
-        with browser.open(headless=True, stealth=False) as b:
-            self.assertIs(b.open().raw.evaluate("navigator.webdriver"), False)
-
-
-def chromium_path() -> str:
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as playwright:
-        return playwright.chromium.executable_path
-
-
-def debugging_port(user_data: Path) -> str:
-    """Chromium writes the port it picked for --remote-debugging-port=0 into its profile folder."""
-    port_file = user_data / "DevToolsActivePort"
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        if port_file.is_file() and port_file.read_text().strip():
-            return port_file.read_text().split()[0]
-        time.sleep(0.05)
-    raise TimeoutError("Chromium did not open its debugging port")
+        seen = []
+        with self.assertRaises(ValueError):
+            run(fail(seen))
+        self.assertFalse(seen[0].is_connected())
 
 
 @needs_chromium
 class PageCase(BrowserCase):
-    """One browser for the whole class; each test gets a fresh tab."""
+    """One browser for the whole class; each test gets a fresh tab on https://site.test/."""
 
     @classmethod
     def setUpClass(cls):
-        cls.browser = browser.open(headless=True)
-        cls.browser.raw.route("https://site.test/**", fulfill)
-        cls.browser.raw.route("https://bad.test/**", fulfill)
+        cls.browser = run(_browser.launch(headless=True))
+        run(cls.browser.raw.route("https://site.test/**", fulfill))
+        run(cls.browser.raw.route("https://bad.test/**", fulfill))
 
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close()
+        run(cls.browser.close())
 
     def setUp(self):
         super().setUp()
-        self.page = self.browser.open("https://site.test/")
-        self.addCleanup(self.page.close)
+        self.page = run(self.browser.tab())
+        run(self.page.goto("https://site.test/"))
+        self.addCleanup(lambda: run(self.page.close()))
 
 
 class BrowserTest(PageCase):
-    def test_open_page_with_and_without_url(self):
-        self.assertEqual(self.browser.open().url, "about:blank")
-        self.assertEqual(self.page.url, "https://site.test/")
-        failed = self.browser.open("https://bad.test/")
-        self.assertEqual(failed.url, "about:blank")
-        self.assertTrue(self.lines()[0].startswith("! could not open https://bad.test/: "))
-        self.assertIs(failed.browser, self.browser)
-
     def test_cookies(self):
-        self.browser.cookies.add(cookies.Jar([
+        run(self.browser.add_cookies(_cookies.Jar([
             {"name": "sid", "value": "1", "domain": ".site.test", "secure": True},
             {"name": "csrf", "value": "2", "domain": "site.test", "path": "/api"},
-        ]))
-        jar = self.browser.cookies.get()
-        self.assertIsInstance(jar, cookies.Jar)
+        ])))
+        jar = run(self.browser.cookies())
+        self.assertIsInstance(jar, _cookies.Jar)
         stored = {cookie["name"]: (cookie["domain"], cookie["path"]) for cookie in jar}
         self.assertEqual(stored, {"sid": (".site.test", "/"), "csrf": ("site.test", "/api")})
         self.assertEqual(jar.filter(names="sid").header, "sid=1")
-        self.browser.cookies.clear()
-        self.assertEqual(len(self.browser.cookies.get()), 0)
-
-    def test_closed_tabs_are_forgotten(self):
-        tab = self.browser.open("https://site.test/")
-        self.assertIn(tab.raw, self.browser._wrappers)
-        self.assertIn(tab, self.browser._opened)
-        tab.close()
-        self.assertNotIn(tab.raw, self.browser._wrappers)
-        self.assertNotIn(tab, self.browser._opened)
+        run(self.browser.raw.clear_cookies())
 
     def test_one_bad_cookie_among_good_ones(self):
-        self.browser.cookies.add([{"name": "bad", "value": "s3cr3t-value"},
-                                  {"name": "good", "value": "1", "domain": "site.test"}])
-        self.assertEqual([cookie["name"] for cookie in self.browser.cookies.get()], ["good"])
+        run(self.browser.add_cookies([{"name": "bad", "value": "s3cr3t-value"},
+                                      {"name": "good", "value": "1", "domain": "site.test"}]))
+        self.assertEqual([cookie["name"] for cookie in run(self.browser.cookies())], ["good"])
         self.assertEqual(len(self.lines()), 1)
         self.assertTrue(self.lines()[0].startswith("! cookie bad was rejected: "))
         self.assertNotIn("s3cr3t-value", self.lines()[0])
-        self.browser.cookies.clear()
+        run(self.browser.raw.clear_cookies())
 
 
 class PageTest(PageCase):
     def fetch(self, path):
-        with self.page.raw.expect_response(lambda response: response.url.endswith(path)):
-            self.page.raw.evaluate("path => fetch(path).then(response => response.text())", path)
+        run(self.page.raw.evaluate("path => fetch(path).then(response => response.text())", path))
 
     def test_goto_returns_the_status(self):
-        visit = self.page.goto("https://site.test/other", idle=True)
+        visit = run(self.page.goto("https://site.test/other", idle=True))
         assert visit is not None
         self.assertEqual((visit.status, visit.url), (200, "https://site.test/other"))
         self.assertIn("text/html", visit.headers["content-type"])
-        missing = self.page.goto("https://site.test/missing")
+        missing = run(self.page.goto("https://site.test/missing"))
         self.assertEqual(None if missing is None else missing.status, 404)
-        self.assertIsNone(self.page.goto("https://bad.test/?token=secret"))
+        self.assertIsNone(run(self.page.goto("https://bad.test/?token=secret")))
         self.assertEqual(len(self.lines()), 1)
         self.assertIn("https://bad.test/", self.lines()[0])
         self.assertNotIn("token=secret", self.lines()[0])
 
-    def test_responses_each_match_form(self):
-        for match in ("graphql", re.compile(r"/api/graph"), lambda url: url.endswith("graphql")):
-            with self.page.responses(match) as watch:
-                self.fetch("/api/graphql")
-                self.fetch("/api/other")
-            self.fetch("/api/graphql")
-            seen = []
-            for data in watch:
-                seen.append((data, watch.request.url if watch.request else None))
-            self.assertEqual(seen, [({"data": {"n": 1}}, "https://site.test/api/graphql")], match)
-
-    def test_a_match_of_another_type_raises(self):
-        with self.assertRaises(TypeError):
-            self.page.responses(3)  # type: ignore[arg-type]
-
-    def test_responses_skips_bodies_that_are_not_json(self):
-        ui.level = "debug"
-        with self.page.responses("/api/") as watch:
-            self.fetch("/api/html")
-            self.fetch("/api/other")
-        self.assertEqual(list(watch), [{"other": True}])
-        self.assertIn(self.lines(), ([". responses: skipped a body that is not JSON from https://site.test/api/html"],
-                                     ["· responses: skipped a body that is not JSON from https://site.test/api/html"]))
-
-    def test_requests_and_stop(self):
-        watching = self.page.requests(lambda url: "/api/" in url)
-        self.assertIsInstance(watching, browser.Watch)
-        self.fetch("/api/other")
-        watching.stop()
-        watching.stop()   # a second stop does nothing
+    def test_a_capture_keeps_the_bodies_it_accepts_in_order(self):
+        capture = run(self.page.capture(lambda response: "/api/" in response.url))
         self.fetch("/api/graphql")
-        self.assertEqual([req.url for req in watching], ["https://site.test/api/other"])
+        self.fetch("/home")
+        self.fetch("/api/other")
+        run(capture.settle())
+        self.assertEqual([(url.removeprefix("https://site.test"), json.loads(body)) for url, body in capture.items],
+                         [("/api/graphql", {"data": {"n": 1}}), ("/api/other", {"other": True})])
+        left = run(capture.close())
+        self.assertEqual(len(left), 2)
+        self.fetch("/api/graphql")
+        run(capture.settle())
+        self.assertEqual(list(capture.items), [])
 
     def test_wait(self):
-        self.page.raw.evaluate("setTimeout(() => document.body.innerHTML = '<article>hi</article>', 100)")
-        self.page.wait("article", timeout=5)
-        self.page.raw.evaluate("setTimeout(() => history.pushState({}, '', '/reels/'), 100)")
-        self.page.wait(url="**/reels/", timeout=5)
-        self.page.wait(url=re.compile(r"/reels/$"), timeout=5)
-        self.page.wait(url=lambda url: url.endswith("/reels/"), timeout=5)
-        self.page.goto("https://site.test/")
-        self.page.wait(timeout=5)
-        self.page.wait(idle=True, timeout=5)
-        self.page.wait("body", url="**/site.test/", idle=True, timeout=5)
+        run(self.page.evaluate("setTimeout(() => document.body.innerHTML = '<article>hi</article>', 100)"))
+        run(self.page.wait("article", timeout=5))
+        run(self.page.evaluate("setTimeout(() => history.pushState({}, '', '/reels/'), 100)"))
+        run(self.page.wait(url="**/reels/", timeout=5))
+        run(self.page.wait(url=re.compile(r"/reels/$"), timeout=5))
+        run(self.page.wait(url=lambda url: url.endswith("/reels/"), timeout=5))
+        run(self.page.goto("https://site.test/"))
+        run(self.page.wait(timeout=5))
+        run(self.page.wait(idle=True, timeout=5))
+        run(self.page.wait("body", url="**/site.test/", idle=True, timeout=5))
 
     def test_wait_raises_wait_error_naming_what_it_waited_for(self):
         for options, what in (({"css": "#never"}, "an element to match '#never'"),
@@ -695,101 +649,95 @@ class PageTest(PageCase):
                               ({"url": lambda url: False}, "the URL to match a predicate")):
             with self.subTest(what=what):
                 started = time.monotonic()
-                with self.assertRaises(browser.WaitError) as caught:
-                    self.page.wait(**cast(dict[str, Any], options), timeout=0.2)
+                with self.assertRaises(_browser.WaitError) as caught:
+                    run(self.page.wait(**cast(dict[str, Any], options), timeout=0.2))
                 self.assertEqual(str(caught.exception), f"waited 0.2 s for {what}")
                 self.assertIsInstance(caught.exception, Error)
-                self.assertNotIsInstance(caught.exception, browser._raw_error())
+                self.assertNotIsInstance(caught.exception, _browser._raw_error())
                 self.assertLess(time.monotonic() - started, 3)
 
     def test_wait_timeout_is_for_every_condition_together(self):
         # The element never comes, so the URL wait has only what the first one left: none.
         started = time.monotonic()
-        with self.assertRaises(browser.WaitError):
-            self.page.wait("body", url="**/never/", timeout=0.5)
+        with self.assertRaises(_browser.WaitError):
+            run(self.page.wait("body", url="**/never/", timeout=0.5))
         self.assertLess(time.monotonic() - started, 2)
 
-    def test_content_url_close(self):
-        self.assertIn("home", self.page.document.raw.get() or "")
-        self.page.raw.evaluate("document.body.innerHTML = '<p>changed</p>'")
-        self.assertIn("changed", self.page.document.css("body").text)
+    def test_content_evaluate_url_close(self):
+        self.assertIn("home", run(self.page.content()))
+        run(self.page.evaluate("document.body.innerHTML = '<p>changed</p>'"))
+        self.assertIn("changed", run(self.page.content()))
+        self.assertEqual(run(self.page.evaluate("x => x + 1", 41)), 42)
         self.assertEqual(self.page.url, "https://site.test/")
-        self.page.close()
+        run(self.page.close())
         self.assertTrue(self.page.raw.is_closed())
 
-    def test_handoff_headless_raises(self):
-        with self.assertRaises(Error):
-            self.page.handoff(until=lambda: False, message="Solve the captcha")
-        self.assertTrue(self.page.handoff(until=lambda: True, message="Solve the captcha"))
+    def test_click(self):
+        run(self.page.evaluate("document.body.innerHTML = "
+                               "'<button onclick=\"this.textContent = 1\">0</button>'"))
+        run(self.page.click("button"))
+        self.assertEqual(run(self.page.evaluate("document.querySelector('button').textContent")), "1")
+        with self.assertRaisesRegex(_browser.WaitError, "to click '#never'"):
+            run(self.page.click("#never", timeout=0.2))
 
 
 class ScrollTest(PageCase):
     def setUp(self):
         super().setUp()
-        self.enterContext(clock.use(seeded(7)))
-        self.enterContext(mock.patch.object(browser, "SCROLL_WAIT", 0.3))
-        self.enterContext(mock.patch.object(browser, "SCROLL_PAUSE", 0.01))
+        self.enterContext(_time.use(seeded(7)))
+        self.enterContext(mock.patch.object(_browser, "SCROLL_WAIT", 0.3))
+        self.enterContext(mock.patch.object(_browser, "SCROLL_PAUSE", 0.01))
 
     def load(self, cap=40, jiggle=False):
-        self.page.goto(f"https://site.test/feed?cap={cap}&jiggle={int(jiggle)}")
+        run(self.page.goto(f"https://site.test/feed?cap={cap}&jiggle={int(jiggle)}"))
 
     def count(self) -> int:
-        return self.page.raw.locator(".item").count()
+        return run(self.page.evaluate("document.querySelectorAll('.item').length"))
 
     def wheels(self) -> list[int]:
-        return self.page.raw.evaluate("wheels")
+        return run(self.page.evaluate("wheels"))
 
     def test_reaches_the_end_of_the_feed(self):
         self.load(cap=20)
-        scrolls = self.page.scroll(idle=1.5)
+        scrolls = run(self.page.scroll(idle=1.5))
         self.assertEqual(self.count(), 20)
         self.assertLess(scrolls, 20)
 
     def test_feed_that_only_loads_after_the_jiggle(self):
         self.load(cap=20, jiggle=True)
-        self.page.scroll(idle=2.0)
+        run(self.page.scroll(idle=2.0))
         self.assertEqual(self.count(), 20)
 
-    def test_until_stops_it(self):
-        self.load()
-        self.page.scroll(until=lambda: self.count() >= 15)
-        self.assertGreaterEqual(self.count(), 15)
-        self.assertLess(self.count(), 25)
+    def test_by_script_reaches_the_end_too(self):
+        self.page.by_script = True
+        self.load(cap=20)
+        run(self.page.scroll(idle=1.5))
+        self.assertEqual(self.count(), 20)
 
     def test_until_is_asked_before_each_scroll(self):
         self.load()
-        with mock.patch.object(browser, "SCROLL_WAIT", 0.02):
-            self.assertEqual(self.page.scroll(until=upto(3)), 3)
-        self.assertEqual(self.page.scroll(until=lambda: True), 0)
-
-    def test_new_responses_count_as_progress(self):
-        # Every scroll fetches /api/other, so while it is watched the feed never looks finished.
-        self.page.goto("https://site.test/feed?cap=5&fetch=1")
-        with mock.patch.object(browser, "SCROLL_WAIT", 2.0):
-            with self.page.responses("/api/"):
-                self.assertEqual(self.page.scroll(until=upto(4), idle=0.01), 4)
-        # Unwatched, the same responses are no progress: the first scroll at the bottom ends it.
-        with mock.patch.object(browser, "SCROLL_WAIT", 0.02):
-            self.assertEqual(self.page.scroll(until=upto(4), idle=0.01), 1)
+        with mock.patch.object(_browser, "SCROLL_WAIT", 0.02):
+            self.assertEqual(run(self.page.scroll(until=upto(3))), 3)
+        self.assertEqual(run(self.page.scroll(until=lambda: True)), 0)
 
     def test_within_scrolls_an_element_to_its_end(self):
-        self.page.goto("https://site.test/box")
-        scrolls = self.page.scroll(within="#box", idle=1.0)
+        run(self.page.goto("https://site.test/box"))
+        scrolls = run(self.page.scroll(within="#box", idle=1.0))
         self.assertEqual(self.count(), 20)
         self.assertGreater(scrolls, 3)
         # The box scrolled, and the page around it didn't.
-        self.assertGreater(self.page.raw.evaluate("document.getElementById('box').scrollTop"), 0)
-        self.assertEqual(self.page.raw.evaluate("scrollY"), 0)
+        self.assertGreater(run(self.page.evaluate("document.getElementById('box').scrollTop")), 0)
+        self.assertEqual(run(self.page.evaluate("scrollY")), 0)
 
     def test_within_nothing_visible_raises(self):
         self.load()
-        with self.assertRaisesRegex(Error, "no visible element"):
-            self.page.scroll(within="#missing")
+        with self.assertRaisesRegex(Changed, "no visible element"):
+            run(self.page.scroll(within="#missing"))
 
     def test_uses_the_wheel_in_uneven_steps(self):
         self.load()
-        with mock.patch.object(browser, "SCROLL_WAIT", 0.02):
-            self.page.scroll(until=upto(8))
+        with mock.patch.object(_browser, "SCROLL_WAIT", 0.02):
+            run(self.page.scroll(until=upto(8)))
         down = [delta for delta in self.wheels() if delta > 0]
         self.assertGreaterEqual(len(down), 8 * 3)
         self.assertGreater(len(set(down)), 5)
@@ -797,12 +745,12 @@ class ScrollTest(PageCase):
 
     def test_seeded_run_is_repeatable(self):
         runs = []
-        with mock.patch.object(browser, "SCROLL_WAIT", 0.02):
+        with mock.patch.object(_browser, "SCROLL_WAIT", 0.02):
             for _ in range(2):
                 import random
                 random.seed(42)
                 self.load(cap=5)
-                self.page.scroll(until=upto(4), idle=100)
+                run(self.page.scroll(until=upto(4), idle=100))
                 runs.append(self.wheels())
         self.assertEqual(runs[0], runs[1])
         self.assertTrue(any(delta < 0 for delta in runs[0]))
@@ -814,112 +762,80 @@ def upto(scrolls: int):
     return lambda: next(asked, scrolls) >= scrolls
 
 
-class FakeContext:
-    """A `BrowserContext` that keeps cookies, and rejects any without a domain, quoting it whole."""
-
-    def __init__(self):
-        self.stored = []
-
-    def add_cookies(self, cookies):
-        for cookie in cookies:
-            if "domain" not in cookie:
-                raise browser._raw_error()(f"Invalid cookie {cookie}")
-            self.stored.append(cookie)
-
-    def cookies(self):
-        return [dict(cookie) for cookie in self.stored]
-
-    def clear_cookies(self):
-        self.stored.clear()
-
-
 class CookiesTest(BrowserCase):
     def setUp(self):
         super().setUp()
-        self.live = browser.Browser(FakeContext(), close_steps=[], headless=True)  # type: ignore[arg-type]
+        self.live = _browser.Browser(cast(Any, FakeContext()), close_steps=[], headless=True)
 
     def test_a_jar_goes_in_and_comes_out(self):
-        jar = cookies.Jar([{"name": "sid", "value": "1", "domain": ".example.com"}])
-        self.live.cookies.add(jar)
-        self.assertEqual(self.live.cookies.get(),
-                         cookies.Jar([{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"}]))
-        self.assertEqual(self.live.cookies.get().header, "sid=1")
-        self.live.cookies.clear()
-        self.assertEqual(len(self.live.cookies.get()), 0)
+        run(self.live.add_cookies(_cookies.Jar([{"name": "sid", "value": "1", "domain": ".example.com"}])))
+        self.assertEqual(run(self.live.cookies()),
+                         _cookies.Jar([{"name": "sid", "value": "1", "domain": ".example.com", "path": "/"}]))
+        self.assertEqual(run(self.live.cookies()).header, "sid=1")
 
     def test_a_rejected_cookie_is_logged_without_its_value(self):
-        self.live.cookies.add([{"name": "bad", "value": "s3cr3t-value"},
-                               {"name": "good", "value": "1", "domain": "example.com"}])
-        self.assertEqual([c["name"] for c in self.live.cookies.get().list], ["good"])
+        run(self.live.add_cookies([{"name": "bad", "value": "s3cr3t-value"},
+                                   {"name": "good", "value": "1", "domain": "example.com"}]))
+        self.assertEqual([c["name"] for c in run(self.live.cookies()).list], ["good"])
         self.assertEqual(len(self.lines()), 1)
         self.assertTrue(self.lines()[0].startswith("! cookie bad was rejected: Invalid cookie"))
         self.assertNotIn("s3cr3t-value", self.lines()[0])
 
 
-class PageContextTest(unittest.TestCase):
-    def test_with_closes_the_tab_even_when_the_block_raises(self):
-        for fails in (False, True):
-            with self.subTest(fails=fails):
-                closed = []
-                tab = browser.Page(SimpleNamespace(close=lambda closed=closed: closed.append(1)), None)  # type: ignore[arg-type]
-                try:
-                    with tab as inside:
-                        self.assertIs(inside, tab)
-                        if fails:
-                            raise KeyError("x")
-                except KeyError:
-                    self.assertTrue(fails)
-                self.assertEqual(closed, [1])
+class CloseTest(BrowserCase):
+    def test_every_step_runs_and_a_failure_is_one_line(self):
+        ran = []
+
+        async def fails():
+            ran.append("context")
+            raise RuntimeError("Target closed")
+
+        chrome = _browser.Browser(cast(Any, FakeContext()), close_steps=[fails, lambda: ran.append("copy")],
+                                  headless=True)
+        run(chrome.close())
+        run(chrome.close())
+        self.assertEqual(ran, ["context", "copy"])
+        self.assertEqual(self.lines(), ["! closing the browser failed: Target closed"])
 
 
 class GoneTest(unittest.TestCase):
     def test_gone_matches_a_navigation_and_a_freed_body_only(self):
-        self.assertTrue(browser._gone(Exception("Execution context was destroyed, most likely")))
-        self.assertTrue(browser._gone(Exception("No resource with given identifier found")))
-        self.assertFalse(browser._gone(Exception("Target closed")))
+        self.assertTrue(_browser._gone(Exception("Execution context was destroyed, most likely")))
+        self.assertTrue(_browser._gone(Exception("No resource with given identifier found")))
+        self.assertFalse(_browser._gone(Exception("Target closed")))
 
 
 class GoneBodyTest(BrowserCase):
-    def response(self, error):
-        return SimpleNamespace(url="https://site.test/api/graphql", text=mock.Mock(side_effect=error))
+    def capture(self, error):
+        raw = SimpleNamespace(on=lambda *args: None, remove_listener=lambda *args: None)
+        capture = run(_browser.Page(cast(Any, raw), cast(Any, None)).capture(lambda response: True))
+
+        async def hear():
+            capture.listener(SimpleNamespace(url="https://site.test/api/graphql", text=mock.AsyncMock(side_effect=error)))
+            await capture.settle()
+
+        run(hear())
+        return capture
 
     def test_a_body_freed_after_the_page_moved_on_is_skipped_without_a_line(self):
         ui.level = "debug"
-        error = browser._raw_error()("Response.text: Protocol error (Network.getResponseBody): "
-                                     "No resource with given identifier found")
-        self.assertEqual(browser._json_bodies(cast(Any, self.response(error)), False), [])
+        error = _browser._raw_error()("Response.text: Protocol error (Network.getResponseBody): "
+                                      "No resource with given identifier found")
+        self.assertEqual(list(self.capture(error).items), [])
         self.assertEqual(self.lines(), [])
 
     def test_another_unreadable_body_is_a_debug_line(self):
         ui.level = "debug"
-        closed = self.response(browser._raw_error()("Target closed"))
-        self.assertEqual(browser._json_bodies(cast(Any, closed), False), [])
+        self.assertEqual(list(self.capture(_browser._raw_error()("Target closed")).items), [])
         self.assertIn(self.lines(), ([". responses: no body for https://site.test/api/graphql: Target closed"],
                                      ["· responses: no body for https://site.test/api/graphql: Target closed"]))
-
-
-class WatchTest(unittest.TestCase):
-    def test_stop_runs_once_and_with_stops(self):
-        stops = []
-        watching = browser.Watch(lambda: stops.append(1))
-        watching.stop()
-        watching.stop()
-        with browser.Watch(lambda: stops.append(2)) as other:
-            self.assertIsInstance(other, browser.Watch)
-            self.assertEqual(stops, [1])
-        self.assertEqual(stops, [1, 2])
 
 
 def seeded(seed):
     """The real clock with a seeded random source, so a scroll's jitter repeats."""
     import random
     random.seed(seed)
-    return clock._RealClock()
-
-
-class FakeRawPage:
-    def wait_for_timeout(self, ms):
-        time.sleep(ms / 1000)
+    return _time._RealClock()
 
 
 class FakeFeed:
@@ -929,28 +845,28 @@ class FakeFeed:
     """
 
     def __init__(self, *, after=0.1, grows=10**9, bottom=True):
-        self.clock = clock.Fake()
+        self.clock = _time.Fake()
         self.after, self.grows, self.bottom = after, grows, bottom
         self.height = 1000
         self.due = []                                    # when the next pages arrive
         self.scrolled_at = []
-        self.mouse = SimpleNamespace(move=lambda *args, **kw: None, wheel=lambda *args: None)
+        self.mouse = SimpleNamespace(move=mock.AsyncMock(), wheel=mock.AsyncMock())
 
-    def scroll(self, raw_page):
+    def scroll(self):
         self.scrolled_at.append(self.now)
         if self.grows:
             self.grows -= 1
             self.due.append(self.now + self.after)
 
-    def evaluate(self, expression):
-        if expression == browser.PAGE_HEIGHT:
+    async def evaluate(self, expression, arg=None):
+        if expression == _browser.PAGE_HEIGHT:
             arrived = [when for when in self.due if when <= self.now]
             self.due = [when for when in self.due if when > self.now]
             self.height += 900 * len(arrived)
             return self.height
-        if expression == browser.NEAR_BOTTOM:
+        if expression == _browser.NEAR_BOTTOM:
             return self.bottom
-        if expression == browser.VIEWPORT:
+        if expression == _browser.VIEWPORT:
             return [800, 900]
         raise AssertionError(f"unexpected script {expression!r}")
 
@@ -958,7 +874,7 @@ class FakeFeed:
     def now(self):
         return self.clock.now
 
-    def wait_for_timeout(self, ms):
+    async def wait_for_timeout(self, ms):
         self.clock.advance(ms / 1000)
 
 
@@ -967,12 +883,14 @@ class ScrollTimingTest(BrowserCase):
 
     def feed(self, **options):
         feed = FakeFeed(**options)
-        self.enterContext(clock.use(feed.clock))
-        page = browser.Page(feed, SimpleNamespace(_headless=True))  # type: ignore[arg-type]
-        # The fake page's scroll stands in for the mouse and the wheel, which would advance the clock.
-        move = mock.patch.object(page, "_move", lambda target: feed.scroll(None))
-        move.start()
-        self.addCleanup(move.stop)
+        self.enterContext(_time.use(feed.clock))
+        page = _browser.Page(cast(Any, feed), cast(Any, None))
+
+        async def move(target):
+            # The fake page's scroll stands in for the mouse and the wheel, which would advance the clock.
+            feed.scroll()
+
+        self.enterContext(mock.patch.object(page, "_move", move))
         return feed, page
 
     def gaps(self, feed):
@@ -980,8 +898,8 @@ class ScrollTimingTest(BrowserCase):
 
     def test_a_page_that_grows_quickly_is_scrolled_again_after_the_floor_not_the_wait(self):
         feed, page = self.feed(after=0.1, grows=20)
-        with mock.patch.object(browser, "SCROLL_WAIT", 3.0), mock.patch.object(browser, "SCROLL_PAUSE", 0.05):
-            page.scroll(until=upto(20))
+        with mock.patch.object(_browser, "SCROLL_WAIT", 3.0), mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
+            run(page.scroll(until=upto(20)))
         # 0.1 s for the page, then the 0.05 s floor plus at most 40%, give or take one 50 ms check.
         gaps = self.gaps(feed)
         self.assertGreaterEqual(min(gaps), 0.1 + 0.05)
@@ -989,8 +907,8 @@ class ScrollTimingTest(BrowserCase):
 
     def test_a_slow_page_is_waited_for(self):
         feed, page = self.feed(after=2.0, grows=5)
-        with mock.patch.object(browser, "SCROLL_WAIT", 3.0), mock.patch.object(browser, "SCROLL_PAUSE", 0.05):
-            page.scroll(until=upto(5))
+        with mock.patch.object(_browser, "SCROLL_WAIT", 3.0), mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
+            run(page.scroll(until=upto(5)))
         self.assertTrue(all(2.0 + 0.05 <= gap < 3.0 for gap in self.gaps(feed)))
         self.assertEqual(feed.height, 1000 + 900 * 5)
 
@@ -998,8 +916,9 @@ class ScrollTimingTest(BrowserCase):
         for wait in (0.05, 0.5, 3.0):
             with self.subTest(wait=wait):
                 feed, page = self.feed(after=0.1, grows=5)
-                with mock.patch.object(browser, "SCROLL_WAIT", wait), mock.patch.object(browser, "SCROLL_PAUSE", 0.05):
-                    page.scroll()
+                with mock.patch.object(_browser, "SCROLL_WAIT", wait), \
+                        mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
+                    run(page.scroll())
                 # The quiet spell starts with the sixth scroll, the first that brought nothing.
                 quiet = feed.scrolled_at[5]
                 self.assertGreaterEqual(feed.now - quiet, 10.0)
@@ -1007,21 +926,21 @@ class ScrollTimingTest(BrowserCase):
 
     def test_300_growing_scrolls_are_not_cut_off(self):
         feed, page = self.feed(after=0.1, grows=300)
-        with mock.patch.object(browser, "SCROLL_PAUSE", 0.05):
-            scrolls = page.scroll()
+        with mock.patch.object(_browser, "SCROLL_PAUSE", 0.05):
+            scrolls = run(page.scroll())
         self.assertGreater(scrolls, 300)
         self.assertEqual(feed.height, 1000 + 900 * 300)
 
     def test_away_from_the_bottom_there_is_nothing_to_wait_for(self):
         feed, page = self.feed(grows=0, bottom=False)
-        with mock.patch.object(browser, "SCROLL_WAIT", 3.0):
-            self.assertEqual(page.scroll(until=upto(10)), 10)
+        with mock.patch.object(_browser, "SCROLL_WAIT", 3.0):
+            self.assertEqual(run(page.scroll(until=upto(10))), 10)
         self.assertTrue(all(gap == 0.0 for gap in self.gaps(feed)))
 
     def test_the_floor_is_the_pause(self):
         feed, page = self.feed(after=0.0, grows=10)
-        with mock.patch.object(browser, "SCROLL_PAUSE", 2.4):
-            page.scroll(until=upto(10))
+        with mock.patch.object(_browser, "SCROLL_PAUSE", 2.4):
+            run(page.scroll(until=upto(10)))
         self.assertTrue(all(2.4 <= gap <= 2.4 * 1.4 + 1e-9 for gap in self.gaps(feed)))
 
 
@@ -1029,56 +948,96 @@ class NavigationRaceTest(BrowserCase):
     """Reads that evaluate in the page survive "Execution context was destroyed" once or twice."""
 
     def page(self, failures):
-        errors = [browser._raw_error()("Page.content: Execution context was destroyed, most likely "
-                                       "because of a navigation")] * failures
+        errors = [_browser._raw_error()("Page.content: Execution context was destroyed, most likely "
+                                        "because of a navigation")] * failures
         loads = []
 
-        def content():
+        async def content():
             if errors:
                 raise errors.pop()
             return "<html><body><p id='x'>hi</p></body></html>"
 
-        raw = SimpleNamespace(content=content, wait_for_load_state=lambda state, timeout: loads.append(state))
-        return browser.Page(raw, SimpleNamespace(_headless=True)), loads  # type: ignore[arg-type]
+        async def wait_for_load_state(state, timeout):
+            loads.append(state)
+
+        raw = SimpleNamespace(content=content, wait_for_load_state=wait_for_load_state)
+        return _browser.Page(cast(Any, raw), cast(Any, None)), loads
 
     def test_a_read_that_hits_a_navigation_waits_for_the_load_and_reads_again(self):
         page, loads = self.page(1)
-        self.assertEqual(page.document.css("#x::text").first, "hi")
+        self.assertIn("hi", run(page.content()))
         self.assertEqual(loads, ["load"])
 
     def test_a_page_that_keeps_navigating_warns_and_reads_as_empty(self):
         page, loads = self.page(10)
-        self.assertEqual(page.document.css("#x::text").get(), [])
+        self.assertEqual(run(page.content()), "<html></html>")
         self.assertEqual(len(loads), 2)
         self.assertTrue(any("kept navigating" in line for line in self.lines()))
 
     def test_another_error_is_not_swallowed(self):
-        raw = SimpleNamespace(content=mock.Mock(side_effect=browser._raw_error()("Target closed")))
-        page = browser.Page(raw, SimpleNamespace(_headless=True))  # type: ignore[arg-type]
-        with self.assertRaises(browser._raw_error()):
-            page.document
+        raw = SimpleNamespace(content=mock.AsyncMock(side_effect=_browser._raw_error()("Target closed")))
+        page = _browser.Page(cast(Any, raw), cast(Any, None))
+        with self.assertRaises(_browser._raw_error()):
+            run(page.content())
 
 
-class HandoffTest(BrowserCase):
+class NoProfilesTest(unittest.TestCase):
+    """The suite-wide guard (`tests/no_profiles.py`): no test may read or copy a real browser profile.
+
+    The real home is left as it is here, so each call below would reach the account's real
+    profiles; the reads are also faked to fail, so even a broken guard reads nothing.
+    """
+
     def setUp(self):
-        super().setUp()
-        self.page = browser.Page(FakeRawPage(), SimpleNamespace(_headless=False))  # type: ignore[arg-type]
+        self.assertTrue(os.environ.get(_cookies.NO_PROFILES), "the guard is off under the suite")
+        never = AssertionError("a real profile was about to be read")
+        for patcher in (mock.patch.object(shutil, "copytree", side_effect=never),
+                        mock.patch.object(_cookies, "_open_copy", side_effect=never),
+                        mock.patch.object(_browser, "_start_playwright", side_effect=never)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
-    def test_done_at_once(self):
-        self.assertTrue(self.page.handoff(until=lambda: True, message="Solve the captcha"))
-        self.assertEqual(self.lines(), [])
+    def test_a_real_chrome_profile_is_neither_copied_nor_launched(self):
+        with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
+            run(_browser.launch(profile="Default", headless=True))
+        with self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
+            run(_browser._open_context(cast(Any, None), _cookies._real_home() / "profile", "chrome",
+                                       {"headless": True, "args": []}, {}))
 
-    def test_done_later(self):
-        ready = time.monotonic() + 0.1
-        with mock.patch.object(browser, "HANDOFF_POLL", 0.02):
-            self.assertTrue(self.page.handoff(until=lambda: time.monotonic() >= ready, message="Solve the captcha"))
-        self.assertIn(self.lines(), (["! Solve the captcha", "+ Solve the captcha"],
-                                     ["! Solve the captcha", "✓ Solve the captcha"]))
+    def test_real_browser_cookies_are_not_read(self):
+        for browser in ("chrome", "firefox"):
+            with self.subTest(browser=browser), self.assertRaisesRegex(RuntimeError, _cookies.NO_PROFILES):
+                _cookies.load(browser)
 
-    def test_timeout(self):
-        with mock.patch.object(browser, "HANDOFF_POLL", 0.02):
-            self.assertFalse(self.page.handoff(until=lambda: False, message="Log in", timeout=0.1))
-        self.assertIn(self.lines(), (["! Log in", "x Log in"], ["! Log in", "✗ Log in"]))
+    def test_a_fake_home_in_a_temporary_folder_is_allowed_and_the_guard_is_off_without_the_variable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _cookies.refuse_profile(Path(folder) / "Default")
+        with mock.patch.dict(os.environ, {_cookies.NO_PROFILES: ""}):
+            _cookies.refuse_profile(_cookies._real_home() / "Default")
+
+
+class LoopTest(unittest.TestCase):
+    def test_run_from_the_loop_itself_raises_and_a_closed_loop_refuses(self):
+        loop = Loop()
+
+        async def inner():
+            return loop.run(asyncio.sleep(0))
+
+        with self.assertRaisesRegex(RuntimeError, "own thread"):
+            loop.run(inner())
+        self.assertEqual(loop.run(asyncio.sleep(0, "done")), "done")
+        loop.close()
+        with self.assertRaisesRegex(RuntimeError, "closed"):
+            loop.run(asyncio.sleep(0))
+
+    def test_the_callers_clock_is_the_coroutines(self):
+        fake = _time.Fake(start=5.0)
+
+        async def now():
+            return _time.now()
+
+        with _time.use(fake):
+            self.assertEqual(run(now()), 5.0)
 
 
 # Every byte value, so a body that went through text anywhere would come back changed.
@@ -1160,7 +1119,7 @@ class LocalServer:
 
 
 class FetchTest(PageCase):
-    """`Page.fetch`: a request sent by the page itself, to a local server, returned as an `http.Response`."""
+    """`Page.fetch`: a request sent by the page itself, to a local server, returned as an `_http.Response`."""
 
     @classmethod
     def setUpClass(cls):
@@ -1174,88 +1133,92 @@ class FetchTest(PageCase):
 
     def setUp(self):
         BrowserCase.setUp(self)
-        self.page = self.browser.open(f"{self.server.url}/app/")
-        self.addCleanup(self.page.close)
+        self.page = run(self.browser.tab())
+        run(self.page.goto(f"{self.server.url}/app/"))
+        self.addCleanup(lambda: run(self.page.close()))
+
+    def fetch(self, url, **options):
+        return run(self.page.fetch(url, **options))
 
     def test_a_json_body(self):
-        response = self.page.fetch(f"{self.server.url}/json?page=2")
-        self.assertIsInstance(response, http.Response)
+        response = self.fetch(f"{self.server.url}/json?page=2")
+        self.assertIsInstance(response, _http.Response)
         self.assertEqual((response.status, response.ok, response.url), (200, True, f"{self.server.url}/json?page=2"))
         self.assertEqual(response.headers["Content-Type"], "application/json")
         self.assertEqual(response.json, {"path": "/json", "query": "page=2"})
 
     def test_a_text_body_keeps_its_bytes(self):
-        response = self.page.fetch("/text")
+        response = self.fetch("/text")
         self.assertEqual(response.content, "héllo\r\nwörld".encode())
         self.assertEqual(response.text, "héllo\r\nwörld")
 
     def test_a_binary_body_comes_back_byte_for_byte(self):
-        self.assertEqual(self.page.fetch("/binary").content, BINARY_BODY)
+        self.assertEqual(self.fetch("/binary").content, BINARY_BODY)
 
     def test_a_relative_url_is_resolved_against_the_page(self):
-        response = self.page.fetch("data/json")
+        response = self.fetch("data/json")
         self.assertEqual(response.url, f"{self.server.url}/app/data/json")
         self.assertEqual(response.json["path"], "/app/data/json")
 
     def test_post_with_a_json_body(self):
-        echo = self.page.fetch("/echo", method="post", body={"id": 1, "name": "example_user"}).json
+        echo = self.fetch("/echo", method="post", body={"id": 1, "name": "example_user"}).json
         self.assertEqual(echo["method"], "POST")
         self.assertEqual(json.loads(echo["body"]), {"id": 1, "name": "example_user"})
         self.assertEqual(echo["headers"]["content-type"], "application/json")
 
     def test_post_with_bytes_or_a_form_as_text(self):
-        raw = self.page.fetch("/echo", method="POST", body=b"\x00\xff\n").json
+        raw = self.fetch("/echo", method="POST", body=b"\x00\xff\n").json
         self.assertEqual(raw["body"], "\x00\xff\n")
-        form = self.page.fetch("/echo", method="POST", body="q=a+b&n=2",
-                               headers={"Content-Type": "application/x-www-form-urlencoded"}).json
+        form = self.fetch("/echo", method="POST", body="q=a+b&n=2",
+                          headers={"Content-Type": "application/x-www-form-urlencoded"}).json
         self.assertEqual(form["body"], "q=a+b&n=2")
 
     def test_a_get_takes_a_dict_body_as_its_query(self):
-        response = self.page.fetch("/json?page=2", body={"n": 3})
+        response = self.fetch("/json?page=2", body={"n": 3})
         self.assertEqual(response.json["query"], "page=2&n=3")
 
     def test_headers_are_passed_through_with_the_pages_origin(self):
-        echo = self.page.fetch("/echo", headers={"X-Csrf": "token-1", "Accept": "application/json"}).json
+        echo = self.fetch("/echo", headers={"X-Csrf": "token-1", "Accept": "application/json"}).json
         self.assertEqual(echo["headers"]["x-csrf"], "token-1")
         self.assertEqual(echo["headers"]["accept"], "application/json")
         self.assertEqual(echo["headers"]["referer"], f"{self.server.url}/app/")
 
     def test_the_pages_cookies_are_sent(self):
-        self.page.raw.evaluate("document.cookie = 'sid=example-session; path=/'")
-        self.assertEqual(self.page.fetch("/echo").json["headers"]["cookie"], "sid=example-session")
+        run(self.page.evaluate("document.cookie = 'sid=example-session; path=/'"))
+        self.assertEqual(self.fetch("/echo").json["headers"]["cookie"], "sid=example-session")
 
     def test_a_404_is_refused_and_unchecked_fetch_returns_it(self):
         with self.assertRaises(SiteError) as caught:
-            self.page.fetch("/status/404?token=abc", headers={"Authorization": SECRET})
+            self.fetch("/status/404?token=abc", headers={"Authorization": SECRET})
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(str(caught.exception), f"GET {self.server.url}/status/404: HTTP 404")
-        self.assertEqual(self.page.fetch("/status/404", check=False).status, 404)
+        self.assertEqual(self.fetch("/status/404", check=False).status, 404)
 
     def test_a_429_is_rate_limited_with_retry_after(self):
         with self.assertRaises(Blocked) as caught:
-            self.page.fetch("/status/429")
+            self.fetch("/status/429")
         self.assertEqual(caught.exception.wait, 7.0)
         self.assertEqual(caught.exception.status, 429)
-        self.assertEqual(self.page.fetch("/status/429", check=False).status, 429)
+        self.assertEqual(self.fetch("/status/429", check=False).status, 429)
 
     def test_a_500_is_a_retryable_site_error(self):
         with self.assertRaises(SiteError) as caught:
-            self.page.fetch("/status/500")
+            self.fetch("/status/500")
         self.assertIn("500", str(caught.exception))
 
     def test_the_timeout_aborts_the_request_in_the_page(self):
         started = time.monotonic()
-        with self.assertRaises(Error) as caught, mock.patch.object(browser, "FETCH_TIMEOUT", 0.5):
-            self.page.fetch("/slow?token=abc", headers={"Authorization": SECRET})
+        with self.assertRaises(NetworkError) as caught, mock.patch.object(_browser, "FETCH_TIMEOUT", 0.5):
+            self.fetch("/slow?token=abc", headers={"Authorization": SECRET})
         self.assertLess(time.monotonic() - started, 5)
         self.assertEqual(str(caught.exception), f"GET {self.server.url}/slow: no answer within 0.5 s")
         # The page is still usable afterwards.
-        self.assertEqual(self.page.fetch("/json").status, 200)
+        self.assertEqual(self.fetch("/json").status, 200)
 
     def test_a_request_the_browser_refuses_names_no_header_value(self):
         with self.assertRaises(Error) as caught:
             # A NUL byte makes the value invalid: the browser's TypeError must not show it, whatever its wording.
-            self.page.fetch("/json", headers={"X-Token": SECRET + "\x00"})
+            self.fetch("/json", headers={"X-Token": SECRET + "\x00"})
         self.assertNotIn("s3cr3t", str(caught.exception))
         self.assertTrue(str(caught.exception).startswith(f"GET {self.server.url}/json: TypeError"), caught.exception)
 

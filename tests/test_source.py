@@ -508,8 +508,8 @@ class PagesTest(unittest.TestCase):
                          [1])
 
 
-BROWSER_NAMES = frozenset({"page", "goto", "handoff", "in_page", "watch_responses", "meta_results",
-                           "on_response", "on_request", "scroll", "browser"})
+BROWSER_NAMES = frozenset({"feed", "click", "evaluate", "handoff", "in_page", "meta_results",
+                           "warm_tabs", "scroll", "browser"})
 
 
 def _names_browser(function, source):

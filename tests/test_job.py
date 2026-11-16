@@ -629,7 +629,7 @@ class AsyncTest(JobCase):
                     yield Post(str(number), [File(f"{CDN}/{chat}/{number}.jpg")], date=1767312000 - number)
 
         self.assertEqual(self.run_engine(Chats, targets=["cht:examplechannel"]), 4)
-        self.assertEqual(set(threads), {"flnd-worker-loop"})
+        self.assertEqual(set(threads), {"flnd-loop"})
         self.assertFalse([thread for thread in threading.enumerate() if thread.name.endswith("-saves")])
 
 

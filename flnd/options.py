@@ -50,7 +50,8 @@ class RunShared:
     interactive: bool = False
     # List what would be downloaded without writing or downloading anything.
     dry: bool = False
-    # The single-window browser pool `site.shared_browser` enters; None outside a run.
+    # The run's browser and loop (`flnd._browser.RunBrowser`), set by `site.shared_browser`;
+    # None outside a run.
     browser_pool: Any = field(default=None, repr=False)
     # Where the run's events go (`flnd._run.Run._emit`). It may wait while a script handles the
     # event before, so it is never called with a lock held. By default, events are dropped.

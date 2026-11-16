@@ -28,8 +28,8 @@ from flnd.source import (
     Changed, File, LoginError, NetworkError, Post, Site, SiteError, Source, caught_up, day,
     target,
 )
-from flnd.sources.common.feed import warm_tabs, watch_responses
-from flnd import _html as selector, _text as text
+from flnd.sources.common.feed import warm_tabs
+from flnd import _html, _text
 
 if TYPE_CHECKING:
     import httpx
@@ -194,7 +194,7 @@ class Twitter(Source):
         except (SiteError, NetworkError) as error:
             site.warn("tweet {id}: {error}", id=tweet_id, error=error)
             return
-        tweet = selector.parse(data).jmespath("data.tweetResult.result").first
+        tweet = _html.parse(data).jmespath("data.tweetResult.result").first
         if not isinstance(tweet, dict) or not unwrap(tweet).get("legacy"):
             site.warn("tweet {id} isn't there, or isn't visible to this login", id=tweet_id)
             return
@@ -211,7 +211,7 @@ class Twitter(Source):
             query, variables = "UserByScreenName", {"screen_name": user}
         found = None
         try:
-            found = selector.parse(
+            found = _html.parse(
                 self.graph.get(site, query, variables)
             ).jmespath("data.user.result").first
         except (SiteError, NetworkError) as error:
@@ -256,10 +256,10 @@ class Twitter(Source):
         if account.user is None:
             return
         user = account.user
-        avatar = selector.parse(user).jmespath(
+        avatar = _html.parse(user).jmespath(
             "avatar.image_url || legacy.profile_image_url_https"
         ).first
-        banner = selector.parse(user).jmespath(
+        banner = _html.parse(user).jmespath(
             "banner.image_url || legacy.profile_banner_url"
         ).first
         # The avatar comes from either place the API has put it; the banner the same way.
@@ -289,10 +289,10 @@ class Twitter(Source):
         since = site.time.since if timeline.category in ("posts", "media", "replies") else None
         seen: set[str] = set()
         old = 0
-        with watch_responses(site, f"/{timeline.query}", scroll=True) as responses:
-            if not site.goto(profile + timeline.tab):
+        with site.feed(f"/{timeline.query}", scroll=True) as responses:
+            if not site.open(profile + timeline.tab):
                 return
-            path = urlsplit(site.page.url).path
+            path = urlsplit(site.url).path
             # A whole segment: a handle like `login_example` only starts with `/login`.
             if any(path == wall or path.startswith(f"{wall}/") for wall in WALLS):
                 raise LoginError(
@@ -368,7 +368,7 @@ class Graph:
             return False
         self._table(site).update(queries)
         site.state[STATE_KEY] = dict(self._table(site))
-        n = text.count(len(queries), "query id")
+        n = _text.count(len(queries), "query id")
         site.info("refreshed {n} from x.com's script", n=n)
         return True
 
@@ -400,7 +400,7 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
     """One timeline page's tweets, and the cursor of the next page (None at the end)."""
     # The timeline sits under user in one response shape and under timeline_v2 in the other; a
     # search's under search_by_raw_query.
-    instructions = selector.parse(data).jmespath(
+    instructions = _html.parse(data).jmespath(
         "data.user.result.timeline.timeline.instructions"
         " || data.user.result.timeline_v2.timeline.instructions"
         " || data.search_by_raw_query.search_timeline.timeline.instructions"
@@ -413,7 +413,7 @@ def read_timeline_page(data: Any) -> tuple[list[dict], str | None]:
             cursor = content.get("value")
         items = [item.get("item", item) for item in content.get("items", [])] or [content]
         for item in items:
-            tweet = selector.parse(item).jmespath("itemContent.tweet_results.result").first
+            tweet = _html.parse(item).jmespath("itemContent.tweet_results.result").first
             if isinstance(tweet, dict):
                 tweets.append(tweet)
     return tweets, cursor
@@ -439,7 +439,7 @@ def unwrap(tweet: dict) -> dict:
 def tweet_id_of(tweet: dict) -> str:
     """A tweet's id, inside its visibility wrapper or not."""
     tweet = unwrap(tweet)
-    return str(tweet.get("rest_id") or selector.parse(tweet).jmespath("legacy.id_str").first or "")
+    return str(tweet.get("rest_id") or _html.parse(tweet).jmespath("legacy.id_str").first or "")
 
 
 def tweet_date(tweet: dict) -> datetime | None:
@@ -493,7 +493,7 @@ def tweet_posts(
     """
     tweet = unwrap(tweet)
     legacy = tweet.get("legacy") or {}
-    retweeted = selector.parse(legacy).jmespath("retweeted_status_result.result").first
+    retweeted = _html.parse(legacy).jmespath("retweeted_status_result.result").first
     # A repost's files are the retweeted tweet's, so the reposts category reads that tweet instead.
     if category == "reposts":
         if not isinstance(retweeted, dict):
@@ -512,13 +512,13 @@ def tweet_posts(
         return
     tweet_id, created_at = tweet_id_of(tweet), legacy.get("created_at")
     posted = parse_date(created_at)
-    quoted = selector.parse(tweet).jmespath("quoted_status_result.result").first
+    quoted = _html.parse(tweet).jmespath("quoted_status_result.result").first
     quoted_media = (
-        selector.parse(unwrap(quoted).get("legacy") or {}).jmespath("extended_entities.media").get()
+        _html.parse(unwrap(quoted).get("legacy") or {}).jmespath("extended_entities.media").get()
         if isinstance(quoted, dict) else []
     )
     found_media = [(index, media) for index, media in
-                   enumerate(selector.parse(legacy).jmespath("extended_entities.media").get())]
+                   enumerate(_html.parse(legacy).jmespath("extended_entities.media").get())]
     found_media += [(f"q{index}", media) for index, media in enumerate(quoted_media)]
     for index, media in found_media:
         found = best_file(media)
@@ -547,9 +547,9 @@ def tweet_posts(
 
 def card_image(tweet: dict) -> str | None:
     """A tweet's card image, at its largest; None when it has no card or no image."""
-    values = selector.parse(tweet).jmespath("card.legacy.binding_values").get()
+    values = _html.parse(tweet).jmespath("card.legacy.binding_values").get()
     images = {
-        entry.get("key"): selector.parse(entry).jmespath("value.image_value.url").first
+        entry.get("key"): _html.parse(entry).jmespath("value.image_value.url").first
         for entry in values if isinstance(entry, dict)
     }
     return next((images[key] for key in CARD_IMAGES if images.get(key)), None)
@@ -575,7 +575,7 @@ def best_file(media: dict) -> tuple[str | tuple[str, ...], str] | None:
         # smaller sizes are mirrors for when it refuses one, tried in this order.
         sizes = tuple(f"{url}?name={size}" for size in PHOTO_SIZES)
         return sizes, PurePosixPath(urlsplit(url).path).suffix.lstrip(".") or "jpg"
-    variants = selector.parse(media).jmespath("video_info.variants").get()
+    variants = _html.parse(media).jmespath("video_info.variants").get()
     # Only MP4 variants are kept: streaming playlists aren't files the engine can save as MP4.
     mp4s = [variant for variant in variants if variant.get("content_type") == "video/mp4"]
     if not mp4s:

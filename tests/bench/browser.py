@@ -6,9 +6,13 @@ fetches the next batch of 10 items from `/slow/items<n>.json`, which the server 
 arrive, and the rest of a scroll's time is the scroller's own waiting.
 
 What it times: launching the browser, opening a tab, one `evaluate` round trip, reading the
-page as HTML, an in-page `fetch` against flnd's HTTP client, scrolling to the end with today's
-default (`idle=10`, how long the scroller waits for silence before deciding the feed ended)
-and with `idle=2`, and closing.
+page as HTML and parsing it, an in-page `fetch` against flnd's HTTP client, scrolling to the end
+with today's default (`idle=10`, how long the scroller waits for silence before deciding the feed
+ended) and with `idle=2`, and closing.
+
+The browser runs on a loop thread of its own (`flnd._loop.Loop`), and every step is handed to it
+from this thread with `Loop.run`, as a source's listing thread does through `Site`'s verbs, so
+each time includes that hop.
 
 The group is skipped when Chromium can't be launched (run `playwright install chromium`).
 """
@@ -21,7 +25,8 @@ import time
 from pathlib import Path
 
 import kit
-from flnd import _browser as browser, _http as http
+from flnd import _browser, _html, _http
+from flnd._loop import Loop
 
 BATCHES = 30
 # The feed: each batch appends 10 tall rows, and nearing the bottom asks for the next batch.
@@ -53,7 +58,7 @@ def timed(work):
 def main() -> None:
     """Serve the feed, drive it in headless Chromium, and emit the report."""
     report = kit.Report("browser")
-    with tempfile.TemporaryDirectory(prefix="flnd-bench-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="flnd-bench-") as scratch, Loop() as loop:
         folder = Path(scratch)
         for n in range(BATCHES):
             batch = {"items": [f"item {n}-{k}" for k in range(10)], "more": n < BATCHES - 1}
@@ -61,36 +66,43 @@ def main() -> None:
         (folder / "feed.html").write_text(FEED)
         with kit.serve(folder) as base:
             try:
-                chrome, took = timed(lambda: browser.open(headless=True))
+                chrome, took = timed(lambda: loop.run(_browser.launch(headless=True)))
             except Exception as error:  # Playwright's own errors, or flnd.ToolError (no browser)
                 report.skip(f"Chromium did not launch ({type(error).__name__}); "
                             "run `playwright install chromium`")
                 report.emit()
                 return
             report.add("launch", took * 1e3, "ms")
-            page, took = timed(lambda: chrome.open(f"{base}/feed.html"))
+
+            async def tab_at(url):
+                page = await chrome.tab()
+                await page.goto(url)
+                return page
+
+            page, took = timed(lambda: loop.run(tab_at(f"{base}/feed.html")))
             report.add("open_tab", took * 1e3, "ms")
-            _, took = timed(lambda: [page.raw.evaluate("1") for _ in range(200)])
+            _, took = timed(lambda: [loop.run(page.evaluate("1")) for _ in range(200)])
             report.add("evaluate", took / 200 * 1e3, "ms")
-            _, took = timed(lambda: [page.document for _ in range(20)])
+            _, took = timed(lambda: [_html.parse(loop.run(page.content())) for _ in range(20)])
             report.add("document", took / 20 * 1e3, "ms")
-            _, took = timed(lambda: [page.fetch(f"{base}/items1.json") for _ in range(50)])
+            _, took = timed(lambda: [loop.run(page.fetch(f"{base}/items1.json"))
+                                     for _ in range(50)])
             report.add("page_fetch", took / 50 * 1e3, "ms")
-            _, took = timed(lambda: [http.fetch(f"{base}/items1.json") for _ in range(50)])
+            _, took = timed(lambda: [_http.fetch(f"{base}/items1.json") for _ in range(50)])
             report.add("http_fetch", took / 50 * 1e3, "ms")
             # `idle` left out is today's default of 10 s.
             for name, tab, options in (("scroll_default", page, {}),
-                                       ("scroll_idle_2", chrome.open(f"{base}/feed.html"),
+                                       ("scroll_idle_2", loop.run(tab_at(f"{base}/feed.html")),
                                         {"idle": 2})):
                 start = time.perf_counter()
-                tab.scroll(**options)
+                loop.run(tab.scroll(**options))
                 took = time.perf_counter() - start
                 # A scroll that stopped early would look fast; only a whole feed counts.
-                rows = tab.raw.evaluate("list.children.length")
+                rows = loop.run(tab.evaluate("list.children.length"))
                 if rows != BATCHES * 10:
                     raise SystemExit(f"browser: {name} stopped at {rows} of {BATCHES * 10} rows")
                 report.add(name, took, "s")
-            _, took = timed(chrome.close)
+            _, took = timed(lambda: loop.run(chrome.close()))
             report.add("close", took * 1e3, "ms")
     report.emit()
 

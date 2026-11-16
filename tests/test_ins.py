@@ -13,7 +13,7 @@ import time
 import unittest
 from datetime import date
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from unittest import mock
 
 import httpx
@@ -291,7 +291,7 @@ PAGES = {
 
 
 class FakeWatch:
-    """`watch_responses` over a fake tab: scrolling gives the responses held for the URL last loaded."""
+    """`site.feed` over a fake tab: scrolling gives the responses held for the URL last loaded."""
 
     def __init__(self, batches):
         self.batches = {url: list(entries) for url, entries in batches.items()}
@@ -312,11 +312,16 @@ class FakeWatch:
 
             def __iter__(self):
                 # Read once the page is loaded, as the first scroll would.
-                queue = batches.get(site.page.url, [])
+                queue = batches.get(site.url, [])
                 while queue:
                     yield queue.pop(0)
 
         return Responses()
+
+
+def watching(watch):
+    """Patch `FakeSite.feed` to be `watch`, a `FakeWatch`."""
+    return mock.patch.object(FakeSite, "feed", lambda site, match, **options: watch(site, match, **options))
 
 
 def scrolled(*tabs):
@@ -327,7 +332,7 @@ def scrolled(*tabs):
 def read(text="ins:someone", *, options=Options(), watch=None, pages=PAGES, json=JSON, seen=None, cookies=None,
          state=None):
     """What the job would download for `text`, with `watch` as the tabs' scrolling (every tab's by default)."""
-    with mock.patch("flnd.sources.ins.watch_responses", watch or scrolled(*TABS)):
+    with watching(watch or scrolled(*TABS)):
         return collect(Instagram, text, pages=pages, json=json, options=options, seen=seen, cookies=cookies,
                        state=state)
 
@@ -441,7 +446,7 @@ class ProfileTest(unittest.TestCase):
     def test_a_grid_post_without_details_is_lazy_and_dated_by_its_pk(self):
         site = FakeSite(Target("ins", "user", "someone"), pages=PAGES, json=JSON)
         instance = Instagram()
-        with mock.patch("flnd.sources.ins.watch_responses", scrolled(*TABS)):
+        with watching(scrolled(*TABS)):
             listed = list(instance.reels(site, instance.user(site, "someone")))
         self.assertEqual([(post.id, post.lazy, day(post.date)) for post in listed],
                          [("R1", True, date(2023, 11, 15)), ("R2", True, date(2023, 11, 15)), ("GONE", True, None)])
@@ -641,13 +646,11 @@ class Landing(FakeSite):
         self.lands = lands
 
     @property
-    def page(self):
-        page = super().page
+    def url(self):
         url = self._seen.visited[-1] if self._seen.visited else "about:blank"
         visits = self._seen.visited.count(url)
         landings = self.lands.get(url, [])
-        cast(Any, page.raw).url = landings[visits - 1] if 1 <= visits <= len(landings) else url
-        return page
+        return landings[visits - 1] if 1 <= visits <= len(landings) else url
 
 
 class ThrottleTest(unittest.TestCase):
