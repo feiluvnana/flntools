@@ -29,16 +29,18 @@ Examples:
 - **A performance commit** quotes its benchmark before and after in the message (`make bench`, `PLAN.md` §14.4). Never claim a speed-up you didn't measure.
 
 ## Checks
-- **Target** (after `PLAN.md` §15.2):
+- **Target** (after `PLAN.md` §15.4):
   - `make check` runs lint (ruff) and the tests, and must be green before every commit;
   - `make setup` syncs `.venv` from `uv.lock`. To change a dependency, edit `pyproject.toml`, then run `uv lock`.
   - `make api` regenerates `tests/data/api.txt`, the public surface (`flnd`, `flnd.source`, `flnd.testing`). Read its diff after any public change: it is the review of that change.
   - `make bench` runs the offline benchmarks; `make docs` builds the API reference.
+  - `make type` runs pyright on the three public modules. It is informational, never a gate, and a wrong public hint is still worth fixing.
 - **Today, until then:** `uv run --no-project scripts/dev.py check` (or `make check`) runs lint, pyright and the tests, and `scripts/dev.py api` regenerates the snapshot.
 - **On Windows**, install make with `winget install ezwinports.make`, or use the one that comes with Git for Windows. Each Makefile recipe is a single `uv` command you can also type yourself.
 
 ## Privacy and live data
 - Never read, print or commit the `*_cookies.txt` files in the repo root, or anything under `.flnd/`.
+- Never pass a file name, caption or any other text from a site to a shell. Run commands with an argument list.
 - Never put a cookie value, key, token or password in a log line, an error message, a comment, a doc or a test.
 - Use only example handles in code, tests and docs: `example_user`, `example_creator`, `example_handle`, `example.page`, `examplechannel`, and the domain `example.com`. Never use a real username.
 - Live checks against real sites are done by hand, on the authorized test accounts, and never in unit tests. Unit tests fake the network, the browser and the clock (`flnd.testing`; today, `httpx.MockTransport` and `clock.Fake`).
@@ -52,15 +54,17 @@ Examples:
 - **`flnd/cli.py`** is the thin CLI (argparse). It imports only `flnd`, so a script can do anything the CLI can.
 - **`flnd/sources/`** has one module per built-in site (`fbk`, `ins`, `loi`, `mht`, `tik`, `tlg`, `twt`) and `_manifest.py`, the list `flnd --help` and target resolution read without importing a source. A source imports only `flnd.source` and the stdlib.
 - **`docs/`** holds the guides for people (§14.6). `examples/` holds a runnable script and an example plugin with its test.
-- **Plugins** live outside the repo: in `<home>/sources/`, or as installed packages with a `flnd.sources` entry point.
+- **Plugins** live outside the repo: in the user's plugin folder (`$FLND_SOURCES`, else `~/.config/flnd/sources/`), or as installed packages with a `flnd.sources` entry point. flnd never loads code from a home folder, since a home may be a folder someone else made.
 
 ## API and naming
 - **Short names**, one word where one word says it.
-- **An action is a verb** (`download`, `sync`, `forget`, `check`, `retry`), with no `get_`, `to_`, `try_` or `load_from_` names. A read is a property, or a method with keyword filters (`fl.files(target=…, kind=…)`).
+- **An action is a verb** (`download`, `follow`, `sync`, `unfollow`, `check`, `retry`), with no `get_`, `to_`, `try_` or `load_from_` names. A read is a property (`fl.logins`), or a method with keyword filters (`fl.files(target=…, kind=…)`).
+- **One word, one meaning**, across the whole package. `retry` is the verb, so an error's advice is `hint`. `wait` waits for a page or a run, so a timed sleep is `pause`. `File` is a file to download (`flnd.source`), so a saved file's row is `Record`.
 - **Options are keyword-only, at most 5.** Past that, use a record or the config file.
-- **Progress is the event stream** (`Saved`, `Skipped`, `Failed`, `Progress`), never a bare callback. Hooks subscribe with `fl.on(...)`.
+- **Progress is the event stream** (`Saved`, `Skipped`, `Failed`, `Progress`). A script iterates a run. There are no callbacks and no hooks: one way to do one thing.
+- **A resource is a context manager** (`with flnd.open(home) as fl:`), so nothing leaks a thread, a browser or a connection.
 - **One spelling:** no aliases and no deprecated names.
-- **Errors are `flnd.Error` subclasses** from the one hierarchy in `PLAN.md` §8. Each has `why` (one line) and `retry` (what to do). A user error never shows a traceback.
+- **Errors are `flnd.Error` subclasses** from the one hierarchy in `PLAN.md` §8. The message is `str(e)`, and `e.hint` says what to do. A user error never shows a traceback. `flnd.Stopped` (Ctrl-C) derives from `KeyboardInterrupt`, never from `flnd.Error`.
 - **The source API is the most important API.** A source declares what it is (code, domains, login, routes, categories) and implements a few well-named hooks. A mistake in a source fails when the class is made, with a message naming the attribute and the fix. The source API is versioned (`api = 1`).
 - `tests/test_names.py` checks the naming rules on the public surface. Its allowlist may only shrink.
 
@@ -69,7 +73,8 @@ The user, 2026-11-16: "the codebase should have extensive comment and docs for h
 
 **Docstrings, everywhere:**
 - **A module** starts with a docstring that says what it holds, who calls it, what it calls, its main flow in numbered steps, and any rule a change must keep (threads, locks, ordering, invariants). There is no length cap.
-- **A class, function or method** has a Google-style docstring: a summary line, then a paragraph on behaviour and edge cases, then `Args:`, `Returns:` and `Raises:`. Public names also get an `Example:`.
+- **A class, function or method** has a Google-style docstring: a summary line, then a paragraph on behaviour and edge cases, then `Args:`, `Returns:` and `Raises:`. Public names also get an `Example:`, which `tests/test_docs.py` runs.
+- **`Args:` says what an argument means** (unit, range, what `None` does), not its type: the annotation says that, and two copies drift.
 - Private functions get one too, unless the body is a few obvious lines.
 
 **Comments explain why, and also how,** wherever the code isn't obvious at a glance:
@@ -104,8 +109,8 @@ A change of behaviour updates its docstrings and its `docs/` page in the same co
 - Measure before changing anything for speed, with `make bench` or a script in your scratchpad, and keep the numbers in the commit message.
 - Use the hot-path rules of `PLAN.md` §5:
   - one asyncio loop for network and browser;
-  - no extra `stat` calls or lock files per file;
-  - batched database writes;
+  - no extra `stat` calls or lock files per file (a `.part` is its own lock);
+  - one database transaction per post, not per file and not on a writer thread;
   - lazy imports, so `flnd --help` stays under 40 ms.
 - A regression guard in `make check` counts things (requests, `stat` calls, statements, imported modules) instead of timing them.
 

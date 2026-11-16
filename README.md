@@ -14,18 +14,19 @@ flnd needs [uv](https://docs.astral.sh/uv/) and Python 3.11 or newer. [Google Ch
 ```bash
 git clone https://github.com/feiluvnana/flntools && cd flntools
 uv tool install .                        # puts `flnd` on your PATH
-uv tool install '.[media,telegram]'      # with slideshows, cards and albums, and Telegram
+uv tool install '.[telegram]'            # with Telegram
 ```
 
 From a checkout, `make setup` creates `.venv`, and then `uv run flnd …` runs it. On Windows, install make first with `winget install ezwinports.make`, or type the `uv` command each Makefile target runs (see [Development](#development)).
 
-ffmpeg is used for videos (joining video and sound, compressing, slideshows). flnd finds it on your PATH, or offers to download it the first time it's needed, and does the same for its other tools (7zz, avifenc, oxipng).
+Photos are compressed in-process, with no tool to install. ffmpeg is used for videos (joining video and sound, compressing, slideshows) and 7zz for archives. flnd finds each on your PATH, or offers to download it the first time it's needed.
 
 ## Quick start
 ```bash
 flnd login ins chrome                        # use your Chrome login for Instagram
-flnd download ins:example_user               # everything example_user posted; follows the target
+flnd download ins:example_user               # every category of example_user, once
 flnd download ins:example_user --only reels --when 2026
+flnd follow ins:example_user                 # follow it, and download what's there now
 flnd sync                                    # new posts of every followed target
 flnd ls                                      # what you follow: files, size, last sync
 flnd show ins:example_user --by month        # one slideshow per month
@@ -33,16 +34,16 @@ flnd show ins:example_user --by month        # one slideshow per month
 
 ## Commands
 ```
-flnd download <targets…> [--only CATS | --all] [--when WHEN] [--limit N] [--compress] [--dry]
-flnd sync [targets…] [--compress]
+flnd download <targets…> [--only CATS] [--when WHEN] [--limit N] [--compress] [--dry] [--exec CMD]
+flnd follow <targets…> [--only CATS] [--when WHEN] [--compress]   follow, and download what's there now
+flnd sync [targets…] [--compress] [--exec CMD]                    what's new for followed targets
+flnd unfollow <targets…>             stop following; files and history stay
 flnd ls [targets…] [--json]          followed targets: files, size, last sync, failures
-flnd forget <targets…>               stop following; files stay
-flnd status                          the last run: what failed and why
+flnd status [--json]                 the last run: what failed and why
 flnd retry                           retry the last run's retryable failures
 flnd check [--fix]                   compare the history with the files on disk, and repair it
-flnd login <source> [how]            how: chrome | firefox | safari | cookies.txt | qr | phone
+flnd login [source] [how]            how: chrome | firefox | safari | cookies.txt | qr | phone; alone, lists your logins
 flnd logout <source>
-flnd logins                          each source's login and when it expires
 flnd sources                         built-in and plugin sources
 flnd show  <targets|paths…> [--by post|day|month|year|all] [--style classic|fun|calm|story] [--music FILE]
 flnd card  <targets|paths…> [--by post|day|month] [--style strip|grid|polaroid|postcard]
@@ -52,14 +53,15 @@ global options: --home DIR · --ui plain|inline · -v · --json
 ```
 
 - **A target** is `<source>:<name, id or link>`, or just the link: `ins:example_user`, `ins:@example_user` and `https://www.instagram.com/example_user/` are the same target. A search is `<source>?<words>`, as in `mht?romance`. `flnd sources` lists every accepted form.
-- **`--only`** picks categories: `posts`, `reels`, `stories`, `highlights`, `tagged`, `reposts` and so on (`flnd sources` lists each site's). Without it, flnd takes the target's own content; `--all` adds other people's (tagged posts, reposts, likes).
+- **`--only`** picks categories: `posts`, `reels`, `stories`, `highlights`, `tagged`, `reposts` and so on (`flnd sources` lists each site's). Without it, flnd takes every category, other people's content included (tagged posts, reposts, likes). A single post has no categories, so `--only` with a post's link is an error.
 - **`--when`** takes `2026`, `2026-06`, `2026-06-15`, `2026-01..2026-03` or `30d` (the last 30 days).
 - **`--dry`** shows what would be downloaded (new, already saved, gone) and writes nothing.
+- **`--exec CMD`** runs a command for each saved file, such as `--exec 'notify-send {path}'`. It never goes through a shell, so a file name can't inject a command.
 - **`--json`** prints one JSON event per line, for scripts.
-- **Exit codes:** 0 ok, 1 some files failed, 2 a usage error, 3 a login is needed, 130 stopped with Ctrl-C.
+- **Exit codes:** 0 ok, 1 some files failed, 2 a usage error, 3 a login is needed, 4 flnd stopped on an error (a full disk, a missing tool, a crash), 130 stopped with Ctrl-C.
 
 ### Following and syncing
-`download` follows every target it downloads, and `flnd sync` fetches what's new for all of them, stopping early once it reaches posts it already has. `flnd forget` stops following a target; its files stay. A scheduled sync suits cron, launchd or Task Scheduler, because it asks no questions and its exit code says whether it went well:
+`download` takes what's there once. `flnd follow` remembers a target with its options and downloads it. `flnd sync` then fetches what's new for every followed target, stopping early once it reaches posts it already has. `flnd unfollow` stops following a target; its files and history stay. A scheduled sync suits cron, launchd or Task Scheduler, because it asks no questions and its exit code says whether it went well:
 
 ```bash
 15 3 * * * /path/to/flnd --home /path/to/media sync
@@ -78,7 +80,7 @@ global options: --home DIR · --ui plain|inline · -v · --json
 - Nothing is ever left half-written.
 
 ### Compressing and unpacking
-- **`--compress`** makes each file as small as it can without visible loss, as it lands: photos to AVIF or optimized JPEG, videos to AV1. Each result is checked before it replaces the original. `flnd sync --compress` also shrinks files saved earlier.
+- **`--compress`** makes each file as small as it can without visible loss, as it lands: photos to AVIF or optimized JPEG, videos to AV1 (or HEVC, with `[compress] video = "hevc"`, for devices that can't play AV1). Each result is checked before it replaces the original, and a file that wouldn't get smaller is left alone. `flnd sync --compress` also shrinks files saved earlier.
 - **Archives unpack automatically** into a folder beside them. A site that knows the password (LOIBUS) passes it on. Unpacking refuses archive tricks: paths that escape the folder, links, and zip bombs.
 
 ### Slideshows, cards and albums
@@ -87,10 +89,10 @@ flnd show ins:example_user --when 2026 --style fun --music song.mp3
 flnd card ins:example_user --by day --style strip        # photobooth strips
 flnd album twt:example_handle --by year                  # a PDF photo book per year
 ```
-Outputs go to `<home>/made/<target>/<show|card|album>/`. A rerun only redoes what changed.
+Outputs go to `<home>/made/<target>/<show|card|album>/`. A rerun only redoes what changed. These three are planned for the release after the first (PLAN.md §16, question 15).
 
 ## Logging in
-`flnd login <source> [how]` reads your login from your browser (Chrome, Firefox, Safari, Edge, Brave), or from a cookies file you exported. Telegram logs in with Telegram Web, a QR code or your phone number. Logins are stored encrypted in `<home>/secrets.db`, with the key in your system keychain; `flnd logins` shows each one and when it expires. A site without a login still downloads what's public, and says so.
+`flnd login <source> [how]` reads your login from your browser (Chrome, Firefox, Safari, Edge, Brave), or from a cookies file you exported. Telegram logs in with Telegram Web, a QR code or your phone number. Logins are stored encrypted in `<home>/secrets.db`, with the key in `<home>/secret.key`, so keep the home as private as the logins in it. `[vault] key = "keychain"` in `config.toml` moves the key to your system keychain, though a scheduled sync may not be able to reach it there. `flnd login` alone shows each login and when it expires. A site without a login still downloads what's public, and says so.
 
 ## The home folder
 Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./.flnd`.
@@ -98,26 +100,26 @@ Everything flnd keeps lives in one folder: `--home`, else `$FLND_HOME`, else `./
 <home>/
   media/<source>/<target>/…   downloaded files, by category (posts/, reels/, stories/, …)
   made/                       slideshows, cards and albums
-  flnd.db                     what was saved, followed targets, run history
+  flnd.db                     what was saved, followed targets, run history and failures
   secrets.db                  logins, encrypted
+  secret.key                  the key to secrets.db
   config.toml                 defaults and per-site settings (pace, proxy, scroll style)
-  sources/                    your plugin sources
-  logs/                       a report of each run
+  logs/                       each run's log and crash reports, kept 30 days
 ```
-An existing `.flnd` from an older flnd is converted on first use, so nothing is downloaded again.
+An existing `.flnd` from an older flnd is converted on first use, so nothing is downloaded again. The old files are only read, so an older flnd still works on it.
 
 ## Use it from Python
 ```python
 import flnd
 
-fl = flnd.open("~/Media/flnd")
-for event in fl.download("ins:example_user", only=["reels"], when="2026", compress=True):
-    if isinstance(event, flnd.Saved):
-        print(event.path, event.post.date)
+with flnd.open("~/Media/flnd") as fl:
+    for event in fl.download("ins:example_user", only=["reels"], when="2026", compress=True):
+        if isinstance(event, flnd.Saved):
+            print(event.path, event.post.date)
 
-fl.sync()
-fl.files(target="ins:example_user", kind="image")    # what's saved, from flnd.db
-fl.show(fl.files(target="ins:example_user", kind="image"), "example_user.mp4", style="calm")
+    report = fl.sync().wait()                            # runs it, and returns the counts and failures
+    photos = fl.files(target="ins:example_user", kind="image")   # what's saved, from flnd.db
+    fl.show(photos, "example_user.mp4", style="calm")
 ```
 [docs/library.md](docs/library.md) covers every call, its options and its events.
 
@@ -128,8 +130,10 @@ from flnd.source import Source, Site, Post, File, target, cookies
 
 class Example(Source):
     """example.com: a user's posts."""
-    code, domains, api = "exm", ("example.com",), 1
-    login = cookies("session")
+    code = "exm"                     # targets look like exm:example_user
+    domains = ("example.com",)       # links, cookies and pacing
+    api = 1                          # the source API this was written for
+    login = cookies("session")       # logged in when this cookie is there
 
     @target("exm:{user}", "example.com/{user}")
     def profile(self, site: Site, user: str) -> dict:
@@ -141,7 +145,7 @@ class Example(Source):
             for p in page["items"]:
                 yield Post(p["id"], [File(p["url"])], date=p["time"])
 ```
-Drop the file into `<home>/sources/`, publish it as a package with a `flnd.sources` entry point, or call `fl.add(Example)`. [docs/writing-a-source.md](docs/writing-a-source.md) walks through it, with the `flnd.testing` kit for its tests.
+Save it as `exm.py` in your plugin folder (`~/.config/flnd/sources/`, or `$FLND_SOURCES`), publish it as a package with a `flnd.sources` entry point, or call `fl.add(Example)`. A plugin runs with your logins, so install only code you trust; flnd never loads one from a home folder. [docs/writing-a-source.md](docs/writing-a-source.md) walks through it, with the `flnd.testing` kit for its tests.
 
 ## Documentation
 [docs/](docs/README.md) covers:
@@ -161,6 +165,7 @@ The code itself is commented for people to read: every module starts with what i
 | `make bench` | the offline benchmarks; `ARGS=--gate` compares with the targets |
 | `make api` | regenerates `tests/data/api.txt`, the public API snapshot |
 | `make docs` | builds the API reference into `build/docs/` |
+| `make type` | checks the public API's type hints with pyright (informational, not part of `check`) |
 | `make try ARGS=…` | runs flnd against a scratch home, `.try/` |
 | `make dist` | a single-file `flnd` binary for this OS (PyInstaller) |
 
