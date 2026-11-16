@@ -37,7 +37,7 @@ def rows(home: Path) -> dict[str, Any]:
     """Return every `targets.db` row by `<code>:<value>` key, or `{}` if missing."""
     if not (home / paths.TARGETS).is_file():
         return {}
-    with store.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+    with paths.table(home / paths.TARGETS, TARGETS_TABLE) as saved:
         return dict(saved.items())
 
 
@@ -70,7 +70,7 @@ def record(
     if not chosen:
         return
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    with store.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+    with paths.table(home / paths.TARGETS, TARGETS_TABLE) as saved:
         for target, options in chosen:
             old = saved.get(key(target))
             kept = _kept_fields(old, options)
@@ -118,7 +118,7 @@ def set_sync(home: Path, target: Target, *, enabled: bool) -> bool:
 def _write_sync(home: Path, target: Target, *, enabled: bool | None) -> bool:
     """Update `target`'s `sync` state in `targets.db`, flipping when `enabled` is None."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    with store.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+    with paths.table(home / paths.TARGETS, TARGETS_TABLE) as saved:
         old = saved.get(key(target))
         row: dict[str, Any] = (dict(old) if isinstance(old, dict)
                else {"kind": target.kind, "at": now})
@@ -130,7 +130,7 @@ def _write_sync(home: Path, target: Target, *, enabled: bool | None) -> bool:
 
 def delete(home: Path, target: Target) -> bool:
     """Remove `target` from `targets.db`, returning True if it was present."""
-    with store.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+    with paths.table(home / paths.TARGETS, TARGETS_TABLE) as saved:
         target_key = key(target)
         if target_key not in saved:
             return False
@@ -150,7 +150,7 @@ def mark_seen(home: Path, target: Target, keys: Iterable[str]) -> None:
     if not items:
         return
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    with store.open(home / paths.TARGETS, table=TARGETS_TABLE) as saved:
+    with paths.table(home / paths.TARGETS, TARGETS_TABLE) as saved:
         old = saved.get(key(target))
         row = (dict(old) if isinstance(old, dict)
                else {"kind": target.kind, SYNC: True, "at": now})

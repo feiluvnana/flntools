@@ -384,18 +384,29 @@ shared.sh.run(cmd: Sequence[str | os.PathLike[str]], *, cwd: PathLike | None = N
 shared.sh.tool(name: str, *, platforms: Mapping[tuple[str, str], Spec] | None = None, dest: PathLike | None = None) -> Tool
 shared.store: module
 shared.store.ClosedError(shared.store.Error, RuntimeError)
+shared.store.Db(path: Path)
+shared.store.Db.batch() -> Iterator[None]
+shared.store.Db.close() -> None
+shared.store.Db.path: attribute
+shared.store.Db.tables: property -> list[str]
 shared.store.Error(shared.Error)
-shared.store.Store(backend: _Backend, table: str)
-shared.store.Store.clear() -> None
-shared.store.Store.close() -> None
-shared.store.Store.get(key: str, default: Any = None) -> Any
-shared.store.Store.items() -> ItemsView[str, Any]
-shared.store.Store.keys(prefix: str = '') -> KeysView[str]
-shared.store.Store.set(key: str, value: Any) -> None
-shared.store.Store.table(name: str) -> Store
-shared.store.Store.update(other: Any = (), /, **kwargs: Any) -> None
-shared.store.Store.values() -> ValuesView[Any]
-shared.store.open(path: PathLike, *, table: str = 'kv') -> Store
+shared.store.Row()
+shared.store.Rows(source: Callable[[], Iterable[T]] | Source[T], plan: Plan = Plan(equal=(), predicates=(), by=None, desc=False, limit=None))
+shared.store.Rows.count: property -> int
+shared.store.Rows.filter(predicate: Any = None, /, **equal: Any) -> Rows[V]
+shared.store.Rows.first: property -> T | None
+shared.store.Rows.get() -> list[T]
+shared.store.Rows.limit(n: int) -> Rows[V]
+shared.store.Rows.prefix(text: str) -> Rows[V]
+shared.store.Rows.sort(by: Any, *, desc: bool = False) -> Rows[V]
+shared.store.Table(db: Db, name: str, kind: type[V] | None)
+shared.store.Table.clear() -> None
+shared.store.Table.db: attribute
+shared.store.Table.items() -> Any
+shared.store.Table.name: attribute
+shared.store.Table.rows: property -> Rows[V]
+shared.store.Table.values() -> Any
+shared.store.open(path: PathLike) -> Db
 shared.text: module
 shared.text.Error(shared.Error)
 shared.text.clean()

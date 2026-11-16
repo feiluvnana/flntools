@@ -71,7 +71,7 @@ class SyncCase(EngineCase):
         return self.engine()._plan(list(targets))
 
     def saved(self):
-        with store.open(self.home / paths.TARGETS, table="targets") as targets:
+        with paths.table(self.home / paths.TARGETS, "targets") as targets:
             return dict(targets.items())
 
     def folder(self):
@@ -122,7 +122,7 @@ class HistoryTest(SyncCase):
     def test_the_history_is_read_once_per_run(self):
         """Fix 12: repair, compress and the tally each scanned the whole history, per target."""
         self.download(texts=("aaa:a", "aaa:b", "aaa:c"))
-        real_iter, real_items, scans = store.Store.__iter__, store.Store.items, []
+        real_iter, real_items, scans = store.Table.__iter__, store.Table.items, []
 
         def counted_iter(s):
             scans.append(s)
@@ -133,11 +133,11 @@ class HistoryTest(SyncCase):
             return real_items(s)
 
         with (
-            mock.patch.object(store.Store, "__iter__", counted_iter),
-            mock.patch.object(store.Store, "items", counted_items),
+            mock.patch.object(store.Table, "__iter__", counted_iter),
+            mock.patch.object(store.Table, "items", counted_items),
         ):
             lines = self.sync()
-        history_scans = [s for s in scans if s._table == "downloads"]
+        history_scans = [s for s in scans if s.name == "downloads"]
         self.assertEqual(len(lines), 3)
         self.assertLessEqual(len(history_scans), 1)
 
@@ -200,7 +200,7 @@ class SyncOptInTest(SyncCase):
         self.assertEqual(self.sync(), [])
         self.assertIn("* nothing to sync", self.lines())
         # A legacy row without a `sync` key counts as synced.
-        with store.open(self.home / paths.TARGETS, table="targets") as targets:
+        with paths.table(self.home / paths.TARGETS, "targets") as targets:
             row = dict(targets["aaa:a"])
             del row["sync"]
             targets["aaa:a"] = row

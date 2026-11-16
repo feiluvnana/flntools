@@ -1,22 +1,31 @@
-"""Tests for `shared._store`: the atomic JSON key-value store."""
+"""Tests for `shared.store`: tables of JSON values and typed rows in one SQLite file."""
 
 import collections.abc
 import json
+import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import shared
-from shared import _store as store
+from shared import store
+
+
+class File(store.Row):
+    table = "files"
+    state: str
+    size: int
+    mtime: int = 0
 
 
 class StoreCase(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
-        self.file = Path(self.folder.name) / "nested" / "state.json"
+        self.file = Path(self.folder.name) / "nested" / "state.db"
         self.db = store.open(self.file)
+        self.kv = self.db["kv"]
 
     def tearDown(self):
         self.db.close()
@@ -25,132 +34,155 @@ class StoreCase(unittest.TestCase):
 
 class MappingTest(StoreCase):
     def test_mutable_mapping_protocol(self):
-        self.assertIsInstance(self.db, collections.abc.MutableMapping)
-        self.db["a"] = {"path": "x.jpg"}
-        self.db["b"] = 2
-        self.assertEqual(self.db["a"], {"path": "x.jpg"})
-        self.assertIn("a", self.db)
-        self.assertNotIn("z", self.db)
-        self.assertNotIn(1, self.db)
-        self.assertEqual(len(self.db), 2)
-        self.assertEqual(list(self.db), ["a", "b"])
-        self.assertEqual(list(self.db.keys()), ["a", "b"])
-        self.assertEqual(list(self.db.values()), [{"path": "x.jpg"}, 2])
-        self.assertEqual(dict(self.db.items()), {"a": {"path": "x.jpg"}, "b": 2})
-        self.assertEqual(self.db.get("z", default="none"), "none")
-        del self.db["a"]
-        self.assertEqual(len(self.db), 1)
+        self.assertIsInstance(self.kv, collections.abc.MutableMapping)
+        self.kv["b"] = 2
+        self.kv["a"] = {"path": "x.jpg"}
+        self.assertEqual(self.kv["a"], {"path": "x.jpg"})
+        self.assertIn("a", self.kv)
+        self.assertNotIn("z", self.kv)
+        self.assertNotIn(1, self.kv)
+        self.assertEqual(len(self.kv), 2)
+        self.assertEqual(list(self.kv), ["a", "b"])
+        self.assertEqual(list(self.kv.values()), [{"path": "x.jpg"}, 2])
+        self.assertEqual(dict(self.kv.items()), {"a": {"path": "x.jpg"}, "b": 2})
+        self.assertEqual(self.kv.get("z", "none"), "none")
+        del self.kv["a"]
+        self.assertNotIn("a", self.kv)
         with self.assertRaises(KeyError):
-            del self.db["a"]
-        with self.assertRaises(KeyError):
-            _ = self.db["a"]
+            del self.kv["a"]
+        self.kv.update({"c": 3}, d=4)
+        self.kv.clear()
+        self.assertEqual(len(self.kv), 0)
 
-    def test_update_and_clear(self):
-        self.db.update({"a": 1, "b": 2}, c=3)
-        self.assertEqual(dict(self.db), {"a": 1, "b": 2, "c": 3})
-        self.db.clear()
-        self.assertEqual(len(self.db), 0)
+    def test_an_unwritten_table_reads_empty(self):
+        self.assertEqual(len(self.db["nothing"]), 0)
+        self.assertEqual(self.db["nothing"].rows.get(), [])
+        self.assertNotIn("x", self.db["nothing"])
 
-    def test_update_bad_value_rolls_back_without_writing(self):
-        self.db["keep"] = 1
-        with self.assertRaises(store.Error):
-            self.db.update([("ok", 2), ("bad", object())])
-        self.assertEqual(dict(self.db), {"keep": 1})
-        on_disk = json.loads(self.file.read_text(encoding="utf-8"))
-        self.assertEqual(on_disk, {"kv": {"keep": 1}})
+    def test_tables_are_separate_and_listed(self):
+        self.db["one"]["k"] = 1
+        self.db["two"]["k"] = 2
+        self.assertEqual((self.db["one"]["k"], self.db["two"]["k"]), (1, 2))
+        self.assertEqual(self.db.tables, ["one", "two"])
 
-
-class PersistenceTest(StoreCase):
-    def test_file_is_readable_json_and_reloads(self):
-        self.db["a"] = {"name": "example"}
-        self.assertEqual(
-            json.loads(self.file.read_text(encoding="utf-8")),
-            {"kv": {"a": {"name": "example"}}},
-        )
+    def test_values_survive_reopening(self):
+        self.kv["a"] = [1, "two", None, True]
         self.db.close()
-        again = store.open(self.file)
-        self.addCleanup(again.close)
-        self.assertEqual(again["a"], {"name": "example"})
+        with store.open(self.file) as again:
+            self.assertEqual(again["kv"]["a"], [1, "two", None, True])
 
-    def test_tables_share_one_file(self):
-        sub = self.db.table("sub")
-        sub["x"] = 1
-        self.db["y"] = 2
-        self.assertEqual(
-            json.loads(self.file.read_text(encoding="utf-8")),
-            {"kv": {"y": 2}, "sub": {"x": 1}},
-        )
-        self.assertEqual(len(self.db), 1)
-        self.assertEqual(len(sub), 1)
-
-    def test_keys_filter_by_prefix(self):
-        self.db.update({"ab": 1, "ac": 2, "bd": 3})
-        self.assertEqual(list(self.db.keys("a")), ["ab", "ac"])
-        self.assertEqual(list(self.db.keys()), ["ab", "ac", "bd"])
-
-
-class ValuesTest(StoreCase):
-    def test_keys_must_be_strings(self):
+    def test_bad_keys_values_and_names_raise_store_errors(self):
         with self.assertRaises(store.Error):
-            self.db[1] = "x"  # pyright: ignore[reportArgumentType]
+            self.kv[1] = "x"  # type: ignore[index]
+        with self.assertRaises(store.Error):
+            self.kv["x"] = object()
+        with self.assertRaises(store.Error):
+            self.db['bad"name']
+        self.assertTrue(issubclass(store.Error, shared.Error))
 
-    def test_unserializable_value_is_a_store_error(self):
-        self.db["ok"] = 1
-        with self.assertRaises(store.Error) as ctx:
-            self.db["bad"] = object()
-        self.assertIsInstance(ctx.exception, shared.Error)
-        self.assertEqual(self.db["ok"], 1)
-        self.assertNotIn("bad", self.db)
-
-
-class ErrorsAndThreadsTest(StoreCase):
-    def test_closed_store_raises_closed_error(self):
-        self.db["y"] = 1
-        sub = self.db.table("sub")
-        sub.close()
-        with self.assertRaises(store.ClosedError) as ctx:
-            _ = sub["x"]
-        self.assertIsInstance(ctx.exception, store.Error)
-        self.assertIsInstance(ctx.exception, RuntimeError)
-        self.assertEqual(self.db["y"], 1)
-
+    def test_a_closed_db_refuses_calls(self):
         self.db.close()
         with self.assertRaises(store.ClosedError):
-            self.db["x"] = 1
+            self.kv["a"] = 1
 
-    def test_bad_file_is_wrapped_in_store_error(self):
-        self.file.parent.mkdir(parents=True, exist_ok=True)
-        self.file.write_text("not json", encoding="utf-8")
-        with self.assertRaises(store.Error) as ctx:
-            store.open(self.file)
-        self.assertIsInstance(ctx.exception, shared.Error)
-        self.assertIsInstance(ctx.exception.__cause__, ValueError)
 
-    def test_os_errors_are_wrapped_in_store_error(self):
-        with mock.patch.object(Path, "mkdir", side_effect=OSError("no perms")):
-            with self.assertRaises(store.Error) as ctx:
-                self.db["x"] = 1
-        self.assertIsInstance(ctx.exception.__cause__, OSError)
+class RowTest(StoreCase):
+    def test_a_row_type_names_its_table_and_decodes(self):
+        files = self.db[File]
+        files["ins/a.jpg"] = File("kept", 1000, 17)
+        self.assertEqual(files["ins/a.jpg"], File("kept", 1000, 17))
+        self.assertEqual(self.db["files"]["ins/a.jpg"], {"state": "kept", "size": 1000, "mtime": 17})
+        self.assertIs(self.db[File], files)
 
-    def test_concurrent_threads_read_and_write(self):
-        errors: list[BaseException] = []
 
-        def worker(idx: int) -> None:
-            try:
-                for step in range(20):
-                    key = f"t{idx}:{step}"
-                    self.db[key] = step
-                    _ = self.db.get(key)
-            except BaseException as err:
-                errors.append(err)
+class RowsTest(StoreCase):
+    def setUp(self):
+        super().setUp()
+        self.files = self.db[File]
+        for key, row in {
+            "ins/a.jpg": File("kept", 5), "ins/b.jpg": File("failed", 9),
+            "twt/c.mp4": File("failed", 1), "ins/d.png": File("kept", 7),
+        }.items():
+            self.files[key] = row
 
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-        self.assertEqual(errors, [])
-        self.assertEqual(len(self.db), 120)
+    def keys(self, query):
+        return [key for key, _ in query.get()]
+
+    def test_prefix_filter_sort_and_limit_run_in_sql(self):
+        rows = self.files.rows
+        self.assertEqual(self.keys(rows.prefix("ins/")), ["ins/a.jpg", "ins/b.jpg", "ins/d.png"])
+        self.assertEqual(self.keys(rows.filter(state="failed")), ["ins/b.jpg", "twt/c.mp4"])
+        self.assertEqual(self.keys(rows.prefix("ins/").filter(state="kept").sort("size", desc=True)),
+                         ["ins/d.png", "ins/a.jpg"])
+        self.assertEqual(self.keys(rows.sort("size").limit(2)), ["twt/c.mp4", "ins/a.jpg"])
+        self.assertEqual(rows.prefix("ins/").count, 3)
+        self.assertEqual(rows.filter(state="failed").first, ("ins/b.jpg", File("failed", 9)))
+
+    def test_a_predicate_sees_key_and_value(self):
+        query = self.files.rows.filter(lambda pair: pair[1].size > 6).sort("key", desc=True)
+        self.assertEqual(self.keys(query), ["ins/d.png", "ins/b.jpg"])
+
+    def test_json_tables_filter_by_field(self):
+        self.kv["a"] = {"sync": True}
+        self.kv["b"] = {"sync": False}
+        self.kv["c"] = {}
+        self.assertEqual(self.keys(self.kv.rows.filter(sync=True)), ["a"])
+        self.assertEqual(self.keys(self.kv.rows.filter(sync=None)), ["c"])
+
+
+class BatchTest(StoreCase):
+    def test_a_batch_commits_once_and_rolls_back_on_error(self):
+        with self.db.batch():
+            self.kv["a"] = 1
+            with self.db.batch():
+                self.kv["b"] = 2
+        self.assertEqual(len(self.kv), 2)
+        with self.assertRaises(RuntimeError):
+            with self.db.batch():
+                self.kv["c"] = 3
+                raise RuntimeError("boom")
+        self.assertNotIn("c", self.kv)
+
+    def test_threads_write_without_losing_rows(self):
+        def write(start):
+            for n in range(start, start + 200):
+                self.kv[str(n)] = n
+
+        threads = [threading.Thread(target=write, args=(n * 200,)) for n in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(self.kv), 800)
+
+    def test_100k_batched_writes_and_reads_are_fast(self):
+        start = time.perf_counter()
+        with self.db.batch():
+            for n in range(100_000):
+                self.kv[f"k{n}"] = {"n": n}
+        self.assertEqual(len(dict(self.kv.items())), 100_000)
+        self.assertEqual(self.kv["k99999"], {"n": 99999})
+        self.assertLess(time.perf_counter() - start, 5.0)
+
+
+class ConvertTest(unittest.TestCase):
+    def test_a_json_store_is_converted_in_place(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "old.db"
+            path.write_text(json.dumps({"downloads": {"a": {"path": "x"}}, "other": {"b": 2}}))
+            with store.open(path) as db:
+                self.assertEqual(db["downloads"]["a"], {"path": "x"})
+                self.assertEqual(db["other"]["b"], 2)
+            with sqlite3.connect(path) as raw:
+                raw.execute("SELECT 1")
+            self.assertEqual(sorted(p.name for p in Path(folder).iterdir() if not p.name.startswith("old.db")), [])
+
+    def test_a_damaged_json_store_raises(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bad.db"
+            path.write_text("{nope")
+            with self.assertRaises(store.Error):
+                store.open(path)
 
 
 if __name__ == "__main__":

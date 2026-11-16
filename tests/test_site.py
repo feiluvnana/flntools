@@ -105,7 +105,7 @@ class SiteCase(unittest.TestCase):
     def open(self, source=Example, *, state=None):
         """A `TargetSite` for `exm:example_user` on a run closed at the end of the test."""
         if state:
-            with store.open(self.home / paths.SOURCE_STATE, table=source.code) as db:
+            with paths.table(self.home / paths.SOURCE_STATE, source.code) as db:
                 db.update(state)
         opened = source_run(RunShared(home=self.home, history={}, stop=self.stop), source())
         run = opened.__enter__()

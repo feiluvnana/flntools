@@ -65,19 +65,17 @@ class SourceRun:
     files: http.Client
     # What the source's `connect` gave, entered once for the run.
     client: Any = None
-    _state: store.Store | None = field(default=None, repr=False)
+    _state: store.Db | None = field(default=None, repr=False)
     _secrets: auth.Vault | None = field(default=None, repr=False)
     _loop: worker.Loop | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
 
     @property
-    def state(self) -> store.Store:
+    def state(self) -> store.Table[Any]:
         """The source's `store` table in `.flnd/metadata/sources.db`, opened on first use."""
         if self._state is None:
-            self._state = store.open(
-                self.settings.home / paths.SOURCE_STATE, table=self.source.code
-            )
-        return self._state
+            self._state = store.open(self.settings.home / paths.SOURCE_STATE)
+        return self._state[self.source.code]
 
     @property
     def secrets(self) -> auth.Vault:
@@ -144,7 +142,7 @@ def source_run(settings: RunShared, source: Source) -> Iterator[SourceRun]:
                 request.headers.update(signed.headers)
 
     raw = net.client(user_agent=source.user_agent, jar=jar, sign=sign)
-    state = store.open(settings.home / paths.SOURCE_STATE, table=source.code)
+    state = store.open(settings.home / paths.SOURCE_STATE)
     stop: cli.Stopping | None = getattr(settings, "stop", None)
     run = SourceRun(
         source, settings, jar,

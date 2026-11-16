@@ -95,8 +95,8 @@ class VaultedCookiesTest(AuthCase):
         self.assertEqual(sorted(path.name for path in self.home.rglob("*") if path.is_file()), ["secret.key", "secrets.db"])
         self.assertEqual([(cookie["name"], cookie["domain"]) for cookie in auth.load(self.home, "ins")],
                          [("sessionid", ".instagram.com")])
-        with store.open(self.home / paths.SECRETS, table="secrets") as db:
-            self.assertEqual(list(db.keys(prefix="ins:")), ["ins:cookies", "ins:origin"])
+        with paths.table(self.home / paths.SECRETS, "secrets") as db:
+            self.assertEqual([key for key, _ in db.rows.prefix("ins:").get()], ["ins:cookies", "ins:origin"])
             self.assertNotIn(b"ins-session", base64.b64decode(db.get("ins:cookies")))
         self.assertEqual(auth.origin(self.home, "ins"), "cookies.txt")
 
@@ -162,8 +162,8 @@ class VaultedCookiesTest(AuthCase):
 
     def test_a_jar_copied_into_another_sources_slot_doesnt_decrypt(self):
         auth.save(self.home, "ins", cookies.Jar([{"name": "sessionid", "value": "s", "domain": ".instagram.com"}]))
-        with store.open(self.home / paths.SECRETS, table="secrets") as db:
-            db.set("twt:cookies", db.get("ins:cookies"))
+        with paths.table(self.home / paths.SECRETS, "secrets") as db:
+            db["twt:cookies"] = db.get("ins:cookies")
         with self.assertRaises(crypto.Error):
             auth.load(self.home, "twt")
 
@@ -265,7 +265,7 @@ class VaultTest(AuthCase):
             secrets["api_hash"] = "abc"
         with auth.secrets(self.home, "tlg") as secrets:
             self.assertEqual(dict(secrets), {"session": "1BVts-secret", "api_hash": "abc"})
-        with store.open(self.home / paths.SECRETS, table="secrets") as db:
+        with paths.table(self.home / paths.SECRETS, "secrets") as db:
             stored = db.get("tlg:session")
         self.assertNotIn(b"1BVts", base64.b64decode(stored))
 
@@ -281,9 +281,9 @@ class VaultTest(AuthCase):
     def test_a_value_moved_to_another_slot_fails(self):
         with auth.secrets(self.home, "tlg") as secrets:
             secrets["session"] = "s"
-        with store.open(self.home / paths.SECRETS, table="secrets") as db:
-            db.set("loi:session", db.get("tlg:session"))
-            db.set("tlg:other", db.get("tlg:session"))
+        with paths.table(self.home / paths.SECRETS, "secrets") as db:
+            db["loi:session"] = db.get("tlg:session")
+            db["tlg:other"] = db.get("tlg:session")
         for code, name in (("loi", "session"), ("tlg", "other")):
             with auth.secrets(self.home, code) as secrets, self.assertRaises(crypto.Error):
                 secrets[name]

@@ -371,7 +371,8 @@ class Vault(MutableMapping[str, str]):
     def __init__(self, home: Path, code: str):
         self._home = home
         self._code = code
-        self._db = shared.store.open(home / paths.SECRETS, table=TABLE)
+        self._file = shared.store.open(home / paths.SECRETS)
+        self._db = self._file[TABLE]
         self._key: bytes | None = None
 
     def __getitem__(self, name: str) -> str:
@@ -388,10 +389,10 @@ class Vault(MutableMapping[str, str]):
 
     def __iter__(self) -> Iterator[str]:
         prefix = self._slot("")
-        return iter([key[len(prefix):] for key in self._db.keys(prefix=prefix)])
+        return iter([key[len(prefix):] for key, _ in self._db.rows.prefix(prefix).get()])
 
     def __len__(self) -> int:
-        return len(self._db.keys(prefix=self._slot("")))
+        return self._db.rows.prefix(self._slot("")).count
 
     def __enter__(self) -> Vault:
         return self
@@ -401,7 +402,7 @@ class Vault(MutableMapping[str, str]):
 
     def close(self) -> None:
         """Close the database; the same as leaving `with`."""
-        self._db.close()
+        self._file.close()
 
     def _slot(self, name: str) -> str:
         return f"{self._code}:{name}"

@@ -380,7 +380,7 @@ class CtrlCTest(unittest.TestCase):
 
 
 def history(home):
-    with store.open(home / paths.HISTORY, table="downloads") as rows:
+    with paths.table(home / paths.HISTORY, "downloads") as rows:
         return dict(rows.items())
 
 
@@ -496,7 +496,7 @@ class ApiTest(EngineCase):
         return Engine(home=self.home, sources={source.code: source for source in sources})
 
     def saved(self):
-        with store.open(self.home / paths.TARGETS, table="targets") as targets:
+        with paths.table(self.home / paths.TARGETS, "targets") as targets:
             return dict(targets.items())
 
     def test_flnd_exports_exactly_the_engine_api(self):

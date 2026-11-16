@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing, contextmanager
+from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
@@ -790,11 +790,11 @@ class Engine:
             ]
         return max(map(len, labels), default=0)
 
-    def _history(self) -> store.Store:
-        return store.open(self.home / paths.HISTORY, table=HISTORY_TABLE)
+    def _history(self) -> AbstractContextManager[store.Table[Any]]:
+        return paths.table(self.home / paths.HISTORY, HISTORY_TABLE)
 
-    def _targets(self) -> store.Store:
-        return store.open(self.home / paths.TARGETS, table=flnd.targets.TARGETS_TABLE)
+    def _targets(self) -> AbstractContextManager[store.Table[Any]]:
+        return paths.table(self.home / paths.TARGETS, flnd.targets.TARGETS_TABLE)
 
 
 def _validate_targets(

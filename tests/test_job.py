@@ -49,7 +49,7 @@ class JobCase(EngineCase):
         return respond
 
     def history(self):
-        with store.open(self.home / paths.HISTORY, table="downloads") as history:
+        with paths.table(self.home / paths.HISTORY, "downloads") as history:
             return dict(history.items())
 
     def fetched(self, url):
@@ -441,11 +441,11 @@ class SyncStopTest(JobCase):
         self.engine = Engine(home=self.home, sources={"fed": Feed})
 
     def record(self):
-        with store.open(self.home / paths.TARGETS, table="targets") as rows:
+        with paths.table(self.home / paths.TARGETS, "targets") as rows:
             return rows.get("fed:example_user", {}).get("complete")
 
     def forget_record(self):
-        with store.open(self.home / paths.TARGETS, table="targets") as rows:
+        with paths.table(self.home / paths.TARGETS, "targets") as rows:
             row = dict(rows["fed:example_user"])
             row.pop("complete")
             rows["fed:example_user"] = row
@@ -472,7 +472,7 @@ class SyncStopTest(JobCase):
         self.assertEqual(self.listed, ["p0", "p1", "p2", "p3", "p4"])
         self.assertEqual(report.files, 0)
         self.assertIn("posts", self.record())
-        with store.open(self.home / paths.TARGETS, table="targets") as rows:
+        with paths.table(self.home / paths.TARGETS, "targets") as rows:
             self.assertNotIn("cursors", rows.get("fed:example_user", {}))
         self.listed.clear()
         report2 = self.engine.sync(["fed:example_user"])
@@ -530,7 +530,7 @@ class SyncStopTest(JobCase):
         # Remove two saved files in the middle: the 4 saved ones before it never reach 5, then a new one resets.
         for name in ("p2", "p3"):
             next(self.target_dir("fed", "example_user").rglob(f"*{name}.jpg")).unlink()
-        with store.open(self.home / paths.HISTORY, table="downloads") as history:
+        with paths.table(self.home / paths.HISTORY, "downloads") as history:
             for name in ("p2", "p3"):
                 del history[f"fed:{name}"]
         self.listed.clear()
@@ -994,7 +994,7 @@ class ResumeTest(JobCase):
         self.engine = Engine(home=self.home, sources={"pgd": Paged})
 
     def row(self):
-        with store.open(self.home / paths.TARGETS, table="targets") as rows:
+        with paths.table(self.home / paths.TARGETS, "targets") as rows:
             return rows.get("pgd:example_user", {})
 
     def interrupted(self):
@@ -1027,7 +1027,7 @@ class ResumeTest(JobCase):
         self.engine.download(["pgd:example_user"], categories="all")
         self.feed[None] = (["n1", "n2"], "c0")
         self.feed["c0"] = (["p1", "p2", "p3", "p4", "p5"], "c1")
-        with store.open(self.home / paths.TARGETS, table="targets") as rows:
+        with paths.table(self.home / paths.TARGETS, "targets") as rows:
             row = dict(rows["pgd:example_user"])
             row["cursors"] = {"posts": "c2"}
             rows["pgd:example_user"] = row
@@ -1104,7 +1104,7 @@ class MemoryTest(JobCase):
         undated = Post("B2", [File(f"{CDN}/b.jpg")])
         self.run_feed([dated])
         # B2's day is known from an earlier run's history row for its key.
-        with store.open(self.home / paths.HISTORY, table="downloads") as history:
+        with paths.table(self.home / paths.HISTORY, "downloads") as history:
             history["mem:B2_0"] = {"path": "/gone.jpg", "size": 1,
                                    "at": "2026-01-03T00:00:00+00:00", "date": "2026-01-03"}
         self.assertIn("2026-01-03_B2.jpg", self.run_feed([undated]))

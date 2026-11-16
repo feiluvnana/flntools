@@ -17,10 +17,12 @@ removes; `shared.fs.write` writes small files atomically.
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from shared import text
+from shared import store, text
 
 if TYPE_CHECKING:
     from flnd.source import Target
@@ -49,6 +51,13 @@ NOUNS = {IMAGE: "a photo", VIDEO: "a video", AUDIO: "an audio file"}
 # The history fields of a finished file's size and modified time (ns), which `flnd sync` trusts
 # while the file still has them.
 SIZE, MTIME = "size", "mtime"
+
+
+@contextmanager
+def table(path: Path, name: str) -> Iterator[store.Table[Any]]:
+    """One table of the store at `path`, open for the block."""
+    with store.open(path) as db:
+        yield db[name]
 
 
 def stamp(path: Path) -> dict[str, int]:
